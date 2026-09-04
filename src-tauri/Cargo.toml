@@ -1,0 +1,28 @@
+[package]
+name = "tauri-ide"
+version = "0.1.0"
+description = "A minimal, low-memory IDE shell"
+edition = "2021"
+
+[lib]
+name = "tauri_ide_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.13", features = ["json", "rustls", "stream"] }
+futures-util = "0.3.34"
+
+# Keep release builds small and light — matters for a "low memory" tool.
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
