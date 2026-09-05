@@ -2,7 +2,7 @@
 import { createMemo, createSignal, Show } from 'solid-js';
 import type { ChatToolCall } from '../types';
 import CodeBlock from './CodeBlock';
-import { EXT_TO_LANGUAGE, extensionOf, languageForFile } from '../lib/language';
+import { extensionOf } from '../lib/language';
 
 export type ToolDetailsVariant = 'call' | 'result';
 
@@ -63,7 +63,7 @@ export default function ToolDetails(props: ToolDetailsProps) {
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           const keys = Object.keys(parsed);
           if (keys.length > 0) {
-            return `Tool call: ${props.toolCall.name} · ${keys.join(', ')}`;
+            return `Tool call: ${props.toolCall.name}`;
           }
         }
       } catch {
@@ -73,20 +73,24 @@ export default function ToolDetails(props: ToolDetailsProps) {
       return `Tool call: ${props.toolCall.name}`;
     }
 
+    if (props.toolCall) {
+      return `Tool result: ${props.toolCall.name}`;
+    }
+
     // variant === 'result'
     const content = (props.content ?? '').trim();
 
     if (!content) {
-      return 'Tool result · empty';
+      return 'Tool result: empty';
     }
 
     const firstLine = content.split(/\r?\n/, 1)[0].trim();
 
     if (firstLine.length <= 120) {
-      return `Tool result · ${firstLine}`;
+      return `Tool result: ${firstLine}`;
     }
 
-    return `Tool result · ${firstLine.slice(0, 117)}…`;
+    return `Tool result: ${firstLine.slice(0, 117)}…`;
   };
 
   return (
