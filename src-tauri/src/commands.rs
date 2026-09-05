@@ -1,8 +1,8 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
+use std::{eprintln, fs};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tauri::Manager;
 use futures_util::StreamExt;
@@ -167,6 +167,15 @@ fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    None,
+    Low,
+    Medium,
+    High,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OpenAIChatOptions {
@@ -174,6 +183,7 @@ pub struct OpenAIChatOptions {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub stop: Option<Vec<String>>,
+    pub reasoning_effort: Option<ReasoningEffort>
     // add more as needed: frequency_penalty, presence_penalty, etc.
 }
 
@@ -225,20 +235,16 @@ pub async fn send_chat_message(
         base_url.trim_end_matches('/')
     );
 
-    // Only frame this as an agentic coding session when there's actually a
-    // project open for the tools to operate on — otherwise this is just chat.
-    if tools.as_ref().is_some_and(|t| !t.is_empty()) {
-        let content = system_prompt.unwrap_or(CODING_AGENT_SYSTEM_PROMPT.to_string());
+    let system_prompt = system_prompt.unwrap_or(CODING_AGENT_SYSTEM_PROMPT.to_string());
         messages.insert(
             0,
             WireChatMessage {
                 role: "system".to_string(),
-                content,
+                content: system_prompt,
                 tool_calls: None,
                 tool_call_id: None,
             },
         );
-    }
 
     let mut body = serde_json::json!({
         "model": model,
@@ -259,6 +265,26 @@ pub async fn send_chat_message(
         }
         if let Some(stop) = opts.stop.filter(|s| !s.is_empty()) {
             body["stop"] = serde_json::json!(stop);
+        }
+        if let Some(reasoning_effort) = opts.reasoning_effort {
+            match reasoning_effort {
+            ReasoningEffort::None => {
+                body["reasoning_effort"] = serde_json::json!("none");
+                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
+            }
+            ReasoningEffort::Low => {
+                body["reasoning_effort"] = serde_json::json!("low");
+                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
+            }
+            ReasoningEffort::Medium => {
+                body["reasoning_effort"] = serde_json::json!("medium");
+                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
+            }
+            ReasoningEffort::High => {
+                body["reasoning_effort"] = serde_json::json!("high");
+                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
+            }
+        };
         }
     }
 
@@ -496,4 +522,27 @@ pub async fn send_chat_message(
 
     let _ = on_event.send(ChatStreamEvent::Done);
     Ok(())
+}
+
+fn chat_history_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app .path() .app_data_dir() .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    fs::create_dir_all(&dir)
+    .map_err(|e| format!("Failed to create app data directory: {e}"))?;
+Ok(dir.join("chat-history.json"))
+}
+
+#[tauri::command]
+pub fn load_chat_history(app: tauri::AppHandle) -> Result<String, String> {
+    let path = chat_history_path(&app)?;
+    if !path.exists() {
+        return Ok(r#"{"dialogs":[]}"#.to_string());
+    }
+    fs::read_to_string(&path)
+    .map_err(|e| format!("Failed to read chat history: {e}"))
+}
+
+#[tauri::command] pub fn save_chat_history(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    let path = chat_history_path(&app)?;
+    fs::write(&path, json)
+    .map_err(|e| format!("Failed to save chat history: {e}"))
 }

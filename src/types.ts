@@ -73,6 +73,7 @@ export interface OpenAIChatOptions {
   temperature?: number | null;
   top_p?: number | null;
   stop?: string[] | null;
+  reasoning_effort?: 'none' | 'low' | 'medium' | 'high' | null;
 }
 
 export type ChatStreamEvent =
@@ -82,3 +83,11 @@ export type ChatStreamEvent =
   | { type: 'ToolCallStart'; id: string; name: string }
   | { type: 'ToolCallArgumentsDelta'; id: string; arguments_delta: string }
   | { type: 'ToolCallComplete'; id: string; name: string; arguments: string };
+
+export interface ChatDialog {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+}

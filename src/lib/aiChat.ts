@@ -7,17 +7,19 @@ interface SendChatMessageArgs {
   profile: ModelProfile;
   messages: ChatMessage[];
   channel: Channel<ChatStreamEvent>;
+  systemPrompt?: string;
   tools?: unknown[];
   options?: OpenAIChatOptions;
 }
 
 export async function sendChatMessage(args: SendChatMessageArgs): Promise<void> {
-  const { profile, messages, channel, tools, options } = args;
+  const { profile, systemPrompt, messages, channel, tools, options } = args;
 
   await invoke<string>('send_chat_message', {
     baseUrl: profile.baseUrl,
     apiKey: profile.apiKey,
     model: profile.model,
+    systemPrompt,
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content ?? '',

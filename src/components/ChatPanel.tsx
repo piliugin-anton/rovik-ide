@@ -1,17 +1,25 @@
-import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect } from 'solid-js';
-import ModelSettingsPanel from './ModelSettingsPanel';
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { Channel } from '@tauri-apps/api/core';
+import type {
+  ChatDialog,
+  ChatMessage,
+  ChatStreamEvent,
+  ChatToolCall,
+  ModelProfile,
+} from '../types';
+import type { ActiveFileContext } from '../lib/activeContext';
+import { buildContextHeader } from '../lib/activeContext';
 import { loadAiSettings, saveAiSettings } from '../lib/aiSettings';
+import { loadChatHistory, saveChatHistory } from '../lib/chatHistory';
+import { generateChatTitle } from '../lib/chatTitle';
 import { sendChatMessage } from '../lib/aiChat';
 import { AGENT_TOOL_SCHEMAS, executeAgentTool } from '../lib/tools';
-import { buildContextHeader } from '../lib/activeContext';
-import type { ActiveFileContext } from '../lib/activeContext';
-import type { ChatMessage, ChatStreamEvent, ChatToolCall, ModelProfile } from '../types';
-import { Channel } from '@tauri-apps/api/core';
+import ModelSettingsPanel from './ModelSettingsPanel';
 
-// Hard ceiling on how many read→act round-trips one user message can trigger
-// before we stop and hand control back — a model that keeps calling tools
-// without ever producing a final answer would otherwise loop forever.
+// Hard ceiling on how many read→act round-trips one user message can trigger.
 const MAX_AGENT_STEPS = 8;
+
+const NEW_CHAT_TITLE = 'New Chat';
 
 export default function ChatPanel(props: {
   rootPath: () => string | null;
@@ -19,12 +27,18 @@ export default function ChatPanel(props: {
 }) {
   const [profiles, setProfiles] = createSignal<ModelProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = createSignal<string | null>(null);
-  const [messages, setMessages] = createSignal<ChatMessage[]>([]);
+
+  const [dialogs, setDialogs] = createSignal<ChatDialog[]>([]);
+  const [activeDialogId, setActiveDialogId] = createSignal<string | null>(null);
+
   const [input, setInput] = createSignal('');
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [historyOpen, setHistoryOpen] = createSignal(false);
   const [sending, setSending] = createSignal(false);
+  const [loadingHistory, setLoadingHistory] = createSignal(true);
 
-  // Track current in-flight request for cleanup
+  const [isGeneratingTitle, setIsGeneratingTitle] = createSignal(false);
+
   let currentChannel: Channel<ChatStreamEvent> | null = null;
   let rafId: number | null = null;
   let isMounted = true;
@@ -34,65 +48,288 @@ export default function ChatPanel(props: {
     () => profiles().find((p) => p.id === activeProfileId()) ?? null
   );
 
+  const activeDialog = createMemo(() => dialogs().find((d) => d.id === activeDialogId()) ?? null);
+
+  const messages = createMemo<ChatMessage[]>(() => activeDialog()?.messages ?? []);
+
+  /*
+   * -----------------------------------------------------------------------
+   * Initialization
+   * -----------------------------------------------------------------------
+   */
+
   onMount(async () => {
-    const settings = await loadAiSettings();
-    setProfiles(settings.profiles);
-    setActiveProfileId(settings.activeProfileId ?? settings.profiles[0]?.id ?? null);
-  });
+    try {
+      const [settings, history] = await Promise.all([loadAiSettings(), loadChatHistory()]);
 
-  createEffect(() => {
-    // Track whatever should trigger a scroll
-    messages();
-    // Run after Solid has patched the DOM
-    queueMicrotask(() => {
-      if (messagesRef) {
-        messagesRef.scrollTop = messagesRef.scrollHeight;
+      if (!isMounted) return;
+
+      setProfiles(settings.profiles);
+      setActiveProfileId(settings.activeProfileId ?? settings.profiles[0]?.id ?? null);
+
+      setDialogs(history);
+
+      if (history.length > 0) {
+        setActiveDialogId(history[0].id);
+      } else {
+        createNewDialog();
       }
-    });
+    } finally {
+      if (isMounted) {
+        setLoadingHistory(false);
+      }
+    }
   });
 
-  // Cleanup on unmount: abort any in-flight request
+  /*
+   * -----------------------------------------------------------------------
+   * Cleanup
+   * -----------------------------------------------------------------------
+   */
+
   onCleanup(() => {
     isMounted = false;
+
     if (currentChannel) {
-      // Closing the channel tells Rust to stop sending events
       currentChannel = null;
     }
+
     if (rafId !== null) {
       cancelAnimationFrame(rafId);
       rafId = null;
     }
   });
 
-  function persist(nextProfiles: ModelProfile[], nextActiveId: string | null) {
-    void saveAiSettings({ profiles: nextProfiles, activeProfileId: nextActiveId });
+  /*
+   * -----------------------------------------------------------------------
+   * Persistence
+   * -----------------------------------------------------------------------
+   */
+
+  let saveTimer: number | null = null;
+
+  function persistDialogs(nextDialogs: ChatDialog[]) {
+    setDialogs(nextDialogs);
+
+    /*
+     * Debounce writes while the model is streaming.
+     *
+     * Without this, every token would cause a filesystem write.
+     */
+    if (saveTimer !== null) {
+      window.clearTimeout(saveTimer);
+    }
+
+    saveTimer = window.setTimeout(() => {
+      saveTimer = null;
+
+      void saveChatHistory(nextDialogs).catch((err) => {
+        console.error('Failed to persist chat history:', err);
+      });
+    }, 150);
+  }
+
+  async function flushDialogPersistence() {
+    if (saveTimer !== null) {
+      window.clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+
+    try {
+      await saveChatHistory(dialogs());
+    } catch (err) {
+      console.error('Failed to persist chat history:', err);
+    }
+  }
+
+  onCleanup(() => {
+    if (saveTimer !== null) {
+      window.clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+
+    void saveChatHistory(dialogs());
+  });
+
+  /*
+   * -----------------------------------------------------------------------
+   * Dialog helpers
+   * -----------------------------------------------------------------------
+   */
+
+  function createNewDialog(): ChatDialog {
+    const now = Date.now();
+
+    const dialog: ChatDialog = {
+      id: crypto.randomUUID(),
+      title: NEW_CHAT_TITLE,
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setDialogs((prev) => [dialog, ...prev]);
+    setActiveDialogId(dialog.id);
+    setHistoryOpen(false);
+
+    void saveChatHistory([dialog, ...dialogs()]);
+
+    return dialog;
+  }
+
+  function selectDialog(id: string) {
+    setActiveDialogId(id);
+    setHistoryOpen(false);
+  }
+
+  async function deleteDialog(id: string) {
+    const remaining = dialogs().filter((dialog) => dialog.id !== id);
+
+    setDialogs(remaining);
+
+    if (activeDialogId() === id) {
+      if (remaining.length > 0) {
+        setActiveDialogId(remaining[0].id);
+      } else {
+        const dialog = createNewDialog();
+        setActiveDialogId(dialog.id);
+      }
+    }
+
+    await saveChatHistory(remaining.length > 0 ? remaining : dialogs());
+  }
+
+  function updateDialog(id: string, updater: (dialog: ChatDialog) => ChatDialog) {
+    const next = dialogs().map((dialog) => (dialog.id === id ? updater(dialog) : dialog));
+
+    persistDialogs(next);
+  }
+
+  function updateActiveDialogMessages(updater: (messages: ChatMessage[]) => ChatMessage[]) {
+    const id = activeDialogId();
+
+    if (!id) return;
+
+    updateDialog(id, (dialog) => ({
+      ...dialog,
+      messages: updater(dialog.messages),
+      updatedAt: Date.now(),
+    }));
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * AI settings
+   * -----------------------------------------------------------------------
+   */
+
+  function persistAiSettings(nextProfiles: ModelProfile[], nextActiveId: string | null) {
+    void saveAiSettings({
+      profiles: nextProfiles,
+      activeProfileId: nextActiveId,
+    });
   }
 
   function handleProfilesSaved(nextProfiles: ModelProfile[]) {
     setProfiles(nextProfiles);
+
     let nextActive = activeProfileId();
+
     if (!nextProfiles.some((p) => p.id === nextActive)) {
       nextActive = nextProfiles[0]?.id ?? null;
       setActiveProfileId(nextActive);
     }
-    persist(nextProfiles, nextActive);
+
+    persistAiSettings(nextProfiles, nextActive);
   }
 
   function handleModelChange(id: string) {
     setActiveProfileId(id);
-    persist(profiles(), id);
+    persistAiSettings(profiles(), id);
   }
 
-  /**
-   * Runs one model turn against `history`, streams it into a pending
-   * message, and — if the model asked for tool calls and a project is open
-   * — executes them and recurses with the results appended, up to
-   * MAX_AGENT_STEPS. Returns once the model produces a turn with no tool
-   * calls, an error occurs, or the step budget runs out.
+  /*
+   * -----------------------------------------------------------------------
+   * Auto-scroll
+   * -----------------------------------------------------------------------
    */
-  async function runAgentTurn(messages: ChatMessage[], step: number): Promise<void> {
+
+  createEffect(() => {
+    messages();
+    const dialog = activeDialog();
     const profile = activeProfile();
-    if (!profile) return;
+
+    if (!dialog || !profile) return;
+
+    queueMicrotask(async () => {
+      try {
+        if (dialog.title === NEW_CHAT_TITLE && !isGeneratingTitle()) {
+          setIsGeneratingTitle(true);
+          /*
+           * Start title generation in parallel with the actual answer.
+           *
+           * It is completely independent from the main conversation.
+           */
+          await generateTitleForDialog(dialog.id, profile);
+        }
+      } catch (e) {
+        // handle or ignore, depending on your needs
+        if (e instanceof Error && e.name === 'AbortError') {
+          // intentionally aborted, e.g. dialog changed
+          return;
+        }
+        // optionally log other errors
+      } finally {
+        setIsGeneratingTitle(false);
+      }
+
+      if (messagesRef) {
+        messagesRef.scrollTop = messagesRef.scrollHeight;
+      }
+    });
+  });
+
+  /*
+   * -----------------------------------------------------------------------
+   * Title generation
+   * -----------------------------------------------------------------------
+   */
+
+  async function generateTitleForDialog(dialogId: string, profile: ModelProfile) {
+    const chatMessages = messages().filter(
+      (msg) => !msg.toolCalls && !msg.tool_call_id && !msg.error && !msg.pending
+    );
+    if (chatMessages.length === 0) return;
+
+    const title = await generateChatTitle(profile, chatMessages);
+
+    if (!title || !isMounted) {
+      return;
+    }
+
+    updateDialog(dialogId, (dialog) => ({
+      ...dialog,
+      title,
+      updatedAt: Date.now(),
+    }));
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Agent
+   * -----------------------------------------------------------------------
+   */
+
+  async function runAgentTurn(
+    history: ChatMessage[],
+    step: number,
+    dialogId: string
+  ): Promise<void> {
+    const profile = activeProfile();
+
+    if (!profile || !isMounted) {
+      return;
+    }
 
     const pendingMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -101,73 +338,127 @@ export default function ChatPanel(props: {
       pending: true,
       toolCalls: [],
     };
-    setMessages((prev) => [...prev, pendingMsg]);
+
+    updateDialog(dialogId, (dialog) => ({
+      ...dialog,
+      messages: [...dialog.messages, pendingMsg],
+      updatedAt: Date.now(),
+    }));
 
     const channel = new Channel<ChatStreamEvent>();
     currentChannel = channel;
 
     let assistantText = '';
     const toolCallsMap = new Map<string, ChatToolCall>();
+
     let pendingRender = false;
     let streamError: string | null = null;
 
     const flushAssistantText = () => {
       pendingRender = false;
+
       if (!isMounted) return;
-      setMessages((prev) =>
-        prev.map((m) => (m.id === pendingMsg.id ? { ...m, content: assistantText } : m))
-      );
+
+      updateDialog(dialogId, (dialog) => ({
+        ...dialog,
+        messages: dialog.messages.map((message) =>
+          message.id === pendingMsg.id
+            ? {
+                ...message,
+                content: assistantText,
+              }
+            : message
+        ),
+        updatedAt: Date.now(),
+      }));
     };
 
     channel.onmessage = (event) => {
-      // Ignore events if component unmounted
       if (!isMounted) return;
 
       switch (event.type) {
         case 'Delta': {
           assistantText += event.content;
+
           if (!pendingRender) {
             pendingRender = true;
+
             rafId = requestAnimationFrame(() => {
               rafId = null;
               flushAssistantText();
             });
           }
+
           break;
         }
 
         case 'Done': {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false } : m))
-          );
+          updateDialog(dialogId, (dialog) => ({
+            ...dialog,
+            messages: dialog.messages.map((message) =>
+              message.id === pendingMsg.id
+                ? {
+                    ...message,
+                    pending: false,
+                  }
+                : message
+            ),
+            updatedAt: Date.now(),
+          }));
+
           break;
         }
 
         case 'Error': {
           streamError = event.message;
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === pendingMsg.id ? { ...m, pending: false, error: event.message } : m
-            )
-          );
+
+          updateDialog(dialogId, (dialog) => ({
+            ...dialog,
+            messages: dialog.messages.map((message) =>
+              message.id === pendingMsg.id
+                ? {
+                    ...message,
+                    pending: false,
+                    error: event.message,
+                  }
+                : message
+            ),
+            updatedAt: Date.now(),
+          }));
+
           break;
         }
 
         case 'ToolCallStart': {
-          toolCallsMap.set(event.id, { id: event.id, name: event.name, arguments: '' });
+          toolCallsMap.set(event.id, {
+            id: event.id,
+            name: event.name,
+            arguments: '',
+          });
+
           break;
         }
 
         case 'ToolCallArgumentsDelta': {
           const tc = toolCallsMap.get(event.id);
+
           if (tc) {
             tc.arguments += event.arguments_delta;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === pendingMsg.id ? { ...m, toolCalls: Array.from(toolCallsMap.values()) } : m
-              )
-            );
+
+            updateDialog(dialogId, (dialog) => ({
+              ...dialog,
+              messages: dialog.messages.map((message) =>
+                message.id === pendingMsg.id
+                  ? {
+                      ...message,
+                      toolCalls: Array.from(toolCallsMap.values()),
+                    }
+                  : message
+              ),
+              updatedAt: Date.now(),
+            }));
           }
+
           break;
         }
 
@@ -177,31 +468,53 @@ export default function ChatPanel(props: {
             name: event.name,
             arguments: event.arguments,
           });
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === pendingMsg.id ? { ...m, toolCalls: Array.from(toolCallsMap.values()) } : m
-            )
-          );
+
+          updateDialog(dialogId, (dialog) => ({
+            ...dialog,
+            messages: dialog.messages.map((message) =>
+              message.id === pendingMsg.id
+                ? {
+                    ...message,
+                    toolCalls: Array.from(toolCallsMap.values()),
+                  }
+                : message
+            ),
+            updatedAt: Date.now(),
+          }));
+
           break;
         }
       }
     };
 
-    // Tool schemas are only sent once a project folder is open — without a
-    // root there's nowhere for read_file/write_file/etc. to operate.
     const root = props.rootPath();
+
     const tools = root ? (AGENT_TOOL_SCHEMAS as unknown as unknown[]) : undefined;
 
     try {
-      await sendChatMessage({ profile, messages, channel, tools });
+      await sendChatMessage({
+        profile,
+        messages: history,
+        channel,
+        tools,
+      });
     } catch (err) {
       if (isMounted) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === pendingMsg.id ? { ...m, pending: false, error: String(err) } : m
-          )
-        );
+        updateDialog(dialogId, (dialog) => ({
+          ...dialog,
+          messages: dialog.messages.map((message) =>
+            message.id === pendingMsg.id
+              ? {
+                  ...message,
+                  pending: false,
+                  error: String(err),
+                }
+              : message
+          ),
+          updatedAt: Date.now(),
+        }));
       }
+
       return;
     } finally {
       if (currentChannel === channel) {
@@ -209,68 +522,131 @@ export default function ChatPanel(props: {
       }
     }
 
-    if (streamError) return;
-
-    const toolCalls = Array.from(toolCallsMap.values());
-
-    // Nothing to act on (either the model gave a plain answer, or there's no
-    // project open to run tools against) — this turn is the final answer.
-    if (toolCalls.length === 0 || !root) {
-      if (isMounted) {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false } : m))
-        );
-      }
+    if (streamError) {
       return;
     }
 
+    const toolCalls = Array.from(toolCallsMap.values());
+
+    /*
+     * Normal final answer.
+     */
+    if (toolCalls.length === 0 || !root) {
+      updateDialog(dialogId, (dialog) => ({
+        ...dialog,
+        messages: dialog.messages.map((message) =>
+          message.id === pendingMsg.id
+            ? {
+                ...message,
+                pending: false,
+              }
+            : message
+        ),
+        updatedAt: Date.now(),
+      }));
+
+      await flushDialogPersistence();
+
+      return;
+    }
+
+    /*
+     * Safety limit.
+     */
     if (step >= MAX_AGENT_STEPS) {
-      if (isMounted) {
-        setMessages((prev) => [
-          ...prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false } : m)),
+      updateDialog(dialogId, (dialog) => ({
+        ...dialog,
+        messages: [
+          ...dialog.messages.map((message) =>
+            message.id === pendingMsg.id
+              ? {
+                  ...message,
+                  pending: false,
+                }
+              : message
+          ),
           {
             id: crypto.randomUUID(),
             role: 'assistant',
             content: '',
             error: `Stopped after ${MAX_AGENT_STEPS} tool-call steps to avoid a runaway loop.`,
           },
-        ]);
-      }
+        ],
+        updatedAt: Date.now(),
+      }));
+
+      await flushDialogPersistence();
+
       return;
     }
 
-    // Lock in the assistant turn that requested these calls, then execute
-    // each one and feed the results back so the model can continue.
+    /*
+     * Lock in the assistant message that requested the tools.
+     */
     const assistantMsg: ChatMessage = {
       ...pendingMsg,
       content: assistantText,
       toolCalls,
       pending: false,
     };
-    if (isMounted) {
-      setMessages((prev) => prev.map((m) => (m.id === pendingMsg.id ? assistantMsg : m)));
-    }
 
+    updateDialog(dialogId, (dialog) => ({
+      ...dialog,
+      messages: dialog.messages.map((message) =>
+        message.id === pendingMsg.id ? assistantMsg : message
+      ),
+      updatedAt: Date.now(),
+    }));
+
+    /*
+     * Execute requested tools.
+     */
     const toolResultMsgs: ChatMessage[] = [];
+
     for (const tc of toolCalls) {
       const result = await executeAgentTool(root, tc.name, tc.arguments);
+
       const toolMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'tool',
         content: result,
         tool_call_id: tc.id,
       };
+
       toolResultMsgs.push(toolMsg);
-      if (isMounted) setMessages((prev) => [...prev, toolMsg]);
+
+      updateDialog(dialogId, (dialog) => ({
+        ...dialog,
+        messages: [...dialog.messages, toolMsg],
+        updatedAt: Date.now(),
+      }));
     }
 
-    await runAgentTurn([...messages, assistantMsg, ...toolResultMsgs], step + 1);
+    /*
+     * IMPORTANT:
+     *
+     * Do not use the Solid signal immediately after updating it as the
+     * source of truth. Construct the next model history explicitly.
+     */
+    const nextHistory = [...history, assistantMsg, ...toolResultMsgs];
+
+    await runAgentTurn(nextHistory, step + 1, dialogId);
   }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Sending a user message
+   * -----------------------------------------------------------------------
+   */
 
   async function handleSend() {
     const text = input().trim();
     const profile = activeProfile();
-    if (!text || !profile || sending()) return;
+    const dialog = activeDialog();
+
+    if (!text || !profile || !dialog || sending()) {
+      return;
+    }
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -278,22 +654,47 @@ export default function ChatPanel(props: {
       content: text,
     };
 
-    // Displayed history stays clean; only the copy sent to the model gets
-    // the lightweight editor-context breadcrumb prepended.
+    /*
+     * The displayed/persisted user message stays clean.
+     *
+     * The editor context is only added to the wire copy sent to the model.
+     */
     const contextHeader = buildContextHeader(props.activeFileContext());
+
     const wireUserMsg: ChatMessage = contextHeader
-      ? { ...userMsg, content: `${contextHeader}\n\n${text}` }
+      ? {
+          ...userMsg,
+          content: `${contextHeader}\n\n${text}`,
+        }
       : userMsg;
 
-    const historyBase = messages();
-    setMessages((prev) => [...prev, userMsg]);
+    /*
+     * IMPORTANT:
+     *
+     * Capture the history BEFORE inserting the new user message.
+     */
+    const historyBase = dialog.messages;
+
+    /*
+     * Put the clean message into the persisted conversation.
+     */
+    updateDialog(dialog.id, (current) => ({
+      ...current,
+      messages: [...current.messages, userMsg],
+      updatedAt: Date.now(),
+    }));
+
     setInput('');
     setSending(true);
 
     try {
-      await runAgentTurn([...historyBase, wireUserMsg], 0);
+      await runAgentTurn([...historyBase, wireUserMsg], 0, dialog.id);
     } finally {
-      if (isMounted) setSending(false);
+      if (isMounted) {
+        setSending(false);
+      }
+
+      await flushDialogPersistence();
     }
   }
 
@@ -304,20 +705,96 @@ export default function ChatPanel(props: {
     }
   }
 
-  const title = createMemo(() =>
-    activeProfile() ? `AI Chat — ${activeProfile()!.label}` : 'AI Chat'
-  );
+  const title = createMemo(() => {
+    const dialog = activeDialog();
+
+    if (!dialog) {
+      return activeProfile() ? `AI Chat — ${activeProfile()!.label}` : 'AI Chat';
+    }
+
+    return dialog.title;
+  });
+
+  /*
+   * -----------------------------------------------------------------------
+   * Render
+   * -----------------------------------------------------------------------
+   */
 
   return (
     <div class="chat-panel">
       <div class="chat-header">
+        <button
+          class="chat-history-button"
+          onClick={() => setHistoryOpen((value) => !value)}
+          title="Chat history"
+        >
+          ☰
+        </button>
+
         <span class="chat-title" title={title()}>
           {title()}
         </span>
+
+        <button class="icon-button" onClick={() => createNewDialog()} title="New chat">
+          ＋
+        </button>
+
         <button class="icon-button" onClick={() => setSettingsOpen(true)} title="Model settings">
           ⚙
         </button>
       </div>
+
+      <Show when={historyOpen()}>
+        <div class="chat-history">
+          <div class="chat-history-header">
+            <span>Chats</span>
+
+            <button class="chat-new-button" onClick={() => createNewDialog()}>
+              New Chat
+            </button>
+          </div>
+
+          <Show when={!loadingHistory()} fallback={<div class="chat-history-empty">Loading…</div>}>
+            <Show
+              when={dialogs().length > 0}
+              fallback={<div class="chat-history-empty">No conversations yet</div>}
+            >
+              <div class="chat-history-list">
+                <For each={dialogs()}>
+                  {(dialog) => (
+                    <div
+                      class="chat-history-item"
+                      classList={{
+                        active: dialog.id === activeDialogId(),
+                      }}
+                    >
+                      <button
+                        class="chat-history-item-main"
+                        onClick={() => selectDialog(dialog.id)}
+                      >
+                        <span class="chat-history-item-title">{dialog.title}</span>
+
+                        <span class="chat-history-item-date">
+                          {new Date(dialog.updatedAt).toLocaleString()}
+                        </span>
+                      </button>
+
+                      <button
+                        class="chat-history-delete"
+                        title="Delete chat"
+                        onClick={() => void deleteDialog(dialog.id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </Show>
+        </div>
+      </Show>
 
       <Show when={!props.rootPath()}>
         <div class="chat-tools-hint">Open a folder to let the model read and edit your files.</div>
@@ -331,13 +808,17 @@ export default function ChatPanel(props: {
               fallback={
                 <div class="chat-message tool">
                   <div class="tool-name">Tool result</div>
+
                   <pre class="tool-args">{m.content}</pre>
                 </div>
               }
             >
               <div
                 class="chat-message"
-                classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+                classList={{
+                  user: m.role === 'user',
+                  assistant: m.role === 'assistant',
+                }}
               >
                 <Show
                   when={m.content.length > 0 || !m.pending}
@@ -345,12 +826,14 @@ export default function ChatPanel(props: {
                 >
                   <Show when={!m.error} fallback={<span class="chat-error">{m.error}</span>}>
                     <div class="message-content">{m.content}</div>
+
                     <Show when={m.toolCalls && m.toolCalls.length > 0}>
                       <div class="message-tools">
                         <For each={m.toolCalls!}>
                           {(tc) => (
                             <div class="tool-call">
                               <div class="tool-name">Tool: {tc.name}</div>
+
                               <pre class="tool-args">
                                 {(() => {
                                   try {
@@ -379,9 +862,13 @@ export default function ChatPanel(props: {
           onInput={(e) => setInput(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
           placeholder={activeProfile() ? 'Message the model…' : 'Add a model in settings first'}
-          disabled={!activeProfile()}
+          disabled={!activeProfile() || !activeDialog()}
         />
-        <button onClick={handleSend} disabled={!activeProfile() || sending() || !input().trim()}>
+
+        <button
+          onClick={() => void handleSend()}
+          disabled={!activeProfile() || !activeDialog() || sending() || !input().trim()}
+        >
           Send
         </button>
       </div>

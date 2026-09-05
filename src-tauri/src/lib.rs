@@ -12,6 +12,8 @@ pub fn run() {
             commands::load_ai_settings,
     commands::save_ai_settings,
     commands::send_chat_message,
+    commands::load_chat_history,
+    commands::save_chat_history,
     agent_tools::tool_list_dir,
     agent_tools::tool_search_code,
     agent_tools::tool_read_file_range,
