@@ -1,15 +1,20 @@
 // ToolDetails.tsx
-import { createSignal, Show } from 'solid-js';
+import { createMemo, createSignal, Show } from 'solid-js';
 import type { ChatToolCall } from '../types';
+import CodeBlock from './CodeBlock';
+import { EXT_TO_LANGUAGE, extensionOf, languageForFile } from '../lib/language';
 
 export type ToolDetailsVariant = 'call' | 'result';
 
-export default function ToolDetails(props: {
+export interface ToolDetailsProps {
   variant: ToolDetailsVariant;
   toolCall?: ChatToolCall; // for variant === 'call'
   content?: string; // for variant === 'result'
-}) {
+}
+
+export default function ToolDetails(props: ToolDetailsProps) {
   const [expanded, setExpanded] = createSignal(false);
+  const isFileRead = createMemo(() => props.toolCall?.name === 'read_file');
 
   const formattedContent = () => {
     if (props.variant === 'call' && props.toolCall) {
@@ -22,6 +27,26 @@ export default function ToolDetails(props: {
 
     // variant === 'result'
     return props.content ?? '';
+  };
+
+  const toolArguments = () => {
+    if (!props?.toolCall) return undefined;
+
+    try {
+      return JSON.parse(props.toolCall.arguments) as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const extension = () => {
+    const args = toolArguments();
+
+    if (!args) return undefined;
+
+    if (typeof args?.path === 'string') {
+      return extensionOf(args.path);
+    }
   };
 
   const summary = () => {
@@ -80,7 +105,9 @@ export default function ToolDetails(props: {
       </button>
 
       <Show when={expanded()}>
-        <pre class="tool-args">{formattedContent()}</pre>
+        <Show when={isFileRead} fallback={<pre class="tool-args">{formattedContent()}</pre>}>
+          <CodeBlock code={formattedContent()} language={extension()} />
+        </Show>
       </Show>
     </div>
   );

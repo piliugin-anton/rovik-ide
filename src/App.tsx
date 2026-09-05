@@ -42,7 +42,6 @@ export default function App() {
 
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
-    console.log('[debug] picked folder:', folder);
     if (folder) {
       setRootPath(folder);
       setOpenFiles([]);

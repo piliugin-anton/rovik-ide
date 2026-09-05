@@ -23,7 +23,6 @@ export function createFileTreeController(rootPath: () => string | null) {
     setLoading((prev) => new Set(prev).add(path));
     try {
       const entries = await readDirEntries(path);
-      console.log('[debug] loaded', path, '->', entries.length, 'entries', entries);
       setCache((prev) => {
         const next = new Map(prev);
         next.set(path, entries);

@@ -56,7 +56,7 @@ export function isLikelyBinary(name: string): boolean {
   return BINARY_EXTENSIONS.has(extensionOf(name));
 }
 
-const EXT_TO_LANGUAGE: Record<string, string> = {
+export const EXT_TO_LANGUAGE: Record<string, string> = {
   ts: 'typescript',
   tsx: 'typescript',
   mts: 'typescript',

@@ -54,6 +54,9 @@ export default function ChatPanel(props: {
   const activeDialog = createMemo(() => dialogs().find((d) => d.id === activeDialogId()) ?? null);
 
   const messages = createMemo<ChatMessage[]>(() => activeDialog()?.messages ?? []);
+  const allToolMessages = createMemo(() =>
+    messages().filter((msg) => !msg.error && !msg.pending && (msg.toolCalls || msg.tool_call_id))
+  );
 
   /*
    * -----------------------------------------------------------------------
@@ -73,7 +76,6 @@ export default function ChatPanel(props: {
       setDialogs(history);
 
       if (history.length > 0) {
-        console.log(history[0].messages);
         setActiveDialogId(history[0].id);
       } else {
         createNewDialog();
@@ -262,6 +264,23 @@ export default function ChatPanel(props: {
   function handleModelChange(id: string) {
     setActiveProfileId(id);
     persistAiSettings(profiles(), id);
+  }
+
+  function findToolById(id?: string) {
+    if (!id) return undefined;
+
+    return allToolMessages().reduce((acc: ChatToolCall | undefined, msg) => {
+      // Short-circuit: if we already found the tool, return it immediately
+      if (acc) return acc;
+
+      // Find the tool call with matching id in this message
+      const toolCall = msg.toolCalls?.find((tool) => tool.id === id);
+      if (toolCall) {
+        acc = toolCall;
+      }
+      // Must return the (potentially updated) accumulator
+      return acc;
+    }, undefined);
   }
 
   /*
@@ -785,7 +804,13 @@ export default function ChatPanel(props: {
           {(m) => (
             <Show
               when={m.role !== 'tool'}
-              fallback={<ToolDetails variant="result" content={m.content} />}
+              fallback={
+                <ToolDetails
+                  variant="result"
+                  content={m.content}
+                  toolCall={findToolById(m.tool_call_id)}
+                />
+              }
             >
               <>
                 <Show when={m.pending && m.content.length === 0}>
