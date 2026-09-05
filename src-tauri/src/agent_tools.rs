@@ -47,7 +47,8 @@ fn is_denylisted_name(name: &str) -> bool {
 }
 
 fn canonicalize_or_err(p: &Path) -> Result<PathBuf, String> {
-    p.canonicalize().map_err(|e| format!("{}: {e}", p.display()))
+    p.canonicalize()
+        .map_err(|e| format!("{}: {e}", p.display()))
 }
 
 /// Resolves `candidate` (as given by the model, relative to the project
@@ -154,12 +155,18 @@ pub fn tool_list_dir(
         if p == target {
             continue;
         }
-        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if is_denylisted_name(&name) {
             continue;
         }
-        let rel_depth = p.strip_prefix(&target).map(|r| r.components().count()).unwrap_or(1);
+        let rel_depth = p
+            .strip_prefix(&target)
+            .map(|r| r.components().count())
+            .unwrap_or(1);
         out.push(ToolDirEntry {
             path: p
                 .strip_prefix(&root_canon)
@@ -225,7 +232,10 @@ pub fn tool_search_code(
             continue;
         }
 
-        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if is_denylisted_name(&name) {
             continue;
         }
@@ -236,13 +246,21 @@ pub fn tool_search_code(
             }
         }
 
-        let Ok(metadata) = entry.metadata() else { continue };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
         if metadata.len() > 2_000_000 {
             continue;
         }
 
-        let Ok(content) = fs::read_to_string(p) else { continue };
-        let rel_path = p.strip_prefix(&root_canon).unwrap_or(p).to_string_lossy().to_string();
+        let Ok(content) = fs::read_to_string(p) else {
+            continue;
+        };
+        let rel_path = p
+            .strip_prefix(&root_canon)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .to_string();
 
         for (i, line) in content.lines().enumerate() {
             if line.to_lowercase().contains(&needle) {

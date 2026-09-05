@@ -1,20 +1,24 @@
+use bytes::{Buf, BytesMut};
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::{eprintln, fs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use tauri::Manager;
-use futures_util::StreamExt;
+use std::{eprintln, fs};
 use tauri::ipc::Channel;
-use bytes::{BytesMut, Buf};
+use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum ChatStreamEvent {
-    Delta { content: String },
+    Delta {
+        content: String,
+    },
     Done,
-    Error { message: String },
+    Error {
+        message: String,
+    },
     ToolCallStart {
         id: String,
         name: String,
@@ -70,7 +74,11 @@ pub fn read_dir_entries(path: String) -> Result<Vec<DirEntryInfo>, String> {
     }
 
     // Directories first, then alphabetical (case-insensitive) within each group.
-    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
 
     Ok(entries)
 }
@@ -183,8 +191,7 @@ pub struct OpenAIChatOptions {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub stop: Option<Vec<String>>,
-    pub reasoning_effort: Option<ReasoningEffort>
-    // add more as needed: frequency_penalty, presence_penalty, etc.
+    pub reasoning_effort: Option<ReasoningEffort>, // add more as needed: frequency_penalty, presence_penalty, etc.
 }
 
 const CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are a coding agent operating inside a developer's IDE. You have access to tools that let you read, write, and search the user's actual project. Your job is to complete coding tasks by using these tools — not by describing what should be done.
@@ -230,21 +237,18 @@ pub async fn send_chat_message(
 ) -> Result<(), String> {
     let client = Client::new();
 
-    let url = format!(
-        "{}/chat/completions",
-        base_url.trim_end_matches('/')
-    );
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
     let system_prompt = system_prompt.unwrap_or(CODING_AGENT_SYSTEM_PROMPT.to_string());
-        messages.insert(
-            0,
-            WireChatMessage {
-                role: "system".to_string(),
-                content: system_prompt,
-                tool_calls: None,
-                tool_call_id: None,
-            },
-        );
+    messages.insert(
+        0,
+        WireChatMessage {
+            role: "system".to_string(),
+            content: system_prompt,
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    );
 
     let mut body = serde_json::json!({
         "model": model,
@@ -268,23 +272,23 @@ pub async fn send_chat_message(
         }
         if let Some(reasoning_effort) = opts.reasoning_effort {
             match reasoning_effort {
-            ReasoningEffort::None => {
-                body["reasoning_effort"] = serde_json::json!("none");
-                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
-            }
-            ReasoningEffort::Low => {
-                body["reasoning_effort"] = serde_json::json!("low");
-                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
-            }
-            ReasoningEffort::Medium => {
-                body["reasoning_effort"] = serde_json::json!("medium");
-                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
-            }
-            ReasoningEffort::High => {
-                body["reasoning_effort"] = serde_json::json!("high");
-                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
-            }
-        };
+                ReasoningEffort::None => {
+                    body["reasoning_effort"] = serde_json::json!("none");
+                    body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
+                }
+                ReasoningEffort::Low => {
+                    body["reasoning_effort"] = serde_json::json!("low");
+                    body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
+                }
+                ReasoningEffort::Medium => {
+                    body["reasoning_effort"] = serde_json::json!("medium");
+                    body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
+                }
+                ReasoningEffort::High => {
+                    body["reasoning_effort"] = serde_json::json!("high");
+                    body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
+                }
+            };
         }
     }
 
@@ -310,7 +314,9 @@ pub async fn send_chat_message(
         let text = resp.text().await.unwrap_or_default();
         let error = format!("{status}: {text}");
 
-        let _ = on_event.send(ChatStreamEvent::Error{ message: error.clone() });
+        let _ = on_event.send(ChatStreamEvent::Error {
+            message: error.clone(),
+        });
         return Err(error);
     }
 
@@ -320,7 +326,9 @@ pub async fn send_chat_message(
 
         // For non-streaming, we can just send the whole body as a delta
         // or parse it more finely; here we keep your original behavior.
-        let _ = on_event.send(ChatStreamEvent::Delta { content: text.clone() });
+        let _ = on_event.send(ChatStreamEvent::Delta {
+            content: text.clone(),
+        });
 
         // Also parse tool calls if present
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -385,16 +393,16 @@ pub async fn send_chat_message(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
         // Keep raw bytes. Do NOT decode each network chunk independently.
-    buffer.extend_from_slice(&chunk);
+        buffer.extend_from_slice(&chunk);
 
-       while let Some((pos, separator_len)) = find_sse_boundary(&buffer) {
-        let event_bytes = buffer.split_to(pos);
+        while let Some((pos, separator_len)) = find_sse_boundary(&buffer) {
+            let event_bytes = buffer.split_to(pos);
 
-        // Consume \n\n or \r\n\r\n
-        buffer.advance(separator_len);
+            // Consume \n\n or \r\n\r\n
+            buffer.advance(separator_len);
 
             let event = std::str::from_utf8(&event_bytes)
-            .map_err(|e| format!("Invalid UTF-8 in SSE event: {e}"))?;
+                .map_err(|e| format!("Invalid UTF-8 in SSE event: {e}"))?;
 
             for line in event.lines() {
                 let Some(data) = line.strip_prefix("data:") else {
@@ -420,9 +428,9 @@ pub async fn send_chat_message(
                 let value: serde_json::Value = match serde_json::from_str(data) {
                     Ok(value) => value,
                     Err(err) => {
-        eprintln!("Failed to parse SSE data: {err}; data={data:?}");
-        continue;
-    }
+                        eprintln!("Failed to parse SSE data: {err}; data={data:?}");
+                        continue;
+                    }
                 };
 
                 // Extract delta from choices[0].delta
@@ -431,17 +439,15 @@ pub async fn send_chat_message(
                 };
 
                 // Content delta
-                if let Some(content) = delta
-                    .pointer("/content")
-                    .and_then(|v| v.as_str())
-                {
-                    let _ = on_event.send(ChatStreamEvent::Delta { content: content.to_string() });
+                if let Some(content) = delta.pointer("/content").and_then(|v| v.as_str()) {
+                    let _ = on_event.send(ChatStreamEvent::Delta {
+                        content: content.to_string(),
+                    });
                 }
 
                 // Tool calls delta
-                if let Some(tool_calls_arr) = delta
-                    .pointer("/tool_calls")
-                    .and_then(|v| v.as_array())
+                if let Some(tool_calls_arr) =
+                    delta.pointer("/tool_calls").and_then(|v| v.as_array())
                 {
                     for tc in tool_calls_arr {
                         let id = tc
@@ -465,10 +471,12 @@ pub async fn send_chat_message(
                             continue;
                         }
 
-                        let entry = tool_calls.entry(id.clone()).or_insert_with(|| ToolCallState {
-                            name: String::new(),
-                            arguments: String::new(),
-                        });
+                        let entry = tool_calls
+                            .entry(id.clone())
+                            .or_insert_with(|| ToolCallState {
+                                name: String::new(),
+                                arguments: String::new(),
+                            });
 
                         // If this is the first time we see this call id + name, emit start
                         if entry.name.is_empty() && !name.is_empty() {
@@ -525,10 +533,12 @@ pub async fn send_chat_message(
 }
 
 fn chat_history_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app .path() .app_data_dir() .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
-    fs::create_dir_all(&dir)
-    .map_err(|e| format!("Failed to create app data directory: {e}"))?;
-Ok(dir.join("chat-history.json"))
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data directory: {e}"))?;
+    Ok(dir.join("chat-history.json"))
 }
 
 #[tauri::command]
@@ -537,12 +547,11 @@ pub fn load_chat_history(app: tauri::AppHandle) -> Result<String, String> {
     if !path.exists() {
         return Ok(r#"{"dialogs":[]}"#.to_string());
     }
-    fs::read_to_string(&path)
-    .map_err(|e| format!("Failed to read chat history: {e}"))
+    fs::read_to_string(&path).map_err(|e| format!("Failed to read chat history: {e}"))
 }
 
-#[tauri::command] pub fn save_chat_history(app: tauri::AppHandle, json: String) -> Result<(), String> {
+#[tauri::command]
+pub fn save_chat_history(app: tauri::AppHandle, json: String) -> Result<(), String> {
     let path = chat_history_path(&app)?;
-    fs::write(&path, json)
-    .map_err(|e| format!("Failed to save chat history: {e}"))
+    fs::write(&path, json).map_err(|e| format!("Failed to save chat history: {e}"))
 }

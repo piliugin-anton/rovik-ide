@@ -264,7 +264,7 @@ body {
   white-space: pre-wrap;
   max-width: 90%;
   width: fit-content;
-  flex-grow: 1;
+  flex-grow: 0;
   flex-shrink: 0;
 }
 
