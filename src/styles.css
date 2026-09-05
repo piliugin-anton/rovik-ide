@@ -557,3 +557,85 @@ body {
 .chat-history-delete:hover {
   color: #e06c75;
 }
+.chat-tools-hint {
+  margin: 8px 12px;
+  padding: 8px 12px;
+
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary, #888);
+
+  background: var(--background-secondary, rgba(128, 128, 128, 0.08));
+  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.15));
+  border-radius: 6px;
+
+  text-align: center;
+}
+.tool-summary {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-summary:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.tool-summary-icon {
+  flex: 0 0 14px;
+  width: 14px;
+  margin-right: 4px;
+  opacity: 0.65;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tool-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.tool-args {
+  max-height: 320px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-top: 1px solid var(--border-color, rgba(127, 127, 127, 0.15));
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tool-details {
+  margin-top: 6px;
+  border: 1px solid var(--border-color, rgba(127, 127, 127, 0.2));
+  border-radius: 6px;
+  background: var(--tool-background, rgba(127, 127, 127, 0.06));
+
+  /* Match .chat-message inner spacing and typography */
+  padding: 6px 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  max-width: 90%;
+}
+.message-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}

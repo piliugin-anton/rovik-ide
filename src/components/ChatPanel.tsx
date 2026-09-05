@@ -15,6 +15,8 @@ import { generateChatTitle } from '../lib/chatTitle';
 import { sendChatMessage } from '../lib/aiChat';
 import { AGENT_TOOL_SCHEMAS, executeAgentTool } from '../lib/tools';
 import ModelSettingsPanel from './ModelSettingsPanel';
+import ToolDetails from './ToolDetails';
+import { isBlank } from '../lib/textUtils';
 
 // Hard ceiling on how many read→act round-trips one user message can trigger.
 const MAX_AGENT_STEPS = 8;
@@ -70,6 +72,7 @@ export default function ChatPanel(props: {
       setDialogs(history);
 
       if (history.length > 0) {
+        console.log(history[0].messages);
         setActiveDialogId(history[0].id);
       } else {
         createNewDialog();
@@ -199,18 +202,30 @@ export default function ChatPanel(props: {
     await saveChatHistory(remaining.length > 0 ? remaining : dialogs());
   }
 
+  /**
+   * Update any part of a dialog by its stable ID.
+   *
+   * This should be used by asynchronous work such as agent turns,
+   * because the user can switch active dialogs while that work is running.
+   */
   function updateDialog(id: string, updater: (dialog: ChatDialog) => ChatDialog) {
     const next = dialogs().map((dialog) => (dialog.id === id ? updater(dialog) : dialog));
 
     persistDialogs(next);
   }
 
-  function updateActiveDialogMessages(updater: (messages: ChatMessage[]) => ChatMessage[]) {
-    const id = activeDialogId();
-
-    if (!id) return;
-
-    updateDialog(id, (dialog) => ({
+  /**
+   * Update the messages belonging to a specific dialog.
+   *
+   * Deliberately takes dialogId instead of using activeDialogId().
+   * Agent operations must continue targeting the dialog that started
+   * the operation even if the user switches to another dialog.
+   */
+  function updateDialogMessages(
+    dialogId: string,
+    updater: (messages: ChatMessage[]) => ChatMessage[]
+  ) {
+    updateDialog(dialogId, (dialog) => ({
       ...dialog,
       messages: updater(dialog.messages),
       updatedAt: Date.now(),
@@ -256,6 +271,7 @@ export default function ChatPanel(props: {
 
   createEffect(() => {
     messages();
+
     const dialog = activeDialog();
     const profile = activeProfile();
 
@@ -264,6 +280,7 @@ export default function ChatPanel(props: {
     queueMicrotask(async () => {
       if (dialog.title === NEW_CHAT_TITLE && !isGeneratingTitle()) {
         setIsGeneratingTitle(true);
+
         try {
           /*
            * Start title generation in parallel with the actual answer.
@@ -271,8 +288,8 @@ export default function ChatPanel(props: {
            * It is completely independent from the main conversation.
            */
           await generateTitleForDialog(dialog.id, profile);
-        } catch (e) {
-          // optionally log other errors
+        } catch {
+          // Optionally log title generation errors.
         } finally {
           setIsGeneratingTitle(false);
         }
@@ -294,6 +311,7 @@ export default function ChatPanel(props: {
     const chatMessages = messages().filter(
       (msg) => !msg.toolCalls && !msg.tool_call_id && !msg.error && !msg.pending
     );
+
     if (chatMessages.length === 0) return;
 
     const title = await generateChatTitle(profile, chatMessages);
@@ -334,11 +352,7 @@ export default function ChatPanel(props: {
       toolCalls: [],
     };
 
-    updateDialog(dialogId, (dialog) => ({
-      ...dialog,
-      messages: [...dialog.messages, pendingMsg],
-      updatedAt: Date.now(),
-    }));
+    updateDialogMessages(dialogId, (messages) => [...messages, pendingMsg]);
 
     const channel = new Channel<ChatStreamEvent>();
     currentChannel = channel;
@@ -354,18 +368,16 @@ export default function ChatPanel(props: {
 
       if (!isMounted) return;
 
-      updateDialog(dialogId, (dialog) => ({
-        ...dialog,
-        messages: dialog.messages.map((message) =>
+      updateDialogMessages(dialogId, (messages) =>
+        messages.map((message) =>
           message.id === pendingMsg.id
             ? {
                 ...message,
                 content: assistantText,
               }
             : message
-        ),
-        updatedAt: Date.now(),
-      }));
+        )
+      );
     };
 
     channel.onmessage = (event) => {
@@ -388,18 +400,16 @@ export default function ChatPanel(props: {
         }
 
         case 'Done': {
-          updateDialog(dialogId, (dialog) => ({
-            ...dialog,
-            messages: dialog.messages.map((message) =>
+          updateDialogMessages(dialogId, (messages) =>
+            messages.map((message) =>
               message.id === pendingMsg.id
                 ? {
                     ...message,
                     pending: false,
                   }
                 : message
-            ),
-            updatedAt: Date.now(),
-          }));
+            )
+          );
 
           break;
         }
@@ -407,9 +417,8 @@ export default function ChatPanel(props: {
         case 'Error': {
           streamError = event.message;
 
-          updateDialog(dialogId, (dialog) => ({
-            ...dialog,
-            messages: dialog.messages.map((message) =>
+          updateDialogMessages(dialogId, (messages) =>
+            messages.map((message) =>
               message.id === pendingMsg.id
                 ? {
                     ...message,
@@ -417,9 +426,8 @@ export default function ChatPanel(props: {
                     error: event.message,
                   }
                 : message
-            ),
-            updatedAt: Date.now(),
-          }));
+            )
+          );
 
           break;
         }
@@ -440,18 +448,16 @@ export default function ChatPanel(props: {
           if (tc) {
             tc.arguments += event.arguments_delta;
 
-            updateDialog(dialogId, (dialog) => ({
-              ...dialog,
-              messages: dialog.messages.map((message) =>
+            updateDialogMessages(dialogId, (messages) =>
+              messages.map((message) =>
                 message.id === pendingMsg.id
                   ? {
                       ...message,
                       toolCalls: Array.from(toolCallsMap.values()),
                     }
                   : message
-              ),
-              updatedAt: Date.now(),
-            }));
+              )
+            );
           }
 
           break;
@@ -464,18 +470,16 @@ export default function ChatPanel(props: {
             arguments: event.arguments,
           });
 
-          updateDialog(dialogId, (dialog) => ({
-            ...dialog,
-            messages: dialog.messages.map((message) =>
+          updateDialogMessages(dialogId, (messages) =>
+            messages.map((message) =>
               message.id === pendingMsg.id
                 ? {
                     ...message,
                     toolCalls: Array.from(toolCallsMap.values()),
                   }
                 : message
-            ),
-            updatedAt: Date.now(),
-          }));
+            )
+          );
 
           break;
         }
@@ -495,9 +499,8 @@ export default function ChatPanel(props: {
       });
     } catch (err) {
       if (isMounted) {
-        updateDialog(dialogId, (dialog) => ({
-          ...dialog,
-          messages: dialog.messages.map((message) =>
+        updateDialogMessages(dialogId, (messages) =>
+          messages.map((message) =>
             message.id === pendingMsg.id
               ? {
                   ...message,
@@ -505,9 +508,8 @@ export default function ChatPanel(props: {
                   error: String(err),
                 }
               : message
-          ),
-          updatedAt: Date.now(),
-        }));
+          )
+        );
       }
 
       return;
@@ -527,18 +529,16 @@ export default function ChatPanel(props: {
      * Normal final answer.
      */
     if (toolCalls.length === 0 || !root) {
-      updateDialog(dialogId, (dialog) => ({
-        ...dialog,
-        messages: dialog.messages.map((message) =>
+      updateDialogMessages(dialogId, (messages) =>
+        messages.map((message) =>
           message.id === pendingMsg.id
             ? {
                 ...message,
                 pending: false,
               }
             : message
-        ),
-        updatedAt: Date.now(),
-      }));
+        )
+      );
 
       await flushDialogPersistence();
 
@@ -549,26 +549,22 @@ export default function ChatPanel(props: {
      * Safety limit.
      */
     if (step >= MAX_AGENT_STEPS) {
-      updateDialog(dialogId, (dialog) => ({
-        ...dialog,
-        messages: [
-          ...dialog.messages.map((message) =>
-            message.id === pendingMsg.id
-              ? {
-                  ...message,
-                  pending: false,
-                }
-              : message
-          ),
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: '',
-            error: `Stopped after ${MAX_AGENT_STEPS} tool-call steps to avoid a runaway loop.`,
-          },
-        ],
-        updatedAt: Date.now(),
-      }));
+      updateDialogMessages(dialogId, (messages) => [
+        ...messages.map((message) =>
+          message.id === pendingMsg.id
+            ? {
+                ...message,
+                pending: false,
+              }
+            : message
+        ),
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: '',
+          error: `Stopped after ${MAX_AGENT_STEPS} tool-call steps to avoid a runaway loop.`,
+        },
+      ]);
 
       await flushDialogPersistence();
 
@@ -585,13 +581,9 @@ export default function ChatPanel(props: {
       pending: false,
     };
 
-    updateDialog(dialogId, (dialog) => ({
-      ...dialog,
-      messages: dialog.messages.map((message) =>
-        message.id === pendingMsg.id ? assistantMsg : message
-      ),
-      updatedAt: Date.now(),
-    }));
+    updateDialogMessages(dialogId, (messages) =>
+      messages.map((message) => (message.id === pendingMsg.id ? assistantMsg : message))
+    );
 
     /*
      * Execute requested tools.
@@ -610,11 +602,7 @@ export default function ChatPanel(props: {
 
       toolResultMsgs.push(toolMsg);
 
-      updateDialog(dialogId, (dialog) => ({
-        ...dialog,
-        messages: [...dialog.messages, toolMsg],
-        updatedAt: Date.now(),
-      }));
+      updateDialogMessages(dialogId, (messages) => [...messages, toolMsg]);
     }
 
     /*
@@ -673,11 +661,7 @@ export default function ChatPanel(props: {
     /*
      * Put the clean message into the persisted conversation.
      */
-    updateDialog(dialog.id, (current) => ({
-      ...current,
-      messages: [...current.messages, userMsg],
-      updatedAt: Date.now(),
-    }));
+    updateDialogMessages(dialog.id, (messages) => [...messages, userMsg]);
 
     setInput('');
     setSending(true);
@@ -800,52 +784,46 @@ export default function ChatPanel(props: {
           {(m) => (
             <Show
               when={m.role !== 'tool'}
-              fallback={
-                <div class="chat-message tool">
-                  <div class="tool-name">Tool result</div>
-
-                  <pre class="tool-args">{m.content}</pre>
-                </div>
-              }
+              fallback={<ToolDetails variant="result" content={m.content} />}
             >
-              <div
-                class="chat-message"
-                classList={{
-                  user: m.role === 'user',
-                  assistant: m.role === 'assistant',
-                }}
-              >
-                <Show
-                  when={m.content.length > 0 || !m.pending}
-                  fallback={<span class="chat-pending">Thinking…</span>}
-                >
-                  <Show when={!m.error} fallback={<span class="chat-error">{m.error}</span>}>
-                    <div class="message-content">{m.content}</div>
+              <>
+                <Show when={m.pending && m.content.length === 0}>
+                  <div
+                    class="chat-message"
+                    classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+                  >
+                    <span class="chat-pending">Thinking…</span>
+                  </div>
+                </Show>
 
-                    <Show when={m.toolCalls && m.toolCalls.length > 0}>
-                      <div class="message-tools">
-                        <For each={m.toolCalls!}>
-                          {(tc) => (
-                            <div class="tool-call">
-                              <div class="tool-name">Tool: {tc.name}</div>
+                <Show when={!m.pending || m.content.length > 0}>
+                  <Show when={m.error}>
+                    <div
+                      class="chat-message"
+                      classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+                    >
+                      <span class="chat-error">{m.error}</span>
+                    </div>
+                  </Show>
 
-                              <pre class="tool-args">
-                                {(() => {
-                                  try {
-                                    return JSON.stringify(JSON.parse(tc.arguments), null, 2);
-                                  } catch {
-                                    return tc.arguments;
-                                  }
-                                })()}
-                              </pre>
-                            </div>
-                          )}
-                        </For>
-                      </div>
-                    </Show>
+                  <Show when={!m.error && !isBlank(m.content)}>
+                    <div
+                      class="chat-message"
+                      classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+                    >
+                      <div class="message-content">{m.content}</div>
+                    </div>
                   </Show>
                 </Show>
-              </div>
+
+                <Show when={m.toolCalls && m.toolCalls.length > 0}>
+                  <div class="message-tools">
+                    <For each={m.toolCalls!}>
+                      {(tc) => <ToolDetails variant="call" toolCall={tc} />}
+                    </For>
+                  </div>
+                </Show>
+              </>
             </Show>
           )}
         </For>
