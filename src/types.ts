@@ -47,23 +47,18 @@ export interface ChatToolCall {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   toolCalls?: ChatToolCall[];
+  tool_call_id?: string; // if you later send tool results back
   pending?: boolean;
   error?: string;
 }
 
 export type ChatStreamEvent =
-  | {
-      type: "Delta";
-      data: string;
-    }
-  | {
-      type: "Done";
-      data?: never;
-    }
-  | {
-      type: "Error";
-      data: string;
-    };
+  | { type: "Delta"; content: string }
+  | { type: "Done" }
+  | { type: "Error"; message: string }
+  | { type: "ToolCallStart"; id: string; name: string }
+  | { type: "ToolCallArgumentsDelta"; id: string; arguments_delta: string }
+  | { type: "ToolCallComplete"; id: string; name: string; arguments: string };

@@ -99,7 +99,7 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
                   Streaming?
                   <input
                     type="checkbox"
-                    value={String(draft()!.stream)}
+                    checked={draft()!.stream}
                     onChange={(e) => setDraft({ ...draft()!, stream: e.currentTarget.checked })}
                   />
                 </label>

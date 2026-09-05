@@ -1,8 +1,8 @@
-import { createSignal, onMount, For, Show, createMemo } from "solid-js";
+import { createSignal, onMount, onCleanup, For, Show, createMemo } from "solid-js";
 import ModelSettingsPanel from "./ModelSettingsPanel";
 import { loadAiSettings, saveAiSettings } from "../lib/aiSettings";
 import { sendChatMessage } from "../lib/aiChat";
-import type { ChatMessage, ChatStreamEvent, ModelProfile } from "../types";
+import type { ChatMessage, ChatStreamEvent, ChatToolCall, ModelProfile } from "../types";
 import { Channel } from "@tauri-apps/api/core";
 
 export default function ChatPanel() {
@@ -12,14 +12,28 @@ export default function ChatPanel() {
   const [input, setInput] = createSignal("");
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [sending, setSending] = createSignal(false);
-  const channel = new Channel<ChatStreamEvent>()
 
-  const activeProfile = createMemo(() => profiles().find((p) => p.id === activeProfileId()) ?? null);
+  // Track current in-flight request for cleanup
+  let currentChannel: Channel<ChatStreamEvent> | null = null;
+  let isMounted = true;
+
+  const activeProfile = createMemo(() =>
+    profiles().find((p) => p.id === activeProfileId()) ?? null
+  );
 
   onMount(async () => {
     const settings = await loadAiSettings();
     setProfiles(settings.profiles);
     setActiveProfileId(settings.activeProfileId ?? settings.profiles[0]?.id ?? null);
+  });
+
+  // Cleanup on unmount: abort any in-flight request
+  onCleanup(() => {
+    isMounted = false;
+    if (currentChannel) {
+      // Closing the channel tells Rust to stop sending events
+      currentChannel = null;
+    }
   });
 
   function persist(nextProfiles: ModelProfile[], nextActiveId: string | null) {
@@ -46,44 +60,162 @@ export default function ChatPanel() {
     const profile = activeProfile();
     if (!text || !profile || sending()) return;
 
-    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text };
-    const pendingMsg: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "", pending: true };
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: text,
+    };
+
+    const pendingMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: "",
+      pending: true,
+      toolCalls: [],
+    };
+
     setMessages((prev) => [...prev, userMsg, pendingMsg]);
     setInput("");
     setSending(true);
 
+    // Create a NEW channel for THIS request only
+    const channel = new Channel<ChatStreamEvent>();
+    currentChannel = channel;
+
     try {
+      // Capture history at moment of send
       const history = [...messages(), userMsg];
+
       let assistantText = "";
+      const toolCallsMap = new Map<string, ChatToolCall>();
+
+      let pendingRender = false;
+
+const flushAssistantText = () => {
+  pendingRender = false;
+
+  if (!isMounted) return;
+
+  setMessages((prev) =>
+    prev.map((m) =>
+      m.id === pendingMsg.id
+        ? { ...m, content: assistantText }
+        : m
+    )
+  );
+};
+
       channel.onmessage = (event) => {
-    if (event.type === "Delta") {
-      assistantText += event.data;
+        // Ignore events if component unmounted
+        if (!isMounted) return;
 
-      // Update your Solid signal/store here.
-      console.log(assistantText);
-    }
+        switch (event.type) {
+          case "Delta": {
+            assistantText += event.content;
+            if (!pendingRender) {
+        pendingRender = true;
 
-    if (event.type === "Done") {
-      console.log("stream finished");
-    }
+        requestAnimationFrame(() => {
+          flushAssistantText();
+        });
+      }
+            break;
+          }
 
-    if (event.type === "Error") {
-      console.error(event.data);
-    }
-  };
-      const result = await sendChatMessage(profile, history, channel);
-      
-      /* setMessages((prev) =>
-        prev.map((m) =>
-          m.id === pendingMsg.id ? { ...m, content: result.content, toolCalls: result.toolCalls, pending: false } : m
-        )
-      ); */
+          case "Done": {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingMsg.id ? { ...m, pending: false } : m
+              )
+            );
+            break;
+          }
+
+          case "Error": {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingMsg.id
+                  ? { ...m, pending: false, error: event.message }
+                  : m
+              )
+            );
+            break;
+          }
+
+          case "ToolCallStart": {
+            toolCallsMap.set(event.id, {
+              id: event.id,
+              name: event.name,
+              arguments: "",
+            });
+            break;
+          }
+
+          case "ToolCallArgumentsDelta": {
+            const tc = toolCallsMap.get(event.id);
+            if (tc) {
+              tc.arguments += event.arguments_delta;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === pendingMsg.id
+                    ? { ...m, toolCalls: Array.from(toolCallsMap.values()) }
+                    : m
+                )
+              );
+            }
+            break;
+          }
+
+          case "ToolCallComplete": {
+            toolCallsMap.set(event.id, {
+              id: event.id,
+              name: event.name,
+              arguments: event.arguments,
+            });
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingMsg.id
+                  ? { ...m, toolCalls: Array.from(toolCallsMap.values()) }
+                  : m
+              )
+            );
+            break;
+          }
+        }
+      };
+
+      await sendChatMessage(profile, history, channel);
+
+      // Safety finalize (if stream ends without explicit Done)
+      if (isMounted) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === pendingMsg.id
+              ? {
+                  ...m,
+                  toolCalls: Array.from(toolCallsMap.values()),
+                  pending: false,
+                }
+              : m
+          )
+        );
+      }
     } catch (err) {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false, error: String(err) } : m))
-      );
+      if (isMounted) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === pendingMsg.id
+              ? { ...m, pending: false, error: String(err) }
+              : m
+          )
+        );
+      }
     } finally {
-      setSending(false);
+      // Clean up channel reference
+      if (currentChannel === channel) {
+        currentChannel = null;
+      }
+      if (isMounted) setSending(false);
     }
   }
 
@@ -94,7 +226,9 @@ export default function ChatPanel() {
     }
   }
 
-  const title = createMemo(() => (activeProfile() ? `AI Chat — ${activeProfile()!.label}` : "AI Chat"));
+  const title = createMemo(() =>
+    activeProfile() ? `AI Chat — ${activeProfile()!.label}` : "AI Chat"
+  );
 
   return (
     <div class="chat-panel">
@@ -108,12 +242,48 @@ export default function ChatPanel() {
       </div>
 
       <div class="chat-messages">
-        <For each={messages()} fallback={<div class="empty-state">Ask the model anything</div>}>
+        <For
+          each={messages()}
+          fallback={<div class="empty-state">Ask the model anything</div>}
+        >
           {(m) => (
-            <div class="chat-message" classList={{ user: m.role === "user", assistant: m.role === "assistant" }}>
-              <Show when={!m.pending} fallback={<span class="chat-pending">…</span>}>
-                <Show when={!m.error} fallback={<span class="chat-error">{m.error}</span>}>
-                  {m.content}
+            <div
+              class="chat-message"
+              classList={{ user: m.role === "user", assistant: m.role === "assistant" }}
+            >
+              <Show
+                when={!m.pending}
+                fallback={<span class="chat-pending">…</span>}
+              >
+                <Show
+                  when={!m.error}
+                  fallback={<span class="chat-error">{m.error}</span>}
+                >
+                  <div class="message-content">{m.content}</div>
+                  <Show when={m.toolCalls && m.toolCalls.length > 0}>
+                    <div class="message-tools">
+                      <For each={m.toolCalls!}>
+                        {(tc) => (
+                          <div class="tool-call">
+                            <div class="tool-name">Tool: {tc.name}</div>
+                            <pre class="tool-args">
+                              {(() => {
+                                try {
+                                  return JSON.stringify(
+                                    JSON.parse(tc.arguments),
+                                    null,
+                                    2
+                                  );
+                                } catch {
+                                  return tc.arguments;
+                                }
+                              })()}
+                            </pre>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
                 </Show>
               </Show>
             </div>
@@ -126,10 +296,15 @@ export default function ChatPanel() {
           value={input()}
           onInput={(e) => setInput(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
-          placeholder={activeProfile() ? "Message the model…" : "Add a model in settings first"}
+          placeholder={
+            activeProfile() ? "Message the model…" : "Add a model in settings first"
+          }
           disabled={!activeProfile()}
         />
-        <button onClick={handleSend} disabled={!activeProfile() || sending() || !input().trim()}>
+        <button
+          onClick={handleSend}
+          disabled={!activeProfile() || sending() || !input().trim()}
+        >
           Send
         </button>
       </div>
