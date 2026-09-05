@@ -22,7 +22,7 @@ body,
 }
 
 body {
-  font-family: -apple-system, "Segoe UI", sans-serif;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--fg);
 }
@@ -164,7 +164,7 @@ body {
   resize: none;
   background: var(--bg-editor);
   color: var(--fg);
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
   font-size: 13px;
   line-height: 1.5;
   padding: 8px 12px;

@@ -36,7 +36,7 @@ export interface ModelProfile {
   model: string; // e.g. "gpt-4o-mini"
   baseUrl: string; // e.g. "https://api.openai.com/v1"
   apiKey: string;
-  stream: boolean
+  stream: boolean;
 }
 
 export interface ChatToolCall {
@@ -47,7 +47,7 @@ export interface ChatToolCall {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "system" | "tool";
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   toolCalls?: ChatToolCall[];
   tool_call_id?: string; // if you later send tool results back
@@ -56,9 +56,9 @@ export interface ChatMessage {
 }
 
 export type ChatStreamEvent =
-  | { type: "Delta"; content: string }
-  | { type: "Done" }
-  | { type: "Error"; message: string }
-  | { type: "ToolCallStart"; id: string; name: string }
-  | { type: "ToolCallArgumentsDelta"; id: string; arguments_delta: string }
-  | { type: "ToolCallComplete"; id: string; name: string; arguments: string };
+  | { type: 'Delta'; content: string }
+  | { type: 'Done' }
+  | { type: 'Error'; message: string }
+  | { type: 'ToolCallStart'; id: string; name: string }
+  | { type: 'ToolCallArgumentsDelta'; id: string; arguments_delta: string }
+  | { type: 'ToolCallComplete'; id: string; name: string; arguments: string };

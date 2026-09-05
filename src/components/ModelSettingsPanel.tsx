@@ -1,5 +1,5 @@
-import { createSignal, For, Show } from "solid-js";
-import type { ModelProfile } from "../types";
+import { createSignal, For, Show } from 'solid-js';
+import type { ModelProfile } from '../types';
 
 interface ModelSettingsPanelProps {
   profiles: ModelProfile[];
@@ -9,11 +9,11 @@ interface ModelSettingsPanelProps {
 
 const emptyDraft = (): ModelProfile => ({
   id: crypto.randomUUID(),
-  label: "",
-  model: "",
-  baseUrl: "",
-  apiKey: "",
-  stream: false
+  label: '',
+  model: '',
+  baseUrl: '',
+  apiKey: '',
+  stream: false,
 });
 
 export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {

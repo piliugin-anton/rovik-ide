@@ -1,18 +1,18 @@
-import { createSignal, createMemo, Show } from "solid-js";
-import FileTree from "./components/FileTree";
-import Tabs from "./components/Tabs";
-import Editor from "./components/Editor";
-import ChatPanel from "./components/ChatPanel";
-import { createFileTreeController } from "./lib/fileTree";
-import { languageForFile, isLikelyBinary } from "./lib/language";
-import { pickProjectFolder, readFileContent, writeFileContent } from "./lib/commands";
-import type { OpenFile, TreeRow } from "./types";
+import { createSignal, createMemo, Show } from 'solid-js';
+import FileTree from './components/FileTree';
+import Tabs from './components/Tabs';
+import Editor from './components/Editor';
+import ChatPanel from './components/ChatPanel';
+import { createFileTreeController } from './lib/fileTree';
+import { languageForFile, isLikelyBinary } from './lib/language';
+import { pickProjectFolder, readFileContent, writeFileContent } from './lib/commands';
+import type { OpenFile, TreeRow } from './types';
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
   const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
   const [activePath, setActivePath] = createSignal<string | null>(null);
-  const [sidebarTab, setSidebarTab] = createSignal<"files" | "chat">("files");
+  const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat'>('files');
 
   const tree = createFileTreeController(rootPath);
 
@@ -20,7 +20,7 @@ export default function App() {
 
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
-    console.log("[debug] picked folder:", folder);
+    console.log('[debug] picked folder:', folder);
     if (folder) {
       setRootPath(folder);
       setOpenFiles([]);
@@ -29,36 +29,38 @@ export default function App() {
   }
 
   async function openFile(row: TreeRow) {
-  const existing = openFiles().find((f) => f.path === row.path);
-  if (existing) {
-    setActivePath(row.path);
-    return;
+    const existing = openFiles().find((f) => f.path === row.path);
+    if (existing) {
+      setActivePath(row.path);
+      return;
+    }
+    if (isLikelyBinary(row.name)) {
+      window.alert(`"${row.name}" looks like a binary file and can't be opened in the editor.`);
+      return;
+    }
+    try {
+      const content = await readFileContent(row.path);
+      const file: OpenFile = {
+        path: row.path,
+        name: row.name,
+        content,
+        originalContent: content,
+        dirty: false,
+        language: languageForFile(row.name),
+      };
+      setOpenFiles((prev) => [...prev, file]);
+      setActivePath(row.path);
+    } catch (err) {
+      console.error(`Failed to open ${row.path}:`, err);
+      window.alert(String(err));
+    }
   }
-  if (isLikelyBinary(row.name)) {
-    window.alert(`"${row.name}" looks like a binary file and can't be opened in the editor.`);
-    return;
-  }
-  try {
-    const content = await readFileContent(row.path);
-    const file: OpenFile = {
-      path: row.path,
-      name: row.name,
-      content,
-      originalContent: content,
-      dirty: false,
-      language: languageForFile(row.name),
-    };
-    setOpenFiles((prev) => [...prev, file]);
-    setActivePath(row.path);
-  } catch (err) {
-    console.error(`Failed to open ${row.path}:`, err);
-    window.alert(String(err));
-  }
-}
 
   function updateContent(path: string, content: string) {
     setOpenFiles((prev) =>
-      prev.map((f) => (f.path === path ? { ...f, content, dirty: content !== f.originalContent } : f))
+      prev.map((f) =>
+        f.path === path ? { ...f, content, dirty: content !== f.originalContent } : f
+      )
     );
   }
 
@@ -68,7 +70,9 @@ export default function App() {
     try {
       await writeFileContent(file.path, file.content);
       setOpenFiles((prev) =>
-        prev.map((f) => (f.path === file.path ? { ...f, originalContent: f.content, dirty: false } : f))
+        prev.map((f) =>
+          f.path === file.path ? { ...f, originalContent: f.content, dirty: false } : f
+        )
       );
     } catch (err) {
       console.error(`Failed to save ${file.path}:`, err);
@@ -89,37 +93,48 @@ export default function App() {
   return (
     <div class="app">
       <div class="sidebar">
-  <div class="sidebar-tabs">
-    <button classList={{ active: sidebarTab() === "files" }} onClick={() => setSidebarTab("files")}>
-      Files
-    </button>
-    <button classList={{ active: sidebarTab() === "chat" }} onClick={() => setSidebarTab("chat")}>
-      AI Chat
-    </button>
-  </div>
+        <div class="sidebar-tabs">
+          <button
+            classList={{ active: sidebarTab() === 'files' }}
+            onClick={() => setSidebarTab('files')}
+          >
+            Files
+          </button>
+          <button
+            classList={{ active: sidebarTab() === 'chat' }}
+            onClick={() => setSidebarTab('chat')}
+          >
+            AI Chat
+          </button>
+        </div>
 
-  <Show when={sidebarTab() === "files"}>
-    <div class="sidebar-header">
-      <button onClick={handlePickFolder}>Open Folder…</button>
-    </div>
-    <Show when={rootPath()} fallback={<div class="empty-state">No folder open</div>}>
-      <FileTree
-        rows={tree.rows}
-        expanded={tree.expanded}
-        activePath={activePath}
-        onToggle={tree.toggle}
-        onOpenFile={openFile}
-      />
-    </Show>
-  </Show>
+        <Show when={sidebarTab() === 'files'}>
+          <div class="sidebar-header">
+            <button onClick={handlePickFolder}>Open Folder…</button>
+          </div>
+          <Show when={rootPath()} fallback={<div class="empty-state">No folder open</div>}>
+            <FileTree
+              rows={tree.rows}
+              expanded={tree.expanded}
+              activePath={activePath}
+              onToggle={tree.toggle}
+              onOpenFile={openFile}
+            />
+          </Show>
+        </Show>
 
-  <Show when={sidebarTab() === "chat"}>
-    <ChatPanel />
-  </Show>
-</div>
+        <Show when={sidebarTab() === 'chat'}>
+          <ChatPanel />
+        </Show>
+      </div>
 
       <div class="main">
-        <Tabs files={openFiles} activePath={activePath} onSelect={setActivePath} onClose={closeFile} />
+        <Tabs
+          files={openFiles}
+          activePath={activePath}
+          onSelect={setActivePath}
+          onClose={closeFile}
+        />
         <div class="editor-area">
           <Show
             when={activePath()}
@@ -128,11 +143,11 @@ export default function App() {
           >
             {(path) => (
               <Editor
-    content={() => openFiles().find((f) => f.path === path)?.content ?? ""}
-    language={() => openFiles().find((f) => f.path === path)?.language ?? "plaintext"}
-    onChange={(value) => updateContent(path, value)}
-    onSave={saveActiveFile}
-  />
+                content={() => openFiles().find((f) => f.path === path)?.content ?? ''}
+                language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
+                onChange={(value) => updateContent(path, value)}
+                onSave={saveActiveFile}
+              />
             )}
           </Show>
         </div>

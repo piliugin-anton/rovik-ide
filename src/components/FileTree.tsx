@@ -1,6 +1,6 @@
-import { createVirtualizer } from "@tanstack/solid-virtual";
-import { For, type Accessor } from "solid-js";
-import type { TreeRow } from "../types";
+import { createVirtualizer } from '@tanstack/solid-virtual';
+import { For, type Accessor } from 'solid-js';
+import type { TreeRow } from '../types';
 
 const ROW_HEIGHT = 22;
 
@@ -35,7 +35,7 @@ export default function FileTree(props: FileTreeProps) {
 
   return (
     <div class="file-tree" ref={scrollRef}>
-      <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
+      <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
         <For each={virtualizer.getVirtualItems()}>
           {(item) => {
             const row = () => props.rows()[item.index];
@@ -48,19 +48,25 @@ export default function FileTree(props: FileTreeProps) {
                   loading: row()?.loading,
                 }}
                 style={{
-                  position: "absolute",
+                  position: 'absolute',
                   top: 0,
                   left: 0,
-                  width: "100%",
+                  width: '100%',
                   height: `${ROW_HEIGHT}px`,
                   transform: `translateY(${item.start}px)`,
-                  "padding-left": `${8 + row()?.depth * 14}px`,
+                  'padding-left': `${8 + row()?.depth * 14}px`,
                 }}
                 onClick={() => handleClick(row())}
                 title={row()?.name}
               >
                 <span class="tree-row-icon">
-                  {row()?.loading ? "" : row()?.isDir ? (props.expanded().has(row()!.path) ? "▾" : "▸") : "·"}
+                  {row()?.loading
+                    ? ''
+                    : row()?.isDir
+                      ? props.expanded().has(row()!.path)
+                        ? '▾'
+                        : '▸'
+                      : '·'}
                 </span>
                 <span class="tree-row-name">{row()?.name}</span>
               </div>

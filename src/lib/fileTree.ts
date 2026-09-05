@@ -1,6 +1,6 @@
-import { createMemo, createSignal, createEffect } from "solid-js";
-import { readDirEntries } from "./commands";
-import type { DirEntryInfo, TreeRow } from "../types";
+import { createMemo, createSignal, createEffect } from 'solid-js';
+import { readDirEntries } from './commands';
+import type { DirEntryInfo, TreeRow } from '../types';
 
 /**
  * Lazy, cache-backed file tree.
@@ -23,7 +23,7 @@ export function createFileTreeController(rootPath: () => string | null) {
     setLoading((prev) => new Set(prev).add(path));
     try {
       const entries = await readDirEntries(path);
-      console.log("[debug] loaded", path, "->", entries.length, "entries", entries);
+      console.log('[debug] loaded', path, '->', entries.length, 'entries', entries);
       setCache((prev) => {
         const next = new Map(prev);
         next.set(path, entries);
@@ -46,7 +46,7 @@ export function createFileTreeController(rootPath: () => string | null) {
     // Only reset cache and loading state if root changed to a new value
     if (root !== lastRootPath()) {
       setCache(new Map<string, DirEntryInfo[]>()); // reset on actual change
-      setExpanded(new Set<string>());              // reset on actual change
+      setExpanded(new Set<string>()); // reset on actual change
       setLastRootPath(root);
     }
     if (root) {
@@ -91,7 +91,7 @@ export function createFileTreeController(rootPath: () => string | null) {
           } else if (currentLoading.has(child.path)) {
             out.push({
               path: `${child.path}::loading`,
-              name: "Loading…",
+              name: 'Loading…',
               isDir: false,
               depth: depth + 1,
               loading: true,

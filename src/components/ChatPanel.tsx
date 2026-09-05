@@ -1,24 +1,26 @@
-import { createSignal, onMount, onCleanup, For, Show, createMemo } from "solid-js";
-import ModelSettingsPanel from "./ModelSettingsPanel";
-import { loadAiSettings, saveAiSettings } from "../lib/aiSettings";
-import { sendChatMessage } from "../lib/aiChat";
-import type { ChatMessage, ChatStreamEvent, ChatToolCall, ModelProfile } from "../types";
-import { Channel } from "@tauri-apps/api/core";
+import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect } from 'solid-js';
+import ModelSettingsPanel from './ModelSettingsPanel';
+import { loadAiSettings, saveAiSettings } from '../lib/aiSettings';
+import { sendChatMessage } from '../lib/aiChat';
+import type { ChatMessage, ChatStreamEvent, ChatToolCall, ModelProfile } from '../types';
+import { Channel } from '@tauri-apps/api/core';
 
 export default function ChatPanel() {
   const [profiles, setProfiles] = createSignal<ModelProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = createSignal<string | null>(null);
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
-  const [input, setInput] = createSignal("");
+  const [input, setInput] = createSignal('');
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [sending, setSending] = createSignal(false);
 
   // Track current in-flight request for cleanup
   let currentChannel: Channel<ChatStreamEvent> | null = null;
+  let rafId: number | null = null;
   let isMounted = true;
+  let messagesRef: HTMLDivElement | undefined;
 
-  const activeProfile = createMemo(() =>
-    profiles().find((p) => p.id === activeProfileId()) ?? null
+  const activeProfile = createMemo(
+    () => profiles().find((p) => p.id === activeProfileId()) ?? null
   );
 
   onMount(async () => {
@@ -27,12 +29,27 @@ export default function ChatPanel() {
     setActiveProfileId(settings.activeProfileId ?? settings.profiles[0]?.id ?? null);
   });
 
+  createEffect(() => {
+    // Track whatever should trigger a scroll
+    messages();
+    // Run after Solid has patched the DOM
+    queueMicrotask(() => {
+      if (messagesRef) {
+        messagesRef.scrollTop = messagesRef.scrollHeight;
+      }
+    });
+  });
+
   // Cleanup on unmount: abort any in-flight request
   onCleanup(() => {
     isMounted = false;
     if (currentChannel) {
       // Closing the channel tells Rust to stop sending events
       currentChannel = null;
+    }
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
     }
   });
 
@@ -62,20 +79,20 @@ export default function ChatPanel() {
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
-      role: "user",
+      role: 'user',
       content: text,
     };
 
     const pendingMsg: ChatMessage = {
       id: crypto.randomUUID(),
-      role: "assistant",
-      content: "",
+      role: 'assistant',
+      content: '',
       pending: true,
       toolCalls: [],
     };
 
     setMessages((prev) => [...prev, userMsg, pendingMsg]);
-    setInput("");
+    setInput('');
     setSending(true);
 
     // Create a NEW channel for THIS request only
@@ -86,72 +103,65 @@ export default function ChatPanel() {
       // Capture history at moment of send
       const history = [...messages(), userMsg];
 
-      let assistantText = "";
+      let assistantText = '';
       const toolCallsMap = new Map<string, ChatToolCall>();
 
       let pendingRender = false;
 
-const flushAssistantText = () => {
-  pendingRender = false;
+      const flushAssistantText = () => {
+        pendingRender = false;
 
-  if (!isMounted) return;
+        if (!isMounted) return;
 
-  setMessages((prev) =>
-    prev.map((m) =>
-      m.id === pendingMsg.id
-        ? { ...m, content: assistantText }
-        : m
-    )
-  );
-};
+        setMessages((prev) =>
+          prev.map((m) => (m.id === pendingMsg.id ? { ...m, content: assistantText } : m))
+        );
+      };
 
       channel.onmessage = (event) => {
         // Ignore events if component unmounted
         if (!isMounted) return;
 
         switch (event.type) {
-          case "Delta": {
+          case 'Delta': {
             assistantText += event.content;
             if (!pendingRender) {
-        pendingRender = true;
+              pendingRender = true;
 
-        requestAnimationFrame(() => {
-          flushAssistantText();
-        });
-      }
+              rafId = requestAnimationFrame(() => {
+                rafId = null;
+                flushAssistantText();
+              });
+            }
             break;
           }
 
-          case "Done": {
+          case 'Done': {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false } : m))
+            );
+            break;
+          }
+
+          case 'Error': {
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === pendingMsg.id ? { ...m, pending: false } : m
+                m.id === pendingMsg.id ? { ...m, pending: false, error: event.message } : m
               )
             );
             break;
           }
 
-          case "Error": {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === pendingMsg.id
-                  ? { ...m, pending: false, error: event.message }
-                  : m
-              )
-            );
-            break;
-          }
-
-          case "ToolCallStart": {
+          case 'ToolCallStart': {
             toolCallsMap.set(event.id, {
               id: event.id,
               name: event.name,
-              arguments: "",
+              arguments: '',
             });
             break;
           }
 
-          case "ToolCallArgumentsDelta": {
+          case 'ToolCallArgumentsDelta': {
             const tc = toolCallsMap.get(event.id);
             if (tc) {
               tc.arguments += event.arguments_delta;
@@ -166,7 +176,7 @@ const flushAssistantText = () => {
             break;
           }
 
-          case "ToolCallComplete": {
+          case 'ToolCallComplete': {
             toolCallsMap.set(event.id, {
               id: event.id,
               name: event.name,
@@ -174,9 +184,7 @@ const flushAssistantText = () => {
             });
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === pendingMsg.id
-                  ? { ...m, toolCalls: Array.from(toolCallsMap.values()) }
-                  : m
+                m.id === pendingMsg.id ? { ...m, toolCalls: Array.from(toolCallsMap.values()) } : m
               )
             );
             break;
@@ -204,9 +212,7 @@ const flushAssistantText = () => {
       if (isMounted) {
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === pendingMsg.id
-              ? { ...m, pending: false, error: String(err) }
-              : m
+            m.id === pendingMsg.id ? { ...m, pending: false, error: String(err) } : m
           )
         );
       }
@@ -220,14 +226,14 @@ const flushAssistantText = () => {
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
     }
   }
 
   const title = createMemo(() =>
-    activeProfile() ? `AI Chat — ${activeProfile()!.label}` : "AI Chat"
+    activeProfile() ? `AI Chat — ${activeProfile()!.label}` : 'AI Chat'
   );
 
   return (
@@ -241,24 +247,18 @@ const flushAssistantText = () => {
         </button>
       </div>
 
-      <div class="chat-messages">
-        <For
-          each={messages()}
-          fallback={<div class="empty-state">Ask the model anything</div>}
-        >
+      <div ref={messagesRef} class="chat-messages">
+        <For each={messages()} fallback={<div class="empty-state">Ask the model anything</div>}>
           {(m) => (
             <div
               class="chat-message"
-              classList={{ user: m.role === "user", assistant: m.role === "assistant" }}
+              classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
             >
               <Show
-                when={!m.pending}
-                fallback={<span class="chat-pending">…</span>}
+                when={m.content.length > 0 || !m.pending}
+                fallback={<span class="chat-pending">Thinking…</span>}
               >
-                <Show
-                  when={!m.error}
-                  fallback={<span class="chat-error">{m.error}</span>}
-                >
+                <Show when={!m.error} fallback={<span class="chat-error">{m.error}</span>}>
                   <div class="message-content">{m.content}</div>
                   <Show when={m.toolCalls && m.toolCalls.length > 0}>
                     <div class="message-tools">
@@ -269,11 +269,7 @@ const flushAssistantText = () => {
                             <pre class="tool-args">
                               {(() => {
                                 try {
-                                  return JSON.stringify(
-                                    JSON.parse(tc.arguments),
-                                    null,
-                                    2
-                                  );
+                                  return JSON.stringify(JSON.parse(tc.arguments), null, 2);
                                 } catch {
                                   return tc.arguments;
                                 }
@@ -296,22 +292,17 @@ const flushAssistantText = () => {
           value={input()}
           onInput={(e) => setInput(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
-          placeholder={
-            activeProfile() ? "Message the model…" : "Add a model in settings first"
-          }
+          placeholder={activeProfile() ? 'Message the model…' : 'Add a model in settings first'}
           disabled={!activeProfile()}
         />
-        <button
-          onClick={handleSend}
-          disabled={!activeProfile() || sending() || !input().trim()}
-        >
+        <button onClick={handleSend} disabled={!activeProfile() || sending() || !input().trim()}>
           Send
         </button>
       </div>
 
       <div class="chat-model-select">
         <select
-          value={activeProfileId() ?? ""}
+          value={activeProfileId() ?? ''}
           onChange={(e) => handleModelChange(e.currentTarget.value)}
           disabled={profiles().length === 0}
         >

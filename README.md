@@ -71,6 +71,7 @@ npm install
 npm run tauri dev      # dev mode, hot reload
 npm run tauri build    # production bundle
 ```
+
 See https://v2.tauri.app/start/prerequisites/ for the non-Linux prerequisites
 (Xcode CLT on macOS, MSVC Build Tools on Windows).
 

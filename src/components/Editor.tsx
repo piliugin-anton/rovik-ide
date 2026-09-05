@@ -1,6 +1,6 @@
-import { onMount, onCleanup, createEffect } from "solid-js";
-import type { Accessor } from "solid-js";
-import * as monaco from "monaco-editor";
+import { onMount, onCleanup, createEffect } from 'solid-js';
+import type { Accessor } from 'solid-js';
+import * as monaco from 'monaco-editor';
 
 interface EditorProps {
   content: Accessor<string>;
@@ -27,7 +27,7 @@ export default function Editor(props: EditorProps) {
     editor = monaco.editor.create(containerRef, {
       value: props.content(),
       language: props.language(), // TODO: pick based on file extension
-      theme: "vs-dark",
+      theme: 'vs-dark',
       automaticLayout: true,
       minimap: { enabled: false },
     });
@@ -54,9 +54,9 @@ export default function Editor(props: EditorProps) {
     });
 
     createEffect(() => {
-  const model = editor?.getModel();
-  if (model) monaco.editor.setModelLanguage(model, props.language());
-});
+      const model = editor?.getModel();
+      if (model) monaco.editor.setModelLanguage(model, props.language());
+    });
 
     onCleanup(() => {
       disposable.dispose();
@@ -64,5 +64,5 @@ export default function Editor(props: EditorProps) {
     });
   });
 
-  return <div ref={containerRef} class="editor" style={{ height: "100%", width: "100%" }} />;
+  return <div ref={containerRef} class="editor" style={{ height: '100%', width: '100%' }} />;
 }

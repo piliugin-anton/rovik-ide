@@ -1,5 +1,5 @@
-import { For, type Accessor } from "solid-js";
-import type { OpenFile } from "../types";
+import { For, type Accessor } from 'solid-js';
+import type { OpenFile } from '../types';
 
 interface TabsProps {
   files: Accessor<OpenFile[]>;
@@ -21,7 +21,7 @@ export default function Tabs(props: TabsProps) {
           >
             <span class="tab-name">
               {file.name}
-              {file.dirty ? " •" : ""}
+              {file.dirty ? ' •' : ''}
             </span>
             <span
               class="tab-close"
