@@ -36,13 +36,7 @@ body {
 /* Sidebar */
 
 .sidebar {
-  width: 260px;
-  min-width: 160px;
-  max-width: 480px;
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 
@@ -269,7 +263,9 @@ body {
   border-radius: 6px;
   white-space: pre-wrap;
   max-width: 90%;
-  overflow: auto;
+  width: fit-content;
+  flex-grow: 1;
+  flex-shrink: 0;
 }
 
 .chat-message.user {
@@ -649,4 +645,21 @@ body {
 }
 .message-text {
   white-space: pre-wrap;
+}
+/* Remove vertical gaps between paragraphs */
+.markdown-body p {
+  margin-top: 0;
+  margin-bottom: 4px; /* Tiny gap for readability, or set to 0 for no gap */
+}
+
+/* Make line height tighter if needed */
+.markdown-body {
+  line-height: 1.4;
+}
+
+/* Ensure list items and code segments stay compact */
+.markdown-body ul,
+.markdown-body ol {
+  margin-top: 0;
+  margin-bottom: 4px;
 }

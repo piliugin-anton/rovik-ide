@@ -9,6 +9,7 @@ import { pickProjectFolder, readFileContent, writeFileContent } from './lib/comm
 import type { OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext } from './lib/activeContext';
+import Resizable from './components/ResizableDiv';
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
@@ -113,7 +114,7 @@ export default function App() {
 
   return (
     <div class="app">
-      <div class="sidebar">
+      <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
         <div class="sidebar-tabs">
           <button
             classList={{ active: sidebarTab() === 'files' }}
@@ -131,7 +132,7 @@ export default function App() {
 
         <Show when={sidebarTab() === 'files'}>
           <div class="sidebar-header">
-            <button onClick={handlePickFolder}>Open Folder…</button>
+            <button onClick={handlePickFolder}>Open Folder...</button>
           </div>
           <Show when={rootPath()} fallback={<div class="empty-state">No folder open</div>}>
             <FileTree
@@ -147,7 +148,7 @@ export default function App() {
         <Show when={sidebarTab() === 'chat'}>
           <ChatPanel rootPath={rootPath} activeFileContext={activeFileContext} />
         </Show>
-      </div>
+      </Resizable>
 
       <div class="main">
         <Tabs

@@ -90,7 +90,7 @@ export default function ToolDetails(props: ToolDetailsProps) {
       return `Tool result: ${firstLine}`;
     }
 
-    return `Tool result: ${firstLine.slice(0, 117)}…`;
+    return `Tool result: ${firstLine.slice(0, 117)}...`;
   };
 
   return (

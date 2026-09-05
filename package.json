@@ -16,6 +16,7 @@
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "@tauri-apps/plugin-fs": "^2.2.0",
+    "marked": "^18.0.11",
     "monaco-editor": "^0.56.0",
     "solid-js": "^1.9.3"
   },
