@@ -262,25 +262,20 @@ export default function ChatPanel(props: {
     if (!dialog || !profile) return;
 
     queueMicrotask(async () => {
-      try {
-        if (dialog.title === NEW_CHAT_TITLE && !isGeneratingTitle()) {
-          setIsGeneratingTitle(true);
+      if (dialog.title === NEW_CHAT_TITLE && !isGeneratingTitle()) {
+        setIsGeneratingTitle(true);
+        try {
           /*
            * Start title generation in parallel with the actual answer.
            *
            * It is completely independent from the main conversation.
            */
           await generateTitleForDialog(dialog.id, profile);
+        } catch (e) {
+          // optionally log other errors
+        } finally {
+          setIsGeneratingTitle(false);
         }
-      } catch (e) {
-        // handle or ignore, depending on your needs
-        if (e instanceof Error && e.name === 'AbortError') {
-          // intentionally aborted, e.g. dialog changed
-          return;
-        }
-        // optionally log other errors
-      } finally {
-        setIsGeneratingTitle(false);
       }
 
       if (messagesRef) {
