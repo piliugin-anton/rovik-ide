@@ -255,19 +255,21 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
 .chat-message {
+  min-height: 32px;
   font-size: 13px;
   line-height: 1.4;
   padding: 6px 8px;
   border-radius: 6px;
   white-space: pre-wrap;
   max-width: 90%;
+  overflow: auto;
 }
 
 .chat-message.user {
@@ -638,4 +640,13 @@ body {
   flex-direction: column;
   gap: 4px;
   margin-top: 8px;
+}
+.code-block {
+  width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 4px 0;
+}
+.message-text {
+  white-space: pre-wrap;
 }

@@ -17,6 +17,7 @@ import { AGENT_TOOL_SCHEMAS, executeAgentTool } from '../lib/tools';
 import ModelSettingsPanel from './ModelSettingsPanel';
 import ToolDetails from './ToolDetails';
 import { isBlank } from '../lib/textUtils';
+import MessageContent from './MessageContent';
 
 // Hard ceiling on how many read→act round-trips one user message can trigger.
 const MAX_AGENT_STEPS = 8;
@@ -811,7 +812,7 @@ export default function ChatPanel(props: {
                       class="chat-message"
                       classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
                     >
-                      <div class="message-content">{m.content}</div>
+                      <MessageContent content={m.content} />
                     </div>
                   </Show>
                 </Show>
