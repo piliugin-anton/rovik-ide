@@ -7,6 +7,12 @@ interface EditorProps {
   language: Accessor<string>;
   onChange: (value: string) => void;
   onSave: () => void;
+  onCursorChange?: (info: {
+    line: number;
+    column: number;
+    selectionStartLine: number | null;
+    selectionEndLine: number | null;
+  }) => void;
 }
 
 /**
@@ -43,6 +49,16 @@ export default function Editor(props: EditorProps) {
       props.onSave();
     });
 
+    const selectionDisposable = editor.onDidChangeCursorSelection((e) => {
+      const sel = e.selection;
+      props.onCursorChange?.({
+        line: sel.positionLineNumber,
+        column: sel.positionColumn,
+        selectionStartLine: sel.isEmpty() ? null : sel.startLineNumber,
+        selectionEndLine: sel.isEmpty() ? null : sel.endLineNumber,
+      });
+    });
+
     // Only push external content changes into the editor — never on the
     // user's own keystrokes, or every character typed would reset the
     // cursor position and blow away undo history.
@@ -60,6 +76,7 @@ export default function Editor(props: EditorProps) {
 
     onCleanup(() => {
       disposable.dispose();
+      selectionDisposable.dispose();
       editor?.dispose();
     });
   });

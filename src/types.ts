@@ -45,6 +45,19 @@ export interface ChatToolCall {
   arguments: string; // raw JSON string, as returned by the API
 }
 
+export interface ToolDirEntry {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  depth: number;
+}
+
+export interface ToolSearchMatch {
+  path: string;
+  line: number;
+  text: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -53,6 +66,13 @@ export interface ChatMessage {
   tool_call_id?: string; // if you later send tool results back
   pending?: boolean;
   error?: string;
+}
+
+export interface OpenAIChatOptions {
+  max_tokens?: number | null;
+  temperature?: number | null;
+  top_p?: number | null;
+  stop?: string[] | null;
 }
 
 export type ChatStreamEvent =

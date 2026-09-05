@@ -19,6 +19,7 @@ serde_json = "1"
 reqwest = { version = "0.13", features = ["json", "rustls", "stream"] }
 futures-util = "0.3.34"
 bytes = "1.12.1"
+ignore = "0.4.33"
 
 # Keep release builds small and light — matters for a "low memory" tool.
 [profile.release]

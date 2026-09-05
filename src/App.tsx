@@ -7,16 +7,38 @@ import { createFileTreeController } from './lib/fileTree';
 import { languageForFile, isLikelyBinary } from './lib/language';
 import { pickProjectFolder, readFileContent, writeFileContent } from './lib/commands';
 import type { OpenFile, TreeRow } from './types';
+import { findEnclosingSymbol } from './lib/activeContext';
+import type { ActiveFileContext } from './lib/activeContext';
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
   const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
   const [activePath, setActivePath] = createSignal<string | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat'>('files');
+  const [cursorInfo, setCursorInfo] = createSignal<{
+    line: number;
+    column: number;
+    selectionStartLine: number | null;
+    selectionEndLine: number | null;
+  } | null>(null);
 
   const tree = createFileTreeController(rootPath);
 
   const activeFile = createMemo(() => openFiles().find((f) => f.path === activePath()) ?? null);
+  const activeFileContext = createMemo<ActiveFileContext | null>(() => {
+    const file = activeFile();
+    const info = cursorInfo();
+    if (!file || !info) return null;
+    return {
+      path: file.path,
+      language: file.language,
+      line: info.line,
+      column: info.column,
+      enclosingSymbol: findEnclosingSymbol(file.content, info.line, file.language),
+      selectionStartLine: info.selectionStartLine,
+      selectionEndLine: info.selectionEndLine,
+    };
+  });
 
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
@@ -124,7 +146,7 @@ export default function App() {
         </Show>
 
         <Show when={sidebarTab() === 'chat'}>
-          <ChatPanel />
+          <ChatPanel rootPath={rootPath} activeFileContext={activeFileContext} />
         </Show>
       </div>
 
@@ -147,6 +169,7 @@ export default function App() {
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
                 onChange={(value) => updateContent(path, value)}
                 onSave={saveActiveFile}
+                onCursorChange={setCursorInfo}
               />
             )}
           </Show>

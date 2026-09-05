@@ -1,5 +1,5 @@
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -123,9 +123,30 @@ pub fn save_ai_settings(app: tauri::AppHandle, json: String) -> Result<(), Strin
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+pub struct WireToolCallFunction {
+    name: String,
+    arguments: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct WireToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    function: WireToolCallFunction,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct WireChatMessage {
     role: String,
+    #[serde(default)]
     content: String,
+    // Present on an assistant message that requested tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<WireToolCall>>,
+    // Present on a role:"tool" message replying to one of the above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
 }
 
 struct ToolCallState {
@@ -146,37 +167,44 @@ fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-const SYSTEM_PROMPT: &str = r#"You are a coding agent operating inside a developer's IDE. You have access to tools that let you read, write, and execute code in the user's actual project. Your job is to complete coding tasks by using these tools — not by describing what should be done.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct OpenAIChatOptions {
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub stop: Option<Vec<String>>,
+    // add more as needed: frequency_penalty, presence_penalty, etc.
+}
+
+const CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are a coding agent operating inside a developer's IDE. You have access to tools that let you read, write, and search the user's actual project. Your job is to complete coding tasks by using these tools — not by describing what should be done.
 
 ## Core behavior
 
-- You are an agent, not a chatbot. When a task requires inspecting files, running code, or searching the codebase, use the appropriate tool immediately. Do not ask the user to paste file contents you can read yourself, and do not guess at file contents, APIs, or project structure — verify with a tool call.
-- Never claim you made a change unless you actually called the tool that makes it. Never describe code you "would" write instead of writing it, unless the user explicitly asked for a plan or explanation only.
-- Work in small, verifiable steps: read relevant context, make a change, verify it (run tests/lint/build if available), then proceed. Don't batch large unverified changes.
-- If a tool call fails, read the error, adjust, and retry with a corrected call rather than giving up or fabricating a result.
-- If you're missing information a tool could get you (a file's contents, a function's definition, test output), get it — don't ask the user for something you can retrieve yourself.
-- Only ask the user a clarifying question when the task is genuinely ambiguous in a way that changes the approach (e.g. conflicting requirements, missing business logic decision). Otherwise, make a reasonable assumption, state it briefly, and proceed.
+- You are an agent, not a chatbot. When a task requires inspecting files or searching the codebase, use the appropriate tool immediately. Do not ask the user to paste file contents you can read yourself, and do not guess at file contents, APIs, or project structure — verify with a tool call.
+- Never claim you made a change unless you actually called write_file. Never describe code you "would" write instead of writing it, unless the user explicitly asked for a plan or explanation only.
+- If a tool call fails or returns an error string, read it, adjust, and retry with a corrected call rather than giving up or fabricating a result.
+- If you're missing information a tool could get you, get it — don't ask the user for something you can retrieve yourself.
+- Only ask the user a clarifying question when the task is genuinely ambiguous in a way that changes the approach. Otherwise, make a reasonable assumption, state it briefly, and proceed.
 
 ## Tool use rules
 
-- Available tools: {{list tool names and one-line purpose for each — e.g. read_file, write_file, list_dir, search_code, run_command, run_tests}}
+- Available tools: read_file (read a file, optionally a line range), write_file (create or fully overwrite a file), list_dir (recursively list files/directories, gitignore-aware), search_code (case-insensitive text search across the project).
 - Always use `search_code` / `list_dir` before assuming a file doesn't exist or a symbol isn't defined somewhere.
-- Prefer targeted edits (patch/diff-style changes) over rewriting whole files, unless the file is small or the rewrite is the actual task.
-- After making a change that could break something (logic change, dependency bump, refactor), run the relevant tests or build command if a tool for that exists. Report actual output, not assumed output.
+- There is no patch/diff tool — write_file always replaces the entire file. For edits to an existing file, read_file first, then write_file back the complete updated content, not just the changed lines.
 - Never invent tool output. If a tool call hasn't been made, you don't have the result.
 - Chain tool calls as needed within a turn to fully resolve the task before responding — don't stop halfway and ask "should I continue?" unless you hit a real decision point.
 
 ## Communication style
 
 - Keep prose minimal. Lead with the change/result, not a restatement of the request.
-- When you finish, summarize concretely: what files changed, what was verified (tests passed/failed, build succeeded), and any remaining risk or TODO.
+- When you finish, summarize concretely: what files changed and any remaining risk or TODO.
 - If you're uncertain about correctness, say so explicitly rather than presenting a guess as fact.
 
 ## Boundaries
 
-- Don't run destructive commands (rm -rf, force-push, drop database, etc.) without explicit confirmation from the user in this session.
-- Don't install new dependencies or modify config/CI files unless the task calls for it or the user approves.
-- Stay within the project directory unless the task explicitly requires touching something outside it."#;
+- All file paths are relative to the project root and confined to it — you cannot and should not attempt to access anything outside the opened project folder.
+- Don't create or modify config/dependency files unless the task calls for it."#;
 
 #[tauri::command]
 pub async fn send_chat_message(
@@ -185,6 +213,9 @@ pub async fn send_chat_message(
     model: String,
     mut messages: Vec<WireChatMessage>,
     streaming: bool,
+    tools: Option<Vec<serde_json::Value>>,
+    system_prompt: Option<String>,
+    options: Option<OpenAIChatOptions>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
     let client = Client::new();
@@ -194,18 +225,55 @@ pub async fn send_chat_message(
         base_url.trim_end_matches('/')
     );
 
-    messages.insert(0, WireChatMessage { role: "system".to_string(), content: SYSTEM_PROMPT.to_string() });
+    // Only frame this as an agentic coding session when there's actually a
+    // project open for the tools to operate on — otherwise this is just chat.
+    if tools.as_ref().is_some_and(|t| !t.is_empty()) {
+        let content = system_prompt.unwrap_or(CODING_AGENT_SYSTEM_PROMPT.to_string());
+        messages.insert(
+            0,
+            WireChatMessage {
+                role: "system".to_string(),
+                content,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        );
+    }
+
+    let mut body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "stream": streaming,
+    });
+
+    // Merge optional OpenAI parameters from `options`
+    if let Some(opts) = options {
+        if let Some(max_tokens) = opts.max_tokens {
+            body["max_tokens"] = serde_json::json!(max_tokens);
+        }
+        if let Some(temperature) = opts.temperature {
+            body["temperature"] = serde_json::json!(temperature);
+        }
+        if let Some(top_p) = opts.top_p {
+            body["top_p"] = serde_json::json!(top_p);
+        }
+        if let Some(stop) = opts.stop.filter(|s| !s.is_empty()) {
+            body["stop"] = serde_json::json!(stop);
+        }
+    }
+
+    // Only attach "tools"/"tool_choice" when the frontend actually gave us
+    // schemas (e.g. no project folder is open yet, or the profile disabled
+    // tool use) — some OpenAI-compatible backends reject an empty tools array.
+    if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+        body["tools"] = serde_json::json!(tools);
+        body["tool_choice"] = serde_json::json!("auto");
+    }
 
     let resp = client
         .post(&url)
         .bearer_auth(api_key)
-        .json(&serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "stream": streaming,
-            // You likely also pass "tools" here from the frontend or config.
-            // "tools": tools,
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(|e| e.to_string())?;

@@ -2,10 +2,21 @@ import { createSignal, onMount, onCleanup, For, Show, createMemo, createEffect }
 import ModelSettingsPanel from './ModelSettingsPanel';
 import { loadAiSettings, saveAiSettings } from '../lib/aiSettings';
 import { sendChatMessage } from '../lib/aiChat';
+import { AGENT_TOOL_SCHEMAS, executeAgentTool } from '../lib/tools';
+import { buildContextHeader } from '../lib/activeContext';
+import type { ActiveFileContext } from '../lib/activeContext';
 import type { ChatMessage, ChatStreamEvent, ChatToolCall, ModelProfile } from '../types';
 import { Channel } from '@tauri-apps/api/core';
 
-export default function ChatPanel() {
+// Hard ceiling on how many read→act round-trips one user message can trigger
+// before we stop and hand control back — a model that keeps calling tools
+// without ever producing a final answer would otherwise loop forever.
+const MAX_AGENT_STEPS = 8;
+
+export default function ChatPanel(props: {
+  rootPath: () => string | null;
+  activeFileContext: () => ActiveFileContext | null;
+}) {
   const [profiles, setProfiles] = createSignal<ModelProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = createSignal<string | null>(null);
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
@@ -72,6 +83,190 @@ export default function ChatPanel() {
     persist(profiles(), id);
   }
 
+  /**
+   * Runs one model turn against `history`, streams it into a pending
+   * message, and — if the model asked for tool calls and a project is open
+   * — executes them and recurses with the results appended, up to
+   * MAX_AGENT_STEPS. Returns once the model produces a turn with no tool
+   * calls, an error occurs, or the step budget runs out.
+   */
+  async function runAgentTurn(messages: ChatMessage[], step: number): Promise<void> {
+    const profile = activeProfile();
+    if (!profile) return;
+
+    const pendingMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: '',
+      pending: true,
+      toolCalls: [],
+    };
+    setMessages((prev) => [...prev, pendingMsg]);
+
+    const channel = new Channel<ChatStreamEvent>();
+    currentChannel = channel;
+
+    let assistantText = '';
+    const toolCallsMap = new Map<string, ChatToolCall>();
+    let pendingRender = false;
+    let streamError: string | null = null;
+
+    const flushAssistantText = () => {
+      pendingRender = false;
+      if (!isMounted) return;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === pendingMsg.id ? { ...m, content: assistantText } : m))
+      );
+    };
+
+    channel.onmessage = (event) => {
+      // Ignore events if component unmounted
+      if (!isMounted) return;
+
+      switch (event.type) {
+        case 'Delta': {
+          assistantText += event.content;
+          if (!pendingRender) {
+            pendingRender = true;
+            rafId = requestAnimationFrame(() => {
+              rafId = null;
+              flushAssistantText();
+            });
+          }
+          break;
+        }
+
+        case 'Done': {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false } : m))
+          );
+          break;
+        }
+
+        case 'Error': {
+          streamError = event.message;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingMsg.id ? { ...m, pending: false, error: event.message } : m
+            )
+          );
+          break;
+        }
+
+        case 'ToolCallStart': {
+          toolCallsMap.set(event.id, { id: event.id, name: event.name, arguments: '' });
+          break;
+        }
+
+        case 'ToolCallArgumentsDelta': {
+          const tc = toolCallsMap.get(event.id);
+          if (tc) {
+            tc.arguments += event.arguments_delta;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === pendingMsg.id ? { ...m, toolCalls: Array.from(toolCallsMap.values()) } : m
+              )
+            );
+          }
+          break;
+        }
+
+        case 'ToolCallComplete': {
+          toolCallsMap.set(event.id, {
+            id: event.id,
+            name: event.name,
+            arguments: event.arguments,
+          });
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingMsg.id ? { ...m, toolCalls: Array.from(toolCallsMap.values()) } : m
+            )
+          );
+          break;
+        }
+      }
+    };
+
+    // Tool schemas are only sent once a project folder is open — without a
+    // root there's nowhere for read_file/write_file/etc. to operate.
+    const root = props.rootPath();
+    const tools = root ? (AGENT_TOOL_SCHEMAS as unknown as unknown[]) : undefined;
+
+    try {
+      await sendChatMessage({ profile, messages, channel, tools });
+    } catch (err) {
+      if (isMounted) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === pendingMsg.id ? { ...m, pending: false, error: String(err) } : m
+          )
+        );
+      }
+      return;
+    } finally {
+      if (currentChannel === channel) {
+        currentChannel = null;
+      }
+    }
+
+    if (streamError) return;
+
+    const toolCalls = Array.from(toolCallsMap.values());
+
+    // Nothing to act on (either the model gave a plain answer, or there's no
+    // project open to run tools against) — this turn is the final answer.
+    if (toolCalls.length === 0 || !root) {
+      if (isMounted) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false } : m))
+        );
+      }
+      return;
+    }
+
+    if (step >= MAX_AGENT_STEPS) {
+      if (isMounted) {
+        setMessages((prev) => [
+          ...prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false } : m)),
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: '',
+            error: `Stopped after ${MAX_AGENT_STEPS} tool-call steps to avoid a runaway loop.`,
+          },
+        ]);
+      }
+      return;
+    }
+
+    // Lock in the assistant turn that requested these calls, then execute
+    // each one and feed the results back so the model can continue.
+    const assistantMsg: ChatMessage = {
+      ...pendingMsg,
+      content: assistantText,
+      toolCalls,
+      pending: false,
+    };
+    if (isMounted) {
+      setMessages((prev) => prev.map((m) => (m.id === pendingMsg.id ? assistantMsg : m)));
+    }
+
+    const toolResultMsgs: ChatMessage[] = [];
+    for (const tc of toolCalls) {
+      const result = await executeAgentTool(root, tc.name, tc.arguments);
+      const toolMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'tool',
+        content: result,
+        tool_call_id: tc.id,
+      };
+      toolResultMsgs.push(toolMsg);
+      if (isMounted) setMessages((prev) => [...prev, toolMsg]);
+    }
+
+    await runAgentTurn([...messages, assistantMsg, ...toolResultMsgs], step + 1);
+  }
+
   async function handleSend() {
     const text = input().trim();
     const profile = activeProfile();
@@ -83,144 +278,21 @@ export default function ChatPanel() {
       content: text,
     };
 
-    const pendingMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: '',
-      pending: true,
-      toolCalls: [],
-    };
+    // Displayed history stays clean; only the copy sent to the model gets
+    // the lightweight editor-context breadcrumb prepended.
+    const contextHeader = buildContextHeader(props.activeFileContext());
+    const wireUserMsg: ChatMessage = contextHeader
+      ? { ...userMsg, content: `${contextHeader}\n\n${text}` }
+      : userMsg;
 
-    setMessages((prev) => [...prev, userMsg, pendingMsg]);
+    const historyBase = messages();
+    setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setSending(true);
 
-    // Create a NEW channel for THIS request only
-    const channel = new Channel<ChatStreamEvent>();
-    currentChannel = channel;
-
     try {
-      // Capture history at moment of send
-      const history = [...messages(), userMsg];
-
-      let assistantText = '';
-      const toolCallsMap = new Map<string, ChatToolCall>();
-
-      let pendingRender = false;
-
-      const flushAssistantText = () => {
-        pendingRender = false;
-
-        if (!isMounted) return;
-
-        setMessages((prev) =>
-          prev.map((m) => (m.id === pendingMsg.id ? { ...m, content: assistantText } : m))
-        );
-      };
-
-      channel.onmessage = (event) => {
-        // Ignore events if component unmounted
-        if (!isMounted) return;
-
-        switch (event.type) {
-          case 'Delta': {
-            assistantText += event.content;
-            if (!pendingRender) {
-              pendingRender = true;
-
-              rafId = requestAnimationFrame(() => {
-                rafId = null;
-                flushAssistantText();
-              });
-            }
-            break;
-          }
-
-          case 'Done': {
-            setMessages((prev) =>
-              prev.map((m) => (m.id === pendingMsg.id ? { ...m, pending: false } : m))
-            );
-            break;
-          }
-
-          case 'Error': {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === pendingMsg.id ? { ...m, pending: false, error: event.message } : m
-              )
-            );
-            break;
-          }
-
-          case 'ToolCallStart': {
-            toolCallsMap.set(event.id, {
-              id: event.id,
-              name: event.name,
-              arguments: '',
-            });
-            break;
-          }
-
-          case 'ToolCallArgumentsDelta': {
-            const tc = toolCallsMap.get(event.id);
-            if (tc) {
-              tc.arguments += event.arguments_delta;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === pendingMsg.id
-                    ? { ...m, toolCalls: Array.from(toolCallsMap.values()) }
-                    : m
-                )
-              );
-            }
-            break;
-          }
-
-          case 'ToolCallComplete': {
-            toolCallsMap.set(event.id, {
-              id: event.id,
-              name: event.name,
-              arguments: event.arguments,
-            });
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === pendingMsg.id ? { ...m, toolCalls: Array.from(toolCallsMap.values()) } : m
-              )
-            );
-            break;
-          }
-        }
-      };
-
-      await sendChatMessage(profile, history, channel);
-
-      // Safety finalize (if stream ends without explicit Done)
-      if (isMounted) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === pendingMsg.id
-              ? {
-                  ...m,
-                  toolCalls: Array.from(toolCallsMap.values()),
-                  pending: false,
-                }
-              : m
-          )
-        );
-      }
-    } catch (err) {
-      if (isMounted) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === pendingMsg.id ? { ...m, pending: false, error: String(err) } : m
-          )
-        );
-      }
+      await runAgentTurn([...historyBase, wireUserMsg], 0);
     } finally {
-      // Clean up channel reference
-      if (currentChannel === channel) {
-        currentChannel = null;
-      }
       if (isMounted) setSending(false);
     }
   }
@@ -247,42 +319,56 @@ export default function ChatPanel() {
         </button>
       </div>
 
+      <Show when={!props.rootPath()}>
+        <div class="chat-tools-hint">Open a folder to let the model read and edit your files.</div>
+      </Show>
+
       <div ref={messagesRef} class="chat-messages">
         <For each={messages()} fallback={<div class="empty-state">Ask the model anything</div>}>
           {(m) => (
-            <div
-              class="chat-message"
-              classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+            <Show
+              when={m.role !== 'tool'}
+              fallback={
+                <div class="chat-message tool">
+                  <div class="tool-name">Tool result</div>
+                  <pre class="tool-args">{m.content}</pre>
+                </div>
+              }
             >
-              <Show
-                when={m.content.length > 0 || !m.pending}
-                fallback={<span class="chat-pending">Thinking…</span>}
+              <div
+                class="chat-message"
+                classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
               >
-                <Show when={!m.error} fallback={<span class="chat-error">{m.error}</span>}>
-                  <div class="message-content">{m.content}</div>
-                  <Show when={m.toolCalls && m.toolCalls.length > 0}>
-                    <div class="message-tools">
-                      <For each={m.toolCalls!}>
-                        {(tc) => (
-                          <div class="tool-call">
-                            <div class="tool-name">Tool: {tc.name}</div>
-                            <pre class="tool-args">
-                              {(() => {
-                                try {
-                                  return JSON.stringify(JSON.parse(tc.arguments), null, 2);
-                                } catch {
-                                  return tc.arguments;
-                                }
-                              })()}
-                            </pre>
-                          </div>
-                        )}
-                      </For>
-                    </div>
+                <Show
+                  when={m.content.length > 0 || !m.pending}
+                  fallback={<span class="chat-pending">Thinking…</span>}
+                >
+                  <Show when={!m.error} fallback={<span class="chat-error">{m.error}</span>}>
+                    <div class="message-content">{m.content}</div>
+                    <Show when={m.toolCalls && m.toolCalls.length > 0}>
+                      <div class="message-tools">
+                        <For each={m.toolCalls!}>
+                          {(tc) => (
+                            <div class="tool-call">
+                              <div class="tool-name">Tool: {tc.name}</div>
+                              <pre class="tool-args">
+                                {(() => {
+                                  try {
+                                    return JSON.stringify(JSON.parse(tc.arguments), null, 2);
+                                  } catch {
+                                    return tc.arguments;
+                                  }
+                                })()}
+                              </pre>
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
                   </Show>
                 </Show>
-              </Show>
-            </div>
+              </div>
+            </Show>
           )}
         </For>
       </div>

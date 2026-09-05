@@ -1,4 +1,5 @@
 mod commands;
+mod agent_tools;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -11,6 +12,10 @@ pub fn run() {
             commands::load_ai_settings,
     commands::save_ai_settings,
     commands::send_chat_message,
+    agent_tools::tool_list_dir,
+    agent_tools::tool_search_code,
+    agent_tools::tool_read_file_range,
+    agent_tools::tool_write_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
