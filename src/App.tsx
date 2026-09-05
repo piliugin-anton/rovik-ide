@@ -1,4 +1,4 @@
-import { createSignal, createMemo, Show } from 'solid-js';
+import { createSignal, createMemo, Show, onMount, createEffect } from 'solid-js';
 import FileTree from './components/FileTree';
 import Tabs from './components/Tabs';
 import Editor from './components/Editor';
@@ -6,10 +6,12 @@ import ChatPanel from './components/ChatPanel';
 import { createFileTreeController } from './lib/fileTree';
 import { languageForFile, isLikelyBinary } from './lib/language';
 import { pickProjectFolder, readFileContent, writeFileContent } from './lib/commands';
-import type { OpenFile, TreeRow } from './types';
+import type { FileWatchPayload, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
@@ -111,6 +113,44 @@ export default function App() {
       setActivePath(remaining.length ? remaining[remaining.length - 1].path : null);
     }
   }
+
+  onMount(async () => {
+    const unlisten = await listen<FileWatchPayload>('fs-changes', (event) => {
+      const { path, operation, is_dir } = event.payload;
+
+      console.log(`Target is a ${is_dir ? 'Folder' : 'File'}`, path, operation);
+
+      switch (operation) {
+        case 'create':
+          // Handle adding item to your Solid.js file tree state
+          break;
+        case 'modify':
+          // If the file is currently open in an IDE tab, reload/prompt to save
+          break;
+        case 'remove':
+          // Remove from UI file tree and close open tabs matching this path
+          break;
+        case 'unknown':
+          break;
+      }
+    });
+
+    return () => unlisten();
+  });
+
+  createEffect(async () => {
+    const currentPath = rootPath();
+
+    // If no folder is open, don't ping the backend watcher
+    if (!currentPath) return;
+
+    try {
+      console.log('Notifying backend to watch new folder:', currentPath);
+      await invoke('start_file_watch', { pathStr: currentPath });
+    } catch (error) {
+      console.error('Failed to start file watcher:', error);
+    }
+  });
 
   return (
     <div class="app">

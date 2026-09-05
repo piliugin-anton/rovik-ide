@@ -91,3 +91,11 @@ export interface ChatDialog {
   createdAt: number;
   updatedAt: number;
 }
+
+export type WatchOperation = 'create' | 'modify' | 'remove' | 'unknown';
+
+export interface FileWatchPayload {
+  path: string;
+  operation: WatchOperation;
+  is_dir: boolean;
+}

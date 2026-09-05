@@ -3,11 +3,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::{eprintln, fs};
 use tauri::ipc::Channel;
-use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
@@ -32,102 +28,6 @@ pub enum ChatStreamEvent {
         name: String,
         arguments: String, // fully accumulated JSON string
     },
-}
-
-static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
-const BINARY_SNIFF_BYTES: usize = 8000;
-
-#[derive(Serialize)]
-pub struct DirEntryInfo {
-    name: String,
-    path: String,
-    is_dir: bool,
-}
-
-/// Lists the immediate children of `path` — non-recursive by design. The
-/// frontend calls this again for each folder the user expands, so cost
-/// scales with what's actually opened, not with total project size.
-#[tauri::command]
-pub fn read_dir_entries(path: String) -> Result<Vec<DirEntryInfo>, String> {
-    let n = CALL_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
-    eprintln!("[debug] read_dir_entries call #{n} for {path}");
-
-    let dir = Path::new(&path);
-    let read = fs::read_dir(dir).map_err(|e| format!("{path}: {e}"))?;
-
-    let mut entries: Vec<DirEntryInfo> = Vec::new();
-    for entry in read {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let file_type = entry.file_type().map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        // Skip dotfiles and the usual heavy/noisy directories by default.
-        if name.starts_with('.') || name == "node_modules" || name == "target" {
-            continue;
-        }
-
-        entries.push(DirEntryInfo {
-            name,
-            path: entry.path().to_string_lossy().to_string(),
-            is_dir: file_type.is_dir(),
-        });
-    }
-
-    // Directories first, then alphabetical (case-insensitive) within each group.
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-
-    Ok(entries)
-}
-
-fn looks_binary(path: &Path) -> Result<bool, String> {
-    use std::io::Read;
-    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; BINARY_SNIFF_BYTES];
-    let n = file.read(&mut buf).map_err(|e| e.to_string())?;
-    Ok(buf[..n].contains(&0))
-}
-
-#[tauri::command]
-pub fn read_file_content(path: String) -> Result<String, String> {
-    let p = Path::new(&path);
-    if looks_binary(p)? {
-        return Err(format!("{path}: binary file, cannot open in editor"));
-    }
-    fs::read_to_string(p).map_err(|e| format!("{path}: {e}"))
-}
-
-#[tauri::command]
-pub fn write_file_content(path: String, content: String) -> Result<(), String> {
-    fs::write(&path, content).map_err(|e| format!("{path}: {e}"))
-}
-
-// --- AI chat: settings persistence + the actual API call ------------------
-
-fn ai_settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    Ok(dir.join("ai-settings.json"))
-}
-
-#[tauri::command]
-pub fn load_ai_settings(app: tauri::AppHandle) -> Result<String, String> {
-    let path = ai_settings_path(&app)?;
-    if !path.exists() {
-        return Ok(r#"{"profiles":[],"activeProfileId":null}"#.to_string());
-    }
-    fs::read_to_string(&path).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn save_ai_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
-    let path = ai_settings_path(&app)?;
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    fs::write(&path, json).map_err(|e| e.to_string())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -530,28 +430,4 @@ pub async fn send_chat_message(
 
     let _ = on_event.send(ChatStreamEvent::Done);
     Ok(())
-}
-
-fn chat_history_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data directory: {e}"))?;
-    Ok(dir.join("chat-history.json"))
-}
-
-#[tauri::command]
-pub fn load_chat_history(app: tauri::AppHandle) -> Result<String, String> {
-    let path = chat_history_path(&app)?;
-    if !path.exists() {
-        return Ok(r#"{"dialogs":[]}"#.to_string());
-    }
-    fs::read_to_string(&path).map_err(|e| format!("Failed to read chat history: {e}"))
-}
-
-#[tauri::command]
-pub fn save_chat_history(app: tauri::AppHandle, json: String) -> Result<(), String> {
-    let path = chat_history_path(&app)?;
-    fs::write(&path, json).map_err(|e| format!("Failed to save chat history: {e}"))
 }
