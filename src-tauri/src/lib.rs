@@ -8,7 +8,9 @@ mod filesystem;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-    .manage(WatcherState { active_watcher: Mutex::new(None) }) // Register our state manager
+        .manage(WatcherState {
+            active_watcher: Mutex::new(None),
+        }) // Register our state manager
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             filesystem::start_file_watch,

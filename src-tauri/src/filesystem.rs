@@ -72,6 +72,11 @@ pub fn start_file_watch(
                         _ => WatchOp::Unknown,
                     };
 
+                    // 💡 SKIP EMITTING IF WATCHOP IS UNKNOWN
+                    if let WatchOp::Unknown = operation {
+                        continue;
+                    }
+
                     // Some events might contain multiple paths at once
                     for path in event.paths {
                         // 2. Safely check if the target path is a directory
