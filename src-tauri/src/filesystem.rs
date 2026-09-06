@@ -50,14 +50,13 @@ pub fn start_file_watch(
     // Automatically load the .gitignore file if it exists in the root directory
     let gitignore_path = root.join(".gitignore");
     if gitignore_path.exists() {
-        if let Some(err) = gitignore_builder.add(gitignore_path) {
+        if let Some(err) = gitignore_builder.add(gitignore_path.clone()) {
             eprintln!("Warning loading gitignore: {:?}", err);
         }
     }
-
-    let gitfolder_path = root.join(".git");
-    if gitfolder_path.exists() {
-        let _ = gitignore_builder.add(gitfolder_path);
+    // Explicitly ignore the .git directory
+    if let Err(err) = gitignore_builder.add_line(Some(gitignore_path), ".git/") {
+        eprintln!("Warning adding .git/ to ignore: {:?}", err);
     }
 
     let gitignore_matcher = gitignore_builder
@@ -104,7 +103,9 @@ pub fn start_file_watch(
                         let is_dir = path.is_dir();
                         // 💡 CHECK IF PATH IS COVERED BY GITIGNORE RULES
                         // returns if the path is explicitly ignored
-                        let is_ignored = gitignore_matcher.matched_path_or_any_parents(&path, is_dir).is_ignore();
+                        let is_ignored = gitignore_matcher
+                            .matched_path_or_any_parents(&path, is_dir)
+                            .is_ignore();
 
                         if is_ignored {
                             continue; // Skip emitting this event entirely!
