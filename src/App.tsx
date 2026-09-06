@@ -28,9 +28,9 @@ export default function App() {
   // 1. Reactive state for menu visibility and viewport position
   const [contextMenuVisible, setContextMenuVisible] = createSignal(false);
   const [cursorPosition, setCursorPosition] = createSignal({ x: 0, y: 0 });
-  const [activePanel, setActivePanel] = createSignal<'left' | 'right' | null>(null);
-  let leftPanelRef: HTMLDivElement | undefined;
-  let rightPanelRef: HTMLDivElement | undefined;
+  const [activePanel, setActivePanel] = createSignal<'files' | 'editor' | null>(null);
+  let fileTreeRef: HTMLDivElement | undefined;
+  let editorRef: HTMLDivElement | undefined;
   let menuRef: HTMLDivElement | undefined;
 
   const tree = createFileTreeController(rootPath);
@@ -129,47 +129,43 @@ export default function App() {
     let posX = e.clientX;
     let posY = e.clientY;
 
-    // Cross-browser structural hit testing via bounding boxes
-    if (leftPanelRef && rightPanelRef) {
-      const leftRect = leftPanelRef.getBoundingClientRect();
-      const rightRect = rightPanelRef.getBoundingClientRect();
+    if (!editorRef || !fileTreeRef || !menuRef) return;
 
-      // Check if cursor falls within the left panel bounds
-      if (
-        posX >= leftRect.left &&
-        posX <= leftRect.right &&
-        posY >= leftRect.top &&
-        posY <= leftRect.bottom
-      ) {
-        setActivePanel('left');
-      }
-      // Check if cursor falls within the right panel bounds
-      else if (
-        posX >= rightRect.left &&
-        posX <= rightRect.right &&
-        posY >= rightRect.top &&
-        posY <= rightRect.bottom
-      ) {
-        setActivePanel('right');
-      } else {
-        setActivePanel(null); // Clicked in dead-zone or margins
-      }
+    // Cross-browser structural hit testing via bounding boxes
+    const fileTreeRect = fileTreeRef.getBoundingClientRect();
+    const editorRect = editorRef.getBoundingClientRect();
+
+    // Check if cursor falls within the left panel bounds
+    if (
+      posX >= fileTreeRect.left &&
+      posX <= fileTreeRect.right &&
+      posY >= fileTreeRect.top &&
+      posY <= fileTreeRect.bottom
+    ) {
+      setActivePanel('files');
+    }
+    // Check if cursor falls within the right panel bounds
+    else if (
+      posX >= editorRect.left &&
+      posX <= editorRect.right &&
+      posY >= editorRect.top &&
+      posY <= editorRect.bottom
+    ) {
+      setActivePanel('editor');
+    } else {
+      setActivePanel(null); // Clicked in dead-zone or margins
     }
 
     // Prevent boundary overflow
     let adjustedX = posX;
     let adjustedY = posY;
-    if (menuRef) {
-      const menuWidth = menuRef.offsetWidth || 160;
-      const menuHeight = menuRef.offsetHeight || 150;
+    const menuWidth = menuRef.offsetWidth || 160;
+    const menuHeight = menuRef.offsetHeight || 150;
 
-      if (posX + menuWidth > window.innerWidth) adjustedX = window.innerWidth - menuWidth - 10;
-      if (posY + menuHeight > window.innerHeight) adjustedY = window.innerHeight - menuHeight - 10;
-    }
+    if (posX + menuWidth > window.innerWidth) adjustedX = window.innerWidth - menuWidth - 10;
+    if (posY + menuHeight > window.innerHeight) adjustedY = window.innerHeight - menuHeight - 10;
 
     setCursorPosition({ x: adjustedX, y: adjustedY });
-
-    setCursorPosition({ x: posX, y: posY });
   }
 
   const closeContextMenu = () => setContextMenuVisible(false);
@@ -197,10 +193,10 @@ export default function App() {
       }
     });
 
-    onCleanup(() => {
+    return () => {
       window.removeEventListener('click', closeContextMenu);
       unlistenFSChanges();
-    });
+    };
   });
 
   createEffect(async () => {
@@ -219,13 +215,7 @@ export default function App() {
 
   return (
     <div class="app" onContextMenu={handleContextMenu}>
-      <Resizable
-        forwardRef={(el) => (leftPanelRef = el)}
-        class="sidebar"
-        initialWidth={380}
-        minWidth={320}
-        maxWidth={480}
-      >
+      <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
         <div class="sidebar-tabs">
           <button
             classList={{ active: sidebarTab() === 'files' }}
@@ -247,6 +237,7 @@ export default function App() {
           </div>
           <Show when={rootPath()} fallback={<div class="empty-state">No folder open</div>}>
             <FileTree
+              forwardRef={(el) => (fileTreeRef = el)}
               rows={tree.rows}
               expanded={tree.expanded}
               activePath={activePath}
@@ -261,7 +252,7 @@ export default function App() {
         </Show>
       </Resizable>
 
-      <div class="main" ref={rightPanelRef}>
+      <div class="main">
         <Tabs
           files={openFiles}
           activePath={activePath}
@@ -276,6 +267,7 @@ export default function App() {
           >
             {(path) => (
               <Editor
+                forwardRef={(el) => (editorRef = el)}
                 content={() => openFiles().find((f) => f.path === path)?.content ?? ''}
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
                 onChange={(value) => updateContent(path, value)}
@@ -298,18 +290,21 @@ export default function App() {
         >
           <ul class="context-menu-list">
             {/* Conditional Menu Rendering based on side detected */}
-            <Show when={activePanel() === 'left'}>
-              <ContextMenuItem label="⬅️ Left Option A" onClick={() => alert('Left side click')} />
-              <ContextMenuItem label="⬅️ Left Option B" onClick={() => alert('Left side action')} />
+            <Show when={activePanel() === 'files'}>
+              <ContextMenuItem label="⬅️ Files Option A" onClick={() => alert('Left side click')} />
+              <ContextMenuItem
+                label="⬅️ Files Option B"
+                onClick={() => alert('Left side action')}
+              />
             </Show>
 
-            <Show when={activePanel() === 'right'}>
+            <Show when={activePanel() === 'editor'}>
               <ContextMenuItem
-                label="➡️ Right Option X"
+                label="➡️ Editor Option X"
                 onClick={() => alert('Right side click')}
               />
               <ContextMenuItem
-                label="➡️ Right Option Y"
+                label="➡️ Editor Option Y"
                 onClick={() => alert('Right side action')}
               />
             </Show>

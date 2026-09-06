@@ -5,6 +5,7 @@ import type { TreeRow } from '../types';
 const ROW_HEIGHT = 22;
 
 interface FileTreeProps {
+  forwardRef: (el: HTMLDivElement) => void;
   rows: Accessor<TreeRow[]>;
   expanded: Accessor<Set<string>>;
   activePath: Accessor<string | null>;
@@ -34,7 +35,13 @@ export default function FileTree(props: FileTreeProps) {
   }
 
   return (
-    <div class="file-tree" ref={scrollRef}>
+    <div
+      class="file-tree"
+      ref={(el) => {
+        scrollRef = el;
+        props.forwardRef(el);
+      }}
+    >
       <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
         <For each={virtualizer.getVirtualItems()}>
           {(item) => {

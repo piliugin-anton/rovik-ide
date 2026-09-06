@@ -3,6 +3,7 @@ import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
 
 interface EditorProps {
+  forwardRef?: (el: HTMLDivElement) => void;
   content: Accessor<string>;
   language: Accessor<string>;
   onChange: (value: string) => void;
@@ -81,5 +82,14 @@ export default function Editor(props: EditorProps) {
     });
   });
 
-  return <div ref={containerRef} class="editor" style={{ height: '100%', width: '100%' }} />;
+  return (
+    <div
+      ref={(el) => {
+        containerRef = el;
+        props.forwardRef?.(el);
+      }}
+      class="editor"
+      style={{ height: '100%', width: '100%' }}
+    />
+  );
 }
