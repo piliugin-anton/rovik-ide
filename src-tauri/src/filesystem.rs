@@ -207,7 +207,7 @@ pub fn start_file_watch(
 
     let app_handle = app_handle.clone();
     let debouncer = state.debouncer.clone();
-    let gitignore_matcher = gitignore_matcher.clone();
+    let mut gitignore_matcher = gitignore_matcher.clone();
 
     // Spawn the watcher in a background thread so it doesn't block the UI
     std::thread::spawn(move || {
@@ -232,6 +232,31 @@ pub fn start_file_watch(
                     for path in event.paths {
                         // Safely check if the target path is a directory
                         let is_dir = path.is_dir();
+                        // The `ignore` crate has no live-reload — a Gitignore
+                        // matcher is a frozen snapshot of the rules at the
+                        // moment it was built. If this event is the root's
+                        // own .gitignore changing, rebuild the matcher now
+                        // so this event (and everything after it) is
+                        // filtered with current rules, and push the update
+                        // to the shared cache so read_dir_entries sees it too.
+                        let is_root_gitignore = path.file_name().and_then(|n| n.to_str())
+                            == Some(".gitignore")
+                            && path.parent() == Some(root.as_path());
+
+                        if is_root_gitignore {
+                            match build_gitignore(&root) {
+                                Ok(fresh) => {
+                                    let fresh = Arc::new(fresh);
+                                    let state = app_handle.state::<WatcherState>();
+                                    *state.gitignore.lock().unwrap() =
+                                        Some((root.clone(), fresh.clone()));
+                                    gitignore_matcher = fresh;
+                                }
+                                Err(e) => eprintln!(
+                                    "Failed to rebuild gitignore after .gitignore change: {e}"
+                                ),
+                            }
+                        }
                         // 💡 CHECK IF PATH IS COVERED BY GITIGNORE RULES
                         // returns if the path is explicitly ignored
                         let is_ignored = gitignore_matcher

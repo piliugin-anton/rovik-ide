@@ -326,7 +326,11 @@ export default function App() {
         case 'create':
         case 'modify':
         case 'remove':
-          tree.refresh(path);
+          if (path.endsWith('.gitignore')) {
+            tree.refresh(); // ignore rules may affect any cached directory
+          } else {
+            tree.refresh(path);
+          }
           break;
         case 'unknown':
           tree.refresh();
