@@ -290,21 +290,14 @@ export default function App() {
       <Show when={contextMenuVisible() && activePanel() !== null}>
         <div
           ref={menuRef}
+          class="context-menu"
           style={{
-            position: 'fixed',
             top: `${cursorPosition().y}px`,
             left: `${cursorPosition().x}px`,
-            background: '#2a2a32',
-            border: '1px solid #444',
-            'border-radius': '6px',
-            padding: '5px 0',
-            'box-shadow': '0px 4px 12px rgba(0, 0, 0, 0.3)',
-            'z-index': 9999,
-            'min-width': '160px',
           }}
         >
-          <ul style={{ 'list-style': 'none', margin: 0, padding: 0 }}>
-            {/* 4. Conditional Menu Rendering based on side detected */}
+          <ul class="context-menu-list">
+            {/* Conditional Menu Rendering based on side detected */}
             <Show when={activePanel() === 'left'}>
               <ContextMenuItem label="⬅️ Left Option A" onClick={() => alert('Left side click')} />
               <ContextMenuItem label="⬅️ Left Option B" onClick={() => alert('Left side action')} />
