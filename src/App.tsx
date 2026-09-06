@@ -1,4 +1,4 @@
-import { createSignal, createMemo, Show, onMount, createEffect } from 'solid-js';
+import { createSignal, createMemo, Show, onMount, createEffect, onCleanup } from 'solid-js';
 import FileTree from './components/FileTree';
 import Tabs from './components/Tabs';
 import Editor from './components/Editor';
@@ -12,6 +12,7 @@ import type { ActiveFileContext } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import ContextMenuItem from './components/ContextMenuItem';
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
@@ -24,6 +25,13 @@ export default function App() {
     selectionStartLine: number | null;
     selectionEndLine: number | null;
   } | null>(null);
+  // 1. Reactive state for menu visibility and viewport position
+  const [contextMenuVisible, setContextMenuVisible] = createSignal(false);
+  const [cursorPosition, setCursorPosition] = createSignal({ x: 0, y: 0 });
+  const [activePanel, setActivePanel] = createSignal<'left' | 'right' | null>(null);
+  let leftPanelRef: HTMLDivElement | undefined;
+  let rightPanelRef: HTMLDivElement | undefined;
+  let menuRef: HTMLDivElement | undefined;
 
   const tree = createFileTreeController(rootPath);
 
@@ -114,8 +122,62 @@ export default function App() {
     }
   }
 
+  function handleContextMenu(e: MouseEvent) {
+    e.preventDefault(); // Blocks the default browser right-click menu
+    setContextMenuVisible(true);
+
+    let posX = e.clientX;
+    let posY = e.clientY;
+
+    // Cross-browser structural hit testing via bounding boxes
+    if (leftPanelRef && rightPanelRef) {
+      const leftRect = leftPanelRef.getBoundingClientRect();
+      const rightRect = rightPanelRef.getBoundingClientRect();
+
+      // Check if cursor falls within the left panel bounds
+      if (
+        posX >= leftRect.left &&
+        posX <= leftRect.right &&
+        posY >= leftRect.top &&
+        posY <= leftRect.bottom
+      ) {
+        setActivePanel('left');
+      }
+      // Check if cursor falls within the right panel bounds
+      else if (
+        posX >= rightRect.left &&
+        posX <= rightRect.right &&
+        posY >= rightRect.top &&
+        posY <= rightRect.bottom
+      ) {
+        setActivePanel('right');
+      } else {
+        setActivePanel(null); // Clicked in dead-zone or margins
+      }
+    }
+
+    // Prevent boundary overflow
+    let adjustedX = posX;
+    let adjustedY = posY;
+    if (menuRef) {
+      const menuWidth = menuRef.offsetWidth || 160;
+      const menuHeight = menuRef.offsetHeight || 150;
+
+      if (posX + menuWidth > window.innerWidth) adjustedX = window.innerWidth - menuWidth - 10;
+      if (posY + menuHeight > window.innerHeight) adjustedY = window.innerHeight - menuHeight - 10;
+    }
+
+    setCursorPosition({ x: adjustedX, y: adjustedY });
+
+    setCursorPosition({ x: posX, y: posY });
+  }
+
+  const closeContextMenu = () => setContextMenuVisible(false);
+
   onMount(async () => {
-    const unlisten = await listen<FileWatchPayload>('fs-changes', (event) => {
+    window.addEventListener('click', closeContextMenu);
+
+    const unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
       const { path, operation, is_dir } = event.payload;
 
       console.log(`Target is a ${is_dir ? 'Folder' : 'File'}`, path, operation);
@@ -135,7 +197,10 @@ export default function App() {
       }
     });
 
-    return () => unlisten();
+    onCleanup(() => {
+      window.removeEventListener('click', closeContextMenu);
+      unlistenFSChanges();
+    });
   });
 
   createEffect(async () => {
@@ -153,8 +218,14 @@ export default function App() {
   });
 
   return (
-    <div class="app">
-      <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
+    <div class="app" onContextMenu={handleContextMenu}>
+      <Resizable
+        forwardRef={(el) => (leftPanelRef = el)}
+        class="sidebar"
+        initialWidth={380}
+        minWidth={320}
+        maxWidth={480}
+      >
         <div class="sidebar-tabs">
           <button
             classList={{ active: sidebarTab() === 'files' }}
@@ -190,7 +261,7 @@ export default function App() {
         </Show>
       </Resizable>
 
-      <div class="main">
+      <div class="main" ref={rightPanelRef}>
         <Tabs
           files={openFiles}
           activePath={activePath}
@@ -215,6 +286,43 @@ export default function App() {
           </Show>
         </div>
       </div>
+
+      <Show when={contextMenuVisible() && activePanel() !== null}>
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed',
+            top: `${cursorPosition().y}px`,
+            left: `${cursorPosition().x}px`,
+            background: '#2a2a32',
+            border: '1px solid #444',
+            'border-radius': '6px',
+            padding: '5px 0',
+            'box-shadow': '0px 4px 12px rgba(0, 0, 0, 0.3)',
+            'z-index': 9999,
+            'min-width': '160px',
+          }}
+        >
+          <ul style={{ 'list-style': 'none', margin: 0, padding: 0 }}>
+            {/* 4. Conditional Menu Rendering based on side detected */}
+            <Show when={activePanel() === 'left'}>
+              <ContextMenuItem label="⬅️ Left Option A" onClick={() => alert('Left side click')} />
+              <ContextMenuItem label="⬅️ Left Option B" onClick={() => alert('Left side action')} />
+            </Show>
+
+            <Show when={activePanel() === 'right'}>
+              <ContextMenuItem
+                label="➡️ Right Option X"
+                onClick={() => alert('Right side click')}
+              />
+              <ContextMenuItem
+                label="➡️ Right Option Y"
+                onClick={() => alert('Right side action')}
+              />
+            </Show>
+          </ul>
+        </div>
+      </Show>
     </div>
   );
 }

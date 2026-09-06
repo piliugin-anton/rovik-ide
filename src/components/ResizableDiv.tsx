@@ -1,6 +1,7 @@
 import { createSignal, onCleanup, JSX } from 'solid-js';
 
 interface ResizableProps {
+  forwardRef: (el: HTMLDivElement) => void;
   children: JSX.Element;
   class?: string; // Accepts the custom class string
   initialWidth?: number;
@@ -37,7 +38,7 @@ export default function Resizable(props: ResizableProps) {
   onCleanup(() => stopResize());
 
   return (
-    <div style={{ display: 'flex', height: '100%', 'min-height': '200px' }}>
+    <div ref={props.forwardRef} style={{ display: 'flex', height: '100%', 'min-height': '200px' }}>
       {/* 
         The parent component passes props.class here. 
         Inner container is a flex column that fills the height,
