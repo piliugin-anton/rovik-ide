@@ -96,3 +96,8 @@ export interface FileWatchPayload {
   operation: WatchOperation;
   is_dir: boolean;
 }
+
+export interface MonacoLibEntry {
+  name: string;
+  content: string;
+}

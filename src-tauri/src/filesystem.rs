@@ -174,7 +174,7 @@ pub fn start_file_watch(
     tauri::async_runtime::spawn(async move {
         // We'll collect events over a short window and evaluate them on the trailing edge
         let mut event_bucket: HashMap<FileWatchPayload, Instant> = HashMap::new();
-        let debounce_duration = Duration::from_millis(500); // 500ms should be enough for file-system quiet down
+        let debounce_duration = Duration::from_millis(300); // 300ms should be enough for file-system quiet down
 
         loop {
             // Step 1: Drain any available events from the native channel without blocking indefinitely

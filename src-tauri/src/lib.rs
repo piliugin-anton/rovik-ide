@@ -1,12 +1,10 @@
-use crate::filesystem::{WatcherState};
-use std::{
-    collections::HashMap,
-    sync::{Mutex},
-};
+use crate::filesystem::WatcherState;
+use std::{collections::HashMap, sync::Mutex};
 
 mod agent;
 mod agent_tools;
 mod filesystem;
+mod typings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -33,6 +31,7 @@ pub fn run() {
             filesystem::rename_path,
             filesystem::move_path,
             filesystem::copy_path,
+            typings::nodejs::load_nodejs_project_typings,
             agent::send_chat_message,
             agent_tools::tool_list_dir,
             agent_tools::tool_search_code,

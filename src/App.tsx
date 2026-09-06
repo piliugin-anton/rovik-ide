@@ -603,8 +603,10 @@ export default function App() {
     setCursorPosition({ x: adjustedX, y: adjustedY });
   });
 
+  //  onContextMenu={handleContextMenu}
+
   return (
-    <div class="app" onContextMenu={handleContextMenu}>
+    <div class="app">
       <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
         <div class="sidebar-tabs">
           <button
@@ -662,6 +664,8 @@ export default function App() {
           >
             {(path) => (
               <Editor
+                projectDir={rootPath}
+                currentFilePath={path}
                 content={() => openFiles().find((f) => f.path === path)?.content ?? ''}
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
                 onChange={(value) => updateContent(path, value)}
