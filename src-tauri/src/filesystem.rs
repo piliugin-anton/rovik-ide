@@ -80,46 +80,11 @@ impl PartialEq for FileWatchPayload {
 
 impl Eq for FileWatchPayload {}
 
-pub struct WatcherDebouncer {
-    pub debounce_duration: Duration,
-    pub pending: Mutex<HashMap<FileWatchPayload, Instant>>,
-}
-
-impl WatcherDebouncer {
-    pub fn new(debounce_ms: u64) -> Self {
-        Self {
-            debounce_duration: Duration::from_millis(debounce_ms),
-            pending: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub fn should_emit(&self, payload: FileWatchPayload) -> bool {
-        let now = Instant::now();
-        let mut pending = self.pending.lock().unwrap();
-
-        match pending.get_mut(&payload) {
-            Some(last_seen) if now.duration_since(*last_seen) < self.debounce_duration => {
-                // Same event repeated within the debounce window — refresh the
-                // timestamp but suppress it as a duplicate.
-                *last_seen = now;
-                false
-            }
-            _ => {
-                // First time we've seen it, or it's been long enough since the
-                // last one that this counts as a new, distinct change.
-                pending.insert(payload, now);
-                true
-            }
-        }
-    }
-}
-
 // Safe wrapper to store the active channel tx or the watcher itself
 pub struct WatcherState {
     // Storing a generic box or token. If we drop this, notify closes the thread.
     // The easiest trick with notify is: dropping the RecommendedWatcher stops the watch loop.
     pub active_watcher: Mutex<Option<notify::RecommendedWatcher>>,
-    pub debouncer: Arc<WatcherDebouncer>,
     pub gitignore: Mutex<Option<(PathBuf, Arc<Gitignore>)>>,
     // Maps a stable_file_id() back to the last path we saw it at. Populated
     // whenever we hand an id to the frontend (read_dir_entries, get_path_id)
@@ -204,15 +169,17 @@ pub fn start_file_watch(
     println!("Watching: {:?}", root);
 
     let app_handle = app_handle.clone();
-    let debouncer = state.debouncer.clone();
 
-    // Spawn the watcher in a background thread so it doesn't block the UI
-    std::thread::spawn(move || {
-        // Loop indefinitely listening for file system events
-        for res in rx {
-            match res {
-                Ok(event) => {
-                    // 1. Normalize cross-platform event kinds into our strict WatchOp enum
+    // Use Tauri's built-in async runtime to handle async sleeping & debounce intervals smoothly
+    tauri::async_runtime::spawn(async move {
+        // We'll collect events over a short window and evaluate them on the trailing edge
+        let mut event_bucket: HashMap<FileWatchPayload, Instant> = HashMap::new();
+        let debounce_duration = Duration::from_millis(500); // 500ms should be enough for file-system quiet down
+
+        loop {
+            // Step 1: Drain any available events from the native channel without blocking indefinitely
+            while let Ok(res) = rx.try_recv() {
+                if let Ok(event) = res {
                     let operation = match event.kind {
                         EventKind::Create(_) => WatchOp::Create,
                         EventKind::Modify(_) => WatchOp::Modify,
@@ -220,29 +187,45 @@ pub fn start_file_watch(
                         _ => WatchOp::Unknown,
                     };
 
-                    // 💡 SKIP EMITTING IF WATCHOP IS UNKNOWN
                     if let WatchOp::Unknown = operation {
                         continue;
                     }
 
-                    // Some events might contain multiple paths at once
                     for path in event.paths {
-                        // Safely check if the target path is a directory
                         let is_dir = path.is_dir();
-
                         let payload = FileWatchPayload {
                             path: path.to_string_lossy().into_owned(),
                             operation: operation.clone(),
                             is_dir,
                         };
-                        if !debouncer.should_emit(payload.clone()) {
-                            continue;
-                        }
-                        let _ = app_handle.emit("fs-changes", payload);
+
+                        // Overwrite or update the timestamp. Every new activity resets the trailing timer.
+                        event_bucket.insert(payload, Instant::now());
                     }
                 }
-                Err(e) => eprintln!("Watch error: {:?}", e),
             }
+
+            // Step 2: Check if any debounced events are ready to emit
+            let now = Instant::now();
+            let mut ready_to_emit = Vec::new();
+
+            // Retain only items that haven't expired yet; extract the ones that have
+            event_bucket.retain(|payload, last_seen| {
+                if now.duration_since(*last_seen) >= debounce_duration {
+                    ready_to_emit.push(payload.clone());
+                    false // Removes it from the bucket, preventing memory leaks!
+                } else {
+                    true // Keep waiting, it's still bouncing
+                }
+            });
+
+            // Step 3: Emit the stabilized events to the frontend
+            for payload in ready_to_emit {
+                let _ = app_handle.emit("fs-changes", payload);
+            }
+
+            // Step 4: Short pause to rest the CPU before polling for new events/timeouts again
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     });
 

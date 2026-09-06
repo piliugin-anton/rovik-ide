@@ -107,18 +107,18 @@ export default function App() {
     };
   });
 
-  const newFolderContextMenuItemDisabled = createMemo(() => {
-    const selected = selectedFileIds();
-    if (selected.size !== 1) return true;
-    const target = tree.rows().find((r) => selected.has(r.id));
-    if (!target || target.isDir) return true;
-    return false;
-  });
-
   const effectiveSelectedRows = createMemo<TreeRow[]>(() => {
     const selectedIds = selectedFileIds();
     const rows = tree.rows();
     return rows.filter((r) => selectedIds.has(r.id));
+  });
+
+  const newFolderContextMenuItemDisabled = createMemo(() => {
+    const selected = selectedFileIds();
+    if (selected.size > 1) return true;
+    const target = tree.rows().find((r) => selected.has(r.id));
+    if (!target || target.isDir) return false;
+    return true;
   });
 
   const firstSelectedRow = createMemo<TreeRow | null>(() => {
@@ -191,7 +191,8 @@ export default function App() {
 
   function closeFile(path: string) {
     const file = openFiles().find((f) => f.path === path);
-    if (file?.dirty && !window.confirm(`Discard unsaved changes to ${file.name}?`)) return;
+    // TODO: show confirmation modal
+    if (file?.dirty /*  && !window.confirm(`Discard unsaved changes to ${file.name}?`) */) return;
 
     const remaining = openFiles().filter((f) => f.path !== path);
     setOpenFiles(remaining);
@@ -207,12 +208,6 @@ export default function App() {
     if (!id) return null;
     const row = tree.rows().find((r) => r.id === id);
     return row && !row.loading ? row : null;
-  }
-
-  function findRowIndex(row: TreeRow | null): number {
-    if (!row) return -1;
-    const rows = tree.rows();
-    return rows.findIndex((r) => r.id === row.id);
   }
 
   function handleContextMenu(e: MouseEvent) {
@@ -265,7 +260,8 @@ export default function App() {
         ? `Delete "${names}"? This can't be undone.`
         : `Delete ${count} items?\n\n${names}\n\nThis can't be undone.`;
 
-    if (!window.confirm(message)) return;
+    // TODO: show confirmation modal
+    //if (!window.confirm(message)) return;
 
     try {
       for (const row of selectedRows) {
@@ -438,53 +434,6 @@ export default function App() {
     }
   }
 
-  /* function handleFileTreeClick(e: MouseEvent) {
-    const row = findRowAtPoint(e.clientX, e.clientY);
-    if (!row) {
-      // Clicked on empty space - clear selection
-      setSelectedFileIds(new Set<string>());
-      setLastSelectedId(null);
-      return;
-    }
-
-    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-    const modKey = isMac ? e.metaKey : e.ctrlKey;
-    const shiftKey = e.shiftKey;
-
-    const currentSelection = selectedFileIds();
-    const newSelection = new Set(currentSelection);
-
-    if (shiftKey && lastSelectedId()) {
-      // Shift+Click: range select
-      const rows = tree.rows();
-      const lastIndex = findRowIndex(rows.find((r) => r.id === lastSelectedId()) || null);
-      const currentIndex = findRowIndex(row);
-
-      if (lastIndex !== -1 && currentIndex !== -1) {
-        const start = Math.min(lastIndex, currentIndex);
-        const end = Math.max(lastIndex, currentIndex);
-
-        for (let i = start; i <= end; i++) {
-          newSelection.add(rows[i].id);
-        }
-      }
-    } else if (modKey) {
-      // Ctrl/Cmd+Click: toggle selection
-      if (newSelection.has(row.id)) {
-        newSelection.delete(row.id);
-      } else {
-        newSelection.add(row.id);
-      }
-    } else {
-      // Regular click: select only this item
-      newSelection.clear();
-      newSelection.add(row.id);
-    }
-
-    setSelectedFileIds(newSelection);
-    setLastSelectedId(row.id);
-  } */
-
   function handleFileTreeSelect(
     row: TreeRow,
     options: {
@@ -543,19 +492,9 @@ export default function App() {
     window.addEventListener('click', closeContextMenu);
     window.addEventListener('keydown', handleKeyDown);
 
-    /* const treeEl = fileTreeEl();
-    if (treeEl) {
-      treeEl.addEventListener('click', handleFileTreeClick);
-    } */
-
     onCleanup(() => {
       window.removeEventListener('click', closeContextMenu);
       window.removeEventListener('keydown', handleKeyDown);
-
-      /* const treeEl = fileTreeEl();
-      if (treeEl) {
-        treeEl.removeEventListener('click', handleFileTreeClick);
-      } */
     });
   });
 
@@ -613,7 +552,6 @@ export default function App() {
       });
   });
 
-  let selectedFileTreeRowEl: HTMLElement | null = null;
   createEffect(() => {
     const selectedIds = selectedFileIds();
     const container = fileTreeEl();

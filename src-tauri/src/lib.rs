@@ -1,7 +1,7 @@
-use crate::filesystem::{WatcherDebouncer, WatcherState};
+use crate::filesystem::{WatcherState};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Mutex},
 };
 
 mod agent;
@@ -10,11 +10,9 @@ mod filesystem;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let debouncer = Arc::new(WatcherDebouncer::new(2500));
     tauri::Builder::default()
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
-            debouncer,
             gitignore: Mutex::new(None),
             id_to_path: Mutex::new(HashMap::new()),
         }) // Register our state manager

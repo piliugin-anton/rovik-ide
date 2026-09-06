@@ -21,6 +21,7 @@ futures-util = "0.3.34"
 bytes = "1.12.1"
 ignore = "0.4.33"
 notify = "8.2.0"
+tokio = "1.53.1"
 
 # Keep release builds small and light — matters for a "low memory" tool.
 [profile.release]
