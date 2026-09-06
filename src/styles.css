@@ -110,6 +110,23 @@ body {
   margin-left: 4px;
 }
 
+.tree-row-input {
+  flex: 1;
+  min-width: 0;
+  margin-left: 4px;
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: none;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 1px;
+  outline: none;
+}
+
+.tree-row.editing:hover {
+  background: none;
+}
+
 /* Main / editor area */
 
 .main {

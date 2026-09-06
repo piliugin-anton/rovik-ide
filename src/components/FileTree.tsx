@@ -1,5 +1,5 @@
 import { createVirtualizer } from '@tanstack/solid-virtual';
-import { For, type Accessor } from 'solid-js';
+import { For, Show, type Accessor } from 'solid-js';
 import type { TreeRow } from '../types';
 
 const ROW_HEIGHT = 22;
@@ -11,6 +11,9 @@ interface FileTreeProps {
   activePath: Accessor<string | null>;
   onToggle: (row: TreeRow) => void;
   onOpenFile: (row: TreeRow) => void;
+  editingId: Accessor<string | null>;
+  onEditSubmit: (row: TreeRow, name: string) => void;
+  onEditCancel: (row: TreeRow) => void;
 }
 
 export default function FileTree(props: FileTreeProps) {
@@ -26,12 +29,19 @@ export default function FileTree(props: FileTreeProps) {
   });
 
   function handleClick(row: TreeRow) {
-    if (row.loading) return;
+    if (row.loading || props.editingId() === row.id) return;
     if (row.isDir) {
       props.onToggle(row);
     } else {
       props.onOpenFile(row);
     }
+  }
+
+  function focusAndSelect(el: HTMLInputElement) {
+    queueMicrotask(() => {
+      el.focus();
+      el.select();
+    });
   }
 
   return (
@@ -46,6 +56,8 @@ export default function FileTree(props: FileTreeProps) {
         <For each={virtualizer.getVirtualItems()}>
           {(item) => {
             const row = () => props.rows()[item.index];
+            const isEditing = () => !!row() && row()!.id === props.editingId();
+
             return (
               <div
                 class="tree-row"
@@ -55,6 +67,7 @@ export default function FileTree(props: FileTreeProps) {
                   dir: row()?.isDir,
                   loading: row()?.loading,
                   ignored: row()?.ignored,
+                  editing: isEditing(),
                 }}
                 style={{
                   position: 'absolute',
@@ -66,7 +79,7 @@ export default function FileTree(props: FileTreeProps) {
                   'padding-left': `${8 + row()?.depth * 14}px`,
                 }}
                 onClick={() => handleClick(row())}
-                title={row()?.name}
+                title={isEditing() ? undefined : row()?.name}
               >
                 <span class="tree-row-icon">
                   {row()?.loading
@@ -77,10 +90,35 @@ export default function FileTree(props: FileTreeProps) {
                         : '▸'
                       : '·'}
                 </span>
-                <span class="tree-row-name">
-                  {row()?.name}
-                  {row()?.ignored}
-                </span>
+                <Show
+                  when={isEditing()}
+                  fallback={
+                    <span class="tree-row-name">
+                      {row()?.name}
+                      {row()?.ignored}
+                    </span>
+                  }
+                >
+                  <input
+                    class="tree-row-input"
+                    value={row()?.name ?? ''}
+                    ref={focusAndSelect}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        props.onEditSubmit(row(), (e.currentTarget as HTMLInputElement).value);
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        props.onEditCancel(row());
+                      }
+                    }}
+                    onBlur={(e) =>
+                      props.onEditSubmit(row(), (e.currentTarget as HTMLInputElement).value)
+                    }
+                  />
+                </Show>
               </div>
             );
           }}

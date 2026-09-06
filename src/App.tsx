@@ -49,27 +49,46 @@ export default function App() {
   const [menuEl, setMenuEl] = createSignal<HTMLDivElement | null>(null);
   const [clipboard, setClipboard] = createSignal<{ id: string; mode: 'copy' | 'cut' } | null>(null);
   const [contextMenuTarget, setContextMenuTarget] = createSignal<TreeRow | null>(null);
-  const [selectedRow, setSelectedRow] = createSignal<HTMLDivElement | null>(null); // tree selection
-
-  // The project root doesn't come through read_dir_entries on its own (it's
-  // the thing read_dir_entries is called *with*), so resolve its stable id
-  // separately whenever it changes — "new file/folder" at the top level
-  // needs a directory id, same as everything else.
-  createEffect(() => {
-    const path = rootPath();
-    if (!path) {
-      setRootId(null);
-      return;
-    }
-    getPathId(path)
-      .then(setRootId)
-      .catch((err) => {
-        console.error('Failed to resolve root id:', err);
-        setRootId(null);
-      });
-  });
+  const [editingId, setEditingId] = createSignal<string | null>(null);
+  const [draftEntry, setDraftEntry] = createSignal<{
+    parentId: string;
+    parentPath: string | null;
+    depth: number;
+    isDir: boolean;
+  } | null>(null);
 
   const tree = createFileTreeController(rootPath);
+
+  // merge the draft row into the real rows so it renders inline
+  const displayRows = createMemo<TreeRow[]>(() => {
+    const rows = tree.rows();
+    const draft = draftEntry();
+    if (!draft) return rows;
+
+    const draftRow = {
+      id: '__draft__',
+      path: '__draft__',
+      name: '',
+      isDir: draft.isDir,
+      depth: draft.depth,
+      loading: false,
+      ignored: false,
+    } as TreeRow;
+
+    if (draft.depth === 0) {
+      // root-level create: drop it at the very top
+      return [draftRow, ...rows];
+    }
+
+    const idx = rows.findIndex((r) => r.depth === draft.depth - 1 && draft.parentPath === r.path);
+    if (idx === -1) return rows;
+
+    let insertAt = idx + 1;
+    while (insertAt < rows.length && rows[insertAt].depth > rows[idx].depth) {
+      insertAt++;
+    }
+    return [...rows.slice(0, insertAt), draftRow, ...rows.slice(insertAt)];
+  });
 
   const activeFile = createMemo(() => openFiles().find((f) => f.path === activePath()) ?? null);
   const activeFileContext = createMemo<ActiveFileContext | null>(() => {
@@ -171,13 +190,13 @@ export default function App() {
     }
   }
 
-  function findRowAtPoint(x: number, y: number): [TreeRow, HTMLDivElement] | null {
+  function findRowAtPoint(x: number, y: number): TreeRow | null {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
     const rowEl = el?.closest<HTMLDivElement>('[data-file-id]');
     const id = rowEl?.dataset.fileId;
     if (!id) return null;
     const row = tree.rows().find((r) => r.id === id);
-    return row && !row.loading ? [row, rowEl] : null;
+    return row && !row.loading ? row : null;
   }
 
   function handleContextMenu(e: MouseEvent) {
@@ -194,18 +213,7 @@ export default function App() {
       if (posX >= rect.left && posX <= rect.right && posY >= rect.top && posY <= rect.bottom) {
         showContextMenu = true;
         setActivePanel('files');
-
-        const rowData = findRowAtPoint(posX, posY);
-        if (rowData) {
-          const [row, rowEl] = rowData;
-          setContextMenuTarget(row);
-          setSelectedRow(rowEl);
-
-          rowEl.classList.add('selected');
-        } else {
-          setContextMenuTarget(null);
-          setSelectedRow(null);
-        }
+        setContextMenuTarget(findRowAtPoint(posX, posY));
       }
     }
 
@@ -213,7 +221,6 @@ export default function App() {
       setActivePanel(null);
       setContextMenuVisible(false);
       setContextMenuTarget(null);
-      setSelectedRow(null);
       return;
     }
 
@@ -222,44 +229,9 @@ export default function App() {
   }
 
   const closeContextMenu = () => {
-    const selectedRowElement = selectedRow();
-    if (selectedRowElement) {
-      selectedRowElement.classList.remove('selected');
-    }
     setContextMenuVisible(false);
     setContextMenuTarget(null);
-    setSelectedRow(null);
   };
-
-  async function handleNewFile() {
-    setContextMenuVisible(false);
-    const target = contextMenuTarget();
-    const dirId = target?.isDir ? target.id : rootId();
-    if (!dirId) return;
-    const name = window.prompt('New file name:');
-    if (!name) return;
-    try {
-      await createFileOnDisk(dirId, name);
-    } catch (err) {
-      console.error('Failed to create file:', err);
-      window.alert(String(err));
-    }
-  }
-
-  async function handleNewFolder() {
-    setContextMenuVisible(false);
-    const target = contextMenuTarget();
-    const dirId = target?.isDir ? target.id : rootId();
-    if (!dirId) return;
-    const name = window.prompt('New folder name:');
-    if (!name) return;
-    try {
-      await createFolderOnDisk(dirId, name);
-    } catch (err) {
-      console.error('Failed to create folder:', err);
-      window.alert(String(err));
-    }
-  }
 
   async function handleDeleteFile() {
     setContextMenuVisible(false);
@@ -273,25 +245,6 @@ export default function App() {
       if (openTarget && activePath() === openTarget.path) setActivePath(null);
     } catch (err) {
       console.error('Failed to delete:', err);
-      window.alert(String(err));
-    }
-  }
-
-  async function handleRenameFile() {
-    setContextMenuVisible(false);
-    const target = contextMenuTarget();
-    if (!target) return;
-    const name = window.prompt('Rename to:', target.name);
-    if (!name || name === target.name) return;
-    try {
-      const newPath = await renamePathOnDisk(target.id, name);
-      const openTarget = openFiles().find((f) => f.id === target.id);
-      setOpenFiles((prev) =>
-        prev.map((f) => (f.id === target.id ? { ...f, path: newPath, name } : f))
-      );
-      if (openTarget && activePath() === openTarget.path) setActivePath(newPath);
-    } catch (err) {
-      console.error('Failed to rename:', err);
       window.alert(String(err));
     }
   }
@@ -329,6 +282,78 @@ export default function App() {
       window.alert(String(err));
     }
     if (entry.mode === 'cut') setClipboard(null);
+  }
+
+  function beginCreate(kind: 'file' | 'folder') {
+    setContextMenuVisible(false);
+    const target = contextMenuTarget();
+    const parentId = target?.isDir ? target.id : rootId();
+    if (!parentId) return;
+
+    const parentPath = target?.isDir ? target.path : rootPath();
+    const parentDepth = target?.isDir ? target.depth : -1;
+
+    if (target?.isDir && !tree.expanded().has(target.path)) {
+      tree.toggle(target); // expands async; displayRows re-slots the draft once children load
+    }
+
+    setDraftEntry({ parentId, parentPath, depth: parentDepth + 1, isDir: kind === 'folder' });
+    setEditingId('__draft__');
+  }
+
+  function handleNewFile() {
+    beginCreate('file');
+  }
+
+  function handleNewFolder() {
+    beginCreate('folder');
+  }
+
+  function handleRenameFile() {
+    setContextMenuVisible(false);
+    const target = contextMenuTarget();
+    if (!target) return;
+    setEditingId(target.id);
+  }
+
+  async function handleTreeEditSubmit(row: TreeRow, rawName: string) {
+    const name = rawName.trim();
+
+    if (row.id === '__draft__') {
+      const draft = draftEntry();
+      setEditingId(null);
+      setDraftEntry(null);
+      if (!name || !draft) return;
+      try {
+        if (draft.isDir) {
+          await createFolderOnDisk(draft.parentId, name);
+        } else {
+          await createFileOnDisk(draft.parentId, name);
+        }
+      } catch (err) {
+        console.error(`Failed to create ${draft.isDir ? 'folder' : 'file'}:`, err);
+        window.alert(String(err));
+      }
+      return;
+    }
+
+    setEditingId(null);
+    if (!name || name === row.name) return;
+    try {
+      const newPath = await renamePathOnDisk(row.id, name);
+      setOpenFiles((prev) =>
+        prev.map((f) => (f.id === row.id ? { ...f, path: newPath, name } : f))
+      );
+      if (activePath() === row.path) setActivePath(newPath);
+    } catch (err) {
+      console.error('Failed to rename:', err);
+      window.alert(String(err));
+    }
+  }
+
+  function handleTreeEditCancel(row: TreeRow) {
+    setEditingId(null);
+    if (row.id === '__draft__') setDraftEntry(null);
   }
 
   onMount(() => {
@@ -376,6 +401,24 @@ export default function App() {
     } catch (error) {
       console.error('Failed to start file watcher:', error);
     }
+  });
+
+  // The project root doesn't come through read_dir_entries on its own (it's
+  // the thing read_dir_entries is called *with*), so resolve its stable id
+  // separately whenever it changes — "new file/folder" at the top level
+  // needs a directory id, same as everything else.
+  createEffect(() => {
+    const path = rootPath();
+    if (!path) {
+      setRootId(null);
+      return;
+    }
+    getPathId(path)
+      .then(setRootId)
+      .catch((err) => {
+        console.error('Failed to resolve root id:', err);
+        setRootId(null);
+      });
   });
 
   // Reflect the current context-menu target as a `.selected` class on its
@@ -457,11 +500,14 @@ export default function App() {
           <Show when={rootPath()} fallback={<div class="empty-state">No folder open</div>}>
             <FileTree
               forwardRef={setFileTreeEl}
-              rows={tree.rows}
+              rows={displayRows}
               expanded={tree.expanded}
               activePath={activePath}
               onToggle={tree.toggle}
               onOpenFile={openFile}
+              editingId={editingId}
+              onEditSubmit={handleTreeEditSubmit}
+              onEditCancel={handleTreeEditCancel}
             />
           </Show>
         </Show>
