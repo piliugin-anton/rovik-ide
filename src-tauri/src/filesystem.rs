@@ -97,17 +97,19 @@ impl WatcherDebouncer {
         let now = Instant::now();
         let mut pending = self.pending.lock().unwrap();
 
-        if let Some(last_seen) = pending.get_mut(&payload) {
-            if now.duration_since(*last_seen) < self.debounce_duration {
+        match pending.get_mut(&payload) {
+            Some(last_seen) if now.duration_since(*last_seen) < self.debounce_duration => {
+                // Same event repeated within the debounce window — refresh the
+                // timestamp but suppress it as a duplicate.
                 *last_seen = now;
-                return false;
-            } else {
-                pending.remove(&payload);
-                return true;
+                false
             }
-        } else {
-            pending.insert(payload, now);
-            return false;
+            _ => {
+                // First time we've seen it, or it's been long enough since the
+                // last one that this counts as a new, distinct change.
+                pending.insert(payload, now);
+                true
+            }
         }
     }
 }
@@ -119,6 +121,30 @@ pub struct WatcherState {
     pub active_watcher: Mutex<Option<notify::RecommendedWatcher>>,
     pub debouncer: Arc<WatcherDebouncer>,
     pub gitignore: Mutex<Option<(PathBuf, Arc<Gitignore>)>>,
+    // Maps a stable_file_id() back to the last path we saw it at. Populated
+    // whenever we hand an id to the frontend (read_dir_entries, get_path_id)
+    // and updated on rename/move, so mutating commands can always resolve an
+    // id to a real path instead of trusting a path string the frontend may
+    // be holding onto with stale or differently-cased casing.
+    pub id_to_path: Mutex<HashMap<String, PathBuf>>,
+}
+
+fn resolve_id(state: &WatcherState, id: &str) -> Result<PathBuf, String> {
+    state
+        .id_to_path
+        .lock()
+        .unwrap()
+        .get(id)
+        .cloned()
+        .ok_or_else(|| format!("{id}: unknown id (try refreshing the folder view)"))
+}
+
+fn remember_id(state: &WatcherState, id: &str, path: &Path) {
+    state
+        .id_to_path
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), path.to_path_buf());
 }
 
 fn build_gitignore(root: &Path) -> Result<Gitignore, String> {
@@ -267,6 +293,10 @@ pub fn read_dir_entries(
     let dir = Path::new(&path);
     let read = fs::read_dir(dir).map_err(|e| format!("{path}: {e}"))?;
 
+    // Remember the directory's own id too, so "new file/folder in this
+    // directory" can resolve it even before any of its children are cached.
+    remember_id(&state, &stable_file_id(dir), dir);
+
     let mut entries: Vec<DirEntryInfo> = Vec::new();
     for entry in read {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -282,8 +312,11 @@ pub fn read_dir_entries(
             .matched_path_or_any_parents(&entry_path, file_type.is_dir())
             .is_ignore();
 
+        let id = stable_file_id(&entry_path);
+        remember_id(&state, &id, &entry_path);
+
         entries.push(DirEntryInfo {
-            id: stable_file_id(&entry_path),
+            id,
             name,
             path: entry_path.to_string_lossy().to_string(),
             is_dir: file_type.is_dir(),
@@ -320,6 +353,166 @@ pub fn read_file_content(path: String) -> Result<String, String> {
 #[tauri::command]
 pub fn write_file_content(path: String, content: String) -> Result<(), String> {
     fs::write(&path, content).map_err(|e| format!("{path}: {e}"))
+}
+
+// --- File tree mutations: create / delete / rename / copy ------------------
+//
+// All of these take a stable id (from DirEntryInfo.id / get_path_id), never
+// a raw path, for anything that identifies an *existing* entry. The id is
+// resolved to a real path via `resolve_id` right before touching disk, so a
+// path string the frontend cached earlier (which may differ only in case on
+// case-insensitive filesystems) can never be the thing that actually gets
+// deleted, renamed, or copied.
+
+fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let dest_path = dest.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else {
+            fs::copy(entry.path(), &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Resolves (and caches) the id for an arbitrary path the frontend already
+/// knows about directly — e.g. the project root, which never comes through
+/// `read_dir_entries` itself.
+#[tauri::command]
+pub fn get_path_id(state: State<'_, WatcherState>, path: String) -> Result<String, String> {
+    let p = Path::new(&path);
+    let id = stable_file_id(p);
+    remember_id(&state, &id, p);
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn create_file(
+    state: State<'_, WatcherState>,
+    dir_id: String,
+    name: String,
+) -> Result<(), String> {
+    let dir = resolve_id(&state, &dir_id)?;
+    let p = dir.join(&name);
+    if p.exists() {
+        return Err(format!("{name}: already exists"));
+    }
+    fs::File::create(&p).map_err(|e| format!("{name}: {e}"))?;
+    remember_id(&state, &stable_file_id(&p), &p);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_dir(
+    state: State<'_, WatcherState>,
+    dir_id: String,
+    name: String,
+) -> Result<(), String> {
+    let dir = resolve_id(&state, &dir_id)?;
+    let p = dir.join(&name);
+    if p.exists() {
+        return Err(format!("{name}: already exists"));
+    }
+    fs::create_dir_all(&p).map_err(|e| format!("{name}: {e}"))?;
+    remember_id(&state, &stable_file_id(&p), &p);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_path(state: State<'_, WatcherState>, id: String) -> Result<(), String> {
+    let p = resolve_id(&state, &id)?;
+    let meta = fs::symlink_metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let result = if meta.is_dir() {
+        fs::remove_dir_all(&p)
+    } else {
+        fs::remove_file(&p)
+    };
+    result.map_err(|e| format!("{}: {e}", p.display()))?;
+    state.id_to_path.lock().unwrap().remove(&id);
+    Ok(())
+}
+
+/// Renames an entry in place (same parent directory, new file/folder name).
+/// The id is unchanged by the rename — same inode/file-index — so we just
+/// update where it points. Returns the new absolute path so the frontend can
+/// update any open tab.
+#[tauri::command]
+pub fn rename_path(
+    state: State<'_, WatcherState>,
+    id: String,
+    new_name: String,
+) -> Result<String, String> {
+    let from = resolve_id(&state, &id)?;
+    let parent = from
+        .parent()
+        .ok_or_else(|| "cannot rename the root folder".to_string())?;
+    let to = parent.join(&new_name);
+    if to.exists() {
+        return Err(format!("{new_name}: already exists"));
+    }
+    fs::rename(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+    remember_id(&state, &id, &to);
+    Ok(to.to_string_lossy().to_string())
+}
+
+/// Moves an entry into a different directory (optionally renaming it),
+/// i.e. what a cut-then-paste does. `dest_dir_id` must be a directory's id.
+/// Returns the new absolute path so the frontend can update any open tab.
+#[tauri::command]
+pub fn move_path(
+    state: State<'_, WatcherState>,
+    id: String,
+    dest_dir_id: String,
+    new_name: Option<String>,
+) -> Result<String, String> {
+    let from = resolve_id(&state, &id)?;
+    let dest_dir = resolve_id(&state, &dest_dir_id)?;
+    let name = new_name.unwrap_or_else(|| {
+        from.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    });
+    let to = dest_dir.join(&name);
+    if to.exists() {
+        return Err(format!("{name}: already exists"));
+    }
+    fs::rename(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+    remember_id(&state, &id, &to);
+    Ok(to.to_string_lossy().to_string())
+}
+
+/// Copies an entry into a different directory (optionally renaming it), i.e.
+/// what a copy-then-paste does. `dest_dir_id` must be a directory's id.
+#[tauri::command]
+pub fn copy_path(
+    state: State<'_, WatcherState>,
+    id: String,
+    dest_dir_id: String,
+    new_name: Option<String>,
+) -> Result<(), String> {
+    let src = resolve_id(&state, &id)?;
+    let dest_dir = resolve_id(&state, &dest_dir_id)?;
+    let name = new_name.unwrap_or_else(|| {
+        src.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    });
+    let dest = dest_dir.join(&name);
+    if dest.exists() {
+        return Err(format!("{name}: already exists"));
+    }
+    let meta = fs::symlink_metadata(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+    if meta.is_dir() {
+        copy_dir_recursive(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
+    } else {
+        fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
+    }
+    remember_id(&state, &stable_file_id(&dest), &dest);
+    Ok(())
 }
 
 // --- AI chat: settings persistence + the actual API call ------------------

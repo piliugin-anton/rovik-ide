@@ -5,7 +5,18 @@ import Editor from './components/Editor';
 import ChatPanel from './components/ChatPanel';
 import { createFileTreeController } from './lib/fileTree';
 import { languageForFile, isLikelyBinary } from './lib/language';
-import { pickProjectFolder, readFileContent, writeFileContent } from './lib/commands';
+import {
+  pickProjectFolder,
+  readFileContent,
+  writeFileContent,
+  getPathId,
+  createFile as createFileOnDisk,
+  createFolder as createFolderOnDisk,
+  deletePath as deletePathOnDisk,
+  renamePath as renamePathOnDisk,
+  movePath as movePathOnDisk,
+  copyPath as copyPathOnDisk,
+} from './lib/commands';
 import type { FileWatchPayload, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext } from './lib/activeContext';
@@ -18,6 +29,7 @@ let unlistenFSChanges: (() => void) | undefined;
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
+  const [rootId, setRootId] = createSignal<string | null>(null);
   const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
   const [activePath, setActivePath] = createSignal<string | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat'>('files');
@@ -35,10 +47,26 @@ export default function App() {
 
   const [fileTreeEl, setFileTreeEl] = createSignal<HTMLDivElement | null>(null);
   const [menuEl, setMenuEl] = createSignal<HTMLDivElement | null>(null);
-  const [clipboard, setClipboard] = createSignal<{ path: string; mode: 'copy' | 'cut' } | null>(
-    null
-  );
+  const [clipboard, setClipboard] = createSignal<{ id: string; mode: 'copy' | 'cut' } | null>(null);
   const [contextMenuTarget, setContextMenuTarget] = createSignal<TreeRow | null>(null);
+
+  // The project root doesn't come through read_dir_entries on its own (it's
+  // the thing read_dir_entries is called *with*), so resolve its stable id
+  // separately whenever it changes — "new file/folder" at the top level
+  // needs a directory id, same as everything else.
+  createEffect(() => {
+    const path = rootPath();
+    if (!path) {
+      setRootId(null);
+      return;
+    }
+    getPathId(path)
+      .then(setRootId)
+      .catch((err) => {
+        console.error('Failed to resolve root id:', err);
+        setRootId(null);
+      });
+  });
 
   const tree = createFileTreeController(rootPath);
 
@@ -77,9 +105,12 @@ export default function App() {
   }
 
   async function openFile(row: TreeRow) {
-    const existing = openFiles().find((f) => f.path === row.path);
+    const existing = openFiles().find((f) => f.id === row.id);
     if (existing) {
-      setActivePath(row.path);
+      // Reuse the casing already stored for this file rather than row.path,
+      // so activePath never ends up holding two different casings for the
+      // same underlying file on case-insensitive filesystems.
+      setActivePath(existing.path);
       return;
     }
     if (isLikelyBinary(row.name)) {
@@ -182,45 +213,96 @@ export default function App() {
     setContextMenuTarget(null);
   };
 
-  function handleNewFile() {
+  async function handleNewFile() {
     const target = contextMenuTarget();
-    console.log('TODO: create file in', target?.isDir ? target.path : rootPath());
+    const dirId = target?.isDir ? target.id : rootId();
+    if (!dirId) return;
+    const name = window.prompt('New file name:');
+    if (!name) return;
+    try {
+      await createFileOnDisk(dirId, name);
+    } catch (err) {
+      console.error('Failed to create file:', err);
+      window.alert(String(err));
+    }
   }
 
-  function handleNewFolder() {
+  async function handleNewFolder() {
     const target = contextMenuTarget();
-    console.log('TODO: create folder in', target?.isDir ? target.path : rootPath());
+    const dirId = target?.isDir ? target.id : rootId();
+    if (!dirId) return;
+    const name = window.prompt('New folder name:');
+    if (!name) return;
+    try {
+      await createFolderOnDisk(dirId, name);
+    } catch (err) {
+      console.error('Failed to create folder:', err);
+      window.alert(String(err));
+    }
   }
 
-  function handleDeleteFile() {
+  async function handleDeleteFile() {
     const target = contextMenuTarget();
     if (!target) return;
-    console.log('TODO: delete', target);
+    if (!window.confirm(`Delete "${target.name}"? This can't be undone.`)) return;
+    try {
+      await deletePathOnDisk(target.id);
+      const openTarget = openFiles().find((f) => f.id === target.id);
+      setOpenFiles((prev) => prev.filter((f) => f.id !== target.id));
+      if (openTarget && activePath() === openTarget.path) setActivePath(null);
+    } catch (err) {
+      console.error('Failed to delete:', err);
+      window.alert(String(err));
+    }
   }
 
-  function handleRenameFile() {
+  async function handleRenameFile() {
     const target = contextMenuTarget();
     if (!target) return;
-    console.log('TODO: rename', target);
+    const name = window.prompt('Rename to:', target.name);
+    if (!name || name === target.name) return;
+    try {
+      const newPath = await renamePathOnDisk(target.id, name);
+      const openTarget = openFiles().find((f) => f.id === target.id);
+      setOpenFiles((prev) =>
+        prev.map((f) => (f.id === target.id ? { ...f, path: newPath, name } : f))
+      );
+      if (openTarget && activePath() === openTarget.path) setActivePath(newPath);
+    } catch (err) {
+      console.error('Failed to rename:', err);
+      window.alert(String(err));
+    }
   }
 
   function handleCopyFile() {
     const target = contextMenuTarget();
     if (!target) return;
-    setClipboard({ path: target.path, mode: 'copy' });
+    setClipboard({ id: target.id, mode: 'copy' });
   }
 
   function handleCutFile() {
     const target = contextMenuTarget();
     if (!target) return;
-    setClipboard({ path: target.path, mode: 'cut' });
+    setClipboard({ id: target.id, mode: 'cut' });
   }
 
-  function handlePasteFile() {
+  async function handlePasteFile() {
     const entry = clipboard();
     const target = contextMenuTarget();
     if (!entry || !target) return;
-    console.log('TODO: paste', entry, 'into', target.isDir ? target.path : rootPath());
+    const destDirId = target.isDir ? target.id : rootId();
+    if (!destDirId) return;
+    try {
+      if (entry.mode === 'copy') {
+        await copyPathOnDisk(entry.id, destDirId);
+      } else {
+        const newPath = await movePathOnDisk(entry.id, destDirId);
+        setOpenFiles((prev) => prev.map((f) => (f.id === entry.id ? { ...f, path: newPath } : f)));
+      }
+    } catch (err) {
+      console.error('Failed to paste:', err);
+      window.alert(String(err));
+    }
     if (entry.mode === 'cut') setClipboard(null);
   }
 
@@ -244,7 +326,10 @@ export default function App() {
         case 'create':
         case 'modify':
         case 'remove':
+          tree.refresh(path);
+          break;
         case 'unknown':
+          tree.refresh();
           break;
       }
     });
@@ -265,6 +350,27 @@ export default function App() {
       await invoke('start_file_watch', { pathStr: currentPath });
     } catch (error) {
       console.error('Failed to start file watcher:', error);
+    }
+  });
+
+  // Reflect the current context-menu target as a `.selected` class on its
+  // row element, without needing FileTree to know about context-menu state.
+  let selectedRowEl: HTMLElement | null = null;
+  createEffect(() => {
+    const target = contextMenuTarget();
+    const container = fileTreeEl();
+
+    if (selectedRowEl) {
+      selectedRowEl.classList.remove('selected');
+      selectedRowEl = null;
+    }
+
+    if (!target || !container) return;
+
+    const el = container.querySelector<HTMLElement>(`[data-file-id="${target.id}"]`);
+    if (el) {
+      el.classList.add('selected');
+      selectedRowEl = el;
     }
   });
 

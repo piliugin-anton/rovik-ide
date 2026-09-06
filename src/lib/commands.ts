@@ -22,6 +22,42 @@ export async function writeFileContent(path: string, content: string): Promise<v
   return invoke<void>('write_file_content', { path, content });
 }
 
+// Bootstraps an id for a path the frontend knows directly (e.g. the project
+// root), which never comes through read_dir_entries on its own.
+export async function getPathId(path: string): Promise<string> {
+  return invoke('get_path_id', { path });
+}
+
+export async function createFile(dirId: string, name: string): Promise<void> {
+  await invoke('create_file', { dirId, name });
+}
+
+export async function createFolder(dirId: string, name: string): Promise<void> {
+  await invoke('create_dir', { dirId, name });
+}
+
+export async function deletePath(id: string): Promise<void> {
+  await invoke('delete_path', { id });
+}
+
+// Rename in place (same parent dir, new name). Returns the new absolute
+// path so callers can update any open tab.
+export async function renamePath(id: string, newName: string): Promise<string> {
+  return invoke('rename_path', { id, newName });
+}
+
+// Move into a different directory (optionally renaming), i.e. cut + paste.
+// destDirId must be a directory's id. Returns the new absolute path.
+export async function movePath(id: string, destDirId: string, newName?: string): Promise<string> {
+  return invoke('move_path', { id, destDirId, newName });
+}
+
+// Copy into a different directory (optionally renaming), i.e. copy + paste.
+// destDirId must be a directory's id.
+export async function copyPath(id: string, destDirId: string, newName?: string): Promise<void> {
+  await invoke('copy_path', { id, destDirId, newName });
+}
+
 // --- Agent file tools -------------------------------------------------
 // Backed by src-tauri/src/agent_tools.rs. All paths are relative to `root`
 // (the currently opened project folder) and confined to it on the Rust side.

@@ -1,5 +1,8 @@
 use crate::filesystem::{WatcherDebouncer, WatcherState};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 mod agent;
 mod agent_tools;
@@ -13,6 +16,7 @@ pub fn run() {
             active_watcher: Mutex::new(None),
             debouncer,
             gitignore: Mutex::new(None),
+            id_to_path: Mutex::new(HashMap::new()),
         }) // Register our state manager
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -24,6 +28,13 @@ pub fn run() {
             filesystem::save_ai_settings,
             filesystem::load_chat_history,
             filesystem::save_chat_history,
+            filesystem::get_path_id,
+            filesystem::create_file,
+            filesystem::create_dir,
+            filesystem::delete_path,
+            filesystem::rename_path,
+            filesystem::move_path,
+            filesystem::copy_path,
             agent::send_chat_message,
             agent_tools::tool_list_dir,
             agent_tools::tool_search_code,

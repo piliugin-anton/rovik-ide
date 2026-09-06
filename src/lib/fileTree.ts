@@ -59,7 +59,7 @@ export function createFileTreeController(rootPath: () => string | null) {
     }
   });
 
-  function toggle(entry: { path: string; isDir: boolean }) {
+  function toggle(entry: { path: string; isDir: boolean; ignored?: boolean }) {
     if (!entry.isDir) return;
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -67,10 +67,49 @@ export function createFileTreeController(rootPath: () => string | null) {
         next.delete(entry.path);
       } else {
         next.add(entry.path);
-        if (!cache().has(entry.path)) void loadDir(entry.path);
+        // The backend's watcher skips gitignored paths entirely (see
+        // is_ignored in filesystem.rs), so fs-changes events never arrive
+        // for anything under an ignored directory. We can't rely on the
+        // cache being fresh for those — force a re-fetch on every expand
+        // instead of only when uncached.
+        if (entry.ignored || !cache().has(entry.path)) {
+          void loadDir(entry.path);
+        }
       }
       return next;
     });
+  }
+
+  // path.dirname-equivalent for both '/' and '\' separators, since Tauri
+  // paths can be POSIX or Windows depending on platform.
+  function parentOf(path: string): string | null {
+    const trimmed = path.replace(/[\\/]+$/, '');
+    const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+    if (idx < 0) return null;
+    return idx === 0 ? trimmed.slice(0, 1) : trimmed.slice(0, idx);
+  }
+
+  function refresh(changedPath?: string) {
+    const root = rootPath();
+    if (!root) return;
+
+    if (!changedPath) {
+      for (const dirPath of cache().keys()) void loadDir(dirPath);
+      return;
+    }
+
+    // If changedPath is itself a directory we've already loaded (e.g. it was
+    // modified in place, or removed and we need to pick that up), refresh it.
+    if (cache().has(changedPath)) {
+      void loadDir(changedPath);
+    }
+
+    // Always refresh whatever directory *contains* changedPath — that's the
+    // listing that needs to gain or lose this entry on create/remove.
+    const parent = parentOf(changedPath);
+    if (parent && cache().has(parent)) {
+      void loadDir(parent);
+    }
   }
 
   const rows = createMemo<TreeRow[]>(() => {
@@ -115,5 +154,5 @@ export function createFileTreeController(rootPath: () => string | null) {
     return out;
   });
 
-  return { rows, expanded, toggle };
+  return { rows, expanded, toggle, refresh };
 }
