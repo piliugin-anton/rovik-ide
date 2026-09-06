@@ -31,11 +31,6 @@ export default function Editor(props: EditorProps) {
   let containerRef: HTMLDivElement | undefined;
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
   let model: monaco.editor.ITextModel | undefined;
-  // True while we're inside the onDidChangeModelContent → onChange round trip,
-  // so the "push external content" effect below knows to skip this update
-  // instead of relying on string equality (fragile — e.g. EOL normalization —
-  // and a false mismatch there causes editor.setValue() to reset the cursor).
-  let isInternalUpdate = false;
 
   onMount(async () => {
     const projectRoot = props.projectDir();
@@ -101,9 +96,9 @@ export default function Editor(props: EditorProps) {
       // Bind basic editor event listeners
       const contentDisposable = editor.onDidChangeModelContent(() => {
         const value = editor!.getValue();
-        isInternalUpdate = true;
-        props.onChange(value);
-        isInternalUpdate = false;
+        if (value !== props.content()) {
+          props.onChange(value);
+        }
       });
 
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
@@ -137,7 +132,6 @@ export default function Editor(props: EditorProps) {
   // cursor position and blow away undo history.
   createEffect(() => {
     const next = props.content();
-    if (isInternalUpdate) return;
     if (editor && editor.getValue() !== next) {
       editor.setValue(next);
     }
