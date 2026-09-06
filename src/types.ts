@@ -1,27 +1,24 @@
 export interface DirEntryInfo {
+  id: string;
   name: string;
   path: string;
   is_dir: boolean;
+  ignored: boolean;
 }
 
 /** A flattened, visible row in the file tree — what actually gets rendered/virtualized. */
 export interface TreeRow {
+  id: string;
   path: string;
   name: string;
   isDir: boolean;
   depth: number;
   loading?: boolean;
+  ignored?: boolean;
 }
 
 export interface OpenFile {
-  path: string;
-  name: string;
-  content: string;
-  originalContent: string;
-  dirty: boolean;
-}
-
-export interface OpenFile {
+  id: string;
   path: string;
   name: string;
   content: string;

@@ -14,6 +14,8 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import ContextMenuItem from './components/ContextMenuItem';
 
+let unlistenFSChanges: (() => void) | undefined;
+
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
   const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
@@ -33,6 +35,10 @@ export default function App() {
 
   const [fileTreeEl, setFileTreeEl] = createSignal<HTMLDivElement | null>(null);
   const [menuEl, setMenuEl] = createSignal<HTMLDivElement | null>(null);
+  const [clipboard, setClipboard] = createSignal<{ path: string; mode: 'copy' | 'cut' } | null>(
+    null
+  );
+  const [contextMenuTarget, setContextMenuTarget] = createSignal<TreeRow | null>(null);
 
   const tree = createFileTreeController(rootPath);
 
@@ -50,6 +56,15 @@ export default function App() {
       selectionStartLine: info.selectionStartLine,
       selectionEndLine: info.selectionEndLine,
     };
+  });
+
+  const newFolderContextMenuItemDisabled = createMemo(() => {
+    const target = contextMenuTarget();
+    if (!target || target.isDir) {
+      return false;
+    }
+
+    return true;
   });
 
   async function handlePickFolder() {
@@ -74,6 +89,7 @@ export default function App() {
     try {
       const content = await readFileContent(row.path);
       const file: OpenFile = {
+        id: row.id,
         path: row.path,
         name: row.name,
         content,
@@ -123,6 +139,15 @@ export default function App() {
     }
   }
 
+  function findRowAtPoint(x: number, y: number): TreeRow | null {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const rowEl = el?.closest<HTMLElement>('[data-file-id]');
+    const id = rowEl?.dataset.fileId;
+    if (!id) return null;
+    const row = tree.rows().find((r) => r.id === id);
+    return row && !row.loading ? row : null;
+  }
+
   function handleContextMenu(e: MouseEvent) {
     e.preventDefault();
 
@@ -133,16 +158,18 @@ export default function App() {
 
     const fileTree = fileTreeEl();
     if (fileTree) {
-      const rect = fileTree.getBoundingClientRect();
+      const rect = fileTree!.getBoundingClientRect();
       if (posX >= rect.left && posX <= rect.right && posY >= rect.top && posY <= rect.bottom) {
         showContextMenu = true;
         setActivePanel('files');
+        setContextMenuTarget(findRowAtPoint(posX, posY));
       }
     }
 
     if (!showContextMenu) {
       setActivePanel(null);
       setContextMenuVisible(false);
+      setContextMenuTarget(null);
       return;
     }
 
@@ -150,7 +177,52 @@ export default function App() {
     setRawCursor({ x: posX, y: posY });
   }
 
-  const closeContextMenu = () => setContextMenuVisible(false);
+  const closeContextMenu = () => {
+    setContextMenuVisible(false);
+    setContextMenuTarget(null);
+  };
+
+  function handleNewFile() {
+    const target = contextMenuTarget();
+    console.log('TODO: create file in', target?.isDir ? target.path : rootPath());
+  }
+
+  function handleNewFolder() {
+    const target = contextMenuTarget();
+    console.log('TODO: create folder in', target?.isDir ? target.path : rootPath());
+  }
+
+  function handleDeleteFile() {
+    const target = contextMenuTarget();
+    if (!target) return;
+    console.log('TODO: delete', target);
+  }
+
+  function handleRenameFile() {
+    const target = contextMenuTarget();
+    if (!target) return;
+    console.log('TODO: rename', target);
+  }
+
+  function handleCopyFile() {
+    const target = contextMenuTarget();
+    if (!target) return;
+    setClipboard({ path: target.path, mode: 'copy' });
+  }
+
+  function handleCutFile() {
+    const target = contextMenuTarget();
+    if (!target) return;
+    setClipboard({ path: target.path, mode: 'cut' });
+  }
+
+  function handlePasteFile() {
+    const entry = clipboard();
+    const target = contextMenuTarget();
+    if (!entry || !target) return;
+    console.log('TODO: paste', entry, 'into', target.isDir ? target.path : rootPath());
+    if (entry.mode === 'cut') setClipboard(null);
+  }
 
   onMount(() => {
     window.addEventListener('click', closeContextMenu);
@@ -160,7 +232,12 @@ export default function App() {
   });
 
   onMount(async () => {
-    const unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
+    if (unlistenFSChanges) {
+      unlistenFSChanges();
+      unlistenFSChanges = undefined;
+    }
+
+    unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
       const { path, operation, is_dir } = event.payload;
       console.log(`Target is a ${is_dir ? 'Folder' : 'File'}`, path, operation);
       switch (operation) {
@@ -171,8 +248,13 @@ export default function App() {
           break;
       }
     });
+  });
 
-    return () => unlistenFSChanges();
+  onCleanup(() => {
+    if (unlistenFSChanges) {
+      unlistenFSChanges();
+      unlistenFSChanges = undefined;
+    }
   });
 
   createEffect(async () => {
@@ -296,10 +378,177 @@ export default function App() {
         >
           <ul class="context-menu-list">
             <Show when={activePanel() === 'files'}>
-              <ContextMenuItem label="⬅️ Files Option A" onClick={() => alert('Left side click')} />
               <ContextMenuItem
-                label="⬅️ Files Option B"
-                onClick={() => alert('Left side action')}
+                label={
+                  <>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <path d="M4 1.5h5.5L12.5 4.5V14.5H4V1.5Z" stroke-linejoin="round" />
+                      <path d="M9.5 1.5V4.5H12.5" stroke-linejoin="round" />
+                      <path d="M8 7.5V11.5M6 9.5H10" stroke-linecap="round" />
+                    </svg>
+                    New File
+                  </>
+                }
+                onClick={handleNewFile}
+              />
+
+              <ContextMenuItem
+                label={
+                  <>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <path
+                        d="M2 4.5a1 1 0 0 1 1-1h3.5l1.2 1.5H13a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5Z"
+                        stroke-linejoin="round"
+                      />
+                      <path d="M8 8v3.5M6.25 9.75h3.5" stroke-linecap="round" />
+                    </svg>
+                    New Folder
+                  </>
+                }
+                onClick={handleNewFolder}
+                disabled={newFolderContextMenuItemDisabled()}
+              />
+
+              <ContextMenuItem
+                label={
+                  <>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <path
+                        d="M3 4.5h10M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                      <path
+                        d="M4.5 4.5 5 13.5a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l.5-9"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                      <path d="M6.5 7v5M9.5 7v5" stroke-linecap="round" />
+                    </svg>
+                    Delete
+                  </>
+                }
+                isDanger
+                disabled={!contextMenuTarget()}
+                onClick={handleDeleteFile}
+              />
+
+              <ContextMenuItem
+                label={
+                  <>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <path
+                        d="M11 2.5 13.5 5 5.5 13 2.5 13.5 3 10.5 11 2.5Z"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                    Rename
+                  </>
+                }
+                disabled={!contextMenuTarget()}
+                onClick={handleRenameFile}
+              />
+
+              <ContextMenuItem
+                label={
+                  <>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <rect x="5.5" y="5.5" width="8" height="8" rx="1" stroke-linejoin="round" />
+                      <path
+                        d="M2.5 10.5V3a1 1 0 0 1 1-1H10"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                    Copy
+                  </>
+                }
+                disabled={!contextMenuTarget()}
+                onClick={handleCopyFile}
+              />
+
+              <ContextMenuItem
+                label={
+                  <>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <path
+                        d="M6 2.5h4a.5.5 0 0 1 .5.5v1H5.5V3a.5.5 0 0 1 .5-.5Z"
+                        stroke-linejoin="round"
+                      />
+                      <path
+                        d="M4 4.5h8a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1Z"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                    Paste
+                  </>
+                }
+                disabled={!clipboard()}
+                onClick={handlePasteFile}
+              />
+
+              <ContextMenuItem
+                label={
+                  <>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    >
+                      <circle cx="4.5" cy="4.5" r="1.5" />
+                      <circle cx="4.5" cy="11.5" r="1.5" />
+                      <path d="M13 3 5.7 9M13 13 5.7 7" stroke-linecap="round" />
+                    </svg>
+                    Cut
+                  </>
+                }
+                disabled={!contextMenuTarget()}
+                onClick={handleCutFile}
               />
             </Show>
           </ul>

@@ -49,10 +49,12 @@ export default function FileTree(props: FileTreeProps) {
             return (
               <div
                 class="tree-row"
+                data-file-id={row()?.id}
                 classList={{
                   active: row()?.path === props.activePath(),
                   dir: row()?.isDir,
                   loading: row()?.loading,
+                  ignored: row()?.ignored,
                 }}
                 style={{
                   position: 'absolute',
@@ -75,7 +77,10 @@ export default function FileTree(props: FileTreeProps) {
                         : '▸'
                       : '·'}
                 </span>
-                <span class="tree-row-name">{row()?.name}</span>
+                <span class="tree-row-name">
+                  {row()?.name}
+                  {row()?.ignored}
+                </span>
               </div>
             );
           }}

@@ -10,8 +10,8 @@ export async function pickProjectFolder(): Promise<string | null> {
 }
 
 /** Lists the immediate children of a directory (non-recursive — call again per expand). */
-export async function readDirEntries(path: string): Promise<DirEntryInfo[]> {
-  return invoke<DirEntryInfo[]>('read_dir_entries', { path });
+export async function readDirEntries(rootPath: string, path: string): Promise<DirEntryInfo[]> {
+  return invoke<DirEntryInfo[]>('read_dir_entries', { rootPath, path });
 }
 
 export async function readFileContent(path: string): Promise<string> {

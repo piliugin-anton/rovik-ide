@@ -19,10 +19,12 @@ export function createFileTreeController(rootPath: () => string | null) {
   const [lastRootPath, setLastRootPath] = createSignal<string | null>(null);
 
   async function loadDir(path: string) {
-    if (loading().has(path)) return;
+    const root = rootPath();
+    if (!root || loading().has(path)) return;
+
     setLoading((prev) => new Set(prev).add(path));
     try {
-      const entries = await readDirEntries(path);
+      const entries = await readDirEntries(root, path);
       setCache((prev) => {
         const next = new Map(prev);
         next.set(path, entries);
@@ -83,17 +85,26 @@ export function createFileTreeController(rootPath: () => string | null) {
       const children = currentCache.get(path);
       if (!children) return;
       for (const child of children) {
-        out.push({ path: child.path, name: child.name, isDir: child.is_dir, depth });
+        out.push({
+          id: child.id,
+          path: child.path,
+          name: child.name,
+          isDir: child.is_dir,
+          depth,
+          ignored: child.ignored,
+        });
         if (child.is_dir && currentExpanded.has(child.path)) {
           if (currentCache.has(child.path)) {
             walk(child.path, depth + 1);
           } else if (currentLoading.has(child.path)) {
             out.push({
+              id: `${child.id}::loading`,
               path: `${child.path}::loading`,
-              name: 'Loading…',
+              name: 'Loading...',
               isDir: false,
               depth: depth + 1,
               loading: true,
+              ignored: child.ignored,
             });
           }
         }
