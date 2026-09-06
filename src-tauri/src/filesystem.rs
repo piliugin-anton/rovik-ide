@@ -188,8 +188,6 @@ pub fn start_file_watch(
 ) -> std::result::Result<(), String> {
     let root = Path::new(&path_str).to_path_buf();
 
-    let gitignore_matcher = get_or_build_gitignore(&state, &root)?;
-
     // Lock and clean up any existing watcher first
     let mut current_watcher = state.active_watcher.lock().unwrap();
     *current_watcher = None; // Drops the old watcher, killing its channel thread automatically
@@ -207,7 +205,6 @@ pub fn start_file_watch(
 
     let app_handle = app_handle.clone();
     let debouncer = state.debouncer.clone();
-    let mut gitignore_matcher = gitignore_matcher.clone();
 
     // Spawn the watcher in a background thread so it doesn't block the UI
     std::thread::spawn(move || {
@@ -232,40 +229,6 @@ pub fn start_file_watch(
                     for path in event.paths {
                         // Safely check if the target path is a directory
                         let is_dir = path.is_dir();
-                        // The `ignore` crate has no live-reload — a Gitignore
-                        // matcher is a frozen snapshot of the rules at the
-                        // moment it was built. If this event is the root's
-                        // own .gitignore changing, rebuild the matcher now
-                        // so this event (and everything after it) is
-                        // filtered with current rules, and push the update
-                        // to the shared cache so read_dir_entries sees it too.
-                        let is_root_gitignore = path.file_name().and_then(|n| n.to_str())
-                            == Some(".gitignore")
-                            && path.parent() == Some(root.as_path());
-
-                        if is_root_gitignore {
-                            match build_gitignore(&root) {
-                                Ok(fresh) => {
-                                    let fresh = Arc::new(fresh);
-                                    let state = app_handle.state::<WatcherState>();
-                                    *state.gitignore.lock().unwrap() =
-                                        Some((root.clone(), fresh.clone()));
-                                    gitignore_matcher = fresh;
-                                }
-                                Err(e) => eprintln!(
-                                    "Failed to rebuild gitignore after .gitignore change: {e}"
-                                ),
-                            }
-                        }
-                        // 💡 CHECK IF PATH IS COVERED BY GITIGNORE RULES
-                        // returns if the path is explicitly ignored
-                        let is_ignored = gitignore_matcher
-                            .matched_path_or_any_parents(&path, is_dir)
-                            .is_ignore();
-
-                        if is_ignored {
-                            continue; // Skip emitting this event entirely!
-                        }
 
                         let payload = FileWatchPayload {
                             path: path.to_string_lossy().into_owned(),
