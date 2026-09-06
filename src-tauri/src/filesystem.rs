@@ -473,34 +473,109 @@ pub fn move_path(
     Ok(to.to_string_lossy().to_string())
 }
 
+/// Generates a unique path by appending " - copy" or " - copy N" if the
+/// target name already exists. Matches typical desktop OS behavior.
+/// Generates a unique path by appending "copy" or "copyN" if the
+/// target name already exists. Matches typical desktop OS behavior.
+fn generate_unique_path(dest_dir: &Path, name: &str, is_dir: bool) -> PathBuf {
+    let dest = dest_dir.join(name);
+
+    // If path doesn't exist, use it as-is
+    if !dest.exists() {
+        return dest;
+    }
+
+    // Split into base and extension for files
+    let (base, ext) = if is_dir {
+        (name.to_string(), String::new())
+    } else {
+        let path = Path::new(name);
+        let base = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| name.to_string());
+        let ext = path
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+        (base, ext)
+    };
+
+    // Check if the base already ends with "copy" or "copyN"
+    // If so, extract the original base and starting counter
+    let (original_base, start_counter) = if let Some(idx) = base.rfind("copy") {
+        let before_copy = &base[..idx];
+        let after_copy = &base[idx + 4..]; // skip "copy"
+
+        // Check if there's a number after "copy"
+        if !after_copy.is_empty() {
+            // "copyN" format - try to parse the number
+            if let Ok(num) = after_copy.parse::<u32>() {
+                (before_copy.to_string(), num)
+            } else {
+                // "copy" followed by non-number, treat as copy1
+                (base.clone(), 1)
+            }
+        } else {
+            // Just "copy" with nothing after
+            (before_copy.to_string(), 1)
+        }
+    } else {
+        // No "copy" suffix, start from 1
+        (base.clone(), 1)
+    };
+
+    // Try incrementing numbers until we find a free name
+    let mut counter = start_counter;
+    loop {
+        let new_name = format!("{}copy{}{}", original_base, counter, ext);
+        let new_path = dest_dir.join(&new_name);
+        if !new_path.exists() {
+            return new_path;
+        }
+        counter += 1;
+
+        // Safety: prevent infinite loops in pathological cases
+        if counter > 1000 {
+            return new_path; // Let the OS error if it truly can't create
+        }
+    }
+}
+
 /// Copies an entry into a different directory (optionally renaming it), i.e.
 /// what a copy-then-paste does. `dest_dir_id` must be a directory's id.
+/// If a file/folder with the target name already exists, automatically
+/// generates a unique name by appending " - copy" or " - copy N".
 #[tauri::command]
 pub fn copy_path(
     state: State<'_, WatcherState>,
     id: String,
     dest_dir_id: String,
     new_name: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let src = resolve_id(&state, &id)?;
     let dest_dir = resolve_id(&state, &dest_dir_id)?;
-    let name = new_name.unwrap_or_else(|| {
+
+    let base_name = new_name.unwrap_or_else(|| {
         src.file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default()
     });
-    let dest = dest_dir.join(&name);
-    if dest.exists() {
-        return Err(format!("{name}: already exists"));
-    }
+
+    // Generate a unique destination path if collision exists
+    let dest = generate_unique_path(&dest_dir, &base_name, src.is_dir());
+
     let meta = fs::symlink_metadata(&src).map_err(|e| format!("{}: {e}", src.display()))?;
     if meta.is_dir() {
         copy_dir_recursive(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
     } else {
         fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
     }
+
     remember_id(&state, &stable_file_id(&dest), &dest);
-    Ok(())
+
+    // Return the actual path used so frontend can update open tabs if needed
+    Ok(dest.to_string_lossy().to_string())
 }
 
 // --- AI chat: settings persistence + the actual API call ------------------

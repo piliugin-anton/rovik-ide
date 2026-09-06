@@ -48,7 +48,7 @@ export default function App() {
   const [fileTreeEl, setFileTreeEl] = createSignal<HTMLDivElement | null>(null);
   const [menuEl, setMenuEl] = createSignal<HTMLDivElement | null>(null);
   const [clipboard, setClipboard] = createSignal<{ id: string; mode: 'copy' | 'cut' } | null>(null);
-  const [contextMenuTarget, setContextMenuTarget] = createSignal<TreeRow | null>(null);
+  const [selectedFileTreeRow, setselectedFileTreeRow] = createSignal<TreeRow | null>(null);
   const [editingId, setEditingId] = createSignal<string | null>(null);
   const [draftEntry, setDraftEntry] = createSignal<{
     parentId: string;
@@ -59,7 +59,6 @@ export default function App() {
 
   const tree = createFileTreeController(rootPath);
 
-  // merge the draft row into the real rows so it renders inline
   const displayRows = createMemo<TreeRow[]>(() => {
     const rows = tree.rows();
     const draft = draftEntry();
@@ -76,7 +75,6 @@ export default function App() {
     } as TreeRow;
 
     if (draft.depth === 0) {
-      // root-level create: drop it at the very top
       return [draftRow, ...rows];
     }
 
@@ -107,11 +105,10 @@ export default function App() {
   });
 
   const newFolderContextMenuItemDisabled = createMemo(() => {
-    const target = contextMenuTarget();
+    const target = selectedFileTreeRow();
     if (!target || target.isDir) {
       return false;
     }
-
     return true;
   });
 
@@ -127,9 +124,6 @@ export default function App() {
   async function openFile(row: TreeRow) {
     const existing = openFiles().find((f) => f.id === row.id);
     if (existing) {
-      // Reuse the casing already stored for this file rather than row.path,
-      // so activePath never ends up holding two different casings for the
-      // same underlying file on case-insensitive filesystems.
       setActivePath(existing.path);
       return;
     }
@@ -213,14 +207,15 @@ export default function App() {
       if (posX >= rect.left && posX <= rect.right && posY >= rect.top && posY <= rect.bottom) {
         showContextMenu = true;
         setActivePanel('files');
-        setContextMenuTarget(findRowAtPoint(posX, posY));
+        const row = findRowAtPoint(posX, posY);
+        // Update selection on right-click for context menu actions
+        setselectedFileTreeRow(row);
       }
     }
 
     if (!showContextMenu) {
       setActivePanel(null);
       setContextMenuVisible(false);
-      setContextMenuTarget(null);
       return;
     }
 
@@ -230,12 +225,11 @@ export default function App() {
 
   const closeContextMenu = () => {
     setContextMenuVisible(false);
-    setContextMenuTarget(null);
   };
 
   async function handleDeleteFile() {
     setContextMenuVisible(false);
-    const target = contextMenuTarget();
+    const target = selectedFileTreeRow();
     if (!target) return;
     if (!window.confirm(`Delete "${target.name}"? This can't be undone.`)) return;
     try {
@@ -243,6 +237,7 @@ export default function App() {
       const openTarget = openFiles().find((f) => f.id === target.id);
       setOpenFiles((prev) => prev.filter((f) => f.id !== target.id));
       if (openTarget && activePath() === openTarget.path) setActivePath(null);
+      setselectedFileTreeRow(null);
     } catch (err) {
       console.error('Failed to delete:', err);
       window.alert(String(err));
@@ -251,14 +246,14 @@ export default function App() {
 
   function handleCopyFile() {
     setContextMenuVisible(false);
-    const target = contextMenuTarget();
+    const target = selectedFileTreeRow();
     if (!target) return;
     setClipboard({ id: target.id, mode: 'copy' });
   }
 
   function handleCutFile() {
     setContextMenuVisible(false);
-    const target = contextMenuTarget();
+    const target = selectedFileTreeRow();
     if (!target) return;
     setClipboard({ id: target.id, mode: 'cut' });
   }
@@ -266,13 +261,19 @@ export default function App() {
   async function handlePasteFile() {
     setContextMenuVisible(false);
     const entry = clipboard();
-    const target = contextMenuTarget();
-    if (!entry || !target) return;
-    const destDirId = target.isDir ? target.id : rootId();
-    if (!destDirId) return;
+    const target = selectedFileTreeRow();
+    if (!entry) return;
+
+    const destDirId = target?.isDir ? target.id : rootId();
+    if (!destDirId) {
+      window.alert('No destination directory available');
+      return;
+    }
+
     try {
       if (entry.mode === 'copy') {
-        await copyPathOnDisk(entry.id, destDirId);
+        const newPath = await copyPathOnDisk(entry.id, destDirId);
+        console.log('Copied to:', newPath);
       } else {
         const newPath = await movePathOnDisk(entry.id, destDirId);
         setOpenFiles((prev) => prev.map((f) => (f.id === entry.id ? { ...f, path: newPath } : f)));
@@ -286,7 +287,7 @@ export default function App() {
 
   function beginCreate(kind: 'file' | 'folder') {
     setContextMenuVisible(false);
-    const target = contextMenuTarget();
+    const target = selectedFileTreeRow();
     const parentId = target?.isDir ? target.id : rootId();
     if (!parentId) return;
 
@@ -294,7 +295,7 @@ export default function App() {
     const parentDepth = target?.isDir ? target.depth : -1;
 
     if (target?.isDir && !tree.expanded().has(target.path)) {
-      tree.toggle(target); // expands async; displayRows re-slots the draft once children load
+      tree.toggle(target);
     }
 
     setDraftEntry({ parentId, parentPath, depth: parentDepth + 1, isDir: kind === 'folder' });
@@ -311,7 +312,7 @@ export default function App() {
 
   function handleRenameFile() {
     setContextMenuVisible(false);
-    const target = contextMenuTarget();
+    const target = selectedFileTreeRow();
     if (!target) return;
     setEditingId(target.id);
   }
@@ -356,10 +357,63 @@ export default function App() {
     if (row.id === '__draft__') setDraftEntry(null);
   }
 
+  function handleKeyDown(e: KeyboardEvent) {
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const modKey = isMac ? e.metaKey : e.ctrlKey;
+
+    const target = e.target as HTMLElement;
+    const isTyping =
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      (target as HTMLElement).isContentEditable;
+
+    if (isTyping) return;
+    if (!modKey) return;
+
+    const selected = selectedFileTreeRow();
+    const key = e.key.toLowerCase();
+
+    if (key === 'c' && selected) {
+      e.preventDefault();
+      setClipboard({ id: selected.id, mode: 'copy' });
+    }
+
+    if (key === 'x' && selected) {
+      e.preventDefault();
+      setClipboard({ id: selected.id, mode: 'cut' });
+    }
+
+    if (key === 'v') {
+      const entry = clipboard();
+      if (entry) {
+        e.preventDefault();
+        handlePasteFile();
+      }
+    }
+  }
+
+  function handleFileTreeClick(e: MouseEvent) {
+    const row = findRowAtPoint(e.clientX, e.clientY);
+    setselectedFileTreeRow(row);
+  }
+
   onMount(() => {
     window.addEventListener('click', closeContextMenu);
+    window.addEventListener('keydown', handleKeyDown);
+
+    const treeEl = fileTreeEl();
+    if (treeEl) {
+      treeEl.addEventListener('click', handleFileTreeClick);
+    }
+
     onCleanup(() => {
       window.removeEventListener('click', closeContextMenu);
+      window.removeEventListener('keydown', handleKeyDown);
+
+      const treeEl = fileTreeEl();
+      if (treeEl) {
+        treeEl.removeEventListener('click', handleFileTreeClick);
+      }
     });
   });
 
@@ -403,10 +457,6 @@ export default function App() {
     }
   });
 
-  // The project root doesn't come through read_dir_entries on its own (it's
-  // the thing read_dir_entries is called *with*), so resolve its stable id
-  // separately whenever it changes — "new file/folder" at the top level
-  // needs a directory id, same as everything else.
   createEffect(() => {
     const path = rootPath();
     if (!path) {
@@ -421,16 +471,14 @@ export default function App() {
       });
   });
 
-  // Reflect the current context-menu target as a `.selected` class on its
-  // row element, without needing FileTree to know about context-menu state.
-  let selectedRowEl: HTMLElement | null = null;
+  let selectedFileTreeRowEl: HTMLElement | null = null;
   createEffect(() => {
-    const target = contextMenuTarget();
+    const target = selectedFileTreeRow();
     const container = fileTreeEl();
 
-    if (selectedRowEl) {
-      selectedRowEl.classList.remove('selected');
-      selectedRowEl = null;
+    if (selectedFileTreeRowEl) {
+      selectedFileTreeRowEl.classList.remove('selected');
+      selectedFileTreeRowEl = null;
     }
 
     if (!target || !container) return;
@@ -438,11 +486,10 @@ export default function App() {
     const el = container.querySelector<HTMLElement>(`[data-file-id="${target.id}"]`);
     if (el) {
       el.classList.add('selected');
-      selectedRowEl = el;
+      selectedFileTreeRowEl = el;
     }
   });
 
-  // Bullet-proof positioning effect with logs
   createEffect(() => {
     const visible = contextMenuVisible();
     const panel = activePanel();
@@ -453,7 +500,6 @@ export default function App() {
     }
 
     if (!menu) {
-      // Will re-run when menuEl changes
       return;
     }
 
@@ -495,9 +541,9 @@ export default function App() {
 
         <Show when={sidebarTab() === 'files'}>
           <div class="sidebar-header">
-            <button onClick={handlePickFolder}>Open Folder...</button>
+            <button onClick={handlePickFolder}>Open project...</button>
           </div>
-          <Show when={rootPath()} fallback={<div class="empty-state">No folder open</div>}>
+          <Show when={rootPath()} fallback={<div class="empty-state">No project open</div>}>
             <FileTree
               forwardRef={setFileTreeEl}
               rows={displayRows}
@@ -627,7 +673,7 @@ export default function App() {
                   </>
                 }
                 isDanger
-                disabled={!contextMenuTarget()}
+                disabled={!selectedFileTreeRow()}
                 onClick={handleDeleteFile}
               />
 
@@ -650,7 +696,7 @@ export default function App() {
                     Rename
                   </>
                 }
-                disabled={!contextMenuTarget()}
+                disabled={!selectedFileTreeRow()}
                 onClick={handleRenameFile}
               />
 
@@ -675,7 +721,7 @@ export default function App() {
                     Copy
                   </>
                 }
-                disabled={!contextMenuTarget()}
+                disabled={!selectedFileTreeRow()}
                 onClick={handleCopyFile}
               />
 
@@ -724,7 +770,7 @@ export default function App() {
                     Cut
                   </>
                 }
-                disabled={!contextMenuTarget()}
+                disabled={!selectedFileTreeRow()}
                 onClick={handleCutFile}
               />
             </Show>
