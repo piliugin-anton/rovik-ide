@@ -1,3 +1,4 @@
+use ignore::gitignore::GitignoreBuilder;
 use notify::{self, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
 use serde::Serialize;
 use std::path::Path;
@@ -41,7 +42,22 @@ pub fn start_file_watch(
     state: State<'_, WatcherState>, // Access our global state
     path_str: String,
 ) -> std::result::Result<(), String> {
-    let path = Path::new(&path_str).to_path_buf();
+    let root = Path::new(&path_str).to_path_buf();
+
+    // Build a fast Gitignore matcher scoped to this project folder root
+    let mut gitignore_builder = GitignoreBuilder::new(&root);
+
+    // Automatically load the .gitignore file if it exists in the root directory
+    let gitignore_path = root.join(".gitignore");
+    if gitignore_path.exists() {
+        if let Some(err) = gitignore_builder.add(gitignore_path) {
+            eprintln!("Warning loading gitignore: {:?}", err);
+        }
+    }
+
+    let gitignore_matcher = gitignore_builder
+        .build()
+        .map_err(|e| format!("Failed to compile gitignore: {}", e))?;
 
     // Lock and clean up any existing watcher first
     let mut current_watcher = state.active_watcher.lock().unwrap();
@@ -53,10 +69,10 @@ pub fn start_file_watch(
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
     watcher
-        .watch(&path, RecursiveMode::Recursive)
+        .watch(&root, RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
 
-    println!("Watching: {:?}", path);
+    println!("Watching: {:?}", root);
 
     // Spawn the watcher in a background thread so it doesn't block the UI
     std::thread::spawn(move || {
@@ -79,8 +95,16 @@ pub fn start_file_watch(
 
                     // Some events might contain multiple paths at once
                     for path in event.paths {
-                        // 2. Safely check if the target path is a directory
+                        // Safely check if the target path is a directory
                         let is_dir = path.is_dir();
+                        // 💡 CHECK IF PATH IS COVERED BY GITIGNORE RULES
+                        // returns if the path is explicitly ignored
+                        let is_ignored = gitignore_matcher.matched_path_or_any_parents(&path, is_dir).is_ignore();
+
+                        if is_ignored {
+                            continue; // Skip emitting this event entirely!
+                        }
+
                         let payload = FileWatchPayload {
                             path: path.to_string_lossy().into_owned(),
                             operation: operation.clone(),
@@ -127,7 +151,7 @@ pub fn read_dir_entries(path: String) -> Result<Vec<DirEntryInfo>, String> {
         let name = entry.file_name().to_string_lossy().to_string();
 
         // Skip dotfiles and the usual heavy/noisy directories by default.
-        if name.starts_with('.') || name == "node_modules" || name == "target" {
+        if name == ".git" {
             continue;
         }
 
