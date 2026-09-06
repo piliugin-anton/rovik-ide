@@ -47,8 +47,11 @@ export default function App() {
 
   const [fileTreeEl, setFileTreeEl] = createSignal<HTMLDivElement | null>(null);
   const [menuEl, setMenuEl] = createSignal<HTMLDivElement | null>(null);
-  const [clipboard, setClipboard] = createSignal<{ id: string; mode: 'copy' | 'cut' } | null>(null);
-  const [selectedFileTreeRow, setselectedFileTreeRow] = createSignal<TreeRow | null>(null);
+  const [clipboard, setClipboard] = createSignal<{ ids: string[]; mode: 'copy' | 'cut' } | null>(
+    null
+  );
+  const [selectedFileIds, setSelectedFileIds] = createSignal<Set<string>>(new Set());
+  const [lastSelectedId, setLastSelectedId] = createSignal<string | null>(null);
   const [editingId, setEditingId] = createSignal<string | null>(null);
   const [draftEntry, setDraftEntry] = createSignal<{
     parentId: string;
@@ -105,11 +108,22 @@ export default function App() {
   });
 
   const newFolderContextMenuItemDisabled = createMemo(() => {
-    const target = selectedFileTreeRow();
-    if (!target || target.isDir) {
-      return false;
-    }
-    return true;
+    const selected = selectedFileIds();
+    if (selected.size !== 1) return true;
+    const target = tree.rows().find((r) => selected.has(r.id));
+    if (!target || target.isDir) return true;
+    return false;
+  });
+
+  const effectiveSelectedRows = createMemo<TreeRow[]>(() => {
+    const selectedIds = selectedFileIds();
+    const rows = tree.rows();
+    return rows.filter((r) => selectedIds.has(r.id));
+  });
+
+  const firstSelectedRow = createMemo<TreeRow | null>(() => {
+    const rows = effectiveSelectedRows();
+    return rows.length > 0 ? rows[0] : null;
   });
 
   async function handlePickFolder() {
@@ -118,6 +132,8 @@ export default function App() {
       setRootPath(folder);
       setOpenFiles([]);
       setActivePath(null);
+      setSelectedFileIds(new Set<string>());
+      setLastSelectedId(null);
     }
   }
 
@@ -193,6 +209,12 @@ export default function App() {
     return row && !row.loading ? row : null;
   }
 
+  function findRowIndex(row: TreeRow | null): number {
+    if (!row) return -1;
+    const rows = tree.rows();
+    return rows.findIndex((r) => r.id === row.id);
+  }
+
   function handleContextMenu(e: MouseEvent) {
     e.preventDefault();
 
@@ -208,8 +230,12 @@ export default function App() {
         showContextMenu = true;
         setActivePanel('files');
         const row = findRowAtPoint(posX, posY);
-        // Update selection on right-click for context menu actions
-        setselectedFileTreeRow(row);
+
+        // If right-clicking on a non-selected item, select only that item
+        if (row && !selectedFileIds().has(row.id)) {
+          setSelectedFileIds(new Set([row.id]));
+          setLastSelectedId(row.id);
+        }
       }
     }
 
@@ -229,15 +255,27 @@ export default function App() {
 
   async function handleDeleteFile() {
     setContextMenuVisible(false);
-    const target = selectedFileTreeRow();
-    if (!target) return;
-    if (!window.confirm(`Delete "${target.name}"? This can't be undone.`)) return;
+    const selectedRows = effectiveSelectedRows();
+    if (selectedRows.length === 0) return;
+
+    const names = selectedRows.map((r) => r.name).join(', ');
+    const count = selectedRows.length;
+    const message =
+      count === 1
+        ? `Delete "${names}"? This can't be undone.`
+        : `Delete ${count} items?\n\n${names}\n\nThis can't be undone.`;
+
+    if (!window.confirm(message)) return;
+
     try {
-      await deletePathOnDisk(target.id);
-      const openTarget = openFiles().find((f) => f.id === target.id);
-      setOpenFiles((prev) => prev.filter((f) => f.id !== target.id));
-      if (openTarget && activePath() === openTarget.path) setActivePath(null);
-      setselectedFileTreeRow(null);
+      for (const row of selectedRows) {
+        await deletePathOnDisk(row.id);
+        const openTarget = openFiles().find((f) => f.id === row.id);
+        if (openTarget && activePath() === openTarget.path) setActivePath(null);
+      }
+      setOpenFiles((prev) => prev.filter((f) => !selectedFileIds().has(f.id)));
+      setSelectedFileIds(new Set<string>());
+      setLastSelectedId(null);
     } catch (err) {
       console.error('Failed to delete:', err);
       window.alert(String(err));
@@ -246,22 +284,22 @@ export default function App() {
 
   function handleCopyFile() {
     setContextMenuVisible(false);
-    const target = selectedFileTreeRow();
-    if (!target) return;
-    setClipboard({ id: target.id, mode: 'copy' });
+    const selectedIds = Array.from(selectedFileIds());
+    if (selectedIds.length === 0) return;
+    setClipboard({ ids: selectedIds, mode: 'copy' });
   }
 
   function handleCutFile() {
     setContextMenuVisible(false);
-    const target = selectedFileTreeRow();
-    if (!target) return;
-    setClipboard({ id: target.id, mode: 'cut' });
+    const selectedIds = Array.from(selectedFileIds());
+    if (selectedIds.length === 0) return;
+    setClipboard({ ids: selectedIds, mode: 'cut' });
   }
 
   async function handlePasteFile() {
     setContextMenuVisible(false);
     const entry = clipboard();
-    const target = selectedFileTreeRow();
+    const target = firstSelectedRow();
     if (!entry) return;
 
     const destDirId = target?.isDir ? target.id : rootId();
@@ -271,12 +309,14 @@ export default function App() {
     }
 
     try {
-      if (entry.mode === 'copy') {
-        const newPath = await copyPathOnDisk(entry.id, destDirId);
-        console.log('Copied to:', newPath);
-      } else {
-        const newPath = await movePathOnDisk(entry.id, destDirId);
-        setOpenFiles((prev) => prev.map((f) => (f.id === entry.id ? { ...f, path: newPath } : f)));
+      for (const id of entry.ids) {
+        if (entry.mode === 'copy') {
+          const newPath = await copyPathOnDisk(id, destDirId);
+          console.log('Copied to:', newPath);
+        } else {
+          const newPath = await movePathOnDisk(id, destDirId);
+          setOpenFiles((prev) => prev.map((f) => (f.id === id ? { ...f, path: newPath } : f)));
+        }
       }
     } catch (err) {
       console.error('Failed to paste:', err);
@@ -287,7 +327,7 @@ export default function App() {
 
   function beginCreate(kind: 'file' | 'folder') {
     setContextMenuVisible(false);
-    const target = selectedFileTreeRow();
+    const target = firstSelectedRow();
     const parentId = target?.isDir ? target.id : rootId();
     if (!parentId) return;
 
@@ -312,7 +352,7 @@ export default function App() {
 
   function handleRenameFile() {
     setContextMenuVisible(false);
-    const target = selectedFileTreeRow();
+    const target = firstSelectedRow();
     if (!target) return;
     setEditingId(target.id);
   }
@@ -370,17 +410,17 @@ export default function App() {
     if (isTyping) return;
     if (!modKey) return;
 
-    const selected = selectedFileTreeRow();
+    const selected = selectedFileIds();
     const key = e.key.toLowerCase();
 
-    if (key === 'c' && selected) {
+    if (key === 'c' && selected.size > 0) {
       e.preventDefault();
-      setClipboard({ id: selected.id, mode: 'copy' });
+      setClipboard({ ids: Array.from(selected), mode: 'copy' });
     }
 
-    if (key === 'x' && selected) {
+    if (key === 'x' && selected.size > 0) {
       e.preventDefault();
-      setClipboard({ id: selected.id, mode: 'cut' });
+      setClipboard({ ids: Array.from(selected), mode: 'cut' });
     }
 
     if (key === 'v') {
@@ -390,30 +430,132 @@ export default function App() {
         handlePasteFile();
       }
     }
+
+    // Delete with Backspace or Delete key
+    if ((key === 'backspace' || key === 'delete') && selected.size > 0) {
+      e.preventDefault();
+      handleDeleteFile();
+    }
   }
 
-  function handleFileTreeClick(e: MouseEvent) {
+  /* function handleFileTreeClick(e: MouseEvent) {
     const row = findRowAtPoint(e.clientX, e.clientY);
-    setselectedFileTreeRow(row);
+    if (!row) {
+      // Clicked on empty space - clear selection
+      setSelectedFileIds(new Set<string>());
+      setLastSelectedId(null);
+      return;
+    }
+
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const modKey = isMac ? e.metaKey : e.ctrlKey;
+    const shiftKey = e.shiftKey;
+
+    const currentSelection = selectedFileIds();
+    const newSelection = new Set(currentSelection);
+
+    if (shiftKey && lastSelectedId()) {
+      // Shift+Click: range select
+      const rows = tree.rows();
+      const lastIndex = findRowIndex(rows.find((r) => r.id === lastSelectedId()) || null);
+      const currentIndex = findRowIndex(row);
+
+      if (lastIndex !== -1 && currentIndex !== -1) {
+        const start = Math.min(lastIndex, currentIndex);
+        const end = Math.max(lastIndex, currentIndex);
+
+        for (let i = start; i <= end; i++) {
+          newSelection.add(rows[i].id);
+        }
+      }
+    } else if (modKey) {
+      // Ctrl/Cmd+Click: toggle selection
+      if (newSelection.has(row.id)) {
+        newSelection.delete(row.id);
+      } else {
+        newSelection.add(row.id);
+      }
+    } else {
+      // Regular click: select only this item
+      newSelection.clear();
+      newSelection.add(row.id);
+    }
+
+    setSelectedFileIds(newSelection);
+    setLastSelectedId(row.id);
+  } */
+
+  function handleFileTreeSelect(
+    row: TreeRow,
+    options: {
+      shiftKey: boolean;
+      modKey: boolean;
+    }
+  ) {
+    const { shiftKey, modKey } = options;
+
+    const currentSelection = selectedFileIds();
+    const newSelection = new Set(currentSelection);
+
+    if (shiftKey && lastSelectedId()) {
+      const rows = tree.rows();
+
+      const lastIndex = rows.findIndex((r) => r.id === lastSelectedId());
+
+      const currentIndex = rows.findIndex((r) => r.id === row.id);
+
+      if (lastIndex !== -1 && currentIndex !== -1) {
+        const start = Math.min(lastIndex, currentIndex);
+        const end = Math.max(lastIndex, currentIndex);
+
+        // Shift selection starts from the existing selection and
+        // adds the entire range.
+        for (let i = start; i <= end; i++) {
+          if (!rows[i].loading) {
+            newSelection.add(rows[i].id);
+          }
+        }
+      }
+    } else if (modKey) {
+      // Ctrl+Click on Windows/Linux
+      // Cmd+Click on macOS
+      if (newSelection.has(row.id)) {
+        newSelection.delete(row.id);
+      } else {
+        newSelection.add(row.id);
+      }
+    } else {
+      // Normal click selects exactly one item.
+      newSelection.clear();
+      newSelection.add(row.id);
+    }
+
+    setSelectedFileIds(newSelection);
+    setLastSelectedId(row.id);
+  }
+
+  function handleFileTreeClearSelection() {
+    setSelectedFileIds(new Set<string>());
+    setLastSelectedId(null);
   }
 
   onMount(() => {
     window.addEventListener('click', closeContextMenu);
     window.addEventListener('keydown', handleKeyDown);
 
-    const treeEl = fileTreeEl();
+    /* const treeEl = fileTreeEl();
     if (treeEl) {
       treeEl.addEventListener('click', handleFileTreeClick);
-    }
+    } */
 
     onCleanup(() => {
       window.removeEventListener('click', closeContextMenu);
       window.removeEventListener('keydown', handleKeyDown);
 
-      const treeEl = fileTreeEl();
+      /* const treeEl = fileTreeEl();
       if (treeEl) {
         treeEl.removeEventListener('click', handleFileTreeClick);
-      }
+      } */
     });
   });
 
@@ -473,21 +615,23 @@ export default function App() {
 
   let selectedFileTreeRowEl: HTMLElement | null = null;
   createEffect(() => {
-    const target = selectedFileTreeRow();
+    const selectedIds = selectedFileIds();
     const container = fileTreeEl();
 
-    if (selectedFileTreeRowEl) {
-      selectedFileTreeRowEl.classList.remove('selected');
-      selectedFileTreeRowEl = null;
-    }
+    // Remove old selection
+    document.querySelectorAll('[data-file-id].selected').forEach((el) => {
+      el.classList.remove('selected');
+    });
 
-    if (!target || !container) return;
+    if (selectedIds.size === 0 || !container) return;
 
-    const el = container.querySelector<HTMLElement>(`[data-file-id="${target.id}"]`);
-    if (el) {
-      el.classList.add('selected');
-      selectedFileTreeRowEl = el;
-    }
+    // Add selection to all selected items
+    selectedIds.forEach((id) => {
+      const el = container.querySelector<HTMLElement>(`[data-file-id="${id}"]`);
+      if (el) {
+        el.classList.add('selected');
+      }
+    });
   });
 
   createEffect(() => {
@@ -551,6 +695,8 @@ export default function App() {
               activePath={activePath}
               onToggle={tree.toggle}
               onOpenFile={openFile}
+              onSelect={handleFileTreeSelect}
+              onClearSelection={handleFileTreeClearSelection}
               editingId={editingId}
               onEditSubmit={handleTreeEditSubmit}
               onEditCancel={handleTreeEditCancel}
@@ -673,7 +819,7 @@ export default function App() {
                   </>
                 }
                 isDanger
-                disabled={!selectedFileTreeRow()}
+                disabled={selectedFileIds().size === 0}
                 onClick={handleDeleteFile}
               />
 
@@ -696,7 +842,7 @@ export default function App() {
                     Rename
                   </>
                 }
-                disabled={!selectedFileTreeRow()}
+                disabled={selectedFileIds().size !== 1}
                 onClick={handleRenameFile}
               />
 
@@ -721,7 +867,7 @@ export default function App() {
                     Copy
                   </>
                 }
-                disabled={!selectedFileTreeRow()}
+                disabled={selectedFileIds().size === 0}
                 onClick={handleCopyFile}
               />
 
@@ -770,7 +916,7 @@ export default function App() {
                     Cut
                   </>
                 }
-                disabled={!selectedFileTreeRow()}
+                disabled={selectedFileIds().size === 0}
                 onClick={handleCutFile}
               />
             </Show>

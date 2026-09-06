@@ -9,8 +9,20 @@ interface FileTreeProps {
   rows: Accessor<TreeRow[]>;
   expanded: Accessor<Set<string>>;
   activePath: Accessor<string | null>;
+
   onToggle: (row: TreeRow) => void;
   onOpenFile: (row: TreeRow) => void;
+
+  onSelect: (
+    row: TreeRow,
+    options: {
+      shiftKey: boolean;
+      modKey: boolean;
+    }
+  ) => void;
+
+  onClearSelection: () => void;
+
   editingId: Accessor<string | null>;
   onEditSubmit: (row: TreeRow, name: string) => void;
   onEditCancel: (row: TreeRow) => void;
@@ -28,13 +40,51 @@ export default function FileTree(props: FileTreeProps) {
     overscan: 12,
   });
 
-  function handleClick(row: TreeRow) {
+  function handleRowMouseDown(e: MouseEvent, row: TreeRow) {
     if (row.loading || props.editingId() === row.id) return;
+
+    // Only left-click should change the selection.
+    // Right-click is handled by App's context-menu logic.
+    if (e.button !== 0) return;
+
+    e.preventDefault();
+
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const modKey = isMac ? e.metaKey : e.ctrlKey;
+
+    props.onSelect(row, {
+      shiftKey: e.shiftKey,
+      modKey,
+    });
+  }
+
+  function handleRowClick(e: MouseEvent, row: TreeRow) {
+    if (row.loading || props.editingId() === row.id) return;
+
+    // Selection is already handled by mousedown.
+    // Modifier clicks should select, but must NOT open/toggle the item.
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      return;
+    }
+
     if (row.isDir) {
       props.onToggle(row);
     } else {
       props.onOpenFile(row);
     }
+  }
+
+  function handleTreeMouseDown(e: MouseEvent) {
+    // Only clear selection when clicking the actual empty tree area.
+    // Do not interfere with rows or editable inputs.
+    const target = e.target as HTMLElement;
+
+    if (target.closest('[data-file-id]')) return;
+    if (target.closest('input')) return;
+
+    e.preventDefault();
+    props.onClearSelection();
   }
 
   function focusAndSelect(el: HTMLInputElement) {
@@ -51,75 +101,108 @@ export default function FileTree(props: FileTreeProps) {
         scrollRef = el;
         props.forwardRef(el);
       }}
+      onMouseDown={handleTreeMouseDown}
+      style={{
+        'user-select': 'none',
+        '-webkit-user-select': 'none',
+      }}
     >
-      <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          position: 'relative',
+        }}
+      >
         <For each={virtualizer.getVirtualItems()}>
           {(item) => {
             const row = () => props.rows()[item.index];
             const isEditing = () => !!row() && row()!.id === props.editingId();
 
             return (
-              <div
-                class="tree-row"
-                data-file-id={row()?.id}
-                classList={{
-                  active: row()?.path === props.activePath(),
-                  dir: row()?.isDir,
-                  loading: row()?.loading,
-                  ignored: row()?.ignored,
-                  editing: isEditing(),
-                }}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: `${ROW_HEIGHT}px`,
-                  transform: `translateY(${item.start}px)`,
-                  'padding-left': `${8 + row()?.depth * 14}px`,
-                }}
-                onClick={() => handleClick(row())}
-                title={isEditing() ? undefined : row()?.name}
-              >
-                <span class="tree-row-icon">
-                  {row()?.loading
-                    ? ''
-                    : row()?.isDir
-                      ? props.expanded().has(row()!.path)
-                        ? '▾'
-                        : '▸'
-                      : '·'}
-                </span>
-                <Show
-                  when={isEditing()}
-                  fallback={
-                    <span class="tree-row-name">
-                      {row()?.name}
-                      {row()?.ignored}
-                    </span>
-                  }
-                >
-                  <input
-                    class="tree-row-input"
-                    value={row()?.name ?? ''}
-                    ref={focusAndSelect}
-                    onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      e.stopPropagation();
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        props.onEditSubmit(row(), (e.currentTarget as HTMLInputElement).value);
-                      } else if (e.key === 'Escape') {
-                        e.preventDefault();
-                        props.onEditCancel(row());
-                      }
+              <Show when={row()}>
+                {(currentRow) => (
+                  <div
+                    class="tree-row"
+                    data-file-id={currentRow().id}
+                    classList={{
+                      active: currentRow().path === props.activePath(),
+                      dir: currentRow().isDir,
+                      loading: currentRow().loading,
+                      ignored: currentRow().ignored,
+                      editing: isEditing(),
                     }}
-                    onBlur={(e) =>
-                      props.onEditSubmit(row(), (e.currentTarget as HTMLInputElement).value)
-                    }
-                  />
-                </Show>
-              </div>
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: `${ROW_HEIGHT}px`,
+                      transform: `translateY(${item.start}px)`,
+                      'padding-left': `${8 + currentRow().depth * 14}px`,
+                      'user-select': 'none',
+                      '-webkit-user-select': 'none',
+                    }}
+                    onMouseDown={(e) => handleRowMouseDown(e, currentRow())}
+                    onClick={(e) => handleRowClick(e, currentRow())}
+                    title={isEditing() ? undefined : currentRow().name}
+                  >
+                    <span class="tree-row-icon">
+                      {currentRow().loading
+                        ? ''
+                        : currentRow().isDir
+                          ? props.expanded().has(currentRow().path)
+                            ? '▾'
+                            : '▸'
+                          : '·'}
+                    </span>
+
+                    <Show
+                      when={isEditing()}
+                      fallback={
+                        <span class="tree-row-name">
+                          {currentRow().name}
+                          {currentRow().ignored}
+                        </span>
+                      }
+                    >
+                      <input
+                        class="tree-row-input"
+                        value={currentRow().name}
+                        ref={focusAndSelect}
+                        onMouseDown={(e) => {
+                          // Allow normal text editing/selection inside
+                          // the rename input.
+                          e.stopPropagation();
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                        }}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+
+                            props.onEditSubmit(
+                              currentRow(),
+                              (e.currentTarget as HTMLInputElement).value
+                            );
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            props.onEditCancel(currentRow());
+                          }
+                        }}
+                        onBlur={(e) =>
+                          props.onEditSubmit(
+                            currentRow(),
+                            (e.currentTarget as HTMLInputElement).value
+                          )
+                        }
+                      />
+                    </Show>
+                  </div>
+                )}
+              </Show>
             );
           }}
         </For>
