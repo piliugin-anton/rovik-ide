@@ -55,6 +55,11 @@ pub fn start_file_watch(
         }
     }
 
+    let gitfolder_path = root.join(".git");
+    if gitfolder_path.exists() {
+        let _ = gitignore_builder.add(gitfolder_path);
+    }
+
     let gitignore_matcher = gitignore_builder
         .build()
         .map_err(|e| format!("Failed to compile gitignore: {}", e))?;
