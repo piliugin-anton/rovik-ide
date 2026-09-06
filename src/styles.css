@@ -92,6 +92,10 @@ body {
   color: var(--fg-dim);
 }
 
+.tree-row.selected {
+  border: 2px solid var(--accent);
+}
+
 .tree-row-icon {
   width: 14px;
   flex-shrink: 0;

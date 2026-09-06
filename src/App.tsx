@@ -49,6 +49,7 @@ export default function App() {
   const [menuEl, setMenuEl] = createSignal<HTMLDivElement | null>(null);
   const [clipboard, setClipboard] = createSignal<{ id: string; mode: 'copy' | 'cut' } | null>(null);
   const [contextMenuTarget, setContextMenuTarget] = createSignal<TreeRow | null>(null);
+  const [selectedRow, setSelectedRow] = createSignal<HTMLDivElement | null>(null); // tree selection
 
   // The project root doesn't come through read_dir_entries on its own (it's
   // the thing read_dir_entries is called *with*), so resolve its stable id
@@ -170,13 +171,13 @@ export default function App() {
     }
   }
 
-  function findRowAtPoint(x: number, y: number): TreeRow | null {
+  function findRowAtPoint(x: number, y: number): [TreeRow, HTMLDivElement] | null {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
-    const rowEl = el?.closest<HTMLElement>('[data-file-id]');
+    const rowEl = el?.closest<HTMLDivElement>('[data-file-id]');
     const id = rowEl?.dataset.fileId;
     if (!id) return null;
     const row = tree.rows().find((r) => r.id === id);
-    return row && !row.loading ? row : null;
+    return row && !row.loading ? [row, rowEl] : null;
   }
 
   function handleContextMenu(e: MouseEvent) {
@@ -189,11 +190,22 @@ export default function App() {
 
     const fileTree = fileTreeEl();
     if (fileTree) {
-      const rect = fileTree!.getBoundingClientRect();
+      const rect = fileTree.getBoundingClientRect();
       if (posX >= rect.left && posX <= rect.right && posY >= rect.top && posY <= rect.bottom) {
         showContextMenu = true;
         setActivePanel('files');
-        setContextMenuTarget(findRowAtPoint(posX, posY));
+
+        const rowData = findRowAtPoint(posX, posY);
+        if (rowData) {
+          const [row, rowEl] = rowData;
+          setContextMenuTarget(row);
+          setSelectedRow(rowEl);
+
+          rowEl.classList.add('selected');
+        } else {
+          setContextMenuTarget(null);
+          setSelectedRow(null);
+        }
       }
     }
 
@@ -201,6 +213,7 @@ export default function App() {
       setActivePanel(null);
       setContextMenuVisible(false);
       setContextMenuTarget(null);
+      setSelectedRow(null);
       return;
     }
 
@@ -209,11 +222,17 @@ export default function App() {
   }
 
   const closeContextMenu = () => {
+    const selectedRowElement = selectedRow();
+    if (selectedRowElement) {
+      selectedRowElement.classList.remove('selected');
+    }
     setContextMenuVisible(false);
     setContextMenuTarget(null);
+    setSelectedRow(null);
   };
 
   async function handleNewFile() {
+    setContextMenuVisible(false);
     const target = contextMenuTarget();
     const dirId = target?.isDir ? target.id : rootId();
     if (!dirId) return;
@@ -228,6 +247,7 @@ export default function App() {
   }
 
   async function handleNewFolder() {
+    setContextMenuVisible(false);
     const target = contextMenuTarget();
     const dirId = target?.isDir ? target.id : rootId();
     if (!dirId) return;
@@ -242,6 +262,7 @@ export default function App() {
   }
 
   async function handleDeleteFile() {
+    setContextMenuVisible(false);
     const target = contextMenuTarget();
     if (!target) return;
     if (!window.confirm(`Delete "${target.name}"? This can't be undone.`)) return;
@@ -257,6 +278,7 @@ export default function App() {
   }
 
   async function handleRenameFile() {
+    setContextMenuVisible(false);
     const target = contextMenuTarget();
     if (!target) return;
     const name = window.prompt('Rename to:', target.name);
@@ -275,18 +297,21 @@ export default function App() {
   }
 
   function handleCopyFile() {
+    setContextMenuVisible(false);
     const target = contextMenuTarget();
     if (!target) return;
     setClipboard({ id: target.id, mode: 'copy' });
   }
 
   function handleCutFile() {
+    setContextMenuVisible(false);
     const target = contextMenuTarget();
     if (!target) return;
     setClipboard({ id: target.id, mode: 'cut' });
   }
 
   async function handlePasteFile() {
+    setContextMenuVisible(false);
     const entry = clipboard();
     const target = contextMenuTarget();
     if (!entry || !target) return;
