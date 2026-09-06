@@ -25,13 +25,14 @@ export default function App() {
     selectionStartLine: number | null;
     selectionEndLine: number | null;
   } | null>(null);
-  // 1. Reactive state for menu visibility and viewport position
+
   const [contextMenuVisible, setContextMenuVisible] = createSignal(false);
+  const [activePanel, setActivePanel] = createSignal<'files' | 'something' | null>(null);
+  const [rawCursor, setRawCursor] = createSignal({ x: 0, y: 0 });
   const [cursorPosition, setCursorPosition] = createSignal({ x: 0, y: 0 });
-  const [activePanel, setActivePanel] = createSignal<'files' | 'editor' | null>(null);
-  let fileTreeRef: HTMLDivElement | undefined;
-  let editorRef: HTMLDivElement | undefined;
-  let menuRef: HTMLDivElement | undefined;
+
+  const [fileTreeEl, setFileTreeEl] = createSignal<HTMLDivElement | null>(null);
+  const [menuEl, setMenuEl] = createSignal<HTMLDivElement | null>(null);
 
   const tree = createFileTreeController(rootPath);
 
@@ -123,94 +124,99 @@ export default function App() {
   }
 
   function handleContextMenu(e: MouseEvent) {
-    e.preventDefault(); // Blocks the default browser right-click menu
+    e.preventDefault();
+
+    const posX = e.clientX;
+    const posY = e.clientY;
+
+    let showContextMenu = false;
+
+    const fileTree = fileTreeEl();
+    if (fileTree) {
+      const rect = fileTree.getBoundingClientRect();
+      if (posX >= rect.left && posX <= rect.right && posY >= rect.top && posY <= rect.bottom) {
+        showContextMenu = true;
+        setActivePanel('files');
+      }
+    }
+
+    if (!showContextMenu) {
+      setActivePanel(null);
+      setContextMenuVisible(false);
+      return;
+    }
+
     setContextMenuVisible(true);
-
-    let posX = e.clientX;
-    let posY = e.clientY;
-
-    if (!editorRef || !fileTreeRef || !menuRef) return;
-
-    // Cross-browser structural hit testing via bounding boxes
-    const fileTreeRect = fileTreeRef.getBoundingClientRect();
-    const editorRect = editorRef.getBoundingClientRect();
-
-    // Check if cursor falls within the left panel bounds
-    if (
-      posX >= fileTreeRect.left &&
-      posX <= fileTreeRect.right &&
-      posY >= fileTreeRect.top &&
-      posY <= fileTreeRect.bottom
-    ) {
-      setActivePanel('files');
-    }
-    // Check if cursor falls within the right panel bounds
-    else if (
-      posX >= editorRect.left &&
-      posX <= editorRect.right &&
-      posY >= editorRect.top &&
-      posY <= editorRect.bottom
-    ) {
-      setActivePanel('editor');
-    } else {
-      setActivePanel(null); // Clicked in dead-zone or margins
-    }
-
-    // Prevent boundary overflow
-    let adjustedX = posX;
-    let adjustedY = posY;
-    const menuWidth = menuRef.offsetWidth || 160;
-    const menuHeight = menuRef.offsetHeight || 150;
-
-    if (posX + menuWidth > window.innerWidth) adjustedX = window.innerWidth - menuWidth - 10;
-    if (posY + menuHeight > window.innerHeight) adjustedY = window.innerHeight - menuHeight - 10;
-
-    setCursorPosition({ x: adjustedX, y: adjustedY });
+    setRawCursor({ x: posX, y: posY });
   }
 
   const closeContextMenu = () => setContextMenuVisible(false);
 
-  onMount(async () => {
+  onMount(() => {
     window.addEventListener('click', closeContextMenu);
+    onCleanup(() => {
+      window.removeEventListener('click', closeContextMenu);
+    });
+  });
 
+  onMount(async () => {
     const unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
       const { path, operation, is_dir } = event.payload;
-
       console.log(`Target is a ${is_dir ? 'Folder' : 'File'}`, path, operation);
-
       switch (operation) {
         case 'create':
-          // Handle adding item to your Solid.js file tree state
-          break;
         case 'modify':
-          // If the file is currently open in an IDE tab, reload/prompt to save
-          break;
         case 'remove':
-          // Remove from UI file tree and close open tabs matching this path
-          break;
         case 'unknown':
           break;
       }
     });
 
-    return () => {
-      window.removeEventListener('click', closeContextMenu);
-      unlistenFSChanges();
-    };
+    return () => unlistenFSChanges();
   });
 
   createEffect(async () => {
     const currentPath = rootPath();
-
-    // If no folder is open, don't ping the backend watcher
     if (!currentPath) return;
-
     try {
       console.log('Notifying backend to watch new folder:', currentPath);
       await invoke('start_file_watch', { pathStr: currentPath });
     } catch (error) {
       console.error('Failed to start file watcher:', error);
     }
+  });
+
+  // Bullet-proof positioning effect with logs
+  createEffect(() => {
+    const visible = contextMenuVisible();
+    const panel = activePanel();
+    const menu = menuEl();
+
+    if (!visible || panel === null) {
+      return;
+    }
+
+    if (!menu) {
+      // Will re-run when menuEl changes
+      return;
+    }
+
+    const { x, y } = rawCursor();
+
+    const menuWidth = menu.offsetWidth || 160;
+    const menuHeight = menu.offsetHeight || 150;
+
+    let adjustedX = x;
+    let adjustedY = y;
+
+    if (x + menuWidth > window.innerWidth) {
+      adjustedX = window.innerWidth - menuWidth - 10;
+    }
+    if (y + menuHeight > window.innerHeight) {
+      adjustedY = window.innerHeight - menuHeight - 10;
+    }
+
+    setCursorPosition({ x: adjustedX, y: adjustedY });
   });
 
   return (
@@ -237,7 +243,7 @@ export default function App() {
           </div>
           <Show when={rootPath()} fallback={<div class="empty-state">No folder open</div>}>
             <FileTree
-              forwardRef={(el) => (fileTreeRef = el)}
+              forwardRef={setFileTreeEl}
               rows={tree.rows}
               expanded={tree.expanded}
               activePath={activePath}
@@ -267,7 +273,6 @@ export default function App() {
           >
             {(path) => (
               <Editor
-                forwardRef={(el) => (editorRef = el)}
                 content={() => openFiles().find((f) => f.path === path)?.content ?? ''}
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
                 onChange={(value) => updateContent(path, value)}
@@ -281,31 +286,20 @@ export default function App() {
 
       <Show when={contextMenuVisible() && activePanel() !== null}>
         <div
-          ref={menuRef}
+          ref={setMenuEl}
           class="context-menu"
           style={{
+            position: 'fixed',
             top: `${cursorPosition().y}px`,
             left: `${cursorPosition().x}px`,
           }}
         >
           <ul class="context-menu-list">
-            {/* Conditional Menu Rendering based on side detected */}
             <Show when={activePanel() === 'files'}>
               <ContextMenuItem label="⬅️ Files Option A" onClick={() => alert('Left side click')} />
               <ContextMenuItem
                 label="⬅️ Files Option B"
                 onClick={() => alert('Left side action')}
-              />
-            </Show>
-
-            <Show when={activePanel() === 'editor'}>
-              <ContextMenuItem
-                label="➡️ Editor Option X"
-                onClick={() => alert('Right side click')}
-              />
-              <ContextMenuItem
-                label="➡️ Editor Option Y"
-                onClick={() => alert('Right side action')}
               />
             </Show>
           </ul>
