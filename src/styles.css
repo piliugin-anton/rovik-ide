@@ -990,3 +990,116 @@ body {
 .terminal-instance .xterm .xterm-viewport {
   background: transparent !important;
 }
+
+/* Git panel container */
+.git-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-sidebar);
+  color: var(--fg);
+}
+
+/* Header */
+.git-panel-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Branch row */
+.git-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.git-branch-label {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.git-branch-button {
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.git-branch-arrow {
+  margin-left: 4px;
+  font-size: 10px;
+}
+
+/* Branch dropdown */
+.git-branch-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 8px;
+  margin-top: 0;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  z-index: 50;
+  min-width: 160px;
+}
+
+.git-branch-item-active {
+  background: var(--row-active);
+}
+
+/* Fetch / Pull row */
+.git-fetch-pull-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* Files area */
+.git-files {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.git-files .empty-state {
+  padding: 12px 8px;
+  font-size: 12px;
+}
+
+.git-files .tree-row {
+  padding: 4px 8px;
+}
+
+/* Commit bar */
+.git-commit-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.git-commit-input {
+  width: 100%;
+}
+
+.git-commit-button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.git-commit-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

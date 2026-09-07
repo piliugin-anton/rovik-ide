@@ -27,6 +27,7 @@ import TerminalPanel from './components/TerminalPanel';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import ContextMenuItem from './components/ContextMenuItem';
+import { GitPanel } from './components/GitPanel';
 
 let unlistenFSChanges: (() => void) | undefined;
 
@@ -50,7 +51,7 @@ export default function App() {
   const [rootId, setRootId] = createSignal<string | null>(null);
   const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
   const [activePath, setActivePath] = createSignal<string | null>(null);
-  const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat'>('files');
+  const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat' | 'git'>('files');
   const [cursorInfo, setCursorInfo] = createSignal<{
     line: number;
     column: number;
@@ -676,6 +677,12 @@ export default function App() {
           >
             AI Chat
           </button>
+          <button
+            classList={{ active: sidebarTab() === 'git' }}
+            onClick={() => setSidebarTab('git')}
+          >
+            Git
+          </button>
         </div>
 
         <Show when={sidebarTab() === 'files'}>
@@ -701,6 +708,10 @@ export default function App() {
 
         <Show when={sidebarTab() === 'chat'}>
           <ChatPanel rootPath={rootPath} activeFileContext={activeFileContext} files={tree.files} />
+        </Show>
+
+        <Show when={sidebarTab() === 'git'}>
+          <GitPanel />
         </Show>
       </Resizable>
 
