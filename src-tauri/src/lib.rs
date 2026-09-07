@@ -24,6 +24,8 @@ pub fn run() {
             filesystem::save_ai_settings,
             filesystem::load_chat_history,
             filesystem::save_chat_history,
+            filesystem::load_last_project,
+            filesystem::save_last_project,
             filesystem::get_path_id,
             filesystem::create_file,
             filesystem::create_dir,

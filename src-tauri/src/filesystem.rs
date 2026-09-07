@@ -609,3 +609,28 @@ pub fn save_chat_history(app: AppHandle, json: String) -> Result<(), String> {
     let path = chat_history_path(&app)?;
     fs::write(&path, json).map_err(|e| format!("Failed to save chat history: {e}"))
 }
+
+fn last_project_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data directory: {e}"))?;
+    Ok(dir.join("last-project.json"))
+}
+
+#[tauri::command]
+pub fn load_last_project(app: AppHandle) -> Result<String, String> {
+    let path = last_project_path(&app)?;
+    if !path.exists() {
+        return Ok(r#"{"path":null}"#.to_string());
+    }
+    fs::read_to_string(&path).map_err(|e| format!("Failed to read last project: {e}"))
+}
+
+#[tauri::command]
+pub fn save_last_project(app: AppHandle, path: String) -> Result<(), String> {
+    let project_path = last_project_path(&app)?;
+    let json = format!(r#"{{"path":{}}}"#, serde_json::to_string(&path).unwrap_or("null".to_string()));
+    fs::write(&project_path, json).map_err(|e| format!("Failed to save last project: {e}"))
+}

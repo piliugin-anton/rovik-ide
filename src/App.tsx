@@ -18,6 +18,7 @@ import {
   movePath as movePathOnDisk,
   copyPath as copyPathOnDisk,
 } from './lib/commands';
+import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import type { FileWatchPayload, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext } from './lib/activeContext';
@@ -30,6 +31,15 @@ let unlistenFSChanges: (() => void) | undefined;
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
+
+  // Load last opened project on startup
+  onMount(async () => {
+    const lastProject = await loadLastProject();
+    if (lastProject) {
+      for (const m of monaco.editor.getModels()) m.dispose();
+      setRootPath(lastProject);
+    }
+  });
   const [rootId, setRootId] = createSignal<string | null>(null);
   const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
   const [activePath, setActivePath] = createSignal<string | null>(null);
@@ -136,6 +146,10 @@ export default function App() {
       setActivePath(null);
       setSelectedFileIds(new Set<string>());
       setLastSelectedId(null);
+      // Save this as the last opened project
+      saveLastProject(folder).catch((err) => {
+        console.error('Failed to save last project:', err);
+      });
     }
   }
 

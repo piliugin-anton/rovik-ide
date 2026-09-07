@@ -32,7 +32,7 @@ import MessageContent from './MessageContent';
 import { toRelativePath } from '../lib/fileTools';
 
 // Hard ceiling on how many read→act round-trips one user message can trigger.
-const MAX_AGENT_STEPS = 8;
+const MAX_AGENT_STEPS = 24;
 
 const NEW_CHAT_TITLE = 'New Chat';
 
