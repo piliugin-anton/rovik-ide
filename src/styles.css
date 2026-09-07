@@ -1103,3 +1103,31 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+
+.resizable-root {
+  display: flex;
+  height: 100%;
+  min-height: 200px;
+}
+
+.resizable-inner {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.resizable-handle {
+  width: 2px;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.2s;
+  margin-left: 2px;
+  margin-right: 2px;
+}
+
+.resizable-handle:hover,
+.resizable-handle.resizing {
+  background: #3b82f6;
+}
