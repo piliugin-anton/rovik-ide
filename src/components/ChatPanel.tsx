@@ -342,21 +342,38 @@ export default function ChatPanel(props: ChatProps) {
     const triggerStart = fileTriggerStart();
     if (triggerStart === null) return;
 
+    /*
+     * Focus FIRST. Calling focus() after setting the selection can
+     * collapse the caret back to the start of the element (WebKit does
+     * this), which is the main reason the cursor never moved.
+     */
+    container.focus();
+
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
 
-    // Get current cursor position
-    const cursorOffset = selection.anchorOffset;
+    const startLocation = findTextOffset(container, triggerStart);
+    if (!startLocation) return;
 
-    // Create a range that spans from triggerStart to current cursor position
+    /*
+     * Delete from the '@' up to the caret.
+     */
     const deleteRange = document.createRange();
-    deleteRange.setStart(container.firstChild ?? container, triggerStart);
-    deleteRange.setEnd(container.firstChild ?? container, cursorOffset);
-
-    // Delete the @query text
+    deleteRange.setStart(startLocation.node, startLocation.offset);
+    deleteRange.setEnd(selection.focusNode ?? container, selection.focusOffset);
     deleteRange.deleteContents();
 
-    // Create the chip element
+    /*
+     * Collapse the selection to the deletion point so insertNode()
+     * inserts exactly where '@query' used to be.
+     */
+    deleteRange.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(deleteRange);
+
+    /*
+     * Insert the chip.
+     */
     const chip = document.createElement('span');
     chip.className = 'chat-file-reference';
     chip.contentEditable = 'false';
@@ -371,58 +388,51 @@ export default function ChatPanel(props: ChatProps) {
     >×</button>
   `;
 
-    // Add click handler for remove button
-    const removeBtn = chip.querySelector('.chat-file-reference-remove');
-    removeBtn?.addEventListener('click', (e) => {
+    chip.querySelector('.chat-file-reference-remove')?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       removeReferencedFile(suggestion.path);
       chip.remove();
     });
 
-    // Get fresh range after deletion
-    const range = selection.getRangeAt(0);
+    deleteRange.insertNode(chip);
 
-    // Insert the chip
-    range.insertNode(chip);
-
-    // Add a space after the chip for better UX
+    /*
+     * Insert a trailing space.
+     */
     const space = document.createTextNode(' ');
-    range.insertNode(space);
+    chip.after(space);
 
-    // Move cursor after the chip and space
-    range.setStartAfter(space);
-    range.setEndAfter(space);
+    /*
+     * Position the caret AFTER the chip with a fresh, collapsed range.
+     * Don't reuse the range we inserted with — its position after the
+     * insertions is engine-dependent.
+     */
+    const caretRange = document.createRange();
+    caretRange.setStartAfter(space);
+    caretRange.collapse(true);
     selection.removeAllRanges();
-    selection.addRange(range);
+    selection.addRange(caretRange);
 
-    // Update referenced files state
-    setReferencedFiles((current) => {
-      if (current.some((file) => file.path === suggestion.path)) {
-        return current;
-      }
-      return [...current, suggestion];
-    });
+    setReferencedFiles((current) =>
+      current.some((file) => file.path === suggestion.path) ? current : [...current, suggestion]
+    );
 
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
     setFileQuery('');
     setSelectedSuggestionIndex(0);
 
-    // Focus and ensure cursor is visible
-    container.focus();
-
-    // Scroll to caret if needed
+    /*
+     * Keep the caret visible. Note: getClientRects() returns nothing for a
+     * collapsed range, so use getBoundingClientRect() on the range instead.
+     */
     setTimeout(() => {
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0) {
-        const caretRect = sel.getRangeAt(0).getClientRects()[0];
-        if (caretRect) {
-          const containerRect = container.getBoundingClientRect();
-          if (caretRect.bottom > containerRect.bottom) {
-            container.scrollTop += caretRect.bottom - containerRect.bottom;
-          }
-        }
+      const caretRect = caretRange.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+
+      if (caretRect.bottom > containerRect.bottom) {
+        container.scrollTop += caretRect.bottom - containerRect.bottom;
       }
     }, 0);
   }
@@ -433,6 +443,16 @@ export default function ChatPanel(props: ChatProps) {
     requestAnimationFrame(() => {
       inputTextareaRef?.focus();
     });
+  }
+
+  function clearChatInput() {
+    setInput('');
+    setReferencedFiles([]);
+
+    if (inputTextareaRef) {
+      inputTextareaRef.innerHTML = '';
+      inputTextareaRef.focus();
+    }
   }
 
   /*
@@ -471,30 +491,36 @@ export default function ChatPanel(props: ChatProps) {
     }));
   }
 
-  function getCaretCoordinates(element: HTMLElement): { left: number; top: number } {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) {
-      return { left: 0, top: 0 };
+  function getTextOffset(root: Node, node: Node, nodeOffset: number): number {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    let current = walker.nextNode() as Text | null;
+
+    while (current) {
+      if (current === node) {
+        return offset + Math.min(nodeOffset, current.data.length);
+      }
+      offset += current.data.length;
+      current = walker.nextNode() as Text | null;
     }
 
-    const range = selection.getRangeAt(0).cloneRange();
-    const rects = range.getClientRects();
+    return offset;
+  }
 
-    if (rects.length > 0) {
-      const rect = rects[0];
-      const elementRect = element.getBoundingClientRect();
+  function findTextOffset(root: Node, offset: number): { node: Text; offset: number } | null {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let remaining = offset;
+    let node = walker.nextNode() as Text | null;
 
-      return {
-        left: rect.left - elementRect.left + element.scrollLeft,
-        top: rect.top - elementRect.top + element.scrollTop,
-      };
+    while (node) {
+      if (remaining <= node.data.length) {
+        return { node, offset: remaining };
+      }
+      remaining -= node.data.length;
+      node = walker.nextNode() as Text | null;
     }
 
-    // Fallback: return bottom-left of the element if no caret position available
-    return {
-      left: 0,
-      top: element.scrollHeight,
-    };
+    return null;
   }
   /*
    * -----------------------------------------------------------------------
@@ -662,6 +688,7 @@ export default function ChatPanel(props: ChatProps) {
       );
     };
 
+    let clearInput = true;
     channel.onmessage = (event) => {
       if (!isMounted) return;
 
@@ -697,6 +724,7 @@ export default function ChatPanel(props: ChatProps) {
         }
 
         case 'Error': {
+          clearInput = false;
           streamError = event.message;
 
           updateDialogMessages(dialogId, (messages) =>
@@ -765,6 +793,10 @@ export default function ChatPanel(props: ChatProps) {
 
           break;
         }
+      }
+
+      if (clearInput) {
+        clearChatInput();
       }
     };
 
@@ -1243,7 +1275,14 @@ export default function ChatPanel(props: ChatProps) {
               const target = e.currentTarget;
               const text = target.textContent ?? '';
               setInput(text);
-              updateFileAutocomplete(text, getCaretCoordinates(target).left);
+
+              const sel = window.getSelection();
+              const caretOffset =
+                sel && sel.focusNode
+                  ? getTextOffset(target, sel.focusNode, sel.focusOffset)
+                  : text.length;
+
+              updateFileAutocomplete(text, caretOffset);
             }}
             onKeyDown={handleKeyDown}
             data-placeholder={
