@@ -306,6 +306,7 @@ body {
 }
 
 .chat-input-row {
+  position: relative;
   display: flex;
   gap: 6px;
   padding: 8px;
@@ -314,12 +315,25 @@ body {
 }
 
 .chat-send-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  height: 20px;
+  width: 20px;
   background: var(--accent);
   color: #fff;
   border: none;
   border-radius: 4px;
   padding: 0 12px;
   cursor: pointer;
+  z-index: 2;
+}
+
+.chat-send-button svg {
+  flex-shrink: 0;
 }
 
 .chat-send-button:disabled {
