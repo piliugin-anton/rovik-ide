@@ -29,6 +29,7 @@ import ModelSettingsPanel from './ModelSettingsPanel';
 import ToolDetails from './ToolDetails';
 import { isBlank } from '../lib/textUtils';
 import MessageContent from './MessageContent';
+import { toRelativePath } from '../lib/fileTools';
 
 // Hard ceiling on how many read→act round-trips one user message can trigger.
 const MAX_AGENT_STEPS = 8;
@@ -107,36 +108,43 @@ export default function ChatPanel(props: ChatProps) {
 
     const query = fileQuery().trim().toLowerCase();
 
-    return props
-      .files()
-      .filter((file) => {
-        const path = file.path.toLowerCase();
-        const name = file.name.toLowerCase();
+    return (
+      props
+        .files()
+        // Skip ignored rows entirely — they should never be referenceable.
+        .filter((file) => !file.ignored)
+        // Only suggest actual files, not directories.
+        .filter((file) => !file.isDir)
+        .filter((file) => {
+          const path = file.path.toLowerCase();
+          const name = file.name.toLowerCase();
 
-        if (!query) return true;
+          if (!query) return true;
 
-        return name.includes(query) || path.includes(query);
-      })
-      .sort((a, b) => {
-        const aName = a.name.toLowerCase();
-        const bName = b.name.toLowerCase();
+          return name.includes(query) || path.includes(query);
+        })
+        .sort((a, b) => {
+          const aName = a.name.toLowerCase();
+          const bName = b.name.toLowerCase();
 
-        // Prefer filename matches over path-only matches.
-        const aNameMatch = aName.includes(query);
-        const bNameMatch = bName.includes(query);
+          // Prefer filename matches over path-only matches.
+          const aNameMatch = aName.includes(query);
+          const bNameMatch = bName.includes(query);
 
-        if (aNameMatch !== bNameMatch) {
-          return aNameMatch ? -1 : 1;
-        }
+          if (aNameMatch !== bNameMatch) {
+            return aNameMatch ? -1 : 1;
+          }
 
-        return a.path.localeCompare(b.path);
-      })
-      .slice(0, 50)
-      .map((file) => ({
-        id: file.id,
-        path: file.path,
-        name: file.name,
-      }));
+          return a.path.localeCompare(b.path);
+        })
+        .slice(0, 50)
+        .map((file) => ({
+          id: file.id,
+          path: file.path,
+          name: file.name,
+          relativePath: toRelativePath(file.path, props.rootPath()),
+        }))
+    );
   });
 
   /*
@@ -1308,7 +1316,7 @@ export default function ChatPanel(props: ChatProps) {
                     onClick={() => acceptFileSuggestion(suggestion)}
                   >
                     <span class="file-suggestion-name">{suggestion.name}</span>
-                    <span class="file-suggestion-path">{suggestion.path}</span>
+                    <span class="file-suggestion-path">./{suggestion.relativePath}</span>
                   </button>
                 )}
               </For>
