@@ -615,6 +615,7 @@ pub fn save_chat_history(app: AppHandle, json: String) -> Result<(), String> {
 struct LastProjectData {
     path: Option<String>,
     opened_files: Option<Vec<OpenFile>>,
+    expanded_paths: Option<Vec<String>>,
 }
 
 fn last_project_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -630,7 +631,7 @@ fn last_project_path(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn load_last_project(app: AppHandle) -> Result<String, String> {
     let path = last_project_path(&app)?;
     if !path.exists() {
-        return Ok(r#"{"path":null,"opened_files":null}"#.to_string());
+        return Ok(r#"{"path":null,"opened_files":null,"expanded_paths":null}"#.to_string());
     }
     fs::read_to_string(&path).map_err(|e| format!("Failed to read last project: {e}"))
 }
@@ -638,19 +639,26 @@ pub fn load_last_project(app: AppHandle) -> Result<String, String> {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenFile {
-  pub id: String,
-  pub path: String,
-  pub name: String,
-  pub language: String
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub language: String,
 }
 
 #[tauri::command]
-pub fn save_last_project(app: AppHandle, path: String, opened_files: Option<Vec<OpenFile>>) -> Result<(), String> {
+pub fn save_last_project(
+    app: AppHandle,
+    path: String,
+    opened_files: Option<Vec<OpenFile>>,
+    expanded_paths: Option<Vec<String>>,
+) -> Result<(), String> {
     let project_path = last_project_path(&app)?;
     let data = LastProjectData {
         path: Some(path),
         opened_files,
+        expanded_paths,
     };
-    let json = serde_json::to_string(&data).map_err(|e| format!("Failed to serialize last project: {e}"))?;
+    let json = serde_json::to_string(&data)
+        .map_err(|e| format!("Failed to serialize last project: {e}"))?;
     fs::write(&project_path, json).map_err(|e| format!("Failed to save last project: {e}"))
 }

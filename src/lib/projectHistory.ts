@@ -17,14 +17,19 @@ export async function loadLastProject(): Promise<LastProjectData | null> {
   }
 }
 
-export async function saveLastProject(path: string, opened_files: OpenFile[]): Promise<void> {
+export async function saveLastProject(
+  path: string,
+  openedFiles: OpenFile[],
+  expandedPaths: string[]
+): Promise<void> {
   await invoke<void>('save_last_project', {
     path,
-    openedFiles: opened_files.map((f) => ({
+    openedFiles: openedFiles.map((f) => ({
       id: f.id,
       path: f.path,
       name: f.name,
       language: f.language,
     })),
+    expandedPaths,
   });
 }

@@ -17,6 +17,10 @@ export function createFileTreeController(rootPath: () => string | null) {
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const [loading, setLoading] = createSignal<Set<string>>(new Set());
   const [lastRootPath, setLastRootPath] = createSignal<string | null>(null);
+  const [pendingExpanded, setPendingExpandedState] = createSignal<{
+    root: string;
+    paths: string[];
+  } | null>(null);
 
   const files = createMemo<TreeRow[]>(() => {
     const currentCache = cache();
@@ -63,20 +67,38 @@ export function createFileTreeController(rootPath: () => string | null) {
     }
   }
 
+  // Register a saved expansion set to apply the next time `root` becomes
+  // the active root. Call this *before* setRootPath so it's in place when
+  // the reset effect below runs.
+  function presetExpanded(root: string, paths: string[]) {
+    setPendingExpandedState({ root, paths });
+  }
+
   // (Re)load the root whenever the project folder changes, and reset state.
   createEffect(() => {
     const root = rootPath();
-    // Only reset cache and loading state if root changed to a new value
     if (root !== lastRootPath()) {
-      setCache(new Map<string, DirEntryInfo[]>()); // reset on actual change
-      setExpanded(new Set<string>()); // reset on actual change
+      setCache(new Map<string, DirEntryInfo[]>());
+      const pending = pendingExpanded();
+      if (pending && pending.root === root) {
+        setExpanded(new Set([root, ...pending.paths]));
+        setPendingExpandedState(null);
+      } else if (root) {
+        setExpanded(new Set([root]));
+      }
       setLastRootPath(root);
     }
     if (root) {
-      // Only load if not already cached (avoid infinite reload loop)
       if (!cache().has(root)) {
-        setExpanded(new Set([root])); // expand root only when first loading
         void loadDir(root);
+      }
+      // Fetch any expanded directory that isn't cached yet — covers both
+      // manual toggling and a restored expansion set, with no ordering
+      // requirement between parent/child.
+      for (const p of expanded()) {
+        if (p !== root && !cache().has(p) && !loading().has(p)) {
+          void loadDir(p);
+        }
       }
     }
   });
@@ -171,5 +193,5 @@ export function createFileTreeController(rootPath: () => string | null) {
     return out;
   });
 
-  return { rows, expanded, toggle, refresh, files };
+  return { rows, expanded, toggle, refresh, files, presetExpanded };
 }

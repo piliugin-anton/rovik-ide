@@ -23,6 +23,7 @@ import type { FileWatchPayload, LastProjectOpenFile, OpenFile, TreeRow } from '.
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
+import TerminalPanel from './components/TerminalPanel';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import ContextMenuItem from './components/ContextMenuItem';
@@ -36,8 +37,9 @@ export default function App() {
   onMount(async () => {
     const projectData = await getLastProject();
     if (!projectData) return;
-    const [path, openFiles] = projectData;
+    const [path, openFiles, expandedPaths] = projectData;
     for (const m of monaco.editor.getModels()) m.dispose();
+    tree.presetExpanded(path, expandedPaths);
     setRootPath(path);
     setOpenFiles(openFiles);
     console.log('openFiles', openFiles);
@@ -142,7 +144,7 @@ export default function App() {
     return rows.length > 0 ? rows[0] : null;
   });
 
-  async function getLastProject(): Promise<[string, OpenFile[]] | null> {
+  async function getLastProject(): Promise<[string, OpenFile[], string[]] | null> {
     const lastProject = await loadLastProject();
     if (!lastProject || !lastProject.path) return null;
     const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
@@ -158,7 +160,7 @@ export default function App() {
       })
     );
 
-    return [lastProject.path, openFiles];
+    return [lastProject.path, openFiles, lastProject.expandedPaths ?? []];
   }
 
   async function handlePickFolder() {
@@ -170,10 +172,6 @@ export default function App() {
       setActivePath(null);
       setSelectedFileIds(new Set<string>());
       setLastSelectedId(null);
-      // Save this as the last opened project
-      saveLastProject(folder, []).catch((err) => {
-        console.error('Failed to save last project:', err);
-      });
     }
   }
 
@@ -198,10 +196,7 @@ export default function App() {
         dirty: false,
         language: languageForFile(row.name),
       };
-      const openFiles = setOpenFiles((prev) => [...prev, file]);
-      saveLastProject(rootPath()!, openFiles).catch((err) => {
-        console.error('Failed to save last project:', err);
-      });
+      setOpenFiles((prev) => [...prev, file]);
       setActivePath(row.path);
     } catch (err) {
       console.error(`Failed to open ${row.path}:`, err);
@@ -570,6 +565,16 @@ export default function App() {
     }
   });
 
+  createEffect(() => {
+    const root = rootPath();
+    const expandedPaths = Array.from(tree.expanded());
+    const files = openFiles();
+    if (!root) return;
+    saveLastProject(root, files, expandedPaths).catch((err) => {
+      console.error('Failed to save last project:', err);
+    });
+  });
+
   createEffect(async () => {
     const currentPath = rootPath();
     if (!currentPath) return;
@@ -718,6 +723,8 @@ export default function App() {
             )}
           </Show>
         </div>
+
+        <TerminalPanel rootPath={rootPath} />
       </div>
 
       <Show when={contextMenuVisible() && activePanel() !== null}>

@@ -905,3 +905,88 @@ body {
   cursor: default;
   pointer-events: none;
 }
+
+/* Terminal panel */
+
+.terminal-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  background: var(--bg-editor);
+  border-top: 1px solid var(--border);
+}
+
+.terminal-panel-header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  background: var(--bg-sidebar);
+}
+
+.terminal-panel:not(.collapsed) .terminal-panel-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-toggle-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.terminal-toggle-button:hover {
+  color: var(--fg);
+}
+
+.terminal-toggle-icon {
+  display: inline-flex;
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+
+.terminal-toggle-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.terminal-panel-body {
+  overflow: hidden;
+  transition: height 0.12s ease;
+}
+
+.terminal-panel-body.no-transition {
+  transition: none;
+}
+
+.terminal-instance {
+  height: 100%;
+  width: 100%;
+  padding: 4px 0 4px 8px;
+}
+
+.terminal-resize-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  z-index: 10;
+}
+
+.terminal-resize-handle:hover,
+.terminal-resize-handle.dragging {
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+.terminal-instance .xterm .xterm-viewport {
+  background: transparent !important;
+}

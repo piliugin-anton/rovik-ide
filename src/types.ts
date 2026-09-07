@@ -119,4 +119,5 @@ export interface LastProjectOpenFile {
 export interface LastProjectData {
   path: string | null;
   openedFiles: LastProjectOpenFile[] | null;
+  expandedPaths: string[] | null;
 }

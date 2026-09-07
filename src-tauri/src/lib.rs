@@ -1,14 +1,22 @@
-use crate::filesystem::WatcherState;
+use crate::{filesystem::WatcherState, terminal::TerminalState};
 use std::{collections::HashMap, sync::Mutex};
 
 mod agent;
 mod agent_tools;
 mod filesystem;
 mod typings;
+mod terminal;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+    .manage(TerminalState::default())
+        .invoke_handler(tauri::generate_handler![
+            terminal::spawn_terminal,
+            terminal::write_to_terminal,
+            terminal::resize_terminal,
+            terminal::close_terminal,
+        ])
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
             gitignore: Mutex::new(None),
@@ -33,6 +41,8 @@ pub fn run() {
             filesystem::rename_path,
             filesystem::move_path,
             filesystem::copy_path,
+        ])
+        .invoke_handler(tauri::generate_handler![
             typings::nodejs::load_nodejs_project_typings,
             agent::send_chat_message,
             agent_tools::tool_list_dir,
