@@ -438,7 +438,7 @@ export default function ChatPanel(props: ChatProps) {
     selection.addRange(caretRange);
 
     // Pull the plain text version of the container's contents (including the space)
-    const updatedText = container.innerText || container.textContent || '';
+    const updatedText = container.innerText || container.textContent;
     setInput(updatedText);
 
     setReferencedFiles((current) =>
