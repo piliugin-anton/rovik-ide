@@ -752,11 +752,14 @@ export default function ChatPanel(props: {
             <span>Chats</span>
 
             <button class="chat-new-button" onClick={() => createNewDialog()}>
-              New Chat
+              New chat
             </button>
           </div>
 
-          <Show when={!loadingHistory()} fallback={<div class="chat-history-empty">Loading…</div>}>
+          <Show
+            when={!loadingHistory()}
+            fallback={<div class="chat-history-empty">Loading...</div>}
+          >
             <Show
               when={dialogs().length > 0}
               fallback={<div class="chat-history-empty">No conversations yet</div>}
