@@ -735,13 +735,15 @@ export default function ChatPanel(props: {
           {title()}
         </span>
 
-        <button class="icon-button" onClick={() => createNewDialog()} title="New chat">
-          ＋
-        </button>
+        <div class="chat-controls">
+          <button class="icon-button" onClick={() => createNewDialog()} title="New chat">
+            ＋
+          </button>
 
-        <button class="icon-button" onClick={() => setSettingsOpen(true)} title="Model settings">
-          ⚙
-        </button>
+          <button class="icon-button" onClick={() => setSettingsOpen(true)} title="Model settings">
+            ⚙
+          </button>
+        </div>
       </div>
 
       <Show when={historyOpen()}>
