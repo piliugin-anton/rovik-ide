@@ -117,7 +117,7 @@ export function GitPanel() {
             onClick={() => setBranchOpen((v) => !v)}
             title="Switch branch"
           >
-            {s?.branch ?? '…'}
+            {s?.branch ?? '...'}
             <span class="git-branch-arrow">▼</span>
           </button>
         </div>
@@ -150,7 +150,7 @@ export function GitPanel() {
 
       {/* Uncommitted files */}
       <div class="git-files file-tree">
-        {loading() && !s && <div class="empty-state">Loading Git status…</div>}
+        {loading() && !s && <div class="empty-state">Loading Git status...</div>}
         {!s && !loading() && <div class="empty-state">No Git repository</div>}
         {s && s.files.length === 0 && <div class="empty-state">No uncommitted changes</div>}
         {s && s.files.length > 0 && (
