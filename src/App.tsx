@@ -649,7 +649,7 @@ export default function App() {
         </Show>
       </Resizable>
 
-      <div class="main">
+      <div class="app-main">
         <Tabs
           files={openFiles}
           activePath={activePath}
