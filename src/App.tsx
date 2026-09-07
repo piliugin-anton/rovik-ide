@@ -19,7 +19,7 @@ import {
   copyPath as copyPathOnDisk,
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
-import type { FileWatchPayload, OpenFile, TreeRow } from './types';
+import type { FileWatchPayload, LastProjectOpenFile, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
@@ -34,10 +34,15 @@ export default function App() {
 
   // Load last opened project on startup
   onMount(async () => {
-    const lastProject = await loadLastProject();
-    if (lastProject) {
-      for (const m of monaco.editor.getModels()) m.dispose();
-      setRootPath(lastProject);
+    const projectData = await getLastProject();
+    if (!projectData) return;
+    const [path, openFiles] = projectData;
+    for (const m of monaco.editor.getModels()) m.dispose();
+    setRootPath(path);
+    setOpenFiles(openFiles);
+    console.log('openFiles', openFiles);
+    if (openFiles.length > 0) {
+      setActivePath(openFiles[openFiles.length - 1].path);
     }
   });
   const [rootId, setRootId] = createSignal<string | null>(null);
@@ -137,6 +142,25 @@ export default function App() {
     return rows.length > 0 ? rows[0] : null;
   });
 
+  async function getLastProject(): Promise<[string, OpenFile[]] | null> {
+    const lastProject = await loadLastProject();
+    if (!lastProject || !lastProject.path) return null;
+    const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
+    const openFiles: OpenFile[] = await Promise.all(
+      openedFilesRaw.map(async (f) => {
+        const content = await readFileContent(f.path);
+        return {
+          ...f,
+          content,
+          originalContent: content,
+          dirty: false,
+        };
+      })
+    );
+
+    return [lastProject.path, openFiles];
+  }
+
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
     if (folder) {
@@ -147,7 +171,7 @@ export default function App() {
       setSelectedFileIds(new Set<string>());
       setLastSelectedId(null);
       // Save this as the last opened project
-      saveLastProject(folder).catch((err) => {
+      saveLastProject(folder, []).catch((err) => {
         console.error('Failed to save last project:', err);
       });
     }
@@ -174,7 +198,10 @@ export default function App() {
         dirty: false,
         language: languageForFile(row.name),
       };
-      setOpenFiles((prev) => [...prev, file]);
+      const openFiles = setOpenFiles((prev) => [...prev, file]);
+      saveLastProject(rootPath()!, openFiles).catch((err) => {
+        console.error('Failed to save last project:', err);
+      });
       setActivePath(row.path);
     } catch (err) {
       console.error(`Failed to open ${row.path}:`, err);

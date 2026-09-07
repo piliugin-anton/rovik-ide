@@ -89,11 +89,6 @@ export function createFileTreeController(rootPath: () => string | null) {
         next.delete(entry.path);
       } else {
         next.add(entry.path);
-        // The backend's watcher skips gitignored paths entirely (see
-        // is_ignored in filesystem.rs), so fs-changes events never arrive
-        // for anything under an ignored directory. We can't rely on the
-        // cache being fresh for those — force a re-fetch on every expand
-        // instead of only when uncached.
         if (entry.ignored || !cache().has(entry.path)) {
           void loadDir(entry.path);
         }

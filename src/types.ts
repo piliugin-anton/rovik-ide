@@ -108,3 +108,15 @@ export type FileSuggestion = {
   relativePath: string;
   name: string;
 };
+
+export interface LastProjectOpenFile {
+  id: string;
+  path: string;
+  name: string;
+  language: string;
+}
+
+export interface LastProjectData {
+  path: string | null;
+  openedFiles: LastProjectOpenFile[] | null;
+}

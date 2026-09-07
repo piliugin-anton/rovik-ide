@@ -1,6 +1,6 @@
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{self, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 #[cfg(unix)]
@@ -610,6 +610,13 @@ pub fn save_chat_history(app: AppHandle, json: String) -> Result<(), String> {
     fs::write(&path, json).map_err(|e| format!("Failed to save chat history: {e}"))
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LastProjectData {
+    path: Option<String>,
+    opened_files: Option<Vec<OpenFile>>,
+}
+
 fn last_project_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -623,14 +630,27 @@ fn last_project_path(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn load_last_project(app: AppHandle) -> Result<String, String> {
     let path = last_project_path(&app)?;
     if !path.exists() {
-        return Ok(r#"{"path":null}"#.to_string());
+        return Ok(r#"{"path":null,"opened_files":null}"#.to_string());
     }
     fs::read_to_string(&path).map_err(|e| format!("Failed to read last project: {e}"))
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenFile {
+  pub id: String,
+  pub path: String,
+  pub name: String,
+  pub language: String
+}
+
 #[tauri::command]
-pub fn save_last_project(app: AppHandle, path: String) -> Result<(), String> {
+pub fn save_last_project(app: AppHandle, path: String, opened_files: Option<Vec<OpenFile>>) -> Result<(), String> {
     let project_path = last_project_path(&app)?;
-    let json = format!(r#"{{"path":{}}}"#, serde_json::to_string(&path).unwrap_or("null".to_string()));
+    let data = LastProjectData {
+        path: Some(path),
+        opened_files,
+    };
+    let json = serde_json::to_string(&data).map_err(|e| format!("Failed to serialize last project: {e}"))?;
     fs::write(&project_path, json).map_err(|e| format!("Failed to save last project: {e}"))
 }
