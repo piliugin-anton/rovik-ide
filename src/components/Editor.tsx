@@ -19,16 +19,31 @@ interface EditorProps {
   }) => void;
 }
 
+function modelUriFor(filePath: string): monaco.Uri {
+  let normalizedPath = filePath.replace(/\\/g, '/');
+  while (normalizedPath.startsWith('/')) {
+    normalizedPath = normalizedPath.substring(1);
+  }
+  return monaco.Uri.parse(`file:///${normalizedPath}`);
+}
+
 export default function Editor(props: EditorProps) {
   let containerRef!: HTMLDivElement;
 
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
-  let model: monaco.editor.ITextModel | undefined;
+  let disposed = false;
 
-  onMount(async () => {
-    const projectRoot = props.projectDir();
-
-    if (!projectRoot) return;
+  onMount(() => {
+    // Register cleanup FIRST, synchronously - it must run even if the
+    // component unmounts while typings are still loading.
+    onCleanup(() => {
+      disposed = true;
+      editor?.dispose();
+      editor = undefined;
+      // NOTE: we intentionally do NOT dispose the Monaco model here.
+      // Models are cached by URI and shared; disposing on tab close is
+      // what caused the "reopen -> empty editor" bug.
+    });
 
     const compilerOptions = {
       target: monaco.typescript.ScriptTarget.ESNext,
@@ -41,36 +56,35 @@ export default function Editor(props: EditorProps) {
     monaco.typescript.typescriptDefaults.setCompilerOptions(compilerOptions);
     monaco.typescript.javascriptDefaults.setCompilerOptions(compilerOptions);
 
-    try {
-      const typeLibraries = await invoke<MonacoLibEntry[]>('load_nodejs_project_typings', {
-        projectRoot,
-      });
+    const uri = modelUriFor(props.currentFilePath);
 
-      for (const lib of typeLibraries) {
-        monaco.typescript.typescriptDefaults.addExtraLib(lib.content, lib.name);
+    // Monaco caches models by URI. Reuse a live cached model if there is
+    // one, but never a disposed one - this cache is a known race area
+    // (see microsoft/monaco-editor issue #1715, "Race when model is
+    // disposed": getModel can hand back a model around disposal time).
+    let model = monaco.editor.getModel(uri);
+    if (model && model.isDisposed()) {
+      model = null;
+    }
 
-        monaco.typescript.javascriptDefaults.addExtraLib(lib.content, lib.name);
+    const content = props.content();
+    if (model) {
+      // A cached model may hold stale content/language (e.g. the file
+      // changed on disk while the tab was closed). Bring it in sync with
+      // the content we just read from disk.
+      monaco.editor.setModelLanguage(model, props.language());
+      if (model.getValue() !== content) {
+        model.setValue(content);
       }
-    } catch (err) {
-      console.error('Failed to load types:', err);
+    } else {
+      model = monaco.editor.createModel(content, props.language(), uri);
     }
 
-    // ------------------------------------------
-    // Create Monaco ONCE
-    // ------------------------------------------
-
-    let normalizedPath = props.currentFilePath.replace(/\\/g, '/');
-
-    while (normalizedPath.startsWith('/')) {
-      normalizedPath = normalizedPath.substring(1);
-    }
-
-    const currentFileUri = monaco.Uri.parse(`file:///${normalizedPath}`);
-
-    model =
-      monaco.editor.getModel(currentFileUri) ??
-      monaco.editor.createModel(props.content(), props.language(), currentFileUri);
-
+    // Create the editor SYNCHRONOUSLY during mount. The previous version
+    // awaited `load_nodejs_project_typings` first, so the editor did not
+    // exist when the content-sync effect below ran - and since `editor`
+    // is a plain (non-reactive) variable, that effect never re-ran after
+    // creation. The editor got exactly one chance to receive content.
     editor = monaco.editor.create(containerRef, {
       model,
       theme: 'vs-dark',
@@ -103,18 +117,13 @@ export default function Editor(props: EditorProps) {
       });
     });
 
-    // This cleanup belongs to the COMPONENT,
-    // not the creation effect.
     onCleanup(() => {
       contentDisposable.dispose();
       selectionDisposable.dispose();
-
-      editor?.dispose();
-      model?.dispose();
-
-      editor = undefined;
-      model = undefined;
     });
+
+    // Load typings in the background - never block editor creation on it.
+    void loadProjectTypings(props.projectDir());
   });
 
   // ------------------------------------------
@@ -124,7 +133,7 @@ export default function Editor(props: EditorProps) {
   createEffect(() => {
     const next = props.content();
 
-    if (!editor) return;
+    if (!editor || disposed) return;
 
     if (editor.getValue() !== next) {
       editor.setValue(next);
@@ -141,4 +150,22 @@ export default function Editor(props: EditorProps) {
       }}
     />
   );
+}
+
+async function loadProjectTypings(projectRoot: string | null): Promise<void> {
+  if (!projectRoot) return;
+
+  try {
+    const typeLibraries = await invoke<MonacoLibEntry[]>('load_nodejs_project_typings', {
+      projectRoot,
+    });
+
+    for (const lib of typeLibraries) {
+      monaco.typescript.typescriptDefaults.addExtraLib(lib.content, lib.name);
+
+      monaco.typescript.javascriptDefaults.addExtraLib(lib.content, lib.name);
+    }
+  } catch (err) {
+    console.error('Failed to load types:', err);
+  }
 }

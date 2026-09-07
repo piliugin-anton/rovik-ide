@@ -1,4 +1,5 @@
 import { createSignal, createMemo, Show, onMount, createEffect, onCleanup } from 'solid-js';
+import * as monaco from 'monaco-editor';
 import FileTree from './components/FileTree';
 import Tabs from './components/Tabs';
 import Editor from './components/Editor';
@@ -129,6 +130,7 @@ export default function App() {
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
     if (folder) {
+      for (const m of monaco.editor.getModels()) m.dispose();
       setRootPath(folder);
       setOpenFiles([]);
       setActivePath(null);
