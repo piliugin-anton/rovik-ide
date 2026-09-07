@@ -386,15 +386,30 @@ export default function ChatPanel(props: ChatProps) {
     chip.className = 'chat-file-reference';
     chip.contentEditable = 'false';
     chip.dataset.path = suggestion.path;
-    chip.innerHTML = `
-    <span class="chat-file-reference-name" title="${escapeHtml(suggestion.path)}">${escapeHtml(suggestion.name)}</span>
+    chip.innerHTML = `<span class="chat-file-reference-name" title="${escapeHtml(suggestion.path)}">${escapeHtml(suggestion.name)}</span>
     <button
       type="button"
       class="chat-file-reference-remove"
       aria-label="Remove ${suggestion.name}"
       title="Remove reference"
-    >×</button>
-  `;
+    >
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+      >
+        <path
+          d="M6 6l12 12M18 6L6 18"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>`;
 
     chip.querySelector('.chat-file-reference-remove')?.addEventListener('click', (e) => {
       e.preventDefault();
@@ -421,6 +436,10 @@ export default function ChatPanel(props: ChatProps) {
     caretRange.collapse(true);
     selection.removeAllRanges();
     selection.addRange(caretRange);
+
+    // Pull the plain text version of the container's contents (including the space)
+    const updatedText = container.innerText || container.textContent || '';
+    setInput(updatedText);
 
     setReferencedFiles((current) =>
       current.some((file) => file.path === suggestion.path) ? current : [...current, suggestion]
