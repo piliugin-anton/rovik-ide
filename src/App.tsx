@@ -645,7 +645,7 @@ export default function App() {
         </Show>
 
         <Show when={sidebarTab() === 'chat'}>
-          <ChatPanel rootPath={rootPath} activeFileContext={activeFileContext} />
+          <ChatPanel rootPath={rootPath} activeFileContext={activeFileContext} files={tree.files} />
         </Show>
       </Resizable>
 

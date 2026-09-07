@@ -1,11 +1,22 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import {
+  Accessor,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from 'solid-js';
 import { Channel } from '@tauri-apps/api/core';
 import type {
   ChatDialog,
   ChatMessage,
   ChatStreamEvent,
   ChatToolCall,
+  FileSuggestion,
   ModelProfile,
+  TreeRow,
 } from '../types';
 import type { ActiveFileContext } from '../lib/activeContext';
 import { buildContextHeader } from '../lib/activeContext';
@@ -24,10 +35,13 @@ const MAX_AGENT_STEPS = 8;
 
 const NEW_CHAT_TITLE = 'New Chat';
 
-export default function ChatPanel(props: {
-  rootPath: () => string | null;
-  activeFileContext: () => ActiveFileContext | null;
-}) {
+interface ChatProps {
+  rootPath: Accessor<string | null>;
+  activeFileContext: Accessor<ActiveFileContext | null>;
+  files: Accessor<TreeRow[]>;
+}
+
+export default function ChatPanel(props: ChatProps) {
   const [profiles, setProfiles] = createSignal<ModelProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = createSignal<string | null>(null);
 
@@ -42,10 +56,39 @@ export default function ChatPanel(props: {
 
   const [isGeneratingTitle, setIsGeneratingTitle] = createSignal(false);
 
+  /*
+   * -----------------------------------------------------------------------
+   * File autocomplete
+   * -----------------------------------------------------------------------
+   */
+
+  const [fileSuggestionsOpen, setFileSuggestionsOpen] = createSignal(false);
+  const [fileQuery, setFileQuery] = createSignal('');
+  const [fileTriggerStart, setFileTriggerStart] = createSignal<number | null>(null);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = createSignal(0);
+
+  /*
+   * Files explicitly referenced by the current message.
+   *
+   * These are intentionally separate from the textarea contents.
+   *
+   * Example:
+   *
+   *   referencedFiles() =>
+   *     [
+   *       { name: 'ChatPanel.tsx', path: 'src/components/ChatPanel.tsx' }
+   *     ]
+   *
+   * The user sees only "ChatPanel.tsx", while the complete project-relative
+   * path remains available when constructing the message sent to the model.
+   */
+  const [referencedFiles, setReferencedFiles] = createSignal<FileSuggestion[]>([]);
+
   let currentChannel: Channel<ChatStreamEvent> | null = null;
   let rafId: number | null = null;
   let isMounted = true;
   let messagesRef: HTMLDivElement | undefined;
+  let inputTextareaRef: HTMLTextAreaElement | undefined;
 
   const activeProfile = createMemo(
     () => profiles().find((p) => p.id === activeProfileId()) ?? null
@@ -54,9 +97,47 @@ export default function ChatPanel(props: {
   const activeDialog = createMemo(() => dialogs().find((d) => d.id === activeDialogId()) ?? null);
 
   const messages = createMemo<ChatMessage[]>(() => activeDialog()?.messages ?? []);
+
   const allToolMessages = createMemo(() =>
     messages().filter((msg) => !msg.error && !msg.pending && (msg.toolCalls || msg.tool_call_id))
   );
+
+  const fileSuggestions = createMemo<FileSuggestion[]>(() => {
+    if (!fileSuggestionsOpen()) return [];
+
+    const query = fileQuery().trim().toLowerCase();
+
+    return props
+      .files()
+      .filter((file) => {
+        const path = file.path.toLowerCase();
+        const name = file.name.toLowerCase();
+
+        if (!query) return true;
+
+        return name.includes(query) || path.includes(query);
+      })
+      .sort((a, b) => {
+        const aName = a.name.toLowerCase();
+        const bName = b.name.toLowerCase();
+
+        // Prefer filename matches over path-only matches.
+        const aNameMatch = aName.includes(query);
+        const bNameMatch = bName.includes(query);
+
+        if (aNameMatch !== bNameMatch) {
+          return aNameMatch ? -1 : 1;
+        }
+
+        return a.path.localeCompare(b.path);
+      })
+      .slice(0, 50)
+      .map((file) => ({
+        id: file.id,
+        path: file.path,
+        name: file.name,
+      }));
+  });
 
   /*
    * -----------------------------------------------------------------------
@@ -178,6 +259,11 @@ export default function ChatPanel(props: {
     setActiveDialogId(dialog.id);
     setHistoryOpen(false);
 
+    /*
+     * References belong to the current composer, not to the new dialog.
+     */
+    setReferencedFiles([]);
+
     void saveChatHistory([dialog, ...dialogs()]);
 
     return dialog;
@@ -186,6 +272,16 @@ export default function ChatPanel(props: {
   function selectDialog(id: string) {
     setActiveDialogId(id);
     setHistoryOpen(false);
+
+    /*
+     * References are composer state, so don't carry them between dialogs.
+     */
+    setReferencedFiles([]);
+    setInput('');
+
+    setFileSuggestionsOpen(false);
+    setFileTriggerStart(null);
+    setFileQuery('');
   }
 
   async function deleteDialog(id: string) {
@@ -204,6 +300,146 @@ export default function ChatPanel(props: {
 
     await saveChatHistory(remaining.length > 0 ? remaining : dialogs());
   }
+
+  /*
+   * -----------------------------------------------------------------------
+   * File autocomplete
+   * -----------------------------------------------------------------------
+   */
+
+  function updateFileAutocomplete(value: string, cursorPosition: number) {
+    const beforeCursor = value.slice(0, cursorPosition);
+
+    const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/);
+
+    if (!match) {
+      setFileSuggestionsOpen(false);
+      setFileTriggerStart(null);
+      setFileQuery('');
+      return;
+    }
+
+    const query = match[2] ?? '';
+
+    const triggerStart = beforeCursor.length - query.length - 1;
+
+    setFileTriggerStart(triggerStart);
+    setFileQuery(query);
+    setSelectedSuggestionIndex(0);
+    setFileSuggestionsOpen(true);
+  }
+
+  function escapeHtml(text: string): string {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function acceptFileSuggestion(suggestion: FileSuggestion) {
+    const container = inputTextareaRef;
+    if (!container) return;
+
+    const triggerStart = fileTriggerStart();
+    if (triggerStart === null) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+
+    // Get current cursor position
+    const cursorOffset = selection.anchorOffset;
+
+    // Create a range that spans from triggerStart to current cursor position
+    const deleteRange = document.createRange();
+    deleteRange.setStart(container.firstChild ?? container, triggerStart);
+    deleteRange.setEnd(container.firstChild ?? container, cursorOffset);
+
+    // Delete the @query text
+    deleteRange.deleteContents();
+
+    // Create the chip element
+    const chip = document.createElement('span');
+    chip.className = 'chat-file-reference';
+    chip.contentEditable = 'false';
+    chip.dataset.path = suggestion.path;
+    chip.innerHTML = `
+    <span class="chat-file-reference-name" title="${escapeHtml(suggestion.path)}">${escapeHtml(suggestion.name)}</span>
+    <button
+      type="button"
+      class="chat-file-reference-remove"
+      aria-label="Remove ${suggestion.name}"
+      title="Remove reference"
+    >×</button>
+  `;
+
+    // Add click handler for remove button
+    const removeBtn = chip.querySelector('.chat-file-reference-remove');
+    removeBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      removeReferencedFile(suggestion.path);
+      chip.remove();
+    });
+
+    // Get fresh range after deletion
+    const range = selection.getRangeAt(0);
+
+    // Insert the chip
+    range.insertNode(chip);
+
+    // Add a space after the chip for better UX
+    const space = document.createTextNode(' ');
+    range.insertNode(space);
+
+    // Move cursor after the chip and space
+    range.setStartAfter(space);
+    range.setEndAfter(space);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    // Update referenced files state
+    setReferencedFiles((current) => {
+      if (current.some((file) => file.path === suggestion.path)) {
+        return current;
+      }
+      return [...current, suggestion];
+    });
+
+    setFileSuggestionsOpen(false);
+    setFileTriggerStart(null);
+    setFileQuery('');
+    setSelectedSuggestionIndex(0);
+
+    // Focus and ensure cursor is visible
+    container.focus();
+
+    // Scroll to caret if needed
+    setTimeout(() => {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const caretRect = sel.getRangeAt(0).getClientRects()[0];
+        if (caretRect) {
+          const containerRect = container.getBoundingClientRect();
+          if (caretRect.bottom > containerRect.bottom) {
+            container.scrollTop += caretRect.bottom - containerRect.bottom;
+          }
+        }
+      }
+    }, 0);
+  }
+
+  function removeReferencedFile(path: string) {
+    setReferencedFiles((current) => current.filter((file) => file.path !== path));
+
+    requestAnimationFrame(() => {
+      inputTextareaRef?.focus();
+    });
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Dialog state helpers
+   * -----------------------------------------------------------------------
+   */
 
   /**
    * Update any part of a dialog by its stable ID.
@@ -235,6 +471,31 @@ export default function ChatPanel(props: {
     }));
   }
 
+  function getCaretCoordinates(element: HTMLElement): { left: number; top: number } {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return { left: 0, top: 0 };
+    }
+
+    const range = selection.getRangeAt(0).cloneRange();
+    const rects = range.getClientRects();
+
+    if (rects.length > 0) {
+      const rect = rects[0];
+      const elementRect = element.getBoundingClientRect();
+
+      return {
+        left: rect.left - elementRect.left + element.scrollLeft,
+        top: rect.top - elementRect.top + element.scrollTop,
+      };
+    }
+
+    // Fallback: return bottom-left of the element if no caret position available
+    return {
+      left: 0,
+      top: element.scrollHeight,
+    };
+  }
   /*
    * -----------------------------------------------------------------------
    * AI settings
@@ -275,10 +536,11 @@ export default function ChatPanel(props: {
 
       // Find the tool call with matching id in this message
       const toolCall = msg.toolCalls?.find((tool) => tool.id === id);
+
       if (toolCall) {
         acc = toolCall;
       }
-      // Must return the (potentially updated) accumulator
+
       return acc;
     }, undefined);
   }
@@ -646,8 +908,18 @@ export default function ChatPanel(props: {
     const text = input().trim();
     const profile = activeProfile();
     const dialog = activeDialog();
+    const selectedFiles = referencedFiles();
 
-    if (!text || !profile || !dialog || sending()) {
+    /*
+     * A message containing only referenced files is valid.
+     *
+     * For example:
+     *
+     *   [ChatPanel.tsx]
+     *
+     * can be sent without requiring additional text.
+     */
+    if (!profile || !dialog || sending() || (!text && selectedFiles.length === 0)) {
       return;
     }
 
@@ -660,16 +932,52 @@ export default function ChatPanel(props: {
     /*
      * The displayed/persisted user message stays clean.
      *
-     * The editor context is only added to the wire copy sent to the model.
+     * The selected file references and active editor context are only
+     * added to the wire copy sent to the model.
      */
+    const contextParts: string[] = [];
+
     const contextHeader = buildContextHeader(props.activeFileContext());
 
-    const wireUserMsg: ChatMessage = contextHeader
-      ? {
-          ...userMsg,
-          content: `${contextHeader}\n\n${text}`,
-        }
-      : userMsg;
+    if (contextHeader) {
+      contextParts.push(contextHeader);
+    }
+
+    if (selectedFiles.length > 0) {
+      contextParts.push(
+        [
+          'The user explicitly referenced these project files:',
+          ...selectedFiles.map((file) => `- ${file.path}`),
+          '',
+          'Treat these as explicit file references from the user. Use the available file tools to inspect them when relevant.',
+        ].join('\n')
+      );
+    }
+
+    /*
+     * If the user sends only file references, provide a small wire-level
+     * description instead of sending an empty user message to the model.
+     *
+     * The visible/persisted message remains empty in that case, but the
+     * actual model message contains the reference context.
+     */
+    const wireContentParts: string[] = [];
+
+    if (contextParts.length > 0) {
+      wireContentParts.push(contextParts.join('\n\n'));
+    }
+
+    if (text) {
+      wireContentParts.push(text);
+    }
+
+    const wireUserMsg: ChatMessage =
+      wireContentParts.length > 0
+        ? {
+            ...userMsg,
+            content: wireContentParts.join('\n\n'),
+          }
+        : userMsg;
 
     /*
      * IMPORTANT:
@@ -684,6 +992,17 @@ export default function ChatPanel(props: {
     updateDialogMessages(dialog.id, (messages) => [...messages, userMsg]);
 
     setInput('');
+
+    /*
+     * References have now been consumed by this message.
+     */
+    setReferencedFiles([]);
+
+    setFileSuggestionsOpen(false);
+    setFileTriggerStart(null);
+    setFileQuery('');
+    setSelectedSuggestionIndex(0);
+
     setSending(true);
 
     try {
@@ -698,6 +1017,55 @@ export default function ChatPanel(props: {
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    if (fileSuggestionsOpen()) {
+      const suggestions = fileSuggestions();
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+
+        if (suggestions.length > 0) {
+          setSelectedSuggestionIndex((index) => Math.min(index + 1, suggestions.length - 1));
+        }
+
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+
+        if (suggestions.length > 0) {
+          setSelectedSuggestionIndex((index) => Math.max(index - 1, 0));
+        }
+
+        return;
+      }
+
+      if (e.key === 'Enter' && !e.shiftKey) {
+        if (suggestions.length > 0) {
+          e.preventDefault();
+
+          const suggestion = suggestions[selectedSuggestionIndex()];
+
+          if (suggestion) {
+            acceptFileSuggestion(suggestion);
+          }
+
+          return;
+        }
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+
+        setFileSuggestionsOpen(false);
+        setFileTriggerStart(null);
+        setFileQuery('');
+        setSelectedSuggestionIndex(0);
+
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
@@ -745,7 +1113,6 @@ export default function ChatPanel(props: {
           </button>
         </div>
       </div>
-
       <Show when={historyOpen()}>
         <div class="chat-history">
           <div class="chat-history-header">
@@ -799,11 +1166,9 @@ export default function ChatPanel(props: {
           </Show>
         </div>
       </Show>
-
       <Show when={!props.rootPath()}>
         <div class="chat-tools-hint">Open a folder to let the model read and edit your files.</div>
       </Show>
-
       <div ref={messagesRef} class="chat-messages">
         <For each={messages()} fallback={<div class="empty-state">Ask the model anything</div>}>
           {(m) => (
@@ -821,7 +1186,10 @@ export default function ChatPanel(props: {
                 <Show when={m.pending && m.content.length === 0}>
                   <div
                     class="chat-message"
-                    classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+                    classList={{
+                      user: m.role === 'user',
+                      assistant: m.role === 'assistant',
+                    }}
                   >
                     <span class="chat-pending">Thinking…</span>
                   </div>
@@ -831,7 +1199,10 @@ export default function ChatPanel(props: {
                   <Show when={m.error}>
                     <div
                       class="chat-message"
-                      classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+                      classList={{
+                        user: m.role === 'user',
+                        assistant: m.role === 'assistant',
+                      }}
                     >
                       <span class="chat-error">{m.error}</span>
                     </div>
@@ -840,7 +1211,10 @@ export default function ChatPanel(props: {
                   <Show when={!m.error && !isBlank(m.content)}>
                     <div
                       class="chat-message"
-                      classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+                      classList={{
+                        user: m.role === 'user',
+                        assistant: m.role === 'assistant',
+                      }}
                     >
                       <MessageContent content={m.content} />
                     </div>
@@ -859,24 +1233,63 @@ export default function ChatPanel(props: {
           )}
         </For>
       </div>
-
       <div class="chat-input-row">
-        <textarea
-          value={input()}
-          onInput={(e) => setInput(e.currentTarget.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={activeProfile() ? 'Message the model…' : 'Add a model in settings first'}
-          disabled={!activeProfile() || !activeDialog()}
-        />
+        <div class="chat-input-container">
+          <div
+            ref={inputTextareaRef as unknown as HTMLDivElement}
+            class="chat-input-contenteditable"
+            contenteditable
+            onInput={(e) => {
+              const target = e.currentTarget;
+              const text = target.textContent ?? '';
+              setInput(text);
+              updateFileAutocomplete(text, getCaretCoordinates(target).left);
+            }}
+            onKeyDown={handleKeyDown}
+            data-placeholder={
+              activeProfile() ? 'Message the model…' : 'Add a model in settings first'
+            }
+          />
+
+          <Show when={fileSuggestionsOpen() && fileSuggestions().length > 0}>
+            <div class="file-suggestions" role="listbox">
+              <For each={fileSuggestions()}>
+                {(suggestion, index) => (
+                  <button
+                    type="button"
+                    class="file-suggestion"
+                    classList={{
+                      selected: index() === selectedSuggestionIndex(),
+                    }}
+                    role="option"
+                    aria-selected={index() === selectedSuggestionIndex()}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                    }}
+                    onClick={() => acceptFileSuggestion(suggestion)}
+                  >
+                    <span class="file-suggestion-name">{suggestion.name}</span>
+                    <span class="file-suggestion-path">{suggestion.path}</span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+        </div>
 
         <button
           onClick={() => void handleSend()}
-          disabled={!activeProfile() || !activeDialog() || sending() || !input().trim()}
+          disabled={
+            !activeProfile() ||
+            !activeDialog() ||
+            sending() ||
+            (!input().trim() && referencedFiles().length === 0)
+          }
+          class="chat-send-button"
         >
           Send
         </button>
       </div>
-
       <div class="chat-model-select">
         <select
           value={activeProfileId() ?? ''}
@@ -888,7 +1301,6 @@ export default function ChatPanel(props: {
           </Show>
         </select>
       </div>
-
       <Show when={settingsOpen()}>
         <ModelSettingsPanel
           profiles={profiles()}

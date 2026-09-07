@@ -18,6 +18,28 @@ export function createFileTreeController(rootPath: () => string | null) {
   const [loading, setLoading] = createSignal<Set<string>>(new Set());
   const [lastRootPath, setLastRootPath] = createSignal<string | null>(null);
 
+  const files = createMemo<TreeRow[]>(() => {
+    const currentCache = cache();
+    const out: TreeRow[] = [];
+
+    for (const children of currentCache.values()) {
+      for (const child of children) {
+        if (!child.is_dir) {
+          out.push({
+            id: child.id,
+            path: child.path,
+            name: child.name,
+            isDir: false,
+            depth: 0,
+            ignored: child.ignored,
+          });
+        }
+      }
+    }
+
+    return out;
+  });
+
   async function loadDir(path: string) {
     const root = rootPath();
     if (!root || loading().has(path)) return;
@@ -154,5 +176,5 @@ export function createFileTreeController(rootPath: () => string | null) {
     return out;
   });
 
-  return { rows, expanded, toggle, refresh };
+  return { rows, expanded, toggle, refresh, files };
 }

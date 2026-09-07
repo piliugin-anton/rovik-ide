@@ -101,3 +101,9 @@ export interface MonacoLibEntry {
   name: string;
   content: string;
 }
+
+export type FileSuggestion = {
+  id: string;
+  path: string;
+  name: string;
+};
