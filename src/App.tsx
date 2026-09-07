@@ -37,12 +37,12 @@ export default function App() {
   onMount(async () => {
     const projectData = await getLastProject();
     if (!projectData) return;
-    const [path, openFiles, expandedPaths] = projectData;
+    const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
     for (const m of monaco.editor.getModels()) m.dispose();
     tree.presetExpanded(path, expandedPaths);
     setRootPath(path);
     setOpenFiles(openFiles);
-    console.log('openFiles', openFiles);
+    setTerminalCollapsed(terminalCollapsed);
     if (openFiles.length > 0) {
       setActivePath(openFiles[openFiles.length - 1].path);
     }
@@ -77,6 +77,7 @@ export default function App() {
     depth: number;
     isDir: boolean;
   } | null>(null);
+  const [terminalCollapsed, setTerminalCollapsed] = createSignal(true);
 
   const tree = createFileTreeController(rootPath);
 
@@ -144,7 +145,7 @@ export default function App() {
     return rows.length > 0 ? rows[0] : null;
   });
 
-  async function getLastProject(): Promise<[string, OpenFile[], string[]] | null> {
+  async function getLastProject(): Promise<[string, OpenFile[], string[], boolean] | null> {
     const lastProject = await loadLastProject();
     if (!lastProject || !lastProject.path) return null;
     const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
@@ -160,7 +161,12 @@ export default function App() {
       })
     );
 
-    return [lastProject.path, openFiles, lastProject.expandedPaths ?? []];
+    return [
+      lastProject.path,
+      openFiles,
+      lastProject.expandedPaths ?? [],
+      lastProject.terminalCollapsed,
+    ];
   }
 
   async function handlePickFolder() {
@@ -569,8 +575,9 @@ export default function App() {
     const root = rootPath();
     const expandedPaths = Array.from(tree.expanded());
     const files = openFiles();
+    const collapsedTerminal = terminalCollapsed();
     if (!root) return;
-    saveLastProject(root, files, expandedPaths).catch((err) => {
+    saveLastProject(root, files, expandedPaths, collapsedTerminal).catch((err) => {
       console.error('Failed to save last project:', err);
     });
   });
@@ -724,7 +731,11 @@ export default function App() {
           </Show>
         </div>
 
-        <TerminalPanel rootPath={rootPath} />
+        <TerminalPanel
+          rootPath={rootPath}
+          collapsed={terminalCollapsed}
+          onCollapsedChange={setTerminalCollapsed}
+        />
       </div>
 
       <Show when={contextMenuVisible() && activePanel() !== null}>

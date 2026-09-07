@@ -98,10 +98,7 @@ pub fn spawn_terminal(
     // master's reader never sees EOF when the child exits.
     drop(pair.slave);
 
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| e.to_string())?;
+    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
     let id = Uuid::new_v4().to_string();
@@ -121,7 +118,7 @@ pub fn spawn_terminal(
     // Pump PTY output -> frontend events on a dedicated thread so we never
     // block the async command runtime on blocking reads.
     let emit_id = id.clone();
-    std::thread::spawn(move || {
+    tauri::async_runtime::spawn(async move {
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {

@@ -2,6 +2,8 @@ import { createSignal, Show, type Accessor } from 'solid-js';
 import Terminal from './Terminal';
 
 interface TerminalPanelProps {
+  collapsed: Accessor<boolean>;
+  onCollapsedChange: (value: boolean) => void;
   rootPath: Accessor<string | null>;
 }
 
@@ -10,20 +12,23 @@ const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 640;
 
 export default function TerminalPanel(props: TerminalPanelProps) {
-  const [collapsed, setCollapsed] = createSignal(true);
-  const [mounted, setMounted] = createSignal(false);
+  const [mounted, setMounted] = createSignal(!props.collapsed());
   const [height, setHeight] = createSignal(DEFAULT_HEIGHT);
   const [dragging, setDragging] = createSignal(false);
 
   function toggle() {
-    setCollapsed((c) => !c);
-    // Lazily create the shell session the first time the panel is opened;
-    // once created it keeps running in the background while collapsed.
-    if (!mounted()) setMounted(true);
+    const next = !props.collapsed();
+
+    // Mount before/while expanding.
+    if (!mounted()) {
+      setMounted(true);
+    }
+
+    props.onCollapsedChange(next);
   }
 
   function startResize(e: PointerEvent) {
-    if (collapsed()) return;
+    if (props.collapsed()) return;
     e.preventDefault();
     setDragging(true);
     const startY = e.clientY;
@@ -43,8 +48,8 @@ export default function TerminalPanel(props: TerminalPanelProps) {
   }
 
   return (
-    <div class="terminal-panel" classList={{ collapsed: collapsed() }}>
-      <Show when={!collapsed()}>
+    <div class="terminal-panel" classList={{ collapsed: props.collapsed() }}>
+      <Show when={!props.collapsed()}>
         <div
           class="terminal-resize-handle"
           classList={{ dragging: dragging() }}
@@ -56,9 +61,9 @@ export default function TerminalPanel(props: TerminalPanelProps) {
         <button
           class="terminal-toggle-button"
           onClick={toggle}
-          title={collapsed() ? 'Expand terminal' : 'Collapse terminal'}
+          title={props.collapsed() ? 'Expand terminal' : 'Collapse terminal'}
         >
-          <span class="terminal-toggle-icon" classList={{ expanded: !collapsed() }}>
+          <span class="terminal-toggle-icon" classList={{ expanded: !props.collapsed() }}>
             &#9656;
           </span>
           Terminal
@@ -68,7 +73,7 @@ export default function TerminalPanel(props: TerminalPanelProps) {
       <div
         class="terminal-panel-body"
         classList={{ 'no-transition': dragging() }}
-        style={{ height: collapsed() ? '0px' : `${height()}px` }}
+        style={{ height: props.collapsed() ? '0px' : `${height()}px` }}
       >
         <Show when={mounted()}>
           <Terminal cwd={props.rootPath()} />

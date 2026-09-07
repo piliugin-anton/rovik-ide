@@ -20,7 +20,8 @@ export async function loadLastProject(): Promise<LastProjectData | null> {
 export async function saveLastProject(
   path: string,
   openedFiles: OpenFile[],
-  expandedPaths: string[]
+  expandedPaths: string[],
+  terminalCollapsed: boolean
 ): Promise<void> {
   await invoke<void>('save_last_project', {
     path,
@@ -31,5 +32,6 @@ export async function saveLastProject(
       language: f.language,
     })),
     expandedPaths,
+    terminalCollapsed,
   });
 }

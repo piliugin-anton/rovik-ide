@@ -616,6 +616,7 @@ struct LastProjectData {
     path: Option<String>,
     opened_files: Option<Vec<OpenFile>>,
     expanded_paths: Option<Vec<String>>,
+    terminal_collapsed: bool,
 }
 
 fn last_project_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -631,7 +632,15 @@ fn last_project_path(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn load_last_project(app: AppHandle) -> Result<String, String> {
     let path = last_project_path(&app)?;
     if !path.exists() {
-        return Ok(r#"{"path":null,"opened_files":null,"expanded_paths":null}"#.to_string());
+        let defaults: LastProjectData = LastProjectData {
+            path: None,
+            opened_files: None,
+            expanded_paths: None,
+            terminal_collapsed: true,
+        };
+        return Ok(
+            serde_json::to_string(&defaults).map_err(|e| format!("Failed to serialize project data defaults: {e}"))?
+        );
     }
     fs::read_to_string(&path).map_err(|e| format!("Failed to read last project: {e}"))
 }
@@ -651,12 +660,14 @@ pub fn save_last_project(
     path: String,
     opened_files: Option<Vec<OpenFile>>,
     expanded_paths: Option<Vec<String>>,
+    terminal_collapsed: bool
 ) -> Result<(), String> {
     let project_path = last_project_path(&app)?;
     let data = LastProjectData {
         path: Some(path),
         opened_files,
         expanded_paths,
+        terminal_collapsed
     };
     let json = serde_json::to_string(&data)
         .map_err(|e| format!("Failed to serialize last project: {e}"))?;

@@ -4,19 +4,13 @@ use std::{collections::HashMap, sync::Mutex};
 mod agent;
 mod agent_tools;
 mod filesystem;
-mod typings;
 mod terminal;
+mod typings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-    .manage(TerminalState::default())
-        .invoke_handler(tauri::generate_handler![
-            terminal::spawn_terminal,
-            terminal::write_to_terminal,
-            terminal::resize_terminal,
-            terminal::close_terminal,
-        ])
+        .manage(TerminalState::default())
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
             gitignore: Mutex::new(None),
@@ -24,6 +18,10 @@ pub fn run() {
         }) // Register our state manager
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            terminal::spawn_terminal,
+            terminal::write_to_terminal,
+            terminal::resize_terminal,
+            terminal::close_terminal,
             filesystem::start_file_watch,
             filesystem::read_dir_entries,
             filesystem::read_file_content,
@@ -41,8 +39,6 @@ pub fn run() {
             filesystem::rename_path,
             filesystem::move_path,
             filesystem::copy_path,
-        ])
-        .invoke_handler(tauri::generate_handler![
             typings::nodejs::load_nodejs_project_typings,
             agent::send_chat_message,
             agent_tools::tool_list_dir,
