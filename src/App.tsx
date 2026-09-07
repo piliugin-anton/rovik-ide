@@ -79,6 +79,7 @@ export default function App() {
     isDir: boolean;
   } | null>(null);
   const [terminalCollapsed, setTerminalCollapsed] = createSignal(true);
+  const [pendingOpenPath, setPendingOpenPath] = createSignal<string | null>(null);
 
   const tree = createFileTreeController(rootPath);
 
@@ -551,9 +552,15 @@ export default function App() {
 
     unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
       const { path, operation, is_dir } = event.payload;
-      console.log(`Target is a ${is_dir ? 'Folder' : 'File'}`, path, operation);
       switch (operation) {
         case 'create':
+          tree.refresh(path);
+
+          if (is_dir) break;
+
+          setPendingOpenPath(path);
+
+          break;
         case 'modify':
         case 'remove':
           tree.refresh(path);
@@ -592,6 +599,19 @@ export default function App() {
     } catch (error) {
       console.error('Failed to start file watcher:', error);
     }
+  });
+
+  createEffect(() => {
+    const pending = pendingOpenPath();
+    if (!pending) return;
+
+    const rows = tree.rows();
+    const row = rows.find((r) => r.path === pending);
+    if (!row || row.loading) return;
+
+    // Path is now in the tree → open it and clear pending
+    openFile(row);
+    setPendingOpenPath(null);
   });
 
   createEffect(() => {
@@ -662,7 +682,7 @@ export default function App() {
   //  onContextMenu={handleContextMenu}
 
   return (
-    <div class="app">
+    <div class="app" onContextMenu={handleContextMenu}>
       <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
         <div class="sidebar-tabs">
           <button
