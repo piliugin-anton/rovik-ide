@@ -1,5 +1,6 @@
 import { createSignal, Show, type Accessor } from 'solid-js';
 import Terminal from './Terminal';
+import { createEffect } from 'solid-js';
 
 interface TerminalPanelProps {
   collapsed: Accessor<boolean>;
@@ -15,6 +16,14 @@ export default function TerminalPanel(props: TerminalPanelProps) {
   const [mounted, setMounted] = createSignal(!props.collapsed());
   const [height, setHeight] = createSignal(DEFAULT_HEIGHT);
   const [dragging, setDragging] = createSignal(false);
+
+  // Handles asynchronously restored project settings:
+  // true -> false after App loads lastProject.
+  createEffect(() => {
+    if (!props.collapsed() && !mounted()) {
+      setMounted(true);
+    }
+  });
 
   function toggle() {
     const next = !props.collapsed();
