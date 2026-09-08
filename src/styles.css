@@ -1,13 +1,57 @@
 :root {
+  /* Surfaces */
   --bg: #1e1e1e;
   --bg-sidebar: #202020;
   --bg-editor: #1e1e1e;
+  --bg-elevated: #252526;
+  --bg-subtle: #2a2a2a;
+  --bg-control: #2d2d2d;
+  --bg-control-hover: #383838;
+  --bg-history: #1b1b1b;
+  --bg-history-active: #292929;
+
+  /* Text */
   --fg: #d4d4d4;
   --fg-dim: #7d7d7d;
-  --accent: #2b5adb;
+  --fg-muted: #8a8a8a;
+  --fg-on-accent: #ffffff;
+
+  /* Borders / interaction */
   --border: #2a2a2a;
+  --border-subtle: #252525;
+  --hover: rgba(255, 255, 255, 0.06);
+  --hover-strong: rgba(255, 255, 255, 0.08);
+  --active: rgba(255, 255, 255, 0.14);
+
+  /* Accent */
+  --accent: #2b5adb;
+  --accent-hover: #3b6be8;
+  --accent-active: #244fc2;
+  --accent-soft: rgba(43, 90, 219, 0.15);
   --row-hover: #2a2a2a;
-  --row-active: #094771;
+  --row-active: #243b70;
+
+  /* Status */
+  --success: #4ec9b0;
+  --warning: #dcb26a;
+  --error: #e06c75;
+  --error-strong: #ff6464;
+  --error-soft: rgba(224, 108, 117, 0.15);
+  --info: #4fc1ff;
+
+  /* Overlays / shadows */
+  --overlay: rgba(0, 0, 0, 0.5);
+  --shadow: rgba(0, 0, 0, 0.35);
+  --shadow-soft: rgba(0, 0, 0, 0.3);
+
+  /* Component aliases */
+  --background-secondary: rgba(128, 128, 128, 0.08);
+  --border-color: rgba(128, 128, 128, 0.15);
+  --tool-background: rgba(127, 127, 127, 0.06);
+  --font-mono: monospace;
+  --accent-fg: #ffffff;
+  --menu-bg: #252526;
+  --input-bg: #3c3c3c;
 }
 
 * {
@@ -25,6 +69,11 @@ body {
   font-family: -apple-system, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--fg);
+  font-size: 13px;
+}
+
+.text-center {
+  text-align: center;
 }
 
 .app {
@@ -48,7 +97,7 @@ body {
 .sidebar-header button {
   width: 100%;
   padding: 6px 8px;
-  background: #2d2d2d;
+  background: var(--bg-control);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -57,13 +106,14 @@ body {
 }
 
 .sidebar-header button:hover {
-  background: #383838;
+  background: var(--bg-control-hover);
 }
 
 .file-tree {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  min-height: 0;
 }
 
 .tree-row {
@@ -289,12 +339,12 @@ body {
 .chat-message.user {
   align-self: flex-end;
   background: var(--accent);
-  color: #fff;
+  color: var(--fg-on-accent);
 }
 
 .chat-message.assistant {
   align-self: flex-start;
-  background: #2a2a2a;
+  background: var(--bg-subtle);
 }
 
 .chat-pending {
@@ -302,7 +352,7 @@ body {
 }
 
 .chat-error {
-  color: #e06c75;
+  color: var(--error);
 }
 
 .chat-input-row {
@@ -324,7 +374,7 @@ body {
   height: 20px;
   width: 20px;
   background: var(--accent);
-  color: #fff;
+  color: var(--fg-on-accent);
   border: none;
   border-radius: 4px;
   padding: 0 12px;
@@ -349,8 +399,8 @@ body {
 
 .chat-model-select select {
   width: 100%;
-  background: #2d2d2d;
-  color: black;
+  background: var(--bg-control);
+  color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 4px;
@@ -362,7 +412,7 @@ body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -432,7 +482,7 @@ body {
 .add-profile-button {
   width: 100%;
   padding: 6px;
-  background: #2d2d2d;
+  background: var(--bg-control);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -471,7 +521,7 @@ body {
 
 .profile-form-actions .primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--fg-on-accent);
   border: none;
 }
 
@@ -490,7 +540,7 @@ body {
 }
 .chat-history {
   border-bottom: 1px solid var(--border);
-  background: #1b1b1b;
+  background: var(--bg-history);
   max-height: 280px;
   display: flex;
   flex-direction: column;
@@ -512,7 +562,7 @@ body {
   gap: 4px;
 }
 .chat-new-button {
-  background: #2d2d2d;
+  background: var(--bg-control);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -521,7 +571,7 @@ body {
   font-size: 11px;
 }
 .chat-new-button:hover {
-  background: #383838;
+  background: var(--bg-control-hover);
 }
 .chat-history-list {
   overflow-y: auto;
@@ -535,13 +585,13 @@ body {
 .chat-history-item {
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid #252525;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .chat-history-item:hover {
   background: var(--row-hover);
 }
 .chat-history-item.active {
-  background: #292929;
+  background: var(--bg-history-active);
 }
 .chat-history-item-main {
   flex: 1;
@@ -577,7 +627,7 @@ body {
   font-size: 15px;
 }
 .chat-history-delete:hover {
-  color: #e06c75;
+  color: var(--error);
 }
 /* File reference autocomplete */
 
@@ -620,7 +670,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 4px;
 
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 12px var(--shadow);
 
   z-index: 100;
 }
@@ -723,7 +773,7 @@ body {
   gap: 4px;
   padding: 2px 6px;
   margin: 0 2px;
-  background: rgba(43, 90, 219, 0.15);
+  background: var(--accent-soft);
   border: 1px solid var(--accent);
   border-radius: 12px;
   font-size: 12px;
@@ -762,7 +812,7 @@ body {
 }
 
 .chat-file-reference-remove:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--hover-strong);
   color: var(--fg);
 }
 .chat-tools-hint {
@@ -771,10 +821,10 @@ body {
 
   font-size: 12px;
   line-height: 1.4;
-  color: var(--text-secondary, #888);
+  color: var(--fg-muted);
 
-  background: var(--background-secondary, rgba(128, 128, 128, 0.08));
-  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.15));
+  background: var(--background-secondary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
 
   text-align: center;
@@ -795,7 +845,7 @@ body {
 }
 
 .tool-summary:hover {
-  background: rgba(127, 127, 127, 0.08);
+  background: var(--hover-strong);
 }
 
 .tool-summary-icon {
@@ -821,8 +871,8 @@ body {
   margin: 0;
   padding: 8px 10px;
   overflow: auto;
-  border-top: 1px solid var(--border-color, rgba(127, 127, 127, 0.15));
-  font-family: var(--font-mono, monospace);
+  border-top: 1px solid var(--border-color);
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.45;
   white-space: pre-wrap;
@@ -830,9 +880,9 @@ body {
 }
 .tool-details {
   margin-top: 6px;
-  border: 1px solid var(--border-color, rgba(127, 127, 127, 0.2));
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  background: var(--tool-background, rgba(127, 127, 127, 0.06));
+  background: var(--tool-background);
 
   /* Match .chat-message inner spacing and typography */
   padding: 6px 8px;
@@ -881,7 +931,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 0;
-  box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.3);
+  box-shadow: 0px 4px 12px var(--shadow-soft);
   z-index: 9999;
   min-width: 160px;
 }
@@ -908,11 +958,11 @@ body {
 }
 
 .context-menu-item.danger {
-  color: #e06c75;
+  color: var(--error);
 }
 
 .context-menu-item.danger:hover {
-  background: rgba(224, 108, 117, 0.15);
+  background: var(--error-soft);
 }
 .context-menu-item.disabled {
   color: var(--fg-dim);
@@ -1056,7 +1106,7 @@ body {
   background: var(--bg-sidebar);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 12px var(--shadow);
   z-index: 50;
   min-width: 160px;
 }
@@ -1075,9 +1125,9 @@ body {
 /* Files area */
 .git-files {
   flex: 1;
-  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  min-height: 0;
 }
 
 .git-files .empty-state {
@@ -1105,7 +1155,7 @@ body {
 
 .git-commit-button {
   background: var(--accent);
-  color: #fff;
+  color: var(--fg-on-accent);
   border: none;
   border-radius: 4px;
   padding: 6px 10px;
@@ -1143,5 +1193,340 @@ body {
 
 .resizable-handle:hover,
 .resizable-handle.resizing {
-  background: #3b82f6;
+  background: var(--accent-hover);
+}
+
+/* git-panel.css
+   Styles for GitPanel.tsx — class names match 1:1 with the component.
+   Uses the shared theme tokens defined at the top of this file. */
+
+.git-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Header / branch row                                                    */
+/* ---------------------------------------------------------------------- */
+
+.git-panel-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.git-branch-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+}
+
+.git-branch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-branch-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 4px;
+  border-radius: 8px;
+  line-height: 16px;
+}
+
+.git-badge-ahead {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+}
+
+.git-badge-behind {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+}
+
+.git-fetch-pull-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Buttons                                                                 */
+/* ---------------------------------------------------------------------- */
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--hover-strong);
+}
+
+.icon-button:active:not(:disabled) {
+  background: var(--active);
+}
+
+.icon-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.icon-button.primary {
+  background: var(--accent);
+  color: var(--fg-on-accent);
+}
+
+.icon-button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.icon-button.primary:disabled {
+  background: var(--accent);
+  opacity: 0.4;
+}
+
+/* Spinner: applied to the small IconSpinner svg while an op is in flight */
+.git-spin {
+  animation: git-spin-rotate 0.8s linear infinite;
+}
+
+@keyframes git-spin-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Branch dropdown                                                        */
+/* ---------------------------------------------------------------------- */
+
+.git-branch-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 8px;
+  z-index: 20;
+  min-width: 200px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 2px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px var(--shadow);
+}
+
+.context-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.context-menu-item:hover {
+  background: var(--hover-strong);
+}
+
+.context-menu-item.git-branch-item-active {
+  color: var(--fg-on-accent);
+  font-weight: 600;
+}
+
+.context-menu-loading {
+  color: var(--fg-muted);
+  cursor: default;
+}
+
+.context-menu-loading:hover {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Empty / loading / error states                                        */
+/* ---------------------------------------------------------------------- */
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 16px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+.git-panel-loading {
+  flex: 1;
+}
+
+.git-panel-empty {
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.git-panel-empty p {
+  margin: 0;
+  max-width: 220px;
+}
+
+.git-panel-error svg {
+  color: var(--error);
+}
+
+.git-init-button {
+  margin-top: 2px;
+}
+
+.git-inline-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.git-inline-error svg {
+  flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------------- */
+/* File tree                                                              */
+/* ---------------------------------------------------------------------- */
+
+.git-files {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tree-row:hover {
+  background: var(--hover);
+}
+
+.tree-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-row-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 3px;
+}
+
+.git-status-modified {
+  color: var(--warning);
+}
+
+.git-status-added {
+  color: var(--success);
+}
+
+.git-status-deleted {
+  color: var(--error);
+}
+
+.git-status-renamed {
+  color: var(--info);
+}
+
+.git-status-conflicted {
+  color: var(--error-strong);
+  font-weight: 900;
+}
+
+.git-status-untracked {
+  color: var(--fg-muted);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Commit bar                                                              */
+/* ---------------------------------------------------------------------- */
+
+.git-commit-bar {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.git-commit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: inherit;
+  font-size: 12px;
+}
+
+.git-commit-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.git-commit-input:disabled {
+  opacity: 0.6;
+}
+
+.git-commit-button {
+  flex-shrink: 0;
 }

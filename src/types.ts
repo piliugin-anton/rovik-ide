@@ -122,3 +122,17 @@ export interface LastProjectData {
   expandedPaths: string[] | null;
   terminalCollapsed: boolean;
 }
+
+export type GitFileStatusCode = 'M' | 'A' | 'D' | 'R' | 'U' | '?';
+
+export type GitStatus = {
+  branch: string;
+  behind: number;
+  ahead: number;
+  files: {
+    path: string;
+    status: GitFileStatusCode;
+  }[];
+};
+
+export type GitPanelPhase = 'uninitialized' | 'ready' | 'no-repo' | 'error';

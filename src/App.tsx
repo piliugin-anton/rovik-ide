@@ -1,4 +1,13 @@
-import { createSignal, createMemo, Show, onMount, createEffect, onCleanup } from 'solid-js';
+import {
+  createSignal,
+  createMemo,
+  Show,
+  onMount,
+  createEffect,
+  onCleanup,
+  Switch,
+  Match,
+} from 'solid-js';
 import * as monaco from 'monaco-editor';
 import FileTree from './components/FileTree';
 import Tabs from './components/Tabs';
@@ -731,7 +740,14 @@ export default function App() {
         </Show>
 
         <Show when={sidebarTab() === 'git'}>
-          <GitPanel />
+          <Switch>
+            <Match when={!!rootPath()}>
+              <GitPanel projectPath={rootPath()!} />
+            </Match>
+            <Match when={!rootPath()}>
+              <p class="text-center">Open a project to see git panel</p>
+            </Match>
+          </Switch>
         </Show>
       </Resizable>
 

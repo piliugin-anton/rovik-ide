@@ -6,6 +6,7 @@ mod agent_tools;
 mod filesystem;
 mod terminal;
 mod typings;
+mod git;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,6 +40,14 @@ pub fn run() {
             filesystem::rename_path,
             filesystem::move_path,
             filesystem::copy_path,
+            git::git_init,
+            git::git_fetch,
+            git::git_pull,
+            git::git_commit,
+            git::git_push,
+            git::git_checkout,
+            git::git_branches,
+            git::git_status,
             typings::nodejs::load_nodejs_project_typings,
             agent::send_chat_message,
             agent_tools::tool_list_dir,

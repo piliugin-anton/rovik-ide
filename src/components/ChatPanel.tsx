@@ -1250,7 +1250,7 @@ export default function ChatPanel(props: ChatProps) {
                       assistant: m.role === 'assistant',
                     }}
                   >
-                    <span class="chat-pending">Thinking…</span>
+                    <span class="chat-pending">Thinking...</span>
                   </div>
                 </Show>
 
@@ -1313,7 +1313,7 @@ export default function ChatPanel(props: ChatProps) {
             }}
             onKeyDown={handleKeyDown}
             data-placeholder={
-              activeProfile() ? 'Message the model…' : 'Add a model in settings first'
+              activeProfile() ? 'Message the model...' : 'Add a model in settings first'
             }
           />
 

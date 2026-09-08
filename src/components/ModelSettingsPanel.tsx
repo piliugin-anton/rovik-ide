@@ -92,7 +92,7 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
                     type="password"
                     value={draft()!.apiKey}
                     onInput={(e) => setDraft({ ...draft()!, apiKey: e.currentTarget.value })}
-                    placeholder="sk-…"
+                    placeholder="sk-..."
                   />
                 </label>
                 <label>

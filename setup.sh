@@ -16,7 +16,7 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 
 install_system_deps() {
   if command -v apt-get >/dev/null 2>&1; then
-    log "Installing system packages via apt (needs sudo)…"
+    log "Installing system packages via apt (needs sudo)..."
     sudo apt-get update -qq
     sudo apt-get install -y -qq \
       build-essential curl wget file \
@@ -27,7 +27,7 @@ install_system_deps() {
       pkg-config
 
   elif command -v dnf >/dev/null 2>&1; then
-    log "Installing system packages via dnf (needs sudo)…"
+    log "Installing system packages via dnf (needs sudo)..."
     sudo dnf install -y \
       gcc gcc-c++ make curl wget file \
       webkit2gtk4.1-devel gtk3-devel librsvg2-devel \
@@ -36,7 +36,7 @@ install_system_deps() {
       NetworkManager-libnm-devel
 
   elif command -v pacman >/dev/null 2>&1; then
-    log "Installing system packages via pacman (needs sudo)…"
+    log "Installing system packages via pacman (needs sudo)..."
     sudo pacman -Sy --needed --noconfirm \
       base-devel curl wget file \
       webkit2gtk-4.1 gtk3 librsvg \
@@ -71,10 +71,10 @@ install_rust() {
   fi
 
   if [ -x "$HOME/.cargo/bin/rustc" ]; then
-    log "rustup-managed toolchain exists, updating…"
+    log "rustup-managed toolchain exists, updating..."
     "$HOME/.cargo/bin/rustup" update stable
   else
-    log "Installing Rust via rustup…"
+    log "Installing Rust via rustup..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
   fi
 
@@ -92,7 +92,7 @@ install_node_deps() {
   command -v npm >/dev/null 2>&1 || die "npm not found alongside node — check your Node install."
   log "Node $(node --version), npm $(npm --version)."
 
-  log "Installing npm dependencies…"
+  log "Installing npm dependencies..."
   npm install
 }
 
