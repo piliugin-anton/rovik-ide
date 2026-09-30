@@ -147,6 +147,12 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
     patch({ models: d.models.map((m) => (m.id === id ? { ...m, enabled } : m)) });
   }
 
+  function toggleVision(id: string) {
+    const d = draft();
+    if (!d) return;
+    patch({ models: d.models.map((m) => (m.id === id ? { ...m, vision: !m.vision } : m)) });
+  }
+
   function setAllFiltered(enabled: boolean) {
     const d = draft();
     if (!d) return;
@@ -367,6 +373,19 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
                             />
                             <span>{m.id}</span>
                           </label>
+                          <button
+                            class="vision-toggle"
+                            classList={{ on: !!m.vision }}
+                            onClick={() => toggleVision(m.id)}
+                            aria-pressed={!!m.vision}
+                            title={
+                              m.vision
+                                ? 'Accepts images: the agent can take browser screenshots'
+                                : 'Mark as accepting images to enable browser screenshots'
+                            }
+                          >
+                            vision
+                          </button>
                           <button
                             class="icon-button"
                             onClick={() => removeModel(m.id)}

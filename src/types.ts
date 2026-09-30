@@ -38,12 +38,15 @@ export interface ModelProfile {
   baseUrl: string; // e.g. "https://api.openai.com/v1"
   apiKey: string;
   stream: boolean;
+  /** Model accepts image input; enables the screenshot tool. */
+  vision: boolean;
 }
 
 export interface ProviderModel {
   id: string; // exactly as the API expects it, e.g. "anthropic/claude-sonnet-4.5"
   ownedBy?: string; // `owned_by` from GET /models, when present
   enabled: boolean; // shown in the chat model picker
+  vision?: boolean; // accepts image input (set by the user; /models doesn't say)
 }
 
 /** One OpenAI-compatible endpoint + credentials, with the models it serves. */
@@ -90,6 +93,8 @@ export interface ChatMessage {
   error?: string;
   /** User message whose request never got an answer; kept for the record, not sent again. */
   failed?: boolean;
+  /** data: URLs attached to a tool result (browser screenshots). */
+  images?: string[];
 }
 
 export interface OpenAIChatOptions {
@@ -163,3 +168,25 @@ export type GitStatus = {
 };
 
 export type GitPanelPhase = 'uninitialized' | 'ready' | 'no-repo' | 'error';
+
+export interface WebSearchHit {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface BrowsedPage {
+  url: string;
+  title: string;
+  text: string;
+  truncated: boolean;
+  links: { text: string; url: string }[];
+}
+
+export interface BrowserScreenshot {
+  url: string;
+  title: string;
+  data_url: string;
+  width: number;
+  height: number;
+}

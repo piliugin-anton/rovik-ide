@@ -3,7 +3,7 @@
 // One collapsible row per tool invocation. The header is a single readable
 // sentence ("Read src/App.tsx", "Searched for "foo" · 12 matches"); expanding
 // it shows the call arguments and the result together.
-import { createMemo, createSignal, Show } from 'solid-js';
+import { createMemo, createSignal, For, Show } from 'solid-js';
 import type { ChatToolCall } from '../types';
 import CodeBlock from './CodeBlock';
 import { extensionOf } from '../lib/language';
@@ -14,6 +14,8 @@ export interface ToolCallBlockProps {
   result?: string;
   /** True while the agent loop is still running (args streaming or tool executing). */
   running?: boolean;
+  /** Images the tool produced (browser screenshots), as data: URLs. */
+  images?: string[];
 }
 
 type Args = Record<string, unknown>;
@@ -67,6 +69,13 @@ function isErrorResult(result?: string) {
   return result !== undefined && /^Error:/.test(result.trimStart());
 }
 
+/** "https://docs.rs/tokio/latest/" → "docs.rs/tokio/latest" */
+function shortUrl(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const stripped = raw.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return stripped.length > 60 ? `${stripped.slice(0, 57)}…` : stripped;
+}
+
 interface Summary {
   /** Main sentence, e.g. "Read src/App.tsx". */
   title: string;
@@ -118,6 +127,32 @@ function describe(name: string, args: Args, status: Status, result?: string): Su
       if (failed || !result) return { title };
       const none = result.trim() === 'No matches.';
       return { title, meta: none ? 'no matches' : plural(countLines(result), 'match', 'matches') };
+    }
+
+    case 'web_search': {
+      const query = str(args.query);
+      const title = `${active ? 'Searching' : 'Searched'} the web for ${query ? `"${query}"` : '…'}`;
+      if (failed || !result) return { title };
+      const count = result.split('\n').filter((line) => /^\d+\. /.test(line)).length;
+      return { title, meta: count ? plural(count, 'result') : 'no results' };
+    }
+
+    case 'browse_url': {
+      const url = shortUrl(str(args.url));
+      const title = `${active ? 'Opening' : 'Read'} ${url ?? 'page'}`;
+      if (failed || !result) return { title };
+      const pageTitle = result.match(/^# (.+)$/m)?.[1];
+      return {
+        title,
+        meta: pageTitle && pageTitle !== '(untitled)' ? pageTitle.slice(0, 40) : undefined,
+      };
+    }
+
+    case 'browser_screenshot': {
+      const url = shortUrl(str(args.url));
+      return {
+        title: `${active ? 'Taking' : 'Took'} a screenshot of ${url ?? 'the current page'}`,
+      };
     }
 
     default:
@@ -235,6 +270,9 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
               >
                 <CodeBlock code={props.result!} language={language()} />
               </Show>
+              <For each={props.images ?? []}>
+                {(src) => <img class="tool-call-image" src={src} alt="Browser screenshot" />}
+              </For>
             </Show>
           </section>
         </div>

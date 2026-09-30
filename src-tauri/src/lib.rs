@@ -1,7 +1,9 @@
-use crate::{filesystem::WatcherState, terminal::TerminalState};
+use crate::{browser_tools::BrowserState, filesystem::WatcherState, terminal::TerminalState};
 use std::{collections::HashMap, sync::Mutex};
+use tauri::Manager;
 
 mod agent;
+mod browser_tools;
 mod agent_tools;
 mod filesystem;
 mod terminal;
@@ -12,6 +14,7 @@ mod git;
 pub fn run() {
     tauri::Builder::default()
         .manage(TerminalState::default())
+        .manage(BrowserState::default())
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
             gitignore: Mutex::new(None),
@@ -51,11 +54,21 @@ pub fn run() {
             typings::nodejs::load_nodejs_project_typings,
             agent::send_chat_message,
             agent::list_models,
+            browser_tools::web_search,
+            browser_tools::browse_url,
+            browser_tools::browser_screenshot,
             agent_tools::tool_list_dir,
             agent_tools::tool_search_code,
             agent_tools::tool_read_file_range,
             agent_tools::tool_write_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Don't leave a headless Chrome running after the IDE closes.
+            if let tauri::RunEvent::Exit = event {
+                let browser = app.state::<BrowserState>().inner().clone();
+                tauri::async_runtime::block_on(browser.shutdown());
+            }
+        });
 }

@@ -4,6 +4,7 @@ import {
   createMemo,
   createSignal,
   For,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -31,7 +32,7 @@ import {
 import { loadChatHistory, saveChatHistory } from '../lib/chatHistory';
 import { generateChatTitle } from '../lib/chatTitle';
 import { sendChatMessage } from '../lib/aiChat';
-import { AGENT_TOOL_SCHEMAS, executeAgentTool } from '../lib/tools';
+import { agentToolsFor, executeAgentTool } from '../lib/tools';
 import ModelSettingsPanel from './ModelSettingsPanel';
 import ModelPicker from './ModelPicker';
 import ToolCallBlock from './ToolCallBlock';
@@ -119,9 +120,9 @@ export default function ChatPanel(props: ChatProps) {
 
   // tool_call_id -> result content, so each call can render with its result inline.
   const toolResults = createMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<string, ChatMessage>();
     for (const msg of messages()) {
-      if (msg.role === 'tool' && msg.tool_call_id) map.set(msg.tool_call_id, msg.content);
+      if (msg.role === 'tool' && msg.tool_call_id) map.set(msg.tool_call_id, msg);
     }
     return map;
   });
@@ -869,12 +870,49 @@ export default function ChatPanel(props: ChatProps) {
           setIsGeneratingTitle(false);
         }
       }
+    });
+  });
 
-      if (messagesRef) {
+  /*
+   * Follow new content only while the user is at the bottom. Scrolling up
+   * (even mid-stream) releases it; scrolling back down, sending a message or
+   * switching dialogs re-engages it.
+   */
+  const [stickToBottom, setStickToBottom] = createSignal(true);
+
+  // Small tolerance for fractional scroll positions on scaled displays.
+  const BOTTOM_TOLERANCE_PX = 8;
+
+  function handleMessagesScroll() {
+    const el = messagesRef;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setStickToBottom(distance <= BOTTOM_TOLERANCE_PX);
+  }
+
+  function scrollToBottom() {
+    if (messagesRef) messagesRef.scrollTop = messagesRef.scrollHeight;
+    setStickToBottom(true);
+  }
+
+  createEffect(() => {
+    messages();
+    if (!stickToBottom()) return;
+
+    // After Solid has applied the update, so scrollHeight includes it.
+    requestAnimationFrame(() => {
+      if (stickToBottom() && messagesRef) {
         messagesRef.scrollTop = messagesRef.scrollHeight;
       }
     });
   });
+
+  createEffect(
+    on(activeDialogId, () => {
+      setStickToBottom(true);
+      requestAnimationFrame(scrollToBottom);
+    })
+  );
 
   /*
    * -----------------------------------------------------------------------
@@ -1071,7 +1109,9 @@ export default function ChatPanel(props: ChatProps) {
 
     const root = props.rootPath();
 
-    const tools = root ? (AGENT_TOOL_SCHEMAS as unknown as unknown[]) : undefined;
+    // File tools need an open project; web tools are always available, and
+    // the screenshot tool only for models marked as accepting images.
+    const tools = agentToolsFor({ hasProject: !!root, vision: profile.vision });
 
     try {
       await sendChatMessage({
@@ -1115,7 +1155,7 @@ export default function ChatPanel(props: ChatProps) {
     /*
      * Normal final answer.
      */
-    if (toolCalls.length === 0 || !root) {
+    if (toolCalls.length === 0) {
       updateDialogMessages(dialogId, (messages) =>
         messages.map((message) =>
           message.id === pendingMsg.id
@@ -1183,7 +1223,8 @@ export default function ChatPanel(props: ChatProps) {
       const toolMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'tool',
-        content: result,
+        content: result.content,
+        images: result.images,
         tool_call_id: tc.id,
       };
 
@@ -1306,6 +1347,9 @@ export default function ChatPanel(props: ChatProps) {
       createdAt: new Date().toISOString(),
     });
     inFlightMessageId = userMsg.id;
+
+    // Sending always brings the conversation back into view.
+    setStickToBottom(true);
 
     /*
      * Put the clean message into the persisted conversation.
@@ -1505,7 +1549,7 @@ export default function ChatPanel(props: ChatProps) {
       <Show when={!props.rootPath()}>
         <div class="chat-tools-hint">Open a folder to let the model read and edit your files.</div>
       </Show>
-      <div ref={messagesRef} class="chat-messages">
+      <div ref={messagesRef} class="chat-messages" onScroll={handleMessagesScroll}>
         <For each={messages()} fallback={<div class="empty-state">Ask the model anything</div>}>
           {/* Tool results render inside their call's block, not as separate rows. */}
           {(m) => (
@@ -1559,7 +1603,8 @@ export default function ChatPanel(props: ChatProps) {
                       {(tc) => (
                         <ToolCallBlock
                           toolCall={tc}
-                          result={toolResults().get(tc.id)}
+                          result={toolResults().get(tc.id)?.content}
+                          images={toolResults().get(tc.id)?.images}
                           running={sending()}
                         />
                       )}
@@ -1570,6 +1615,26 @@ export default function ChatPanel(props: ChatProps) {
             </Show>
           )}
         </For>
+        <Show when={!stickToBottom() && messages().length > 0}>
+          <button
+            type="button"
+            class="chat-jump-latest"
+            onClick={scrollToBottom}
+            title="Scroll to latest"
+            aria-label="Scroll to latest message"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                d="M8 3v9M4 8.5 8 12.5l4-4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </Show>
       </div>
       <div class="chat-input-row">
         <div class="chat-input-container">

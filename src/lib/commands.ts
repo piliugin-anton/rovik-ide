@@ -1,6 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import type { DirEntryInfo, ToolDirEntry, ToolSearchMatch } from '../types';
+import type {
+  BrowsedPage,
+  BrowserScreenshot,
+  DirEntryInfo,
+  ToolDirEntry,
+  ToolSearchMatch,
+  WebSearchHit,
+} from '../types';
 
 /** Opens the native "select a folder" dialog. Returns null if the user cancels. */
 export async function pickProjectFolder(): Promise<string | null> {
@@ -90,4 +97,21 @@ export async function toolReadFileRange(
 
 export async function toolWriteFile(root: string, path: string, content: string): Promise<string> {
   return invoke<string>('tool_write_file', { root, path, content });
+}
+
+/*
+ * Web tools (src-tauri/src/browser_tools.rs). The first call starts a
+ * headless Chrome, so it can take a few seconds.
+ */
+
+export function toolWebSearch(query: string, maxResults?: number): Promise<WebSearchHit[]> {
+  return invoke('web_search', { query, maxResults });
+}
+
+export function toolBrowseUrl(url: string, maxChars?: number): Promise<BrowsedPage> {
+  return invoke('browse_url', { url, maxChars });
+}
+
+export function toolBrowserScreenshot(url?: string): Promise<BrowserScreenshot> {
+  return invoke('browser_screenshot', { url });
 }

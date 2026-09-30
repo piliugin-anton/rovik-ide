@@ -188,6 +188,7 @@ export function resolveProfile(
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
     stream: provider.stream,
+    vision: !!model.vision,
   };
 }
 
