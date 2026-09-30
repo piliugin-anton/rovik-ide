@@ -336,6 +336,11 @@ body {
   flex-shrink: 0;
 }
 
+/* A user message that never got an answer; its text went back into the input. */
+.chat-message.failed {
+  opacity: 0.55;
+}
+
 .chat-message.user {
   align-self: flex-end;
   background: var(--accent);
@@ -397,14 +402,133 @@ body {
   flex-shrink: 0;
 }
 
-.chat-model-select select {
+/* Model picker (replaces the native <select>, whose option list GTK draws light) */
+
+.model-picker {
+  position: relative;
+  color-scheme: dark;
+}
+
+.model-picker-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
+  height: 26px;
+  padding: 0 8px;
   background: var(--bg-control);
-  color: var(--fg);
+  color: var(--fg-on-accent);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 4px;
+  font: inherit;
   font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-picker-trigger:hover {
+  background: var(--bg-control-hover);
+}
+
+.model-picker-trigger:focus-visible,
+.model-picker-search:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.model-picker-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker-value.placeholder {
+  color: var(--fg-muted);
+}
+
+.model-picker-caret {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.model-picker-popover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  max-height: min(360px, 60vh);
+  background: var(--menu-bg);
+  color: var(--fg-on-accent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px var(--shadow);
+  overflow: hidden;
+}
+
+.model-picker-search {
+  flex: 0 0 auto;
+  margin: 6px;
+  padding: 5px 8px;
+  background: var(--input-bg);
+  color: var(--fg-on-accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.model-picker-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 4px;
+}
+
+.model-picker-option {
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.model-picker-option.highlighted {
+  background: var(--hover-strong);
+}
+
+.model-picker-option.selected {
+  background: var(--row-active);
+}
+
+.model-picker-empty {
+  padding: 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.model-picker-manage {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 0;
+  border-top: 1px solid var(--border);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-picker-manage:hover {
+  color: var(--fg-on-accent);
+  background: var(--hover);
 }
 
 /* Settings modal */
@@ -420,6 +544,7 @@ body {
 }
 
 .modal {
+  color-scheme: dark;
   width: 420px;
   max-height: 80vh;
   display: flex;
@@ -523,6 +648,190 @@ body {
   background: var(--accent);
   color: var(--fg-on-accent);
   border: none;
+}
+
+/* Provider settings */
+
+.modal.model-settings {
+  width: 480px;
+}
+
+.modal button:not(.icon-button):not(.link-button) {
+  padding: 5px 10px;
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.modal button:not(.icon-button):not(.link-button):hover:not(:disabled) {
+  background: var(--bg-control-hover);
+}
+
+.modal button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.modal button.danger:hover:not(:disabled) {
+  color: var(--error);
+}
+
+.modal .profile-form-actions .primary,
+.modal .profile-form-actions .primary:hover {
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  border-color: transparent;
+}
+
+.modal .profile-form-actions .primary:hover {
+  background: var(--accent-hover);
+}
+
+.modal input[type='checkbox'] {
+  accent-color: var(--accent);
+  margin: 0;
+  padding: 0;
+}
+
+.profile-form label.checkbox-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+}
+
+.provider-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.provider-test-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.provider-test-status.ok {
+  color: var(--success);
+}
+
+.provider-test-status.error {
+  color: var(--error);
+}
+
+.provider-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.provider-models-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.provider-models-bulk {
+  display: flex;
+  gap: 10px;
+}
+
+.link-button {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--info);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.provider-models-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-editor);
+}
+
+.provider-models-empty {
+  padding: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.provider-model-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 8px;
+}
+
+.provider-model-row:hover {
+  background: var(--hover);
+}
+
+.profile-form .provider-model-row label {
+  flex: 1;
+  min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.provider-model-row label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.provider-model-row .icon-button {
+  opacity: 0;
+}
+
+.provider-model-row:hover .icon-button,
+.provider-model-row .icon-button:focus-visible {
+  opacity: 1;
+}
+
+.provider-manual-row {
+  display: flex;
+  gap: 6px;
+}
+
+.provider-manual-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.provider-models-filter,
+.provider-manual-row input {
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  font-size: 12px;
 }
 
 /* Chat history */
@@ -966,26 +1275,138 @@ body {
   overflow: hidden;
   margin: 4px 0;
 }
-.message-text {
-  white-space: pre-wrap;
-}
-/* Remove vertical gaps between paragraphs */
-.markdown-body p {
-  margin-top: 0;
-  margin-bottom: 4px; /* Tiny gap for readability, or set to 0 for no gap */
+/*
+ * Rendered markdown. The block structure (paragraphs, lists, tables) now
+ * comes from the HTML, so the pre-wrap inherited from .chat-message must be
+ * off here or every newline between tags shows up as a blank line.
+ */
+.markdown-body {
+  white-space: normal;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
-/* Make line height tighter if needed */
-.markdown-body {
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body .md-table-wrap {
+  margin: 0 0 8px;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 20px;
+}
+
+.markdown-body li + li {
+  margin-top: 2px;
+}
+
+.markdown-body li > p {
+  margin: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 12px 0 6px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.markdown-body h1 {
+  font-size: 1.25em;
+}
+
+.markdown-body h2 {
+  font-size: 1.15em;
+}
+
+.markdown-body h3,
+.markdown-body h4 {
+  font-size: 1em;
+}
+
+.markdown-body code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--hover-strong);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: normal;
+}
+
+.markdown-body a {
+  color: var(--info);
+}
+
+.markdown-body blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--border-color);
+  color: var(--fg-muted);
+}
+
+.markdown-body hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.md-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  font-size: 12px;
   line-height: 1.4;
 }
 
-/* Ensure list items and code segments stay compact */
-.markdown-body ul,
-.markdown-body ol {
-  margin-top: 0;
-  margin-bottom: 4px;
+.markdown-body th,
+.markdown-body td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+  overflow-wrap: normal;
 }
+
+.markdown-body td {
+  min-width: 80px;
+  max-width: 360px;
+}
+
+.markdown-body th {
+  background: var(--background-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Headers center by default; columns with :--: / --: alignment keep their align attribute. */
+.markdown-body th:not([align]) {
+  text-align: left;
+}
+
+.markdown-body tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-body td code {
+  white-space: nowrap;
+}
+
 /* Context menu */
 
 .context-menu {

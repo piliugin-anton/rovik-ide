@@ -431,3 +431,70 @@ pub async fn send_chat_message(
     let _ = on_event.send(ChatStreamEvent::Done);
     Ok(())
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * Model discovery
+ * ---------------------------------------------------------------------------
+ */
+
+#[derive(Serialize)]
+pub struct RemoteModel {
+    id: String,
+    owned_by: Option<String>,
+}
+
+/// `GET {base_url}/models` on an OpenAI-compatible server.
+///
+/// Accepts both the standard `{ "data": [...] }` envelope and a bare array,
+/// since a few self-hosted servers skip the envelope. Runs on the Rust side so
+/// local servers (Ollama, LM Studio, llama.cpp) aren't blocked by CORS.
+#[tauri::command]
+pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Vec<RemoteModel>, String> {
+    let url = format!("{}/models", base_url.trim().trim_end_matches('/'));
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = client.get(&url);
+    if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        req = req.bearer_auth(key);
+    }
+
+    let res = req.send().await.map_err(|e| format!("Could not reach {url}: {e}"))?;
+    let status = res.status();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+
+    if !status.is_success() {
+        let snippet: String = body.chars().take(200).collect();
+        return Err(match status.as_u16() {
+            401 | 403 => format!("{status}: API key rejected. {snippet}"),
+            404 => format!("{status}: this server doesn't provide a model list. Add models manually."),
+            _ => format!("{status}: {snippet}"),
+        });
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("Response is not JSON: {e}"))?;
+
+    let items = json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| json.as_array())
+        .ok_or_else(|| "Response has no model list (`data` array missing).".to_string())?;
+
+    let mut models: Vec<RemoteModel> = items
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id")?.as_str()?.to_string();
+            let owned_by = m.get("owned_by").and_then(|o| o.as_str()).map(str::to_string);
+            Some(RemoteModel { id, owned_by })
+        })
+        .collect();
+
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    Ok(models)
+}

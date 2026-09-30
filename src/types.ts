@@ -27,13 +27,38 @@ export interface OpenFile {
   language: string;
 }
 
+/**
+ * A resolved provider + model pair, ready to send requests with. Built from
+ * the active selection at runtime; not persisted.
+ */
 export interface ModelProfile {
-  id: string;
-  label: string; // user-chosen display name
+  id: string; // `${providerId}::${modelId}`
+  label: string; // "Provider/developer/model"
   model: string; // e.g. "gpt-4o-mini"
   baseUrl: string; // e.g. "https://api.openai.com/v1"
   apiKey: string;
   stream: boolean;
+}
+
+export interface ProviderModel {
+  id: string; // exactly as the API expects it, e.g. "anthropic/claude-sonnet-4.5"
+  ownedBy?: string; // `owned_by` from GET /models, when present
+  enabled: boolean; // shown in the chat model picker
+}
+
+/** One OpenAI-compatible endpoint + credentials, with the models it serves. */
+export interface Provider {
+  id: string;
+  name: string; // e.g. "OpenRouter"
+  baseUrl: string;
+  apiKey: string;
+  stream: boolean;
+  models: ProviderModel[];
+}
+
+export interface ModelSelection {
+  providerId: string;
+  modelId: string;
 }
 
 export interface ChatToolCall {
@@ -63,6 +88,8 @@ export interface ChatMessage {
   tool_call_id?: string; // if you later send tool results back
   pending?: boolean;
   error?: string;
+  /** User message whose request never got an answer; kept for the record, not sent again. */
+  failed?: boolean;
 }
 
 export interface OpenAIChatOptions {

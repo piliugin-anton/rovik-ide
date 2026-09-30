@@ -16,18 +16,35 @@ import type {
   ChatToolCall,
   FileSuggestion,
   ModelProfile,
+  ModelSelection,
+  Provider,
   TreeRow,
 } from '../types';
 import type { ActiveFileContext } from '../lib/activeContext';
 import { buildContextHeader } from '../lib/activeContext';
-import { loadAiSettings, saveAiSettings } from '../lib/aiSettings';
+import {
+  loadAiSettings,
+  reconcileSelection,
+  resolveProfile,
+  saveAiSettings,
+} from '../lib/aiSettings';
 import { loadChatHistory, saveChatHistory } from '../lib/chatHistory';
 import { generateChatTitle } from '../lib/chatTitle';
 import { sendChatMessage } from '../lib/aiChat';
 import { AGENT_TOOL_SCHEMAS, executeAgentTool } from '../lib/tools';
 import ModelSettingsPanel from './ModelSettingsPanel';
+import ModelPicker from './ModelPicker';
 import ToolCallBlock from './ToolCallBlock';
 import { isBlank } from '../lib/textUtils';
+import {
+  clearPendingDraft,
+  listPendingDrafts,
+  prunePendingDrafts,
+  savePendingDraft,
+  takePendingDraft,
+  type DraftSegment,
+  type PendingDraft,
+} from '../lib/pendingDraft';
 import MessageContent from './MessageContent';
 import { toRelativePath } from '../lib/fileTools';
 
@@ -43,8 +60,8 @@ interface ChatProps {
 }
 
 export default function ChatPanel(props: ChatProps) {
-  const [profiles, setProfiles] = createSignal<ModelProfile[]>([]);
-  const [activeProfileId, setActiveProfileId] = createSignal<string | null>(null);
+  const [providers, setProviders] = createSignal<Provider[]>([]);
+  const [selection, setSelection] = createSignal<ModelSelection | null>(null);
 
   const [dialogs, setDialogs] = createSignal<ChatDialog[]>([]);
   const [activeDialogId, setActiveDialogId] = createSignal<string | null>(null);
@@ -86,14 +103,15 @@ export default function ChatPanel(props: ChatProps) {
   const [referencedFiles, setReferencedFiles] = createSignal<FileSuggestion[]>([]);
 
   let currentChannel: Channel<ChatStreamEvent> | null = null;
+  /** User message currently waiting for its first answer; its draft must not be restored. */
+  let inFlightMessageId: string | null = null;
   let rafId: number | null = null;
   let isMounted = true;
   let messagesRef: HTMLDivElement | undefined;
   let inputTextareaRef: HTMLTextAreaElement | undefined;
 
-  const activeProfile = createMemo(
-    () => profiles().find((p) => p.id === activeProfileId()) ?? null
-  );
+  // Provider + model resolved into what the send path needs.
+  const activeProfile = createMemo(() => resolveProfile(providers(), selection()));
 
   const activeDialog = createMemo(() => dialogs().find((d) => d.id === activeDialogId()) ?? null);
 
@@ -164,8 +182,8 @@ export default function ChatPanel(props: ChatProps) {
 
       if (!isMounted) return;
 
-      setProfiles(settings.profiles);
-      setActiveProfileId(settings.activeProfileId ?? settings.profiles[0]?.id ?? null);
+      setProviders(settings.providers);
+      setSelection(reconcileSelection(settings.providers, settings.active));
 
       setDialogs(history);
 
@@ -174,6 +192,8 @@ export default function ChatPanel(props: ChatProps) {
       } else {
         createNewDialog();
       }
+
+      recoverDraftsAfterRestart();
     } finally {
       if (isMounted) {
         setLoadingHistory(false);
@@ -289,16 +309,19 @@ export default function ChatPanel(props: ChatProps) {
     /*
      * References are composer state, so don't carry them between dialogs.
      */
-    setReferencedFiles([]);
-    setInput('');
+    clearChatInput(false);
 
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
     setFileQuery('');
+
+    restoreDraftForDialog(id);
   }
 
   async function deleteDialog(id: string) {
     const remaining = dialogs().filter((dialog) => dialog.id !== id);
+
+    takePendingDraft(id);
 
     setDialogs(remaining);
 
@@ -348,45 +371,8 @@ export default function ChatPanel(props: ChatProps) {
     return div.innerHTML;
   }
 
-  function acceptFileSuggestion(suggestion: FileSuggestion) {
-    const container = inputTextareaRef;
-    if (!container) return;
-
-    const triggerStart = fileTriggerStart();
-    if (triggerStart === null) return;
-
-    /*
-     * Focus FIRST. Calling focus() after setting the selection can
-     * collapse the caret back to the start of the element (WebKit does
-     * this), which is the main reason the cursor never moved.
-     */
-    container.focus();
-
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
-
-    const startLocation = findTextOffset(container, triggerStart);
-    if (!startLocation) return;
-
-    /*
-     * Delete from the '@' up to the caret.
-     */
-    const deleteRange = document.createRange();
-    deleteRange.setStart(startLocation.node, startLocation.offset);
-    deleteRange.setEnd(selection.focusNode ?? container, selection.focusOffset);
-    deleteRange.deleteContents();
-
-    /*
-     * Collapse the selection to the deletion point so insertNode()
-     * inserts exactly where '@query' used to be.
-     */
-    deleteRange.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(deleteRange);
-
-    /*
-     * Insert the chip.
-     */
+  /** Builds the non-editable "file reference" chip used in the composer. */
+  function createFileChip(suggestion: FileSuggestion): HTMLSpanElement {
     const chip = document.createElement('span');
     chip.className = 'chat-file-reference';
     chip.contentEditable = 'false';
@@ -423,6 +409,47 @@ export default function ChatPanel(props: ChatProps) {
       chip.remove();
     });
 
+    return chip;
+  }
+
+  function acceptFileSuggestion(suggestion: FileSuggestion) {
+    const container = inputTextareaRef;
+    if (!container) return;
+
+    const triggerStart = fileTriggerStart();
+    if (triggerStart === null) return;
+
+    /*
+     * Focus FIRST. Calling focus() after setting the selection can
+     * collapse the caret back to the start of the element (WebKit does
+     * this), which is the main reason the cursor never moved.
+     */
+    container.focus();
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+
+    const startLocation = findTextOffset(container, triggerStart);
+    if (!startLocation) return;
+
+    /*
+     * Delete from the '@' up to the caret.
+     */
+    const deleteRange = document.createRange();
+    deleteRange.setStart(startLocation.node, startLocation.offset);
+    deleteRange.setEnd(selection.focusNode ?? container, selection.focusOffset);
+    deleteRange.deleteContents();
+
+    /*
+     * Collapse the selection to the deletion point so insertNode()
+     * inserts exactly where '@query' used to be.
+     */
+    deleteRange.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(deleteRange);
+
+    const chip = createFileChip(suggestion);
+
     deleteRange.insertNode(chip);
 
     /*
@@ -442,9 +469,7 @@ export default function ChatPanel(props: ChatProps) {
     selection.removeAllRanges();
     selection.addRange(caretRange);
 
-    // Pull the plain text version of the container's contents (including the space)
-    const updatedText = container.innerText || container.textContent;
-    setInput(updatedText);
+    setInput(readComposerText());
 
     setReferencedFiles((current) =>
       current.some((file) => file.path === suggestion.path) ? current : [...current, suggestion]
@@ -477,14 +502,251 @@ export default function ChatPanel(props: ChatProps) {
     });
   }
 
-  function clearChatInput() {
+  function clearChatInput(focus = true) {
     setInput('');
     setReferencedFiles([]);
 
     if (inputTextareaRef) {
       inputTextareaRef.innerHTML = '';
-      inputTextareaRef.focus();
+      if (focus) inputTextareaRef.focus();
     }
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Pending drafts (see lib/pendingDraft.ts)
+   * -----------------------------------------------------------------------
+   */
+
+  /** Reads the composer as ordered text + file-chip segments. */
+  function serializeComposer(): DraftSegment[] {
+    const segments: DraftSegment[] = [];
+    const pushText = (text: string) => {
+      if (!text) return;
+      const last = segments[segments.length - 1];
+      if (last?.type === 'text') last.text += text;
+      else segments.push({ type: 'text', text });
+    };
+
+    const walk = (node: Node) => {
+      node.childNodes.forEach((child, index) => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          pushText(child.textContent ?? '');
+          return;
+        }
+        if (!(child instanceof HTMLElement)) return;
+
+        if (child.classList.contains('chat-file-reference')) {
+          const path = child.dataset.path ?? '';
+          const file = referencedFiles().find((f) => f.path === path);
+          if (file) segments.push({ type: 'file', file });
+          else pushText(child.textContent ?? '');
+          return;
+        }
+        if (child.tagName === 'BR') {
+          // A <br> that is the only/last thing in a line <div> is WebKit's
+          // placeholder for an empty line; the <div> already counts as the break.
+          const isLinePlaceholder =
+            child.parentElement !== inputTextareaRef &&
+            child.parentElement?.tagName === 'DIV' &&
+            child.nextSibling === null;
+          if (!isLinePlaceholder) pushText('\n');
+          return;
+        }
+        // contenteditable wraps new lines in <div>s.
+        if (child.tagName === 'DIV' && index > 0) pushText('\n');
+        walk(child);
+      });
+    };
+
+    if (inputTextareaRef) walk(inputTextareaRef);
+    return segments;
+  }
+
+  /**
+   * The composer's text with real line breaks (textContent drops the ones
+   * WebKit makes out of <div>/<br>) and file chips as their names.
+   */
+  function readComposerText(): string {
+    return serializeComposer()
+      .map((segment) => (segment.type === 'text' ? segment.text : segment.file.name))
+      .join('');
+  }
+
+  function handleComposerInput(target: HTMLElement) {
+    /*
+     * Once the composer is visually empty, drop whatever markup is left
+     * (stray <br>, empty styled <span>s). Otherwise WebKit keeps applying the
+     * last node's style to new text, and the :empty placeholder never shows.
+     */
+    if (!target.textContent && !target.querySelector('.chat-file-reference')) {
+      target.innerHTML = '';
+    }
+
+    setInput(readComposerText());
+
+    // Autocomplete works on raw text-node offsets, so keep using textContent here.
+    const raw = target.textContent ?? '';
+    const sel = window.getSelection();
+    const caretOffset =
+      sel && sel.focusNode ? getTextOffset(target, sel.focusNode, sel.focusOffset) : raw.length;
+
+    updateFileAutocomplete(raw, caretOffset);
+  }
+
+  /**
+   * Inserts text at the caret as plain text. execCommand('insertText') is
+   * deprecated but still the only way to keep native undo (Ctrl+Z) working,
+   * and it fires `input` like typing would. The manual path is a fallback.
+   */
+  function insertPlainText(text: string) {
+    const container = inputTextareaRef;
+    if (!container || !text) return;
+
+    if (document.execCommand('insertText', false, text)) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+
+    const range = selection.getRangeAt(0);
+    if (!container.contains(range.commonAncestorContainer)) return;
+
+    range.deleteContents();
+    const fragment = document.createDocumentFragment();
+    text.split('\n').forEach((line, i) => {
+      if (i > 0) fragment.append(document.createElement('br'));
+      if (line) fragment.append(document.createTextNode(line));
+    });
+    const last = fragment.lastChild;
+    range.insertNode(fragment);
+
+    if (last) {
+      range.setStartAfter(last);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    handleComposerInput(container);
+  }
+
+  /** Clipboard text only: code copied from Monaco carries colored HTML. */
+  function handleComposerPaste(e: ClipboardEvent) {
+    const text = e.clipboardData?.getData('text/plain');
+    e.preventDefault();
+    if (text) insertPlainText(text.replace(/\r\n?/g, '\n'));
+  }
+
+  /** Same for drag-and-drop of selected text. */
+  function handleComposerDrop(e: DragEvent) {
+    const text = e.dataTransfer?.getData('text/plain');
+    if (!text) return;
+
+    e.preventDefault();
+
+    // Put the caret where the text was dropped before inserting.
+    const range = document.caretRangeFromPoint?.(e.clientX, e.clientY);
+    if (range) {
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+
+    insertPlainText(text.replace(/\r\n?/g, '\n'));
+  }
+
+  /**
+   * Puts a draft back into the composer. Appends on a new line when the
+   * user has already started typing something else, so nothing is lost.
+   */
+  function restoreDraftToComposer(draft: PendingDraft) {
+    const container = inputTextareaRef;
+    if (!container) return;
+
+    const hasContent = (container.textContent ?? '').trim().length > 0;
+    const fragment = document.createDocumentFragment();
+
+    if (hasContent) fragment.append(document.createElement('br'));
+
+    const files: FileSuggestion[] = [];
+    draft.segments.forEach((segment, index) => {
+      if (segment.type === 'text') {
+        const lines = segment.text.split('\n');
+        lines.forEach((line, i) => {
+          if (i > 0) fragment.append(document.createElement('br'));
+          if (line) fragment.append(document.createTextNode(line));
+        });
+      } else {
+        fragment.append(createFileChip(segment.file));
+        // Chips are followed by a space when inserted; keep exactly one.
+        const next = draft.segments[index + 1];
+        if (!(next?.type === 'text' && /^\s/.test(next.text))) {
+          fragment.append(document.createTextNode(' '));
+        }
+        files.push(segment.file);
+      }
+    });
+
+    container.append(fragment);
+
+    setInput(readComposerText());
+    setReferencedFiles((current) => [
+      ...current,
+      ...files.filter((f) => !current.some((c) => c.path === f.path)),
+    ]);
+
+    // Caret at the end, ready to edit and resend.
+    container.focus();
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  function restoreDraftForDialog(dialogId: string) {
+    const stored = listPendingDrafts().find((d) => d.dialogId === dialogId);
+    if (!stored || stored.messageId === inFlightMessageId) return;
+
+    const draft = takePendingDraft(dialogId);
+    if (draft) queueMicrotask(() => restoreDraftToComposer(draft));
+  }
+
+  function markMessageFailed(dialogId: string, messageId: string) {
+    updateDialogMessages(dialogId, (messages) =>
+      messages.map((m) => (m.id === messageId ? { ...m, failed: true } : m))
+    );
+  }
+
+  /**
+   * Drafts still in storage at startup were never answered: the app closed
+   * or crashed mid-request. Mark their messages failed and bring the text
+   * back for the dialog that's open.
+   */
+  function recoverDraftsAfterRestart() {
+    prunePendingDrafts(new Set(dialogs().map((d) => d.id)));
+
+    for (const draft of listPendingDrafts()) {
+      const dialog = dialogs().find((d) => d.id === draft.dialogId);
+      const index = dialog?.messages.findIndex((m) => m.id === draft.messageId) ?? -1;
+
+      if (dialog && index >= 0) {
+        const answered = dialog.messages
+          .slice(index + 1)
+          .some((m) => m.role === 'assistant' && !m.error && !m.pending);
+
+        if (answered) {
+          // The answer made it into history before the draft was cleared.
+          clearPendingDraft(draft.dialogId, draft.messageId);
+          continue;
+        }
+        markMessageFailed(dialog.id, draft.messageId);
+      }
+    }
+
+    const active = activeDialogId();
+    if (active) restoreDraftForDialog(active);
   }
 
   /*
@@ -560,29 +822,20 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  function persistAiSettings(nextProfiles: ModelProfile[], nextActiveId: string | null) {
-    void saveAiSettings({
-      profiles: nextProfiles,
-      activeProfileId: nextActiveId,
-    });
+  function persistAiSettings(nextProviders: Provider[], nextSelection: ModelSelection | null) {
+    void saveAiSettings({ version: 2, providers: nextProviders, active: nextSelection });
   }
 
-  function handleProfilesSaved(nextProfiles: ModelProfile[]) {
-    setProfiles(nextProfiles);
-
-    let nextActive = activeProfileId();
-
-    if (!nextProfiles.some((p) => p.id === nextActive)) {
-      nextActive = nextProfiles[0]?.id ?? null;
-      setActiveProfileId(nextActive);
-    }
-
-    persistAiSettings(nextProfiles, nextActive);
+  function handleProvidersSaved(nextProviders: Provider[]) {
+    const nextSelection = reconcileSelection(nextProviders, selection());
+    setProviders(nextProviders);
+    setSelection(nextSelection);
+    persistAiSettings(nextProviders, nextSelection);
   }
 
-  function handleModelChange(id: string) {
-    setActiveProfileId(id);
-    persistAiSettings(profiles(), id);
+  function handleModelChange(next: ModelSelection) {
+    setSelection(next);
+    persistAiSettings(providers(), next);
   }
 
   /*
@@ -655,14 +908,22 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
+  /**
+   * @param onSettled Called once this turn's outcome is known: true when the
+   *   model answered without error (text or tool calls), false otherwise.
+   *   Only the first turn passes it; later tool-loop steps don't affect
+   *   whether the user's message was delivered.
+   */
   async function runAgentTurn(
     history: ChatMessage[],
     step: number,
-    dialogId: string
+    dialogId: string,
+    onSettled?: (ok: boolean) => void
   ): Promise<void> {
     const profile = activeProfile();
 
     if (!profile || !isMounted) {
+      onSettled?.(false);
       return;
     }
 
@@ -702,7 +963,6 @@ export default function ChatPanel(props: ChatProps) {
       );
     };
 
-    let clearInput = true;
     channel.onmessage = (event) => {
       if (!isMounted) return;
 
@@ -738,7 +998,6 @@ export default function ChatPanel(props: ChatProps) {
         }
 
         case 'Error': {
-          clearInput = false;
           streamError = event.message;
 
           updateDialogMessages(dialogId, (messages) =>
@@ -808,10 +1067,6 @@ export default function ChatPanel(props: ChatProps) {
           break;
         }
       }
-
-      if (clearInput) {
-        clearChatInput();
-      }
     };
 
     const root = props.rootPath();
@@ -840,6 +1095,7 @@ export default function ChatPanel(props: ChatProps) {
         );
       }
 
+      onSettled?.(false);
       return;
     } finally {
       if (currentChannel === channel) {
@@ -848,8 +1104,11 @@ export default function ChatPanel(props: ChatProps) {
     }
 
     if (streamError) {
+      onSettled?.(false);
       return;
     }
+
+    onSettled?.(true);
 
     const toolCalls = Array.from(toolCallsMap.values());
 
@@ -1030,19 +1289,33 @@ export default function ChatPanel(props: ChatProps) {
      *
      * Capture the history BEFORE inserting the new user message.
      */
-    const historyBase = dialog.messages;
+    /*
+     * Failed messages and error placeholders stay visible in the transcript
+     * but are never sent to the model again.
+     */
+    const historyBase = dialog.messages.filter((m) => !m.failed && !m.error && !m.pending);
+
+    /*
+     * Save the composer before anything else: from here until the model
+     * answers, this is the only copy of what the user typed.
+     */
+    savePendingDraft({
+      dialogId: dialog.id,
+      messageId: userMsg.id,
+      segments: serializeComposer(),
+      createdAt: new Date().toISOString(),
+    });
+    inFlightMessageId = userMsg.id;
 
     /*
      * Put the clean message into the persisted conversation.
      */
     updateDialogMessages(dialog.id, (messages) => [...messages, userMsg]);
 
-    setInput('');
-
     /*
-     * References have now been consumed by this message.
+     * Clear right away; the draft brings it back if the request fails.
      */
-    setReferencedFiles([]);
+    clearChatInput();
 
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
@@ -1052,8 +1325,25 @@ export default function ChatPanel(props: ChatProps) {
     setSending(true);
 
     try {
-      await runAgentTurn([...historyBase, wireUserMsg], 0, dialog.id);
+      await runAgentTurn([...historyBase, wireUserMsg], 0, dialog.id, (ok) => {
+        inFlightMessageId = null;
+
+        if (ok) {
+          clearPendingDraft(dialog.id, userMsg.id);
+          return;
+        }
+
+        markMessageFailed(dialog.id, userMsg.id);
+
+        // Restore now if the user is still in this dialog; otherwise the
+        // draft waits in storage until they switch back to it.
+        if (isMounted && activeDialogId() === dialog.id) {
+          restoreDraftForDialog(dialog.id);
+        }
+      });
     } finally {
+      inFlightMessageId = null;
+
       if (isMounted) {
         setSending(false);
       }
@@ -1252,7 +1542,11 @@ export default function ChatPanel(props: ChatProps) {
                       classList={{
                         user: m.role === 'user',
                         assistant: m.role === 'assistant',
+                        failed: !!m.failed,
                       }}
+                      title={
+                        m.failed ? 'Not delivered: text was put back into the input' : undefined
+                      }
                     >
                       <MessageContent content={m.content} />
                     </div>
@@ -1283,19 +1577,9 @@ export default function ChatPanel(props: ChatProps) {
             ref={inputTextareaRef as unknown as HTMLDivElement}
             class="chat-input-contenteditable"
             contenteditable
-            onInput={(e) => {
-              const target = e.currentTarget;
-              const text = target.textContent ?? '';
-              setInput(text);
-
-              const sel = window.getSelection();
-              const caretOffset =
-                sel && sel.focusNode
-                  ? getTextOffset(target, sel.focusNode, sel.focusOffset)
-                  : text.length;
-
-              updateFileAutocomplete(text, caretOffset);
-            }}
+            onInput={(e) => handleComposerInput(e.currentTarget)}
+            onPaste={handleComposerPaste}
+            onDrop={handleComposerDrop}
             onKeyDown={handleKeyDown}
             data-placeholder={
               activeProfile() ? 'Message the model...' : 'Add a model in settings first'
@@ -1344,20 +1628,17 @@ export default function ChatPanel(props: ChatProps) {
         </button>
       </div>
       <div class="chat-model-select">
-        <select
-          value={activeProfileId() ?? ''}
-          onChange={(e) => handleModelChange(e.currentTarget.value)}
-          disabled={profiles().length === 0}
-        >
-          <Show when={profiles().length > 0} fallback={<option value="">No models saved</option>}>
-            <For each={profiles()}>{(p) => <option value={p.id}>{p.label}</option>}</For>
-          </Show>
-        </select>
+        <ModelPicker
+          providers={providers()}
+          selection={selection()}
+          onSelect={handleModelChange}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
       </div>
       <Show when={settingsOpen()}>
         <ModelSettingsPanel
-          profiles={profiles()}
-          onSave={handleProfilesSaved}
+          providers={providers()}
+          onSave={handleProvidersSaved}
           onClose={() => setSettingsOpen(false)}
         />
       </Show>

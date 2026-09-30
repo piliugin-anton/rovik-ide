@@ -50,6 +50,7 @@ pub fn run() {
             git::git_status,
             typings::nodejs::load_nodejs_project_typings,
             agent::send_chat_message,
+            agent::list_models,
             agent_tools::tool_list_dir,
             agent_tools::tool_search_code,
             agent_tools::tool_read_file_range,
