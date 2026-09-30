@@ -829,73 +829,136 @@ body {
 
   text-align: center;
 }
-.tool-summary {
+.tool-call {
+  max-width: 90%;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--tool-background);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+}
+
+.tool-call-header {
   display: flex;
   align-items: center;
+  gap: 6px;
   width: 100%;
   min-width: 0;
   height: 28px;
   padding: 0 8px;
   border: 0;
   background: transparent;
-  color: inherit;
+  color: var(--fg);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.tool-summary:hover {
+.tool-call-header:hover {
   background: var(--hover-strong);
 }
 
-.tool-summary-icon {
-  flex: 0 0 14px;
-  width: 14px;
-  margin-right: 4px;
-  opacity: 0.65;
-  font-size: 14px;
-  line-height: 1;
+.tool-call-header:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
-.tool-summary-text {
+.tool-call-chevron {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  transition: transform 120ms ease;
+}
+
+.tool-call.expanded .tool-call-chevron {
+  transform: rotate(90deg);
+}
+
+.tool-call-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  opacity: 0.8;
+  opacity: 0.85;
 }
 
-.tool-args {
+.tool-call-meta {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.tool-call.error .tool-call-meta {
+  color: var(--error);
+}
+
+.tool-call-spinner {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-left: auto;
+  border: 1.5px solid var(--fg-dim);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: tool-call-spin 0.8s linear infinite;
+}
+
+@keyframes tool-call-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-call-chevron,
+  .tool-call-spinner {
+    transition: none;
+    animation: none;
+  }
+}
+
+.tool-call-body {
+  border-top: 1px solid var(--border-color);
+}
+
+.tool-call-section + .tool-call-section {
+  border-top: 1px solid var(--border-color);
+}
+
+.tool-call-label {
+  padding: 6px 10px 2px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.tool-call-pre {
   max-height: 320px;
   margin: 0;
-  padding: 8px 10px;
+  padding: 4px 10px 8px;
   overflow: auto;
-  border-top: 1px solid var(--border-color);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
 }
-.tool-details {
-  margin-top: 6px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--tool-background);
 
-  /* Match .chat-message inner spacing and typography */
-  padding: 6px 8px;
-  font-size: 13px;
-  line-height: 1.4;
-  white-space: pre-wrap;
-  max-width: 90%;
+.tool-call-section .code-block {
+  border-radius: 0;
 }
+
+.tool-call-pending {
+  padding: 4px 10px 8px;
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+/* Spacing between blocks comes from .chat-messages' gap, so tool rows line
+   up with regular messages whether they share a group or not. */
 .message-tools {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 8px;
+  gap: 8px;
 }
 .code-block {
   width: 100%;

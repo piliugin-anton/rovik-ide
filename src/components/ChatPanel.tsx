@@ -26,7 +26,7 @@ import { generateChatTitle } from '../lib/chatTitle';
 import { sendChatMessage } from '../lib/aiChat';
 import { AGENT_TOOL_SCHEMAS, executeAgentTool } from '../lib/tools';
 import ModelSettingsPanel from './ModelSettingsPanel';
-import ToolDetails from './ToolDetails';
+import ToolCallBlock from './ToolCallBlock';
 import { isBlank } from '../lib/textUtils';
 import MessageContent from './MessageContent';
 import { toRelativePath } from '../lib/fileTools';
@@ -99,9 +99,14 @@ export default function ChatPanel(props: ChatProps) {
 
   const messages = createMemo<ChatMessage[]>(() => activeDialog()?.messages ?? []);
 
-  const allToolMessages = createMemo(() =>
-    messages().filter((msg) => !msg.error && !msg.pending && (msg.toolCalls || msg.tool_call_id))
-  );
+  // tool_call_id -> result content, so each call can render with its result inline.
+  const toolResults = createMemo(() => {
+    const map = new Map<string, string>();
+    for (const msg of messages()) {
+      if (msg.role === 'tool' && msg.tool_call_id) map.set(msg.tool_call_id, msg.content);
+    }
+    return map;
+  });
 
   const fileSuggestions = createMemo<FileSuggestion[]>(() => {
     if (!fileSuggestionsOpen()) return [];
@@ -578,24 +583,6 @@ export default function ChatPanel(props: ChatProps) {
   function handleModelChange(id: string) {
     setActiveProfileId(id);
     persistAiSettings(profiles(), id);
-  }
-
-  function findToolById(id?: string) {
-    if (!id) return undefined;
-
-    return allToolMessages().reduce((acc: ChatToolCall | undefined, msg) => {
-      // Short-circuit: if we already found the tool, return it immediately
-      if (acc) return acc;
-
-      // Find the tool call with matching id in this message
-      const toolCall = msg.toolCalls?.find((tool) => tool.id === id);
-
-      if (toolCall) {
-        acc = toolCall;
-      }
-
-      return acc;
-    }, undefined);
   }
 
   /*
@@ -1230,17 +1217,9 @@ export default function ChatPanel(props: ChatProps) {
       </Show>
       <div ref={messagesRef} class="chat-messages">
         <For each={messages()} fallback={<div class="empty-state">Ask the model anything</div>}>
+          {/* Tool results render inside their call's block, not as separate rows. */}
           {(m) => (
-            <Show
-              when={m.role !== 'tool'}
-              fallback={
-                <ToolDetails
-                  variant="result"
-                  content={m.content}
-                  toolCall={findToolById(m.tool_call_id)}
-                />
-              }
-            >
+            <Show when={m.role !== 'tool'}>
               <>
                 <Show when={m.pending && m.content.length === 0}>
                   <div
@@ -1283,7 +1262,13 @@ export default function ChatPanel(props: ChatProps) {
                 <Show when={m.toolCalls && m.toolCalls.length > 0}>
                   <div class="message-tools">
                     <For each={m.toolCalls!}>
-                      {(tc) => <ToolDetails variant="call" toolCall={tc} />}
+                      {(tc) => (
+                        <ToolCallBlock
+                          toolCall={tc}
+                          result={toolResults().get(tc.id)}
+                          running={sending()}
+                        />
+                      )}
                     </For>
                   </div>
                 </Show>
