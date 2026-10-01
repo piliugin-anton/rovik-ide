@@ -604,6 +604,85 @@ body {
   overflow-y: auto;
 }
 
+/* Confirm dialog (components/ConfirmDialog.tsx) */
+
+.modal.confirm-dialog {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+}
+
+.confirm-dialog-body {
+  padding: 16px 16px 12px;
+}
+
+.confirm-dialog-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.confirm-dialog-message {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.confirm-dialog-message strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 16px 14px;
+}
+
+.confirm-dialog-actions button {
+  min-width: 72px;
+  padding: 6px 12px;
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.confirm-dialog-actions button:hover {
+  background: var(--bg-control-hover);
+}
+
+.confirm-dialog-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.modal .confirm-dialog-actions button.primary {
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  border-color: transparent;
+}
+
+.modal .confirm-dialog-actions button.primary:hover {
+  background: var(--accent-hover);
+}
+
+.modal .confirm-dialog-actions button.danger-filled {
+  background: var(--error);
+  color: var(--fg-on-accent);
+  border-color: transparent;
+}
+
+.modal .confirm-dialog-actions button.danger-filled:hover {
+  background: var(--error-strong);
+}
+
 .profile-row {
   display: flex;
   align-items: center;
@@ -691,7 +770,7 @@ body {
   width: 480px;
 }
 
-.modal button:not(.icon-button):not(.link-button):not(.vision-toggle) {
+.model-settings button:not(.icon-button):not(.link-button):not(.vision-toggle) {
   padding: 5px 10px;
   background: var(--bg-control);
   color: var(--fg);
@@ -702,16 +781,17 @@ body {
   cursor: pointer;
 }
 
-.modal button:not(.icon-button):not(.link-button):not(.vision-toggle):hover:not(:disabled) {
+.model-settings
+  button:not(.icon-button):not(.link-button):not(.vision-toggle):hover:not(:disabled) {
   background: var(--bg-control-hover);
 }
 
-.modal button:disabled {
+.model-settings button:disabled {
   opacity: 0.55;
   cursor: default;
 }
 
-.modal button.danger:hover:not(:disabled) {
+.model-settings button.danger:hover:not(:disabled) {
   color: var(--error);
 }
 
@@ -840,7 +920,7 @@ body {
   font-size: 12px;
 }
 
-.modal button.vision-toggle {
+.model-settings button.vision-toggle {
   flex: 0 0 auto;
   padding: 1px 6px;
   background: transparent;
@@ -850,7 +930,7 @@ body {
   font-size: 10px;
 }
 
-.modal button.vision-toggle.on {
+.model-settings button.vision-toggle.on {
   color: var(--fg-on-accent);
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -933,6 +1013,15 @@ body {
 .chat-new-button:hover {
   background: var(--bg-control-hover);
 }
+.chat-history-error {
+  padding: 6px 10px;
+  background: var(--error-soft);
+  border-bottom: 1px solid var(--border);
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .chat-history-list {
   overflow-y: auto;
 }
@@ -945,6 +1034,9 @@ body {
 .chat-history-item {
   display: flex;
   align-items: stretch;
+  /* GTK draws overlay scrollbars on top of content, so space has to be
+     left for them explicitly (scrollbar-gutter only works for classic ones). */
+  padding-right: 10px;
   border-bottom: 1px solid var(--border-subtle);
 }
 .chat-history-item:hover {
@@ -974,6 +1066,69 @@ body {
   white-space: nowrap;
   font-size: 12px;
 }
+.chat-history-item-snippet {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.chat-history-item mark {
+  background: var(--accent-soft);
+  color: var(--fg-on-accent);
+  border-radius: 2px;
+}
+
+.chat-history-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 8px;
+  padding: 0 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.chat-history-search:focus-within {
+  border-color: var(--accent);
+}
+
+.chat-history-search svg {
+  flex: 0 0 auto;
+}
+
+.chat-history-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.chat-history-search-clear {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  background: none;
+  border: 0;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-history-search-clear:hover {
+  color: var(--fg);
+}
+
 .chat-history-item-date {
   color: var(--fg-dim);
   font-size: 10px;

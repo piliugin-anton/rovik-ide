@@ -40,6 +40,8 @@ export interface ModelProfile {
   stream: boolean;
   /** Model accepts image input; enables the screenshot tool. */
   vision: boolean;
+  /** Context window in tokens, when known; sizes the history sent to the model. */
+  contextTokens?: number;
 }
 
 export interface ProviderModel {
@@ -47,6 +49,7 @@ export interface ProviderModel {
   ownedBy?: string; // `owned_by` from GET /models, when present
   enabled: boolean; // shown in the chat model picker
   vision?: boolean; // accepts image input (set by the user; /models doesn't say)
+  contextLength?: number; // context window in tokens, if GET /models reported it
 }
 
 /** One OpenAI-compatible endpoint + credentials, with the models it serves. */

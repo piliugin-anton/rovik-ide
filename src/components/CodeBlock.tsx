@@ -92,12 +92,31 @@ export default function CodeBlock(props: { code: string; language?: string }) {
 
         const model = editor.getModel();
 
-        if (model && model.getValue() !== code) {
-          model.setValue(code);
-        }
-
         if (model) {
-          monaco.editor.setModelLanguage(model, resolveLanguage(language));
+          const current = model.getValue();
+          if (current !== code) {
+            if (code.startsWith(current)) {
+              /*
+               * Streaming only ever appends. Inserting just the new tail
+               * keeps Monaco's tokenization of earlier lines; setValue()
+               * would re-tokenize the whole block every frame.
+               */
+              const end = model.getFullModelRange().getEndPosition();
+              model.applyEdits([
+                {
+                  range: new monaco.Range(end.lineNumber, end.column, end.lineNumber, end.column),
+                  text: code.slice(current.length),
+                },
+              ]);
+            } else {
+              model.setValue(code);
+            }
+          }
+
+          const languageId = resolveLanguage(language);
+          if (model.getLanguageId() !== languageId) {
+            monaco.editor.setModelLanguage(model, languageId);
+          }
         }
 
         if (containerRef) {

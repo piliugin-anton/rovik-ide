@@ -446,6 +446,10 @@ pub async fn send_chat_message(
 pub struct RemoteModel {
     id: String,
     owned_by: Option<String>,
+    /// Context window in tokens, when the server reports it. There's no
+    /// standard field: OpenRouter/Together use `context_length`, vLLM
+    /// `max_model_len`, Groq `context_window`.
+    context_length: Option<u64>,
 }
 
 /// `GET {base_url}/models` on an OpenAI-compatible server.
@@ -494,7 +498,16 @@ pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Ve
         .filter_map(|m| {
             let id = m.get("id")?.as_str()?.to_string();
             let owned_by = m.get("owned_by").and_then(|o| o.as_str()).map(str::to_string);
-            Some(RemoteModel { id, owned_by })
+            let context_length = ["context_length", "max_model_len", "context_window"]
+                .iter()
+                .find_map(|key| m.get(*key).and_then(|v| v.as_u64()))
+                .or_else(|| {
+                    m.get("top_provider")
+                        .and_then(|p| p.get("context_length"))
+                        .and_then(|v| v.as_u64())
+                })
+                .filter(|&n| n > 0);
+            Some(RemoteModel { id, owned_by, context_length })
         })
         .collect();
 

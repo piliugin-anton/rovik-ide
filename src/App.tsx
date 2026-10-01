@@ -37,6 +37,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import ContextMenuItem from './components/ContextMenuItem';
 import { GitPanel } from './components/GitPanel';
+import { ConfirmDialogHost } from './components/ConfirmDialog';
 
 let unlistenFSChanges: (() => void) | undefined;
 
@@ -973,6 +974,7 @@ export default function App() {
           </ul>
         </div>
       </Show>
+      <ConfirmDialogHost />
     </div>
   );
 }

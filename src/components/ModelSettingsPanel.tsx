@@ -107,9 +107,16 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
       const merged: ProviderModel[] = remote.map((r) => {
         const existing = known.get(r.id);
         known.delete(r.id);
-        if (existing) return { ...existing, ownedBy: r.owned_by ?? existing.ownedBy };
+        const contextLength = r.context_length ?? undefined;
+        if (existing) {
+          return {
+            ...existing,
+            ownedBy: r.owned_by ?? existing.ownedBy,
+            contextLength: contextLength ?? existing.contextLength,
+          };
+        }
         added++;
-        return { id: r.id, ownedBy: r.owned_by ?? undefined, enabled: firstFetch };
+        return { id: r.id, ownedBy: r.owned_by ?? undefined, contextLength, enabled: firstFetch };
       });
 
       // Models added by hand that the server didn't list stay put.

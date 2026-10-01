@@ -3,6 +3,8 @@ use std::{collections::HashMap, sync::Mutex};
 use tauri::Manager;
 
 mod agent;
+mod atomic_file;
+mod chat_store;
 mod browser_tools;
 mod agent_tools;
 mod filesystem;
@@ -32,8 +34,9 @@ pub fn run() {
             filesystem::write_file_content,
             filesystem::load_ai_settings,
             filesystem::save_ai_settings,
-            filesystem::load_chat_history,
-            filesystem::save_chat_history,
+            chat_store::load_chat_history,
+            chat_store::save_chat_dialog,
+            chat_store::delete_chat_dialog,
             filesystem::load_last_project,
             filesystem::save_last_project,
             filesystem::get_path_id,

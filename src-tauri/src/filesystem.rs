@@ -580,34 +580,7 @@ pub fn load_ai_settings(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn save_ai_settings(app: AppHandle, json: String) -> Result<(), String> {
     let path = ai_settings_path(&app)?;
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    fs::write(&path, json).map_err(|e| e.to_string())
-}
-
-fn chat_history_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data directory: {e}"))?;
-    Ok(dir.join("chat-history.json"))
-}
-
-#[tauri::command]
-pub fn load_chat_history(app: AppHandle) -> Result<String, String> {
-    let path = chat_history_path(&app)?;
-    if !path.exists() {
-        return Ok(r#"{"dialogs":[]}"#.to_string());
-    }
-    fs::read_to_string(&path).map_err(|e| format!("Failed to read chat history: {e}"))
-}
-
-#[tauri::command]
-pub fn save_chat_history(app: AppHandle, json: String) -> Result<(), String> {
-    let path = chat_history_path(&app)?;
-    fs::write(&path, json).map_err(|e| format!("Failed to save chat history: {e}"))
+    crate::atomic_file::write_atomic(&path, json.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -671,5 +644,6 @@ pub fn save_last_project(
     };
     let json = serde_json::to_string(&data)
         .map_err(|e| format!("Failed to serialize last project: {e}"))?;
-    fs::write(&project_path, json).map_err(|e| format!("Failed to save last project: {e}"))
+    crate::atomic_file::write_atomic(&project_path, json.as_bytes())
+        .map_err(|e| format!("Failed to save last project: {e}"))
 }

@@ -189,6 +189,7 @@ export function resolveProfile(
     apiKey: provider.apiKey,
     stream: provider.stream,
     vision: !!model.vision,
+    contextTokens: model.contextLength,
   };
 }
 
@@ -214,6 +215,7 @@ export function reconcileSelection(
 export interface RemoteModel {
   id: string;
   owned_by?: string | null;
+  context_length?: number | null;
 }
 
 export function fetchModels(baseUrl: string, apiKey: string): Promise<RemoteModel[]> {

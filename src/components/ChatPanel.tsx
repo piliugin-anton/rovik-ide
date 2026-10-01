@@ -29,14 +29,17 @@ import {
   resolveProfile,
   saveAiSettings,
 } from '../lib/aiSettings';
-import { loadChatHistory, saveChatHistory } from '../lib/chatHistory';
+import { createChatSaver, loadChatHistory } from '../lib/chatHistory';
 import { generateChatTitle } from '../lib/chatTitle';
 import { sendChatMessage } from '../lib/aiChat';
 import { agentToolsFor, executeAgentTool } from '../lib/tools';
+import { fitHistoryToBudget } from '../lib/contextBudget';
 import ModelSettingsPanel from './ModelSettingsPanel';
 import ModelPicker from './ModelPicker';
+import { confirmDialog } from './ConfirmDialog';
 import ToolCallBlock from './ToolCallBlock';
 import { isBlank } from '../lib/textUtils';
+import { pruneSearchCache, searchChats, type Highlighted } from '../lib/chatSearch';
 import {
   clearPendingDraft,
   listPendingDrafts,
@@ -70,8 +73,13 @@ export default function ChatPanel(props: ChatProps) {
   const [input, setInput] = createSignal('');
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [historyOpen, setHistoryOpen] = createSignal(false);
+  const [historyQuery, setHistoryQuery] = createSignal('');
+  /** Lags historyQuery slightly so fast typing doesn't search on every key. */
+  const [searchQuery, setSearchQuery] = createSignal('');
   const [sending, setSending] = createSignal(false);
   const [loadingHistory, setLoadingHistory] = createSignal(true);
+  /** Set when the chat store couldn't be read; saving is off for the session. */
+  const [historyLoadError, setHistoryLoadError] = createSignal<string | null>(null);
 
   const [isGeneratingTitle, setIsGeneratingTitle] = createSignal(false);
 
@@ -117,6 +125,69 @@ export default function ChatPanel(props: ChatProps) {
   const activeDialog = createMemo(() => dialogs().find((d) => d.id === activeDialogId()) ?? null);
 
   const messages = createMemo<ChatMessage[]>(() => activeDialog()?.messages ?? []);
+
+  let searchDebounce: number | undefined;
+  createEffect(
+    on(historyQuery, (query) => {
+      window.clearTimeout(searchDebounce);
+      // Clearing is instant; typing waits for a short pause.
+      if (!query.trim()) setSearchQuery('');
+      else searchDebounce = window.setTimeout(() => setSearchQuery(query), 120);
+    })
+  );
+  onCleanup(() => window.clearTimeout(searchDebounce));
+
+  /*
+   * Search runs over a snapshot of the dialogs, not dialogs() itself: while
+   * a reply streams, dialogs() changes every frame, and re-ranking all chats
+   * that often is wasted work. The snapshot refreshes at most once a second
+   * during streaming, and immediately when the query changes.
+   */
+  const SEARCH_REFRESH_MS = 1000;
+  const [searchCorpus, setSearchCorpus] = createSignal<ChatDialog[]>([]);
+  let corpusTimer: number | undefined;
+
+  createEffect(
+    on(dialogs, () => {
+      if (!searchQuery().trim() || corpusTimer !== undefined) return;
+      corpusTimer = window.setTimeout(() => {
+        corpusTimer = undefined;
+        setSearchCorpus(dialogs());
+      }, SEARCH_REFRESH_MS);
+    })
+  );
+  createEffect(
+    on(searchQuery, (query) => {
+      if (query.trim()) setSearchCorpus(dialogs());
+    })
+  );
+  onCleanup(() => window.clearTimeout(corpusTimer));
+
+  /** null when not searching; otherwise the ranked hits. */
+  const searchHits = createMemo(() => {
+    const query = searchQuery().trim();
+    return query ? searchChats(searchCorpus(), query) : null;
+  });
+
+  /*
+   * Rows for the chat list. <For> tracks items by identity, so rows are
+   * cached per dialog object: an unchanged dialog keeps the same row and its
+   * DOM, and only the chat that actually changed re-renders.
+   */
+  type HistoryRow = { dialog: ChatDialog; title: Highlighted; snippet?: Highlighted };
+  const rowCache = new WeakMap<ChatDialog, HistoryRow>();
+  const historyRows = createMemo<HistoryRow[]>(
+    () =>
+      searchHits() ??
+      dialogs().map((dialog) => {
+        let row = rowCache.get(dialog);
+        if (!row) {
+          row = { dialog, title: { text: dialog.title, ranges: [] } };
+          rowCache.set(dialog, row);
+        }
+        return row;
+      })
+  );
 
   // tool_call_id -> result content, so each call can render with its result inline.
   const toolResults = createMemo(() => {
@@ -186,10 +257,20 @@ export default function ChatPanel(props: ChatProps) {
       setProviders(settings.providers);
       setSelection(reconcileSelection(settings.providers, settings.active));
 
-      setDialogs(history);
+      if (!history.ok) {
+        /*
+         * Never treat a failed load as "no chats": the next save would then
+         * look like the whole history. Work in memory only until restart.
+         */
+        chatSaver.disable();
+        setHistoryLoadError(history.error);
+      }
 
-      if (history.length > 0) {
-        setActiveDialogId(history[0].id);
+      const loaded = history.ok ? history.dialogs : [];
+      setDialogs(loaded);
+
+      if (loaded.length > 0) {
+        setActiveDialogId(loaded[0].id);
       } else {
         createNewDialog();
       }
@@ -227,49 +308,15 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  let saveTimer: number | null = null;
-
-  function persistDialogs(nextDialogs: ChatDialog[]) {
-    setDialogs(nextDialogs);
-
-    /*
-     * Debounce writes while the model is streaming.
-     *
-     * Without this, every token would cause a filesystem write.
-     */
-    if (saveTimer !== null) {
-      window.clearTimeout(saveTimer);
-    }
-
-    saveTimer = window.setTimeout(() => {
-      saveTimer = null;
-
-      void saveChatHistory(nextDialogs).catch((err) => {
-        console.error('Failed to persist chat history:', err);
-      });
-    }, 150);
-  }
+  // Saves only the chats that changed (lib/chatHistory.ts).
+  const chatSaver = createChatSaver((id) => dialogs().find((d) => d.id === id));
 
   async function flushDialogPersistence() {
-    if (saveTimer !== null) {
-      window.clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-
-    try {
-      await saveChatHistory(dialogs());
-    } catch (err) {
-      console.error('Failed to persist chat history:', err);
-    }
+    await chatSaver.flush();
   }
 
   onCleanup(() => {
-    if (saveTimer !== null) {
-      window.clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-
-    void saveChatHistory(dialogs());
+    void chatSaver.flush();
   });
 
   /*
@@ -298,7 +345,7 @@ export default function ChatPanel(props: ChatProps) {
      */
     setReferencedFiles([]);
 
-    void saveChatHistory([dialog, ...dialogs()]);
+    chatSaver.markDirty(dialog.id);
 
     return dialog;
   }
@@ -319,12 +366,32 @@ export default function ChatPanel(props: ChatProps) {
     restoreDraftForDialog(id);
   }
 
+  async function confirmAndDeleteDialog(dialog: ChatDialog) {
+    const count = dialog.messages.filter((m) => m.role === 'user' || m.role === 'assistant').length;
+    const confirmed = await confirmDialog({
+      title: 'Delete this chat?',
+      message: (
+        <>
+          <strong>{dialog.title || 'Untitled chat'}</strong>
+          {count > 0 ? ` and its ${count} message${count === 1 ? '' : 's'}` : ''} will be
+          permanently deleted.
+        </>
+      ),
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (confirmed) await deleteDialog(dialog.id);
+  }
+
   async function deleteDialog(id: string) {
     const remaining = dialogs().filter((dialog) => dialog.id !== id);
+    pruneSearchCache(remaining);
 
     takePendingDraft(id);
 
     setDialogs(remaining);
+    // A deleted chat must leave search results now, not at the next refresh.
+    if (searchQuery().trim()) setSearchCorpus(remaining);
 
     if (activeDialogId() === id) {
       if (remaining.length > 0) {
@@ -335,7 +402,7 @@ export default function ChatPanel(props: ChatProps) {
       }
     }
 
-    await saveChatHistory(remaining.length > 0 ? remaining : dialogs());
+    await chatSaver.remove(id);
   }
 
   /*
@@ -763,9 +830,8 @@ export default function ChatPanel(props: ChatProps) {
    * because the user can switch active dialogs while that work is running.
    */
   function updateDialog(id: string, updater: (dialog: ChatDialog) => ChatDialog) {
-    const next = dialogs().map((dialog) => (dialog.id === id ? updater(dialog) : dialog));
-
-    persistDialogs(next);
+    setDialogs((current) => current.map((dialog) => (dialog.id === id ? updater(dialog) : dialog)));
+    chatSaver.markDirty(id);
   }
 
   /**
@@ -1113,10 +1179,22 @@ export default function ChatPanel(props: ChatProps) {
     // the screenshot tool only for models marked as accepting images.
     const tools = agentToolsFor({ hasProject: !!root, vision: profile.vision });
 
+    // Only the copy sent to the model is trimmed; the stored chat is untouched.
+    const fitted = fitHistoryToBudget(history, {
+      contextTokens: profile.contextTokens,
+      vision: profile.vision,
+    });
+    if (fitted.trimmed) {
+      console.info(
+        `Context budget: ~${fitted.estimatedTokens}/${fitted.budget} tokens` +
+          (fitted.droppedTurns ? `, ${fitted.droppedTurns} oldest turn(s) omitted` : '')
+      );
+    }
+
     try {
       await sendChatMessage({
         profile,
-        messages: history,
+        messages: fitted.messages,
         channel,
         tools,
       });
@@ -1503,6 +1581,50 @@ export default function ChatPanel(props: ChatProps) {
             </button>
           </div>
 
+          <Show when={!loadingHistory() && dialogs().length > 0}>
+            <div class="chat-history-search">
+              <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                <circle
+                  cx="7"
+                  cy="7"
+                  r="4.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                />
+                <path
+                  d="m10.5 10.5 3 3"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                />
+              </svg>
+              <input
+                value={historyQuery()}
+                onInput={(e) => setHistoryQuery(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && historyQuery()) {
+                    e.preventDefault();
+                    setHistoryQuery('');
+                  }
+                }}
+                placeholder="Search chats"
+                spellcheck={false}
+                aria-label="Search chats by title or message"
+              />
+              <Show when={historyQuery()}>
+                <button
+                  class="chat-history-search-clear"
+                  onClick={() => setHistoryQuery('')}
+                  aria-label="Clear search"
+                  title="Clear"
+                >
+                  ×
+                </button>
+              </Show>
+            </div>
+          </Show>
+
           <Show
             when={!loadingHistory()}
             fallback={<div class="chat-history-empty">Loading...</div>}
@@ -1512,29 +1634,42 @@ export default function ChatPanel(props: ChatProps) {
               fallback={<div class="chat-history-empty">No conversations yet</div>}
             >
               <div class="chat-history-list">
-                <For each={dialogs()}>
-                  {(dialog) => (
+                <For
+                  each={historyRows()}
+                  fallback={<div class="chat-history-empty">No chats match "{searchQuery()}"</div>}
+                >
+                  {(item) => (
                     <div
                       class="chat-history-item"
                       classList={{
-                        active: dialog.id === activeDialogId(),
+                        active: item.dialog.id === activeDialogId(),
                       }}
                     >
                       <button
                         class="chat-history-item-main"
-                        onClick={() => selectDialog(dialog.id)}
+                        onClick={() => selectDialog(item.dialog.id)}
                       >
-                        <span class="chat-history-item-title">{dialog.title}</span>
+                        <span class="chat-history-item-title">
+                          <HighlightedText value={item.title} />
+                        </span>
+
+                        <Show when={item.snippet}>
+                          {(snippet) => (
+                            <span class="chat-history-item-snippet">
+                              <HighlightedText value={snippet()} />
+                            </span>
+                          )}
+                        </Show>
 
                         <span class="chat-history-item-date">
-                          {new Date(dialog.updatedAt).toLocaleString()}
+                          {new Date(item.dialog.updatedAt).toLocaleString()}
                         </span>
                       </button>
 
                       <button
                         class="chat-history-delete"
                         title="Delete chat"
-                        onClick={() => void deleteDialog(dialog.id)}
+                        onClick={() => void confirmAndDeleteDialog(item.dialog)}
                       >
                         ×
                       </button>
@@ -1544,6 +1679,12 @@ export default function ChatPanel(props: ChatProps) {
               </div>
             </Show>
           </Show>
+        </div>
+      </Show>
+      <Show when={historyLoadError()}>
+        <div class="chat-history-error" role="alert" title={historyLoadError() ?? undefined}>
+          Chat history couldn't be loaded, so nothing in this session will be saved. Your saved
+          chats are untouched; restart the app to try again.
         </div>
       </Show>
       <Show when={!props.rootPath()}>
@@ -1709,4 +1850,22 @@ export default function ChatPanel(props: ChatProps) {
       </Show>
     </div>
   );
+}
+
+/** Renders text with the given [start, end) ranges wrapped in <mark>. */
+function HighlightedText(props: { value: Highlighted }) {
+  const parts = createMemo(() => {
+    const { text, ranges } = props.value;
+    const out: { text: string; mark: boolean }[] = [];
+    let cursor = 0;
+    for (const [start, end] of ranges) {
+      if (start > cursor) out.push({ text: text.slice(cursor, start), mark: false });
+      out.push({ text: text.slice(start, end), mark: true });
+      cursor = end;
+    }
+    if (cursor < text.length) out.push({ text: text.slice(cursor), mark: false });
+    return out;
+  });
+
+  return <For each={parts()}>{(part) => (part.mark ? <mark>{part.text}</mark> : part.text)}</For>;
 }
