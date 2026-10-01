@@ -7,7 +7,6 @@ import {
   createEffect,
   createMemo,
   createSignal,
-  For,
   Index,
   on,
   onCleanup,
@@ -16,6 +15,7 @@ import {
 } from 'solid-js';
 import type { DialogSummary } from '../types';
 import type { Highlighted } from '../lib/chatSearch';
+import HighlightedText from './HighlightedText';
 
 const ROW_HEIGHT = 44;
 const ROW_WITH_SNIPPET = 60;
@@ -215,12 +215,15 @@ export default function ChatList(props: {
                     onClick={() => props.onSelect(entry().row)}
                   >
                     <span class="chat-history-item-title">
-                      <HighlightedText value={entry().row.title} />
+                      <HighlightedText
+                        text={entry().row.title.text}
+                        ranges={entry().row.title.ranges}
+                      />
                     </span>
                     <Show when={entry().row.snippet}>
                       {(snippet) => (
                         <span class="chat-history-item-snippet">
-                          <HighlightedText value={snippet()} />
+                          <HighlightedText text={snippet().text} ranges={snippet().ranges} />
                         </span>
                       )}
                     </Show>
@@ -243,21 +246,4 @@ export default function ChatList(props: {
       </Show>
     </>
   );
-}
-
-/** Renders text with the given [start, end) ranges wrapped in <mark>. */
-function HighlightedText(props: { value: Highlighted }) {
-  const parts = createMemo(() => {
-    const { text, ranges } = props.value;
-    const out: { text: string; mark: boolean }[] = [];
-    let cursor = 0;
-    for (const [start, end] of ranges) {
-      if (start > cursor) out.push({ text: text.slice(cursor, start), mark: false });
-      out.push({ text: text.slice(start, end), mark: true });
-      cursor = end;
-    }
-    if (cursor < text.length) out.push({ text: text.slice(cursor), mark: false });
-    return out;
-  });
-  return <For each={parts()}>{(part) => (part.mark ? <mark>{part.text}</mark> : part.text)}</For>;
 }

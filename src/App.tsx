@@ -28,7 +28,13 @@ import {
   copyPath as copyPathOnDisk,
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
-import type { FileWatchPayload, LastProjectOpenFile, OpenFile, TreeRow } from './types';
+import type {
+  FileWatchPayload,
+  LastProjectOpenFile,
+  OpenFile,
+  RevealRequest,
+  TreeRow,
+} from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
@@ -38,6 +44,7 @@ import { invoke } from '@tauri-apps/api/core';
 import ContextMenuItem from './components/ContextMenuItem';
 import { GitPanel } from './components/GitPanel';
 import { ConfirmDialogHost } from './components/ConfirmDialog';
+import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 
 let unlistenFSChanges: (() => void) | undefined;
 
@@ -61,6 +68,9 @@ export default function App() {
   const [rootId, setRootId] = createSignal<string | null>(null);
   const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
   const [activePath, setActivePath] = createSignal<string | null>(null);
+  /** The Files tab shows search results instead of the tree while searching. */
+  const [searchActive, setSearchActive] = createSignal(false);
+  const [revealRequest, setRevealRequest] = createSignal<RevealRequest | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat' | 'git'>('files');
   const [cursorInfo, setCursorInfo] = createSignal<{
     line: number;
@@ -194,7 +204,8 @@ export default function App() {
   }
 
   async function openFile(row: TreeRow) {
-    const existing = openFiles().find((f) => f.id === row.id);
+    // By path too: a file opened from search results may carry a different id.
+    const existing = openFiles().find((f) => f.id === row.id || f.path === row.path);
     if (existing) {
       setActivePath(existing.path);
       return;
@@ -219,6 +230,34 @@ export default function App() {
     } catch (err) {
       console.error(`Failed to open ${row.path}:`, err);
       window.alert(String(err));
+    }
+  }
+
+  /** Opens a search result with the match selected. */
+  async function openSearchMatch(target: SearchMatchTarget) {
+    const root = rootPath();
+    if (!root) return;
+    const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
+    const relative = target.relativePath.replace(/[\\/]/g, sep);
+    const path = `${root.replace(/[\\/]+$/, '')}${sep}${relative}`;
+    const name = relative.split(sep).pop() ?? relative;
+
+    const row: TreeRow = tree.files().find((r) => r.path === path) ?? {
+      id: path,
+      path,
+      name,
+      isDir: false,
+      depth: 0,
+    };
+    await openFile(row);
+    if (activePath() === path) {
+      setRevealRequest({
+        path,
+        line: target.line,
+        column: target.column,
+        length: target.length,
+        nonce: Date.now(),
+      });
     }
   }
 
@@ -720,6 +759,13 @@ export default function App() {
             <button onClick={handlePickFolder}>Open project...</button>
           </div>
           <Show when={rootPath()} fallback={<div class="empty-state">No project open</div>}>
+            <SearchPanel
+              rootPath={rootPath}
+              onOpenMatch={(target) => void openSearchMatch(target)}
+              onActiveChange={setSearchActive}
+            />
+          </Show>
+          <Show when={rootPath() && !searchActive()}>
             <FileTree
               forwardRef={setFileTreeEl}
               rows={displayRows}
@@ -774,6 +820,8 @@ export default function App() {
                 onChange={(value) => updateContent(path, value)}
                 onSave={saveActiveFile}
                 onCursorChange={setCursorInfo}
+                reveal={revealRequest}
+                onRevealed={() => setRevealRequest(null)}
               />
             )}
           </Show>

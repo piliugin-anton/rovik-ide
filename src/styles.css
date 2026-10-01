@@ -109,6 +109,222 @@ body {
   background: var(--bg-control-hover);
 }
 
+/* Search in files (components/SearchPanel.tsx) */
+
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* While searching, results take the space the file tree normally uses. */
+.search-panel.active {
+  flex: 1;
+  min-height: 0;
+  border-bottom: 0;
+}
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.search-input-wrap {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.search-input-wrap:focus-within {
+  border-color: var(--accent);
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.search-glob {
+  flex: none;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.search-glob:focus {
+  border-color: var(--accent);
+}
+
+.search-toggle,
+.search-icon-button {
+  flex: 0 0 auto;
+  min-width: 22px;
+  height: 20px;
+  margin-right: 2px;
+  padding: 0 4px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.search-toggle.whole-word {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.search-toggle:hover,
+.search-icon-button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.search-toggle[aria-pressed='true'],
+.search-icon-button[aria-pressed='true'] {
+  color: var(--fg-on-accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.search-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 20px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.search-error {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--error-soft);
+  color: var(--error);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.search-results {
+  flex: 1;
+  min-height: 0;
+  margin: 0 -8px -8px;
+  overflow-y: auto;
+  transition: opacity 0.15s;
+}
+
+/* Previous results stay visible, dimmed, while a new search runs. */
+.search-results.stale {
+  opacity: 0.6;
+}
+
+.search-file-header,
+.search-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 12px 3px 8px;
+  background: none;
+  border: 0;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.search-file-header:hover,
+.search-line:hover {
+  background: var(--row-hover);
+}
+
+.search-chevron {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  transform: rotate(90deg);
+  transition: transform 0.12s ease;
+}
+
+.search-file-header[aria-expanded='false'] .search-chevron {
+  transform: rotate(0deg);
+}
+
+.search-file-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.search-file-dir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.search-file-count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--hover-strong);
+  color: var(--fg-dim);
+  font-size: 10px;
+  text-align: center;
+}
+
+.search-line {
+  padding-left: 26px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 22px;
+}
+
+.search-line-number {
+  flex: 0 0 auto;
+  min-width: 28px;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+}
+
+.search-line-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.search-line-text mark {
+  background: var(--accent-soft);
+  color: var(--fg-on-accent);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 .file-tree {
   flex: 1;
   overflow-y: auto;

@@ -5,7 +5,7 @@ import type {
   BrowserScreenshot,
   DirEntryInfo,
   ToolDirEntry,
-  ToolSearchMatch,
+  ToolSearchResult,
   WebSearchHit,
 } from '../types';
 
@@ -77,13 +77,22 @@ export async function toolListDir(
   return invoke<ToolDirEntry[]>('tool_list_dir', { root, path, maxDepth });
 }
 
-export async function toolSearchCode(
+export interface SearchCodeOptions {
+  /** ripgrep-style globs, comma-separated; "!" excludes. */
+  pathGlob?: string;
+  maxResults?: number;
+  regex?: boolean;
+  caseSensitive?: boolean;
+  contextLines?: number;
+}
+
+/** Project search on ripgrep's engine (src-tauri/src/code_search.rs). */
+export function toolSearchCode(
   root: string,
   query: string,
-  pathGlob?: string,
-  maxResults?: number
-): Promise<ToolSearchMatch[]> {
-  return invoke<ToolSearchMatch[]>('tool_search_code', { root, query, pathGlob, maxResults });
+  options: SearchCodeOptions = {}
+): Promise<ToolSearchResult> {
+  return invoke<ToolSearchResult>('tool_search_code', { root, query, ...options });
 }
 
 export async function toolReadFileRange(
@@ -114,4 +123,23 @@ export function toolBrowseUrl(url: string, maxChars?: number): Promise<BrowsedPa
 
 export function toolBrowserScreenshot(url?: string): Promise<BrowserScreenshot> {
   return invoke('browser_screenshot', { url });
+}
+
+export interface SearchInFilesOptions {
+  regex?: boolean;
+  caseSensitive?: boolean;
+  wholeWord?: boolean;
+  /** Comma-separated ripgrep-style globs, e.g. "src/**, *.ts". */
+  include?: string;
+  exclude?: string;
+  maxResults?: number;
+}
+
+/** Files-tab search (src-tauri/src/code_search.rs, ripgrep engine). */
+export function searchInFiles(
+  root: string,
+  query: string,
+  options: SearchInFilesOptions = {}
+): Promise<ToolSearchResult> {
+  return invoke<ToolSearchResult>('search_in_files', { root, query, ...options });
 }

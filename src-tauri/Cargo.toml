@@ -31,6 +31,9 @@ base64 = "0.23.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11.0"
 tauri-plugin-single-instance = "2.5.2"
+grep-searcher = "0.1.17"
+grep-regex = "0.1.14"
+grep-matcher = "0.1.9"
 
 # Keep release builds small and light — matters for a "low memory" tool.
 [profile.release]

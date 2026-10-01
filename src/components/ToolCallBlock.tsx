@@ -121,8 +121,12 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
       return { count: countLines(result) };
     case 'list_dir':
       return { count: result.startsWith('(empty') ? 0 : countLines(result) };
-    case 'search_code':
-      return { count: result.trim() === 'No matches.' ? 0 : countLines(result) };
+    case 'search_code': {
+      // First line: "12 matches in 3 files" (context lines aren't matches).
+      if (result.trim() === 'No matches.') return { count: 0 };
+      const count = Number(result.match(/^(\d+) match/)?.[1]);
+      return Number.isFinite(count) ? { count } : { count: countLines(result) };
+    }
     case 'web_search':
       return { count: result.split('\n').filter((line) => /^\d+\. /.test(line)).length };
     case 'browse_url': {

@@ -1,3 +1,4 @@
+import type { ToolSearchResult } from '../types';
 import {
   toolBrowseUrl,
   toolBrowserScreenshot,
@@ -89,17 +90,34 @@ export const AGENT_TOOL_SCHEMAS = [
     function: {
       name: 'search_code',
       description:
-        'Case-insensitive text search across project files, skipping ignored and binary files. Returns ' +
-        'matching file paths, line numbers, and the matching line text. Use this to find where something ' +
-        'is defined or used before reading whole files.',
+        'Fast project-wide search (ripgrep engine), skipping ignored and binary files. Literal text by ' +
+        'default, or a regular expression with regex: true. Case-insensitive unless case_sensitive is ' +
+        'true. Returns matching lines as path:line: text. Use it to find where something is defined or ' +
+        'used before reading whole files.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Text to search for.' },
+          query: {
+            type: 'string',
+            description:
+              'Text to search for, or a Rust-syntax regular expression when regex is true.',
+          },
+          regex: {
+            type: 'boolean',
+            description:
+              'Treat query as a regular expression, e.g. "fn\\s+handle_\\w+". Default false.',
+          },
+          case_sensitive: { type: 'boolean', description: 'Match case exactly. Default false.' },
           path_glob: {
             type: 'string',
             description:
-              'Optional simple filter with a leading/trailing wildcard, e.g. "*.ts" or "src/*".',
+              'Optional ripgrep-style globs, comma-separated. "*.ts" matches at any depth, ' +
+              '"src/**/*.rs" is relative to the project root, a leading "!" excludes ' +
+              '(e.g. "*.ts, !*.test.ts").',
+          },
+          context_lines: {
+            type: 'integer',
+            description: 'Lines of context before and after each match (0-5, default 0).',
           },
           max_results: {
             type: 'integer',
@@ -318,17 +336,38 @@ async function executeFileTool(root: string, name: string, args: ToolArgs): Prom
     case 'search_code': {
       const query = asString(args.query);
       if (!query) return 'Error: "query" is required.';
-      const matches = await toolSearchCode(
-        root,
-        query,
-        asString(args.path_glob),
-        asNumber(args.max_results)
-      );
-      if (matches.length === 0) return 'No matches.';
-      return matches.map((m) => `${m.path}:${m.line}: ${m.text}`).join('\n');
+      const result = await toolSearchCode(root, query, {
+        pathGlob: asString(args.path_glob),
+        maxResults: asNumber(args.max_results),
+        regex: args.regex === true,
+        caseSensitive: args.case_sensitive === true,
+        contextLines: asNumber(args.context_lines),
+      });
+      return formatSearchResult(result);
     }
 
     default:
       return `Error: unknown tool "${name}".`;
   }
+}
+
+/**
+ * ripgrep-style text: "path:line: text" for matches, "path-line- text" for
+ * context, "--" between separate groups. The first line is a summary the
+ * tool block header reads its count from.
+ */
+export function formatSearchResult(result: ToolSearchResult): string {
+  if (result.matchCount === 0) return 'No matches.';
+  const files = result.fileCount === 1 ? 'file' : 'files';
+  const out = [
+    `${result.matchCount} ${result.matchCount === 1 ? 'match' : 'matches'} in ${result.fileCount} ${files}` +
+      (result.truncated ? ' (result limit reached; narrow the query or path_glob)' : ''),
+  ];
+  let prev: { path: string; line: number } | null = null;
+  for (const l of result.lines) {
+    if (prev && (prev.path !== l.path || l.line > prev.line + 1)) out.push('--');
+    out.push(l.isMatch ? `${l.path}:${l.line}: ${l.text}` : `${l.path}-${l.line}- ${l.text}`);
+    prev = l;
+  }
+  return out.join('\n');
 }

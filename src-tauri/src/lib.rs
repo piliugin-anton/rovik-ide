@@ -5,6 +5,7 @@ use tauri::Manager;
 mod agent;
 mod atomic_file;
 mod chat_db;
+mod code_search;
 mod browser_tools;
 mod agent_tools;
 mod filesystem;
@@ -93,6 +94,7 @@ pub fn run() {
             browser_tools::browser_screenshot,
             agent_tools::tool_list_dir,
             agent_tools::tool_search_code,
+            code_search::search_in_files,
             agent_tools::tool_read_file_range,
             agent_tools::tool_write_file,
         ])

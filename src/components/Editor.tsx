@@ -1,7 +1,7 @@
 import { onMount, onCleanup, createEffect } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
-import { MonacoLibEntry } from '../types';
+import type { MonacoLibEntry, RevealRequest } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 
 interface EditorProps {
@@ -17,6 +17,9 @@ interface EditorProps {
     selectionStartLine: number | null;
     selectionEndLine: number | null;
   }) => void;
+  /** Select and center a range (search results); cleared via onRevealed. */
+  reveal?: Accessor<RevealRequest | null>;
+  onRevealed?: () => void;
 }
 
 function modelUriFor(filePath: string): monaco.Uri {
@@ -120,6 +123,19 @@ export default function Editor(props: EditorProps) {
     onCleanup(() => {
       contentDisposable.dispose();
       selectionDisposable.dispose();
+    });
+
+    // Runs for an already-open file and for one that just opened (this
+    // effect is created after the editor exists).
+    createEffect(() => {
+      const request = props.reveal?.();
+      if (!request || !editor || request.path !== props.currentFilePath) return;
+      const end = request.column + Math.max(0, request.length);
+      const selection = new monaco.Selection(request.line, request.column, request.line, end);
+      editor.setSelection(selection);
+      editor.revealRangeInCenter(selection, monaco.editor.ScrollType.Smooth);
+      editor.focus();
+      props.onRevealed?.();
     });
 
     // Load typings in the background - never block editor creation on it.

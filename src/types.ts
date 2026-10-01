@@ -81,10 +81,34 @@ export interface ToolDirEntry {
   depth: number;
 }
 
-export interface ToolSearchMatch {
+export interface ToolSearchLine {
   path: string;
   line: number;
   text: string;
+  /** false for context lines around a match. */
+  isMatch: boolean;
+  /** Match positions within `text` (UTF-16 indexes). */
+  ranges?: [number, number][];
+  /** 1-based column of the first match in the original line. */
+  column?: number;
+}
+
+/** Ask the editor to select a range in a file (e.g. a search result). */
+export interface RevealRequest {
+  path: string;
+  line: number;
+  column: number;
+  length: number;
+  /** Distinguishes repeated requests for the same spot. */
+  nonce: number;
+}
+
+export interface ToolSearchResult {
+  lines: ToolSearchLine[];
+  matchCount: number;
+  fileCount: number;
+  /** Stopped at the result limit; more matches exist. */
+  truncated: boolean;
 }
 
 export interface ChatMessage {

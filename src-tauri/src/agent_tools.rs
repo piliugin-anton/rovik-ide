@@ -34,7 +34,7 @@ const DENYLIST_DIRS: &[&str] = &[
 ];
 const DENYLIST_EXTENSIONS: &[&str] = &["pem", "key", "pfx", "p12"];
 
-fn is_denylisted_name(name: &str) -> bool {
+pub(crate) fn is_denylisted_name(name: &str) -> bool {
     if DENYLIST_DIRS.contains(&name) {
         return true;
     }
@@ -100,15 +100,6 @@ fn looks_binary(path: &Path) -> Result<bool, String> {
 /// Minimal glob: only leading/trailing `*` wildcards. Good enough for
 /// "*.ts" / "src/*" style filters from the model without pulling in a globbing
 /// crate for one feature.
-fn simple_glob_match(glob: &str, path: &str) -> bool {
-    match (glob.starts_with('*'), glob.ends_with('*')) {
-        (true, true) if glob.len() >= 2 => path.contains(&glob[1..glob.len() - 1]),
-        (true, _) => path.ends_with(&glob[1..]),
-        (false, true) => path.starts_with(&glob[..glob.len() - 1]),
-        (false, false) => path.contains(glob),
-    }
-}
-
 #[derive(Serialize)]
 pub struct ToolDirEntry {
     pub path: String,
@@ -121,11 +112,18 @@ pub struct ToolDirEntry {
 /// denylist. Capped on both depth and total entries so a huge or
 /// gitignore-less project can't produce an unbounded response.
 #[tauri::command]
-pub fn tool_list_dir(
+pub async fn tool_list_dir(
     root: String,
     path: Option<String>,
     max_depth: Option<usize>,
 ) -> Result<Vec<ToolDirEntry>, String> {
+    // Walking a large tree must not block the main thread.
+    tauri::async_runtime::spawn_blocking(move || list_dir(root, path, max_depth))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn list_dir(root: String, path: Option<String>, max_depth: Option<usize>) -> Result<Vec<ToolDirEntry>, String> {
     let target_rel = path.unwrap_or_default();
     let target = resolve_within_root(&root, &target_rel)?;
     if !target.is_dir() {
@@ -140,6 +138,9 @@ pub fn tool_list_dir(
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
+        .require_git(false)
+        // Prune denylisted directories instead of walking into them.
+        .filter_entry(|e| !is_denylisted_name(&e.file_name().to_string_lossy()))
         .build();
 
     let mut out = Vec::new();
@@ -182,101 +183,46 @@ pub fn tool_list_dir(
     Ok(out)
 }
 
-#[derive(Serialize)]
-pub struct SearchMatch {
-    pub path: String,
-    pub line: usize,
-    pub text: String,
-}
 
-/// Case-insensitive substring search across project files (not a full
-/// regex engine — kept intentionally simple). Skips ignored files, binaries,
-/// and anything over ~2MB.
+/// Text or regex search across the project on ripgrep's engine (see
+/// code_search.rs). Runs off the main thread.
 #[tauri::command]
-pub fn tool_search_code(
+#[allow(clippy::too_many_arguments)]
+pub async fn tool_search_code(
     root: String,
     query: String,
     path_glob: Option<String>,
     max_results: Option<usize>,
-) -> Result<Vec<SearchMatch>, String> {
+    regex: Option<bool>,
+    case_sensitive: Option<bool>,
+    context_lines: Option<usize>,
+) -> Result<crate::code_search::SearchResult, String> {
     if query.trim().is_empty() {
         return Err("query must not be empty".to_string());
     }
     let root_canon = canonicalize_or_err(Path::new(&root))?;
-    let cap = max_results.unwrap_or(100).clamp(1, 500);
-    let needle = query.to_lowercase();
-
-    let walker = WalkBuilder::new(&root_canon)
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .build();
-
-    let mut results = Vec::new();
-    let mut visited = 0usize;
-
-    for entry in walker {
-        if results.len() >= cap {
-            break;
-        }
-        visited += 1;
-        if visited > 50_000 {
-            break;
-        }
-
-        let Ok(entry) = entry else { continue };
-        let p = entry.path();
-        let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
-        if !is_file {
-            continue;
-        }
-
-        let name = p
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if is_denylisted_name(&name) {
-            continue;
-        }
-
-        if let Some(glob) = &path_glob {
-            if !simple_glob_match(glob, &p.to_string_lossy()) {
-                continue;
-            }
-        }
-
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if metadata.len() > 2_000_000 {
-            continue;
-        }
-
-        let Ok(content) = fs::read_to_string(p) else {
-            continue;
-        };
-        let rel_path = p
-            .strip_prefix(&root_canon)
-            .unwrap_or(p)
-            .to_string_lossy()
-            .to_string();
-
-        for (i, line) in content.lines().enumerate() {
-            if line.to_lowercase().contains(&needle) {
-                results.push(SearchMatch {
-                    path: rel_path.clone(),
-                    line: i + 1,
-                    text: line.trim().chars().take(300).collect(),
-                });
-                if results.len() >= cap {
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(results)
+    // Several globs may be given, comma-separated: "*.ts, !*.test.ts".
+    let globs = path_glob
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+        .map(str::to_string)
+        .collect();
+    let opts = crate::code_search::SearchOptions {
+        query,
+        regex: regex.unwrap_or(false),
+        case_sensitive: case_sensitive.unwrap_or(false),
+        whole_word: false,
+        globs,
+        max_results: max_results.unwrap_or(100).clamp(1, 500),
+        context_lines: context_lines.unwrap_or(0).min(5),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::code_search::search(&root_canon, &opts, is_denylisted_name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Reads a text file, optionally a 1-indexed inclusive line range. Full-file
