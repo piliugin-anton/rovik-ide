@@ -3,19 +3,45 @@
 // One collapsible row per tool invocation. The header is a single readable
 // sentence ("Read src/App.tsx", "Searched for "foo" · 12 matches"); expanding
 // it shows the call arguments and the result together.
-import { createMemo, createSignal, For, Show } from 'solid-js';
-import type { ChatToolCall } from '../types';
-import CodeBlock from './CodeBlock';
+import { createMemo, createResource, createSignal, For, Show } from 'solid-js';
+import type { ChatMessage, ChatToolCall, ToolMeta } from '../types';
+import StaticCodeBlock from './StaticCodeBlock';
+import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
 
 export interface ToolCallBlockProps {
   toolCall: ChatToolCall;
   /** Content of the matching role:"tool" message, if it has arrived. */
-  result?: string;
+  result?: ChatMessage;
   /** True while the agent loop is still running (args streaming or tool executing). */
   running?: boolean;
-  /** Images the tool produced (browser screenshots), as data: URLs. */
-  images?: string[];
+}
+
+/*
+ * Full bodies of large results, loaded on expand. Small LRU: 20 bodies or
+ * 2 MB, whichever fills first.
+ */
+const BODY_CACHE_ENTRIES = 20;
+const BODY_CACHE_CHARS = 2_000_000;
+const bodyCache = new Map<string, string>();
+
+async function loadBody(messageId: string): Promise<string> {
+  const cached = bodyCache.get(messageId);
+  if (cached !== undefined) {
+    bodyCache.delete(messageId);
+    bodyCache.set(messageId, cached); // most recently used last
+    return cached;
+  }
+  const body = await chatApi.getMessageBody(messageId);
+  bodyCache.set(messageId, body);
+  let size = [...bodyCache.values()].reduce((n, b) => n + b.length, 0);
+  for (const [key, value] of bodyCache) {
+    if (bodyCache.size <= BODY_CACHE_ENTRIES && size <= BODY_CACHE_CHARS) break;
+    if (key === messageId) continue;
+    bodyCache.delete(key);
+    size -= value.length;
+  }
+  return body;
 }
 
 type Args = Record<string, unknown>;
@@ -83,10 +109,36 @@ interface Summary {
   meta?: string;
 }
 
-function describe(name: string, args: Args, status: Status, result?: string): Summary {
+/**
+ * Header counts for a finished tool result. Computed once when the tool
+ * finishes and stored with the message, so the header never needs the full
+ * body (which may only be loaded on expand).
+ */
+export function toolResultMeta(name: string, result: string): ToolMeta | undefined {
+  if (isErrorResult(result)) return undefined;
+  switch (name) {
+    case 'read_file':
+      return { count: countLines(result) };
+    case 'list_dir':
+      return { count: result.startsWith('(empty') ? 0 : countLines(result) };
+    case 'search_code':
+      return { count: result.trim() === 'No matches.' ? 0 : countLines(result) };
+    case 'web_search':
+      return { count: result.split('\n').filter((line) => /^\d+\. /.test(line)).length };
+    case 'browse_url': {
+      const pageTitle = result.match(/^# (.+)$/m)?.[1];
+      return pageTitle && pageTitle !== '(untitled)' ? { pageTitle } : {};
+    }
+    default:
+      return undefined;
+  }
+}
+
+function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Summary {
   const active = status === 'running';
   const failed = status === 'error';
   const path = str(args.path);
+  const count = failed ? undefined : meta?.count;
 
   switch (name) {
     case 'read_file': {
@@ -97,8 +149,8 @@ function describe(name: string, args: Args, status: Status, result?: string): Su
           ? `lines ${start ?? 1}–${end ?? 'end'}`
           : undefined;
       const title = `${active ? 'Reading' : 'Read'} ${path ?? 'file'}`;
-      if (failed || !result) return { title, meta: range };
-      const lines = plural(countLines(result), 'line');
+      if (count === undefined) return { title, meta: range };
+      const lines = plural(count, 'line');
       return { title, meta: range ? `${range}, ${lines}` : lines };
     }
 
@@ -113,9 +165,8 @@ function describe(name: string, args: Args, status: Status, result?: string): Su
 
     case 'list_dir': {
       const title = `${active ? 'Listing' : 'Listed'} ${path || 'project root'}`;
-      if (failed || !result) return { title };
-      const empty = result.startsWith('(empty');
-      return { title, meta: empty ? 'empty' : plural(countLines(result), 'entry', 'entries') };
+      if (count === undefined) return { title };
+      return { title, meta: count === 0 ? 'empty' : plural(count, 'entry', 'entries') };
     }
 
     case 'search_code': {
@@ -124,28 +175,21 @@ function describe(name: string, args: Args, status: Status, result?: string): Su
       const title =
         `${active ? 'Searching' : 'Searched'} for ${query ? `"${query}"` : 'text'}` +
         (glob ? ` in ${glob}` : '');
-      if (failed || !result) return { title };
-      const none = result.trim() === 'No matches.';
-      return { title, meta: none ? 'no matches' : plural(countLines(result), 'match', 'matches') };
+      if (count === undefined) return { title };
+      return { title, meta: count === 0 ? 'no matches' : plural(count, 'match', 'matches') };
     }
 
     case 'web_search': {
       const query = str(args.query);
       const title = `${active ? 'Searching' : 'Searched'} the web for ${query ? `"${query}"` : '…'}`;
-      if (failed || !result) return { title };
-      const count = result.split('\n').filter((line) => /^\d+\. /.test(line)).length;
+      if (count === undefined) return { title };
       return { title, meta: count ? plural(count, 'result') : 'no results' };
     }
 
     case 'browse_url': {
       const url = shortUrl(str(args.url));
       const title = `${active ? 'Opening' : 'Read'} ${url ?? 'page'}`;
-      if (failed || !result) return { title };
-      const pageTitle = result.match(/^# (.+)$/m)?.[1];
-      return {
-        title,
-        meta: pageTitle && pageTitle !== '(untitled)' ? pageTitle.slice(0, 40) : undefined,
-      };
+      return { title, meta: !failed && meta?.pageTitle ? meta.pageTitle.slice(0, 40) : undefined };
     }
 
     case 'browser_screenshot': {
@@ -194,10 +238,25 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
 
   const status = createMemo<Status>(() => {
     if (props.result === undefined) return props.running ? 'running' : 'idle';
-    return isErrorResult(props.result) ? 'error' : 'done';
+    return isErrorResult(props.result.content) ? 'error' : 'done';
   });
 
-  const summary = createMemo(() => describe(props.toolCall.name, args(), status(), props.result));
+  // Stored counts; computed from the text only for results that predate them.
+  const resultMeta = createMemo(() => {
+    const r = props.result;
+    if (!r) return undefined;
+    return r.meta ?? (r.bodyExternal ? undefined : toolResultMeta(props.toolCall.name, r.content));
+  });
+
+  const summary = createMemo(() => describe(props.toolCall.name, args(), status(), resultMeta()));
+
+  // A large result arrives as a preview; the full text loads on expand.
+  const [fullBody] = createResource(
+    () => (expanded() && props.result?.bodyExternal ? props.result.id : null),
+    loadBody
+  );
+  const resultText = () =>
+    props.result?.bodyExternal ? (fullBody() ?? undefined) : props.result?.content;
 
   const meta = () => (status() === 'error' ? 'failed' : summary().meta);
 
@@ -250,7 +309,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
               <pre class="tool-call-pre">{callText()}</pre>
             </Show>
             <Show when={isWrite() && str(args().content) !== undefined}>
-              <CodeBlock code={str(args().content)!} language={language()} />
+              <StaticCodeBlock code={str(args().content)!} language={language()} />
             </Show>
           </section>
 
@@ -265,13 +324,24 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
               }
             >
               <Show
-                when={isRead() && status() === 'done'}
-                fallback={<pre class="tool-call-pre">{props.result}</pre>}
+                when={resultText() !== undefined}
+                fallback={
+                  <div class="tool-call-pending">
+                    {fullBody.error ? 'Could not load the result' : 'Loading…'}
+                  </div>
+                }
               >
-                <CodeBlock code={props.result!} language={language()} />
+                <Show
+                  when={isRead() && status() === 'done'}
+                  fallback={<pre class="tool-call-pre">{resultText()}</pre>}
+                >
+                  <StaticCodeBlock code={resultText()!} language={language()} />
+                </Show>
               </Show>
-              <For each={props.images ?? []}>
-                {(src) => <img class="tool-call-image" src={src} alt="Browser screenshot" />}
+              <For each={props.result?.attachments ?? []}>
+                {(id) => (
+                  <img class="tool-call-image" src={attachmentUrl(id)} alt="Browser screenshot" />
+                )}
               </For>
             </Show>
           </section>

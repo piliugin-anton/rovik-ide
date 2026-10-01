@@ -17,7 +17,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   html: 'html',
 };
 
-function resolveLanguage(lang: string | undefined): string {
+export function resolveLanguage(lang: string | undefined): string {
   if (!lang) return 'plaintext';
 
   const normalized = lang.trim().toLowerCase();

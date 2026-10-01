@@ -185,10 +185,10 @@ export function agentToolsFor(opts: { hasProject: boolean; vision: boolean }): u
   ];
 }
 
-/** Text for the model, plus images for tools that produce them. */
+/** Text for the model, plus attachments (screenshots) for tools that produce them. */
 export interface ToolResult {
   content: string;
-  images?: string[];
+  attachments?: string[];
 }
 
 /** Loosely-typed arguments as parsed from the model's JSON — validated per-tool below. */
@@ -279,7 +279,7 @@ async function executeWebTool(name: string, args: ToolArgs): Promise<ToolResult 
         content:
           `Screenshot of ${shot.url} (${shot.title || 'untitled'}), ${shot.width}x${shot.height}. ` +
           'The image is attached in the next message.',
-        images: [shot.data_url],
+        attachments: [shot.attachmentId],
       };
     }
 

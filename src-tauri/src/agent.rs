@@ -129,10 +129,19 @@ const CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are a coding agent operating ins
 
 #[tauri::command]
 pub async fn send_chat_message(
+    db: tauri::State<'_, crate::chat_db::DbState>,
     base_url: String,
     api_key: String,
     model: String,
-    mut messages: Vec<WireChatMessage>,
+    // Either explicit messages (one-off requests such as title generation)...
+    messages: Option<Vec<WireChatMessage>>,
+    // ...or a chat whose history is loaded and fitted to the budget here.
+    dialog_id: Option<String>,
+    token_budget: Option<usize>,
+    vision: Option<bool>,
+    // The current user message as sent (with editor context), which differs
+    // from what is stored.
+    current_user_content: Option<String>,
     streaming: bool,
     tools: Option<Vec<serde_json::Value>>,
     system_prompt: Option<String>,
@@ -142,6 +151,38 @@ pub async fn send_chat_message(
     let client = Client::new();
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    let mut messages: Vec<WireChatMessage> = match (messages, dialog_id) {
+        (Some(explicit), _) => explicit,
+        (None, Some(dialog_id)) => {
+            let data_dir = db.data_dir().to_path_buf();
+            let budget = token_budget.unwrap_or(22_400);
+            let vision = vision.unwrap_or(false);
+            let (wire, info) = db
+                .read(move |conn| {
+                    crate::chat_db::history::build_wire(
+                        conn,
+                        &data_dir,
+                        &dialog_id,
+                        budget,
+                        vision,
+                        current_user_content.as_deref(),
+                    )
+                })
+                .await?;
+            if info.trimmed {
+                eprintln!(
+                    "context budget: ~{}/{} tokens, {} oldest turn(s) omitted",
+                    info.estimated_tokens, budget, info.dropped_turns
+                );
+            }
+            wire.into_iter()
+                .map(serde_json::from_value)
+                .collect::<Result<_, _>>()
+                .map_err(|e| format!("Failed to build chat history: {e}"))?
+        }
+        (None, None) => return Err("send_chat_message needs messages or a dialogId".into()),
+    };
 
     let system_prompt = system_prompt.unwrap_or(CODING_AGENT_SYSTEM_PROMPT.to_string());
     messages.insert(

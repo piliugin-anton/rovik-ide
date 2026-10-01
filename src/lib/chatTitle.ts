@@ -6,7 +6,7 @@ import { sendChatMessage } from './aiChat';
  * Generates a short title for a conversation.
  *
  * The generated title is deliberately not added to the conversation's
- * persisted messages. It is metadata belonging to ChatDialog.
+ * persisted messages. It is metadata belonging to the chat.
  */
 export async function generateChatTitle(
   profile: ModelProfile,

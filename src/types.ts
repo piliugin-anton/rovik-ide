@@ -40,7 +40,7 @@ export interface ModelProfile {
   stream: boolean;
   /** Model accepts image input; enables the screenshot tool. */
   vision: boolean;
-  /** Context window in tokens, when known; sizes the history sent to the model. */
+  /** Context window in tokens: the user's override, else the reported value. */
   contextTokens?: number;
 }
 
@@ -50,6 +50,7 @@ export interface ProviderModel {
   enabled: boolean; // shown in the chat model picker
   vision?: boolean; // accepts image input (set by the user; /models doesn't say)
   contextLength?: number; // context window in tokens, if GET /models reported it
+  contextOverride?: number; // typed in provider settings; wins over contextLength
 }
 
 /** One OpenAI-compatible endpoint + credentials, with the models it serves. */
@@ -96,8 +97,37 @@ export interface ChatMessage {
   error?: string;
   /** User message whose request never got an answer; kept for the record, not sent again. */
   failed?: boolean;
-  /** data: URLs attached to a tool result (browser screenshots). */
-  images?: string[];
+  /** Attachment ids (SHA-256) on a tool result, e.g. browser screenshots. */
+  attachments?: string[];
+  /** Position in the chat, assigned by the database. */
+  seq?: number;
+  /** A large tool result whose full text lives in the database (`content` is a preview). */
+  bodyExternal?: boolean;
+  bodyBytes?: number;
+  /** Small summary computed when a tool finishes (counts for the block header). */
+  meta?: ToolMeta;
+  finalized?: boolean;
+  createdAt?: number;
+}
+
+export interface ToolMeta {
+  count?: number;
+  pageTitle?: string;
+}
+
+/** A chat as listed: metadata only, no messages. */
+export interface DialogSummary {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  preview?: string | null;
+}
+
+export interface DialogCursor {
+  updatedAt: number;
+  id: string;
 }
 
 export interface OpenAIChatOptions {
@@ -115,14 +145,6 @@ export type ChatStreamEvent =
   | { type: 'ToolCallStart'; id: string; name: string }
   | { type: 'ToolCallArgumentsDelta'; id: string; arguments_delta: string }
   | { type: 'ToolCallComplete'; id: string; name: string; arguments: string };
-
-export interface ChatDialog {
-  id: string;
-  title: string;
-  messages: ChatMessage[];
-  createdAt: number;
-  updatedAt: number;
-}
 
 export type WatchOperation = 'create' | 'modify' | 'remove' | 'unknown';
 
@@ -189,7 +211,7 @@ export interface BrowsedPage {
 export interface BrowserScreenshot {
   url: string;
   title: string;
-  data_url: string;
+  attachmentId: string;
   width: number;
   height: number;
 }

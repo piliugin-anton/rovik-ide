@@ -11,10 +11,10 @@ import {
 } from 'solid-js';
 import { Channel } from '@tauri-apps/api/core';
 import type {
-  ChatDialog,
   ChatMessage,
   ChatStreamEvent,
   ChatToolCall,
+  DialogSummary,
   FileSuggestion,
   ModelProfile,
   ModelSelection,
@@ -29,27 +29,26 @@ import {
   resolveProfile,
   saveAiSettings,
 } from '../lib/aiSettings';
-import { createChatSaver, loadChatHistory } from '../lib/chatHistory';
+import { createChatStore } from '../lib/chatStore';
+import { chatApi } from '../lib/chatApi';
+import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
 import { sendChatMessage } from '../lib/aiChat';
 import { agentToolsFor, executeAgentTool } from '../lib/tools';
-import { fitHistoryToBudget } from '../lib/contextBudget';
 import ModelSettingsPanel from './ModelSettingsPanel';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
-import ToolCallBlock from './ToolCallBlock';
-import { isBlank } from '../lib/textUtils';
-import { pruneSearchCache, searchChats, type Highlighted } from '../lib/chatSearch';
+import { toolResultMeta } from './ToolCallBlock';
+import ChatList, { type ChatListRow } from './ChatList';
+import MessageList, { type MessageListController } from './MessageList';
 import {
   clearPendingDraft,
   listPendingDrafts,
-  prunePendingDrafts,
   savePendingDraft,
   takePendingDraft,
   type DraftSegment,
   type PendingDraft,
 } from '../lib/pendingDraft';
-import MessageContent from './MessageContent';
 import { toRelativePath } from '../lib/fileTools';
 
 // Hard ceiling on how many read→act round-trips one user message can trigger.
@@ -67,8 +66,9 @@ export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
 
-  const [dialogs, setDialogs] = createSignal<ChatDialog[]>([]);
-  const [activeDialogId, setActiveDialogId] = createSignal<string | null>(null);
+  // Chat list page + open chats; everything else stays in the database.
+  const store = createChatStore();
+  const activeDialogId = () => store.state.activeId;
 
   const [input, setInput] = createSignal('');
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -78,8 +78,11 @@ export default function ChatPanel(props: ChatProps) {
   const [searchQuery, setSearchQuery] = createSignal('');
   const [sending, setSending] = createSignal(false);
   const [loadingHistory, setLoadingHistory] = createSignal(true);
-  /** Set when the chat store couldn't be read; saving is off for the session. */
+  /** Set when the chat database couldn't be read at startup. */
   const [historyLoadError, setHistoryLoadError] = createSignal<string | null>(null);
+  /** A search hit to scroll to in the open chat. */
+  const [focusMessageId, setFocusMessageId] = createSignal<string | null>(null);
+  let listController: MessageListController | undefined;
 
   const [isGeneratingTitle, setIsGeneratingTitle] = createSignal(false);
 
@@ -116,15 +119,17 @@ export default function ChatPanel(props: ChatProps) {
   let inFlightMessageId: string | null = null;
   let rafId: number | null = null;
   let isMounted = true;
-  let messagesRef: HTMLDivElement | undefined;
   let inputTextareaRef: HTMLTextAreaElement | undefined;
 
   // Provider + model resolved into what the send path needs.
   const activeProfile = createMemo(() => resolveProfile(providers(), selection()));
 
-  const activeDialog = createMemo(() => dialogs().find((d) => d.id === activeDialogId()) ?? null);
-
-  const messages = createMemo<ChatMessage[]>(() => activeDialog()?.messages ?? []);
+  const activeDialog = () => store.state.active;
+  const activeChat = () => {
+    const id = store.state.activeId;
+    return id ? store.state.open[id] : undefined;
+  };
+  const messages = (): ChatMessage[] => activeChat()?.messages ?? [];
 
   let searchDebounce: number | undefined;
   createEffect(
@@ -132,71 +137,61 @@ export default function ChatPanel(props: ChatProps) {
       window.clearTimeout(searchDebounce);
       // Clearing is instant; typing waits for a short pause.
       if (!query.trim()) setSearchQuery('');
-      else searchDebounce = window.setTimeout(() => setSearchQuery(query), 120);
+      else searchDebounce = window.setTimeout(() => setSearchQuery(query), 150);
     })
   );
   onCleanup(() => window.clearTimeout(searchDebounce));
 
   /*
-   * Search runs over a snapshot of the dialogs, not dialogs() itself: while
-   * a reply streams, dialogs() changes every frame, and re-ranking all chats
-   * that often is wasted work. The snapshot refreshes at most once a second
-   * during streaming, and immediately when the query changes.
+   * Search runs in the database (FTS5). Results of an older query that
+   * arrive late are ignored.
    */
-  const SEARCH_REFRESH_MS = 1000;
-  const [searchCorpus, setSearchCorpus] = createSignal<ChatDialog[]>([]);
-  let corpusTimer: number | undefined;
-
-  createEffect(
-    on(dialogs, () => {
-      if (!searchQuery().trim() || corpusTimer !== undefined) return;
-      corpusTimer = window.setTimeout(() => {
-        corpusTimer = undefined;
-        setSearchCorpus(dialogs());
-      }, SEARCH_REFRESH_MS);
-    })
-  );
+  const [searchRows, setSearchRows] = createSignal<ChatListRow[] | null>(null);
+  let searchRun = 0;
   createEffect(
     on(searchQuery, (query) => {
-      if (query.trim()) setSearchCorpus(dialogs());
+      const run = ++searchRun;
+      if (!query.trim()) {
+        setSearchRows(null);
+        return;
+      }
+      chatApi
+        .search(query)
+        .then((hits) => {
+          if (run !== searchRun) return;
+          setSearchRows(
+            hits.map((hit) => ({
+              dialog: hit.dialog,
+              title: highlightTitle(hit.dialog.title, query),
+              snippet: hit.snippet ?? undefined,
+              messageId: hit.messageId ?? undefined,
+            }))
+          );
+        })
+        .catch((err) => {
+          console.error('Chat search failed:', err);
+          if (run === searchRun) setSearchRows([]);
+        });
     })
   );
-  onCleanup(() => window.clearTimeout(corpusTimer));
-
-  /** null when not searching; otherwise the ranked hits. */
-  const searchHits = createMemo(() => {
-    const query = searchQuery().trim();
-    return query ? searchChats(searchCorpus(), query) : null;
-  });
 
   /*
-   * Rows for the chat list. <For> tracks items by identity, so rows are
-   * cached per dialog object: an unchanged dialog keeps the same row and its
-   * DOM, and only the chat that actually changed re-renders.
+   * Rows for the chat list. Cached per summary object so an unchanged chat
+   * keeps the same row (and its DOM).
    */
-  type HistoryRow = { dialog: ChatDialog; title: Highlighted; snippet?: Highlighted };
-  const rowCache = new WeakMap<ChatDialog, HistoryRow>();
-  const historyRows = createMemo<HistoryRow[]>(
+  const rowCache = new WeakMap<DialogSummary, ChatListRow>();
+  const historyRows = createMemo<ChatListRow[]>(
     () =>
-      searchHits() ??
-      dialogs().map((dialog) => {
+      searchRows() ??
+      store.state.list.items.map((dialog) => {
         let row = rowCache.get(dialog);
-        if (!row) {
+        if (!row || row.title.text !== dialog.title) {
           row = { dialog, title: { text: dialog.title, ranges: [] } };
           rowCache.set(dialog, row);
         }
         return row;
       })
   );
-
-  // tool_call_id -> result content, so each call can render with its result inline.
-  const toolResults = createMemo(() => {
-    const map = new Map<string, ChatMessage>();
-    for (const msg of messages()) {
-      if (msg.role === 'tool' && msg.tool_call_id) map.set(msg.tool_call_id, msg);
-    }
-    return map;
-  });
 
   const fileSuggestions = createMemo<FileSuggestion[]>(() => {
     if (!fileSuggestionsOpen()) return [];
@@ -250,36 +245,27 @@ export default function ChatPanel(props: ChatProps) {
 
   onMount(async () => {
     try {
-      const [settings, history] = await Promise.all([loadAiSettings(), loadChatHistory()]);
-
+      const settings = await loadAiSettings();
       if (!isMounted) return;
-
       setProviders(settings.providers);
       setSelection(reconcileSelection(settings.providers, settings.active));
 
-      if (!history.ok) {
-        /*
-         * Never treat a failed load as "no chats": the next save would then
-         * look like the whole history. Work in memory only until restart.
-         */
-        chatSaver.disable();
-        setHistoryLoadError(history.error);
+      try {
+        await store.loadFirstPage();
+      } catch (err) {
+        console.error('Failed to load chats:', err);
+        setHistoryLoadError(String(err));
+        return;
       }
+      if (!isMounted) return;
 
-      const loaded = history.ok ? history.dialogs : [];
-      setDialogs(loaded);
+      const first = store.state.list.items[0];
+      if (first) await store.openChat(first);
+      else createNewDialog();
 
-      if (loaded.length > 0) {
-        setActiveDialogId(loaded[0].id);
-      } else {
-        createNewDialog();
-      }
-
-      recoverDraftsAfterRestart();
+      await recoverDraftsAfterRestart();
     } finally {
-      if (isMounted) {
-        setLoadingHistory(false);
-      }
+      if (isMounted) setLoadingHistory(false);
     }
   });
 
@@ -308,15 +294,12 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  // Saves only the chats that changed (lib/chatHistory.ts).
-  const chatSaver = createChatSaver((id) => dialogs().find((d) => d.id === id));
-
   async function flushDialogPersistence() {
-    await chatSaver.flush();
+    await store.flush();
   }
 
   onCleanup(() => {
-    void chatSaver.flush();
+    void store.flush();
   });
 
   /*
@@ -325,49 +308,41 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  function createNewDialog(): ChatDialog {
-    const now = Date.now();
-
-    const dialog: ChatDialog = {
-      id: crypto.randomUUID(),
-      title: NEW_CHAT_TITLE,
-      messages: [],
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    setDialogs((prev) => [dialog, ...prev]);
-    setActiveDialogId(dialog.id);
-    setHistoryOpen(false);
-
-    /*
-     * References belong to the current composer, not to the new dialog.
-     */
-    setReferencedFiles([]);
-
-    chatSaver.markDirty(dialog.id);
-
-    return dialog;
-  }
-
-  function selectDialog(id: string) {
-    setActiveDialogId(id);
-    setHistoryOpen(false);
-
-    /*
-     * References are composer state, so don't carry them between dialogs.
-     */
+  function resetComposerState() {
     clearChatInput(false);
-
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
     setFileQuery('');
-
-    restoreDraftForDialog(id);
   }
 
-  async function confirmAndDeleteDialog(dialog: ChatDialog) {
-    const count = dialog.messages.filter((m) => m.role === 'user' || m.role === 'assistant').length;
+  function createNewDialog(): DialogSummary {
+    const dialog = store.createDialog(NEW_CHAT_TITLE);
+    setHistoryOpen(false);
+    setFocusMessageId(null);
+    // References belong to the current composer, not to the new dialog.
+    setReferencedFiles([]);
+    return dialog;
+  }
+
+  async function selectRow(row: ChatListRow) {
+    setHistoryOpen(false);
+    resetComposerState();
+    try {
+      if (row.messageId) {
+        await store.openChatAround(row.dialog, row.messageId);
+        setFocusMessageId(row.messageId);
+      } else {
+        setFocusMessageId(null);
+        await store.openChat(row.dialog);
+      }
+    } catch (err) {
+      console.error('Failed to open chat:', err);
+    }
+    restoreDraftForDialog(row.dialog.id);
+  }
+
+  async function confirmAndDeleteDialog(dialog: DialogSummary) {
+    const count = dialog.messageCount;
     const confirmed = await confirmDialog({
       title: 'Delete this chat?',
       message: (
@@ -384,25 +359,17 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   async function deleteDialog(id: string) {
-    const remaining = dialogs().filter((dialog) => dialog.id !== id);
-    pruneSearchCache(remaining);
-
+    const wasActive = activeDialogId() === id;
     takePendingDraft(id);
+    // A deleted chat leaves search results right away.
+    setSearchRows((rows) => rows?.filter((r) => r.dialog.id !== id) ?? null);
+    await store.deleteDialog(id);
 
-    setDialogs(remaining);
-    // A deleted chat must leave search results now, not at the next refresh.
-    if (searchQuery().trim()) setSearchCorpus(remaining);
-
-    if (activeDialogId() === id) {
-      if (remaining.length > 0) {
-        setActiveDialogId(remaining[0].id);
-      } else {
-        const dialog = createNewDialog();
-        setActiveDialogId(dialog.id);
-      }
+    if (wasActive) {
+      const next = store.state.list.items[0];
+      if (next) await store.openChat(next);
+      else createNewDialog();
     }
-
-    await chatSaver.remove(id);
   }
 
   /*
@@ -782,9 +749,7 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   function markMessageFailed(dialogId: string, messageId: string) {
-    updateDialogMessages(dialogId, (messages) =>
-      messages.map((m) => (m.id === messageId ? { ...m, failed: true } : m))
-    );
+    void store.markFailed(dialogId, messageId);
   }
 
   /**
@@ -792,64 +757,29 @@ export default function ChatPanel(props: ChatProps) {
    * or crashed mid-request. Mark their messages failed and bring the text
    * back for the dialog that's open.
    */
-  function recoverDraftsAfterRestart() {
-    prunePendingDrafts(new Set(dialogs().map((d) => d.id)));
+  async function recoverDraftsAfterRestart() {
+    const drafts = listPendingDrafts();
+    if (drafts.length === 0) return;
 
-    for (const draft of listPendingDrafts()) {
-      const dialog = dialogs().find((d) => d.id === draft.dialogId);
-      const index = dialog?.messages.findIndex((m) => m.id === draft.messageId) ?? -1;
+    let answered = new Set<string>();
+    try {
+      answered = new Set(await chatApi.messagesAnswered(drafts.map((d) => d.messageId)));
+    } catch (err) {
+      console.error('Draft recovery check failed:', err);
+      return;
+    }
 
-      if (dialog && index >= 0) {
-        const answered = dialog.messages
-          .slice(index + 1)
-          .some((m) => m.role === 'assistant' && !m.error && !m.pending);
-
-        if (answered) {
-          // The answer made it into history before the draft was cleared.
-          clearPendingDraft(draft.dialogId, draft.messageId);
-          continue;
-        }
-        markMessageFailed(dialog.id, draft.messageId);
+    for (const draft of drafts) {
+      if (answered.has(draft.messageId)) {
+        // The answer made it into the database before the draft was cleared.
+        clearPendingDraft(draft.dialogId, draft.messageId);
+      } else {
+        markMessageFailed(draft.dialogId, draft.messageId);
       }
     }
 
     const active = activeDialogId();
     if (active) restoreDraftForDialog(active);
-  }
-
-  /*
-   * -----------------------------------------------------------------------
-   * Dialog state helpers
-   * -----------------------------------------------------------------------
-   */
-
-  /**
-   * Update any part of a dialog by its stable ID.
-   *
-   * This should be used by asynchronous work such as agent turns,
-   * because the user can switch active dialogs while that work is running.
-   */
-  function updateDialog(id: string, updater: (dialog: ChatDialog) => ChatDialog) {
-    setDialogs((current) => current.map((dialog) => (dialog.id === id ? updater(dialog) : dialog)));
-    chatSaver.markDirty(id);
-  }
-
-  /**
-   * Update the messages belonging to a specific dialog.
-   *
-   * Deliberately takes dialogId instead of using activeDialogId().
-   * Agent operations must continue targeting the dialog that started
-   * the operation even if the user switches to another dialog.
-   */
-  function updateDialogMessages(
-    dialogId: string,
-    updater: (messages: ChatMessage[]) => ChatMessage[]
-  ) {
-    updateDialog(dialogId, (dialog) => ({
-      ...dialog,
-      messages: updater(dialog.messages),
-      updatedAt: Date.now(),
-    }));
   }
 
   function getTextOffset(root: Node, node: Node, nodeOffset: number): number {
@@ -907,103 +837,39 @@ export default function ChatPanel(props: ChatProps) {
 
   /*
    * -----------------------------------------------------------------------
-   * Auto-scroll
-   * -----------------------------------------------------------------------
-   */
-
-  createEffect(() => {
-    messages();
-
-    const dialog = activeDialog();
-    const profile = activeProfile();
-
-    if (!dialog || !profile) return;
-
-    queueMicrotask(async () => {
-      if (dialog.title === NEW_CHAT_TITLE && !isGeneratingTitle()) {
-        setIsGeneratingTitle(true);
-
-        try {
-          /*
-           * Start title generation in parallel with the actual answer.
-           *
-           * It is completely independent from the main conversation.
-           */
-          await generateTitleForDialog(dialog.id, profile);
-        } catch {
-          // Optionally log title generation errors.
-        } finally {
-          setIsGeneratingTitle(false);
-        }
-      }
-    });
-  });
-
-  /*
-   * Follow new content only while the user is at the bottom. Scrolling up
-   * (even mid-stream) releases it; scrolling back down, sending a message or
-   * switching dialogs re-engages it.
-   */
-  const [stickToBottom, setStickToBottom] = createSignal(true);
-
-  // Small tolerance for fractional scroll positions on scaled displays.
-  const BOTTOM_TOLERANCE_PX = 8;
-
-  function handleMessagesScroll() {
-    const el = messagesRef;
-    if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setStickToBottom(distance <= BOTTOM_TOLERANCE_PX);
-  }
-
-  function scrollToBottom() {
-    if (messagesRef) messagesRef.scrollTop = messagesRef.scrollHeight;
-    setStickToBottom(true);
-  }
-
-  createEffect(() => {
-    messages();
-    if (!stickToBottom()) return;
-
-    // After Solid has applied the update, so scrollHeight includes it.
-    requestAnimationFrame(() => {
-      if (stickToBottom() && messagesRef) {
-        messagesRef.scrollTop = messagesRef.scrollHeight;
-      }
-    });
-  });
-
-  createEffect(
-    on(activeDialogId, () => {
-      setStickToBottom(true);
-      requestAnimationFrame(scrollToBottom);
-    })
-  );
-
-  /*
-   * -----------------------------------------------------------------------
    * Title generation
    * -----------------------------------------------------------------------
    */
 
+  createEffect(
+    on(
+      () => [activeDialog()?.id, activeDialog()?.title, messages().length] as const,
+      ([dialogId, title]) => {
+        const profile = activeProfile();
+        if (!dialogId || !profile || title !== NEW_CHAT_TITLE || isGeneratingTitle()) return;
+        if (!messages().some((m) => m.role === 'user' && m.content.trim())) return;
+
+        setIsGeneratingTitle(true);
+        // Runs alongside the answer; independent of the conversation.
+        void generateTitleForDialog(dialogId, profile)
+          .catch(() => {})
+          .finally(() => setIsGeneratingTitle(false));
+      }
+    )
+  );
+
   async function generateTitleForDialog(dialogId: string, profile: ModelProfile) {
-    const chatMessages = messages().filter(
-      (msg) => !msg.toolCalls && !msg.tool_call_id && !msg.error && !msg.pending
-    );
+    const chatMessages = store
+      .messagesOf(dialogId)
+      .filter((msg) => !msg.toolCalls?.length && !msg.tool_call_id && !msg.error && !msg.pending)
+      .slice(0, 6);
 
     if (chatMessages.length === 0) return;
 
     const title = await generateChatTitle(profile, chatMessages);
+    if (!title || !isMounted) return;
 
-    if (!title || !isMounted) {
-      return;
-    }
-
-    updateDialog(dialogId, (dialog) => ({
-      ...dialog,
-      title,
-      updatedAt: Date.now(),
-    }));
+    await store.renameDialog(dialogId, title);
   }
 
   /*
@@ -1013,15 +879,20 @@ export default function ChatPanel(props: ChatProps) {
    */
 
   /**
+   * One request to the model. The backend reads the chat's history from the
+   * database, so everything up to this point must already be stored.
+   *
+   * @param currentUserContent The request's user message as sent to the
+   *   model (with editor context); stored messages keep the clean text.
    * @param onSettled Called once this turn's outcome is known: true when the
    *   model answered without error (text or tool calls), false otherwise.
    *   Only the first turn passes it; later tool-loop steps don't affect
    *   whether the user's message was delivered.
    */
   async function runAgentTurn(
-    history: ChatMessage[],
-    step: number,
     dialogId: string,
+    currentUserContent: string | undefined,
+    step: number,
     onSettled?: (ok: boolean) => void
   ): Promise<void> {
     const profile = activeProfile();
@@ -1036,140 +907,77 @@ export default function ChatPanel(props: ChatProps) {
       role: 'assistant',
       content: '',
       pending: true,
-      toolCalls: [],
+      finalized: false,
     };
-
-    updateDialogMessages(dialogId, (messages) => [...messages, pendingMsg]);
+    // Unfinished placeholders are skipped when the history is built.
+    await store.appendMessages(dialogId, [pendingMsg]);
 
     const channel = new Channel<ChatStreamEvent>();
     currentChannel = channel;
 
     let assistantText = '';
     const toolCallsMap = new Map<string, ChatToolCall>();
-
     let pendingRender = false;
     let streamError: string | null = null;
 
+    // One store update per animation frame, and a checkpoint every couple
+    // of seconds so a crash mid-reply loses little.
     const flushAssistantText = () => {
       pendingRender = false;
-
       if (!isMounted) return;
+      store.patchMessage(dialogId, pendingMsg.id, { content: assistantText });
+      store.checkpoint(dialogId, pendingMsg.id);
+    };
 
-      updateDialogMessages(dialogId, (messages) =>
-        messages.map((message) =>
-          message.id === pendingMsg.id
-            ? {
-                ...message,
-                content: assistantText,
-              }
-            : message
-        )
-      );
+    const publishToolCalls = () => {
+      store.patchMessage(dialogId, pendingMsg.id, {
+        toolCalls: Array.from(toolCallsMap.values(), (tc) => ({ ...tc })),
+      });
     };
 
     channel.onmessage = (event) => {
       if (!isMounted) return;
 
       switch (event.type) {
-        case 'Delta': {
+        case 'Delta':
           assistantText += event.content;
-
           if (!pendingRender) {
             pendingRender = true;
-
             rafId = requestAnimationFrame(() => {
               rafId = null;
               flushAssistantText();
             });
           }
-
           break;
-        }
 
-        case 'Done': {
-          updateDialogMessages(dialogId, (messages) =>
-            messages.map((message) =>
-              message.id === pendingMsg.id
-                ? {
-                    ...message,
-                    pending: false,
-                  }
-                : message
-            )
-          );
-
+        case 'Done':
           break;
-        }
 
-        case 'Error': {
+        case 'Error':
           streamError = event.message;
-
-          updateDialogMessages(dialogId, (messages) =>
-            messages.map((message) =>
-              message.id === pendingMsg.id
-                ? {
-                    ...message,
-                    pending: false,
-                    error: event.message,
-                  }
-                : message
-            )
-          );
-
           break;
-        }
 
-        case 'ToolCallStart': {
-          toolCallsMap.set(event.id, {
-            id: event.id,
-            name: event.name,
-            arguments: '',
-          });
-
+        case 'ToolCallStart':
+          toolCallsMap.set(event.id, { id: event.id, name: event.name, arguments: '' });
           break;
-        }
 
         case 'ToolCallArgumentsDelta': {
           const tc = toolCallsMap.get(event.id);
-
           if (tc) {
             tc.arguments += event.arguments_delta;
-
-            updateDialogMessages(dialogId, (messages) =>
-              messages.map((message) =>
-                message.id === pendingMsg.id
-                  ? {
-                      ...message,
-                      toolCalls: Array.from(toolCallsMap.values()),
-                    }
-                  : message
-              )
-            );
+            publishToolCalls();
           }
-
           break;
         }
 
-        case 'ToolCallComplete': {
+        case 'ToolCallComplete':
           toolCallsMap.set(event.id, {
             id: event.id,
             name: event.name,
             arguments: event.arguments,
           });
-
-          updateDialogMessages(dialogId, (messages) =>
-            messages.map((message) =>
-              message.id === pendingMsg.id
-                ? {
-                    ...message,
-                    toolCalls: Array.from(toolCallsMap.values()),
-                  }
-                : message
-            )
-          );
-
+          publishToolCalls();
           break;
-        }
       }
     };
 
@@ -1179,147 +987,67 @@ export default function ChatPanel(props: ChatProps) {
     // the screenshot tool only for models marked as accepting images.
     const tools = agentToolsFor({ hasProject: !!root, vision: profile.vision });
 
-    // Only the copy sent to the model is trimmed; the stored chat is untouched.
-    const fitted = fitHistoryToBudget(history, {
-      contextTokens: profile.contextTokens,
-      vision: profile.vision,
-    });
-    if (fitted.trimmed) {
-      console.info(
-        `Context budget: ~${fitted.estimatedTokens}/${fitted.budget} tokens` +
-          (fitted.droppedTurns ? `, ${fitted.droppedTurns} oldest turn(s) omitted` : '')
-      );
-    }
-
     try {
-      await sendChatMessage({
-        profile,
-        messages: fitted.messages,
-        channel,
-        tools,
-      });
+      await sendChatMessage({ profile, dialogId, currentUserContent, channel, tools });
     } catch (err) {
-      if (isMounted) {
-        updateDialogMessages(dialogId, (messages) =>
-          messages.map((message) =>
-            message.id === pendingMsg.id
-              ? {
-                  ...message,
-                  pending: false,
-                  error: String(err),
-                }
-              : message
-          )
-        );
-      }
-
-      onSettled?.(false);
-      return;
+      streamError = String(err);
     } finally {
-      if (currentChannel === channel) {
-        currentChannel = null;
+      if (currentChannel === channel) currentChannel = null;
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
       }
     }
-
-    if (streamError) {
-      onSettled?.(false);
-      return;
-    }
-
-    onSettled?.(true);
 
     const toolCalls = Array.from(toolCallsMap.values());
 
-    /*
-     * Normal final answer.
-     */
-    if (toolCalls.length === 0) {
-      updateDialogMessages(dialogId, (messages) =>
-        messages.map((message) =>
-          message.id === pendingMsg.id
-            ? {
-                ...message,
-                pending: false,
-              }
-            : message
-        )
-      );
-
-      await flushDialogPersistence();
-
+    if (streamError) {
+      await store.finalizeMessage(dialogId, pendingMsg.id, {
+        content: assistantText,
+        error: streamError,
+      });
+      onSettled?.(false);
       return;
     }
 
-    /*
-     * Safety limit.
-     */
+    await store.finalizeMessage(dialogId, pendingMsg.id, { content: assistantText, toolCalls });
+    onSettled?.(true);
+
+    // Normal final answer.
+    if (toolCalls.length === 0) return;
+
+    // Safety limit.
     if (step >= MAX_AGENT_STEPS) {
-      updateDialogMessages(dialogId, (messages) => [
-        ...messages.map((message) =>
-          message.id === pendingMsg.id
-            ? {
-                ...message,
-                pending: false,
-              }
-            : message
-        ),
+      await store.appendMessages(dialogId, [
         {
           id: crypto.randomUUID(),
           role: 'assistant',
           content: '',
           error: `Stopped after ${MAX_AGENT_STEPS} tool-call steps to avoid a runaway loop.`,
+          finalized: true,
         },
       ]);
-
-      await flushDialogPersistence();
-
       return;
     }
 
-    /*
-     * Lock in the assistant message that requested the tools.
-     */
-    const assistantMsg: ChatMessage = {
-      ...pendingMsg,
-      content: assistantText,
-      toolCalls,
-      pending: false,
-    };
-
-    updateDialogMessages(dialogId, (messages) =>
-      messages.map((message) => (message.id === pendingMsg.id ? assistantMsg : message))
-    );
-
-    /*
-     * Execute requested tools.
-     */
-    const toolResultMsgs: ChatMessage[] = [];
-
+    // Execute requested tools; each result is stored before the next turn,
+    // which reads the history from the database.
     for (const tc of toolCalls) {
       const result = await executeAgentTool(root, tc.name, tc.arguments);
-
-      const toolMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'tool',
-        content: result.content,
-        images: result.images,
-        tool_call_id: tc.id,
-      };
-
-      toolResultMsgs.push(toolMsg);
-
-      updateDialogMessages(dialogId, (messages) => [...messages, toolMsg]);
+      await store.appendMessages(dialogId, [
+        {
+          id: crypto.randomUUID(),
+          role: 'tool',
+          content: result.content,
+          attachments: result.attachments,
+          tool_call_id: tc.id,
+          meta: toolResultMeta(tc.name, result.content),
+          finalized: true,
+        },
+      ]);
     }
 
-    /*
-     * IMPORTANT:
-     *
-     * Do not use the Solid signal immediately after updating it as the
-     * source of truth. Construct the next model history explicitly.
-     */
-    const nextHistory = [...history, assistantMsg, ...toolResultMsgs];
-
-    await runAgentTurn(nextHistory, step + 1, dialogId);
+    await runAgentTurn(dialogId, currentUserContent, step + 1);
   }
 
   /*
@@ -1351,6 +1079,7 @@ export default function ChatPanel(props: ChatProps) {
       id: crypto.randomUUID(),
       role: 'user',
       content: text,
+      finalized: true,
     };
 
     /*
@@ -1395,24 +1124,7 @@ export default function ChatPanel(props: ChatProps) {
       wireContentParts.push(text);
     }
 
-    const wireUserMsg: ChatMessage =
-      wireContentParts.length > 0
-        ? {
-            ...userMsg,
-            content: wireContentParts.join('\n\n'),
-          }
-        : userMsg;
-
-    /*
-     * IMPORTANT:
-     *
-     * Capture the history BEFORE inserting the new user message.
-     */
-    /*
-     * Failed messages and error placeholders stay visible in the transcript
-     * but are never sent to the model again.
-     */
-    const historyBase = dialog.messages.filter((m) => !m.failed && !m.error && !m.pending);
+    const wireContent = wireContentParts.length > 0 ? wireContentParts.join('\n\n') : undefined;
 
     /*
      * Save the composer before anything else: from here until the model
@@ -1427,27 +1139,24 @@ export default function ChatPanel(props: ChatProps) {
     inFlightMessageId = userMsg.id;
 
     // Sending always brings the conversation back into view.
-    setStickToBottom(true);
+    listController?.followLatest();
+    setFocusMessageId(null);
 
-    /*
-     * Put the clean message into the persisted conversation.
-     */
-    updateDialogMessages(dialog.id, (messages) => [...messages, userMsg]);
-
-    /*
-     * Clear right away; the draft brings it back if the request fails.
-     */
+    // Clear right away; the draft brings it back if the request fails.
     clearChatInput();
-
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
     setFileQuery('');
     setSelectedSuggestionIndex(0);
 
     setSending(true);
+    store.setBusy(dialog.id, true);
 
     try {
-      await runAgentTurn([...historyBase, wireUserMsg], 0, dialog.id, (ok) => {
+      // Stored first: the backend builds the request from the database.
+      await store.appendMessages(dialog.id, [userMsg]);
+
+      await runAgentTurn(dialog.id, wireContent, 0, (ok) => {
         inFlightMessageId = null;
 
         if (ok) {
@@ -1465,11 +1174,8 @@ export default function ChatPanel(props: ChatProps) {
       });
     } finally {
       inFlightMessageId = null;
-
-      if (isMounted) {
-        setSending(false);
-      }
-
+      store.setBusy(dialog.id, false);
+      if (isMounted) setSending(false);
       await flushDialogPersistence();
     }
   }
@@ -1581,202 +1287,56 @@ export default function ChatPanel(props: ChatProps) {
             </button>
           </div>
 
-          <Show when={!loadingHistory() && dialogs().length > 0}>
-            <div class="chat-history-search">
-              <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-                <circle
-                  cx="7"
-                  cy="7"
-                  r="4.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                />
-                <path
-                  d="m10.5 10.5 3 3"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                />
-              </svg>
-              <input
-                value={historyQuery()}
-                onInput={(e) => setHistoryQuery(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape' && historyQuery()) {
-                    e.preventDefault();
-                    setHistoryQuery('');
-                  }
-                }}
-                placeholder="Search chats"
-                spellcheck={false}
-                aria-label="Search chats by title or message"
-              />
-              <Show when={historyQuery()}>
-                <button
-                  class="chat-history-search-clear"
-                  onClick={() => setHistoryQuery('')}
-                  aria-label="Clear search"
-                  title="Clear"
-                >
-                  ×
-                </button>
-              </Show>
-            </div>
-          </Show>
-
-          <Show
-            when={!loadingHistory()}
-            fallback={<div class="chat-history-empty">Loading...</div>}
-          >
-            <Show
-              when={dialogs().length > 0}
-              fallback={<div class="chat-history-empty">No conversations yet</div>}
-            >
-              <div class="chat-history-list">
-                <For
-                  each={historyRows()}
-                  fallback={<div class="chat-history-empty">No chats match "{searchQuery()}"</div>}
-                >
-                  {(item) => (
-                    <div
-                      class="chat-history-item"
-                      classList={{
-                        active: item.dialog.id === activeDialogId(),
-                      }}
-                    >
-                      <button
-                        class="chat-history-item-main"
-                        onClick={() => selectDialog(item.dialog.id)}
-                      >
-                        <span class="chat-history-item-title">
-                          <HighlightedText value={item.title} />
-                        </span>
-
-                        <Show when={item.snippet}>
-                          {(snippet) => (
-                            <span class="chat-history-item-snippet">
-                              <HighlightedText value={snippet()} />
-                            </span>
-                          )}
-                        </Show>
-
-                        <span class="chat-history-item-date">
-                          {new Date(item.dialog.updatedAt).toLocaleString()}
-                        </span>
-                      </button>
-
-                      <button
-                        class="chat-history-delete"
-                        title="Delete chat"
-                        onClick={() => void confirmAndDeleteDialog(item.dialog)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  )}
-                </For>
-              </div>
-            </Show>
-          </Show>
+          <ChatList
+            rows={historyRows()}
+            activeId={activeDialogId()}
+            query={historyQuery()}
+            onQueryChange={setHistoryQuery}
+            noMatches={!!searchQuery().trim() && searchRows()?.length === 0}
+            loading={loadingHistory() || (store.state.list.loading && !store.state.list.loaded)}
+            onSelect={(row) => void selectRow(row)}
+            onDelete={(dialog) => void confirmAndDeleteDialog(dialog)}
+            onNearEnd={() => {
+              if (!searchQuery().trim()) void store.loadMoreDialogs();
+            }}
+          />
         </div>
       </Show>
-      <Show when={historyLoadError()}>
-        <div class="chat-history-error" role="alert" title={historyLoadError() ?? undefined}>
-          Chat history couldn't be loaded, so nothing in this session will be saved. Your saved
-          chats are untouched; restart the app to try again.
-        </div>
+      <Show when={historyLoadError() ?? store.state.error}>
+        {(problem) => (
+          <div class="chat-history-error" role="alert" title={problem()}>
+            {historyLoadError()
+              ? "Chat history couldn't be loaded. Restart the app to try again."
+              : "A chat change couldn't be saved."}
+            <Show when={!historyLoadError()}>
+              <button class="link-button" onClick={() => store.clearError()}>
+                Dismiss
+              </button>
+            </Show>
+          </div>
+        )}
       </Show>
       <Show when={!props.rootPath()}>
         <div class="chat-tools-hint">Open a folder to let the model read and edit your files.</div>
       </Show>
-      <div ref={messagesRef} class="chat-messages" onScroll={handleMessagesScroll}>
-        <For each={messages()} fallback={<div class="empty-state">Ask the model anything</div>}>
-          {/* Tool results render inside their call's block, not as separate rows. */}
-          {(m) => (
-            <Show when={m.role !== 'tool'}>
-              <>
-                <Show when={m.pending && m.content.length === 0}>
-                  <div
-                    class="chat-message"
-                    classList={{
-                      user: m.role === 'user',
-                      assistant: m.role === 'assistant',
-                    }}
-                  >
-                    <span class="chat-pending">Thinking...</span>
-                  </div>
-                </Show>
-
-                <Show when={!m.pending || m.content.length > 0}>
-                  <Show when={m.error}>
-                    <div
-                      class="chat-message"
-                      classList={{
-                        user: m.role === 'user',
-                        assistant: m.role === 'assistant',
-                      }}
-                    >
-                      <span class="chat-error">{m.error}</span>
-                    </div>
-                  </Show>
-
-                  <Show when={!m.error && !isBlank(m.content)}>
-                    <div
-                      class="chat-message"
-                      classList={{
-                        user: m.role === 'user',
-                        assistant: m.role === 'assistant',
-                        failed: !!m.failed,
-                      }}
-                      title={
-                        m.failed ? 'Not delivered: text was put back into the input' : undefined
-                      }
-                    >
-                      <MessageContent content={m.content} />
-                    </div>
-                  </Show>
-                </Show>
-
-                <Show when={m.toolCalls && m.toolCalls.length > 0}>
-                  <div class="message-tools">
-                    <For each={m.toolCalls!}>
-                      {(tc) => (
-                        <ToolCallBlock
-                          toolCall={tc}
-                          result={toolResults().get(tc.id)?.content}
-                          images={toolResults().get(tc.id)?.images}
-                          running={sending()}
-                        />
-                      )}
-                    </For>
-                  </div>
-                </Show>
-              </>
-            </Show>
-          )}
-        </For>
-        <Show when={!stickToBottom() && messages().length > 0}>
-          <button
-            type="button"
-            class="chat-jump-latest"
-            onClick={scrollToBottom}
-            title="Scroll to latest"
-            aria-label="Scroll to latest message"
-          >
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-              <path
-                d="M8 3v9M4 8.5 8 12.5l4-4"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </button>
-        </Show>
-      </div>
+      <MessageList
+        dialogId={activeDialogId()}
+        chat={activeChat()}
+        sending={sending()}
+        focusMessageId={focusMessageId()}
+        onLoadOlder={() =>
+          activeDialogId() ? store.loadOlder(activeDialogId()!) : Promise.resolve(0)
+        }
+        onLoadNewer={() =>
+          activeDialogId() ? store.loadNewer(activeDialogId()!) : Promise.resolve(0)
+        }
+        onReloadLatest={async () => {
+          const active = activeDialog();
+          setFocusMessageId(null);
+          if (active) await store.openChat(active, { reload: true });
+        }}
+        controller={(c) => (listController = c)}
+      />
       <div class="chat-input-row">
         <div class="chat-input-container">
           <div
@@ -1850,22 +1410,4 @@ export default function ChatPanel(props: ChatProps) {
       </Show>
     </div>
   );
-}
-
-/** Renders text with the given [start, end) ranges wrapped in <mark>. */
-function HighlightedText(props: { value: Highlighted }) {
-  const parts = createMemo(() => {
-    const { text, ranges } = props.value;
-    const out: { text: string; mark: boolean }[] = [];
-    let cursor = 0;
-    for (const [start, end] of ranges) {
-      if (start > cursor) out.push({ text: text.slice(cursor, start), mark: false });
-      out.push({ text: text.slice(start, end), mark: true });
-      cursor = end;
-    }
-    if (cursor < text.length) out.push({ text: text.slice(cursor), mark: false });
-    return out;
-  });
-
-  return <For each={parts()}>{(part) => (part.mark ? <mark>{part.text}</mark> : part.text)}</For>;
 }

@@ -10,7 +10,6 @@
 //! - eoka's stealth features are all off (`StealthConfig::minimal`): this is
 //!   a plain automated Chrome, not a bot-detection bypass.
 
-use base64::Engine;
 use eoka::{Browser, Page, StealthConfig};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -409,11 +408,13 @@ pub async fn browse_url(
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Screenshot {
     url: String,
     title: String,
-    /// `data:image/jpeg;base64,...`, ready for an image_url content part.
-    data_url: String,
+    /// Stored in the chat database's attachments; shown by URL, and only
+    /// base64-encoded when a request to a vision model is built.
+    attachment_id: String,
     width: u32,
     height: u32,
 }
@@ -423,6 +424,7 @@ pub struct Screenshot {
 #[tauri::command]
 pub async fn browser_screenshot(
     state: State<'_, BrowserState>,
+    db: State<'_, crate::chat_db::DbState>,
     url: Option<String>,
 ) -> Result<Screenshot, String> {
     let url = url
@@ -430,7 +432,7 @@ pub async fn browser_screenshot(
         .map(|u| validate_url(&u))
         .transpose()?;
 
-    state
+    let (current, title, bytes) = state
         .with_page(|page| async move {
             if let Some(url) = &url {
                 open(&page, url).await?;
@@ -446,17 +448,16 @@ pub async fn browser_screenshot(
                 .await
                 .map_err(|e| format!("Screenshot failed: {e}"))?;
             let title: String = page.title().await.unwrap_or_default();
-
-            Ok(Screenshot {
-                url: current,
-                title,
-                data_url: format!(
-                    "data:image/jpeg;base64,{}",
-                    base64::engine::general_purpose::STANDARD.encode(bytes)
-                ),
-                width: VIEWPORT.0,
-                height: VIEWPORT.1,
-            })
+            Ok((current, title, bytes))
         })
-        .await
+        .await?;
+
+    let attachment_id = crate::chat_db::attachments::store(&db, bytes, "image/jpeg").await?;
+    Ok(Screenshot {
+        url: current,
+        title,
+        attachment_id,
+        width: VIEWPORT.0,
+        height: VIEWPORT.1,
+    })
 }

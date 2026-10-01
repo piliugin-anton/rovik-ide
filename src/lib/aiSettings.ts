@@ -118,55 +118,7 @@ export function splitModelId(model: Pick<ProviderModel, 'id' | 'ownedBy'>): {
   return { name: model.id };
 }
 
-/**
- * Short provider label for compact UI: the main domain name of the base URL.
- *   https://openrouter.ai/api/v1                     → "openrouter"
- *   https://generativelanguage.googleapis.com/v1beta → "googleapis"
- *   https://llm.example.co.uk/v1                     → "example"
- *   http://localhost:11434/v1                        → "localhost:11434"
- * Falls back to the provider's name when the URL can't be parsed.
- */
-export function providerDomainLabel(provider: Pick<Provider, 'name' | 'baseUrl'>): string {
-  let url: URL;
-  try {
-    url = new URL(provider.baseUrl.trim());
-  } catch {
-    return provider.name;
-  }
-
-  const host = url.hostname.toLowerCase();
-  const isIp = /^[\d.]+$/.test(host) || host.includes(':');
-  const parts = host.split('.').filter(Boolean);
-
-  // Local servers and IPs have no domain to shorten; the port tells them apart.
-  if (isIp || parts.length < 2) {
-    return url.port ? `${host}:${url.port}` : host || provider.name;
-  }
-
-  // Two-level public suffixes like co.uk / com.au: step one label further left.
-  const tld = parts[parts.length - 1];
-  const second = parts[parts.length - 2];
-  const twoLevelSuffix = tld.length === 2 && second.length <= 3 && parts.length >= 3;
-
-  return twoLevelSuffix ? parts[parts.length - 3] : second;
-}
-
-/**
- * Short labels for every provider, keyed by id. When two providers share a
- * domain (e.g. two OpenRouter accounts), those fall back to their names so
- * the picker can still tell them apart.
- */
-export function providerShortLabels(providers: Provider[]): Map<string, string> {
-  const domains = providers.map((p) => providerDomainLabel(p));
-  const counts = new Map<string, number>();
-  for (const d of domains) counts.set(d, (counts.get(d) ?? 0) + 1);
-
-  return new Map(
-    providers.map((p, i) => [p.id, counts.get(domains[i])! > 1 ? p.name : domains[i]])
-  );
-}
-
-/** "openrouter/anthropic/claude-sonnet-4.5", or "localhost:11434/my-model" when the developer is unknown. */
+/** "OpenRouter/anthropic/claude-sonnet-4.5" (the provider name as saved), or "Ollama/my-model" when the developer is unknown. */
 export function formatModelLabel(providerLabel: string, model: ProviderModel): string {
   const { developer, name } = splitModelId(model);
   return [providerLabel, developer, name].filter(Boolean).join('/');
@@ -183,13 +135,13 @@ export function resolveProfile(
 
   return {
     id: `${provider.id}::${model.id}`,
-    label: formatModelLabel(providerShortLabels(providers).get(provider.id)!, model),
+    label: formatModelLabel(provider.name, model),
     model: model.id,
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
     stream: provider.stream,
     vision: !!model.vision,
-    contextTokens: model.contextLength,
+    contextTokens: model.contextOverride ?? model.contextLength,
   };
 }
 

@@ -1,5 +1,7 @@
 export type MessageSegment =
-  { type: 'text'; content: string } | { type: 'code'; language?: string; content: string };
+  | { type: 'text'; content: string }
+  /** `open`: the closing fence hasn't arrived yet (still streaming). */
+  | { type: 'code'; language?: string; content: string; open?: boolean };
 
 // Matches a fully-closed ```lang\n...\n``` block. Non-greedy so multiple
 // blocks in one message are split correctly instead of merged into one.
@@ -53,7 +55,7 @@ export function parseMessageSegments(content: string): MessageSegment[] {
       segments.push({ type: 'text', content: before });
     }
 
-    segments.push({ type: 'code', language: lang || undefined, content: code });
+    segments.push({ type: 'code', language: lang || undefined, content: code, open: true });
   } else if (remainder) {
     segments.push({ type: 'text', content: remainder });
   }

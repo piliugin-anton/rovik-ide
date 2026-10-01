@@ -6,7 +6,7 @@
 // hundreds of models.
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
-import { formatModelLabel, providerShortLabels } from '../lib/aiSettings';
+import { formatModelLabel } from '../lib/aiSettings';
 
 interface ModelPickerProps {
   providers: Provider[];
@@ -30,7 +30,6 @@ export default function ModelPicker(props: ModelPickerProps) {
   let listRef: HTMLDivElement | undefined;
 
   const items = createMemo<PickerItem[]>(() => {
-    const labels = providerShortLabels(props.providers);
     return props.providers.flatMap((p) =>
       p.models
         .filter((m) => m.enabled)
@@ -38,7 +37,7 @@ export default function ModelPicker(props: ModelPickerProps) {
           providerId: p.id,
           modelId: m.id,
           key: `${p.id}::${m.id}`,
-          label: formatModelLabel(labels.get(p.id)!, m),
+          label: formatModelLabel(p.name, m),
         }))
     );
   });

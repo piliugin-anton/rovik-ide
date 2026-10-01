@@ -1,11 +1,6 @@
 import { createMemo, createSignal, For, Show } from 'solid-js';
 import type { Provider, ProviderModel } from '../types';
-import {
-  fetchModels,
-  formatModelLabel,
-  guessProviderName,
-  providerDomainLabel,
-} from '../lib/aiSettings';
+import { fetchModels, formatModelLabel, guessProviderName } from '../lib/aiSettings';
 
 interface ModelSettingsPanelProps {
   providers: Provider[];
@@ -29,6 +24,10 @@ const BASE_URL_PRESETS = [
   'http://localhost:11434/v1',
   'http://localhost:1234/v1',
 ];
+
+const CONTEXT_MIN = 1_000;
+const CONTEXT_MAX = 2_000_000;
+const DEFAULT_CONTEXT = 32_000;
 
 const emptyDraft = (): Provider => ({
   id: crypto.randomUUID(),
@@ -152,6 +151,17 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
     const d = draft();
     if (!d) return;
     patch({ models: d.models.map((m) => (m.id === id ? { ...m, enabled } : m)) });
+  }
+
+  /** Empty clears the override; out-of-range values are ignored. */
+  function setContextOverride(id: string, raw: string) {
+    const d = draft();
+    if (!d) return;
+    const digits = raw.replace(/[^\d]/g, '');
+    const value = digits ? Number(digits) : undefined;
+    const valid = value === undefined || (value >= CONTEXT_MIN && value <= CONTEXT_MAX);
+    if (!valid) return;
+    patch({ models: d.models.map((m) => (m.id === id ? { ...m, contextOverride: value } : m)) });
   }
 
   function toggleVision(id: string) {
@@ -372,7 +382,7 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
                     >
                       {(m) => (
                         <div class="provider-model-row">
-                          <label title={formatModelLabel(providerDomainLabel(d()), m)}>
+                          <label title={formatModelLabel(d().name, m)}>
                             <input
                               type="checkbox"
                               checked={m.enabled}
@@ -380,6 +390,26 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
                             />
                             <span>{m.id}</span>
                           </label>
+                          <input
+                            class="context-input"
+                            inputMode="numeric"
+                            value={m.contextOverride?.toLocaleString() ?? ''}
+                            placeholder={
+                              m.contextLength
+                                ? `${m.contextLength.toLocaleString()} reported`
+                                : `${DEFAULT_CONTEXT.toLocaleString()} default`
+                            }
+                            title="Context window in tokens. Leave empty to use the reported value or the default."
+                            aria-label={`Context window for ${m.id}`}
+                            onChange={(e) => {
+                              setContextOverride(m.id, e.currentTarget.value);
+                              // Show the stored value (or empty if rejected).
+                              const stored = draft()?.models.find(
+                                (x) => x.id === m.id
+                              )?.contextOverride;
+                              e.currentTarget.value = stored?.toLocaleString() ?? '';
+                            }}
+                          />
                           <button
                             class="vision-toggle"
                             classList={{ on: !!m.vision }}

@@ -4,7 +4,7 @@ use tauri::Manager;
 
 mod agent;
 mod atomic_file;
-mod chat_store;
+mod chat_db;
 mod browser_tools;
 mod agent_tools;
 mod filesystem;
@@ -22,7 +22,30 @@ pub fn run() {
             gitignore: Mutex::new(None),
             id_to_path: Mutex::new(HashMap::new()),
         }) // Register our state manager
+        // Must be the first plugin: a second launch focuses this window
+        // instead of opening the chat database a second time.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let dir = app.path().app_data_dir()?;
+            let db = chat_db::DbState::open(&dir).map_err(|e| format!("Chat database: {e}"))?;
+            app.manage(db);
+            Ok(())
+        })
+        // Screenshots: chat-attachment://localhost/<sha256> (Windows:
+        // http://chat-attachment.localhost/<sha256>).
+        .register_asynchronous_uri_scheme_protocol("chat-attachment", |ctx, request, responder| {
+            let db = ctx.app_handle().state::<chat_db::DbState>().inner().clone();
+            let path = request.uri().path().to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(chat_db::attachments::serve(db.data_dir(), &path));
+            });
+        })
         .invoke_handler(tauri::generate_handler![
             terminal::spawn_terminal,
             terminal::write_to_terminal,
@@ -34,9 +57,17 @@ pub fn run() {
             filesystem::write_file_content,
             filesystem::load_ai_settings,
             filesystem::save_ai_settings,
-            chat_store::load_chat_history,
-            chat_store::save_chat_dialog,
-            chat_store::delete_chat_dialog,
+            chat_db::commands::chat_list_dialogs,
+            chat_db::commands::chat_get_messages,
+            chat_db::commands::chat_get_messages_around,
+            chat_db::commands::chat_get_message_body,
+            chat_db::commands::chat_create_dialog,
+            chat_db::commands::chat_append_messages,
+            chat_db::commands::chat_update_message,
+            chat_db::commands::chat_rename_dialog,
+            chat_db::commands::chat_delete_dialog,
+            chat_db::commands::chat_search,
+            chat_db::commands::chat_messages_answered,
             filesystem::load_last_project,
             filesystem::save_last_project,
             filesystem::get_path_id,
@@ -72,6 +103,9 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let browser = app.state::<BrowserState>().inner().clone();
                 tauri::async_runtime::block_on(browser.shutdown());
+                if let Some(db) = app.try_state::<chat_db::DbState>() {
+                    db.mark_clean_exit();
+                }
             }
         });
 }

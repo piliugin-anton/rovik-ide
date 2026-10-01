@@ -1,6 +1,6 @@
 import { createMemo, Index, Match, Switch } from 'solid-js';
 import { parseMessageSegments } from '../lib/messageSegments';
-import CodeBlock from './CodeBlock';
+import StaticCodeBlock from './StaticCodeBlock';
 import FormattedText from './FormattedText';
 
 /*
@@ -14,7 +14,7 @@ import FormattedText from './FormattedText';
  * growing segment updates. The per-field memos stop the new-but-equal
  * segment objects from triggering work downstream.
  */
-export default function MessageContent(props: { content: string }) {
+export default function MessageContent(props: { content: string; streaming?: boolean }) {
   const segments = createMemo(() => parseMessageSegments(props.content));
 
   return (
@@ -26,11 +26,16 @@ export default function MessageContent(props: { content: string }) {
           const s = segment();
           return s.type === 'code' ? s.language : undefined;
         });
+        // Only the unterminated fence of a streaming reply is incomplete.
+        const open = createMemo(() => {
+          const s = segment();
+          return s.type === 'code' && !!s.open && !!props.streaming;
+        });
 
         return (
           <Switch>
             <Match when={type() === 'code'}>
-              <CodeBlock code={text()} language={language()} />
+              <StaticCodeBlock code={text()} language={language()} streaming={open()} />
             </Match>
             <Match when={type() === 'text'}>
               <FormattedText class="message-text" text={text()} />
