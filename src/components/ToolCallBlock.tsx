@@ -8,6 +8,7 @@ import type { ChatMessage, ChatToolCall, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
+import { describeToolCall } from '../lib/permissions';
 import {
   allow,
   decideRemaining,
@@ -353,7 +354,13 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
     return r.meta ?? (r.bodyExternal ? undefined : toolResultMeta(props.toolCall.name, r.content));
   });
 
-  const summary = createMemo(() => describe(props.toolCall.name, args(), status(), resultMeta()));
+  // A call with no result that isn't running never ran (e.g. the app was
+  // closed while it waited for approval): say so instead of a past tense.
+  const summary = createMemo(() =>
+    status() === 'idle' && !request()
+      ? { title: describeToolCall(props.toolCall.name, props.toolCall.arguments), meta: 'not run' }
+      : describe(props.toolCall.name, args(), status(), resultMeta())
+  );
 
   // A large result arrives as a preview; the full text loads on expand.
   const [fullBody] = createResource(
@@ -398,6 +405,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
         awaiting: !!request(),
         running: status() === 'running',
         error: status() === 'error' || approval()?.approved === false,
+        'not-run': status() === 'idle' && !request(),
       }}
     >
       <button

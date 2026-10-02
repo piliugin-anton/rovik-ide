@@ -8,6 +8,7 @@ import {
   onCleanup,
   onMount,
   Show,
+  untrack,
 } from 'solid-js';
 import { Channel } from '@tauri-apps/api/core';
 import type {
@@ -77,6 +78,12 @@ import { readFileContent } from '../lib/commands';
 const MAX_AGENT_STEPS = 24;
 
 const NEW_CHAT_TITLE = 'New Chat';
+
+/**
+ * Chats with an agent run in progress, across ChatPanel instances: the
+ * panel unmounts when the sidebar switches tabs while its run goes on.
+ */
+const runningDialogs = new Set<string>();
 
 interface ChatProps {
   rootPath: Accessor<string | null>;
@@ -975,7 +982,9 @@ export default function ChatPanel(props: ChatProps) {
    */
   async function authorizeToolCall(
     dialogId: string,
-    tc: ChatToolCall
+    tc: ChatToolCall,
+    /** Resuming an interrupted call: ask the user, with this note. */
+    resumeNote?: string
   ): Promise<{
     refusal: string | null;
     approval?: ToolApproval;
@@ -989,7 +998,9 @@ export default function ChatPanel(props: ChatProps) {
     if (!verdict.permitted) {
       return { refusal: `Error: blocked by the user's permission settings. ${verdict.reason}` };
     }
-    if (!verdict.approval) return { refusal: null };
+    // An interrupted call is always confirmed by the user.
+    const approver = resumeNote ? 'user' : verdict.approval;
+    if (!approver) return { refusal: null };
 
     const summary = describeToolCall(tc.name, tc.arguments);
     const command = tc.name === 'run_command' ? toolArg(tc.arguments, 'command') : undefined;
@@ -999,9 +1010,9 @@ export default function ChatPanel(props: ChatProps) {
     // Writing the same content changes nothing: no need to ask.
     if (prepared?.kind === 'unchanged') return { refusal: null };
     const edit = prepared?.kind === 'diff' ? prepared.review : null;
-    let manualReason: string | null = null;
+    let manualReason: string | null = resumeNote ?? null;
 
-    if (verdict.approval === 'ai') {
+    if (approver === 'ai') {
       const models = approvalProfiles(p);
       const editPath = tc.name === 'write_file' ? toolArg(tc.arguments, 'path') : undefined;
 
@@ -1019,6 +1030,7 @@ export default function ChatPanel(props: ChatProps) {
         const review = await reviewWithAi(
           models,
           {
+            reviewId: tc.id,
             group:
               tc.name === 'run_command' ? 'commands' : tc.name === 'write_file' ? 'edits' : 'tools',
             userRequest: latestUserRequest(dialogId),
@@ -1488,10 +1500,24 @@ export default function ChatPanel(props: ChatProps) {
       return;
     }
 
-    // Execute requested tools; each result is stored before the next turn,
-    // which reads the history from the database.
-    // Every requested call gets a result, even after Stop: the provider
-    // rejects a history with tool calls left unanswered.
+    await executeToolCalls(dialogId, toolCalls);
+    if (stopRequested) return;
+    await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, step: step + 1 });
+  }
+
+  /**
+   * Authorizes, runs and records each tool call; each result is stored
+   * before the next turn, which reads the history from the database.
+   * Every call gets a result, even after Stop: providers reject a history
+   * with tool calls left unanswered.
+   */
+  async function executeToolCalls(
+    dialogId: string,
+    toolCalls: ChatToolCall[],
+    /** Interrupted calls being resumed: always asked manually, with this note. */
+    resumeNote?: string
+  ) {
+    const root = props.rootPath();
     const stoppedResult = (tc: ChatToolCall) =>
       store.appendMessages(dialogId, [
         {
@@ -1508,7 +1534,11 @@ export default function ChatPanel(props: ChatProps) {
         await stoppedResult(tc);
         continue;
       }
-      const { refusal, approval, argsOverride, resultNote } = await authorizeToolCall(dialogId, tc);
+      const { refusal, approval, argsOverride, resultNote } = await authorizeToolCall(
+        dialogId,
+        tc,
+        resumeNote
+      );
       // Stop may have been pressed while approval was pending.
       if (stopRequested && (refusal || !approval)) {
         await stoppedResult(tc);
@@ -1540,9 +1570,66 @@ export default function ChatPanel(props: ChatProps) {
         },
       ]);
     }
+  }
 
-    if (stopRequested) return;
-    await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, step: step + 1 });
+  /*
+   * -----------------------------------------------------------------------
+   * Interrupted tool calls
+   * -----------------------------------------------------------------------
+   *
+   * Approvals live in memory. When the app closes while one waits (or
+   * mid-way through a turn's tool calls), the stored chat ends with tool
+   * calls that never ran and have no result. When such a chat is opened,
+   * the run picks up where it stopped: each of those calls asks the user
+   * again (manually, whatever the settings say, since the user wasn't
+   * there to decide), runs if allowed, and the agent continues.
+   */
+
+  /** Tool calls of the chat's last agent step that have no result yet. */
+  function unansweredToolCalls(list: ChatMessage[]): ChatToolCall[] {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.role === 'tool') continue;
+      if (m.role !== 'assistant' || !m.finalized || m.pending || m.error || !m.toolCalls?.length) {
+        return [];
+      }
+      const answered = new Set(
+        list
+          .slice(i + 1)
+          .filter((x) => x.role === 'tool')
+          .map((x) => x.tool_call_id)
+      );
+      return m.toolCalls.filter((tc) => !answered.has(tc.id));
+    }
+    return [];
+  }
+
+  /** Chats already resumed in this session: each is offered once. */
+  const resumed = new Set<string>();
+
+  createEffect(() => {
+    const dialogId = activeDialogId();
+    const chat = activeChat();
+    // Wait until the newest messages are loaded and nothing is running.
+    if (!dialogId || !chat || chat.hasNewer || chat.busy || sending()) return;
+    if (resumed.has(dialogId) || runningDialogs.has(dialogId)) return;
+    const calls = unansweredToolCalls(chat.messages);
+    if (calls.length === 0) return;
+    resumed.add(dialogId);
+    untrack(() => void resumeInterrupted(dialogId, calls));
+  });
+
+  async function resumeInterrupted(dialogId: string, calls: ChatToolCall[]) {
+    listController?.followLatest();
+    await runRequest(dialogId, async () => {
+      await executeToolCalls(
+        dialogId,
+        calls,
+        'Interrupted: the app was closed before this ran. Allow it to continue the task.'
+      );
+      if (stopRequested || !isMounted) return;
+      await runAgentTurn(dialogId, { currentUserContent: lastUserWireContent(dialogId) });
+    });
   }
 
   /**
@@ -1554,9 +1641,11 @@ export default function ChatPanel(props: ChatProps) {
     window.clearTimeout(stopTimer);
     setSending(true);
     store.setBusy(dialogId, true);
+    runningDialogs.add(dialogId);
     try {
       await run();
     } finally {
+      runningDialogs.delete(dialogId);
       window.clearTimeout(stopTimer);
       store.setBusy(dialogId, false);
       if (isMounted) setSending(false);

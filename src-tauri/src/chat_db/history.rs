@@ -214,7 +214,7 @@ pub fn build_wire(
     }
 
     // What is never sent: failed requests, errors, unfinished placeholders.
-    let mut messages: Vec<Msg> = rows
+    let messages: Vec<Msg> = rows
         .into_iter()
         .filter(|m| !m.failed && m.error.is_none())
         .filter(|m| m.role != "system")
@@ -233,6 +233,11 @@ pub fn build_wire(
         })
         .collect();
 
+    // A tool call can be left without a result (the app closed while it
+    // waited for approval). Providers reject such a history, and a model
+    // that sees no result may assume the call ran, so say it didn't.
+    let mut messages = answer_unanswered_calls(messages);
+
     // The current request's user message is sent with the editor context
     // the frontend added; it isn't stored that way.
     if let (Some(content), Some(last_user)) =
@@ -250,6 +255,47 @@ pub fn build_wire(
     }
 
     Ok((to_wire(&fitted, data_dir, vision, gemini), info))
+}
+
+const UNANSWERED_NOTE: &str =
+    "Error: this tool call never ran: the app was closed or the run was stopped before it was approved. Call it again if it's still needed.";
+
+/// Adds a result after every assistant tool call that has none, right after
+/// that call's other results, so each call is answered in its own step.
+pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
+    let mut out: Vec<Msg> = Vec::with_capacity(messages.len());
+    let mut open: Vec<String> = Vec::new();
+
+    let close = |out: &mut Vec<Msg>, open: &mut Vec<String>| {
+        for id in open.drain(..) {
+            out.push(Msg {
+                id: format!("unanswered-{id}"),
+                role: "tool".into(),
+                text: UNANSWERED_NOTE.into(),
+                full_chars: UNANSWERED_NOTE.chars().count(),
+                needs_body: false,
+                tool_calls: None,
+                tool_call_id: Some(id),
+                attachments: Vec::new(),
+            });
+        }
+    };
+
+    for m in messages {
+        if m.role == "tool" {
+            if let Some(id) = &m.tool_call_id {
+                open.retain(|o| o != id);
+            }
+        } else {
+            close(&mut out, &mut open);
+            if m.role == "assistant" {
+                open = m.tool_calls.iter().flatten().map(|c| c.id.clone()).collect();
+            }
+        }
+        out.push(m);
+    }
+    close(&mut out, &mut open);
+    out
 }
 
 /// A non-empty `google.thought_signature` string.
@@ -403,6 +449,19 @@ mod tests {
     const BIG: usize = 30_000;
     const BUDGET_32K: usize = 22_400; // 70% of the default 32k window
     const BUDGET_8K: usize = 5_600;
+
+    #[test]
+    fn unanswered_calls_get_a_result() {
+        let history = vec![
+            msg("user", "q1"), call(&["c1", "c2"]), tool("c1", 3),
+            msg("user", "q2"), call(&["c3"]),
+        ];
+        let out = answer_unanswered_calls(history);
+        let ids: Vec<_> = out.iter().map(|m| format!("{}:{}", &m.role[..1], m.tool_call_id.clone().unwrap_or_default())).collect();
+        assert_eq!(ids, ["u:", "a:", "t:c1", "t:c2", "u:", "a:", "t:c3"]);
+        assert!(pairing_ok(&out));
+        assert_eq!(out[3].text, UNANSWERED_NOTE);
+    }
 
     #[test]
     fn small_chat_untouched() {

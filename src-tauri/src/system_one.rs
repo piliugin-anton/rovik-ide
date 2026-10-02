@@ -17,10 +17,12 @@ const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 pub async fn system_one_request(
     base_url: String,
     api_key: String,
+    model: String,
     body: serde_json::Value,
     timeout_ms: Option<u64>,
 ) -> Result<serde_json::Value, String> {
-    let url = format!("{}/systemone", base_url.trim().trim_end_matches('/'));
+    let url = format!("{}/{}", base_url.trim().trim_end_matches('/'), model);
+    println!("{url}");
     let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL {url}: {e}"))?;
     let local = matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1") | Some("::1"));
     if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local) {

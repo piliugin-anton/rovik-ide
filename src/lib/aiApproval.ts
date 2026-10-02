@@ -27,6 +27,8 @@ import { completeOnce, LEAN_THEN_PLAIN, stripThinking } from './oneShot';
 export type ReviewGroup = 'commands' | 'edits' | 'tools';
 
 export interface AiReviewInput {
+  /** Identifies the review in the terminal log (the tool call id). */
+  reviewId: string;
   group: ReviewGroup;
   /** The user's latest request in this chat, for intent. */
   userRequest: string;
@@ -279,7 +281,8 @@ async function reviewWithTyped(
       // adds /systemone the way chat requests add /chat/completions.
       baseUrl: profile.baseUrl,
       apiKey: profile.apiKey,
-      body: { model: profile.model, state, questions },
+      model: profile.model,
+      body: { state, questions },
       timeoutMs: 15_000,
     });
   } catch (err) {
@@ -338,15 +341,47 @@ export async function reviewWithAi(
   /** Whether to use typed input for a model. */
   typedFor: (profile: ModelProfile) => boolean
 ): Promise<AiReviewResult> {
+  const started = Date.now();
+  logReview('log_ai_review_started', {
+    reviewId: input.reviewId,
+    tool: input.toolName,
+    summary: input.summary,
+    group: input.group,
+    models: models.map((m) => `${m.label}${typedFor(m) ? ' [typed]' : ''}`),
+  });
+
   const errors: string[] = [];
+  let result: AiReviewResult = { decided: false, errors };
   for (const profile of models) {
-    const result = typedFor(profile)
+    const answer = typedFor(profile)
       ? await reviewWithTyped(profile, input, errors)
       : await reviewWithText(profile, input, errors);
     // An unsure answer is an answer: it goes to the user, not to a fallback.
-    if (result) return result;
+    if (answer) {
+      result = answer;
+      break;
+    }
   }
-  return { decided: false, errors };
+
+  logReview('log_ai_review_finished', {
+    reviewId: input.reviewId,
+    outcome: result.decided
+      ? result.approved
+        ? 'approved'
+        : 'rejected'
+      : result.unsure
+        ? 'unsure (asking the user)'
+        : 'failed (asking the user)',
+    model: 'model' in result ? result.model : null,
+    reason: 'reason' in result ? result.reason : result.errors.join('; ') || 'no model answered',
+    durationMs: Date.now() - started,
+  });
+  return result;
+}
+
+/** Terminal log line via the backend; never gets in the review's way. */
+function logReview(command: string, args: Record<string, unknown>) {
+  void invoke(command, args).catch((err) => console.warn('AI review log failed:', err));
 }
 
 /** The change as a compact diff for the reviewer: changed lines only, with positions. */
