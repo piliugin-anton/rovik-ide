@@ -50,6 +50,12 @@ pub struct WireToolCall {
     #[serde(rename = "type")]
     kind: String,
     function: WireToolCallFunction,
+    /// Every other field, passed through unchanged. Gemini 3's thought
+    /// signature lives here (`extra_content.google.thought_signature`) and
+    /// must reach the provider intact; serde would otherwise drop undeclared
+    /// fields silently.
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -65,6 +71,9 @@ pub struct WireChatMessage {
     // Present on a role:"tool" message replying to one of the above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// Any provider-specific message fields, passed through unchanged.
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 
@@ -209,6 +218,7 @@ pub async fn send_chat_message(
             ),
             tool_calls: None,
             tool_call_id: None,
+            other: Default::default(),
         });
     }
 
@@ -227,6 +237,7 @@ pub async fn send_chat_message(
             content: serde_json::Value::String(system_prompt),
             tool_calls: None,
             tool_call_id: None,
+            other: Default::default(),
         },
     );
 
@@ -441,4 +452,41 @@ pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Ve
     models.sort_by(|a, b| a.id.cmp(&b.id));
     models.dedup_by(|a, b| a.id == b.id);
     Ok(models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The history builder's output goes through WireChatMessage on its way
+    /// into the request body. Provider fields must survive that conversion:
+    /// this is the step that silently dropped Gemini thought signatures.
+    #[test]
+    fn tool_call_signatures_survive_into_the_request_body() {
+        let history = json!({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "function-call-1",
+                "type": "function",
+                "function": { "name": "web_search", "arguments": "{\"query\":\"x\"}" },
+                "extra_content": { "google": { "thought_signature": "SIG-A" } }
+            }]
+        });
+        let message: WireChatMessage = serde_json::from_value(history.clone()).unwrap();
+        let body = json!({ "model": "gemini", "messages": [message] });
+        assert_eq!(
+            body.pointer("/messages/0/tool_calls/0/extra_content/google/thought_signature"),
+            Some(&json!("SIG-A"))
+        );
+        assert_eq!(body["messages"][0], history, "the message reaches the body unchanged");
+    }
+
+    #[test]
+    fn plain_messages_gain_no_fields() {
+        let plain = json!({ "role": "user", "content": "hi" });
+        let message: WireChatMessage = serde_json::from_value(plain.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), plain);
+    }
 }

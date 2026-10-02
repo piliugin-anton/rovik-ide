@@ -73,6 +73,20 @@ CREATE VIRTUAL TABLE search_index USING fts5 (
 CREATE VIRTUAL TABLE title_trigrams USING fts5 (title, dialog_id UNINDEXED, tokenize = 'trigram');
 "#;
 
+/// Provider data for each tool call (e.g. Gemini 3 thought signatures),
+/// saved by the backend the moment it parses the call. Keyed by the
+/// assistant message *and* the call id: ids can repeat across turns
+/// (Gemini uses "function-call-1"), so the id alone is ambiguous.
+const SCHEMA_V2: &str = r#"
+CREATE TABLE tool_call_extras (
+  message_id    TEXT NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
+  call_id       TEXT NOT NULL,
+  extra_content TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  PRIMARY KEY (message_id, call_id)
+) STRICT;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -92,6 +106,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA_V1)?;
         tx.pragma_update(None, "user_version", 1)?;
+        tx.commit()?;
+    }
+    if version < 2 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V2)?;
+        tx.pragma_update(None, "user_version", 2)?;
         tx.commit()?;
     }
     Ok(())
