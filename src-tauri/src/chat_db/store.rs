@@ -626,3 +626,49 @@ pub fn messages_answered(conn: &Connection, ids: &[String]) -> DbResult<Vec<Stri
     }
     Ok(answered)
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * Tool call extras (Gemini 3 thought signatures)
+ * ---------------------------------------------------------------------------
+ */
+
+/// Saves provider data for tool calls of an assistant message, as parsed
+/// from the response. Skipped if the message doesn't exist (e.g. deleted).
+pub fn save_tool_call_extras(conn: &mut Connection, message_id: &str, extras: &[(String, Value)]) -> DbResult<()> {
+    let tx = conn.transaction().map_err(err)?;
+    for (call_id, extra) in extras {
+        tx.execute(
+            "INSERT OR REPLACE INTO tool_call_extras (message_id, call_id, extra_content, created_at)
+             SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM messages WHERE id = ?1)",
+            params![message_id, call_id, extra.to_string(), now_ms()],
+        )
+        .map_err(err)?;
+    }
+    tx.commit().map_err(err)
+}
+
+/// Saved extras for these messages, by (message id, call id).
+pub fn tool_call_extras(conn: &Connection, message_ids: &[&str]) -> DbResult<HashMap<(String, String), Value>> {
+    let mut out = HashMap::new();
+    for chunk in message_ids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT message_id, call_id, extra_content FROM tool_call_extras WHERE message_id IN ({placeholders})"
+            ))
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params_from_iter(chunk.iter()), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            })
+            .map_err(err)?;
+        for row in rows {
+            let (message_id, call_id, extra) = row.map_err(err)?;
+            if let Ok(value) = serde_json::from_str(&extra) {
+                out.insert((message_id, call_id), value);
+            }
+        }
+    }
+    Ok(out)
+}

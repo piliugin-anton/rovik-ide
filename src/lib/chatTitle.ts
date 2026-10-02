@@ -1,6 +1,6 @@
 import { Channel } from '@tauri-apps/api/core';
 import type { ChatMessage, ChatStreamEvent, ModelProfile } from '../types';
-import { sendChatMessage } from './aiChat';
+import { sendChatMessage, streamEndSignal, untilStreamEnd } from './aiChat';
 
 /**
  * Generates a short title for a conversation.
@@ -16,6 +16,7 @@ export async function generateChatTitle(
 
   let result = '';
   let failed = false;
+  const stream = streamEndSignal();
 
   channel.onmessage = (event) => {
     switch (event.type) {
@@ -26,9 +27,11 @@ export async function generateChatTitle(
       case 'Error':
         failed = true;
         console.error('Chat title generation failed:', event.error.message);
+        stream.end();
         break;
 
       case 'Done':
+        stream.end();
         break;
 
       case 'ToolCallStart':
@@ -62,6 +65,8 @@ If the conversation is too short, ambiguous, or you cannot infer a clear topic, 
 
 Do not add explanations, notes, or any text other than the title (or an empty string).`,
     });
+    // The last deltas can arrive after the command returns.
+    await untilStreamEnd(stream.ended);
   } catch (err) {
     console.error('Failed to generate chat title:', err);
     return null;

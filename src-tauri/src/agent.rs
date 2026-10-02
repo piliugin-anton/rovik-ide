@@ -140,6 +140,9 @@ pub async fn send_chat_message(
     first_byte_timeout_ms: Option<u64>,
     // Ask the model to continue its last, interrupted reply (not stored).
     continue_reply: Option<bool>,
+    // The pending assistant message this reply fills: provider data for its
+    // tool calls (Gemini thought signatures) is saved against it.
+    assistant_message_id: Option<String>,
     requests: tauri::State<'_, crate::chat_request::ChatRequests>,
     tools: Option<Vec<serde_json::Value>>,
     system_prompt: Option<String>,
@@ -289,13 +292,53 @@ pub async fn send_chat_message(
         streaming,
         limits,
     };
+    let log_signatures = is_gemini_target(&base_url, &model);
+    // Provider data of each completed tool call, saved to the database below.
+    let mut call_extras: Vec<(String, serde_json::Value)> = Vec::new();
     let mut emit = |event: ChatStreamEvent| {
+        if let ChatStreamEvent::ToolCallComplete { id, extra_content: Some(extra), .. } = &event {
+            call_extras.push((id.clone(), extra.clone()));
+        }
+        // Diagnostics: Gemini 3 must sign its tool calls; show whether it did.
+        if log_signatures {
+            if let ChatStreamEvent::ToolCallComplete { id, name, extra_content, .. } = &event {
+                let signed = extra_content
+                    .as_ref()
+                    .and_then(|e| e.pointer("/google/thought_signature"))
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| !s.is_empty());
+                eprintln!(
+                    "gemini: received tool call {id} ({name}), thought signature: {}",
+                    if signed { "yes" } else { "MISSING" }
+                );
+                if !signed {
+                    eprintln!(
+                        "gemini:   extra_content: {}",
+                        extra_content.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "none".into())
+                    );
+                }
+            }
+        }
         let _ = on_event.send(event);
     };
 
     // Failures are reported as a typed Error event; the command itself only
     // fails for problems before the request (e.g. building the history).
-    if let Err(error) = crate::chat_request::run(&spec, &mut registration.cancel, &mut emit).await {
+    let result = crate::chat_request::run(&spec, &mut registration.cancel, &mut emit).await;
+
+    // Saved by the backend itself, before this command returns, so it never
+    // depends on the frontend relaying it back (see chat_db/history.rs). The
+    // frontend waits for this command before starting the next request.
+    if let (Some(message_id), false) = (assistant_message_id, call_extras.is_empty()) {
+        let saved = db
+            .write(move |conn| crate::chat_db::store::save_tool_call_extras(conn, &message_id, &call_extras))
+            .await;
+        if let Err(e) = saved {
+            eprintln!("could not save tool call data: {e}");
+        }
+    }
+
+    if let Err(error) = result {
         let _ = on_event.send(ChatStreamEvent::Error { error });
     }
     Ok(())

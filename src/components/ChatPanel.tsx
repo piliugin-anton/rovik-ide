@@ -34,7 +34,7 @@ import { createChatStore } from '../lib/chatStore';
 import { chatApi } from '../lib/chatApi';
 import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
-import { cancelChatRequest, sendChatMessage } from '../lib/aiChat';
+import { cancelChatRequest, sendChatMessage, streamEndSignal, untilStreamEnd } from '../lib/aiChat';
 import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
 import { agentToolsFor, executeAgentTool } from '../lib/tools';
 import ModelSettingsPanel from './ModelSettingsPanel';
@@ -956,6 +956,8 @@ export default function ChatPanel(props: ChatProps) {
     let gotOutput = false;
     /** Set once we stop listening to this request (Stop wasn't confirmed). */
     let detached = false;
+    // The command can return before its last events (see untilStreamEnd).
+    const stream = streamEndSignal();
 
     const setStatus = (status: ChatMessage['status']) =>
       store.patchMessage(dialogId, pendingMsg.id, { status });
@@ -1005,6 +1007,7 @@ export default function ChatPanel(props: ChatProps) {
           break;
 
         case 'Done':
+          stream.end();
           break;
 
         case 'Retrying':
@@ -1018,6 +1021,7 @@ export default function ChatPanel(props: ChatProps) {
 
         case 'Error':
           failure = event.error;
+          stream.end();
           break;
 
         case 'ToolCallStart':
@@ -1076,10 +1080,13 @@ export default function ChatPanel(props: ChatProps) {
             dialogId,
             currentUserContent: opts.currentUserContent,
             continueReply: opts.continueReply,
+            assistantMessageId: pendingMsg.id,
             requestId,
             channel,
             tools,
-          }).then(() => 'done' as const),
+          })
+            .then(() => untilStreamEnd(stream.ended))
+            .then(() => 'done' as const),
           abandoned,
         ]);
         if (outcome === 'abandoned') {

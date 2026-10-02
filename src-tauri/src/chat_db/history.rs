@@ -11,7 +11,7 @@
 //! Only the copy sent to the model is trimmed; stored messages are untouched.
 
 use super::attachments;
-use super::store::{char_prefix, get_message_body, get_messages, DbResult, ToolCall};
+use super::store::{char_prefix, get_message_body, get_messages, tool_call_extras, DbResult, ToolCall};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -27,8 +27,10 @@ const MAX_IMAGES: usize = 2;
 const OMITTED_NOTE: &str = "[Earlier messages in this chat were omitted to fit the context window.]";
 /// Google's documented placeholder for function calls that have no real
 /// thought signature (made before signatures were stored, or by another
-/// model). Gemini 3 rejects unsigned calls in the current turn otherwise.
-const GEMINI_SKIP_SIGNATURE: &str = "skip_thought_signature_validator";
+/// model). `thought_signature` is a bytes field, base64 on the JSON wire, so
+/// the documented value `skip_thought_signature_validator` must be sent
+/// base64-encoded; the raw text isn't valid base64 and reads as "missing".
+const GEMINI_SKIP_SIGNATURE: &str = "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=";
 
 #[derive(Debug, Clone)]
 pub struct Msg {
@@ -187,6 +189,30 @@ pub fn build_wire(
         }
     }
 
+    // Backfill provider data (Gemini thought signatures) saved by the
+    // backend at parse time, matched by message and call id. Only calls
+    // still lacking a signature are filled, so this composes with data that
+    // arrived through the normal path.
+    let with_calls: Vec<&str> = rows
+        .iter()
+        .filter(|m| m.tool_calls.as_ref().is_some_and(|t| !t.is_empty()))
+        .map(|m| m.id.as_str())
+        .collect();
+    if !with_calls.is_empty() {
+        let saved = tool_call_extras(conn, &with_calls)?;
+        for row in rows.iter_mut() {
+            let id = row.id.clone();
+            for call in row.tool_calls.iter_mut().flatten() {
+                if has_signature(call.extra_content.as_ref()) {
+                    continue;
+                }
+                if let Some(extra) = saved.get(&(id.clone(), call.id.clone())) {
+                    call.extra_content = Some(extra.clone());
+                }
+            }
+        }
+    }
+
     // What is never sent: failed requests, errors, unfinished placeholders.
     let mut messages: Vec<Msg> = rows
         .into_iter()
@@ -224,6 +250,27 @@ pub fn build_wire(
     }
 
     Ok((to_wire(&fitted, data_dir, vision, gemini), info))
+}
+
+/// A non-empty `google.thought_signature` string.
+fn has_signature(extra: Option<&Value>) -> bool {
+    extra
+        .and_then(|e| e.pointer("/google/thought_signature"))
+        .and_then(|s| s.as_str())
+        .is_some_and(|s| !s.is_empty())
+}
+
+/// `extra` with the placeholder signature set, other fields kept.
+fn with_placeholder_signature(extra: Option<Value>) -> Value {
+    let mut extra = match extra {
+        Some(Value::Object(map)) => Value::Object(map),
+        _ => json!({}),
+    };
+    if !extra.get("google").is_some_and(|g| g.is_object()) {
+        extra["google"] = json!({});
+    }
+    extra["google"]["thought_signature"] = json!(GEMINI_SKIP_SIGNATURE);
+    extra
 }
 
 /// Chat Completions only allows text in role:"tool" messages, so images go
@@ -275,18 +322,26 @@ fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) -> Vec
 
         let mut msg = json!({ "role": m.role, "content": content });
         if let Some(calls) = m.tool_calls.as_ref().filter(|c| !c.is_empty()) {
-            // Gemini signs only the first of parallel calls; a turn with no
-            // signature at all gets the placeholder on its first call.
-            let unsigned_turn = calls.iter().all(|c| c.extra_content.is_none());
             msg["tool_calls"] = json!(calls
                 .iter()
                 .enumerate()
                 .map(|(i, c)| {
                     let mut call = json!({ "id": c.id, "type": "function", "function": { "name": c.name, "arguments": c.arguments } });
-                    if let Some(extra) = &c.extra_content {
-                        call["extra_content"] = extra.clone();
-                    } else if gemini && unsigned_turn && i == 0 {
-                        call["extra_content"] = json!({ "google": { "thought_signature": GEMINI_SKIP_SIGNATURE } });
+                    let mut extra = c.extra_content.clone();
+                    // Gemini requires a signature on the first call of every
+                    // step (parallel siblings carry none). Without a real one,
+                    // send the documented placeholder, keeping other data.
+                    if gemini && i == 0 && !has_signature(extra.as_ref()) {
+                        eprintln!(
+                            "gemini: tool call {} ({}) has no thought signature; sending placeholder (extra_content: {})",
+                            c.id,
+                            c.name,
+                            extra.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "none".into())
+                        );
+                        extra = Some(with_placeholder_signature(extra));
+                    }
+                    if let Some(extra) = extra {
+                        call["extra_content"] = extra;
                     }
                     call
                 })
@@ -423,23 +478,47 @@ mod tests {
     fn gemini_signatures_are_echoed_or_placeholdered() {
         let dir = std::env::temp_dir();
         let signed = json!({ "google": { "thought_signature": "SIG-A" } });
-        let mut first = call(&["a", "b"]);
-        first.tool_calls.as_mut().unwrap()[0].extra_content = Some(signed.clone());
-        let unsigned = call(&["c", "d"]);
-        let ms = vec![msg("user", "q"), first, tool("a", 1), tool("b", 1), unsigned, tool("c", 1), tool("d", 1)];
+        let sig = |w: &[Value], m: usize, c: usize| {
+            w[m]["tool_calls"][c].pointer("/extra_content/google/thought_signature").cloned()
+        };
 
-        let calls = |w: &[Value], i: usize| w[i]["tool_calls"].as_array().unwrap().clone();
-        let gemini = to_wire(&ms, &dir, false, true);
-        // A real signature goes back unchanged; its parallel sibling stays unsigned.
-        assert_eq!(calls(&gemini, 1)[0]["extra_content"], signed);
-        assert!(calls(&gemini, 1)[1].get("extra_content").is_none());
-        // A turn with no signature at all: placeholder on the first call only.
-        assert_eq!(calls(&gemini, 4)[0]["extra_content"]["google"]["thought_signature"], GEMINI_SKIP_SIGNATURE);
-        assert!(calls(&gemini, 4)[1].get("extra_content").is_none());
+        let mut first_signed = call(&["a", "b"]);
+        first_signed.tool_calls.as_mut().unwrap()[0].extra_content = Some(signed.clone());
+        // extra_content present but no signature in it (seen from some gateways/models).
+        let mut empty_extra = call(&["c"]);
+        empty_extra.tool_calls.as_mut().unwrap()[0].extra_content = Some(json!({ "google": {}, "other": 1 }));
+        // The signature landed on a sibling, not the first call.
+        let mut sibling_signed = call(&["d", "e"]);
+        sibling_signed.tool_calls.as_mut().unwrap()[1].extra_content = Some(signed.clone());
+        let unsigned = call(&["f"]);
 
-        // Other providers: real data still echoed, never a placeholder.
+        let ms = vec![
+            msg("user", "q"),
+            first_signed, tool("a", 1), tool("b", 1),
+            empty_extra, tool("c", 1),
+            sibling_signed, tool("d", 1), tool("e", 1),
+            unsigned, tool("f", 1),
+        ];
+        let w = to_wire(&ms, &dir, false, true);
+        let placeholder = Some(json!(GEMINI_SKIP_SIGNATURE));
+        {
+            use base64::Engine;
+            let decoded = base64::engine::general_purpose::STANDARD.decode(GEMINI_SKIP_SIGNATURE).unwrap();
+            assert_eq!(decoded, b"skip_thought_signature_validator", "placeholder is the base64 of the documented value");
+        }
+
+        assert_eq!(sig(&w, 1, 0), Some(json!("SIG-A")), "real signature echoed unchanged");
+        assert_eq!(sig(&w, 1, 1), None, "parallel sibling stays unsigned");
+        assert_eq!(sig(&w, 4, 0), placeholder, "extra_content without a signature gets one");
+        assert_eq!(w[4]["tool_calls"][0]["extra_content"]["other"], json!(1), "other data kept");
+        assert_eq!(sig(&w, 6, 0), placeholder, "first call always needs one");
+        assert_eq!(sig(&w, 6, 1), Some(json!("SIG-A")), "sibling's data untouched");
+        assert_eq!(sig(&w, 9, 0), placeholder);
+
+        // Other providers: real data echoed, never a placeholder.
         let other = to_wire(&ms, &dir, false, false);
-        assert_eq!(calls(&other, 1)[0]["extra_content"], signed);
-        assert!(calls(&other, 4)[0].get("extra_content").is_none());
+        assert_eq!(sig(&other, 1, 0), Some(json!("SIG-A")));
+        assert_eq!(sig(&other, 9, 0), None);
+        assert!(other[9]["tool_calls"][0].get("extra_content").is_none());
     }
 }
