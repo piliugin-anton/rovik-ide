@@ -9,6 +9,7 @@ mod chat_request;
 mod code_search;
 mod browser_tools;
 mod agent_tools;
+mod command_tool;
 mod filesystem;
 mod terminal;
 mod typings;
@@ -100,6 +101,7 @@ pub fn run() {
             code_search::search_in_files,
             agent_tools::tool_read_file_range,
             agent_tools::tool_write_file,
+            command_tool::tool_run_command,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

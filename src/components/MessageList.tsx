@@ -52,6 +52,8 @@ export default function MessageList(props: {
   /** Replace an "opened around a hit" chat with its newest page. */
   onReloadLatest: () => Promise<void>;
   controller?: (c: MessageListController) => void;
+  /** Live notes per tool call id (e.g. waiting for approval). */
+  toolNotes?: Record<string, string>;
   /** Re-run the last failed turn. */
   onRetry: () => void;
   /** Continue an interrupted reply. */
@@ -416,6 +418,7 @@ export default function MessageList(props: {
                         toolCall={tc}
                         result={toolResults().get(tc.id)}
                         running={props.sending}
+                        note={props.toolNotes?.[tc.id]}
                       />
                     )}
                   </For>

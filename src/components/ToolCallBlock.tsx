@@ -15,6 +15,8 @@ export interface ToolCallBlockProps {
   result?: ChatMessage;
   /** True while the agent loop is still running (args streaming or tool executing). */
   running?: boolean;
+  /** Live note while the call waits, e.g. for approval. */
+  note?: string;
 }
 
 /*
@@ -129,6 +131,11 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
     }
     case 'web_search':
       return { count: result.split('\n').filter((line) => /^\d+\. /.test(line)).length };
+    case 'run_command': {
+      const line = result.split('\n')[1] ?? '';
+      const code = line.match(/^exit code (-?\d+)/)?.[1];
+      return { exitCode: code !== undefined ? Number(code) : null };
+    }
     case 'browse_url': {
       const pageTitle = result.match(/^# (.+)$/m)?.[1];
       return pageTitle && pageTitle !== '(untitled)' ? { pageTitle } : {};
@@ -164,6 +171,18 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       return {
         title,
         meta: content !== undefined ? plural(countLines(content), 'line') : undefined,
+      };
+    }
+
+    case 'run_command': {
+      const command = str(args.command);
+      const shown = command && command.length > 60 ? `${command.slice(0, 57)}…` : command;
+      const title = `${active ? 'Running' : 'Ran'} ${shown ? `\`${shown}\`` : 'a command'}`;
+      if (failed || meta?.exitCode === undefined) return { title };
+      return {
+        title,
+        meta:
+          meta.exitCode === null ? 'killed' : meta.exitCode === 0 ? 'ok' : `exit ${meta.exitCode}`,
       };
     }
 
@@ -262,7 +281,16 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const resultText = () =>
     props.result?.bodyExternal ? (fullBody() ?? undefined) : props.result?.content;
 
-  const meta = () => (status() === 'error' ? 'failed' : summary().meta);
+  const approval = () => props.result?.meta?.approval;
+
+  const meta = () => {
+    if (status() === 'running' && props.note) return props.note;
+    const a = approval();
+    if (a && !a.approved) return a.by === 'ai' ? 'rejected by AI' : 'denied';
+    const base = status() === 'error' ? 'failed' : summary().meta;
+    const by = a?.by === 'ai' ? 'approved by AI' : undefined;
+    return [base, by].filter(Boolean).join(' · ') || undefined;
+  };
 
   const language = () => {
     const path = str(args().path);
@@ -285,7 +313,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
       classList={{
         expanded: expanded(),
         running: status() === 'running',
-        error: status() === 'error',
+        error: status() === 'error' || approval()?.approved === false,
       }}
     >
       <button
@@ -316,6 +344,19 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
               <StaticCodeBlock code={str(args().content)!} language={language()} />
             </Show>
           </section>
+
+          <Show when={approval()}>
+            {(a) => (
+              <section class="tool-call-section">
+                <div class="tool-call-label">Approval</div>
+                <div class="tool-call-approval" classList={{ rejected: !a().approved }}>
+                  {a().approved ? 'Approved' : 'Rejected'}
+                  {a().by === 'ai' ? ` by ${a().model ?? 'AI'}` : ' by you'}
+                  {a().reason ? `: ${a().reason}` : ''}
+                </div>
+              </section>
+            )}
+          </Show>
 
           <section class="tool-call-section">
             <div class="tool-call-label">Result</div>

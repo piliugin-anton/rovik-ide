@@ -144,6 +144,15 @@ export interface ChatMessage {
   status?: MessageStatus;
 }
 
+/** The approval decision on one tool call. */
+export interface ToolApproval {
+  by: 'user' | 'ai';
+  approved: boolean;
+  /** "By AI": the model that decided. */
+  model?: string;
+  reason?: string;
+}
+
 /** Small per-message metadata, stored with the message. */
 export interface ToolMeta {
   /** Tool results: counts for the block header. */
@@ -153,6 +162,15 @@ export interface ToolMeta {
   failure?: StoredFailure;
   /** Part of the reply arrived, then the request failed. */
   interrupted?: StoredFailure;
+  /** run_command results: the exit code (null when killed or signalled). */
+  exitCode?: number | null;
+  /** Tool results that went through approval: who decided, and why. */
+  approval?: ToolApproval;
+  /**
+   * User messages: the text as sent to the model (with editor context and
+   * file references), reused when the turn is retried or continued.
+   */
+  sentContent?: string;
 }
 
 export type ChatErrorKind =

@@ -20,6 +20,7 @@ import type {
   ModelProfile,
   ModelSelection,
   Provider,
+  ToolApproval,
   TreeRow,
 } from '../types';
 import type { ActiveFileContext } from '../lib/activeContext';
@@ -37,7 +38,7 @@ import { generateChatTitle } from '../lib/chatTitle';
 import { cancelChatRequest, sendChatMessage, streamEndSignal, untilStreamEnd } from '../lib/aiChat';
 import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
 import { agentToolsFor, executeAgentTool } from '../lib/tools';
-import ModelSettingsPanel from './ModelSettingsPanel';
+import AiSettingsModal, { type AiSettingsPage } from './AiSettingsModal';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
 import { toolResultMeta } from './ToolCallBlock';
@@ -52,6 +53,14 @@ import {
   type PendingDraft,
 } from '../lib/pendingDraft';
 import { toRelativePath } from '../lib/fileTools';
+import {
+  checkToolCall,
+  DEFAULT_PERMISSIONS,
+  describeToolCall,
+  sameModel,
+  type AgentPermissions,
+} from '../lib/permissions';
+import { reviewWithAi } from '../lib/aiApproval';
 
 // Hard ceiling on how many read→act round-trips one user message can trigger.
 const MAX_AGENT_STEPS = 24;
@@ -67,13 +76,24 @@ interface ChatProps {
 export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
+  const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
+  /** Live notes on tool calls waiting for approval, by tool call id. */
+  const [toolNotes, setToolNotes] = createSignal<Record<string, string>>({});
+  const setToolNote = (id: string, note?: string) =>
+    setToolNotes((notes) => {
+      const next = { ...notes };
+      if (note) next[id] = note;
+      else delete next[id];
+      return next;
+    });
 
   // Chat list page + open chats; everything else stays in the database.
   const store = createChatStore();
   const activeDialogId = () => store.state.activeId;
 
   const [input, setInput] = createSignal('');
-  const [settingsOpen, setSettingsOpen] = createSignal(false);
+  /** The open settings page, or null when the settings modal is closed. */
+  const [settingsPage, setSettingsPage] = createSignal<AiSettingsPage | null>(null);
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const [historyQuery, setHistoryQuery] = createSignal('');
   /** Lags historyQuery slightly so fast typing doesn't search on every key. */
@@ -86,7 +106,8 @@ export default function ChatPanel(props: ChatProps) {
   const [focusMessageId, setFocusMessageId] = createSignal<string | null>(null);
   let listController: MessageListController | undefined;
 
-  const [isGeneratingTitle, setIsGeneratingTitle] = createSignal(false);
+  /** Chats whose title is being generated right now. */
+  const titlesInFlight = new Set<string>();
 
   /*
    * -----------------------------------------------------------------------
@@ -274,6 +295,7 @@ export default function ChatPanel(props: ChatProps) {
       if (!isMounted) return;
       setProviders(settings.providers);
       setSelection(reconcileSelection(settings.providers, settings.active));
+      setPermissions(settings.permissions);
 
       try {
         await store.loadFirstPage();
@@ -338,6 +360,37 @@ export default function ChatPanel(props: ChatProps) {
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
     setFileQuery('');
+  }
+
+  /** An open chat with nothing in it (and no request running). */
+  function isEmptyChat(dialogId: string): boolean {
+    const chat = store.state.open[dialogId];
+    const summary = activeDialog();
+    return (
+      !!chat &&
+      chat.messages.length === 0 &&
+      !chat.hasOlder &&
+      !chat.busy &&
+      (summary?.id !== dialogId || summary.messageCount === 0)
+    );
+  }
+
+  /**
+   * "New chat" from the UI. When the current chat is still empty it is
+   * reused instead of piling up empty chats in the history.
+   */
+  function startNewChat(): DialogSummary {
+    const current = activeDialog();
+    if (current && isEmptyChat(current.id)) {
+      setHistoryOpen(false);
+      setFocusMessageId(null);
+      inputTextareaRef?.focus();
+      return current;
+    }
+    resetComposerState();
+    const dialog = createNewDialog();
+    inputTextareaRef?.focus();
+    return dialog;
   }
 
   function createNewDialog(): DialogSummary {
@@ -844,20 +897,139 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  function persistAiSettings(nextProviders: Provider[], nextSelection: ModelSelection | null) {
-    void saveAiSettings({ version: 2, providers: nextProviders, active: nextSelection });
+  function persistAiSettings(
+    nextProviders: Provider[],
+    nextSelection: ModelSelection | null,
+    nextPermissions: AgentPermissions = permissions()
+  ) {
+    void saveAiSettings({
+      version: 2,
+      providers: nextProviders,
+      active: nextSelection,
+      permissions: nextPermissions,
+    }).catch((err) => console.error('Failed to save AI settings:', err));
   }
 
-  function handleProvidersSaved(nextProviders: Provider[]) {
-    const nextSelection = reconcileSelection(nextProviders, selection());
-    setProviders(nextProviders);
+  function handleSettingsSaved(changes: { providers: Provider[]; permissions: AgentPermissions }) {
+    const nextSelection = reconcileSelection(changes.providers, selection());
+    setProviders(changes.providers);
     setSelection(nextSelection);
-    persistAiSettings(nextProviders, nextSelection);
+    setPermissions(changes.permissions);
+    persistAiSettings(changes.providers, nextSelection, changes.permissions);
   }
 
   function handleModelChange(next: ModelSelection) {
     setSelection(next);
     persistAiSettings(providers(), next);
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Tool approval
+   * -----------------------------------------------------------------------
+   */
+
+  /** The approval model, then its fallbacks, as far as they still exist. */
+  function approvalProfiles(p: AgentPermissions): ModelProfile[] {
+    const chosen: ModelSelection[] = [];
+    for (const sel of [p.approvalModel, ...p.approvalFallbacks]) {
+      if (sel && !chosen.some((c) => sameModel(c, sel))) chosen.push(sel);
+    }
+    return chosen
+      .map((sel) => resolveProfile(providers(), sel))
+      .filter((profile): profile is ModelProfile => !!profile);
+  }
+
+  /** The latest delivered user request in a chat, for the AI reviewer. */
+  function latestUserRequest(dialogId: string): string {
+    const list = store.messagesOf(dialogId);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.role === 'user' && !m.failed) return m.meta?.sentContent ?? m.content;
+    }
+    return '';
+  }
+
+  /**
+   * Permission first (refused calls never reach approval), then approval
+   * when the settings require it: by the user, or by the approval model.
+   * Returns the refusal to send back to the model (null: run it) and the
+   * decision to show on the tool block.
+   */
+  async function authorizeToolCall(
+    dialogId: string,
+    tc: ChatToolCall
+  ): Promise<{ refusal: string | null; approval?: ToolApproval }> {
+    const p = permissions();
+    const verdict = checkToolCall(tc.name, tc.arguments, p);
+    if (!verdict.permitted) {
+      return { refusal: `Error: blocked by the user's permission settings. ${verdict.reason}` };
+    }
+    if (!verdict.approval) return { refusal: null };
+
+    const summary = describeToolCall(tc.name, tc.arguments);
+    let manualReason: string | null = null;
+
+    if (verdict.approval === 'ai') {
+      const models = approvalProfiles(p);
+      if (models.length === 0) {
+        manualReason = 'No AI reviewer model is set, so this needs your approval.';
+      } else {
+        setToolNote(tc.id, `Reviewing with ${models[0].label}…`);
+        const review = await reviewWithAi(
+          models,
+          {
+            userRequest: latestUserRequest(dialogId),
+            toolName: tc.name,
+            summary,
+            argsJson: tc.arguments,
+          },
+          { typedInput: p.approvalTypedInput }
+        );
+        setToolNote(tc.id);
+
+        if (review.decided) {
+          const approval: ToolApproval = {
+            by: 'ai',
+            approved: review.approved,
+            model: review.model,
+            reason: review.reason,
+          };
+          return review.approved
+            ? { refusal: null, approval }
+            : {
+                refusal: `Error: rejected by the user's AI reviewer (${review.model}): ${review.reason} Do not retry the same action; adjust the approach or ask the user.`,
+                approval,
+              };
+        }
+        console.warn('AI approval gave no decision:', review.errors);
+        manualReason = 'The AI reviewer couldn’t decide, so this needs your approval.';
+      }
+    }
+
+    setToolNote(tc.id, 'Waiting for approval…');
+    const approved = await confirmDialog({
+      title: 'Allow this action?',
+      message: (
+        <>
+          The agent wants to: <strong>{summary}</strong>
+          {verdict.modifiesFiles ? '\nThis may change files in the project.' : ''}
+          {manualReason ? `\n${manualReason}` : ''}
+        </>
+      ),
+      confirmLabel: 'Allow',
+      cancelLabel: 'Deny',
+      danger: verdict.modifiesFiles,
+    });
+    setToolNote(tc.id);
+
+    const approval: ToolApproval = { by: 'user', approved };
+    return approved
+      ? { refusal: null, approval }
+      : {
+          refusal: `Error: the user denied this "${tc.name}" call. Do not retry it; continue without it or ask the user how to proceed.`,
+          approval,
+        };
   }
 
   /*
@@ -871,14 +1043,15 @@ export default function ChatPanel(props: ChatProps) {
       () => [activeDialog()?.id, activeDialog()?.title, messages().length] as const,
       ([dialogId, title]) => {
         const profile = activeProfile();
-        if (!dialogId || !profile || title !== NEW_CHAT_TITLE || isGeneratingTitle()) return;
-        if (!messages().some((m) => m.role === 'user' && m.content.trim())) return;
+        if (!dialogId || !profile || title !== NEW_CHAT_TITLE) return;
+        if (titlesInFlight.has(dialogId)) return;
+        if (!messages().some((m) => m.role === 'user' && !m.failed && m.content.trim())) return;
 
-        setIsGeneratingTitle(true);
+        titlesInFlight.add(dialogId);
         // Runs alongside the answer; independent of the conversation.
         void generateTitleForDialog(dialogId, profile)
-          .catch(() => {})
-          .finally(() => setIsGeneratingTitle(false));
+          .catch((err) => console.error('Chat title generation failed:', err))
+          .finally(() => titlesInFlight.delete(dialogId));
       }
     )
   );
@@ -886,13 +1059,28 @@ export default function ChatPanel(props: ChatProps) {
   async function generateTitleForDialog(dialogId: string, profile: ModelProfile) {
     const chatMessages = store
       .messagesOf(dialogId)
-      .filter((msg) => !msg.toolCalls?.length && !msg.tool_call_id && !msg.error && !msg.pending)
+      .filter(
+        (msg) =>
+          (msg.role === 'user' || msg.role === 'assistant') &&
+          !msg.toolCalls?.length &&
+          !msg.error &&
+          !msg.failed &&
+          !msg.pending &&
+          msg.content.trim()
+      )
       .slice(0, 6);
 
-    if (chatMessages.length === 0) return;
+    if (!chatMessages.some((m) => m.role === 'user')) return;
 
     const title = await generateChatTitle(profile, chatMessages);
     if (!title || !isMounted) return;
+
+    // The user may have renamed it meanwhile; only replace the placeholder.
+    const current =
+      store.state.active?.id === dialogId
+        ? store.state.active
+        : store.state.list.items.find((d) => d.id === dialogId);
+    if (current && current.title !== NEW_CHAT_TITLE) return;
 
     await store.renameDialog(dialogId, title);
   }
@@ -1060,6 +1248,7 @@ export default function ChatPanel(props: ChatProps) {
       hasProject: !!root,
       vision: profile.vision,
       noTools: profile.noTools,
+      permissions: permissions(),
     });
 
     let abandon!: () => void;
@@ -1170,7 +1359,13 @@ export default function ChatPanel(props: ChatProps) {
     // which reads the history from the database.
     for (const tc of toolCalls) {
       if (stopRequested) return;
-      const result = await executeAgentTool(root, tc.name, tc.arguments);
+      const { refusal, approval } = await authorizeToolCall(dialogId, tc);
+      // Stop may have been pressed while approval was pending.
+      if (stopRequested) return;
+      const result = refusal
+        ? { content: refusal, attachments: undefined }
+        : await executeAgentTool(root, tc.name, tc.arguments);
+      const resultMeta = toolResultMeta(tc.name, result.content);
       await store.appendMessages(dialogId, [
         {
           id: crypto.randomUUID(),
@@ -1178,7 +1373,7 @@ export default function ChatPanel(props: ChatProps) {
           content: result.content,
           attachments: result.attachments,
           tool_call_id: tc.id,
-          meta: toolResultMeta(tc.name, result.content),
+          meta: approval ? { ...resultMeta, approval } : resultMeta,
           finalized: true,
         },
       ]);
@@ -1224,12 +1419,30 @@ export default function ChatPanel(props: ChatProps) {
     stopTimer = window.setTimeout(() => abandonCurrent?.(), STOP_GRACE_MS);
   }
 
+  /**
+   * The latest delivered user message as it was sent to the model, with its
+   * editor context and file references. The backend puts it in place of the
+   * stored (clean) text, exactly as on the first attempt.
+   */
+  function lastUserWireContent(dialogId: string): string | undefined {
+    const list = store.messagesOf(dialogId);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.role !== 'user' || m.failed) continue;
+      if (m.meta?.sentContent) return m.meta.sentContent;
+      // Sent before the wire copy was stored: rebuild it from the current editor.
+      return buildWireContent(m.content, []);
+    }
+    return undefined;
+  }
+
   /** Retry after a failed turn (the user's message was delivered earlier). */
   function retryLastTurn() {
     const dialogId = activeDialogId();
     if (!dialogId || sending()) return;
     listController?.followLatest();
-    void runRequest(dialogId, () => runAgentTurn(dialogId));
+    const currentUserContent = lastUserWireContent(dialogId);
+    void runRequest(dialogId, () => runAgentTurn(dialogId, { currentUserContent }));
   }
 
   /** Continue an interrupted reply. */
@@ -1237,7 +1450,10 @@ export default function ChatPanel(props: ChatProps) {
     const dialogId = activeDialogId();
     if (!dialogId || sending()) return;
     listController?.followLatest();
-    void runRequest(dialogId, () => runAgentTurn(dialogId, { continueReply: true }));
+    const currentUserContent = lastUserWireContent(dialogId);
+    void runRequest(dialogId, () =>
+      runAgentTurn(dialogId, { continueReply: true, currentUserContent })
+    );
   }
 
   /*
@@ -1245,6 +1461,36 @@ export default function ChatPanel(props: ChatProps) {
    * Sending a user message
    * -----------------------------------------------------------------------
    */
+
+  /**
+   * The user message as sent to the model: active editor context and
+   * explicit file references first, then the text. Undefined when there is
+   * nothing at all (the backend then sends the stored text).
+   */
+  function buildWireContent(text: string, files: FileSuggestion[]): string | undefined {
+    const contextParts: string[] = [];
+
+    const contextHeader = buildContextHeader(props.activeFileContext());
+    if (contextHeader) contextParts.push(contextHeader);
+
+    if (files.length > 0) {
+      contextParts.push(
+        [
+          'The user explicitly referenced these project files:',
+          ...files.map((file) => `- ${file.path}`),
+          '',
+          'Treat these as explicit file references from the user. Use the available file tools to inspect them when relevant.',
+        ].join('\n')
+      );
+    }
+
+    // A message of only file references still gets the reference context.
+    const parts = [
+      ...(contextParts.length ? [contextParts.join('\n\n')] : []),
+      ...(text ? [text] : []),
+    ];
+    return parts.length > 0 ? parts.join('\n\n') : undefined;
+  }
 
   async function handleSend() {
     const text = input().trim();
@@ -1265,56 +1511,21 @@ export default function ChatPanel(props: ChatProps) {
       return;
     }
 
+    /*
+     * The displayed/persisted text stays clean. The wire copy, with the
+     * active editor context and file references, is what the model gets; it
+     * is stored in the message's meta so a retry or "continue" later sends
+     * the same thing instead of the bare text.
+     */
+    const wireContent = buildWireContent(text, selectedFiles);
+
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: text,
       finalized: true,
+      ...(wireContent && wireContent !== text ? { meta: { sentContent: wireContent } } : {}),
     };
-
-    /*
-     * The displayed/persisted user message stays clean.
-     *
-     * The selected file references and active editor context are only
-     * added to the wire copy sent to the model.
-     */
-    const contextParts: string[] = [];
-
-    const contextHeader = buildContextHeader(props.activeFileContext());
-
-    if (contextHeader) {
-      contextParts.push(contextHeader);
-    }
-
-    if (selectedFiles.length > 0) {
-      contextParts.push(
-        [
-          'The user explicitly referenced these project files:',
-          ...selectedFiles.map((file) => `- ${file.path}`),
-          '',
-          'Treat these as explicit file references from the user. Use the available file tools to inspect them when relevant.',
-        ].join('\n')
-      );
-    }
-
-    /*
-     * If the user sends only file references, provide a small wire-level
-     * description instead of sending an empty user message to the model.
-     *
-     * The visible/persisted message remains empty in that case, but the
-     * actual model message contains the reference context.
-     */
-    const wireContentParts: string[] = [];
-
-    if (contextParts.length > 0) {
-      wireContentParts.push(contextParts.join('\n\n'));
-    }
-
-    if (text) {
-      wireContentParts.push(text);
-    }
-
-    const wireContent = wireContentParts.length > 0 ? wireContentParts.join('\n\n') : undefined;
 
     /*
      * Save the composer before anything else: from here until the model
@@ -1457,11 +1668,16 @@ export default function ChatPanel(props: ChatProps) {
         </span>
 
         <div class="chat-controls">
-          <button class="icon-button" onClick={() => createNewDialog()} title="New chat">
+          <button class="icon-button" onClick={() => startNewChat()} title="New chat">
             ＋
           </button>
 
-          <button class="icon-button" onClick={() => setSettingsOpen(true)} title="Model settings">
+          <button
+            class="icon-button"
+            onClick={() => setSettingsPage('menu')}
+            title="AI Chat settings"
+            aria-label="AI Chat settings"
+          >
             ⚙
           </button>
         </div>
@@ -1471,7 +1687,7 @@ export default function ChatPanel(props: ChatProps) {
           <div class="chat-history-header">
             <span>Chats</span>
 
-            <button class="chat-new-button" onClick={() => createNewDialog()}>
+            <button class="chat-new-button" onClick={() => startNewChat()}>
               New chat
             </button>
           </div>
@@ -1525,6 +1741,7 @@ export default function ChatPanel(props: ChatProps) {
           if (active) await store.openChat(active, { reload: true });
         }}
         controller={(c) => (listController = c)}
+        toolNotes={toolNotes()}
         onRetry={retryLastTurn}
         onContinue={continueReply}
       />
@@ -1612,15 +1829,19 @@ export default function ChatPanel(props: ChatProps) {
           providers={providers()}
           selection={selection()}
           onSelect={handleModelChange}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => setSettingsPage('providers')}
         />
       </div>
-      <Show when={settingsOpen()}>
-        <ModelSettingsPanel
-          providers={providers()}
-          onSave={handleProvidersSaved}
-          onClose={() => setSettingsOpen(false)}
-        />
+      <Show when={settingsPage()} keyed>
+        {(page) => (
+          <AiSettingsModal
+            providers={providers()}
+            permissions={permissions()}
+            initialPage={page}
+            onSave={handleSettingsSaved}
+            onClose={() => setSettingsPage(null)}
+          />
+        )}
       </Show>
     </div>
   );

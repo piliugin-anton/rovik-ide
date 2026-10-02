@@ -1,13 +1,21 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelProfile, ModelSelection, Provider, ProviderModel } from '../types';
+import { DEFAULT_PERMISSIONS, normalizePermissions, type AgentPermissions } from './permissions';
 
 export interface PersistedAiSettings {
   version: 2;
   providers: Provider[];
   active: ModelSelection | null;
+  /** Missing in files written before permissions existed. */
+  permissions: AgentPermissions;
 }
 
-const EMPTY: PersistedAiSettings = { version: 2, providers: [], active: null };
+const EMPTY: PersistedAiSettings = {
+  version: 2,
+  providers: [],
+  active: null,
+  permissions: DEFAULT_PERMISSIONS,
+};
 
 export async function loadAiSettings(): Promise<PersistedAiSettings> {
   try {
@@ -19,6 +27,7 @@ export async function loadAiSettings(): Promise<PersistedAiSettings> {
         version: 2,
         providers: parsed.providers,
         active: parsed.active ?? null,
+        permissions: normalizePermissions(parsed.permissions),
       };
     }
 

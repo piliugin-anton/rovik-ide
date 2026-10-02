@@ -1,13 +1,16 @@
 import type { ToolSearchResult } from '../types';
+import { commandsAvailable, type AgentPermissions } from './permissions';
 import {
   toolBrowseUrl,
   toolBrowserScreenshot,
   toolListDir,
   toolReadFileRange,
+  toolRunCommand,
   toolSearchCode,
   toolWebSearch,
   toolWriteFile,
 } from './commands';
+import type { CommandOutput } from './commands';
 
 /**
  * Tool schemas in OpenAI's function-calling format, sent as the `tools`
@@ -194,19 +197,73 @@ export const SCREENSHOT_TOOL_SCHEMA = {
   },
 } as const;
 
+function runCommandSchema(permissions?: AgentPermissions) {
+  const allowed =
+    !permissions || permissions.allowAnyCommand
+      ? ''
+      : ` Only these commands (and their arguments) are allowed: ${permissions.allowedCommands.join(', ')}. Others are refused.`;
+  return {
+    type: 'function',
+    function: {
+      name: 'run_command',
+      description:
+        'Run a shell command in the project root and get its exit code and output (stdout/stderr, capped at 64 KB each). ' +
+        'Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. ' +
+        'Prefer read_file/search_code/write_file for reading and editing files.' +
+        allowed,
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'The command line, e.g. "npm test" or "git diff --stat".',
+          },
+          timeout_seconds: {
+            type: 'number',
+            description: 'Kill the command after this many seconds. Default 120, max 600.',
+          },
+        },
+        required: ['command'],
+      },
+    },
+  } as const;
+}
+
 /** The tool list for one request, depending on what's available. */
 export function agentToolsFor(opts: {
   hasProject: boolean;
   vision: boolean;
   noTools?: boolean;
+  /** run_command is offered only when some command is allowed. */
+  permissions?: AgentPermissions;
 }): unknown[] {
   // Models marked "no tools" in settings get none (and no tool instructions).
   if (opts.noTools) return [];
+  const commands =
+    opts.hasProject && (!opts.permissions || commandsAvailable(opts.permissions))
+      ? [runCommandSchema(opts.permissions)]
+      : [];
   return [
     ...(opts.hasProject ? AGENT_TOOL_SCHEMAS : []),
+    ...commands,
     ...WEB_TOOL_SCHEMAS,
     ...(opts.vision ? [SCREENSHOT_TOOL_SCHEMA] : []),
   ];
+}
+
+/** The text the model sees for a finished command. */
+export function formatCommandOutput(command: string, out: CommandOutput): string {
+  const status = out.timedOut
+    ? 'timed out (killed)'
+    : out.exitCode === null
+      ? 'ended by a signal'
+      : `exit code ${out.exitCode}`;
+  const parts = [`$ ${command}`, `${status}, ${(out.durationMs / 1000).toFixed(1)} s`];
+  if (out.stdout.trim()) parts.push(`--- stdout ---\n${out.stdout.trimEnd()}`);
+  if (out.stderr.trim()) parts.push(`--- stderr ---\n${out.stderr.trimEnd()}`);
+  if (!out.stdout.trim() && !out.stderr.trim()) parts.push('(no output)');
+  if (out.truncated) parts.push('(output truncated at 64 KB per stream)');
+  return parts.join('\n');
 }
 
 /** Text for the model, plus attachments (screenshots) for tools that produce them. */
@@ -331,6 +388,14 @@ async function executeFileTool(root: string, name: string, args: ToolArgs): Prom
       if (!path) return 'Error: "path" is required.';
       if (content === undefined) return 'Error: "content" is required.';
       return await toolWriteFile(root, path, content);
+    }
+
+    case 'run_command': {
+      const command = asString(args.command);
+      if (!command?.trim()) return 'Error: "command" is required.';
+      const seconds = asNumber(args.timeout_seconds);
+      const out = await toolRunCommand(root, command, seconds ? seconds * 1000 : undefined);
+      return formatCommandOutput(command, out);
     }
 
     case 'list_dir': {

@@ -1,0 +1,177 @@
+// src-tauri/src/command_tool.rs
+//
+// `run_command` for the AI agent: runs one shell command in the project
+// root and returns its exit code and (capped) output.
+//
+// Whether a command may run at all, and whether it needs approval first, is
+// decided in the frontend (src/lib/permissions.ts) before this is invoked.
+// This side only guarantees a bounded run: the project root as working
+// directory, no stdin, a timeout, and capped output.
+
+use std::io::Read;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const MAX_TIMEOUT_MS: u64 = 600_000;
+/// Per stream; the rest is counted but dropped.
+const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandOutput {
+    /// None when the process was killed (timeout) or ended by a signal.
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    pub truncated: bool,
+    pub duration_ms: u64,
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", command]);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/bin/sh".to_string());
+    let mut cmd = Command::new(shell);
+    cmd.args(["-c", command]);
+    cmd
+}
+
+/// Reads a whole stream on its own thread, keeping the first `MAX_OUTPUT_BYTES`.
+fn drain<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<(Vec<u8>, bool)> {
+    thread::spawn(move || {
+        let mut kept = Vec::new();
+        let mut truncated = false;
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = MAX_OUTPUT_BYTES.saturating_sub(kept.len());
+                    if n > room {
+                        truncated = true;
+                    }
+                    kept.extend_from_slice(&buf[..n.min(room)]);
+                }
+            }
+        }
+        (kept, truncated)
+    })
+}
+
+fn run_blocking(root: &str, command: &str, timeout: Duration) -> Result<CommandOutput, String> {
+    let root = Path::new(root);
+    if !root.is_dir() {
+        return Err(format!("project root is not a directory: {}", root.display()));
+    }
+
+    let started = Instant::now();
+    let mut child = shell_command(command)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Tools that page or prompt should just print and exit.
+        .env("GIT_PAGER", "cat")
+        .env("PAGER", "cat")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("CI", "1")
+        .spawn()
+        .map_err(|e| format!("failed to start the command: {e}"))?;
+
+    let stdout = drain(child.stdout.take().ok_or("no stdout")?);
+    let stderr = drain(child.stderr.take().ok_or("no stderr")?);
+
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() >= timeout => {
+                timed_out = true;
+                let _ = child.kill();
+                break child.wait().ok();
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+            Err(e) => return Err(format!("failed to wait for the command: {e}")),
+        }
+    };
+
+    // A child the shell started may still hold the pipes open after a
+    // timeout kill; don't wait on the readers forever in that case.
+    let join = |handle: thread::JoinHandle<(Vec<u8>, bool)>| -> (Vec<u8>, bool) {
+        if timed_out {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !handle.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            if !handle.is_finished() {
+                return (Vec::new(), true);
+            }
+        }
+        handle.join().unwrap_or_default()
+    };
+    let (out, out_cut) = join(stdout);
+    let (err, err_cut) = join(stderr);
+
+    Ok(CommandOutput {
+        exit_code: status.and_then(|s| s.code()),
+        stdout: String::from_utf8_lossy(&out).into_owned(),
+        stderr: String::from_utf8_lossy(&err).into_owned(),
+        timed_out,
+        truncated: out_cut || err_cut,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// Runs `command` through the user's shell with the project root as the
+/// working directory.
+#[tauri::command]
+pub async fn tool_run_command(
+    root: String,
+    command: String,
+    timeout_ms: Option<u64>,
+) -> Result<CommandOutput, String> {
+    if command.trim().is_empty() {
+        return Err("command is empty".into());
+    }
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1_000, MAX_TIMEOUT_MS));
+    tauri::async_runtime::spawn_blocking(move || run_blocking(&root, &command, timeout))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn captures_output_and_exit_code() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), "echo hi; echo oops >&2; exit 3", Duration::from_secs(5)).unwrap();
+        assert_eq!(out.exit_code, Some(3));
+        assert_eq!(out.stdout.trim(), "hi");
+        assert_eq!(out.stderr.trim(), "oops");
+        assert!(!out.timed_out);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn times_out() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), "sleep 5", Duration::from_millis(300)).unwrap();
+        assert!(out.timed_out);
+    }
+}

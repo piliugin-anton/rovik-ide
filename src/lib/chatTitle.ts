@@ -1,89 +1,102 @@
-import { Channel } from '@tauri-apps/api/core';
-import type { ChatMessage, ChatStreamEvent, ModelProfile } from '../types';
-import { sendChatMessage, streamEndSignal, untilStreamEnd } from './aiChat';
+import type { ChatMessage, ModelProfile } from '../types';
+import { completeOnce, LEAN_THEN_PLAIN, stripThinking } from './oneShot';
+
+const MAX_TITLE_CHARS = 60;
+const MAX_MESSAGE_CHARS = 1_500;
+
+const SYSTEM_PROMPT = `You name chats in a code editor.
+
+Reply with a title of 2 to 6 words describing the user's main task or topic.
+- Concrete wording, sentence case, no quotes, no trailing punctuation
+- Use the same language as the user
+- Reply with the title only: no explanation, no prefix like "Title:"`;
+
+const ATTEMPTS = LEAN_THEN_PLAIN(64);
 
 /**
- * Generates a short title for a conversation.
+ * Generates a short title for a conversation. Falls back to the first words
+ * of the user's first message when the model can't produce one, so a chat
+ * never stays "New Chat".
  *
- * The generated title is deliberately not added to the conversation's
- * persisted messages. It is metadata belonging to the chat.
+ * The title is chat metadata, never added to the stored messages.
  */
 export async function generateChatTitle(
   profile: ModelProfile,
   messages: ChatMessage[]
 ): Promise<string | null> {
-  const channel = new Channel<ChatStreamEvent>();
+  const transcript = messages
+    .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content.trim())
+    .map((m) => ({ ...m, content: m.content.slice(0, MAX_MESSAGE_CHARS) }));
 
-  let result = '';
-  let failed = false;
-  const stream = streamEndSignal();
+  if (!transcript.some((m) => m.role === 'user')) return null;
 
-  channel.onmessage = (event) => {
-    switch (event.type) {
-      case 'Delta':
-        result += event.content;
-        break;
+  // One user message holding the conversation: some providers reject a
+  // history that ends with an assistant turn, and it keeps the model from
+  // simply continuing the chat.
+  const request: ChatMessage[] = [
+    {
+      id: 'title-request',
+      role: 'user',
+      content: [
+        'Conversation:',
+        ...transcript.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`),
+        '',
+        'Title for this conversation:',
+      ].join('\n'),
+    },
+  ];
 
-      case 'Error':
-        failed = true;
-        console.error('Chat title generation failed:', event.error.message);
-        stream.end();
-        break;
-
-      case 'Done':
-        stream.end();
-        break;
-
-      case 'ToolCallStart':
-      case 'ToolCallArgumentsDelta':
-      case 'ToolCallComplete':
-        // Title generation should never request tools.
-        break;
-    }
-  };
-
-  try {
-    await sendChatMessage({
+  for (const options of ATTEMPTS) {
+    const result = await completeOnce({
       profile,
-      channel,
-      messages,
-      options: {
-        max_tokens: 20,
-        temperature: 0.01,
-        top_p: 1,
-        reasoning_effort: 'none',
-      },
-      systemPrompt: `You are a chat-title generator for an IDE.
-
-From the conversation below, output ONE short title line (max 6 words) that:
-- Describes the main task or topic
-- Uses active, concrete wording
-- Avoids quotes, special characters, and filler words (a, an, the)
-- Is in English and sentence case (first word capitalized only)
-
-If the conversation is too short, ambiguous, or you cannot infer a clear topic, output an empty string.
-
-Do not add explanations, notes, or any text other than the title (or an empty string).`,
+      systemPrompt: SYSTEM_PROMPT,
+      messages: request,
+      options,
     });
-    // The last deltas can arrive after the command returns.
-    await untilStreamEnd(stream.ended);
-  } catch (err) {
-    console.error('Failed to generate chat title:', err);
-    return null;
+    if (!result.ok) {
+      console.warn('Chat title request failed:', result.error);
+      continue;
+    }
+    const title = cleanTitle(result.text);
+    if (title) return title;
   }
 
-  if (failed) {
-    return null;
-  }
+  return fallbackTitle(transcript.find((m) => m.role === 'user')!.content);
+}
 
-  const title = result
-    .replace(/^["'`]+|["'`]+$/g, '')
+/** First usable line, without reasoning blocks, prefixes, quotes or markdown. */
+export function cleanTitle(raw: string): string | null {
+  const text = stripThinking(raw);
+
+  const line = text
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!line) return null;
+
+  const title = line
+    .replace(/^#+\s*/, '')
+    .replace(/^\*+|\*+$/g, '')
+    .replace(/^(chat\s+)?title\s*:\s*/i, '')
+    .replace(/^["'`“”‘’«»]+|["'`“”‘’«»]+$/g, '')
+    .replace(/[.!:;,\s]+$/, '')
     .replace(/\s+/g, ' ')
     .trim();
 
-  if (!title) {
-    return null;
-  }
+  if (!title) return null;
+  return truncate(title);
+}
 
-  return title.slice(0, 100);
+/** The opening words of the user's message, used when the model gives nothing. */
+export function fallbackTitle(text: string): string | null {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ');
+  if (!words) return null;
+  return truncate(words.charAt(0).toUpperCase() + words.slice(1));
+}
+
+function truncate(title: string): string {
+  if (title.length <= MAX_TITLE_CHARS) return title;
+  const cut = title.slice(0, MAX_TITLE_CHARS);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > 20 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
