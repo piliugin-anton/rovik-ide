@@ -18,15 +18,43 @@ pub async fn system_one_request(
     base_url: String,
     api_key: String,
     model: String,
-    body: serde_json::Value,
+    mut body: serde_json::Value,
     timeout_ms: Option<u64>,
 ) -> Result<serde_json::Value, String> {
-    let url = format!("{}/{}", base_url.trim().trim_end_matches('/'), model);
-    println!("{url}");
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let is_cloudflare_needs_url_rewrite = trimmed.contains("api.cloudflare.com") && !trimmed.ends_with("/run");
+    // For Cloudflare, keep only up to "...ai/" and drop anything after it
+    let url = if is_cloudflare_needs_url_rewrite {
+        // Ensure we keep the trailing slash after "ai"
+        trimmed
+            .split("/v1")
+            .next()
+            .map(|s| format!("{s}/run"))
+            .unwrap_or_else(|| trimmed.to_string())
+    } else {
+        trimmed.to_string()
+    };
     let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL {url}: {e}"))?;
+    println!("{url}");
+    
     let local = matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1") | Some("::1"));
     if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local) {
         return Err(format!("Refusing to send the review over {}: use https", parsed.scheme()));
+    }
+
+    // Inject `model` into the body
+    if let serde_json::Value::Object(ref mut map) = body {
+        map.insert("model".to_string(), serde_json::Value::String(model));
+    } else {
+        // If body is not an object, wrap it
+        let mut new_body = serde_json::Map::new();
+        new_body.insert("model".to_string(), serde_json::Value::String(model));
+        if let serde_json::Value::Object(old) = body {
+            for (k, v) in old {
+                new_body.insert(k, v);
+            }
+        }
+        body = serde_json::Value::Object(new_body);
     }
 
     let client = Client::builder()

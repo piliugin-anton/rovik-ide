@@ -11,7 +11,6 @@ mod browser_tools;
 mod agent_tools;
 mod command_tool;
 mod system_one;
-mod review_log;
 mod filesystem;
 mod terminal;
 mod typings;
@@ -105,8 +104,6 @@ pub fn run() {
             agent_tools::tool_write_file,
             command_tool::tool_run_command,
             system_one::system_one_request,
-            review_log::log_ai_review_started,
-            review_log::log_ai_review_finished,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
