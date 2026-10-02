@@ -142,6 +142,8 @@ export function resolveProfile(
     stream: provider.stream,
     vision: !!model.vision,
     contextTokens: model.contextOverride ?? model.contextLength,
+    noTools: !!model.noTools,
+    firstByteTimeoutMs: model.firstTokenTimeoutSec ? model.firstTokenTimeoutSec * 1000 : undefined,
   };
 }
 

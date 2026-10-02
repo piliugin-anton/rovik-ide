@@ -25,7 +25,7 @@ export async function generateChatTitle(
 
       case 'Error':
         failed = true;
-        console.error('Chat title generation failed:', event.message);
+        console.error('Chat title generation failed:', event.error.message);
         break;
 
       case 'Done':

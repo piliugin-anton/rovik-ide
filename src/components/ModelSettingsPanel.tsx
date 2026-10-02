@@ -28,6 +28,9 @@ const BASE_URL_PRESETS = [
 const CONTEXT_MIN = 1_000;
 const CONTEXT_MAX = 2_000_000;
 const DEFAULT_CONTEXT = 32_000;
+const FIRST_TOKEN_MIN = 5;
+const FIRST_TOKEN_MAX = 1_800;
+const DEFAULT_FIRST_TOKEN = 60;
 
 const emptyDraft = (): Provider => ({
   id: crypto.randomUUID(),
@@ -162,6 +165,24 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
     const valid = value === undefined || (value >= CONTEXT_MIN && value <= CONTEXT_MAX);
     if (!valid) return;
     patch({ models: d.models.map((m) => (m.id === id ? { ...m, contextOverride: value } : m)) });
+  }
+
+  function toggleTools(id: string) {
+    const d = draft();
+    if (!d) return;
+    patch({ models: d.models.map((m) => (m.id === id ? { ...m, noTools: !m.noTools } : m)) });
+  }
+
+  /** Seconds to wait for the first token; empty restores the 60 s default. */
+  function setFirstTokenTimeout(id: string, raw: string) {
+    const d = draft();
+    if (!d) return;
+    const digits = raw.replace(/[^\d]/g, '');
+    const value = digits ? Number(digits) : undefined;
+    if (value !== undefined && (value < FIRST_TOKEN_MIN || value > FIRST_TOKEN_MAX)) return;
+    patch({
+      models: d.models.map((m) => (m.id === id ? { ...m, firstTokenTimeoutSec: value } : m)),
+    });
   }
 
   function toggleVision(id: string) {
@@ -423,6 +444,34 @@ export default function ModelSettingsPanel(props: ModelSettingsPanelProps) {
                           >
                             vision
                           </button>
+                          <button
+                            class="vision-toggle"
+                            classList={{ on: !m.noTools }}
+                            onClick={() => toggleTools(m.id)}
+                            aria-pressed={!m.noTools}
+                            title={
+                              m.noTools
+                                ? 'Tools off: this model is sent no tools (for models without tool-call support)'
+                                : 'Tools on. Turn off for models that go silent or fail after tool calls'
+                            }
+                          >
+                            tools
+                          </button>
+                          <input
+                            class="context-input timeout-input"
+                            inputMode="numeric"
+                            value={m.firstTokenTimeoutSec ? `${m.firstTokenTimeoutSec} s` : ''}
+                            placeholder={`${DEFAULT_FIRST_TOKEN} s`}
+                            title="How long to wait for the first token before retrying. Raise it for slow reasoning models."
+                            aria-label={`First-token timeout for ${m.id}, in seconds`}
+                            onChange={(e) => {
+                              setFirstTokenTimeout(m.id, e.currentTarget.value);
+                              const stored = draft()?.models.find(
+                                (x) => x.id === m.id
+                              )?.firstTokenTimeoutSec;
+                              e.currentTarget.value = stored ? `${stored} s` : '';
+                            }}
+                          />
                           <button
                             class="icon-button"
                             onClick={() => removeModel(m.id)}

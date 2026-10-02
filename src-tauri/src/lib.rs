@@ -5,6 +5,7 @@ use tauri::Manager;
 mod agent;
 mod atomic_file;
 mod chat_db;
+mod chat_request;
 mod code_search;
 mod browser_tools;
 mod agent_tools;
@@ -18,6 +19,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(TerminalState::default())
         .manage(BrowserState::default())
+        .manage(chat_request::ChatRequests::default())
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
             gitignore: Mutex::new(None),
@@ -88,6 +90,7 @@ pub fn run() {
             git::git_status,
             typings::nodejs::load_nodejs_project_typings,
             agent::send_chat_message,
+            chat_request::cancel_chat_request,
             agent::list_models,
             browser_tools::web_search,
             browser_tools::browse_url,

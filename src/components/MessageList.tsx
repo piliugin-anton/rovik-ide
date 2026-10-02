@@ -28,6 +28,7 @@ import {
   type MessageWindow,
 } from '../lib/messageWindow';
 import { isBlank } from '../lib/textUtils';
+import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
 import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 
@@ -51,6 +52,10 @@ export default function MessageList(props: {
   /** Replace an "opened around a hit" chat with its newest page. */
   onReloadLatest: () => Promise<void>;
   controller?: (c: MessageListController) => void;
+  /** Re-run the last failed turn. */
+  onRetry: () => void;
+  /** Continue an interrupted reply. */
+  onContinue: () => void;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let innerRef: HTMLDivElement | undefined;
@@ -61,6 +66,39 @@ export default function MessageList(props: {
   const [win, setWin] = createSignal<MessageWindow>({ start: 0, end: 0 });
   const [stick, setStick] = createSignal(true);
   const [flashId, setFlashId] = createSignal<string | null>(null);
+  const [openDetails, setOpenDetails] = createSignal<string | null>(null);
+
+  // Ticks for countdowns (retry waits, rate-limit resets).
+  const [now, setNow] = createSignal(Date.now());
+  onMount(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 500);
+    onCleanup(() => window.clearInterval(timer));
+  });
+
+  /*
+   * Retry / Continue only on the latest message, while nothing is running.
+   * When the very first request failed, the user's message went back into
+   * the input instead (it's marked failed), so there is nothing to retry.
+   */
+  const isLatest = (m: ChatMessage) => {
+    const list = messages();
+    return !props.sending && list[list.length - 1]?.id === m.id;
+  };
+  const requestUndelivered = () => {
+    const list = messages();
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].role === 'user') return !!list[i].failed;
+    }
+    return false;
+  };
+
+  const statusText = (m: ChatMessage) => {
+    const status = m.status;
+    if (!status) return 'Thinking...';
+    if (!status.until) return status.text;
+    const left = status.until - now();
+    return left > 500 ? `${status.text} in ${formatDuration(left)}…` : `${status.text}…`;
+  };
 
   // tool_call_id -> its result message, so each call renders with its result.
   const toolResults = createMemo(() => {
@@ -291,16 +329,51 @@ export default function MessageList(props: {
             <div class="chat-item" classList={{ flash: flashId() === m.id }} data-id={m.id}>
               <Show when={m.pending && m.content.length === 0 && !m.toolCalls?.length}>
                 <div class="chat-message assistant">
-                  <span class="chat-pending">Thinking...</span>
+                  <span class="chat-pending" classList={{ status: !!m.status }} role="status">
+                    {statusText(m)}
+                  </span>
                 </div>
               </Show>
 
               <Show when={m.error}>
                 <div
-                  class="chat-message"
+                  class="chat-message chat-failure"
                   classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
                 >
-                  <span class="chat-error">{m.error}</span>
+                  <span class="chat-error">
+                    {m.meta?.failure ? describeFailure(m.meta.failure, now()) : m.error}
+                  </span>
+                  <div class="chat-failure-actions">
+                    <Show
+                      when={
+                        m.meta?.failure &&
+                        canRetry(m.meta.failure) &&
+                        isLatest(m) &&
+                        !requestUndelivered()
+                      }
+                    >
+                      <button
+                        type="button"
+                        class="chat-action-button"
+                        onClick={() => props.onRetry()}
+                      >
+                        Retry
+                      </button>
+                    </Show>
+                    <Show when={m.meta?.failure?.details}>
+                      <button
+                        type="button"
+                        class="link-button"
+                        aria-expanded={openDetails() === m.id}
+                        onClick={() => setOpenDetails((id) => (id === m.id ? null : m.id))}
+                      >
+                        {openDetails() === m.id ? 'Hide details' : 'Details'}
+                      </button>
+                    </Show>
+                  </div>
+                  <Show when={openDetails() === m.id}>
+                    <pre class="chat-failure-details">{m.meta?.failure?.details}</pre>
+                  </Show>
                 </div>
               </Show>
 
@@ -316,6 +389,23 @@ export default function MessageList(props: {
                 >
                   <MessageContent content={m.content} streaming={!!m.pending} />
                 </div>
+              </Show>
+
+              <Show when={m.meta?.interrupted}>
+                {(interrupted) => (
+                  <div class="chat-interrupted">
+                    <span>Reply interrupted. {describeFailure(interrupted(), now())}</span>
+                    <Show when={isLatest(m)}>
+                      <button
+                        type="button"
+                        class="chat-action-button"
+                        onClick={() => props.onContinue()}
+                      >
+                        Continue
+                      </button>
+                    </Show>
+                  </div>
+                )}
               </Show>
 
               <Show when={m.toolCalls && m.toolCalls.length > 0}>

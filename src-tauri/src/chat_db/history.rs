@@ -25,6 +25,10 @@ const TOOL_KEEP_CHARS: usize = 1200;
 /// Screenshots re-sent on later turns; older ones become a note.
 const MAX_IMAGES: usize = 2;
 const OMITTED_NOTE: &str = "[Earlier messages in this chat were omitted to fit the context window.]";
+/// Google's documented placeholder for function calls that have no real
+/// thought signature (made before signatures were stored, or by another
+/// model). Gemini 3 rejects unsigned calls in the current turn otherwise.
+const GEMINI_SKIP_SIGNATURE: &str = "skip_thought_signature_validator";
 
 #[derive(Debug, Clone)]
 pub struct Msg {
@@ -166,6 +170,7 @@ pub fn build_wire(
     token_budget: usize,
     vision: bool,
     current_user_content: Option<&str>,
+    gemini: bool,
 ) -> DbResult<(Vec<Value>, FitInfo)> {
     // Newest pages first, until the cap.
     let mut rows = Vec::new();
@@ -218,13 +223,13 @@ pub fn build_wire(
         m.needs_body = false;
     }
 
-    Ok((to_wire(&fitted, data_dir, vision), info))
+    Ok((to_wire(&fitted, data_dir, vision, gemini), info))
 }
 
 /// Chat Completions only allows text in role:"tool" messages, so images go
 /// in a user message after the whole run of tool results (all results for
 /// one assistant turn must directly follow it).
-fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool) -> Vec<Value> {
+fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) -> Vec<Value> {
     let with_images: Vec<usize> = messages
         .iter()
         .enumerate()
@@ -270,9 +275,21 @@ fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool) -> Vec<Value> {
 
         let mut msg = json!({ "role": m.role, "content": content });
         if let Some(calls) = m.tool_calls.as_ref().filter(|c| !c.is_empty()) {
+            // Gemini signs only the first of parallel calls; a turn with no
+            // signature at all gets the placeholder on its first call.
+            let unsigned_turn = calls.iter().all(|c| c.extra_content.is_none());
             msg["tool_calls"] = json!(calls
                 .iter()
-                .map(|c| json!({ "id": c.id, "type": "function", "function": { "name": c.name, "arguments": c.arguments } }))
+                .enumerate()
+                .map(|(i, c)| {
+                    let mut call = json!({ "id": c.id, "type": "function", "function": { "name": c.name, "arguments": c.arguments } });
+                    if let Some(extra) = &c.extra_content {
+                        call["extra_content"] = extra.clone();
+                    } else if gemini && unsigned_turn && i == 0 {
+                        call["extra_content"] = json!({ "google": { "thought_signature": GEMINI_SKIP_SIGNATURE } });
+                    }
+                    call
+                })
                 .collect::<Vec<_>>());
         }
         if let Some(id) = &m.tool_call_id {
@@ -302,7 +319,7 @@ mod tests {
     }
     fn call(ids: &[&str]) -> Msg {
         let mut m = msg("assistant", "");
-        m.tool_calls = Some(ids.iter().map(|id| ToolCall { id: id.to_string(), name: "read_file".into(), arguments: "{}".into() }).collect());
+        m.tool_calls = Some(ids.iter().map(|id| ToolCall { id: id.to_string(), name: "read_file".into(), arguments: "{}".into(), extra_content: None }).collect());
         m
     }
     fn tool(id: &str, size: usize) -> Msg {
@@ -392,13 +409,37 @@ mod tests {
         let ms = vec![msg("user", "check"), call(&["a", "b"]), shot, tool("b", 10)];
 
         let roles = |w: &[Value]| w.iter().map(|m| m["role"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        let vision = to_wire(&ms, &dir, true);
+        let vision = to_wire(&ms, &dir, true, false);
         assert_eq!(roles(&vision), ["user", "assistant", "tool", "tool", "user"]);
         assert_eq!(vision[4]["content"][1]["type"], "image_url");
 
-        let text_only = to_wire(&ms, &dir, false);
+        let text_only = to_wire(&ms, &dir, false, false);
         assert_eq!(roles(&text_only), ["user", "assistant", "tool", "tool"]);
         assert!(text_only[2]["content"].as_str().unwrap().contains("no longer attached"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn gemini_signatures_are_echoed_or_placeholdered() {
+        let dir = std::env::temp_dir();
+        let signed = json!({ "google": { "thought_signature": "SIG-A" } });
+        let mut first = call(&["a", "b"]);
+        first.tool_calls.as_mut().unwrap()[0].extra_content = Some(signed.clone());
+        let unsigned = call(&["c", "d"]);
+        let ms = vec![msg("user", "q"), first, tool("a", 1), tool("b", 1), unsigned, tool("c", 1), tool("d", 1)];
+
+        let calls = |w: &[Value], i: usize| w[i]["tool_calls"].as_array().unwrap().clone();
+        let gemini = to_wire(&ms, &dir, false, true);
+        // A real signature goes back unchanged; its parallel sibling stays unsigned.
+        assert_eq!(calls(&gemini, 1)[0]["extra_content"], signed);
+        assert!(calls(&gemini, 1)[1].get("extra_content").is_none());
+        // A turn with no signature at all: placeholder on the first call only.
+        assert_eq!(calls(&gemini, 4)[0]["extra_content"]["google"]["thought_signature"], GEMINI_SKIP_SIGNATURE);
+        assert!(calls(&gemini, 4)[1].get("extra_content").is_none());
+
+        // Other providers: real data still echoed, never a placeholder.
+        let other = to_wire(&ms, &dir, false, false);
+        assert_eq!(calls(&other, 1)[0]["extra_content"], signed);
+        assert!(calls(&other, 4)[0].get("extra_content").is_none());
     }
 }

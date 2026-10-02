@@ -195,7 +195,13 @@ export const SCREENSHOT_TOOL_SCHEMA = {
 } as const;
 
 /** The tool list for one request, depending on what's available. */
-export function agentToolsFor(opts: { hasProject: boolean; vision: boolean }): unknown[] {
+export function agentToolsFor(opts: {
+  hasProject: boolean;
+  vision: boolean;
+  noTools?: boolean;
+}): unknown[] {
+  // Models marked "no tools" in settings get none (and no tool instructions).
+  if (opts.noTools) return [];
   return [
     ...(opts.hasProject ? AGENT_TOOL_SCHEMAS : []),
     ...WEB_TOOL_SCHEMAS,

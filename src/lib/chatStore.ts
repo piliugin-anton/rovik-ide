@@ -43,7 +43,10 @@ interface ChatState {
 }
 
 export type MessagePatch = Partial<
-  Pick<ChatMessage, 'content' | 'toolCalls' | 'error' | 'failed' | 'pending' | 'meta' | 'finalized'>
+  Pick<
+    ChatMessage,
+    'content' | 'toolCalls' | 'error' | 'failed' | 'pending' | 'meta' | 'finalized' | 'status'
+  >
 >;
 
 function previewOf(text: string): string {

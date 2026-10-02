@@ -696,6 +696,82 @@ body {
   background: var(--hover);
 }
 
+/* Send button turns into Stop while a request runs (or waits to retry). */
+.chat-send-button.stop {
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+
+.chat-send-button.stop:hover {
+  background: var(--error-soft);
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Status of a pending reply: waiting, retrying with a countdown. */
+.chat-pending.status {
+  color: var(--fg-muted);
+  font-style: normal;
+}
+
+.chat-failure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-failure-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-failure-actions:empty {
+  display: none;
+}
+
+.chat-action-button {
+  padding: 3px 10px;
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-action-button:hover {
+  background: var(--bg-control-hover);
+}
+
+.chat-failure-details {
+  max-height: 200px;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  background: var(--bg-editor);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A kept partial reply: note plus Continue. */
+.chat-interrupted {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 90%;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
 .chat-message {
   min-height: 32px;
   font-size: 13px;
@@ -1274,6 +1350,10 @@ body {
   font: inherit;
   font-size: 11px;
   text-align: right;
+}
+
+.context-input.timeout-input {
+  width: 56px;
 }
 
 .context-input::placeholder {

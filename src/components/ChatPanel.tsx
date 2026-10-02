@@ -13,6 +13,7 @@ import { Channel } from '@tauri-apps/api/core';
 import type {
   ChatMessage,
   ChatStreamEvent,
+  ChatError,
   ChatToolCall,
   DialogSummary,
   FileSuggestion,
@@ -33,7 +34,8 @@ import { createChatStore } from '../lib/chatStore';
 import { chatApi } from '../lib/chatApi';
 import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
-import { sendChatMessage } from '../lib/aiChat';
+import { cancelChatRequest, sendChatMessage } from '../lib/aiChat';
+import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
 import { agentToolsFor, executeAgentTool } from '../lib/tools';
 import ModelSettingsPanel from './ModelSettingsPanel';
 import ModelPicker from './ModelPicker';
@@ -115,6 +117,29 @@ export default function ChatPanel(props: ChatProps) {
   const [referencedFiles, setReferencedFiles] = createSignal<FileSuggestion[]>([]);
 
   let currentChannel: Channel<ChatStreamEvent> | null = null;
+  /** The running model request, so the Stop button can cancel it. */
+  let currentRequestId: string | null = null;
+  /** Stop pressed: no further tool steps or turns in this agent run. */
+  let stopRequested = false;
+  /** The pending reply of the running request, for the "Stopping…" status. */
+  let currentPending: { dialogId: string; messageId: string } | null = null;
+  /** Gives up waiting on the running request (see stopRequest). */
+  let abandonCurrent: (() => void) | null = null;
+  let stopTimer: number | undefined;
+  /** How long Stop waits for the backend to confirm before giving up on it. */
+  const STOP_GRACE_MS = 2000;
+
+  const stoppedError = (): ChatError => ({
+    kind: 'cancelled',
+    message: 'Stopped.',
+    retryable: false,
+    retryAfterMs: null,
+    attempts: 0,
+    status: null,
+    details: null,
+    partial: false,
+  });
+
   /** User message currently waiting for its first answer; its draft must not be restored. */
   let inFlightMessageId: string | null = null;
   let rafId: number | null = null;
@@ -878,27 +903,35 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
+  /** Wait this long without any output before saying so. */
+  const STILL_WAITING_MS = 15_000;
+
   /**
    * One request to the model. The backend reads the chat's history from the
-   * database, so everything up to this point must already be stored.
-   *
-   * @param currentUserContent The request's user message as sent to the
-   *   model (with editor context); stored messages keep the clean text.
-   * @param onSettled Called once this turn's outcome is known: true when the
-   *   model answered without error (text or tool calls), false otherwise.
-   *   Only the first turn passes it; later tool-loop steps don't affect
-   *   whether the user's message was delivered.
+   * database, so everything up to this point must already be stored. It
+   * also retries failed attempts on its own (src-tauri/src/chat_request.rs),
+   * reporting each retry, then succeeds or fails for good.
    */
   async function runAgentTurn(
     dialogId: string,
-    currentUserContent: string | undefined,
-    step: number,
-    onSettled?: (ok: boolean) => void
+    opts: {
+      /** The request's user message as sent (with editor context). */
+      currentUserContent?: string;
+      step?: number;
+      /** Ask the model to continue its interrupted last reply. */
+      continueReply?: boolean;
+      /**
+       * Called once the first turn's outcome is known: true when the model
+       * answered (fully or partly), false when nothing came back.
+       */
+      onSettled?: (ok: boolean) => void;
+    } = {}
   ): Promise<void> {
+    const step = opts.step ?? 0;
     const profile = activeProfile();
 
-    if (!profile || !isMounted) {
-      onSettled?.(false);
+    if (!profile || !isMounted || stopRequested) {
+      opts.onSettled?.(false);
       return;
     }
 
@@ -913,12 +946,32 @@ export default function ChatPanel(props: ChatProps) {
     await store.appendMessages(dialogId, [pendingMsg]);
 
     const channel = new Channel<ChatStreamEvent>();
-    currentChannel = channel;
+    const requestId = crypto.randomUUID();
+    currentRequestId = requestId;
 
     let assistantText = '';
     const toolCallsMap = new Map<string, ChatToolCall>();
     let pendingRender = false;
-    let streamError: string | null = null;
+    let failure: ChatError | null = null;
+    let gotOutput = false;
+    /** Set once we stop listening to this request (Stop wasn't confirmed). */
+    let detached = false;
+
+    const setStatus = (status: ChatMessage['status']) =>
+      store.patchMessage(dialogId, pendingMsg.id, { status });
+
+    // "Still waiting" once a while has passed without any output.
+    const waitingTimer = window.setTimeout(() => {
+      if (!gotOutput && !stopRequested && isMounted)
+        setStatus({ text: 'Still waiting for a response…' });
+    }, STILL_WAITING_MS);
+
+    const markOutput = () => {
+      if (gotOutput) return;
+      gotOutput = true;
+      window.clearTimeout(waitingTimer);
+      setStatus(undefined);
+    };
 
     // One store update per animation frame, and a checkpoint every couple
     // of seconds so a crash mid-reply loses little.
@@ -936,10 +989,11 @@ export default function ChatPanel(props: ChatProps) {
     };
 
     channel.onmessage = (event) => {
-      if (!isMounted) return;
+      if (!isMounted || detached) return;
 
       switch (event.type) {
         case 'Delta':
+          markOutput();
           assistantText += event.content;
           if (!pendingRender) {
             pendingRender = true;
@@ -953,12 +1007,23 @@ export default function ChatPanel(props: ChatProps) {
         case 'Done':
           break;
 
+        case 'Retrying':
+          window.clearTimeout(waitingTimer);
+          if (stopRequested) break;
+          setStatus({
+            text: `${retryReason(event.reason)} Retrying (attempt ${event.attempt} of ${event.max_attempts})`,
+            until: Date.now() + event.delay_ms,
+          });
+          break;
+
         case 'Error':
-          streamError = event.message;
+          failure = event.error;
           break;
 
         case 'ToolCallStart':
+          markOutput();
           toolCallsMap.set(event.id, { id: event.id, name: event.name, arguments: '' });
+          publishToolCalls();
           break;
 
         case 'ToolCallArgumentsDelta': {
@@ -975,6 +1040,8 @@ export default function ChatPanel(props: ChatProps) {
             id: event.id,
             name: event.name,
             arguments: event.arguments,
+            // Sent back unchanged in the next request (Gemini 3 requires it).
+            ...(event.extra_content !== undefined ? { extraContent: event.extra_content } : {}),
           });
           publishToolCalls();
           break;
@@ -983,38 +1050,100 @@ export default function ChatPanel(props: ChatProps) {
 
     const root = props.rootPath();
 
-    // File tools need an open project; web tools are always available, and
-    // the screenshot tool only for models marked as accepting images.
-    const tools = agentToolsFor({ hasProject: !!root, vision: profile.vision });
+    // File tools need an open project; web tools are always available, the
+    // screenshot tool only for vision models, and none for "no tools" models.
+    const tools = agentToolsFor({
+      hasProject: !!root,
+      vision: profile.vision,
+      noTools: profile.noTools,
+    });
+
+    let abandon!: () => void;
+    const abandoned = new Promise<'abandoned'>((resolve) => {
+      abandon = () => resolve('abandoned');
+    });
+    abandonCurrent = abandon;
+    currentPending = { dialogId, messageId: pendingMsg.id };
 
     try {
-      await sendChatMessage({ profile, dialogId, currentUserContent, channel, tools });
+      if (stopRequested) {
+        // Stop was pressed while this turn was being prepared: don't send.
+        failure = stoppedError();
+      } else {
+        const outcome = await Promise.race([
+          sendChatMessage({
+            profile,
+            dialogId,
+            currentUserContent: opts.currentUserContent,
+            continueReply: opts.continueReply,
+            requestId,
+            channel,
+            tools,
+          }).then(() => 'done' as const),
+          abandoned,
+        ]);
+        if (outcome === 'abandoned') {
+          // The backend didn't confirm the stop in time. Stop waiting for it
+          // and ignore anything this request still sends.
+          detached = true;
+          failure = stoppedError();
+        }
+      }
     } catch (err) {
-      streamError = String(err);
+      // Only problems before the request (e.g. building the history) land here.
+      failure = {
+        kind: 'provider',
+        message: String(err),
+        retryable: false,
+        retryAfterMs: null,
+        attempts: 0,
+        status: null,
+        details: String(err),
+        partial: false,
+      };
     } finally {
-      if (currentChannel === channel) currentChannel = null;
+      window.clearTimeout(waitingTimer);
+      if (abandonCurrent === abandon) abandonCurrent = null;
+      if (currentPending?.messageId === pendingMsg.id) currentPending = null;
+      if (currentRequestId === requestId) currentRequestId = null;
       if (rafId !== null) {
         cancelAnimationFrame(rafId);
         rafId = null;
       }
+      setStatus(undefined);
     }
 
     const toolCalls = Array.from(toolCallsMap.values());
+    const error = failure as ChatError | null;
 
-    if (streamError) {
-      await store.finalizeMessage(dialogId, pendingMsg.id, {
-        content: assistantText,
-        error: streamError,
-      });
-      onSettled?.(false);
+    if (error) {
+      const stored = toStoredFailure(error);
+      if (assistantText.trim()) {
+        // Part of the reply arrived: keep it (it stays in the history) and
+        // let the user continue. Incomplete tool calls are dropped.
+        await store.finalizeMessage(dialogId, pendingMsg.id, {
+          content: assistantText,
+          toolCalls: [],
+          meta: { interrupted: stored },
+        });
+        opts.onSettled?.(true);
+      } else {
+        await store.finalizeMessage(dialogId, pendingMsg.id, {
+          content: '',
+          toolCalls: [],
+          error: describeFailure(stored),
+          meta: { failure: stored },
+        });
+        opts.onSettled?.(false);
+      }
       return;
     }
 
     await store.finalizeMessage(dialogId, pendingMsg.id, { content: assistantText, toolCalls });
-    onSettled?.(true);
+    opts.onSettled?.(true);
 
-    // Normal final answer.
-    if (toolCalls.length === 0) return;
+    // Normal final answer, or the user pressed Stop.
+    if (toolCalls.length === 0 || stopRequested) return;
 
     // Safety limit.
     if (step >= MAX_AGENT_STEPS) {
@@ -1033,6 +1162,7 @@ export default function ChatPanel(props: ChatProps) {
     // Execute requested tools; each result is stored before the next turn,
     // which reads the history from the database.
     for (const tc of toolCalls) {
+      if (stopRequested) return;
       const result = await executeAgentTool(root, tc.name, tc.arguments);
       await store.appendMessages(dialogId, [
         {
@@ -1047,7 +1177,60 @@ export default function ChatPanel(props: ChatProps) {
       ]);
     }
 
-    await runAgentTurn(dialogId, currentUserContent, step + 1);
+    if (stopRequested) return;
+    await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, step: step + 1 });
+  }
+
+  /**
+   * Runs an agent request with the shared "sending" state: the send button
+   * becomes Stop, the chat stays open in memory, writes are flushed after.
+   */
+  async function runRequest(dialogId: string, run: () => Promise<void>) {
+    stopRequested = false;
+    window.clearTimeout(stopTimer);
+    setSending(true);
+    store.setBusy(dialogId, true);
+    try {
+      await run();
+    } finally {
+      window.clearTimeout(stopTimer);
+      store.setBusy(dialogId, false);
+      if (isMounted) setSending(false);
+      await flushDialogPersistence();
+    }
+  }
+
+  /** Stop: cancels the running request and any further tool steps. */
+  function stopRequest() {
+    stopRequested = true;
+    if (currentRequestId) {
+      void cancelChatRequest(currentRequestId).catch((err) => console.error('Cancel failed:', err));
+    }
+    if (currentPending) {
+      store.patchMessage(currentPending.dialogId, currentPending.messageId, {
+        status: { text: 'Stopping…' },
+      });
+    }
+    // Normally the request ends within a moment. If the backend doesn't
+    // confirm, stop waiting for it anyway: Stop must always work.
+    window.clearTimeout(stopTimer);
+    stopTimer = window.setTimeout(() => abandonCurrent?.(), STOP_GRACE_MS);
+  }
+
+  /** Retry after a failed turn (the user's message was delivered earlier). */
+  function retryLastTurn() {
+    const dialogId = activeDialogId();
+    if (!dialogId || sending()) return;
+    listController?.followLatest();
+    void runRequest(dialogId, () => runAgentTurn(dialogId));
+  }
+
+  /** Continue an interrupted reply. */
+  function continueReply() {
+    const dialogId = activeDialogId();
+    if (!dialogId || sending()) return;
+    listController?.followLatest();
+    void runRequest(dialogId, () => runAgentTurn(dialogId, { continueReply: true }));
   }
 
   /*
@@ -1149,35 +1332,34 @@ export default function ChatPanel(props: ChatProps) {
     setFileQuery('');
     setSelectedSuggestionIndex(0);
 
-    setSending(true);
-    store.setBusy(dialog.id, true);
+    await runRequest(dialog.id, async () => {
+      try {
+        // Stored first: the backend builds the request from the database.
+        await store.appendMessages(dialog.id, [userMsg]);
 
-    try {
-      // Stored first: the backend builds the request from the database.
-      await store.appendMessages(dialog.id, [userMsg]);
+        await runAgentTurn(dialog.id, {
+          currentUserContent: wireContent,
+          onSettled: (ok) => {
+            inFlightMessageId = null;
 
-      await runAgentTurn(dialog.id, wireContent, 0, (ok) => {
+            if (ok) {
+              clearPendingDraft(dialog.id, userMsg.id);
+              return;
+            }
+
+            markMessageFailed(dialog.id, userMsg.id);
+
+            // Restore now if the user is still in this dialog; otherwise the
+            // draft waits in storage until they switch back to it.
+            if (isMounted && activeDialogId() === dialog.id) {
+              restoreDraftForDialog(dialog.id);
+            }
+          },
+        });
+      } finally {
         inFlightMessageId = null;
-
-        if (ok) {
-          clearPendingDraft(dialog.id, userMsg.id);
-          return;
-        }
-
-        markMessageFailed(dialog.id, userMsg.id);
-
-        // Restore now if the user is still in this dialog; otherwise the
-        // draft waits in storage until they switch back to it.
-        if (isMounted && activeDialogId() === dialog.id) {
-          restoreDraftForDialog(dialog.id);
-        }
-      });
-    } finally {
-      inFlightMessageId = null;
-      store.setBusy(dialog.id, false);
-      if (isMounted) setSending(false);
-      await flushDialogPersistence();
-    }
+      }
+    });
   }
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -1336,6 +1518,8 @@ export default function ChatPanel(props: ChatProps) {
           if (active) await store.openChat(active, { reload: true });
         }}
         controller={(c) => (listController = c)}
+        onRetry={retryLastTurn}
+        onContinue={continueReply}
       />
       <div class="chat-input-row">
         <div class="chat-input-container">
@@ -1378,20 +1562,43 @@ export default function ChatPanel(props: ChatProps) {
           </Show>
         </div>
 
-        <button
-          onClick={() => void handleSend()}
-          disabled={
-            !activeProfile() ||
-            !activeDialog() ||
-            sending() ||
-            (!input().trim() && referencedFiles().length === 0)
+        <Show
+          when={sending()}
+          fallback={
+            <button
+              onClick={() => void handleSend()}
+              disabled={
+                !activeProfile() ||
+                !activeDialog() ||
+                (!input().trim() && referencedFiles().length === 0)
+              }
+              class="chat-send-button"
+              title="Send"
+              aria-label="Send message"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
           }
-          class="chat-send-button"
         >
-          <svg xmlns="http://w3.org" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-          </svg>
-        </button>
+          <button
+            onClick={stopRequest}
+            class="chat-send-button stop"
+            title="Stop"
+            aria-label="Stop the response"
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true">
+              <rect x="5" y="5" width="14" height="14" rx="2" />
+            </svg>
+          </button>
+        </Show>
       </div>
       <div class="chat-model-select">
         <ModelPicker

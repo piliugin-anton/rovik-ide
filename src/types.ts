@@ -42,6 +42,10 @@ export interface ModelProfile {
   vision: boolean;
   /** Context window in tokens: the user's override, else the reported value. */
   contextTokens?: number;
+  /** The model doesn't support tool calls: send no tools. */
+  noTools: boolean;
+  /** How long to wait for the first token (default 60 s). */
+  firstByteTimeoutMs?: number;
 }
 
 export interface ProviderModel {
@@ -51,6 +55,8 @@ export interface ProviderModel {
   vision?: boolean; // accepts image input (set by the user; /models doesn't say)
   contextLength?: number; // context window in tokens, if GET /models reported it
   contextOverride?: number; // typed in provider settings; wins over contextLength
+  noTools?: boolean; // the model can't use tool calls
+  firstTokenTimeoutSec?: number; // override of the 60 s first-token timeout
 }
 
 /** One OpenAI-compatible endpoint + credentials, with the models it serves. */
@@ -72,6 +78,8 @@ export interface ChatToolCall {
   id: string;
   name: string;
   arguments: string; // raw JSON string, as returned by the API
+  /** Provider data echoed back with the call (Gemini 3 thought signature). */
+  extraContent?: unknown;
 }
 
 export interface ToolDirEntry {
@@ -132,11 +140,63 @@ export interface ChatMessage {
   meta?: ToolMeta;
   finalized?: boolean;
   createdAt?: number;
+  /** Live status while waiting or retrying (UI only, never stored). */
+  status?: MessageStatus;
 }
 
+/** Small per-message metadata, stored with the message. */
 export interface ToolMeta {
+  /** Tool results: counts for the block header. */
   count?: number;
   pageTitle?: string;
+  /** The request failed before anything was shown. */
+  failure?: StoredFailure;
+  /** Part of the reply arrived, then the request failed. */
+  interrupted?: StoredFailure;
+}
+
+export type ChatErrorKind =
+  | 'empty_response'
+  | 'stalled'
+  | 'timeout'
+  | 'rate_limited'
+  | 'server_error'
+  | 'network'
+  | 'auth'
+  | 'bad_request'
+  | 'not_found'
+  | 'context_length'
+  | 'length'
+  | 'provider'
+  | 'cancelled';
+
+/** Typed request failure from the backend (src-tauri/src/chat_request.rs). */
+export interface ChatError {
+  kind: ChatErrorKind;
+  message: string;
+  retryable: boolean;
+  retryAfterMs: number | null;
+  attempts: number;
+  status: number | null;
+  details: string | null;
+  partial: boolean;
+}
+
+/** The final outcome of a failed request, as stored. */
+export interface StoredFailure {
+  kind: ChatErrorKind;
+  message: string;
+  attempts: number;
+  /** When a rate limit resets (epoch ms), if the provider said. */
+  resetAt?: number;
+  details?: string;
+}
+
+/** Live status of a pending reply (UI only, never stored). */
+export interface MessageStatus {
+  text: string;
+  /** Show a countdown to this time (epoch ms). */
+  until?: number;
 }
 
 /** A chat as listed: metadata only, no messages. */
@@ -165,10 +225,17 @@ export interface OpenAIChatOptions {
 export type ChatStreamEvent =
   | { type: 'Delta'; content: string }
   | { type: 'Done' }
-  | { type: 'Error'; message: string }
+  | { type: 'Error'; error: ChatError }
+  | { type: 'Retrying'; attempt: number; max_attempts: number; delay_ms: number; reason: ChatError }
   | { type: 'ToolCallStart'; id: string; name: string }
   | { type: 'ToolCallArgumentsDelta'; id: string; arguments_delta: string }
-  | { type: 'ToolCallComplete'; id: string; name: string; arguments: string };
+  | {
+      type: 'ToolCallComplete';
+      id: string;
+      name: string;
+      arguments: string;
+      extra_content?: unknown;
+    };
 
 export type WatchOperation = 'create' | 'modify' | 'remove' | 'unknown';
 

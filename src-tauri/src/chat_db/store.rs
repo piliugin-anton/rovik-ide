@@ -47,6 +47,10 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+    /// Provider data that must be sent back unchanged with this call, e.g.
+    /// Gemini 3's `{"google": {"thought_signature": "…"}}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_content: Option<Value>,
 }
 
 #[derive(Serialize, Debug)]

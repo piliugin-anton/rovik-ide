@@ -1,8 +1,5 @@
-use bytes::{Buf, BytesMut};
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tauri::ipc::Channel;
 
 #[derive(Debug, Clone, Serialize)]
@@ -12,8 +9,16 @@ pub enum ChatStreamEvent {
         content: String,
     },
     Done,
+    /// The request failed for good (after any retries).
     Error {
-        message: String,
+        error: crate::chat_request::ChatError,
+    },
+    /// An attempt failed before anything was shown; waiting, then retrying.
+    Retrying {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        reason: crate::chat_request::ChatError,
     },
     ToolCallStart {
         id: String,
@@ -27,6 +32,9 @@ pub enum ChatStreamEvent {
         id: String,
         name: String,
         arguments: String, // fully accumulated JSON string
+        /// Must be echoed back with the call (Gemini 3 thought signatures).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        extra_content: Option<serde_json::Value>,
     },
 }
 
@@ -59,23 +67,6 @@ pub struct WireChatMessage {
     tool_call_id: Option<String>,
 }
 
-struct ToolCallState {
-    name: String,
-    arguments: String,
-}
-
-fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    let crlf = buffer.windows(4).position(|w| w == b"\r\n\r\n");
-    let lf = buffer.windows(2).position(|w| w == b"\n\n");
-
-    match (crlf, lf) {
-        (Some(a), Some(b)) if a <= b => Some((a, 4)),
-        (Some(a), Some(_)) => Some((a, 4)),
-        (Some(a), None) => Some((a, 4)),
-        (None, Some(b)) => Some((b, 2)),
-        (None, None) => None,
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -143,11 +134,22 @@ pub async fn send_chat_message(
     // from what is stored.
     current_user_content: Option<String>,
     streaming: bool,
+    // Lets `cancel_chat_request` stop this request (and its retries).
+    request_id: Option<String>,
+    // Per-model override of the first-token timeout, for slow reasoning models.
+    first_byte_timeout_ms: Option<u64>,
+    // Ask the model to continue its last, interrupted reply (not stored).
+    continue_reply: Option<bool>,
+    requests: tauri::State<'_, crate::chat_request::ChatRequests>,
     tools: Option<Vec<serde_json::Value>>,
     system_prompt: Option<String>,
     options: Option<OpenAIChatOptions>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
+    // Registered first, so a Stop pressed while the history is still being
+    // loaded is not lost.
+    let mut registration = requests.register(request_id);
+
     let client = Client::new();
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -156,20 +158,30 @@ pub async fn send_chat_message(
         (Some(explicit), _) => explicit,
         (None, Some(dialog_id)) => {
             let data_dir = db.data_dir().to_path_buf();
+            // Gemini 3 needs a thought signature on tool calls it didn't sign.
+            let gemini = is_gemini_target(&base_url, &model);
             let budget = token_budget.unwrap_or(22_400);
             let vision = vision.unwrap_or(false);
-            let (wire, info) = db
-                .read(move |conn| {
-                    crate::chat_db::history::build_wire(
-                        conn,
-                        &data_dir,
-                        &dialog_id,
-                        budget,
-                        vision,
-                        current_user_content.as_deref(),
-                    )
-                })
-                .await?;
+            let build = db.read(move |conn| {
+                crate::chat_db::history::build_wire(
+                    conn,
+                    &data_dir,
+                    &dialog_id,
+                    budget,
+                    vision,
+                    current_user_content.as_deref(),
+                    gemini,
+                )
+            });
+            let (wire, info) = tokio::select! {
+                _ = crate::chat_request::cancelled(&mut registration.cancel) => {
+                    let _ = on_event.send(ChatStreamEvent::Error {
+                        error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                    });
+                    return Ok(());
+                }
+                built = build => built?,
+            };
             if info.trimmed {
                 eprintln!(
                     "context budget: ~{}/{} tokens, {} oldest turn(s) omitted",
@@ -184,7 +196,27 @@ pub async fn send_chat_message(
         (None, None) => return Err("send_chat_message needs messages or a dialogId".into()),
     };
 
-    let system_prompt = system_prompt.unwrap_or(CODING_AGENT_SYSTEM_PROMPT.to_string());
+    if continue_reply.unwrap_or(false) {
+        messages.push(WireChatMessage {
+            role: "user".to_string(),
+            content: serde_json::Value::String(
+                "Your previous reply was interrupted. Continue exactly where it stopped, \
+                 without repeating what you already wrote."
+                    .to_string(),
+            ),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
+    let system_prompt = system_prompt.unwrap_or_else(|| {
+        if has_tools {
+            CODING_AGENT_SYSTEM_PROMPT.to_string()
+        } else {
+            without_tool_rules(CODING_AGENT_SYSTEM_PROMPT)
+        }
+    });
     messages.insert(
         0,
         WireChatMessage {
@@ -245,236 +277,47 @@ pub async fn send_chat_message(
         body["tool_choice"] = serde_json::json!("auto");
     }
 
-    let resp = client
-        .post(&url)
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let status = resp.status();
-
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        let error = format!("{status}: {text}");
-
-        let _ = on_event.send(ChatStreamEvent::Error {
-            message: error.clone(),
-        });
-        return Err(error);
+    let mut limits = crate::chat_request::Limits::default();
+    if let Some(ms) = first_byte_timeout_ms.filter(|ms| *ms >= 5_000) {
+        limits.first_byte = std::time::Duration::from_millis(ms);
     }
+    let spec = crate::chat_request::RequestSpec {
+        client: &client,
+        url: &url,
+        api_key: &api_key,
+        body: &body,
+        streaming,
+        limits,
+    };
+    let mut emit = |event: ChatStreamEvent| {
+        let _ = on_event.send(event);
+    };
 
-    // Non-streaming request
-    if !streaming {
-        let text = resp.text().await.map_err(|e| e.to_string())?;
-
-        // For non-streaming, we can just send the whole body as a delta
-        // or parse it more finely; here we keep your original behavior.
-        let _ = on_event.send(ChatStreamEvent::Delta {
-            content: text.clone(),
-        });
-
-        // Also parse tool calls if present
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(tool_calls) = value
-                .pointer("/choices/0/message/tool_calls")
-                .and_then(|v| v.as_array())
-            {
-                for tc in tool_calls {
-                    let id = tc
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    let name = tc
-                        .pointer("/function/name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    let arguments = tc
-                        .pointer("/function/arguments")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    if !id.is_empty() {
-                        let _ = on_event.send(ChatStreamEvent::ToolCallStart {
-                            id: id.clone(),
-                            name: name.clone(),
-                        });
-
-                        if !arguments.is_empty() {
-                            let _ = on_event.send(ChatStreamEvent::ToolCallArgumentsDelta {
-                                id: id.clone(),
-                                arguments_delta: arguments.clone(),
-                            });
-                        }
-
-                        let _ = on_event.send(ChatStreamEvent::ToolCallComplete {
-                            id,
-                            name,
-                            arguments,
-                        });
-                    }
-                }
-            }
-        }
-
-        let _ = on_event.send(ChatStreamEvent::Done);
-        return Ok(());
+    // Failures are reported as a typed Error event; the command itself only
+    // fails for problems before the request (e.g. building the history).
+    if let Err(error) = crate::chat_request::run(&spec, &mut registration.cancel, &mut emit).await {
+        let _ = on_event.send(ChatStreamEvent::Error { error });
     }
-
-    // Streaming request
-    let mut stream = resp.bytes_stream();
-
-    let mut buffer = BytesMut::new();
-
-    // Track in-progress tool calls for this completion
-    let mut tool_calls: HashMap<String, ToolCallState> = HashMap::new();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        // Keep raw bytes. Do NOT decode each network chunk independently.
-        buffer.extend_from_slice(&chunk);
-
-        while let Some((pos, separator_len)) = find_sse_boundary(&buffer) {
-            let event_bytes = buffer.split_to(pos);
-
-            // Consume \n\n or \r\n\r\n
-            buffer.advance(separator_len);
-
-            let event = std::str::from_utf8(&event_bytes)
-                .map_err(|e| format!("Invalid UTF-8 in SSE event: {e}"))?;
-
-            for line in event.lines() {
-                let Some(data) = line.strip_prefix("data:") else {
-                    continue;
-                };
-
-                let data = data.trim();
-
-                if data == "[DONE]" {
-                    // Finalize any in-progress tool calls
-                    for (id, state) in tool_calls.drain() {
-                        let _ = on_event.send(ChatStreamEvent::ToolCallComplete {
-                            id,
-                            name: state.name,
-                            arguments: state.arguments,
-                        });
-                    }
-
-                    let _ = on_event.send(ChatStreamEvent::Done);
-                    return Ok(());
-                }
-
-                let value: serde_json::Value = match serde_json::from_str(data) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        eprintln!("Failed to parse SSE data: {err}; data={data:?}");
-                        continue;
-                    }
-                };
-
-                // Extract delta from choices[0].delta
-                let Some(delta) = value.pointer("/choices/0/delta") else {
-                    continue;
-                };
-
-                // Content delta
-                if let Some(content) = delta.pointer("/content").and_then(|v| v.as_str()) {
-                    let _ = on_event.send(ChatStreamEvent::Delta {
-                        content: content.to_string(),
-                    });
-                }
-
-                // Tool calls delta
-                if let Some(tool_calls_arr) =
-                    delta.pointer("/tool_calls").and_then(|v| v.as_array())
-                {
-                    for tc in tool_calls_arr {
-                        let id = tc
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        let name = tc
-                            .pointer("/function/name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        let args_delta = tc
-                            .pointer("/function/arguments")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-
-                        if id.is_empty() {
-                            continue;
-                        }
-
-                        let entry = tool_calls
-                            .entry(id.clone())
-                            .or_insert_with(|| ToolCallState {
-                                name: String::new(),
-                                arguments: String::new(),
-                            });
-
-                        // If this is the first time we see this call id + name, emit start
-                        if entry.name.is_empty() && !name.is_empty() {
-                            entry.name = name.clone();
-                            let _ = on_event.send(ChatStreamEvent::ToolCallStart {
-                                id: id.clone(),
-                                name: name.clone(),
-                            });
-                        }
-
-                        if !args_delta.is_empty() {
-                            entry.arguments.push_str(args_delta);
-                            let _ = on_event.send(ChatStreamEvent::ToolCallArgumentsDelta {
-                                id: id.clone(),
-                                arguments_delta: args_delta.to_string(),
-                            });
-                        }
-                    }
-                }
-
-                // Check finish_reason to know when tool calls are complete
-                if let Some(finish_reason) = value
-                    .pointer("/choices/0/finish_reason")
-                    .and_then(|v| v.as_str())
-                {
-                    if finish_reason == "tool_calls" {
-                        // Finalize all in-progress tool calls
-                        for (id, state) in tool_calls.drain() {
-                            let _ = on_event.send(ChatStreamEvent::ToolCallComplete {
-                                id,
-                                name: state.name,
-                                arguments: state.arguments,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Stream ended without explicit [DONE]; finalize any pending tool calls
-    for (id, state) in tool_calls.drain() {
-        let _ = on_event.send(ChatStreamEvent::ToolCallComplete {
-            id,
-            name: state.name,
-            arguments: state.arguments,
-        });
-    }
-
-    // Optionally parse any final buffered SSE event here if needed.
-
-    let _ = on_event.send(ChatStreamEvent::Done);
     Ok(())
+}
+
+/// Google's OpenAI-compatible endpoints, or a Gemini model behind a gateway.
+fn is_gemini_target(base_url: &str, model: &str) -> bool {
+    let url = base_url.to_ascii_lowercase();
+    url.contains("generativelanguage.googleapis.com")
+        || url.contains("aiplatform.googleapis.com")
+        || model.to_ascii_lowercase().contains("gemini")
+}
+
+/// The system prompt without its "## Tool use rules" section, for models
+/// used without tools: instructions for tools it can't call only confuse it.
+fn without_tool_rules(prompt: &str) -> String {
+    let Some(start) = prompt.find("## Tool use rules") else {
+        return prompt.to_string();
+    };
+    let rest = &prompt[start + 2..];
+    let end = rest.find("\n## ").map(|i| start + 2 + i + 1).unwrap_or(prompt.len());
+    format!("{}{}", &prompt[..start], &prompt[end..]).trim_end().to_string()
 }
 
 /*
