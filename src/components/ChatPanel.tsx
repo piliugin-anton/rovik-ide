@@ -52,15 +52,26 @@ import {
   type DraftSegment,
   type PendingDraft,
 } from '../lib/pendingDraft';
-import { toRelativePath } from '../lib/fileTools';
+import { toAbsolutePath, toRelativePath } from '../lib/fileTools';
 import {
   checkToolCall,
   DEFAULT_PERMISSIONS,
   describeToolCall,
+  isRiskyCommand,
+  isSecretPath,
   sameModel,
   type AgentPermissions,
 } from '../lib/permissions';
-import { reviewWithAi } from '../lib/aiApproval';
+import { compactDiff, isJevModel, reviewWithAi } from '../lib/aiApproval';
+import {
+  buildEditReview,
+  denyAll,
+  notifyFileWritten,
+  requestApproval,
+  type EditReview,
+  type ReviewHunk,
+} from '../lib/approvals';
+import { readFileContent } from '../lib/commands';
 
 // Hard ceiling on how many read→act round-trips one user message can trigger.
 const MAX_AGENT_STEPS = 24;
@@ -929,13 +940,19 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  /** The approval model, then its fallbacks, as far as they still exist. */
+  /** The approval model, then its fallbacks, as far as they exist and are enabled. */
   function approvalProfiles(p: AgentPermissions): ModelProfile[] {
     const chosen: ModelSelection[] = [];
     for (const sel of [p.approvalModel, ...p.approvalFallbacks]) {
       if (sel && !chosen.some((c) => sameModel(c, sel))) chosen.push(sel);
     }
+    // Only enabled models, as in the chat's model picker.
+    const enabled = (sel: ModelSelection) =>
+      providers()
+        .find((pr) => pr.id === sel.providerId)
+        ?.models.some((m) => m.id === sel.modelId && m.enabled) ?? false;
     return chosen
+      .filter(enabled)
       .map((sel) => resolveProfile(providers(), sel))
       .filter((profile): profile is ModelProfile => !!profile);
   }
@@ -959,7 +976,14 @@ export default function ChatPanel(props: ChatProps) {
   async function authorizeToolCall(
     dialogId: string,
     tc: ChatToolCall
-  ): Promise<{ refusal: string | null; approval?: ToolApproval }> {
+  ): Promise<{
+    refusal: string | null;
+    approval?: ToolApproval;
+    /** Partially accepted edit: the arguments to run instead. */
+    argsOverride?: string;
+    /** Added to the tool result for the model. */
+    resultNote?: string;
+  }> {
     const p = permissions();
     const verdict = checkToolCall(tc.name, tc.arguments, p);
     if (!verdict.permitted) {
@@ -968,23 +992,47 @@ export default function ChatPanel(props: ChatProps) {
     if (!verdict.approval) return { refusal: null };
 
     const summary = describeToolCall(tc.name, tc.arguments);
+    const command = tc.name === 'run_command' ? toolArg(tc.arguments, 'command') : undefined;
+    // Edits are diffed once: the AI reviewer reads the diff, the user
+    // reviews it in the editor.
+    const prepared = tc.name === 'write_file' ? await prepareEditReview(tc.arguments) : null;
+    // Writing the same content changes nothing: no need to ask.
+    if (prepared?.kind === 'unchanged') return { refusal: null };
+    const edit = prepared?.kind === 'diff' ? prepared.review : null;
     let manualReason: string | null = null;
 
     if (verdict.approval === 'ai') {
       const models = approvalProfiles(p);
-      if (models.length === 0) {
+      const editPath = tc.name === 'write_file' ? toolArg(tc.arguments, 'path') : undefined;
+
+      // Shapes no reviewer model may approve on its own (see permissions.ts).
+      if (command !== undefined && isRiskyCommand(command)) {
+        manualReason =
+          'Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets always need your approval.';
+      } else if (editPath !== undefined && isSecretPath(editPath)) {
+        manualReason = 'Edits to credential or secret files always need your approval.';
+      } else if (models.length === 0) {
         manualReason = 'No AI reviewer model is set, so this needs your approval.';
       } else {
         setToolNote(tc.id, `Reviewing with ${models[0].label}…`);
+        const primary = models[0];
         const review = await reviewWithAi(
           models,
           {
+            group:
+              tc.name === 'run_command' ? 'commands' : tc.name === 'write_file' ? 'edits' : 'tools',
             userRequest: latestUserRequest(dialogId),
+            project: props.rootPath() ?? '',
             toolName: tc.name,
             summary,
             argsJson: tc.arguments,
+            editPath,
+            editDiff: edit ? compactDiff(edit.hunks) : undefined,
+            isNewFile: prepared?.kind === 'new',
           },
-          { typedInput: p.approvalTypedInput }
+          // The reviewer model follows the setting; a Jev fallback can only
+          // be asked with typed input.
+          (profile) => (profile === primary ? p.approvalTypedInput : isJevModel(profile.model))
         );
         setToolNote(tc.id);
 
@@ -1002,34 +1050,119 @@ export default function ChatPanel(props: ChatProps) {
                 approval,
               };
         }
-        console.warn('AI approval gave no decision:', review.errors);
-        manualReason = 'The AI reviewer couldn’t decide, so this needs your approval.';
+        if (review.unsure) {
+          manualReason = `${review.reason} This needs your approval.`;
+        } else {
+          console.warn('AI approval gave no decision:', review.errors);
+          manualReason = 'The AI reviewer couldn’t answer, so this needs your approval.';
+        }
       }
     }
 
-    setToolNote(tc.id, 'Waiting for approval…');
-    const approved = await confirmDialog({
-      title: 'Allow this action?',
-      message: (
-        <>
-          The agent wants to: <strong>{summary}</strong>
-          {verdict.modifiesFiles ? '\nThis may change files in the project.' : ''}
-          {manualReason ? `\n${manualReason}` : ''}
-        </>
-      ),
-      confirmLabel: 'Allow',
-      cancelLabel: 'Deny',
-      danger: verdict.modifiesFiles,
-    });
-    setToolNote(tc.id);
+    // Manual: the request shows in the chat (and, for an edit of an existing
+    // file, in the editor as changes to accept or reject one by one).
+    const note =
+      [manualReason, prepared?.kind === 'new' ? 'New file: expand to see its content.' : null]
+        .filter(Boolean)
+        .join(' ') || undefined;
 
-    const approval: ToolApproval = { by: 'user', approved };
-    return approved
-      ? { refusal: null, approval }
-      : {
-          refusal: `Error: the user denied this "${tc.name}" call. Do not retry it; continue without it or ask the user how to proceed.`,
-          approval,
-        };
+    const decision = await requestApproval({
+      toolCallId: tc.id,
+      dialogId,
+      toolName: tc.name,
+      summary,
+      command,
+      note,
+      edit: edit ?? undefined,
+    });
+
+    if (decision.kind === 'allow') {
+      return { refusal: null, approval: { by: 'user', approved: true } };
+    }
+    if (decision.kind === 'deny') {
+      return {
+        refusal: edit
+          ? `Error: the user rejected every change to ${edit.relPath}; the file was not modified. Do not retry the same edit; ask the user or take another approach.`
+          : `Error: the user denied this "${tc.name}" call. Do not retry it; continue without it or ask the user how to proceed.`,
+        approval: { by: 'user', approved: false },
+      };
+    }
+
+    // Some changes accepted: write the original with only those applied.
+    const args = parseToolArgsObject(tc.arguments);
+    const total = decision.accepted.length + decision.rejected.length;
+    return {
+      refusal: null,
+      approval: {
+        by: 'user',
+        approved: true,
+        reason: `Accepted ${decision.accepted.length} of ${total} changes.`,
+      },
+      argsOverride: JSON.stringify({ ...args, content: decision.content }),
+      resultNote: describeRejectedHunks(edit?.relPath ?? 'the file', decision.rejected, total),
+    };
+  }
+
+  /** One string argument of a tool call. */
+  function toolArg(argsJson: string, key: string): string | undefined {
+    const value = parseToolArgsObject(argsJson)[key];
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  function parseToolArgsObject(argsJson: string): Record<string, unknown> {
+    try {
+      const parsed = argsJson.trim() ? JSON.parse(argsJson) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * The diff of a write_file call against the file on disk. A new file has
+   * nothing to compare against: it's approved as a whole.
+   */
+  async function prepareEditReview(
+    argsJson: string
+  ): Promise<
+    { kind: 'diff'; review: EditReview } | { kind: 'new' } | { kind: 'unchanged' } | null
+  > {
+    const root = props.rootPath();
+    const path = toolArg(argsJson, 'path');
+    const content = toolArg(argsJson, 'content');
+    if (!root || !path || content === undefined) return null;
+    const absPath = toAbsolutePath(path, root);
+    let current: string;
+    try {
+      current = await readFileContent(absPath);
+    } catch {
+      return { kind: 'new' };
+    }
+    const review = buildEditReview(absPath, path, current, content);
+    return review ? { kind: 'diff', review } : { kind: 'unchanged' };
+  }
+
+  /** Tells the model which of its changes were not applied. */
+  function describeRejectedHunks(path: string, rejected: ReviewHunk[], total: number): string {
+    const preview = (lines: string[]) => {
+      const shown = lines.slice(0, 3).map((l) => `    ${l}`);
+      if (lines.length > 3) shown.push(`    … (${lines.length - 3} more lines)`);
+      return shown.join('\n');
+    };
+    const items = rejected.map((h) => {
+      const where = `around original line ${h.origStart}`;
+      if (h.added.length === 0)
+        return `- ${where}: deleting these lines (kept):\n${preview(h.deleted)}`;
+      if (h.deleted.length === 0)
+        return `- ${where}: inserting these lines (not added):\n${preview(h.added)}`;
+      return `- ${where}: replacing\n${preview(h.deleted)}\n  with (not applied):\n${preview(h.added)}`;
+    });
+    return [
+      '',
+      `The user reviewed this edit and accepted ${total - rejected.length} of ${total} changes; the file now has only those. Rejected changes:`,
+      ...items,
+      `Read ${path} again before editing it further, and don't redo the rejected changes unless the user asks.`,
+    ].join('\n');
   }
 
   /*
@@ -1357,14 +1490,43 @@ export default function ChatPanel(props: ChatProps) {
 
     // Execute requested tools; each result is stored before the next turn,
     // which reads the history from the database.
+    // Every requested call gets a result, even after Stop: the provider
+    // rejects a history with tool calls left unanswered.
+    const stoppedResult = (tc: ChatToolCall) =>
+      store.appendMessages(dialogId, [
+        {
+          id: crypto.randomUUID(),
+          role: 'tool',
+          content: 'Error: stopped by the user before this ran.',
+          tool_call_id: tc.id,
+          finalized: true,
+        },
+      ]);
+
     for (const tc of toolCalls) {
-      if (stopRequested) return;
-      const { refusal, approval } = await authorizeToolCall(dialogId, tc);
+      if (stopRequested) {
+        await stoppedResult(tc);
+        continue;
+      }
+      const { refusal, approval, argsOverride, resultNote } = await authorizeToolCall(dialogId, tc);
       // Stop may have been pressed while approval was pending.
-      if (stopRequested) return;
+      if (stopRequested && (refusal || !approval)) {
+        await stoppedResult(tc);
+        continue;
+      }
+      const args = argsOverride ?? tc.arguments;
       const result = refusal
         ? { content: refusal, attachments: undefined }
-        : await executeAgentTool(root, tc.name, tc.arguments);
+        : await executeAgentTool(root, tc.name, args);
+      if (resultNote && !result.content.startsWith('Error:')) result.content += resultNote;
+
+      // Open tabs of the file show what was written.
+      if (tc.name === 'write_file' && !refusal && root && !result.content.startsWith('Error:')) {
+        const path = toolArg(args, 'path');
+        const content = toolArg(args, 'content');
+        if (path && content !== undefined) notifyFileWritten(toAbsolutePath(path, root), content);
+      }
+
       const resultMeta = toolResultMeta(tc.name, result.content);
       await store.appendMessages(dialogId, [
         {
@@ -1405,6 +1567,8 @@ export default function ChatPanel(props: ChatProps) {
   /** Stop: cancels the running request and any further tool steps. */
   function stopRequest() {
     stopRequested = true;
+    // Waiting approvals count as denied.
+    denyAll();
     if (currentRequestId) {
       void cancelChatRequest(currentRequestId).catch((err) => console.error('Cancel failed:', err));
     }

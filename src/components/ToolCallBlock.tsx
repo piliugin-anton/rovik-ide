@@ -8,6 +8,15 @@ import type { ChatMessage, ChatToolCall, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
+import {
+  allow,
+  decideRemaining,
+  deny,
+  hunkCounts,
+  pendingApproval,
+  revealEdit,
+  type PendingApproval,
+} from '../lib/approvals';
 
 export interface ToolCallBlockProps {
   toolCall: ChatToolCall;
@@ -254,7 +263,80 @@ function ChevronIcon() {
   );
 }
 
+/**
+ * The request for the user's decision, under the tool call's header. File
+ * edits are reviewed change by change in the editor; this offers the
+ * shortcuts.
+ */
+function ApprovalBar(props: { request: PendingApproval }) {
+  const id = () => props.request.toolCallId;
+  const counts = () => (props.request.edit ? hunkCounts(props.request.edit) : null);
+
+  const status = () => {
+    const c = counts();
+    if (!c) return 'Waiting for your approval';
+    if (c.pending === c.total) {
+      return `Waiting for your review · ${c.total} change${c.total === 1 ? '' : 's'}`;
+    }
+    return `${c.pending} of ${c.total} left · ${c.accepted} accepted · ${c.rejected} rejected`;
+  };
+
+  return (
+    <div class="tool-approval" role="group" aria-label="Approval">
+      <div class="tool-approval-status">
+        <span class="tool-approval-dot" aria-hidden="true" />
+        {status()}
+      </div>
+      <Show when={props.request.note}>
+        <div class="tool-approval-note">{props.request.note}</div>
+      </Show>
+      <Show when={props.request.command}>
+        {(command) => <pre class="tool-approval-command">{command()}</pre>}
+      </Show>
+      <div class="tool-approval-actions">
+        <Show
+          when={props.request.edit}
+          fallback={
+            <>
+              <button class="tool-approval-button primary" onClick={() => allow(id())}>
+                Allow
+              </button>
+              <button class="tool-approval-button" onClick={() => deny(id())}>
+                Deny
+              </button>
+            </>
+          }
+        >
+          <button
+            class="tool-approval-button primary"
+            onClick={() => revealEdit(id())}
+            title="Open the file with the changes highlighted"
+          >
+            Review in editor
+          </button>
+          <button
+            class="tool-approval-button"
+            onClick={() => decideRemaining(id(), 'accepted')}
+            title="Accept every remaining change"
+          >
+            Accept all
+          </button>
+          <button
+            class="tool-approval-button danger"
+            onClick={() => decideRemaining(id(), 'rejected')}
+            title="Reject every remaining change"
+          >
+            Reject all
+          </button>
+        </Show>
+      </div>
+    </div>
+  );
+}
+
 export default function ToolCallBlock(props: ToolCallBlockProps) {
+  const request = () => pendingApproval(props.toolCall.id);
+
   const [expanded, setExpanded] = createSignal(false);
 
   const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
@@ -284,6 +366,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const approval = () => props.result?.meta?.approval;
 
   const meta = () => {
+    if (request()) return undefined;
     if (status() === 'running' && props.note) return props.note;
     const a = approval();
     if (a && !a.approved) return a.by === 'ai' ? 'rejected by AI' : 'denied';
@@ -312,6 +395,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
       class="tool-call"
       classList={{
         expanded: expanded(),
+        awaiting: !!request(),
         running: status() === 'running',
         error: status() === 'error' || approval()?.approved === false,
       }}
@@ -328,10 +412,12 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
         <Show when={meta()}>
           <span class="tool-call-meta">{meta()}</span>
         </Show>
-        <Show when={status() === 'running'}>
+        <Show when={status() === 'running' && !request()}>
           <span class="tool-call-spinner" aria-label="Running" />
         </Show>
       </button>
+
+      <Show when={request()}>{(r) => <ApprovalBar request={r()} />}</Show>
 
       <Show when={expanded()}>
         <div class="tool-call-body">

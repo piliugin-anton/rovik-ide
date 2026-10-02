@@ -1466,6 +1466,10 @@ body {
   color: var(--fg-dim);
 }
 
+.fallback-label.off {
+  color: var(--fg-dim);
+}
+
 .fallback-label {
   flex: 1;
   min-width: 0;
@@ -2246,6 +2250,231 @@ body {
   padding: 4px 10px 8px;
   color: var(--fg-dim);
   font-style: italic;
+}
+
+/* Waiting for the user's approval (ToolCallBlock's ApprovalBar) */
+
+:root {
+  --diff-added-bg: rgba(155, 185, 85, 0.2);
+  --diff-added-strong: #9bb955;
+  --diff-deleted-bg: rgba(255, 0, 0, 0.2);
+  --diff-deleted-strong: #e06c75;
+}
+
+.tool-call.awaiting {
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.tool-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--warning) 6%, transparent);
+}
+
+.tool-approval-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+}
+
+.tool-approval-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  animation: tool-approval-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tool-approval-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-approval-dot {
+    animation: none;
+  }
+}
+
+.tool-approval-note {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.tool-approval-command {
+  max-height: 120px;
+  margin: 0;
+  padding: 4px 8px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-editor);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.tool-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tool-approval-button {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-control);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tool-approval-button:hover {
+  background: var(--bg-control-hover);
+}
+
+.tool-approval-button.primary {
+  color: var(--fg-on-accent);
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.tool-approval-button.primary:hover {
+  background: var(--accent-hover);
+}
+
+.tool-approval-button.danger:hover {
+  color: var(--error);
+}
+
+.tool-approval-button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Agent edit review in the editor (components/editorReview.ts) */
+
+.monaco-editor .review-line-deleted {
+  background: var(--diff-deleted-bg);
+}
+
+.monaco-editor .review-line-deleted.done {
+  background: color-mix(in srgb, var(--diff-deleted-bg) 50%, transparent);
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.monaco-editor .review-gutter-deleted {
+  width: 3px !important;
+  margin-left: 3px;
+  background: var(--diff-deleted-strong);
+}
+
+.review-zone {
+  width: 100%;
+}
+
+.review-added {
+  white-space: pre;
+  background: var(--diff-added-bg);
+  box-shadow: inset 3px 0 0 var(--diff-added-strong);
+}
+
+.review-added-line {
+  padding-left: 6px;
+}
+
+.review-accepted .review-added {
+  background: color-mix(in srgb, var(--diff-added-bg) 50%, transparent);
+}
+
+.review-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.review-strip-label {
+  margin-right: 2px;
+}
+
+.review-accepted .review-strip-label {
+  color: var(--diff-added-strong);
+}
+
+.review-rejected .review-strip-label {
+  color: var(--diff-deleted-strong);
+}
+
+.review-button {
+  height: 20px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg-control);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.review-button:hover {
+  background: var(--bg-control-hover);
+}
+
+.review-button.accept {
+  color: var(--fg-on-accent);
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.review-button.accept:hover {
+  background: var(--accent-hover);
+}
+
+.review-button.reject:hover {
+  color: var(--error);
+}
+
+.review-button.undo {
+  background: transparent;
+}
+
+.review-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 420px;
+  margin: 6px 16px 0 0;
+  padding: 5px 6px 5px 10px;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px var(--shadow-soft);
+}
+
+.review-bar.warning {
+  border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+}
+
+.review-bar-text {
+  margin-right: 4px;
+  color: var(--fg-dim);
 }
 
 /* Spacing between blocks comes from .chat-messages' gap, so tool rows line

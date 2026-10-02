@@ -1,8 +1,15 @@
-import { onMount, onCleanup, createEffect } from 'solid-js';
+import { onMount, onCleanup, createEffect, untrack } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import type { MonacoLibEntry, RevealRequest } from '../types';
 import { invoke } from '@tauri-apps/api/core';
+import { pendingEditFor } from '../lib/approvals';
+import {
+  hunkLine,
+  renderEditReview,
+  renderReviewUnavailable,
+  reviewMatchesModel,
+} from './editorReview';
 
 interface EditorProps {
   projectDir: Accessor<string | null>;
@@ -136,6 +143,55 @@ export default function Editor(props: EditorProps) {
       editor.revealRangeInCenter(selection, monaco.editor.ScrollType.Smooth);
       editor.focus();
       props.onRevealed?.();
+    });
+
+    /*
+     * A pending agent edit of this file (lib/approvals.ts): drawn over the
+     * file, redrawn whenever a change is accepted or rejected. Read-only
+     * meanwhile, so the changes' line numbers stay valid.
+     */
+    createEffect(() => {
+      const approval = pendingEditFor(props.currentFilePath);
+      const ed = editor;
+      if (!approval?.edit || !ed) return;
+      // Re-checked when the content changes (e.g. the user saves or undoes).
+      props.content();
+      const model = ed.getModel();
+      if (!model) return;
+
+      if (!reviewMatchesModel(model, approval)) {
+        const handle = renderReviewUnavailable(ed, approval);
+        onCleanup(() => handle.dispose());
+        return;
+      }
+
+      // Track every change's state so the drawing follows decisions.
+      approval.edit.hunks.forEach((h) => h.state);
+      const handle = renderEditReview(ed, approval);
+      ed.updateOptions({
+        readOnly: true,
+        readOnlyMessage: { value: 'Accept or reject the agent’s edit first.' },
+      });
+      onCleanup(() => {
+        handle.dispose();
+        if (!disposed) ed.updateOptions({ readOnly: false });
+      });
+    });
+
+    // Scroll to the next undecided change when the review asks for it.
+    createEffect(() => {
+      const approval = pendingEditFor(props.currentFilePath);
+      const nonce = approval?.edit?.revealNonce;
+      if (!approval?.edit || !nonce || !editor) return;
+      // Only the nonce triggers a scroll, not each decision.
+      const edit = approval.edit;
+      const next = untrack(() => edit.hunks.find((h) => h.state === 'pending') ?? edit.hunks[0]);
+      if (next) {
+        // After the zones are in, so the scroll accounts for them.
+        requestAnimationFrame(() =>
+          editor?.revealLineInCenter(hunkLine(next), monaco.editor.ScrollType.Smooth)
+        );
+      }
     });
 
     // Load typings in the background - never block editor creation on it.

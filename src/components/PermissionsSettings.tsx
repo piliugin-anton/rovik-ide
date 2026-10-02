@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import { formatModelLabel } from '../lib/aiSettings';
+import { APPROVE_AT, isJevModel, REJECT_AT } from '../lib/aiApproval';
 import {
   DEFAULT_ALLOWED_COMMANDS,
   sameModel,
@@ -24,6 +25,7 @@ interface ModelOption {
   selection: ModelSelection;
   label: string;
   provider: string;
+  enabled: boolean;
 }
 
 const keyOf = (sel: ModelSelection) => `${sel.providerId}::${sel.modelId}`;
@@ -95,6 +97,8 @@ function ApprovalControl(props: {
   noun: string;
   /** Said when approval is off. */
   offText: string;
+  /** Said for "By you", when the generic sentence isn't enough. */
+  userText?: string;
   onChange: (rule: ApprovalRule) => void;
 }) {
   const explain = () => {
@@ -102,7 +106,7 @@ function ApprovalControl(props: {
     if (!rule.required) return props.offText;
     return rule.by === 'ai'
       ? `Every ${props.noun} is allowed or rejected by the AI reviewer before it runs.`
-      : `Every ${props.noun} waits for you to allow or deny it.`;
+      : (props.userText ?? `Every ${props.noun} waits for you to allow or deny it.`);
   };
 
   return (
@@ -153,24 +157,28 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
     p().allowedCommands.every((c, i) => c === DEFAULT_ALLOWED_COMMANDS[i]);
 
   /*
-   * AI reviewer models: every model the user added, enabled ones first.
+   * AI reviewer models: the enabled models, as in the chat's model picker.
+   * A saved choice whose model was turned off is still found (and marked),
+   * so the page can say so instead of losing it.
    */
 
-  const modelOptions = createMemo<ModelOption[]>(() =>
+  const allOptions = createMemo<ModelOption[]>(() =>
     props.providers.flatMap((provider) =>
-      [...provider.models]
-        .sort((a, b) => Number(b.enabled) - Number(a.enabled))
-        .map((model) => {
-          const selection = { providerId: provider.id, modelId: model.id };
-          return {
-            key: keyOf(selection),
-            selection,
-            label: formatModelLabel(provider.name, model),
-            provider: provider.name || provider.baseUrl,
-          };
-        })
+      provider.models.map((model) => {
+        const selection = { providerId: provider.id, modelId: model.id };
+        return {
+          key: keyOf(selection),
+          selection,
+          label: formatModelLabel(provider.name, model),
+          provider: provider.name || provider.baseUrl,
+          enabled: model.enabled,
+        };
+      })
     )
   );
+
+  /** What can be picked: enabled models only. */
+  const modelOptions = createMemo(() => allOptions().filter((o) => o.enabled));
 
   const providerGroups = createMemo(() => {
     const groups = new Map<string, ModelOption[]>();
@@ -183,7 +191,7 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
   });
 
   const optionFor = (sel: ModelSelection | null) =>
-    sel ? modelOptions().find((o) => sameModel(o.selection, sel)) : undefined;
+    sel ? allOptions().find((o) => sameModel(o.selection, sel)) : undefined;
 
   const reviewer = () => optionFor(p().approvalModel);
 
@@ -300,10 +308,24 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
         />
       </section>
 
-      {/* Tool calls */}
+      {/* File edits */}
       <section class="settings-section">
-        <div class="settings-section-title">Tool calls</div>
-        <p class="settings-hint">Reading, searching and editing files, and web access.</p>
+        <div class="settings-section-title">File edits</div>
+        <p class="settings-hint">Files the agent creates or changes.</p>
+
+        <ApprovalControl
+          rule={p().editApproval}
+          noun="file edit"
+          offText="Edits are written right away."
+          userText="You review each edit in the editor and accept or reject its changes one by one."
+          onChange={(editApproval) => patch({ editApproval })}
+        />
+      </section>
+
+      {/* Other tool calls */}
+      <section class="settings-section">
+        <div class="settings-section-title">Other tool calls</div>
+        <p class="settings-hint">Reading and searching files, and web access.</p>
 
         <ApprovalControl
           rule={p().toolApproval}
@@ -319,14 +341,15 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
           <div class="settings-section-title">AI reviewer</div>
           <p class="settings-hint">
             Allows or rejects actions set to “By AI reviewer”. Its decision and reason show on each
-            tool call. If it can’t decide, you’re asked instead.
+            tool call. If it can’t decide, you’re asked instead. Pushing, deleting, deploying and
+            touching secret files always ask you.
           </p>
 
           <Show
             when={modelOptions().length > 0}
             fallback={
               <div class="command-list-empty">
-                No approval models configured. Add models in{' '}
+                No models enabled. Add or enable models in{' '}
                 <button class="link-button" onClick={() => props.onOpenProviders()}>
                   Model providers
                 </button>
@@ -341,6 +364,10 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
                 onChange={(e) => setReviewer(e.currentTarget.value)}
               >
                 <option value="">Select a model…</option>
+                {/* Keeps a turned-off choice visible instead of resetting the selector. */}
+                <Show when={reviewer() && !reviewer()!.enabled}>
+                  <option value={reviewer()!.key}>{reviewer()!.label} (turned off)</option>
+                </Show>
                 <For each={providerGroups()}>
                   {([provider, options]) => (
                     <optgroup label={provider}>
@@ -360,11 +387,39 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
               <span>
                 Use typed input
                 <span class="setting-checkbox-sub">
-                  Sends each review as a JSON object instead of a text prompt. Only for the Typesafe
-                  Jev model.
+                  For TypeSafe Jev. Sends the action as structured data with yes/no checks (TypeSafe
+                  System One API) instead of a chat prompt. Approves when every check is at least{' '}
+                  {Math.round(APPROVE_AT * 100)}% yes, rejects when any is{' '}
+                  {Math.round(REJECT_AT * 100)}% or less, and asks you in between.
                 </span>
               </span>
             </label>
+
+            <Show
+              when={
+                reviewer() && isJevModel(reviewer()!.selection.modelId) && !p().approvalTypedInput
+              }
+            >
+              <p class="settings-hint setting-explain warning">
+                Jev doesn’t answer chat prompts. Turn on typed input to use it as the reviewer.
+              </p>
+            </Show>
+            <Show
+              when={
+                reviewer() && !isJevModel(reviewer()!.selection.modelId) && p().approvalTypedInput
+              }
+            >
+              <p class="settings-hint setting-explain warning">
+                Typed input needs a Jev model; this one probably only answers chat prompts.
+              </p>
+            </Show>
+
+            <Show when={reviewer() && !reviewer()!.enabled}>
+              <p class="settings-hint setting-explain warning">
+                This model is turned off in Model providers, so it isn’t used. Turn it on there or
+                pick another; until then you’re asked instead.
+              </p>
+            </Show>
 
             <Show when={!reviewer()}>
               <p class="settings-hint setting-explain warning">
@@ -381,8 +436,13 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
                     {(o, i) => (
                       <div class="fallback-row">
                         <span class="fallback-order">{i() + 1}.</span>
-                        <span class="fallback-label" title={o.label}>
+                        <span
+                          class="fallback-label"
+                          classList={{ off: !o.enabled }}
+                          title={o.enabled ? o.label : `${o.label}: turned off, skipped`}
+                        >
                           {o.label}
+                          {o.enabled ? '' : ' (turned off)'}
                         </span>
                         <button
                           class="icon-button"

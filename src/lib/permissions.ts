@@ -5,9 +5,9 @@
 //   1. Permission: may this run at all? Only `run_command` is restricted,
 //      by the allowed-commands list (or "any command"). A refused call
 //      never reaches approval.
-//   2. Approval: commands and the other tool calls each have their own
-//      rule: whether approval is required, and who gives it (the user, or
-//      the AI reviewer model).
+//   2. Approval: commands, file edits and the other tool calls each have
+//      their own rule: whether approval is required, and who gives it (the
+//      user, or the AI reviewer model).
 //
 // Stored with the AI settings (lib/aiSettings.ts).
 import type { ModelSelection } from '../types';
@@ -28,7 +28,9 @@ export interface AgentPermissions {
   allowedCommands: string[];
   /** run_command. */
   commandApproval: ApprovalRule;
-  /** Every other tool: reading, editing files, search, web. */
+  /** write_file. */
+  editApproval: ApprovalRule;
+  /** Every other tool: reading and searching files, web access. */
   toolApproval: ApprovalRule;
   /** The model that reviews actions approved "by AI". */
   approvalModel: ModelSelection | null;
@@ -70,6 +72,7 @@ export const DEFAULT_PERMISSIONS: AgentPermissions = {
   // The allowed-commands list is the safeguard by default; approval is
   // opt-in, so the agent works as before until the user turns it on.
   commandApproval: { required: false, by: 'user' },
+  editApproval: { required: false, by: 'user' },
   toolApproval: { required: false, by: 'user' },
   approvalModel: null,
   approvalFallbacks: [],
@@ -137,6 +140,12 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
     commandApproval:
       normalizeRule(r.commandApproval) ?? legacy ?? DEFAULT_PERMISSIONS.commandApproval,
     toolApproval: normalizeRule(r.toolApproval) ?? legacy ?? DEFAULT_PERMISSIONS.toolApproval,
+    // Edits used to follow the tool-calls rule.
+    editApproval:
+      normalizeRule(r.editApproval) ??
+      normalizeRule(r.toolApproval) ??
+      legacy ??
+      DEFAULT_PERMISSIONS.editApproval,
     approvalModel: isSelection(r.approvalModel) ? r.approvalModel : null,
     approvalFallbacks: Array.isArray(r.approvalFallbacks)
       ? r.approvalFallbacks.filter(isSelection)
@@ -522,13 +531,20 @@ export function checkToolCall(
     modifiesFiles = verdict.modifiesFiles;
   }
 
-  const rule = name === 'run_command' ? permissions.commandApproval : permissions.toolApproval;
+  const rule =
+    name === 'run_command'
+      ? permissions.commandApproval
+      : name === 'write_file'
+        ? permissions.editApproval
+        : permissions.toolApproval;
   return { permitted: true, modifiesFiles, approval: rule.required ? rule.by : null };
 }
 
 /** Whether some approval is set to be done by the AI reviewer. */
 export function usesAiReview(p: AgentPermissions): boolean {
-  return [p.commandApproval, p.toolApproval].some((r) => r.required && r.by === 'ai');
+  return [p.commandApproval, p.editApproval, p.toolApproval].some(
+    (r) => r.required && r.by === 'ai'
+  );
 }
 
 /** Whether the model should be offered run_command at all. */
@@ -564,4 +580,72 @@ export function describeToolCall(name: string, argsJson: string): string {
     default:
       return `${name}(${argsJson.slice(0, 200)})`;
   }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Never left to the AI reviewer
+ * ---------------------------------------------------------------------------
+ *
+ * A reviewer model only sees the text it's given: it can't tell that a
+ * command reads a credential file or that a remote is production. These
+ * shapes always go to the user, whatever the reviewer would say. Adapted
+ * from OpenRouter's "Auto-Approve Coding Agent Permission Prompts with Jev"
+ * recipe.
+ */
+
+const RISKY_COMMANDS = [
+  // Hidden program names: quotes, escapes, variables, leading dashes/digits.
+  /^(\S*['"\\=$]|[-0-9])/,
+  /^(sudo|doas|su)\b/,
+  // Running a string through another shell or interpreter hides its content.
+  /^(bash|sh|zsh|fish|eval|xargs)\b/,
+  /^(node|bun|deno|python3?)\s+(-\S+\s+)*(-c|-e|-p|--eval)\b/,
+  /^rm\s+(-\S*[rRf]\S*\s+)+/,
+  /^git\b.*\b(push|reset\s+--hard|clean\s+-\S*[fd]|branch\s+-D|checkout\s+--\s|restore\b)/,
+  /^(npm|pnpm|yarn|bun|cargo)\s+publish\b/,
+  /^(wrangler|vercel|fly|flyctl|netlify)\s+deploy\b|^terraform\s+(apply|destroy)\b|^kubectl\s+(delete|apply)\b/,
+  /^(curl|wget)\b.*\s(-d|--data\S*|-F|--form|-T|--upload-file|-X\s*(POST|PUT|PATCH|DELETE))\b/,
+  /^(chmod|chown)\s+-\S*R/,
+  /\.env\b|\.ssh\b|\.aws\b|\.npmrc\b|\.netrc\b|id_rsa|credentials/i,
+];
+
+/** Paths whose contents are secrets: edits to them always go to the user. */
+const SECRET_PATH =
+  /(^|[\\/])(\.env(\.[^\\/]*)?|\.npmrc|\.netrc|id_[a-z0-9]+|[^\\/]*\.(pem|key|pfx|p12))$|(^|[\\/])(\.ssh|\.aws|\.gnupg)([\\/]|$)|credentials/i;
+
+/** Strips wrappers and prefixes until the program name is bare. */
+function bareCommand(part: string): string {
+  let current = part;
+  for (;;) {
+    const next = current
+      .trim()
+      .replace(/^(if|then|elif|else|fi|while|until|do|done|for|in|case|esac|!)\s+/, '')
+      .replace(
+        /^(command|builtin|exec|env|nohup|time|timeout(\s+\S+)?|nice|watch|npx|bunx|pnpx)\s+/,
+        ''
+      )
+      .replace(/^[A-Za-z_][A-Za-z0-9_]*=[^\s'"\\$]*\s+/, '')
+      .replace(/^\\/, '')
+      .replace(/^[^\s'"\\$]*\//, '');
+    if (next === current) return current;
+    current = next;
+  }
+}
+
+/** A command the AI reviewer must never approve on its own. */
+export function isRiskyCommand(command: string): boolean {
+  // Substitutions and line continuations can hide anything.
+  if (/\$\(|[<>]\(|`|\\\r?\n/.test(command)) return true;
+  // Splitting ignores quotes on purpose: a separator inside a quoted
+  // argument can only add a prompt, never hide a command.
+  return command
+    .split(/\s*(?:&&|\|\||;|\||&|\n|[(){}])\s*/)
+    .map(bareCommand)
+    .some((part) => RISKY_COMMANDS.some((pattern) => pattern.test(part)));
+}
+
+/** A file whose edits the AI reviewer must never approve on its own. */
+export function isSecretPath(path: string): boolean {
+  return SECRET_PATH.test(path.trim());
 }

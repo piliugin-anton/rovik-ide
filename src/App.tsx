@@ -45,6 +45,7 @@ import ContextMenuItem from './components/ContextMenuItem';
 import { GitPanel } from './components/GitPanel';
 import { ConfirmDialogHost } from './components/ConfirmDialog';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
+import { onFileWritten, onRevealEdit } from './lib/approvals';
 
 let unlistenFSChanges: (() => void) | undefined;
 
@@ -232,6 +233,35 @@ export default function App() {
       window.alert(String(err));
     }
   }
+
+  /** Opens a file by absolute path (e.g. an agent edit to review). */
+  async function openPath(path: string) {
+    const sep = path.includes('\\') && !path.includes('/') ? '\\' : '/';
+    const name = path.split(sep).pop() ?? path;
+    const row: TreeRow = tree.files().find((r) => r.path === path) ?? {
+      id: path,
+      path,
+      name,
+      isDir: false,
+      depth: 0,
+    };
+    await openFile(row);
+  }
+
+  // The agent's edits: open files to review them, and refresh open tabs
+  // after a write (an unsaved tab keeps the user's text).
+  const stopReveal = onRevealEdit((path) => void openPath(path));
+  const stopWritten = onFileWritten((path, content) =>
+    setOpenFiles((prev) =>
+      prev.map((f) =>
+        f.path === path && !f.dirty ? { ...f, content, originalContent: content } : f
+      )
+    )
+  );
+  onCleanup(() => {
+    stopReveal();
+    stopWritten();
+  });
 
   /** Opens a search result with the match selected. */
   async function openSearchMatch(target: SearchMatchTarget) {

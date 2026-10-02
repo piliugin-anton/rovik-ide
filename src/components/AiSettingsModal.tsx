@@ -79,7 +79,7 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
     const rule = (r: ApprovalRule) =>
       !r.required ? 'no approval' : r.by === 'ai' ? 'AI approval' : 'your approval';
     const commands = p.allowAnyCommand ? 'any' : `${p.allowedCommands.length} listed`;
-    return `Commands: ${commands}, ${rule(p.commandApproval)} · Tools: ${rule(p.toolApproval)}`;
+    return `Commands: ${commands}, ${rule(p.commandApproval)} · Edits: ${rule(p.editApproval)} · Other tools: ${rule(p.toolApproval)}`;
   };
 
   return (
