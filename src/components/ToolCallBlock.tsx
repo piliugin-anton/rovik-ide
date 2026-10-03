@@ -413,6 +413,27 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const isWrite = () => props.toolCall.name === 'write_file';
   const isEdit = () => props.toolCall.name === 'edit_file';
   const isRead = () => props.toolCall.name === 'read_file';
+  /*
+   * "Open in editor" on any code a file tool shows (read, write, edit) opens
+   * that file in the editor, never an inline editor in the message. The line
+   * to center: the range the tool worked on, else where the edit landed
+   * (edit_file's result names it), else the top.
+   */
+  const targetLine = (): number => {
+    const a = args();
+    const start = lineArg(a.start_line);
+    if (start !== undefined) return start;
+    if (props.toolCall.name === 'edit_file') {
+      const landed = Number(resultText()?.match(/(?:replaced|removed) lines? (\d+)/)?.[1]);
+      if (Number.isFinite(landed) && landed >= 1) return landed;
+    }
+    return 1;
+  };
+  const openInEditor = () => {
+    const path = str(args().path);
+    if (path) requestOpenFile({ path, line: targetLine() });
+  };
+
   // Code arguments are shown highlighted below, not as escaped JSON strings.
   const callText = () =>
     prettyArgs(
@@ -462,11 +483,19 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
               <pre class="tool-call-pre">{callText()}</pre>
             </Show>
             <Show when={isWrite() && str(args().content) !== undefined}>
-              <StaticCodeBlock code={str(args().content)!} language={language()} />
+              <StaticCodeBlock
+                code={str(args().content)!}
+                language={language()}
+                onOpenInEditor={openInEditor}
+              />
             </Show>
             <Show when={isEdit() && str(args().old_text) !== undefined}>
               <div class="tool-call-label">Replace</div>
-              <StaticCodeBlock code={str(args().old_text)!} language={language()} />
+              <StaticCodeBlock
+                code={str(args().old_text)!}
+                language={language()}
+                onOpenInEditor={openInEditor}
+              />
               <div class="tool-call-label">With</div>
               <Show
                 when={str(args().new_text)}
@@ -476,7 +505,13 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                   </div>
                 }
               >
-                {(text) => <StaticCodeBlock code={text()} language={language()} />}
+                {(text) => (
+                  <StaticCodeBlock
+                    code={text()}
+                    language={language()}
+                    onOpenInEditor={openInEditor}
+                  />
+                )}
               </Show>
             </Show>
           </section>
@@ -519,10 +554,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                   <StaticCodeBlock
                     code={resultText()!}
                     language={language()}
-                    onOpenInEditor={() => {
-                      const path = str(args().path);
-                      if (path) requestOpenFile({ path, line: lineArg(args().start_line) ?? 1 });
-                    }}
+                    onOpenInEditor={openInEditor}
                   />
                 </Show>
               </Show>
