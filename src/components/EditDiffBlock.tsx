@@ -76,8 +76,8 @@ export default function EditDiffBlock(props: {
     <div class="static-code edit-diff">
       <div class="static-code-toolbar">
         <span class="edit-diff-counts">
-          <span class="edit-diff-count removed">−{counts().removed}</span>
           <span class="edit-diff-count added">+{counts().added}</span>
+          <span class="edit-diff-count removed">−{counts().removed}</span>
         </span>
         <button type="button" onClick={() => void copyNew()} title="Copy the new text">
           {copied() ? 'Copied' : 'Copy'}

@@ -1,2 +1,0 @@
-1. Change edited tool call component so that on top(header) at the right where it is showing some numbers it will show the actual +1 -2 counters of changes, make deleted count text red, edited/added green
-2. Scroll to chat bottom button appears at some weird places, sometimes in the chenter of chat block after I expand and collapse log tool call results. Make sure this button always appears at one place

@@ -55,6 +55,7 @@ import ContextMeter, { type ContextUsage } from './ContextMeter';
 import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
 import { agentToolsFor, editFileArgs, executeAgentTool } from '../lib/tools';
 import { AgentRunGuard } from '../lib/agentGuard';
+import { recordAgentEdit } from '../lib/agentChanges';
 import { logAgent } from '../lib/agentLog';
 import {
   detectProject,
@@ -1520,6 +1521,8 @@ export default function ChatPanel(props: ChatProps) {
 
   /** Wait this long without any output before saying so. */
   const STILL_WAITING_MS = 15_000;
+  /** Mid-reply silence before "Still generating" shows. */
+  const REPLY_IDLE_MS = 2_500;
 
   /**
    * One request to the model. The backend reads the chat's history from the
@@ -1596,6 +1599,28 @@ export default function ChatPanel(props: ChatProps) {
       setStatus(undefined);
     };
 
+    /*
+     * Output that stops mid-reply. Some providers send a tool call only once
+     * it's complete, so while the model writes a whole file nothing arrives
+     * and the chat looked finished after "Let me fix the test file:". Say
+     * it's still going, with the time since the last output.
+     */
+    let lastOutputAt = Date.now();
+    let idleShown = false;
+    const noteOutput = () => {
+      lastOutputAt = Date.now();
+      if (idleShown) {
+        idleShown = false;
+        setStatus(undefined);
+      }
+    };
+    const idleTimer = window.setInterval(() => {
+      if (!gotOutput || idleShown || stopRequested || detached) return;
+      if (Date.now() - lastOutputAt < REPLY_IDLE_MS) return;
+      idleShown = true;
+      setStatus({ text: 'Still generating', since: lastOutputAt });
+    }, 500);
+
     // One store update per animation frame, and a checkpoint every couple
     // of seconds so a crash mid-reply loses little.
     const flushAssistantText = () => {
@@ -1613,6 +1638,7 @@ export default function ChatPanel(props: ChatProps) {
 
     channel.onmessage = (event) => {
       if (!isMounted || detached) return;
+      if (event.type === 'Delta' || event.type.startsWith('ToolCall')) noteOutput();
 
       switch (event.type) {
         case 'Delta':
@@ -1738,6 +1764,7 @@ export default function ChatPanel(props: ChatProps) {
       };
     } finally {
       window.clearTimeout(waitingTimer);
+      window.clearInterval(idleTimer);
       if (abandonCurrent === abandon) abandonCurrent = null;
       if (currentPending?.messageId === pendingMsg.id) currentPending = null;
       if (currentRequestId === requestId) currentRequestId = null;
@@ -2108,7 +2135,7 @@ export default function ChatPanel(props: ChatProps) {
       // The file before a write, so the guard can tell an edit undoing earlier ones.
       const writePath = writes ? toolArg(args, 'path') : undefined;
       const before =
-        guard && writePath && root
+        writePath && root
           ? await readFileContent(toAbsolutePath(writePath, root)).catch(() => null)
           : null;
       const result = refusal
@@ -2116,11 +2143,19 @@ export default function ChatPanel(props: ChatProps) {
         : await executeAgentTool(root, toolName, args);
       if (resultNote && !result.content.startsWith('Error:')) result.content += resultNote;
 
+      const writeFailed = result.content.startsWith('Error:');
+      const after =
+        result.written?.content ??
+        (toolName === 'write_file' ? toolArg(args, 'content') : undefined);
+      // An edit the user didn't review shows in the editor until they save.
+      if (writes && !writeFailed && writePath && root && after !== undefined) {
+        if (approval?.by !== 'user') {
+          recordAgentEdit(toAbsolutePath(writePath, root), before, after);
+        }
+      }
+
       if (guard) {
-        const failed = result.content.startsWith('Error:');
-        const after =
-          result.written?.content ??
-          (toolName === 'write_file' ? toolArg(args, 'content') : undefined);
+        const failed = writeFailed;
         const verdict = guard.record({
           name: tc.name,
           argsJson: tc.arguments,

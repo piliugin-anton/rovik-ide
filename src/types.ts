@@ -229,6 +229,8 @@ export interface MessageStatus {
   text: string;
   /** Show a countdown to this time (epoch ms). */
   until?: number;
+  /** Show the time elapsed since this (epoch ms). */
+  since?: number;
 }
 
 /** A chat as listed: metadata only, no messages. */

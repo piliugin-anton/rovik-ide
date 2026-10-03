@@ -9,6 +9,7 @@ import StaticCodeBlock from './StaticCodeBlock';
 import EditDiffBlock from './EditDiffBlock';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
+import { diffRows, snippetLines } from '../lib/lineDiff';
 import { describeToolCall } from '../lib/permissions';
 import { requestOpenFile } from '../lib/editorBridge';
 import {
@@ -89,6 +90,18 @@ function parseArgsLenient(raw: string): Args {
         out[key] = Number(num);
       }
     }
+    // A string still arriving (a file's content as it's written): what
+    // there is so far, so the header can count its lines while it streams.
+    const open = /"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*\\?)$/.exec(trimmed);
+    if (open && !(open[1] in out)) {
+      // Drop a half-received escape at the end ("\", "\u00").
+      const raw = open[2].replace(/\\(u[0-9a-fA-F]{0,3})?$/, '');
+      try {
+        out[open[1]] = JSON.parse(`"${raw}"`);
+      } catch {
+        out[open[1]] = raw;
+      }
+    }
     return out;
   }
 }
@@ -127,6 +140,8 @@ interface Summary {
   title: string;
   /** Secondary, muted detail, e.g. "120 lines". */
   meta?: string;
+  /** Lines added and removed (edits), shown green and red. */
+  counts?: { added: number; removed: number };
 }
 
 /**
@@ -190,20 +205,25 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       const range = start !== undefined ? `only lines ${start}–${end}` : undefined;
       const oldText = str(args.old_text);
       const newText = str(args.new_text);
-      const change =
-        oldText !== undefined && newText !== undefined
-          ? `−${countLines(oldText)} +${countLines(newText)}`
-          : undefined;
-      return { title, meta: [range, change].filter(Boolean).join(', ') || undefined };
+      // The same line diff as the expanded view (EditDiffBlock), once the
+      // arguments are complete: an edited line counts as one removed and one added.
+      let counts: Summary['counts'];
+      if (!active && oldText !== undefined && newText !== undefined) {
+        const rows = diffRows(snippetLines(oldText), snippetLines(newText));
+        counts = {
+          added: rows.filter((r) => r.kind === 'added').length,
+          removed: rows.filter((r) => r.kind === 'removed').length,
+        };
+      }
+      return { title, meta: range, counts };
     }
 
     case 'write_file': {
       const title = `${active ? 'Writing' : 'Wrote'} ${path ?? 'file'}`;
       const content = str(args.content);
-      return {
-        title,
-        meta: content !== undefined ? plural(countLines(content), 'line') : undefined,
-      };
+      if (content === undefined) return { title };
+      const lines = plural(countLines(content), 'line');
+      return { title, meta: active ? `${lines} so far` : lines };
     }
 
     case 'run_command': {
@@ -471,6 +491,17 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
         <span class="tool-call-title">{summary().title}</span>
         <Show when={meta()}>
           <span class="tool-call-meta">{meta()}</span>
+        </Show>
+        <Show when={!request() && status() !== 'error' && summary().counts}>
+          {(counts) => (
+            <span
+              class="tool-call-counts"
+              title={`${counts().added} lines added, ${counts().removed} removed`}
+            >
+              <span class="added">+{counts().added}</span>
+              <span class="removed">−{counts().removed}</span>
+            </span>
+          )}
         </Show>
         <Show when={status() === 'running' && !request()}>
           <span class="tool-call-spinner" aria-label="Running" />

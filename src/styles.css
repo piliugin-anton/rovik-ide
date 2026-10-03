@@ -600,19 +600,30 @@ body {
   gap: 8px;
 }
 
-/* Sticky inside the scroll container, so it floats at the bottom edge of
-   the visible area without needing a positioned wrapper. */
+/* The scroll container's frame: the jump button is placed against it, so
+   it stays put whatever the content does. */
+.chat-messages-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Always bottom center of the visible list. It used to be sticky inside
+   the scrolling content, so it sat right after the last message whenever
+   that ended above the bottom edge (e.g. after collapsing a tool block). */
 .chat-jump-latest {
-  position: sticky;
-  bottom: 4px;
-  align-self: center;
-  flex-shrink: 0;
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 28px;
   height: 28px;
-  margin-top: -36px; /* don't add height to the list */
   padding: 0;
   background: var(--bg-control);
   color: var(--fg);
@@ -915,6 +926,12 @@ body {
 
 .chat-pending {
   color: var(--fg-dim);
+}
+
+/* "Still generating… 12 s" under a reply that paused mid-way. */
+.chat-working {
+  padding: 0 8px;
+  font-size: 12px;
 }
 
 .chat-error {
@@ -2320,6 +2337,24 @@ body {
   flex: 0 0 auto;
   color: var(--fg-dim);
   white-space: nowrap;
+}
+
+.tool-call-counts {
+  display: inline-flex;
+  flex: 0 0 auto;
+  /* At the right end of the header. */
+  margin-left: auto;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tool-call-counts .added {
+  color: var(--diff-added-strong);
+}
+
+.tool-call-counts .removed {
+  color: var(--diff-deleted-strong);
 }
 
 .tool-call.not-run .tool-call-title {
@@ -3871,4 +3906,24 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   .chat-context-fill {
     transition: none;
   }
+}
+
+/* The agent's unreviewed edits in the editor (Editor.tsx), until saved */
+
+.monaco-editor .agent-change-line {
+  background: color-mix(in srgb, var(--diff-added-bg) 70%, transparent);
+}
+
+.monaco-editor .agent-change-gutter {
+  width: 3px !important;
+  margin-left: 3px;
+  background: var(--diff-added-strong);
+}
+
+.monaco-editor .agent-change-removed-above {
+  box-shadow: inset 0 2px 0 var(--diff-deleted-strong);
+}
+
+.monaco-editor .agent-change-removed-below {
+  box-shadow: inset 0 -2px 0 var(--diff-deleted-strong);
 }

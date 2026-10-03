@@ -48,6 +48,7 @@ import { ConfirmDialogHost } from './components/ConfirmDialog';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { onFileWritten, onRevealEdit } from './lib/approvals';
 import { onAddToChat, onOpenFileRequest } from './lib/editorBridge';
+import { clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
 
 let unlistenFSChanges: (() => void) | undefined;
@@ -204,11 +205,13 @@ export default function App() {
     }
   }
 
-  async function openFile(row: TreeRow) {
+  /** `activate: false` opens it in a tab without switching to it. */
+  async function openFile(row: TreeRow, opts: { activate?: boolean } = {}) {
+    const activate = opts.activate ?? true;
     // By path too: a file opened from search results may carry a different id.
     const existing = openFiles().find((f) => f.id === row.id || f.path === row.path);
     if (existing) {
-      setActivePath(existing.path);
+      if (activate) setActivePath(existing.path);
       return;
     }
     if (isLikelyBinary(row.name)) {
@@ -227,15 +230,15 @@ export default function App() {
         language: languageForFile(row.name),
       };
       setOpenFiles((prev) => [...prev, file]);
-      setActivePath(row.path);
+      if (activate) setActivePath(row.path);
     } catch (err) {
       console.error(`Failed to open ${row.path}:`, err);
-      window.alert(String(err));
+      if (activate) window.alert(String(err));
     }
   }
 
   /** Opens a file by absolute path (e.g. an agent edit to review). */
-  async function openPath(path: string) {
+  async function openPath(path: string, opts: { activate?: boolean } = {}) {
     const sep = path.includes('\\') && !path.includes('/') ? '\\' : '/';
     const name = path.split(sep).pop() ?? path;
     const row: TreeRow = tree.files().find((r) => r.path === path) ?? {
@@ -245,7 +248,7 @@ export default function App() {
       isDir: false,
       depth: 0,
     };
-    await openFile(row);
+    await openFile(row, opts);
   }
 
   // The agent's edits: open files to review them, and refresh open tabs
@@ -258,6 +261,22 @@ export default function App() {
       )
     )
   );
+  // An unreviewed agent edit: its file opens in a tab so the changes can be
+  // seen. In the background while another file is being worked on, so a
+  // long run doesn't keep switching tabs; focused when nothing else is open.
+  const stopAgentEdits = onAgentEdit((path) => {
+    const open = openFiles().find((f) => f.path === path);
+    // The tab has unsaved edits of the user's: it keeps them and doesn't
+    // show the agent's version, so the highlights would point at the wrong
+    // lines. Drop them rather than show them wrong.
+    if (open?.dirty) {
+      clearAgentChanges(path);
+      return;
+    }
+    if (open) return;
+    void openPath(path, { activate: activePath() === null });
+  });
+
   // "Open in editor" on a read_file result: open the file with the line
   // that was read from centered.
   const stopOpenRequests = onOpenFileRequest(({ path, line }) => {
@@ -272,6 +291,7 @@ export default function App() {
     stopWritten();
     stopOpenRequests();
     stopAddToChat();
+    stopAgentEdits();
   });
 
   async function openPathAtLine(path: string, line: number) {
@@ -332,6 +352,8 @@ export default function App() {
             : f
         )
       );
+      // Saved: the user has seen the agent's changes in it.
+      clearAgentChanges(file.path);
       // Show it in the tree right away, without waiting for the watcher
       // (which can miss files written into a just-created folder).
       if (file.deleted) tree.refreshAncestors(file.path);

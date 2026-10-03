@@ -106,6 +106,10 @@ export default function MessageList(props: {
   const statusText = (m: ChatMessage) => {
     const status = m.status;
     if (!status) return 'Thinking...';
+    if (status.since) {
+      const elapsed = now() - status.since;
+      return elapsed >= 1000 ? `${status.text}… ${formatDuration(elapsed)}` : `${status.text}…`;
+    }
     if (!status.until) return status.text;
     const left = status.until - now();
     return left > 500 ? `${status.text} in ${formatDuration(left)}…` : `${status.text}…`;
@@ -432,186 +436,199 @@ export default function MessageList(props: {
   );
 
   return (
-    <div
-      ref={scrollRef}
-      class="chat-messages"
-      onScroll={handleScroll}
-      onWheel={handleWheel}
-      onTouchMove={markUserInput}
-      onKeyDown={markUserInput}
-      onPointerDown={handlePointerDown}
-    >
-      <div ref={topSentinel} class="chat-sentinel" aria-hidden="true" />
-      {/* Overlaid, not in the flow: showing and hiding it used to push the
+    <div class="chat-messages-frame">
+      <div
+        ref={scrollRef}
+        class="chat-messages"
+        onScroll={handleScroll}
+        onWheel={handleWheel}
+        onTouchMove={markUserInput}
+        onKeyDown={markUserInput}
+        onPointerDown={handlePointerDown}
+      >
+        <div ref={topSentinel} class="chat-sentinel" aria-hidden="true" />
+        {/* Overlaid, not in the flow: showing and hiding it used to push the
           whole list down and back up by its height on every page load. */}
-      <Show when={props.chat?.loadingOlder}>
-        <div class="chat-loading-older" role="status">
-          <span>Loading earlier messages…</span>
-        </div>
-      </Show>
+        <Show when={props.chat?.loadingOlder}>
+          <div class="chat-loading-older" role="status">
+            <span>Loading earlier messages…</span>
+          </div>
+        </Show>
 
-      <div ref={innerRef} class="chat-messages-inner">
-        <For each={visible()} fallback={<div class="empty-state">Ask the model anything</div>}>
-          {(m) => (
-            <div
-              ref={trackItem}
-              class="chat-item"
-              classList={{ flash: flashId() === m.id }}
-              data-id={m.id}
-            >
-              <Show when={m.pending && m.content.length === 0 && !m.toolCalls?.length}>
-                <div class="chat-message assistant">
-                  <span class="chat-pending" classList={{ status: !!m.status }} role="status">
+        <div ref={innerRef} class="chat-messages-inner">
+          <For each={visible()} fallback={<div class="empty-state">Ask the model anything</div>}>
+            {(m) => (
+              <div
+                ref={trackItem}
+                class="chat-item"
+                classList={{ flash: flashId() === m.id }}
+                data-id={m.id}
+              >
+                <Show when={m.pending && m.content.length === 0 && !m.toolCalls?.length}>
+                  <div class="chat-message assistant">
+                    <span class="chat-pending" classList={{ status: !!m.status }} role="status">
+                      {statusText(m)}
+                    </span>
+                  </div>
+                </Show>
+
+                <Show when={m.error}>
+                  <div
+                    class="chat-message chat-failure"
+                    classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
+                  >
+                    <span class="chat-error">
+                      {m.meta?.failure ? describeFailure(m.meta.failure, now()) : m.error}
+                    </span>
+                    <div class="chat-failure-actions">
+                      <Show
+                        when={
+                          m.meta?.failure &&
+                          canRetry(m.meta.failure) &&
+                          isLatest(m) &&
+                          !requestUndelivered()
+                        }
+                      >
+                        <button
+                          type="button"
+                          class="chat-action-button"
+                          onClick={() => props.onRetry()}
+                        >
+                          Retry
+                        </button>
+                      </Show>
+                      <Show when={m.meta?.failure?.details}>
+                        <button
+                          type="button"
+                          class="link-button"
+                          aria-expanded={openDetails() === m.id}
+                          onClick={() => setOpenDetails((id) => (id === m.id ? null : m.id))}
+                        >
+                          {openDetails() === m.id ? 'Hide details' : 'Details'}
+                        </button>
+                      </Show>
+                    </div>
+                    <Show when={openDetails() === m.id}>
+                      <pre class="chat-failure-details">{m.meta?.failure?.details}</pre>
+                    </Show>
+                  </div>
+                </Show>
+
+                {/* The IDE's messages to the model (check failures) show as the
+                  verification record instead. */}
+                <Show when={!m.error && !isBlank(m.content) && !m.meta?.harness}>
+                  <div
+                    class="chat-message"
+                    classList={{
+                      user: m.role === 'user',
+                      assistant: m.role === 'assistant',
+                      failed: !!m.failed,
+                    }}
+                    title={m.failed ? 'Not delivered: text was put back into the input' : undefined}
+                  >
+                    <MessageContent content={m.content} streaming={!!m.pending} />
+                  </div>
+                </Show>
+
+                {/* The reply stopped arriving but isn't over (see REPLY_IDLE_MS). */}
+                <Show when={m.pending && m.status && (m.content.length > 0 || m.toolCalls?.length)}>
+                  <span
+                    class="chat-pending status chat-working"
+                    role="status"
+                    title="The model is still working. Some providers send a tool call, such as a file being written, only once it's complete."
+                  >
                     {statusText(m)}
                   </span>
-                </div>
-              </Show>
+                </Show>
 
-              <Show when={m.error}>
-                <div
-                  class="chat-message chat-failure"
-                  classList={{ user: m.role === 'user', assistant: m.role === 'assistant' }}
-                >
-                  <span class="chat-error">
-                    {m.meta?.failure ? describeFailure(m.meta.failure, now()) : m.error}
-                  </span>
-                  <div class="chat-failure-actions">
-                    <Show
-                      when={
-                        m.meta?.failure &&
-                        canRetry(m.meta.failure) &&
-                        isLatest(m) &&
-                        !requestUndelivered()
-                      }
+                <Show when={m.meta?.interrupted}>
+                  {(interrupted) => (
+                    <div class="chat-interrupted">
+                      <span>Reply interrupted. {describeFailure(interrupted(), now())}</span>
+                      <Show when={isLatest(m)}>
+                        <button
+                          type="button"
+                          class="chat-action-button"
+                          onClick={() => props.onContinue()}
+                        >
+                          Continue
+                        </button>
+                      </Show>
+                    </div>
+                  )}
+                </Show>
+
+                <Show when={m.meta?.paused}>
+                  {(paused) => (
+                    <div
+                      class="chat-paused"
+                      classList={{ loop: paused().kind === 'loop' }}
+                      role="status"
                     >
-                      <button
-                        type="button"
-                        class="chat-action-button"
-                        onClick={() => props.onRetry()}
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                        aria-hidden="true"
                       >
-                        Retry
-                      </button>
-                    </Show>
-                    <Show when={m.meta?.failure?.details}>
-                      <button
-                        type="button"
-                        class="link-button"
-                        aria-expanded={openDetails() === m.id}
-                        onClick={() => setOpenDetails((id) => (id === m.id ? null : m.id))}
-                      >
-                        {openDetails() === m.id ? 'Hide details' : 'Details'}
-                      </button>
-                    </Show>
+                        <circle cx="8" cy="8" r="6" />
+                        <path d="M6.5 5.75v4.5M9.5 5.75v4.5" />
+                      </svg>
+                      <span class="chat-paused-text">
+                        {paused().kind === 'checkpoint'
+                          ? `Paused after ${paused().toolCalls} tool calls.`
+                          : `Paused after ${paused().toolCalls} tool calls: the agent seems stuck, ${paused().reason}.`}
+                      </span>
+                      <Show when={isLatest(m)}>
+                        <button
+                          type="button"
+                          class="chat-action-button"
+                          onClick={() => props.onContinueRun()}
+                        >
+                          Continue
+                        </button>
+                      </Show>
+                    </div>
+                  )}
+                </Show>
+
+                <Show when={m.meta?.verification}>
+                  {(v) => (
+                    <VerificationRecord
+                      meta={v()}
+                      latest={isLatest(m)}
+                      live={props.sending && messages()[messages().length - 1]?.id === m.id}
+                      onRunChecks={() => props.onRunChecks()}
+                      onOpenProjectChecks={() => props.onOpenProjectChecks()}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.toolCalls && m.toolCalls.length > 0}>
+                  <div class="message-tools">
+                    <For each={m.toolCalls!}>
+                      {(tc) => (
+                        <ToolCallBlock
+                          toolCall={tc}
+                          result={toolResults().get(tc.id)}
+                          running={props.sending}
+                          note={props.toolNotes?.[tc.id]}
+                        />
+                      )}
+                    </For>
                   </div>
-                  <Show when={openDetails() === m.id}>
-                    <pre class="chat-failure-details">{m.meta?.failure?.details}</pre>
-                  </Show>
-                </div>
-              </Show>
+                </Show>
+              </div>
+            )}
+          </For>
+        </div>
 
-              {/* The IDE's messages to the model (check failures) show as the
-                  verification record instead. */}
-              <Show when={!m.error && !isBlank(m.content) && !m.meta?.harness}>
-                <div
-                  class="chat-message"
-                  classList={{
-                    user: m.role === 'user',
-                    assistant: m.role === 'assistant',
-                    failed: !!m.failed,
-                  }}
-                  title={m.failed ? 'Not delivered: text was put back into the input' : undefined}
-                >
-                  <MessageContent content={m.content} streaming={!!m.pending} />
-                </div>
-              </Show>
-
-              <Show when={m.meta?.interrupted}>
-                {(interrupted) => (
-                  <div class="chat-interrupted">
-                    <span>Reply interrupted. {describeFailure(interrupted(), now())}</span>
-                    <Show when={isLatest(m)}>
-                      <button
-                        type="button"
-                        class="chat-action-button"
-                        onClick={() => props.onContinue()}
-                      >
-                        Continue
-                      </button>
-                    </Show>
-                  </div>
-                )}
-              </Show>
-
-              <Show when={m.meta?.paused}>
-                {(paused) => (
-                  <div
-                    class="chat-paused"
-                    classList={{ loop: paused().kind === 'loop' }}
-                    role="status"
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                      stroke-linecap="round"
-                      aria-hidden="true"
-                    >
-                      <circle cx="8" cy="8" r="6" />
-                      <path d="M6.5 5.75v4.5M9.5 5.75v4.5" />
-                    </svg>
-                    <span class="chat-paused-text">
-                      {paused().kind === 'checkpoint'
-                        ? `Paused after ${paused().toolCalls} tool calls.`
-                        : `Paused after ${paused().toolCalls} tool calls: the agent seems stuck, ${paused().reason}.`}
-                    </span>
-                    <Show when={isLatest(m)}>
-                      <button
-                        type="button"
-                        class="chat-action-button"
-                        onClick={() => props.onContinueRun()}
-                      >
-                        Continue
-                      </button>
-                    </Show>
-                  </div>
-                )}
-              </Show>
-
-              <Show when={m.meta?.verification}>
-                {(v) => (
-                  <VerificationRecord
-                    meta={v()}
-                    latest={isLatest(m)}
-                    live={props.sending && messages()[messages().length - 1]?.id === m.id}
-                    onRunChecks={() => props.onRunChecks()}
-                    onOpenProjectChecks={() => props.onOpenProjectChecks()}
-                  />
-                )}
-              </Show>
-
-              <Show when={m.toolCalls && m.toolCalls.length > 0}>
-                <div class="message-tools">
-                  <For each={m.toolCalls!}>
-                    {(tc) => (
-                      <ToolCallBlock
-                        toolCall={tc}
-                        result={toolResults().get(tc.id)}
-                        running={props.sending}
-                        note={props.toolNotes?.[tc.id]}
-                      />
-                    )}
-                  </For>
-                </div>
-              </Show>
-            </div>
-          )}
-        </For>
+        <div ref={bottomSentinel} class="chat-sentinel" aria-hidden="true" />
       </div>
-
-      <div ref={bottomSentinel} class="chat-sentinel" aria-hidden="true" />
 
       <Show when={!stick() && messages().length > 0}>
         <button

@@ -6,6 +6,7 @@ import type { CursorInfo } from '../lib/activeContext';
 import { selectedLines } from '../lib/activeContext';
 import { selectionReference } from '../lib/fileReferences';
 import { addToChat } from '../lib/editorBridge';
+import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
 import { invoke } from '@tauri-apps/api/core';
 import { pendingEditFor } from '../lib/approvals';
 import {
@@ -220,6 +221,34 @@ export default function Editor(props: EditorProps) {
       }
     });
 
+    /*
+     * The agent's unreviewed edits (lib/agentChanges.ts): added and changed
+     * lines green, removed lines a red mark where they were. Drawn once
+     * the editor shows exactly what the agent wrote; after that Monaco keeps
+     * them on their lines as the user types. Cleared when the file is saved.
+     */
+    let agentMarks: monaco.editor.IEditorDecorationsCollection | undefined;
+    let drawnFor: AgentChange | undefined;
+    createEffect(() => {
+      const change = agentChangesFor(props.currentFilePath);
+      props.content(); // re-checked once the new content is in the editor
+      const ed = editor;
+      const model = ed?.getModel();
+      if (!ed || !model) return;
+      if (!change) {
+        agentMarks?.clear();
+        drawnFor = undefined;
+        return;
+      }
+      if (change === drawnFor) return;
+      const sameText = (a: string) => a.replace(/\r\n/g, '\n');
+      if (sameText(model.getValue()) !== sameText(change.current)) return;
+      agentMarks?.clear();
+      agentMarks = ed.createDecorationsCollection(agentChangeDecorations(change, model));
+      drawnFor = change;
+    });
+    onCleanup(() => agentMarks?.clear());
+
     // Load typings in the background - never block editor creation on it.
     void loadProjectTypings(props.projectDir());
   });
@@ -370,6 +399,64 @@ function mountAddToChat(
       editor.removeContentWidget(widget);
     },
   };
+}
+
+/** Decorations for the agent's changes, on the lines of the file as it is now. */
+function agentChangeDecorations(
+  change: AgentChange,
+  model: monaco.editor.ITextModel
+): monaco.editor.IModelDeltaDecoration[] {
+  const lineCount = model.getLineCount();
+  const out: monaco.editor.IModelDeltaDecoration[] = [];
+  const plural = (n: number) => `${n} line${n === 1 ? '' : 's'}`;
+  // Hunks count lines of the old text; `shift` maps them onto the new one.
+  let shift = 0;
+  for (const hunk of change.hunks) {
+    const start = hunk.origStart + shift;
+    if (hunk.added.length > 0) {
+      const first = Math.min(start, lineCount);
+      const last = Math.min(start + hunk.added.length - 1, lineCount);
+      out.push({
+        range: new monaco.Range(first, 1, last, 1),
+        options: {
+          isWholeLine: true,
+          className: 'agent-change-line',
+          linesDecorationsClassName: 'agent-change-gutter',
+          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+          overviewRuler: {
+            color: '#9bb955',
+            position: monaco.editor.OverviewRulerLane.Left,
+          },
+          hoverMessage: {
+            // A new file diffs as "one empty line replaced": that's an addition.
+            value:
+              hunk.deleted.length > 0 && hunk.deleted.join('') !== ''
+                ? `Changed by the agent (was ${plural(hunk.deleted.length)})`
+                : `Added by the agent`,
+          },
+        },
+      });
+    } else if (hunk.deleted.length > 0) {
+      // Nothing left to color: a red line where the text was.
+      const atEnd = start > lineCount;
+      const line = Math.max(1, Math.min(start, lineCount));
+      out.push({
+        range: new monaco.Range(line, 1, line, 1),
+        options: {
+          isWholeLine: true,
+          className: atEnd ? 'agent-change-removed-below' : 'agent-change-removed-above',
+          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+          overviewRuler: {
+            color: '#e06c75',
+            position: monaco.editor.OverviewRulerLane.Left,
+          },
+          hoverMessage: { value: `${plural(hunk.deleted.length)} removed by the agent` },
+        },
+      });
+    }
+    shift += hunk.added.length - hunk.deleted.length;
+  }
+  return out;
 }
 
 async function loadProjectTypings(projectRoot: string | null): Promise<void> {
