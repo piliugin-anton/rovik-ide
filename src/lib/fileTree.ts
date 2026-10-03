@@ -65,8 +65,17 @@ export function createFileTreeController(rootPath: () => string | null) {
         next.set(path, entries);
         return next;
       });
+      // Expanded subfolders that aren't in the listing any more were deleted
+      // or renamed: forget them, so they aren't read (and fail) later.
+      const present = new Set(entries.filter((e) => e.is_dir).map((e) => e.path));
+      const gone = [...expanded()].filter((p) => parentOf(p) === path && !present.has(p));
+      for (const p of gone) forget(p);
     } catch (err) {
-      console.error(`Failed to read directory ${path}:`, err);
+      // Usually deleted since it was expanded (or since the expansion state
+      // was saved). Forget it: the effect below retries every expanded
+      // folder that isn't cached, so keeping it would retry forever.
+      console.warn(`Can't read ${path}, collapsing it:`, err);
+      forget(path);
     } finally {
       setLoading((prev) => {
         const next = new Set(prev);
@@ -127,6 +136,33 @@ export function createFileTreeController(rootPath: () => string | null) {
       }
       return next;
     });
+  }
+
+  /** Whether `path` is `base` or inside it. */
+  function isAtOrUnder(path: string, base: string) {
+    if (path === base) return true;
+    const trimmed = base.replace(/[\\/]+$/, '');
+    return path.startsWith(`${trimmed}/`) || path.startsWith(`${trimmed}\\`);
+  }
+
+  /** Drops a folder and everything under it from the expanded set and the cache. */
+  function forget(path: string) {
+    if (path === rootPath()) return; // the root is never collapsed
+    setExpanded((prev) => {
+      const doomed = [...prev].filter((p) => isAtOrUnder(p, path));
+      if (doomed.length === 0) return prev;
+      const next = new Set(prev);
+      for (const p of doomed) next.delete(p);
+      return next;
+    });
+    setCache((prev) => {
+      const doomed = [...prev.keys()].filter((p) => isAtOrUnder(p, path));
+      if (doomed.length === 0) return prev;
+      const next = new Map(prev);
+      for (const p of doomed) next.delete(p);
+      return next;
+    });
+    reloadQueued.delete(path);
   }
 
   // path.dirname-equivalent for both '/' and '\' separators, since Tauri
