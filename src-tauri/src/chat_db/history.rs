@@ -8,6 +8,18 @@
 //!     from its result; the first kept user message says so.
 //!  3. As a last resort, earlier tool results in the current request are
 //!     cut, keeping the latest one whole.
+//!
+//! Before any of that, once the history passes COMPACT_AT of the budget,
+//! content that later events made out of date is compacted (`compact`): a
+//! file read since re-read or edited, a command run again, an earlier
+//! round of check failures, old write_file contents. Most of it can be
+//! fetched again, so this costs the model little. It works in batches of
+//! tool results, so the start of the history stays the same between steps
+//! and providers' prompt caches keep working.
+//!
+//! "The current request" starts at the user's latest message. Messages the
+//! IDE adds in the user role (check failures, `harness` in their meta) are
+//! part of the run, not new requests: the user's request is never dropped.
 //! Only the copy sent to the model is trimmed; stored messages are untouched.
 
 use super::attachments;
@@ -44,27 +56,52 @@ pub struct Msg {
     pub tool_calls: Option<Vec<ToolCall>>,
     pub tool_call_id: Option<String>,
     pub attachments: Vec<String>,
+    /// Written by the IDE in the user role (check failures), not by the user.
+    pub harness: bool,
 }
 
-/// Deliberately pessimistic (~3 characters per token): prose is closer to
-/// 4, code and Cyrillic to 2-3, so this errs towards sending less.
-fn text_tokens(chars: usize) -> usize {
-    chars.div_ceil(3)
+/// Characters per token when nothing better is known. Deliberately
+/// pessimistic: prose is closer to 4, code and Cyrillic to 2-3. Once a
+/// provider reports real token counts, a per-model value is learned
+/// (agent.rs) and passed in instead.
+pub const DEFAULT_CHARS_PER_TOKEN: f64 = 3.0;
+
+/// How token counts are estimated for one request.
+#[derive(Clone, Copy, Debug)]
+pub struct Cost {
+    pub vision: bool,
+    pub chars_per_token: f64,
 }
 
-fn estimate(m: &Msg, vision: bool) -> usize {
-    let mut tokens = MESSAGE_OVERHEAD + text_tokens(m.full_chars);
-    for call in m.tool_calls.iter().flatten() {
-        tokens += text_tokens(call.name.chars().count() + call.arguments.chars().count());
+impl Cost {
+    pub fn tokens(&self, chars: usize) -> usize {
+        (chars as f64 / self.chars_per_token.max(1.0)).ceil() as usize
     }
-    if vision {
-        tokens += m.attachments.len() * IMAGE_TOKENS;
+}
+
+fn estimate(m: &Msg, cost: Cost) -> usize {
+    let mut tokens = MESSAGE_OVERHEAD + cost.tokens(m.full_chars);
+    for call in m.tool_calls.iter().flatten() {
+        tokens += cost.tokens(call.name.chars().count() + call.arguments.chars().count());
     }
     tokens
 }
 
-fn total(messages: &[Msg], vision: bool) -> usize {
-    messages.iter().map(|m| estimate(m, vision)).sum()
+/// Images count only for the messages to_wire actually attaches them to
+/// (the last MAX_IMAGES): older screenshots are sent as a note.
+fn total(messages: &[Msg], cost: Cost) -> usize {
+    let text: usize = messages.iter().map(|m| estimate(m, cost)).sum();
+    if !cost.vision {
+        return text;
+    }
+    let images: usize = messages
+        .iter()
+        .rev()
+        .filter(|m| !m.attachments.is_empty())
+        .take(MAX_IMAGES)
+        .map(|m| m.attachments.len())
+        .sum();
+    text + images * IMAGE_TOKENS
 }
 
 fn truncate_tool_result(m: &mut Msg) {
@@ -93,16 +130,254 @@ pub struct FitInfo {
     pub trimmed: bool,
     pub dropped_turns: usize,
     pub estimated_tokens: usize,
+    /// The whole history, before anything was compacted or trimmed.
+    pub full_tokens: usize,
+    /// Messages compacted because later ones made them out of date.
+    pub compacted: usize,
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Compaction: content later events made out of date
+ * ---------------------------------------------------------------------------
+ */
+
+/// Compaction starts once the history passes this share of the budget, not
+/// at the limit: models get worse with long contexts well before they're full.
+const COMPACT_AT: f64 = 0.75;
+/// The newest tool results are never compacted: the model is working with them.
+const KEEP_RECENT_RESULTS: usize = 8;
+/// Older results become compactable this many at a time, so the start of the
+/// history changes only every few steps (providers cache the prompt prefix).
+const COMPACT_BATCH: usize = 8;
+/// Listings and page text keep this much when compacted.
+const LISTING_KEEP_CHARS: usize = 600;
+/// write_file / edit_file arguments longer than this are compacted.
+const ARGS_KEEP_CHARS: usize = 300;
+
+/// What one finished tool call did, for the supersession rules.
+struct Event {
+    /// Index of its result in the messages.
+    at: usize,
+    name: String,
+    path: Option<String>,
+    range: Option<(u64, u64)>,
+    command: Option<String>,
+    ok: bool,
+}
+
+fn norm_path(p: &str) -> String {
+    p.trim().trim_start_matches("./").replace('\\', "/")
+}
+
+fn line_arg(args: &Value, key: &str) -> Option<u64> {
+    match args.get(key)? {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// Whether a later read of a file (`later`, None = the whole file) covers an
+/// earlier one (`earlier`).
+fn covers(later: Option<(u64, u64)>, earlier: Option<(u64, u64)>) -> bool {
+    match (later, earlier) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some((ls, le)), Some((es, ee))) => ls <= es && le >= ee,
+    }
+}
+
+fn replace_text(m: &mut Msg, text: String) {
+    m.full_chars = text.chars().count();
+    m.text = text;
+    m.needs_body = false;
+}
+
+/// Shortens a call's string argument in place; the arguments stay valid JSON.
+fn shorten_arg(args: &mut Value, key: &str, what: &str) -> bool {
+    let Some(text) = args.get(key).and_then(|v| v.as_str()) else { return false };
+    if text.chars().count() <= ARGS_KEEP_CHARS {
+        return false;
+    }
+    let lines = text.lines().count();
+    args[key] = json!(format!("[{lines} lines {what}; left out of this history]"));
+    true
+}
+
+/// Compacts out-of-date content in place; returns how many messages changed.
+/// Results of the newest tool calls are left alone; the rest become
+/// compactable in batches (see COMPACT_BATCH).
+fn compact(messages: &mut [Msg]) -> usize {
+    // Each call's name and arguments, by id.
+    let mut calls: std::collections::HashMap<String, (String, Value)> = Default::default();
+    for m in messages.iter() {
+        for c in m.tool_calls.iter().flatten() {
+            let args = serde_json::from_str(&c.arguments).unwrap_or(Value::Null);
+            calls.insert(c.id.clone(), (c.name.clone(), args));
+        }
+    }
+    let events: Vec<Event> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == "tool")
+        .filter_map(|(at, m)| {
+            let (name, args) = calls.get(m.tool_call_id.as_ref()?)?;
+            let start = line_arg(args, "start_line");
+            let end = line_arg(args, "end_line");
+            Some(Event {
+                at,
+                name: name.clone(),
+                path: args.get("path").and_then(|p| p.as_str()).map(norm_path),
+                range: match (start, end) {
+                    (None, None) => None,
+                    (s, e) => Some((s.unwrap_or(1), e.unwrap_or(u64::MAX))),
+                },
+                command: args.get("command").and_then(|c| c.as_str()).map(|c| c.trim().to_string()),
+                ok: !m.text.starts_with("Error:"),
+            })
+        })
+        .collect();
+
+    let compactable = events.len().saturating_sub(KEEP_RECENT_RESULTS) / COMPACT_BATCH * COMPACT_BATCH;
+    // Messages before this index are old enough to compact.
+    let horizon = events.get(compactable).map_or(messages.len(), |e| e.at);
+    let mut changed = 0;
+
+    for (i, e) in events[..compactable].iter().enumerate() {
+        let later = &events[i + 1..];
+        let new_text = match e.name.as_str() {
+            // A read is out of date once the file was read again (covering
+            // it) or changed. Not before: it's what the model knows of it.
+            "read_file" if e.ok => {
+                let path = e.path.as_deref().unwrap_or_default();
+                let reread = later.iter().any(|l| {
+                    l.ok && l.name == "read_file" && l.path.as_deref() == Some(path) && covers(l.range, e.range)
+                });
+                let edited = later.iter().any(|l| {
+                    l.ok && (l.name == "edit_file" || l.name == "write_file") && l.path.as_deref() == Some(path)
+                });
+                let lines = e.range.map_or(String::new(), |(s, t)| {
+                    if t == u64::MAX { format!(" from line {s}") } else { format!(" lines {s}-{t}") }
+                });
+                (reread || edited).then(|| {
+                    format!(
+                        "[Read {path}{lines} here. Left out of this history: the file was {} later, so this copy is out of date. Read it again if you need it.]",
+                        if edited { "changed" } else { "read again" }
+                    )
+                })
+            }
+            // The same command ran again later: this run's output is history.
+            "run_command" => {
+                let cmd = e.command.as_deref().unwrap_or_default();
+                later
+                    .iter()
+                    .any(|l| l.name == "run_command" && l.command.as_deref() == Some(cmd))
+                    .then(|| {
+                        let head: Vec<&str> = messages[e.at].text.lines().take(2).collect();
+                        format!("{}\n[Output left out of this history: the same command ran again later.]", head.join("\n"))
+                    })
+            }
+            // Listings and pages can be fetched again; keep their start.
+            "search_code" | "list_dir" | "web_search" | "browse_url"
+                if messages[e.at].full_chars > LISTING_KEEP_CHARS * 2 && !messages[e.at].needs_body =>
+            {
+                Some(format!(
+                    "{}\n[Shortened in this history ({} characters). Run it again if you need the rest.]",
+                    char_prefix(&messages[e.at].text, LISTING_KEEP_CHARS),
+                    messages[e.at].full_chars
+                ))
+            }
+            _ => None,
+        };
+        if let Some(text) = new_text {
+            replace_text(&mut messages[e.at], text);
+            changed += 1;
+        }
+    }
+
+    // Old write_file / edit_file calls: the content they wrote is on disk
+    // (and its result says what changed), so the arguments needn't repeat it.
+    for m in messages[..horizon].iter_mut() {
+        let mut touched = false;
+        for c in m.tool_calls.iter_mut().flatten() {
+            let mut args: Value = match serde_json::from_str(&c.arguments) {
+                Ok(v @ Value::Object(_)) => v,
+                _ => continue,
+            };
+            let shortened = match c.name.as_str() {
+                "write_file" => shorten_arg(&mut args, "content", "written"),
+                "edit_file" => {
+                    let old = shorten_arg(&mut args, "old_text", "replaced");
+                    let new = shorten_arg(&mut args, "new_text", "written");
+                    old || new
+                }
+                _ => false,
+            };
+            if shortened {
+                c.arguments = args.to_string();
+                touched = true;
+            }
+        }
+        if touched {
+            changed += 1;
+        }
+    }
+
+    // Earlier rounds of check failures: the latest round is what counts.
+    let reports: Vec<usize> = (0..messages.len()).filter(|&i| messages[i].harness).collect();
+    if let Some((_, earlier)) = reports.split_last() {
+        for &i in earlier {
+            if messages[i].text.starts_with("[Earlier") {
+                continue;
+            }
+            let head = messages[i].text.lines().take(2).collect::<Vec<_>>().join("\n");
+            replace_text(
+                &mut messages[i],
+                format!("[Earlier round of checks, left out of this history; a later round follows.]\n{head}"),
+            );
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// A user message that starts a request (not one the IDE wrote).
+fn starts_request(m: &Msg) -> bool {
+    m.role == "user" && !m.harness
+}
+
+/// The budget rules with the default token estimate (tests).
+#[cfg(test)]
+pub fn fit(messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, FitInfo) {
+    fit_with(messages, budget, Cost { vision, chars_per_token: DEFAULT_CHARS_PER_TOKEN })
 }
 
 /// The budget rules on resolved-or-estimated messages (pure, unit-tested).
-pub fn fit(mut messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, FitInfo) {
-    let mut sum = total(&messages, vision);
+pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>, FitInfo) {
+    let full_tokens = total(&messages, cost);
+    let mut sum = full_tokens;
+    let mut compacted = 0;
+
+    // 0. Out-of-date content, once the history is getting long.
+    if sum as f64 > budget as f64 * COMPACT_AT {
+        compacted = compact(&mut messages);
+        if compacted > 0 {
+            sum = total(&messages, cost);
+        }
+    }
+    let info = |trimmed: bool, dropped_turns: usize, estimated_tokens: usize| FitInfo {
+        trimmed,
+        dropped_turns,
+        estimated_tokens,
+        full_tokens,
+        compacted,
+    };
     if sum <= budget {
-        return (messages, FitInfo { trimmed: false, dropped_turns: 0, estimated_tokens: sum });
+        return (messages, info(false, 0, sum));
     }
 
-    let mut current_start = messages.iter().rposition(|m| m.role == "user").unwrap_or(0);
+    let mut current_start = messages.iter().rposition(starts_request).unwrap_or(0);
 
     // 1. Shrink old tool results.
     for m in messages.iter_mut().take(current_start) {
@@ -110,14 +385,14 @@ pub fn fit(mut messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, Fi
             truncate_tool_result(m);
         }
     }
-    sum = total(&messages, vision);
+    sum = total(&messages, cost);
     if sum <= budget {
-        return (messages, FitInfo { trimmed: true, dropped_turns: 0, estimated_tokens: sum });
+        return (messages, info(true, 0, sum));
     }
 
     // 2. Drop the oldest whole turns.
     let turn_starts: Vec<usize> = (0..current_start)
-        .filter(|&i| i == 0 || messages[i].role == "user")
+        .filter(|&i| i == 0 || starts_request(&messages[i]))
         .collect();
     let mut cut = 0;
     let mut dropped = 0;
@@ -126,7 +401,7 @@ pub fn fit(mut messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, Fi
             break;
         }
         let next = turn_starts.get(t + 1).copied().unwrap_or(current_start);
-        sum -= total(&messages[start..next], vision);
+        sum -= total(&messages[start..next], cost);
         cut = next;
         dropped += 1;
     }
@@ -139,10 +414,10 @@ pub fn fit(mut messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, Fi
                 first.full_chars += OMITTED_NOTE.chars().count() + 2;
             }
         }
-        sum = total(&messages, vision);
+        sum = total(&messages, cost);
     }
     if sum <= budget {
-        return (messages, FitInfo { trimmed: true, dropped_turns: dropped, estimated_tokens: sum });
+        return (messages, info(true, dropped, sum));
     }
 
     // 3. Last resort: earlier tool results of the current request, oldest
@@ -156,12 +431,12 @@ pub fn fit(mut messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, Fi
                 break;
             }
             truncate_tool_result(&mut messages[i]);
-            sum = total(&messages, vision);
+            sum = total(&messages, cost);
         }
     }
     // Still over: send anyway; trimming the user's words or the latest tool
     // result would change the task.
-    (messages, FitInfo { trimmed: true, dropped_turns: dropped, estimated_tokens: sum })
+    (messages, info(true, dropped, sum))
 }
 
 /// Loads, fits and converts a chat's history to Chat Completions messages.
@@ -173,6 +448,7 @@ pub fn build_wire(
     vision: bool,
     current_user_content: Option<&str>,
     gemini: bool,
+    chars_per_token: f64,
 ) -> DbResult<(Vec<Value>, FitInfo)> {
     // Newest pages first, until the cap.
     let mut rows = Vec::new();
@@ -213,15 +489,6 @@ pub fn build_wire(
         }
     }
 
-    // Messages the IDE added itself (e.g. failed checks after an edit, see
-    // the frontend's verification gate). They are user-role, but never the
-    // user's request, so the request's editor context must not replace them.
-    let harness: std::collections::HashSet<String> = rows
-        .iter()
-        .filter(|m| m.meta.as_ref().is_some_and(|meta| meta.get("harness").is_some()))
-        .map(|m| m.id.clone())
-        .collect();
-
     // What is never sent: failed requests, errors, unfinished placeholders.
     let messages: Vec<Msg> = rows
         .into_iter()
@@ -231,6 +498,9 @@ pub fn build_wire(
             !(m.role == "assistant" && m.content.trim().is_empty() && m.tool_calls.as_ref().map_or(true, |t| t.is_empty()))
         })
         .map(|m| Msg {
+            // Added by the IDE (the frontend's verification gate): user-role,
+            // but never the user's request.
+            harness: m.meta.as_ref().is_some_and(|meta| meta.get("harness").is_some()),
             full_chars: if m.body_external { m.body_bytes as usize } else { m.content.chars().count() },
             needs_body: m.body_external,
             id: m.id,
@@ -251,14 +521,15 @@ pub fn build_wire(
     // the frontend added; it isn't stored that way.
     if let (Some(content), Some(last_user)) = (
         current_user_content,
-        messages.iter_mut().rev().find(|m| m.role == "user" && !harness.contains(&m.id)),
+        messages.iter_mut().rev().find(|m| starts_request(m)),
     )
     {
         last_user.text = content.to_string();
         last_user.full_chars = content.chars().count();
     }
 
-    let (mut fitted, info) = fit(std::mem::take(&mut messages), token_budget, vision);
+    let cost = Cost { vision, chars_per_token };
+    let (mut fitted, info) = fit_with(std::mem::take(&mut messages), token_budget, cost);
 
     for m in fitted.iter_mut().filter(|m| m.needs_body) {
         m.text = get_message_body(conn, &m.id)?;
@@ -288,6 +559,7 @@ pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
                 tool_calls: None,
                 tool_call_id: Some(id),
                 attachments: Vec::new(),
+                harness: false,
             });
         }
     };
@@ -427,6 +699,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             attachments: Vec::new(),
+            harness: false,
         }
     }
     fn call(ids: &[&str]) -> Msg {
@@ -590,5 +863,148 @@ mod tests {
         assert_eq!(sig(&other, 1, 0), Some(json!("SIG-A")));
         assert_eq!(sig(&other, 9, 0), None);
         assert!(other[9]["tool_calls"][0].get("extra_content").is_none());
+    }
+
+    // ---- requests, the IDE's messages, compaction ----
+
+    fn call_with(id: &str, name: &str, args: Value) -> Msg {
+        let mut m = msg("assistant", "");
+        m.tool_calls = Some(vec![ToolCall { id: id.into(), name: name.into(), arguments: args.to_string(), extra_content: None }]);
+        m
+    }
+    fn result(id: &str, text: &str) -> Msg {
+        let mut m = msg("tool", text);
+        m.tool_call_id = Some(id.into());
+        m
+    }
+    fn harness(text: &str) -> Msg {
+        let mut m = msg("user", text);
+        m.harness = true;
+        m
+    }
+    fn generous(vision: bool) -> Cost {
+        Cost { vision, chars_per_token: DEFAULT_CHARS_PER_TOKEN }
+    }
+
+    #[test]
+    fn the_ides_messages_dont_start_a_request() {
+        // Over budget, with a check-failure report after the work: the
+        // user's request and its run are the current request, not old turns.
+        let history = vec![
+            msg("user", "old question"),
+            msg("assistant", &"old answer ".repeat(4_000)),
+            msg("user", "fix the bug"),
+            call(&["a"]),
+            tool("a", BIG),
+            harness("[Automatic check by the IDE] tsc failed"),
+        ];
+        let (out, info) = fit(history, 12_000, false);
+        assert!(info.dropped_turns >= 1, "the old turn goes first");
+        assert!(out.iter().any(|m| m.text.contains("fix the bug")), "the request is kept");
+        assert!(out.last().unwrap().harness, "the report is kept");
+        assert!(!out.iter().any(|m| m.harness && m.text.contains("omitted")), "no note glued onto the report");
+    }
+
+    /// `n` reads of `path`, each with its own result.
+    fn reads(n: usize, path: &str, size: usize) -> Vec<Msg> {
+        (0..n)
+            .flat_map(|i| {
+                let id = format!("r{i}");
+                vec![call_with(&id, "read_file", json!({ "path": path })), result(&id, &"x".repeat(size))]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compaction_waits_for_its_threshold() {
+        let mut history = vec![msg("user", "q")];
+        history.extend(reads(20, "src/a.ts", 100));
+        let (out, info) = fit_with(history.clone(), 1_000_000, generous(false));
+        assert_eq!(info.compacted, 0);
+        assert_eq!(out.len(), history.len());
+    }
+
+    #[test]
+    fn out_of_date_reads_are_compacted_in_batches_and_recent_ones_kept() {
+        let mut history = vec![msg("user", "q")];
+        history.extend(reads(20, "src/a.ts", 3_000));
+        // 20 results, 8 kept recent: 12 compactable, rounded down to 8.
+        let (out, info) = fit_with(history, 10_000, generous(false));
+        let stubs: Vec<usize> = out
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.text.starts_with("[Read src/a.ts here"))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(stubs.len(), 8, "one batch of 8");
+        assert!(info.compacted >= 8);
+        assert_eq!(out.last().unwrap().text.len(), 3_000, "the latest read is whole");
+        assert!(pairing_ok(&out));
+    }
+
+    #[test]
+    fn a_read_nothing_replaced_is_kept() {
+        let mut history = vec![msg("user", "q")];
+        history.extend(reads(1, "src/only.ts", 3_000));
+        for i in 0..16 {
+            let id = format!("o{i}");
+            history.push(call_with(&id, "read_file", json!({ "path": format!("src/f{i}.ts") })));
+            history.push(result(&id, &"y".repeat(3_000)));
+        }
+        let (out, _) = fit_with(history, 20_000, generous(false));
+        assert_eq!(out[2].text.len(), 3_000, "still the model's only copy of that file");
+    }
+
+    #[test]
+    fn edits_supersede_reads_and_old_write_arguments_shrink() {
+        let mut history = vec![msg("user", "q")];
+        history.push(call_with("w0", "write_file", json!({ "path": "src/new.ts", "content": "line\n".repeat(400) })));
+        history.push(result("w0", "wrote 2000 bytes to src/new.ts"));
+        history.push(call_with("ra", "read_file", json!({ "path": "src/a.ts", "start_line": 1, "end_line": 50 })));
+        history.push(result("ra", &"a".repeat(3_000)));
+        history.push(call_with("e0", "edit_file", json!({ "path": "src/a.ts", "old_text": "o".repeat(500), "new_text": "n" })));
+        history.push(result("e0", "Edited src/a.ts: replaced line 3"));
+        history.extend(reads(14, "src/other.ts", 2_000));
+        let (out, _) = fit_with(history, 12_000, generous(false));
+
+        let write_args: Value = serde_json::from_str(&out[1].tool_calls.as_ref().unwrap()[0].arguments).unwrap();
+        assert_eq!(write_args["path"], "src/new.ts", "arguments stay valid JSON with the path");
+        assert_eq!(write_args["content"], "[400 lines written; left out of this history]");
+        assert!(out[4].text.contains("Read src/a.ts lines 1-50 here") && out[4].text.contains("changed later"));
+        let edit_args: Value = serde_json::from_str(&out[5].tool_calls.as_ref().unwrap()[0].arguments).unwrap();
+        assert_eq!(edit_args["new_text"], "n", "short arguments are kept");
+        assert!(edit_args["old_text"].as_str().unwrap().contains("left out"));
+    }
+
+    #[test]
+    fn a_rerun_command_and_earlier_check_rounds_shrink() {
+        let mut history = vec![msg("user", "q")];
+        let out_text = format!("$ npm test\nexit code 1, 3.0 s\n{}", "fail\n".repeat(800));
+        history.push(call_with("c0", "run_command", json!({ "command": "npm test" })));
+        history.push(result("c0", &out_text));
+        history.push(harness(&format!("[Automatic check by the IDE, not written by the user]\nround 1\n{}", "e".repeat(3_000))));
+        history.push(call_with("c1", "run_command", json!({ "command": "npm test" })));
+        history.push(result("c1", &out_text));
+        history.push(harness("[Automatic check by the IDE, not written by the user]\nround 2"));
+        history.extend(reads(14, "src/x.ts", 1_500));
+        let (out, _) = fit_with(history, 9_000, generous(false));
+        assert!(out[2].text.starts_with("$ npm test\nexit code 1") && out[2].text.contains("ran again later"));
+        assert!(out[3].text.starts_with("[Earlier round of checks"));
+        assert!(out[6].text.contains("round 2"), "the latest round is whole");
+    }
+
+    #[test]
+    fn only_attached_screenshots_count() {
+        let mut ms = vec![msg("user", "q")];
+        for i in 0..5 {
+            let id = format!("s{i}");
+            ms.push(call(&[&id]));
+            let mut t = tool(&id, 10);
+            t.attachments = vec!["img".into()];
+            ms.push(t);
+        }
+        let with = total(&ms, generous(true));
+        let without = total(&ms, generous(false));
+        assert_eq!(with - without, MAX_IMAGES * IMAGE_TOKENS);
     }
 }

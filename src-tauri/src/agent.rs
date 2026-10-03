@@ -177,6 +177,11 @@ pub async fn send_chat_message(
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
+    // Token estimates for this model: learned from what the provider reported
+    // for earlier requests (see `calibration`), else a cautious default.
+    let calibration_key = calibration::key(&base_url, &model);
+    let chars_per_token = calibration::chars_per_token(&calibration_key);
+
     let mut messages: Vec<WireChatMessage> = match (messages, dialog_id) {
         (Some(explicit), _) => explicit,
         (None, Some(dialog_id)) => {
@@ -194,6 +199,7 @@ pub async fn send_chat_message(
                     vision,
                     current_user_content.as_deref(),
                     gemini,
+                    chars_per_token,
                 )
             });
             let (wire, info) = tokio::select! {
@@ -205,10 +211,10 @@ pub async fn send_chat_message(
                 }
                 built = build => built?,
             };
-            if info.trimmed {
+            if info.trimmed || info.compacted > 0 {
                 eprintln!(
-                    "context budget: ~{}/{} tokens, {} oldest turn(s) omitted",
-                    info.estimated_tokens, budget, info.dropped_turns
+                    "context budget: ~{}/{} tokens (history ~{}), {} compacted, {} oldest turn(s) omitted",
+                    info.estimated_tokens, budget, info.full_tokens, info.compacted, info.dropped_turns
                 );
             }
             wire.into_iter()
@@ -319,11 +325,18 @@ pub async fn send_chat_message(
         limits,
     };
     let log_signatures = is_gemini_target(&base_url, &model);
+    // What this request's prompt amounts to, to compare with the provider's
+    // token count when it reports one.
+    let (prompt_chars, prompt_images) = calibration::prompt_size(&body);
+    let mut reported_prompt_tokens: Option<u64> = None;
     // Provider data of each completed tool call, saved to the database below.
     let mut call_extras: Vec<(String, serde_json::Value)> = Vec::new();
     let mut emit = |event: ChatStreamEvent| {
         if let ChatStreamEvent::ToolCallComplete { id, extra_content: Some(extra), .. } = &event {
             call_extras.push((id.clone(), extra.clone()));
+        }
+        if let ChatStreamEvent::Finished { usage: Some(usage), .. } = &event {
+            reported_prompt_tokens = calibration::prompt_tokens(usage);
         }
         // Diagnostics: Gemini 3 must sign its tool calls; show whether it did.
         if log_signatures {
@@ -364,10 +377,196 @@ pub async fn send_chat_message(
         }
     }
 
+    if let Some(tokens) = reported_prompt_tokens {
+        calibration::learn(&calibration_key, prompt_chars, prompt_images, tokens);
+    }
+
     if let Err(error) = result {
         let _ = on_event.send(ChatStreamEvent::Error { error });
     }
     Ok(())
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Token estimates
+ * ---------------------------------------------------------------------------
+ *
+ * The history is fitted to a token budget before it's sent, so tokens are
+ * estimated from characters. A fixed ratio is wrong in both directions
+ * (prose vs. code vs. Cyrillic, and every model's tokenizer differs), so
+ * each model's ratio is learned from the prompt sizes providers report.
+ */
+pub mod calibration {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    use crate::chat_db::history::DEFAULT_CHARS_PER_TOKEN;
+
+    /// Learned characters per token, by provider URL and model.
+    static LEARNED: LazyLock<Mutex<HashMap<String, f64>>> = LazyLock::new(Default::default);
+    /// Framing tokens the provider adds per message, roughly.
+    const MESSAGE_OVERHEAD: u64 = 4;
+
+    pub fn key(base_url: &str, model: &str) -> String {
+        format!("{}|{model}", base_url.trim_end_matches('/'))
+    }
+
+    /// What estimates use: the learned ratio with a safety margin (sending a
+    /// little less beats a context-length error), or the cautious default.
+    pub fn chars_per_token(key: &str) -> f64 {
+        LEARNED
+            .lock()
+            .ok()
+            .and_then(|m| m.get(key).copied())
+            .map(|learned| (learned * 0.92).clamp(2.0, 4.5))
+            .unwrap_or(DEFAULT_CHARS_PER_TOKEN)
+    }
+
+    /// The prompt token count from a provider's `usage` object.
+    pub fn prompt_tokens(usage: &serde_json::Value) -> Option<u64> {
+        usage
+            .get("prompt_tokens")
+            .or_else(|| usage.get("input_tokens"))
+            .and_then(|v| v.as_u64())
+    }
+
+    /// Characters of text in a request body (messages and tool schemas), and
+    /// the number of images in it.
+    pub fn prompt_size(body: &serde_json::Value) -> (usize, usize) {
+        let mut chars = 0;
+        let mut images = 0;
+        for m in body.get("messages").and_then(|m| m.as_array()).into_iter().flatten() {
+            match m.get("content") {
+                Some(serde_json::Value::String(s)) => chars += s.chars().count(),
+                Some(serde_json::Value::Array(parts)) => {
+                    for part in parts {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            chars += text.chars().count();
+                        } else {
+                            images += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for call in m.get("tool_calls").and_then(|c| c.as_array()).into_iter().flatten() {
+                if let Some(f) = call.get("function") {
+                    chars += f.get("name").and_then(|n| n.as_str()).map_or(0, |n| n.chars().count());
+                    chars += f.get("arguments").and_then(|a| a.as_str()).map_or(0, |a| a.chars().count());
+                }
+            }
+        }
+        if let Some(tools) = body.get("tools") {
+            chars += tools.to_string().chars().count();
+        }
+        (chars, images)
+    }
+
+    /// Updates a model's ratio from one request (a moving average, so one
+    /// odd request can't swing it).
+    pub fn learn(key: &str, chars: usize, images: usize, prompt_tokens: u64) {
+        // At least a system prompt and a few messages' framing.
+        let messages_overhead = MESSAGE_OVERHEAD * 4;
+        // Images cost a model-specific number of tokens: no clean ratio.
+        if images > 0 || prompt_tokens < 200 || chars < 500 {
+            return;
+        }
+        let observed = chars as f64 / (prompt_tokens - messages_overhead) as f64;
+        // Outside this, something else is going on (cached or hidden tokens).
+        if !(1.2..=8.0).contains(&observed) {
+            return;
+        }
+        if let Ok(mut learned) = LEARNED.lock() {
+            let next = match learned.get(key) {
+                Some(old) => old * 0.7 + observed * 0.3,
+                None => observed,
+            };
+            learned.insert(key.to_string(), next);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn learns_and_keeps_a_margin() {
+            let key = key("https://example.test/v1/", "m");
+            assert_eq!(chars_per_token(&key), DEFAULT_CHARS_PER_TOKEN);
+            learn(&key, 40_000, 0, 10_016); // 4 chars per token
+            let ratio = chars_per_token(&key);
+            assert!((ratio - 4.0 * 0.92).abs() < 0.01, "{ratio}");
+            learn(&key, 40_000, 2, 1_000); // images: ignored
+            assert!((chars_per_token(&key) - ratio).abs() < 1e-9);
+        }
+
+        #[test]
+        fn counts_text_not_images() {
+            let body = serde_json::json!({
+                "messages": [
+                    { "role": "system", "content": "abcd" },
+                    { "role": "user", "content": [{ "type": "text", "text": "xy" }, { "type": "image_url" }] },
+                    { "role": "assistant", "content": "", "tool_calls": [{ "function": { "name": "f", "arguments": "{}" } }] }
+                ]
+            });
+            assert_eq!(prompt_size(&body), (4 + 2 + 1 + 2, 1));
+        }
+    }
+}
+
+/// How much of the model's context the chat's next request would use: the
+/// history as it would be sent (after compaction and trimming), plus the
+/// system prompt and `extra_chars` (tool schemas and project context, which
+/// the frontend knows). Estimated, with the model's learned ratio.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextEstimate {
+    /// The whole next request.
+    prompt_tokens: usize,
+    /// The history alone, as sent.
+    history_tokens: usize,
+    /// The history before anything was compacted or trimmed.
+    full_history_tokens: usize,
+    compacted: usize,
+    dropped_turns: usize,
+}
+
+#[tauri::command]
+pub async fn chat_context_estimate(
+    db: tauri::State<'_, crate::chat_db::DbState>,
+    dialog_id: String,
+    base_url: String,
+    model: String,
+    token_budget: usize,
+    vision: bool,
+    extra_chars: usize,
+) -> Result<ContextEstimate, String> {
+    let data_dir = db.data_dir().to_path_buf();
+    let gemini = is_gemini_target(&base_url, &model);
+    let chars_per_token = calibration::chars_per_token(&calibration::key(&base_url, &model));
+    let (_, info) = db
+        .read(move |conn| {
+            crate::chat_db::history::build_wire(
+                conn,
+                &data_dir,
+                &dialog_id,
+                token_budget,
+                vision,
+                None,
+                gemini,
+                chars_per_token,
+            )
+        })
+        .await?;
+    let fixed = (CODING_AGENT_SYSTEM_PROMPT.chars().count() + extra_chars) as f64 / chars_per_token;
+    Ok(ContextEstimate {
+        prompt_tokens: info.estimated_tokens + fixed.ceil() as usize,
+        history_tokens: info.estimated_tokens,
+        full_history_tokens: info.full_tokens,
+        compacted: info.compacted,
+        dropped_turns: info.dropped_turns,
+    })
 }
 
 /// Google's OpenAI-compatible endpoints, or a Gemini model behind a gateway.

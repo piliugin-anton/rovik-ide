@@ -43,7 +43,15 @@ import { createChatStore } from '../lib/chatStore';
 import { chatApi } from '../lib/chatApi';
 import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
-import { cancelChatRequest, sendChatMessage, streamEndSignal, untilStreamEnd } from '../lib/aiChat';
+import {
+  cancelChatRequest,
+  estimateContext,
+  sendChatMessage,
+  streamEndSignal,
+  untilStreamEnd,
+} from '../lib/aiChat';
+import { DEFAULT_CONTEXT_TOKENS } from '../lib/contextBudget';
+import ContextMeter, { type ContextUsage } from './ContextMeter';
 import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
 import { agentToolsFor, editFileArgs, executeAgentTool } from '../lib/tools';
 import { AgentRunGuard } from '../lib/agentGuard';
@@ -196,6 +204,16 @@ export default function ChatPanel(props: ChatProps) {
    */
   const [referencedFiles, setReferencedFiles] = createSignal<FileSuggestion[]>([]);
 
+  /*
+   * -----------------------------------------------------------------------
+   * Context used (the bar above the input)
+   * -----------------------------------------------------------------------
+   */
+
+  /** The open project's "## Project" prompt section, as the last run sent it. */
+  const [projectContextText, setProjectContextText] = createSignal('');
+  const [contextUsage, setContextUsage] = createSignal<ContextUsage | null>(null);
+
   let currentChannel: Channel<ChatStreamEvent> | null = null;
   /** The running model request, so the Stop button can cancel it. */
   let currentRequestId: string | null = null;
@@ -235,6 +253,88 @@ export default function ChatPanel(props: ChatProps) {
     return id ? store.state.open[id] : undefined;
   };
   const messages = (): ChatMessage[] => activeChat()?.messages ?? [];
+
+  // The project section of the prompt, for the estimate before any run.
+  createEffect(
+    on(
+      () => [props.rootPath(), permissions().verifyChanges] as const,
+      ([root, verify]) => {
+        if (!root) {
+          setProjectContextText('');
+          return;
+        }
+        Promise.all([detectProject(root), loadProjectSettings(root)])
+          .then(([profile, settings]) => {
+            if (props.rootPath() !== root) return;
+            setProjectContextText(
+              projectContext(profile, effectiveChecks(profile, settings), verify)
+            );
+          })
+          .catch((err) => console.error('Project detection failed:', err));
+      }
+    )
+  );
+
+  /*
+   * Re-estimated whenever what the next request would send changes: another
+   * chat or model, a message added or finished, a run starting or ending.
+   * Debounced: a run adds messages quickly.
+   */
+  let contextTimer: number | undefined;
+  let contextRequest = 0;
+  createEffect(
+    on(
+      () => {
+        const list = messages();
+        return [
+          store.state.activeId,
+          activeProfile(),
+          list.length,
+          list[list.length - 1]?.finalized,
+          sending(),
+          projectContextText(),
+          props.rootPath(),
+        ] as const;
+      },
+      ([dialogId, profile]) => {
+        window.clearTimeout(contextTimer);
+        if (!dialogId || !profile) {
+          setContextUsage(null);
+          return;
+        }
+        const request = ++contextRequest;
+        contextTimer = window.setTimeout(async () => {
+          try {
+            const tools = agentToolsFor({
+              hasProject: !!props.rootPath(),
+              vision: profile.vision,
+              noTools: profile.noTools,
+              permissions: permissions(),
+            });
+            const extraChars =
+              (tools.length ? JSON.stringify(tools).length : 0) + projectContextText().length;
+            const estimate = await estimateContext({ profile, dialogId, extraChars });
+            if (request !== contextRequest) return;
+            const known = !!profile.contextTokens && profile.contextTokens > 0;
+            setContextUsage({
+              promptTokens: estimate.promptTokens,
+              windowTokens: known ? profile.contextTokens! : DEFAULT_CONTEXT_TOKENS,
+              windowGuessed: !known,
+              fullHistoryTokens: estimate.fullHistoryTokens,
+              historyTokens: estimate.historyTokens,
+              shortened:
+                estimate.compacted > 0 ||
+                estimate.droppedTurns > 0 ||
+                estimate.fullHistoryTokens > estimate.historyTokens,
+            });
+          } catch (err) {
+            console.error('Context estimate failed:', err);
+          }
+        }, 400);
+      }
+    )
+  );
+  onCleanup(() => window.clearTimeout(contextTimer));
 
   let searchDebounce: number | undefined;
   createEffect(
@@ -1754,6 +1854,7 @@ export default function ChatPanel(props: ChatProps) {
         console.error('Project detection failed:', err);
       }
     }
+    setProjectContextText(context);
     return {
       guard: new AgentRunGuard(p.toolCallCheckpoint, startAtToolCalls),
       checks,
@@ -2507,6 +2608,7 @@ export default function ChatPanel(props: ChatProps) {
         onRunChecks={runApprovedChecks}
         onOpenProjectChecks={() => setSettingsPage('project')}
       />
+      <Show when={contextUsage()}>{(usage) => <ContextMeter usage={usage()} />}</Show>
       <div class="chat-input-row">
         <div class="chat-input-container">
           <div

@@ -109,3 +109,31 @@ export async function untilStreamEnd(
   clearTimeout(timer);
   if (timedOut) console.warn('Chat stream: no Done/Error event arrived; continuing without it.');
 }
+
+export interface ContextEstimate {
+  promptTokens: number;
+  historyTokens: number;
+  fullHistoryTokens: number;
+  compacted: number;
+  droppedTurns: number;
+}
+
+/**
+ * How many tokens the chat's next request would use (agent.rs): its history
+ * as it would be sent, the system prompt, and `extraChars` more (tool
+ * schemas, project context).
+ */
+export function estimateContext(args: {
+  profile: ModelProfile;
+  dialogId: string;
+  extraChars: number;
+}): Promise<ContextEstimate> {
+  return invoke<ContextEstimate>('chat_context_estimate', {
+    dialogId: args.dialogId,
+    baseUrl: args.profile.baseUrl,
+    model: args.profile.model,
+    tokenBudget: historyBudget(args.profile.contextTokens),
+    vision: args.profile.vision,
+    extraChars: args.extraChars,
+  });
+}

@@ -3803,3 +3803,72 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .project-check-add {
   margin-top: 8px;
 }
+
+/* Context used, above the chat input (ContextMeter.tsx) */
+
+.chat-context-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  /* Lines up with the input box (left) and the send button (right). */
+  padding: 5px 9px 0 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* The bar carries the divider; the input row below it doesn't repeat it. */
+.chat-context-bar + .chat-input-row {
+  border-top: none;
+  padding-top: 6px;
+}
+
+.chat-context-note {
+  color: var(--fg-dim);
+  opacity: 0.8;
+}
+
+.chat-context-ring {
+  flex-shrink: 0;
+}
+
+.chat-context-track,
+.chat-context-fill {
+  fill: none;
+  stroke-width: 2;
+}
+
+.chat-context-track {
+  stroke: var(--border-color);
+}
+
+.chat-context-fill {
+  stroke: var(--fg);
+  opacity: 0.75;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.chat-context-bar.mid .chat-context-fill {
+  stroke: var(--warning);
+  opacity: 1;
+}
+
+.chat-context-bar.high .chat-context-fill {
+  stroke: var(--error);
+  opacity: 1;
+}
+
+.chat-context-bar.high .chat-context-label {
+  color: var(--fg-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-context-fill {
+    transition: none;
+  }
+}
