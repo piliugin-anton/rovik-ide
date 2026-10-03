@@ -12,6 +12,7 @@ import {
   toolWriteFile,
 } from './commands';
 import type { CommandOutput, EditFileArgs } from './commands';
+import { PLAN_BLOCKED_TOOLS, type ChatMode } from './chatMode';
 import { capOutput, focusFailures, stripAnsi } from './commandOutput';
 
 /**
@@ -275,6 +276,8 @@ export function agentToolsFor(opts: {
   noTools?: boolean;
   /** run_command is offered only when some command is allowed. */
   permissions?: AgentPermissions;
+  /** Plan mode: read-only tools, plus ask_user (lib/chatMode.ts). */
+  mode?: ChatMode;
 }): unknown[] {
   // Models marked "no tools" in settings get none (and no tool instructions).
   if (opts.noTools) return [];
@@ -282,13 +285,71 @@ export function agentToolsFor(opts: {
     opts.hasProject && (!opts.permissions || commandsAvailable(opts.permissions))
       ? [runCommandSchema(opts.permissions)]
       : [];
-  return [
+  const all = [
     ...(opts.hasProject ? AGENT_TOOL_SCHEMAS : []),
     ...commands,
     ...WEB_TOOL_SCHEMAS,
     ...(opts.vision ? [SCREENSHOT_TOOL_SCHEMA] : []),
   ];
+  if (opts.mode !== 'plan') return all;
+  const name = (t: unknown) => (t as { function?: { name?: string } }).function?.name ?? '';
+  return [...all.filter((t) => !PLAN_BLOCKED_TOOLS.has(name(t))), ASK_USER_SCHEMA];
 }
+
+/** Plan mode's question tool (lib/questions.ts). */
+export const ASK_USER_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'ask_user',
+    description:
+      'Ask the user about decisions only they can make, before planning further: the run waits for the ' +
+      "answer. Ask only what the code and the request can't tell you and what really changes the design, " +
+      'behavior or scope. Put all your questions in one call (up to 3), each with concrete options and a ' +
+      "short reason why it matters. Mark the option you'd choose as recommended. The user can also answer " +
+      'in their own words or leave a question to you.',
+    parameters: {
+      type: 'object',
+      properties: {
+        questions: {
+          type: 'array',
+          maxItems: 3,
+          items: {
+            type: 'object',
+            properties: {
+              question: { type: 'string', description: 'The question, one sentence.' },
+              reason: {
+                type: 'string',
+                description: 'Optional: why the answer matters (what it changes), one sentence.',
+              },
+              options: {
+                type: 'array',
+                maxItems: 6,
+                items: {
+                  type: 'object',
+                  properties: {
+                    label: { type: 'string', description: 'The choice, a few words.' },
+                    description: {
+                      type: 'string',
+                      description: 'Optional: what it means in practice.',
+                    },
+                    recommended: { type: 'boolean', description: 'The option you would choose.' },
+                  },
+                  required: ['label'],
+                },
+              },
+              allow_custom: {
+                type: 'boolean',
+                description: 'Whether the user may answer in their own words (default true).',
+              },
+            },
+            required: ['question', 'options'],
+          },
+        },
+      },
+      required: ['questions'],
+    },
+  },
+};
 
 /** The text the model sees for a finished command. */
 export function formatCommandOutput(command: string, out: CommandOutput): string {

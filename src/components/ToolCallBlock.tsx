@@ -7,6 +7,7 @@ import { createMemo, createResource, createSignal, For, Show } from 'solid-js';
 import type { ChatMessage, ChatToolCall, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
 import EditDiffBlock from './EditDiffBlock';
+import QuestionCard from './QuestionCard';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
 import { diffRows, snippetLines } from '../lib/lineDiff';
@@ -378,6 +379,10 @@ function ApprovalBar(props: { request: PendingApproval }) {
 }
 
 export default function ToolCallBlock(props: ToolCallBlockProps) {
+  // The agent's questions have their own card, always open.
+  if (props.toolCall.name === 'ask_user') {
+    return <QuestionCard toolCall={props.toolCall} result={props.result} running={props.running} />;
+  }
   const request = () => pendingApproval(props.toolCall.id);
 
   const [expanded, setExpanded] = createSignal(false);

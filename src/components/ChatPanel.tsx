@@ -56,6 +56,25 @@ import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors
 import { agentToolsFor, editFileArgs, executeAgentTool } from '../lib/tools';
 import { AgentRunGuard } from '../lib/agentGuard';
 import { recordAgentEdit } from '../lib/agentChanges';
+import {
+  chatMode,
+  MAX_QUESTIONS_PER_RUN,
+  PLAN_BLOCKED_TOOLS,
+  PLAN_MODE_INSTRUCTIONS,
+  setChatMode,
+  type ChatMode,
+} from '../lib/chatMode';
+import {
+  answerQuestions,
+  askUser,
+  describeOutcome,
+  parseQuestions,
+  pendingQuestionsIn,
+  stopQuestions,
+} from '../lib/questions';
+import { dismiss, notify } from '../lib/notifications';
+import ModeSelector from './ModeSelector';
+import QuestionPanel from './QuestionPanel';
 import { logAgent } from '../lib/agentLog';
 import {
   detectProject,
@@ -78,6 +97,10 @@ import {
  */
 interface AgentRun {
   guard: AgentRunGuard;
+  /** The mode of the message that started the run (lib/chatMode.ts). */
+  mode: ChatMode;
+  /** ask_user calls so far (Plan mode caps them). */
+  questionsAsked: number;
   /** The project's checks and the system-prompt section about it. */
   checks: ProjectCheck[];
   projectContext: string;
@@ -311,6 +334,7 @@ export default function ChatPanel(props: ChatProps) {
               vision: profile.vision,
               noTools: profile.noTools,
               permissions: permissions(),
+              mode: chatMode(),
             });
             const extraChars =
               (tools.length ? JSON.stringify(tools).length : 0) + projectContextText().length;
@@ -1546,7 +1570,7 @@ export default function ChatPanel(props: ChatProps) {
       onSettled?: (ok: boolean) => void;
     } = {}
   ): Promise<void> {
-    const run = opts.run ?? (await startRun());
+    const run = opts.run ?? (await startRun(dialogId));
     const guard = run.guard;
     const profile = activeProfile();
 
@@ -1713,6 +1737,7 @@ export default function ChatPanel(props: ChatProps) {
       vision: profile.vision,
       noTools: profile.noTools,
       permissions: permissions(),
+      mode: run.mode,
     });
 
     let abandon!: () => void;
@@ -1737,7 +1762,10 @@ export default function ChatPanel(props: ChatProps) {
             requestId,
             channel,
             tools,
-            projectContext: run.projectContext,
+            projectContext:
+              run.mode === 'plan'
+                ? [run.projectContext, PLAN_MODE_INSTRUCTIONS].filter(Boolean).join('\n\n')
+                : run.projectContext,
           })
             .then(() => untilStreamEnd(stream.ended))
             .then(() => 'done' as const),
@@ -1864,7 +1892,7 @@ export default function ChatPanel(props: ChatProps) {
    * Starts a run: the loop guard, and the project's checks and profile for
    * the system prompt (detected fresh each run: a few file reads).
    */
-  async function startRun(startAtToolCalls = 0): Promise<AgentRun> {
+  async function startRun(dialogId: string, startAtToolCalls = 0): Promise<AgentRun> {
     const p = permissions();
     const root = props.rootPath();
     let checks: ProjectCheck[] = [];
@@ -1884,6 +1912,8 @@ export default function ChatPanel(props: ChatProps) {
     setProjectContextText(context);
     return {
       guard: new AgentRunGuard(p.toolCallCheckpoint, startAtToolCalls),
+      mode: runModeFor(dialogId),
+      questionsAsked: 0,
       checks,
       projectContext: context,
       changedFiles: new Set(),
@@ -1894,6 +1924,130 @@ export default function ChatPanel(props: ChatProps) {
       ended: false,
     };
   }
+
+  /** The mode of the request a run belongs to: its starting message's. */
+  function runModeFor(dialogId: string): ChatMode {
+    const list = store.messagesOf(dialogId);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.role === 'user' && !m.meta?.harness) return m.meta?.mode ?? 'agent';
+    }
+    return chatMode();
+  }
+
+  /**
+   * ask_user: shows the questions in the chat and waits for the answer
+   * (lib/questions.ts). Only in Plan mode, a few per run; the answer is
+   * the tool's result, kept with the questions in its meta for the card.
+   */
+  async function answerAskUser(dialogId: string, tc: ChatToolCall, mode: ChatMode, run?: AgentRun) {
+    const finish = (content: string, meta?: ChatMessage['meta']) =>
+      store.appendMessages(dialogId, [
+        {
+          id: crypto.randomUUID(),
+          role: 'tool',
+          content,
+          tool_call_id: tc.id,
+          finalized: true,
+          meta,
+        },
+      ]);
+    const log = (questions: number, answers: string[]) =>
+      logAgent({
+        event: 'question',
+        dialogId,
+        model: activeProfile()?.model ?? '',
+        questions,
+        answers,
+      });
+
+    if (mode !== 'plan') {
+      await finish(
+        'Error: asking the user is only available in Plan mode. Decide yourself and say what you assumed.'
+      );
+      return;
+    }
+    if (run && run.questionsAsked >= MAX_QUESTIONS_PER_RUN) {
+      log(0, ['over-limit']);
+      await finish(
+        `You've already asked ${run.questionsAsked} times in this task. Decide the rest yourself ` +
+          'and list your assumptions under "Decisions" in the plan.'
+      );
+      return;
+    }
+    const questions = parseQuestions(parseToolArgsObject(tc.arguments));
+    if (questions.length === 0) {
+      await finish(
+        'Error: no question to ask. Pass questions: [{ question, options: [{ label }] }].'
+      );
+      return;
+    }
+    if (run) run.questionsAsked++;
+
+    // In the chat; and in the corner, in case the user is working elsewhere.
+    const note = notify({
+      id: `question-${tc.id}`,
+      title:
+        questions.length === 1
+          ? 'The agent has a question'
+          : `The agent has ${questions.length} questions`,
+      message: questions[0].question,
+      actions: [{ label: 'Show', primary: true, run: () => listController?.followLatest() }],
+    });
+    const outcome = await askUser({ toolCallId: tc.id, dialogId, questions });
+    note.close();
+    dismiss(`question-${tc.id}`);
+
+    log(
+      questions.length,
+      'answers' in outcome
+        ? outcome.answers.map((a) => a.kind)
+        : 'reply' in outcome
+          ? ['reply']
+          : ['stopped']
+    );
+    if ('stopped' in outcome) stopRequest();
+    await finish(describeOutcome(questions, outcome), { questions: { questions, outcome } });
+  }
+
+  /** "Implement this plan": Agent mode, carrying out the plan above. */
+  function implementPlan() {
+    const dialogId = activeDialogId();
+    const profile = activeProfile();
+    if (!dialogId || !profile || sending()) return;
+    setChatMode('agent');
+    const text = 'Implement the plan above.';
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: text,
+      finalized: true,
+      meta: { mode: 'agent' },
+    };
+    listController?.followLatest();
+    void runRequest(dialogId, async () => {
+      await store.appendMessages(dialogId, [userMsg]);
+      await runAgentTurn(dialogId, { currentUserContent: text });
+    });
+  }
+
+  /** A question waiting in the open chat: the composer answers it. */
+  const waitingQuestion = () => {
+    const id = store.state.activeId;
+    return id ? pendingQuestionsIn(id) : undefined;
+  };
+
+  /** The finished plan an "Implement this plan" button goes under, if any. */
+  const planMessageId = createMemo(() => {
+    const dialogId = store.state.activeId;
+    if (!dialogId || sending()) return null;
+    const list = messages();
+    const last = list[list.length - 1];
+    if (!last || last.role !== 'assistant' || last.pending || last.error || last.toolCalls?.length)
+      return null;
+    if (!last.content.trim()) return null;
+    return runModeFor(dialogId) === 'plan' ? last.id : null;
+  });
 
   /** The run's diagnostics line (lib/agentLog.ts), once. */
   function endRun(dialogId: string, run: AgentRun, outcome: string) {
@@ -2058,7 +2212,7 @@ export default function ChatPanel(props: ChatProps) {
     listController?.followLatest();
     const currentUserContent = lastUserWireContent(dialogId);
     void runRequest(dialogId, async () => {
-      const run = await startRun();
+      const run = await startRun(dialogId);
       for (const f of pending.changedFiles) run.changedFiles.add(f);
       run.writesSinceVerify = true;
       run.verifyRounds = pending.round;
@@ -2082,7 +2236,7 @@ export default function ChatPanel(props: ChatProps) {
     // Counting goes on from where it paused; loop evidence starts fresh.
     const currentUserContent = lastUserWireContent(dialogId);
     void runRequest(dialogId, async () => {
-      const run = await startRun(paused?.toolCalls ?? 0);
+      const run = await startRun(dialogId, paused?.toolCalls ?? 0);
       await runAgentTurn(dialogId, { currentUserContent, run });
     });
   }
@@ -2114,9 +2268,31 @@ export default function ChatPanel(props: ChatProps) {
         },
       ]);
 
+    const mode = run?.mode ?? runModeFor(dialogId);
     for (const tc of toolCalls) {
       if (stopRequested) {
         await stoppedResult(tc);
+        continue;
+      }
+      // Questions to the user: answered in the chat, no approval involved
+      // (a resumed one after a restart is simply asked again).
+      if (tc.name === 'ask_user') {
+        await answerAskUser(dialogId, tc, mode, run);
+        continue;
+      }
+      // Plan mode doesn't offer these; a model that calls them anyway is told why.
+      if (mode === 'plan' && PLAN_BLOCKED_TOOLS.has(tc.name)) {
+        await store.appendMessages(dialogId, [
+          {
+            id: crypto.randomUUID(),
+            role: 'tool',
+            content:
+              `Error: ${tc.name} isn't available in Plan mode, which doesn't change anything. ` +
+              'Finish the plan; the user implements it in Agent mode.',
+            tool_call_id: tc.id,
+            finalized: true,
+          },
+        ]);
         continue;
       }
       const { refusal, approval, argsOverride, toolOverride, resultNote } = await authorizeToolCall(
@@ -2284,8 +2460,9 @@ export default function ChatPanel(props: ChatProps) {
   /** Stop: cancels the running request and any further tool steps. */
   function stopRequest() {
     stopRequested = true;
-    // Waiting approvals count as denied.
+    // Waiting approvals count as denied, waiting questions as stopped.
     denyAll();
+    stopQuestions();
     if (currentRequestId) {
       void cancelChatRequest(currentRequestId).catch((err) => console.error('Cancel failed:', err));
     }
@@ -2386,6 +2563,15 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   async function handleSend() {
+    // A question is waiting: what's typed is the answer, not a new request.
+    const waiting = activeDialogId() ? pendingQuestionsIn(activeDialogId()!) : undefined;
+    if (waiting) {
+      const reply = readComposerText().trim();
+      if (!reply) return;
+      clearChatInput();
+      answerQuestions(waiting.toolCallId, { reply });
+      return;
+    }
     const text = input().trim();
     const profile = activeProfile();
     const dialog = activeDialog();
@@ -2419,7 +2605,10 @@ export default function ChatPanel(props: ChatProps) {
       role: 'user',
       content: text,
       finalized: true,
-      ...(wireContent && wireContent !== text ? { meta: { sentContent: wireContent } } : {}),
+      meta: {
+        mode: chatMode(),
+        ...(wireContent && wireContent !== text ? { sentContent: wireContent } : {}),
+      },
     };
 
     /*
@@ -2642,7 +2831,13 @@ export default function ChatPanel(props: ChatProps) {
         onContinueRun={continueRun}
         onRunChecks={runApprovedChecks}
         onOpenProjectChecks={() => setSettingsPage('project')}
+        planMessageId={planMessageId()}
+        onImplementPlan={implementPlan}
       />
+      {/* The agent's questions, one at a time, above the input. */}
+      <Show when={waitingQuestion()} keyed>
+        {(pending) => <QuestionPanel pending={pending} />}
+      </Show>
       <Show when={contextUsage()}>{(usage) => <ContextMeter usage={usage()} />}</Show>
       <div class="chat-input-row">
         <div class="chat-input-container">
@@ -2655,7 +2850,13 @@ export default function ChatPanel(props: ChatProps) {
             onDrop={handleComposerDrop}
             onKeyDown={handleKeyDown}
             data-placeholder={
-              activeProfile() ? 'Message the model...' : 'Add a model in settings first'
+              !activeProfile()
+                ? 'Add a model in settings first'
+                : waitingQuestion()
+                  ? 'Answer the question above, or type your own answer…'
+                  : chatMode() === 'plan'
+                    ? 'Describe what to plan…'
+                    : 'Message the model...'
             }
           />
 
@@ -2691,7 +2892,7 @@ export default function ChatPanel(props: ChatProps) {
         </div>
 
         <Show
-          when={sending()}
+          when={sending() && !waitingQuestion()}
           fallback={
             <button
               onClick={() => void handleSend()}
@@ -2701,8 +2902,8 @@ export default function ChatPanel(props: ChatProps) {
                 (!input().trim() && referencedFiles().length === 0)
               }
               class="chat-send-button"
-              title="Send"
-              aria-label="Send message"
+              title={waitingQuestion() ? 'Send as the answer' : 'Send'}
+              aria-label={waitingQuestion() ? 'Send as the answer' : 'Send message'}
             >
               <svg
                 viewBox="0 0 24 24"
@@ -2729,6 +2930,7 @@ export default function ChatPanel(props: ChatProps) {
         </Show>
       </div>
       <div class="chat-model-select">
+        <ModeSelector />
         <ModelPicker
           providers={providers()}
           selection={selection()}

@@ -67,6 +67,9 @@ export default function MessageList(props: {
   onRunChecks: () => void;
   /** Open the settings page where the project's checks are set up. */
   onOpenProjectChecks: () => void;
+  /** The finished Plan-mode reply that gets "Implement this plan". */
+  planMessageId?: string | null;
+  onImplementPlan?: () => void;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let innerRef: HTMLDivElement | undefined;
@@ -594,6 +597,20 @@ export default function MessageList(props: {
                       </Show>
                     </div>
                   )}
+                </Show>
+
+                <Show when={props.planMessageId === m.id}>
+                  <div class="chat-plan-actions">
+                    <button
+                      type="button"
+                      class="chat-action-button primary"
+                      onClick={() => props.onImplementPlan?.()}
+                      title="Switch to Agent mode and carry out this plan"
+                    >
+                      Implement this plan
+                    </button>
+                    <span class="chat-plan-hint">or reply to change it</span>
+                  </div>
                 </Show>
 
                 <Show when={m.meta?.verification}>

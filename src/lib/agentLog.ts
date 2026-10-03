@@ -36,6 +36,14 @@ export type AgentLogEvent =
       }[];
     }
   | {
+      event: 'question';
+      dialogId: string;
+      model: string;
+      questions: number;
+      /** How each was answered: option, custom, agent; or reply / stopped / over-limit. */
+      answers: string[];
+    }
+  | {
       event: 'run';
       dialogId: string;
       model: string;

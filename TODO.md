@@ -1,1 +1,0 @@
-1. Make sure all chat messsages from assistant which has a "Open in editor" button behaves in a same way: this button should open a file in editor(if it's not open yet) if there is a starting position, then scroll to starting position, so that it's in a editor screen center. Look at already implemented functionality, reuse or unify

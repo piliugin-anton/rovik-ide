@@ -185,6 +185,13 @@ export interface ToolMeta {
    * shown as a user message, and never mistaken for the user's request.
    */
   harness?: 'verification';
+  /** A user message: the mode it was sent in (lib/chatMode.ts). */
+  mode?: import('./lib/chatMode').ChatMode;
+  /** An ask_user result: the questions and how they were answered. */
+  questions?: {
+    questions: import('./lib/questions').Question[];
+    outcome: import('./lib/questions').QuestionsOutcome;
+  };
 }
 
 export type ChatErrorKind =
