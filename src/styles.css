@@ -3727,6 +3727,11 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   content: ' ⌄';
 }
 
+.chat-verify-where {
+  margin: 4px 0 0 18px;
+  color: var(--fg-muted);
+}
+
 .chat-verify-output {
   max-height: 260px;
   margin: 4px 0 2px 18px;

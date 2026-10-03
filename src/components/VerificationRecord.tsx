@@ -129,6 +129,18 @@ export default function VerificationRecord(props: {
                         {check.durationMs !== undefined ? `, ${seconds(check.durationMs)}` : ''}
                       </span>
                     </summary>
+                    <Show when={check.errorFiles}>
+                      {(files) => (
+                        <div class="chat-verify-where">
+                          <Show when={files().changed.length}>
+                            Errors in changed files: {files().changed.join(', ')}.{' '}
+                          </Show>
+                          <Show when={files().other.length}>
+                            In other files: {files().other.join(', ')}.
+                          </Show>
+                        </div>
+                      )}
+                    </Show>
                     <pre class="chat-verify-output">{check.output}</pre>
                   </details>
                 </Show>

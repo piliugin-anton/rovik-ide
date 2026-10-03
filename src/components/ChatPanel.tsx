@@ -1859,6 +1859,7 @@ export default function ChatPanel(props: ChatProps) {
     const update = await addVerificationRecord(dialogId, meta);
 
     const results = await runChecks(root, checks, p, {
+      changedFiles,
       shouldStop: () => stopRequested || !isMounted,
       onProgress: (progress) => {
         meta = { ...meta, checks: progress };

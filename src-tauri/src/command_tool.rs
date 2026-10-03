@@ -16,8 +16,10 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
-/// Per stream; the rest is counted but dropped.
-const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// Kept per stream: the start (what ran) and the end, where errors and
+/// summaries usually are. What's in between is dropped and counted.
+const HEAD_BYTES: usize = 16 * 1024;
+const TAIL_BYTES: usize = 48 * 1024;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,25 +51,76 @@ fn shell_command(command: &str) -> Command {
     cmd
 }
 
-/// Reads a whole stream on its own thread, keeping the first `MAX_OUTPUT_BYTES`.
+/// Keeps the first `HEAD_BYTES` and the last `TAIL_BYTES` of a stream. Only
+/// keeping the start lost what matters most in long output: a build's or a
+/// test run's errors and final summary come at the end.
+struct HeadTail {
+    head: Vec<u8>,
+    tail: Vec<u8>,
+    /// Bytes dropped from the front of `tail` so far.
+    dropped: usize,
+}
+
+impl HeadTail {
+    fn new() -> Self {
+        HeadTail { head: Vec::new(), tail: Vec::new(), dropped: 0 }
+    }
+
+    fn push(&mut self, mut bytes: &[u8]) {
+        if self.head.len() < HEAD_BYTES {
+            let take = bytes.len().min(HEAD_BYTES - self.head.len());
+            self.head.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+        }
+        self.tail.extend_from_slice(bytes);
+        // Trim in batches, not on every read.
+        if self.tail.len() > 2 * TAIL_BYTES {
+            let cut = self.tail.len() - TAIL_BYTES;
+            self.tail.drain(..cut);
+            self.dropped += cut;
+        }
+    }
+
+    /// The kept output, and whether anything was dropped.
+    fn finish(mut self) -> (Vec<u8>, bool) {
+        if self.tail.len() > TAIL_BYTES {
+            let cut = self.tail.len() - TAIL_BYTES;
+            self.tail.drain(..cut);
+            self.dropped += cut;
+        }
+        if self.dropped == 0 {
+            self.head.extend_from_slice(&self.tail);
+            return (self.head, false);
+        }
+        // Cut both parts at line breaks, so no line (or UTF-8 character)
+        // is left half there.
+        if let Some(end) = self.head.iter().rposition(|&b| b == b'\n') {
+            self.dropped += self.head.len() - end - 1;
+            self.head.truncate(end + 1);
+        }
+        if let Some(start) = self.tail.iter().take(4096).position(|&b| b == b'\n') {
+            self.dropped += start + 1;
+            self.tail.drain(..=start);
+        }
+        let mut out = self.head;
+        out.extend_from_slice(format!("[… {} bytes of output omitted …]\n", self.dropped).as_bytes());
+        out.extend_from_slice(&self.tail);
+        (out, true)
+    }
+}
+
+/// Reads a whole stream on its own thread, keeping its start and end.
 fn drain<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<(Vec<u8>, bool)> {
     thread::spawn(move || {
-        let mut kept = Vec::new();
-        let mut truncated = false;
+        let mut kept = HeadTail::new();
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let room = MAX_OUTPUT_BYTES.saturating_sub(kept.len());
-                    if n > room {
-                        truncated = true;
-                    }
-                    kept.extend_from_slice(&buf[..n.min(room)]);
-                }
+                Ok(n) => kept.push(&buf[..n]),
             }
         }
-        (kept, truncated)
+        kept.finish()
     })
 }
 
@@ -88,6 +141,9 @@ fn run_blocking(root: &str, command: &str, timeout: Duration) -> Result<CommandO
         .env("PAGER", "cat")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("CI", "1")
+        // Plain text: color codes only cost context and break matching.
+        .env("NO_COLOR", "1")
+        .env("CARGO_TERM_COLOR", "never")
         .spawn()
         .map_err(|e| format!("failed to start the command: {e}"))?;
 
@@ -165,6 +221,34 @@ mod tests {
         assert_eq!(out.stdout.trim(), "hi");
         assert_eq!(out.stderr.trim(), "oops");
         assert!(!out.timed_out);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn long_output_keeps_its_start_and_end() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "i=0; while [ $i -lt 20000 ]; do echo \"line $i\"; i=$((i+1)); done",
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(out.truncated);
+        assert!(out.stdout.starts_with("line 0\n"));
+        assert!(out.stdout.trim_end().ends_with("line 19999"));
+        assert!(out.stdout.contains("bytes of output omitted"));
+        assert!(out.stdout.len() < HEAD_BYTES + TAIL_BYTES + 100);
+        // Whole lines on both sides of the cut.
+        for line in out.stdout.lines() {
+            assert!(line.starts_with("line ") || line.starts_with("[…"), "{line}");
+        }
+    }
+
+    #[test]
+    fn short_output_is_kept_whole() {
+        let mut kept = HeadTail::new();
+        kept.push(b"hello\nworld\n");
+        assert_eq!(kept.finish(), (b"hello\nworld\n".to_vec(), false));
     }
 
     #[cfg(not(windows))]

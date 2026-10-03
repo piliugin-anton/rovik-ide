@@ -6,6 +6,7 @@
 // back to the agent to fix. The environment, not the model, decides that
 // the change works. This file runs the checks and words the report.
 import { toolRunCommand } from './commands';
+import { errorLocations, focusFailures, splitByChanged } from './commandOutput';
 import { checkCommand, type AgentPermissions } from './permissions';
 import { CHECK_LABEL, orderedChecks, type CheckKind, type ProjectCheck } from './projectProfile';
 
@@ -25,8 +26,10 @@ export interface CheckResult {
   durationMs?: number;
   /** skipped: why. */
   reason?: string;
-  /** failed: the relevant part of the output. */
+  /** failed: the relevant part of the output (error blocks and summary). */
   output?: string;
+  /** failed: files the errors point at, split by whether this run changed them. */
+  errorFiles?: { changed: string[]; other: string[] };
 }
 
 export type VerificationStatus =
@@ -70,7 +73,12 @@ export async function runChecks(
   root: string,
   checks: ProjectCheck[],
   permissions: AgentPermissions,
-  opts: { shouldStop: () => boolean; onProgress: (results: CheckResult[]) => void }
+  opts: {
+    /** Files changed in the run: errors in them are told apart from others. */
+    changedFiles: string[];
+    shouldStop: () => boolean;
+    onProgress: (results: CheckResult[]) => void;
+  }
 ): Promise<CheckResult[]> {
   const results: CheckResult[] = orderedChecks(checks)
     .filter((c) => c.enabled && c.command.trim())
@@ -113,7 +121,10 @@ export async function runChecks(
         result.status = 'failed';
         // Compilers print to either stream; keep both, in order of usefulness.
         const combined = [out.stderr.trim(), out.stdout.trim()].filter(Boolean).join('\n');
-        result.output = trimOutput(combined) || '(no output)';
+        result.output = focusFailures(combined) || '(no output)';
+        // From the focused output: the error blocks, not passing tests' paths.
+        const files = splitByChanged(errorLocations(result.output), opts.changedFiles);
+        if (files.changed.length || files.other.length) result.errorFiles = files;
       }
     } catch (err) {
       result.status = 'failed';
@@ -124,37 +135,25 @@ export async function runChecks(
   return results;
 }
 
-/**
- * The start and the end of long output. Errors and summaries are usually at
- * the end; the start shows what ran. Lines are kept whole.
- */
-export function trimOutput(
-  text: string,
-  headLines = 15,
-  tailLines = 120,
-  maxChars = 8_000
-): string {
-  const lines = text.split('\n');
-  let kept =
-    lines.length > headLines + tailLines
-      ? [
-          ...lines.slice(0, headLines),
-          `[… ${lines.length - headLines - tailLines} lines omitted …]`,
-          ...lines.slice(-tailLines),
-        ]
-      : lines;
-  let out = kept.join('\n');
-  // Very long lines: keep the end, where the summary is.
-  if (out.length > maxChars) {
-    kept = [];
-    let size = 0;
-    for (let i = lines.length - 1; i >= 0 && size + lines[i].length < maxChars; i--) {
-      kept.unshift(lines[i]);
-      size += lines[i].length + 1;
-    }
-    out = `[… output shortened to its last ${kept.length} lines …]\n${kept.join('\n')}`;
+/** "Errors point at …", for the report: changed files first, the rest flagged. */
+export function describeErrorFiles(files?: CheckResult['errorFiles']): string | null {
+  if (!files) return null;
+  const list = (paths: string[]) =>
+    paths.length > 6
+      ? `${paths.slice(0, 6).join(', ')} and ${paths.length - 6} more`
+      : paths.join(', ');
+  const parts: string[] = [];
+  if (files.changed.length)
+    parts.push(`Errors point at files you changed: ${list(files.changed)}.`);
+  if (files.other.length) {
+    parts.push(
+      files.changed.length
+        ? `Also at files you didn't change: ${list(files.other)}.`
+        : `Errors point only at files you didn't change: ${list(files.other)} ` +
+            '(they may have failed before your change, or be affected by it).'
+    );
   }
-  return out;
+  return parts.join(' ');
 }
 
 /** The message the agent gets when checks fail (sent as a user-role message). */
@@ -183,12 +182,10 @@ export function failureReport(
       : r.exitCode === null || r.exitCode === undefined
         ? 'failed'
         : `exit code ${r.exitCode}`;
-    lines.push(
-      '',
-      `## ${CHECK_LABEL[r.kind]} failed: \`${r.command}\` (${how})`,
-      '',
-      r.output ?? ''
-    );
+    lines.push('', `## ${CHECK_LABEL[r.kind]} failed: \`${r.command}\` (${how})`);
+    const where = describeErrorFiles(r.errorFiles);
+    if (where) lines.push(where);
+    lines.push('', r.output ?? '');
   }
   const skipped = results.filter((r) => r.status === 'skipped');
   if (skipped.length) {

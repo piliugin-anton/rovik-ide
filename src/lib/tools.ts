@@ -12,6 +12,7 @@ import {
   toolWriteFile,
 } from './commands';
 import type { CommandOutput, EditFileArgs } from './commands';
+import { capOutput, focusFailures, stripAnsi } from './commandOutput';
 
 /**
  * Tool schemas in OpenAI's function-calling format, sent as the `tools`
@@ -244,7 +245,8 @@ function runCommandSchema(permissions?: AgentPermissions) {
     function: {
       name: 'run_command',
       description:
-        'Run a shell command in the project root and get its exit code and output (stdout/stderr, capped at 64 KB each). ' +
+        'Run a shell command in the project root and get its exit code and output (stdout/stderr). Long output is shortened ' +
+        'to its start and end; for a failing command, to its error lines and final summary. ' +
         'Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. ' +
         'Prefer read_file/search_code/edit_file/write_file for reading and editing files.' +
         allowed,
@@ -295,11 +297,27 @@ export function formatCommandOutput(command: string, out: CommandOutput): string
     : out.exitCode === null
       ? 'ended by a signal'
       : `exit code ${out.exitCode}`;
+  // The first two lines are read back by the chat's tool block (exit code).
   const parts = [`$ ${command}`, `${status}, ${(out.durationMs / 1000).toFixed(1)} s`];
-  if (out.stdout.trim()) parts.push(`--- stdout ---\n${out.stdout.trimEnd()}`);
-  if (out.stderr.trim()) parts.push(`--- stderr ---\n${out.stderr.trimEnd()}`);
+  const failed = out.timedOut || out.exitCode !== 0;
+  let shortened = out.truncated;
+  // A failing run: its errors and summary. Otherwise its start and end.
+  const shape = (text: string) => {
+    const clean = stripAnsi(text).trimEnd();
+    const shaped = failed ? focusFailures(clean, 12_000) : capOutput(clean, 200, 200, 24_000);
+    if (shaped !== clean) shortened = true;
+    return shaped;
+  };
+  if (out.stdout.trim()) parts.push(`--- stdout ---\n${shape(out.stdout)}`);
+  if (out.stderr.trim()) parts.push(`--- stderr ---\n${shape(out.stderr)}`);
   if (!out.stdout.trim() && !out.stderr.trim()) parts.push('(no output)');
-  if (out.truncated) parts.push('(output truncated at 64 KB per stream)');
+  if (shortened) {
+    parts.push(
+      failed
+        ? '(long output: shown are its error lines and its end; rerun narrower, e.g. one test, for the rest)'
+        : '(long output: shown are its start and end; use a narrower command or read_file for the rest)'
+    );
+  }
   return parts.join('\n');
 }
 
