@@ -46,6 +46,7 @@ import { generateChatTitle } from '../lib/chatTitle';
 import { cancelChatRequest, sendChatMessage, streamEndSignal, untilStreamEnd } from '../lib/aiChat';
 import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
 import { agentToolsFor, editFileArgs, executeAgentTool } from '../lib/tools';
+import { AgentRunGuard } from '../lib/agentGuard';
 import AiSettingsModal, { type AiSettingsPage } from './AiSettingsModal';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
@@ -80,9 +81,6 @@ import {
   type ReviewHunk,
 } from '../lib/approvals';
 import { readFileContent, toolEditFile } from '../lib/commands';
-
-// Hard ceiling on how many read→act round-trips one user message can trigger.
-const MAX_AGENT_STEPS = 24;
 
 const NEW_CHAT_TITLE = 'New Chat';
 
@@ -161,6 +159,9 @@ export default function ChatPanel(props: ChatProps) {
    * path remains available when constructing the message sent to the model.
    */
   const [referencedFiles, setReferencedFiles] = createSignal<FileSuggestion[]>([]);
+
+  /** Tool calls in the running agent run, shown next to Stop. */
+  const [runToolCalls, setRunToolCalls] = createSignal(0);
 
   let currentChannel: Channel<ChatStreamEvent> | null = null;
   /** The running model request, so the Stop button can cancel it. */
@@ -1395,7 +1396,8 @@ export default function ChatPanel(props: ChatProps) {
     opts: {
       /** The request's user message as sent (with editor context). */
       currentUserContent?: string;
-      step?: number;
+      /** The run's checkpoint and loop bookkeeping; a new run starts one. */
+      guard?: AgentRunGuard;
       /** Ask the model to continue its interrupted last reply. */
       continueReply?: boolean;
       /**
@@ -1405,7 +1407,8 @@ export default function ChatPanel(props: ChatProps) {
       onSettled?: (ok: boolean) => void;
     } = {}
   ): Promise<void> {
-    const step = opts.step ?? 0;
+    const guard = opts.guard ?? new AgentRunGuard(permissions().toolCallCheckpoint);
+    setRunToolCalls(guard.toolCalls);
     const profile = activeProfile();
 
     if (!profile || !isMounted || stopRequested) {
@@ -1631,23 +1634,41 @@ export default function ChatPanel(props: ChatProps) {
     // Normal final answer, or the user pressed Stop.
     if (toolCalls.length === 0 || stopRequested) return;
 
-    // Safety limit.
-    if (step >= MAX_AGENT_STEPS) {
+    await executeToolCalls(dialogId, toolCalls, undefined, guard);
+    if (stopRequested) return;
+
+    // Every tool call has its result, so the chat can wait here as long as
+    // it likes: Continue picks up with the next request (continueRun).
+    const pause = guard.pause();
+    if (pause) {
       await store.appendMessages(dialogId, [
         {
           id: crypto.randomUUID(),
           role: 'assistant',
+          // Empty, no tool calls: kept out of what the model is sent.
           content: '',
-          error: `Stopped after ${MAX_AGENT_STEPS} tool-call steps to avoid a runaway loop.`,
           finalized: true,
+          meta: { paused: pause },
         },
       ]);
       return;
     }
 
-    await executeToolCalls(dialogId, toolCalls);
-    if (stopRequested) return;
-    await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, step: step + 1 });
+    await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, guard });
+  }
+
+  /** Continue a run that paused at a checkpoint or a loop check. */
+  function continueRun() {
+    const dialogId = activeDialogId();
+    if (!dialogId || sending()) return;
+    const list = store.messagesOf(dialogId);
+    const last = list[list.length - 1];
+    const paused = last?.meta?.paused;
+    listController?.followLatest();
+    // Counting goes on from where it paused; loop evidence starts fresh.
+    const guard = new AgentRunGuard(permissions().toolCallCheckpoint, paused?.toolCalls ?? 0);
+    const currentUserContent = lastUserWireContent(dialogId);
+    void runRequest(dialogId, () => runAgentTurn(dialogId, { currentUserContent, guard }));
   }
 
   /**
@@ -1660,7 +1681,9 @@ export default function ChatPanel(props: ChatProps) {
     dialogId: string,
     toolCalls: ChatToolCall[],
     /** Interrupted calls being resumed: always asked manually, with this note. */
-    resumeNote?: string
+    resumeNote?: string,
+    /** The run's loop checks; each finished call is recorded with it. */
+    guard?: AgentRunGuard
   ) {
     const root = props.rootPath();
     const stoppedResult = (tc: ChatToolCall) =>
@@ -1690,10 +1713,38 @@ export default function ChatPanel(props: ChatProps) {
         continue;
       }
       const args = argsOverride ?? tc.arguments;
+      const toolName = toolOverride ?? tc.name;
+      const writes = !refusal && (toolName === 'write_file' || toolName === 'edit_file');
+      // The file before a write, so the guard can tell an edit undoing earlier ones.
+      const writePath = writes ? toolArg(args, 'path') : undefined;
+      const before =
+        guard && writePath && root
+          ? await readFileContent(toAbsolutePath(writePath, root)).catch(() => null)
+          : null;
       const result = refusal
-        ? { content: refusal, attachments: undefined }
-        : await executeAgentTool(root, toolOverride ?? tc.name, args);
+        ? { content: refusal, attachments: undefined, written: undefined }
+        : await executeAgentTool(root, toolName, args);
       if (resultNote && !result.content.startsWith('Error:')) result.content += resultNote;
+
+      if (guard) {
+        const failed = result.content.startsWith('Error:');
+        const after =
+          result.written?.content ??
+          (toolName === 'write_file' ? toolArg(args, 'content') : undefined);
+        const verdict = guard.record({
+          name: tc.name,
+          argsJson: tc.arguments,
+          result: result.content,
+          write:
+            writes && !failed && writePath && after !== undefined
+              ? { path: writePath, before, after }
+              : undefined,
+        });
+        // The model reads the note with the result; a stop pauses the run
+        // once this turn's calls are done (runAgentTurn).
+        if (verdict.kind !== 'ok') result.content += verdict.note;
+        setRunToolCalls(guard.toolCalls);
+      }
 
       // Open tabs of the file show what was written.
       if (!refusal && root && !result.content.startsWith('Error:')) {
@@ -1789,6 +1840,7 @@ export default function ChatPanel(props: ChatProps) {
     stopRequested = false;
     window.clearTimeout(stopTimer);
     setSending(true);
+    setRunToolCalls(0);
     store.setBusy(dialogId, true);
     runningDialogs.add(dialogId);
     try {
@@ -2159,6 +2211,7 @@ export default function ChatPanel(props: ChatProps) {
         toolNotes={toolNotes()}
         onRetry={retryLastTurn}
         onContinue={continueReply}
+        onContinueRun={continueRun}
       />
       <div class="chat-input-row">
         <div class="chat-input-container">
@@ -2232,6 +2285,11 @@ export default function ChatPanel(props: ChatProps) {
             </button>
           }
         >
+          <Show when={runToolCalls() > 0}>
+            <span class="chat-run-steps" title="Tool calls in this run">
+              {runToolCalls()} {runToolCalls() === 1 ? 'call' : 'calls'}
+            </span>
+          </Show>
           <button
             onClick={stopRequest}
             class="chat-send-button stop"

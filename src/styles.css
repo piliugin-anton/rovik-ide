@@ -851,6 +851,44 @@ body {
   font-size: 12px;
 }
 
+/* A run that paused for the user (MessageList, lib/agentGuard.ts). */
+.chat-paused {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 90%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.chat-paused.loop {
+  border-color: var(--warning);
+}
+
+.chat-paused.loop svg {
+  color: var(--warning);
+}
+
+.chat-paused-text {
+  flex: 1;
+  min-width: 160px;
+}
+
+/* Tool calls so far, next to Stop while the agent runs. */
+.chat-run-steps {
+  align-self: center;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .chat-message {
   min-height: 32px;
   font-size: 13px;

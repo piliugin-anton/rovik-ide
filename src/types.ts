@@ -173,6 +173,11 @@ export interface ToolMeta {
    * file references), reused when the turn is retried or continued.
    */
   sentContent?: string;
+  /**
+   * An empty assistant message marking where a run paused (never sent to the
+   * model): after a number of tool calls, or because it looked stuck.
+   */
+  paused?: { kind: 'checkpoint' | 'loop'; toolCalls: number; reason?: string };
 }
 
 export type ChatErrorKind =

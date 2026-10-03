@@ -11,6 +11,7 @@
 //
 // Stored with the AI settings (lib/aiSettings.ts).
 import type { ModelSelection } from '../types';
+import { DEFAULT_TOOL_CALL_CHECKPOINT } from './agentGuard';
 
 /** Who approves: the user, or the AI reviewer. */
 export type Approver = 'user' | 'ai';
@@ -41,6 +42,12 @@ export interface AgentPermissions {
    * format of the Typesafe Jev model). See lib/aiApproval.ts.
    */
   approvalTypedInput: boolean;
+  /**
+   * Pause the agent for the user after every this many tool calls in one
+   * run; null never pauses on count (loop detection still does). See
+   * lib/agentGuard.ts.
+   */
+  toolCallCheckpoint: number | null;
 }
 
 export const DEFAULT_ALLOWED_COMMANDS = [
@@ -77,6 +84,7 @@ export const DEFAULT_PERMISSIONS: AgentPermissions = {
   approvalModel: null,
   approvalFallbacks: [],
   approvalTypedInput: false,
+  toolCallCheckpoint: DEFAULT_TOOL_CALL_CHECKPOINT,
 };
 
 const isSelection = (v: unknown): v is ModelSelection =>
@@ -151,6 +159,12 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
       ? r.approvalFallbacks.filter(isSelection)
       : [],
     approvalTypedInput: r.approvalTypedInput === true,
+    toolCallCheckpoint:
+      r.toolCallCheckpoint === null
+        ? null
+        : typeof r.toolCallCheckpoint === 'number' && r.toolCallCheckpoint >= 1
+          ? Math.floor(r.toolCallCheckpoint)
+          : DEFAULT_TOOL_CALL_CHECKPOINT,
   };
 }
 

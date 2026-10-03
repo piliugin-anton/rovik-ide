@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import { formatModelLabel } from '../lib/aiSettings';
 import { APPROVE_AT, isJevModel, REJECT_AT } from '../lib/aiApproval';
+import { TOOL_CALL_CHECKPOINT_CHOICES } from '../lib/agentGuard';
 import {
   DEFAULT_ALLOWED_COMMANDS,
   sameModel,
@@ -333,6 +334,33 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
           offText="Tool calls run right away."
           onChange={(toolApproval) => patch({ toolApproval })}
         />
+      </section>
+
+      {/* Long runs */}
+      <section class="settings-section">
+        <div class="settings-section-title">Long runs</div>
+        <p class="settings-hint">
+          The agent stops and asks before going on. It also pauses when it seems stuck (repeating
+          the same call, failing again and again, undoing its own edits), whatever this is set to.
+        </p>
+        <SettingRow label="Pause every">
+          <select
+            class="settings-select"
+            value={String(p().toolCallCheckpoint ?? 'never')}
+            onChange={(e) => {
+              const value = e.currentTarget.value;
+              patch({ toolCallCheckpoint: value === 'never' ? null : Number(value) });
+            }}
+          >
+            <For each={TOOL_CALL_CHECKPOINT_CHOICES}>
+              {(n) => (
+                <option value={String(n ?? 'never')}>
+                  {n === null ? 'Never' : `${n} tool calls`}
+                </option>
+              )}
+            </For>
+          </select>
+        </SettingRow>
       </section>
 
       {/* AI reviewer: only when something is approved by AI */}

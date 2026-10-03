@@ -60,6 +60,8 @@ export default function MessageList(props: {
   onRetry: () => void;
   /** Continue an interrupted reply. */
   onContinue: () => void;
+  /** Continue a run that paused (tool-call checkpoint or loop check). */
+  onContinueRun: () => void;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let innerRef: HTMLDivElement | undefined;
@@ -525,6 +527,44 @@ export default function MessageList(props: {
                         type="button"
                         class="chat-action-button"
                         onClick={() => props.onContinue()}
+                      >
+                        Continue
+                      </button>
+                    </Show>
+                  </div>
+                )}
+              </Show>
+
+              <Show when={m.meta?.paused}>
+                {(paused) => (
+                  <div
+                    class="chat-paused"
+                    classList={{ loop: paused().kind === 'loop' }}
+                    role="status"
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="8" cy="8" r="6" />
+                      <path d="M6.5 5.75v4.5M9.5 5.75v4.5" />
+                    </svg>
+                    <span class="chat-paused-text">
+                      {paused().kind === 'checkpoint'
+                        ? `Paused after ${paused().toolCalls} tool calls.`
+                        : `Paused after ${paused().toolCalls} tool calls: the agent seems stuck, ${paused().reason}.`}
+                    </span>
+                    <Show when={isLatest(m)}>
+                      <button
+                        type="button"
+                        class="chat-action-button"
+                        onClick={() => props.onContinueRun()}
                       >
                         Continue
                       </button>
