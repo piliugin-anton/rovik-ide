@@ -7,7 +7,8 @@ import { For, Match, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
 import type { CheckResult, VerificationMeta } from '../lib/verification';
 
-function headline(meta: VerificationMeta): string {
+function headline(meta: VerificationMeta, interrupted: boolean): string {
+  if (interrupted) return 'Checks didn’t finish: the run ended while they were running.';
   switch (meta.status) {
     case 'running':
       return 'Checking the changes…';
@@ -72,17 +73,28 @@ function StatusIcon(props: { status: CheckResult['status'] }) {
   );
 }
 
+/** A check that was waiting or running when the run ended shows as not run. */
+function shownStatus(check: CheckResult, interrupted: boolean): CheckResult['status'] {
+  return interrupted && (check.status === 'running' || check.status === 'pending')
+    ? 'skipped'
+    : check.status;
+}
+
 export default function VerificationRecord(props: {
   meta: VerificationMeta;
   /** The newest message, nothing running: its buttons are live. */
   latest: boolean;
+  /** Checks for this record are running right now. */
+  live: boolean;
   onRunChecks: () => void;
   onOpenProjectChecks: () => void;
 }) {
+  /** Saved as running, but nothing runs it: the app closed mid-check. */
+  const interrupted = () => props.meta.status === 'running' && !props.live;
   return (
-    <div class={`chat-verify ${props.meta.status}`} role="status">
+    <div class={`chat-verify ${interrupted() ? 'stopped' : props.meta.status}`} role="status">
       <div class="chat-verify-head">
-        <span class="chat-verify-title">{headline(props.meta)}</span>
+        <span class="chat-verify-title">{headline(props.meta, interrupted())}</span>
         <Show when={props.latest && props.meta.status === 'needs-approval'}>
           <button type="button" class="chat-action-button" onClick={() => props.onRunChecks()}>
             Run checks
@@ -99,18 +111,20 @@ export default function VerificationRecord(props: {
         <ul class="chat-verify-checks">
           <For each={props.meta.checks}>
             {(check) => (
-              <li class={`chat-verify-check ${check.status}`}>
+              <li class={`chat-verify-check ${shownStatus(check, interrupted())}`}>
                 <Show
                   when={check.status === 'failed' && check.output}
                   fallback={
                     <div class="chat-verify-row">
-                      <StatusIcon status={check.status} />
+                      <StatusIcon status={shownStatus(check, interrupted())} />
                       <span class="chat-verify-kind">{CHECK_LABEL[check.kind]}</span>
                       <code class="chat-verify-command">{check.command}</code>
                       <span class="chat-verify-note">
-                        {check.status === 'skipped'
-                          ? `skipped: ${check.reason}`
-                          : seconds(check.durationMs)}
+                        {shownStatus(check, interrupted()) !== check.status
+                          ? 'didn’t finish'
+                          : check.status === 'skipped'
+                            ? `skipped: ${check.reason}`
+                            : seconds(check.durationMs)}
                       </span>
                     </div>
                   }

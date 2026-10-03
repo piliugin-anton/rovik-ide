@@ -1801,8 +1801,9 @@ export default function ChatPanel(props: ChatProps) {
     await store.appendMessages(dialogId, [
       { id, role: 'assistant', content: '', finalized: true, meta: { verification: meta } },
     ]);
-    return (next: VerificationMeta) =>
-      store.patchMessage(dialogId, id, { meta: { verification: next } });
+    // Saved on every change, not just shown: the record has to read the
+    // same after a restart.
+    return (next: VerificationMeta) => store.updateMeta(dialogId, id, { verification: next });
   }
 
   /**

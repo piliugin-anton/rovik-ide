@@ -425,6 +425,16 @@ export function createChatStore() {
     );
   }
 
+  /**
+   * Replaces a stored message's meta and saves it: for records that change
+   * after they're added (the verification gate's rounds). patchMessage alone
+   * only changes what's on screen.
+   */
+  function updateMeta(dialogId: string, messageId: string, meta: ToolMeta) {
+    patchMessage(dialogId, messageId, { meta });
+    return persist(() => chatApi.updateMessage(messageId, { meta }));
+  }
+
   function markFailed(dialogId: string, messageId: string) {
     patchMessage(dialogId, messageId, { failed: true });
     return persist(() => chatApi.updateMessage(messageId, { failed: true }));
@@ -450,6 +460,7 @@ export function createChatStore() {
     deleteDialog,
     appendMessages,
     patchMessage,
+    updateMeta,
     checkpoint,
     finalizeMessage,
     markFailed,

@@ -585,6 +585,7 @@ export default function MessageList(props: {
                   <VerificationRecord
                     meta={v()}
                     latest={isLatest(m)}
+                    live={props.sending && messages()[messages().length - 1]?.id === m.id}
                     onRunChecks={() => props.onRunChecks()}
                     onOpenProjectChecks={() => props.onOpenProjectChecks()}
                   />
