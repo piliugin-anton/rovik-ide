@@ -3527,3 +3527,90 @@ body {
   flex-shrink: 0;
   color: var(--fg-muted);
 }
+
+/* edit_file's change as a diff (components/EditDiffBlock.tsx) */
+
+.edit-diff-counts {
+  display: inline-flex;
+  gap: 8px;
+  margin-right: auto;
+  font-family: var(--font-mono);
+}
+
+.edit-diff-count.removed {
+  color: var(--diff-deleted-strong);
+}
+
+.edit-diff-count.added {
+  color: var(--diff-added-strong);
+}
+
+/* The toolbar's first button pushes itself right; the counts already do. */
+.edit-diff .static-code-toolbar button:first-of-type {
+  margin-left: 0;
+}
+
+.edit-diff-body {
+  max-height: 480px;
+  overflow: auto;
+  padding: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 19px;
+  tab-size: 4;
+}
+
+/* As wide as the longest line, so a row's color spans it when scrolled. */
+.edit-diff-lines {
+  width: max-content;
+  min-width: 100%;
+}
+
+.edit-diff-row {
+  display: flex;
+  white-space: pre;
+}
+
+.edit-diff-row.removed {
+  background: var(--diff-deleted-bg);
+}
+
+.edit-diff-row.added {
+  background: var(--diff-added-bg);
+}
+
+.edit-diff-no {
+  flex-shrink: 0;
+  width: 4ch;
+  padding-right: 6px;
+  color: var(--fg-dim);
+  text-align: right;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.edit-diff-sign {
+  flex-shrink: 0;
+  width: 2ch;
+  padding-left: 6px;
+  color: var(--fg-dim);
+  user-select: none;
+}
+
+.edit-diff-row.removed .edit-diff-sign {
+  color: var(--diff-deleted-strong);
+}
+
+.edit-diff-row.added .edit-diff-sign {
+  color: var(--diff-added-strong);
+}
+
+.edit-diff-code {
+  padding-right: 10px;
+}
+
+.edit-diff-empty {
+  padding-left: 10px;
+  color: var(--fg-dim);
+  font-style: italic;
+}

@@ -33,8 +33,23 @@ function unregisterEditor(close: () => void) {
   if (i >= 0) openEditors.splice(i, 1);
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Highlighted HTML for each line of `lines`, in the editor's colors.
+ * colorize() ends every line with "<br/>", which is what it's split on.
+ */
+export async function colorizeLines(lines: string[], language?: string): Promise<string[]> {
+  ensureTheme();
+  const html = await monaco.editor.colorize(lines.join('\n'), resolveLanguage(language), {
+    tabSize: 4,
+  });
+  const out = html.split('<br/>');
+  // A mismatch would put colors on the wrong lines: plain text instead.
+  if (out.length < lines.length) throw new Error('colorize: unexpected line count');
+  return out.slice(0, lines.length);
 }
 
 export default function StaticCodeBlock(props: {

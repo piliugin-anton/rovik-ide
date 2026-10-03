@@ -6,6 +6,7 @@
 import { createMemo, createResource, createSignal, For, Show } from 'solid-js';
 import type { ChatMessage, ChatToolCall, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
+import EditDiffBlock from './EditDiffBlock';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
 import { describeToolCall } from '../lib/permissions';
@@ -419,15 +420,18 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
    * to center: the range the tool worked on, else where the edit landed
    * (edit_file's result names it), else the top.
    */
+  /** edit_file: the file line where the edit landed, from its result. */
+  const editLandedLine = (): number | undefined => {
+    if (props.toolCall.name !== 'edit_file') return undefined;
+    const landed = Number(resultText()?.match(/(?:replaced|removed) lines? (\d+)/)?.[1]);
+    return Number.isFinite(landed) && landed >= 1 ? landed : undefined;
+  };
+
   const targetLine = (): number => {
     const a = args();
     const start = lineArg(a.start_line);
     if (start !== undefined) return start;
-    if (props.toolCall.name === 'edit_file') {
-      const landed = Number(resultText()?.match(/(?:replaced|removed) lines? (\d+)/)?.[1]);
-      if (Number.isFinite(landed) && landed >= 1) return landed;
-    }
-    return 1;
+    return editLandedLine() ?? 1;
   };
   const openInEditor = () => {
     const path = str(args().path);
@@ -490,28 +494,18 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
               />
             </Show>
             <Show when={isEdit() && str(args().old_text) !== undefined}>
-              <div class="tool-call-label">Replace</div>
-              <StaticCodeBlock
-                code={str(args().old_text)!}
-                language={language()}
-                onOpenInEditor={openInEditor}
-              />
-              <div class="tool-call-label">With</div>
+              <div class="tool-call-label">Change</div>
               <Show
-                when={str(args().new_text)}
-                fallback={
-                  <div class="tool-call-pending">
-                    {str(args().new_text) === '' ? 'Nothing: the text is deleted.' : '…'}
-                  </div>
-                }
+                when={str(args().new_text) !== undefined}
+                fallback={<div class="tool-call-pending">…</div>}
               >
-                {(text) => (
-                  <StaticCodeBlock
-                    code={text()}
-                    language={language()}
-                    onOpenInEditor={openInEditor}
-                  />
-                )}
+                <EditDiffBlock
+                  oldText={str(args().old_text)!}
+                  newText={str(args().new_text)!}
+                  language={language()}
+                  startLine={editLandedLine()}
+                  onOpenInEditor={openInEditor}
+                />
               </Show>
             </Show>
           </section>

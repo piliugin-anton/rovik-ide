@@ -133,3 +133,35 @@ export function splitLines(text: string): { lines: string[]; eol: '\n' | '\r\n' 
     eol: text.includes('\r\n') ? '\r\n' : '\n',
   };
 }
+
+/** One line of a diff as shown: unchanged, removed or added. */
+export interface DiffRow {
+  kind: 'same' | 'removed' | 'added';
+  /** Index into the old lines (same, removed). */
+  oldIndex?: number;
+  /** Index into the new lines (same, added). */
+  newIndex?: number;
+}
+
+/** All lines of `a` and `b` in diff order, each marked same, removed or added. */
+export function diffRows(a: string[], b: string[]): DiffRow[] {
+  const out: DiffRow[] = [];
+  let ai = 0;
+  let bi = 0;
+  for (const hunk of diffLines(a, b)) {
+    for (; ai < hunk.origStart - 1; ai++, bi++)
+      out.push({ kind: 'same', oldIndex: ai, newIndex: bi });
+    for (let i = 0; i < hunk.deleted.length; i++) out.push({ kind: 'removed', oldIndex: ai++ });
+    for (let i = 0; i < hunk.added.length; i++) out.push({ kind: 'added', newIndex: bi++ });
+  }
+  for (; ai < a.length; ai++, bi++) out.push({ kind: 'same', oldIndex: ai, newIndex: bi });
+  return out;
+}
+
+/** Lines of a snippet; a trailing line break doesn't add an empty line. */
+export function snippetLines(text: string): string[] {
+  if (text === '') return [];
+  const { lines } = splitLines(text);
+  if (text.endsWith('\n')) lines.pop();
+  return lines;
+}
