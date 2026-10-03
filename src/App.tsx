@@ -153,14 +153,6 @@ export default function App() {
     return rows.filter((r) => selectedIds.has(r.id));
   });
 
-  const newFolderContextMenuItemDisabled = createMemo(() => {
-    const selected = selectedFileIds();
-    if (selected.size > 1) return true;
-    const target = tree.rows().find((r) => selected.has(r.id));
-    if (!target || target.isDir) return false;
-    return true;
-  });
-
   const firstSelectedRow = createMemo<TreeRow | null>(() => {
     const rows = effectiveSelectedRows();
     return rows.length > 0 ? rows[0] : null;
@@ -555,17 +547,35 @@ export default function App() {
     if (entry.mode === 'cut') setClipboard(null);
   }
 
+  /**
+   * The folder a new file or folder goes in: the clicked folder itself, the
+   * folder a clicked file is in, or the project root. With several items
+   * selected, the topmost one decides.
+   */
+  function creationFolder(target: TreeRow | null): TreeRow | null {
+    if (!target) return null;
+    if (target.isDir) return target;
+    // The tree is flattened in order: a file's folder is the nearest row
+    // above it one level up. Top-level files are in the root.
+    const rows = tree.rows();
+    const at = rows.findIndex((r) => r.id === target.id);
+    for (let i = at - 1; i >= 0; i--) {
+      if (rows[i].depth === target.depth - 1 && rows[i].isDir) return rows[i];
+    }
+    return null;
+  }
+
   function beginCreate(kind: 'file' | 'folder') {
     setContextMenuVisible(false);
-    const target = firstSelectedRow();
-    const parentId = target?.isDir ? target.id : rootId();
+    const folder = creationFolder(firstSelectedRow());
+    const parentId = folder ? folder.id : rootId();
     if (!parentId) return;
 
-    const parentPath = target?.isDir ? target.path : rootPath();
-    const parentDepth = target?.isDir ? target.depth : -1;
+    const parentPath = folder ? folder.path : rootPath();
+    const parentDepth = folder ? folder.depth : -1;
 
-    if (target?.isDir && !tree.expanded().has(target.path)) {
-      tree.toggle(target);
+    if (folder && !tree.expanded().has(folder.path)) {
+      tree.toggle(folder);
     }
 
     setDraftEntry({ parentId, parentPath, depth: parentDepth + 1, isDir: kind === 'folder' });
@@ -1011,7 +1021,6 @@ export default function App() {
           ref={setMenuEl}
           x={cursorPosition().x}
           y={cursorPosition().y}
-          canNewFolder={!newFolderContextMenuItemDisabled()}
           hasSelection={selectedFileIds().size > 0}
           singleSelection={selectedFileIds().size === 1}
           canPaste={!!clipboard()}

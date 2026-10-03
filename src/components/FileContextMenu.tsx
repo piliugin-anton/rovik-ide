@@ -31,7 +31,6 @@ export interface FileContextMenuProps {
   ref: (el: HTMLDivElement) => void;
   x: number;
   y: number;
-  canNewFolder: boolean;
   /** Something is selected: copy, cut, delete. */
   hasSelection: boolean;
   /** Exactly one item: rename. */
@@ -70,7 +69,6 @@ export default function FileContextMenu(props: FileContextMenuProps) {
         <ContextMenuItem
           label="New folder"
           onClick={props.onNewFolder}
-          disabled={!props.canNewFolder}
           icon={
             <Icon>
               <path d="M2 4.5a1 1 0 0 1 1-1h3.5l1.2 1.5H13a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5Z" />
