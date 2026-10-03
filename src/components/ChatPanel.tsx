@@ -25,8 +25,14 @@ import type {
   TreeRow,
 } from '../types';
 import type { ActiveFileContext } from '../lib/activeContext';
-import { buildContextHeader, selectedLines } from '../lib/activeContext';
-import { lineRangeLabel, referenceKey, referenceLabel } from '../lib/fileReferences';
+import { buildContextHeader } from '../lib/activeContext';
+import {
+  lineRangeLabel,
+  referenceKey,
+  referenceLabel,
+  selectionReference,
+} from '../lib/fileReferences';
+import { onAddToChat, takeChatReferences } from '../lib/editorBridge';
 import {
   loadAiSettings,
   reconcileSelection,
@@ -39,7 +45,7 @@ import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
 import { cancelChatRequest, sendChatMessage, streamEndSignal, untilStreamEnd } from '../lib/aiChat';
 import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
-import { agentToolsFor, executeAgentTool } from '../lib/tools';
+import { agentToolsFor, editFileArgs, executeAgentTool } from '../lib/tools';
 import AiSettingsModal, { type AiSettingsPage } from './AiSettingsModal';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
@@ -73,7 +79,7 @@ import {
   type EditReview,
   type ReviewHunk,
 } from '../lib/approvals';
-import { readFileContent } from '../lib/commands';
+import { readFileContent, toolEditFile } from '../lib/commands';
 
 // Hard ceiling on how many read→act round-trips one user message can trigger.
 const MAX_AGENT_STEPS = 24;
@@ -266,14 +272,8 @@ export default function ChatPanel(props: ChatProps) {
   const selectionSuggestion = createMemo<FileSuggestion | null>(() => {
     const ctx = props.activeFileContext();
     if (!ctx?.selection) return null;
-    const name = ctx.path.split(/[\\/]/).pop() ?? ctx.path;
-    return {
-      id: props.files().find((f) => f.path === ctx.path)?.id ?? ctx.path,
-      path: ctx.path,
-      name,
-      relativePath: toRelativePath(ctx.path, props.rootPath()),
-      lines: selectedLines(ctx.selection),
-    };
+    const id = props.files().find((f) => f.path === ctx.path)?.id ?? ctx.path;
+    return selectionReference(ctx.path, props.rootPath(), ctx.selection, id);
   });
 
   const fileSuggestions = createMemo<FileSuggestion[]>(() => {
@@ -358,9 +358,23 @@ export default function ChatPanel(props: ChatProps) {
 
       await recoverDraftsAfterRestart();
     } finally {
-      if (isMounted) setLoadingHistory(false);
+      if (isMounted) {
+        setLoadingHistory(false);
+        // "Add to chat" may have opened this panel: its references waited
+        // until the chat was loaded (opening one resets the composer).
+        insertPendingReferences();
+      }
     }
   });
+
+  const stopAddToChat = onAddToChat(() => {
+    if (!loadingHistory()) insertPendingReferences();
+  });
+  onCleanup(stopAddToChat);
+
+  function insertPendingReferences() {
+    for (const reference of takeChatReferences()) insertReferenceChip(reference);
+  }
 
   /*
    * -----------------------------------------------------------------------
@@ -660,6 +674,59 @@ export default function ChatPanel(props: ChatProps) {
         container.scrollTop += caretRect.bottom - containerRect.bottom;
       }
     }, 0);
+  }
+
+  /**
+   * Adds a reference chip from outside the composer ("Add to chat" in the
+   * editor): at the caret when the composer has it, otherwise at the end.
+   * A reference that's already there isn't added twice.
+   */
+  function insertReferenceChip(reference: FileSuggestion) {
+    const container = inputTextareaRef;
+    if (!container) return;
+    const key = referenceKey(reference);
+    const alreadyThere = composerReferences().some((r) => referenceKey(r) === key);
+
+    const selection = window.getSelection();
+    let range: Range;
+    const caret = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    if (caret && container.contains(caret.commonAncestorContainer)) {
+      range = caret;
+      range.deleteContents();
+    } else {
+      // The end of the last line; WebKit wraps lines in <div>s and keeps a
+      // placeholder <br> at the end, which would push the chip to a new line.
+      let target: Node = container;
+      while (target.lastChild instanceof HTMLDivElement) target = target.lastChild;
+      if (target.lastChild?.nodeName === 'BR') target.lastChild.remove();
+      range = document.createRange();
+      range.selectNodeContents(target);
+      range.collapse(false);
+    }
+
+    if (!alreadyThere) {
+      const preceding = document.createRange();
+      preceding.selectNodeContents(container);
+      preceding.setEnd(range.startContainer, range.startOffset);
+      const before = preceding.toString();
+      const fragment = document.createDocumentFragment();
+      if (before && !/\s$/.test(before)) fragment.append(document.createTextNode(' '));
+      fragment.append(createFileChip(reference));
+      const space = document.createTextNode(' ');
+      fragment.append(space);
+      range.insertNode(fragment);
+      range.setStartAfter(space);
+      range.collapse(true);
+      setReferencedFiles((current) =>
+        current.some((f) => referenceKey(f) === key) ? current : [...current, reference]
+      );
+      setInput(readComposerText());
+    }
+
+    setFileSuggestionsOpen(false);
+    container.focus();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
   }
 
   /** File references in the composer, in order, once each. */
@@ -1041,6 +1108,8 @@ export default function ChatPanel(props: ChatProps) {
     approval?: ToolApproval;
     /** Partially accepted edit: the arguments to run instead. */
     argsOverride?: string;
+    /** Run as this tool instead (a partly accepted edit_file is written whole). */
+    toolOverride?: string;
     /** Added to the tool result for the model. */
     resultNote?: string;
   }> {
@@ -1057,15 +1126,19 @@ export default function ChatPanel(props: ChatProps) {
     const command = tc.name === 'run_command' ? toolArg(tc.arguments, 'command') : undefined;
     // Edits are diffed once: the AI reviewer reads the diff, the user
     // reviews it in the editor.
-    const prepared = tc.name === 'write_file' ? await prepareEditReview(tc.arguments) : null;
+    const isFileEdit = tc.name === 'write_file' || tc.name === 'edit_file';
+    const prepared = isFileEdit ? await prepareEditReview(tc.name, tc.arguments) : null;
     // Writing the same content changes nothing: no need to ask.
     if (prepared?.kind === 'unchanged') return { refusal: null };
+    // An edit_file that can't apply (text not found, outside its lines):
+    // the model gets the reason; there's nothing for anyone to approve.
+    if (prepared?.kind === 'invalid') return { refusal: prepared.error };
     const edit = prepared?.kind === 'diff' ? prepared.review : null;
     let manualReason: string | null = resumeNote ?? null;
 
     if (approver === 'ai') {
       const models = approvalProfiles(p);
-      const editPath = tc.name === 'write_file' ? toolArg(tc.arguments, 'path') : undefined;
+      const editPath = isFileEdit ? toolArg(tc.arguments, 'path') : undefined;
 
       // Shapes no reviewer model may approve on its own (see permissions.ts).
       if (command !== undefined && isRiskyCommand(command)) {
@@ -1082,8 +1155,7 @@ export default function ChatPanel(props: ChatProps) {
           models,
           {
             reviewId: tc.id,
-            group:
-              tc.name === 'run_command' ? 'commands' : tc.name === 'write_file' ? 'edits' : 'tools',
+            group: tc.name === 'run_command' ? 'commands' : isFileEdit ? 'edits' : 'tools',
             userRequest: latestUserRequest(dialogId),
             project: props.rootPath() ?? '',
             toolName: tc.name,
@@ -1154,6 +1226,7 @@ export default function ChatPanel(props: ChatProps) {
     // Some changes accepted: write the original with only those applied.
     const args = parseToolArgsObject(tc.arguments);
     const total = decision.accepted.length + decision.rejected.length;
+    const path = typeof args.path === 'string' ? args.path : '';
     return {
       refusal: null,
       approval: {
@@ -1161,7 +1234,12 @@ export default function ChatPanel(props: ChatProps) {
         approved: true,
         reason: `Accepted ${decision.accepted.length} of ${total} changes.`,
       },
-      argsOverride: JSON.stringify({ ...args, content: decision.content }),
+      // edit_file's partial result is a whole new file: written as one.
+      argsOverride:
+        tc.name === 'edit_file'
+          ? JSON.stringify({ path, content: decision.content })
+          : JSON.stringify({ ...args, content: decision.content }),
+      toolOverride: tc.name === 'edit_file' ? 'write_file' : undefined,
       resultNote: describeRejectedHunks(edit?.relPath ?? 'the file', decision.rejected, total),
     };
   }
@@ -1182,18 +1260,34 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /**
-   * The diff of a write_file call against the file on disk. A new file has
-   * nothing to compare against: it's approved as a whole.
+   * The diff of a write_file or edit_file call against the file on disk. A
+   * new file has nothing to compare against: it's approved as a whole.
+   * edit_file's result is computed (not written) by the backend first.
    */
   async function prepareEditReview(
+    toolName: string,
     argsJson: string
   ): Promise<
-    { kind: 'diff'; review: EditReview } | { kind: 'new' } | { kind: 'unchanged' } | null
+    | { kind: 'diff'; review: EditReview }
+    | { kind: 'new' }
+    | { kind: 'unchanged' }
+    | { kind: 'invalid'; error: string }
+    | null
   > {
     const root = props.rootPath();
     const path = toolArg(argsJson, 'path');
-    const content = toolArg(argsJson, 'content');
-    if (!root || !path || content === undefined) return null;
+    if (!root || !path) return null;
+    let content = toolArg(argsJson, 'content');
+    if (toolName === 'edit_file') {
+      const edit = editFileArgs(parseToolArgsObject(argsJson));
+      if (typeof edit === 'string') return { kind: 'invalid', error: edit };
+      try {
+        content = (await toolEditFile(root, edit, true)).content;
+      } catch (err) {
+        return { kind: 'invalid', error: `Error: ${String(err)}` };
+      }
+    }
+    if (content === undefined) return null;
     const absPath = toAbsolutePath(path, root);
     let current: string;
     try {
@@ -1585,7 +1679,7 @@ export default function ChatPanel(props: ChatProps) {
         await stoppedResult(tc);
         continue;
       }
-      const { refusal, approval, argsOverride, resultNote } = await authorizeToolCall(
+      const { refusal, approval, argsOverride, toolOverride, resultNote } = await authorizeToolCall(
         dialogId,
         tc,
         resumeNote
@@ -1598,14 +1692,18 @@ export default function ChatPanel(props: ChatProps) {
       const args = argsOverride ?? tc.arguments;
       const result = refusal
         ? { content: refusal, attachments: undefined }
-        : await executeAgentTool(root, tc.name, args);
+        : await executeAgentTool(root, toolOverride ?? tc.name, args);
       if (resultNote && !result.content.startsWith('Error:')) result.content += resultNote;
 
       // Open tabs of the file show what was written.
-      if (tc.name === 'write_file' && !refusal && root && !result.content.startsWith('Error:')) {
-        const path = toolArg(args, 'path');
-        const content = toolArg(args, 'content');
-        if (path && content !== undefined) notifyFileWritten(toAbsolutePath(path, root), content);
+      if (!refusal && root && !result.content.startsWith('Error:')) {
+        if (result.written) {
+          notifyFileWritten(toAbsolutePath(result.written.path, root), result.written.content);
+        } else if ((toolOverride ?? tc.name) === 'write_file') {
+          const path = toolArg(args, 'path');
+          const content = toolArg(args, 'content');
+          if (path && content !== undefined) notifyFileWritten(toAbsolutePath(path, root), content);
+        }
       }
 
       const resultMeta = toolResultMeta(tc.name, result.content);
@@ -1792,7 +1890,7 @@ export default function ChatPanel(props: ChatProps) {
           ...(hasLines
             ? [
                 'A reference with lines means the user is talking about exactly those lines. Read them with read_file using that start_line and end_line.',
-                'To change them: write_file replaces the whole file, so read the full file first, then write it back with only those lines changed and every other line exactly as it was.',
+                'To change them, use edit_file with that same start_line and end_line, quoting the current text as old_text: the edit then cannot change anything outside those lines. Do not rewrite the file with write_file.',
               ]
             : []),
         ].join('\n')

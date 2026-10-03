@@ -4,6 +4,7 @@ use tauri::Manager;
 
 mod agent;
 mod atomic_file;
+mod edit_file;
 mod chat_db;
 mod chat_request;
 mod code_search;
@@ -103,6 +104,7 @@ pub fn run() {
             code_search::search_in_files,
             agent_tools::tool_read_file_range,
             agent_tools::tool_write_file,
+            agent_tools::tool_edit_file,
             command_tool::tool_run_command,
             system_one::system_one_request,
         ])

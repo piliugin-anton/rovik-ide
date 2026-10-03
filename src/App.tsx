@@ -47,7 +47,7 @@ import { GitPanel } from './components/GitPanel';
 import { ConfirmDialogHost } from './components/ConfirmDialog';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { onFileWritten, onRevealEdit } from './lib/approvals';
-import { onOpenFileRequest } from './lib/editorBridge';
+import { onAddToChat, onOpenFileRequest } from './lib/editorBridge';
 import { toAbsolutePath } from './lib/fileTools';
 
 let unlistenFSChanges: (() => void) | undefined;
@@ -265,10 +265,13 @@ export default function App() {
     if (!root) return;
     void openPathAtLine(toAbsolutePath(path, root), line ?? 1);
   });
+  // "Add to chat" in the editor: bring the chat up; it takes the reference.
+  const stopAddToChat = onAddToChat(() => setSidebarTab('chat'));
   onCleanup(() => {
     stopReveal();
     stopWritten();
     stopOpenRequests();
+    stopAddToChat();
   });
 
   async function openPathAtLine(path: string, line: number) {

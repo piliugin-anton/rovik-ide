@@ -182,6 +182,20 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       return { title, meta: range ? `${range}, ${lines}` : lines };
     }
 
+    case 'edit_file': {
+      const title = `${active ? 'Editing' : 'Edited'} ${path ?? 'file'}`;
+      const start = lineArg(args.start_line);
+      const end = lineArg(args.end_line) ?? start;
+      const range = start !== undefined ? `only lines ${start}–${end}` : undefined;
+      const oldText = str(args.old_text);
+      const newText = str(args.new_text);
+      const change =
+        oldText !== undefined && newText !== undefined
+          ? `−${countLines(oldText)} +${countLines(newText)}`
+          : undefined;
+      return { title, meta: [range, change].filter(Boolean).join(', ') || undefined };
+    }
+
     case 'write_file': {
       const title = `${active ? 'Writing' : 'Wrote'} ${path ?? 'file'}`;
       const content = str(args.content);
@@ -397,8 +411,14 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   // write_file's `content` is shown as a highlighted code block instead of
   // an escaped JSON string, so drop it from the argument dump.
   const isWrite = () => props.toolCall.name === 'write_file';
+  const isEdit = () => props.toolCall.name === 'edit_file';
   const isRead = () => props.toolCall.name === 'read_file';
-  const callText = () => prettyArgs(props.toolCall.arguments, isWrite() ? ['content'] : []);
+  // Code arguments are shown highlighted below, not as escaped JSON strings.
+  const callText = () =>
+    prettyArgs(
+      props.toolCall.arguments,
+      isWrite() ? ['content'] : isEdit() ? ['old_text', 'new_text'] : []
+    );
   const hasCallText = () => {
     const t = callText().trim();
     return t !== '' && t !== '{}';
@@ -443,6 +463,21 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
             </Show>
             <Show when={isWrite() && str(args().content) !== undefined}>
               <StaticCodeBlock code={str(args().content)!} language={language()} />
+            </Show>
+            <Show when={isEdit() && str(args().old_text) !== undefined}>
+              <div class="tool-call-label">Replace</div>
+              <StaticCodeBlock code={str(args().old_text)!} language={language()} />
+              <div class="tool-call-label">With</div>
+              <Show
+                when={str(args().new_text)}
+                fallback={
+                  <div class="tool-call-pending">
+                    {str(args().new_text) === '' ? 'Nothing: the text is deleted.' : '…'}
+                  </div>
+                }
+              >
+                {(text) => <StaticCodeBlock code={text()} language={language()} />}
+              </Show>
             </Show>
           </section>
 

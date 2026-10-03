@@ -112,6 +112,34 @@ export async function toolWriteFile(root: string, path: string, content: string)
   return invoke<string>('tool_write_file', { root, path, content });
 }
 
+export interface EditFileArgs {
+  path: string;
+  oldText: string;
+  newText: string;
+  /** Confine the edit to these lines (1-based, inclusive). */
+  startLine?: number;
+  endLine?: number;
+}
+
+export interface EditOutcome {
+  /** The whole file after the edit. */
+  content: string;
+  /** The tool result for the model. */
+  summary: string;
+}
+
+/**
+ * Replaces the one exact occurrence of `oldText` (src-tauri/src/edit_file.rs).
+ * With `dryRun`, returns the result without writing it (for review).
+ */
+export function toolEditFile(
+  root: string,
+  args: EditFileArgs,
+  dryRun = false
+): Promise<EditOutcome> {
+  return invoke<EditOutcome>('tool_edit_file', { root, ...args, dryRun });
+}
+
 /** Result of `tool_run_command` (src-tauri/src/command_tool.rs). */
 export interface CommandOutput {
   exitCode: number | null;

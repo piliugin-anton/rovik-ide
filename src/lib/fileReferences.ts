@@ -3,6 +3,8 @@
 // File references the user adds to a chat message with "@": a whole file,
 // or some of its lines (the editor selection), shown as "App.tsx:12-14".
 import type { FileSuggestion } from '../types';
+import { selectedLines, type EditorSelection } from './activeContext';
+import { toRelativePath } from './fileTools';
 
 /** Identity of a reference: the same file can be mentioned whole and by lines. */
 export function referenceKey(ref: FileSuggestion): string {
@@ -17,4 +19,20 @@ export function lineRangeLabel(lines: { start: number; end: number }): string {
 /** How a reference reads in the composer and the sent message: "App.tsx:12-14". */
 export function referenceLabel(ref: FileSuggestion): string {
   return ref.lines ? `${ref.name}:${lineRangeLabel(ref.lines)}` : ref.name;
+}
+
+/** A reference to the selected lines of a file, as "@" and "Add to chat" create it. */
+export function selectionReference(
+  path: string,
+  root: string | null,
+  selection: EditorSelection,
+  id: string = path
+): FileSuggestion {
+  return {
+    id,
+    path,
+    name: path.split(/[\\/]/).pop() ?? path,
+    relativePath: toRelativePath(path, root),
+    lines: selectedLines(selection),
+  };
 }

@@ -3,6 +3,9 @@ import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import type { MonacoLibEntry, RevealRequest } from '../types';
 import type { CursorInfo } from '../lib/activeContext';
+import { selectedLines } from '../lib/activeContext';
+import { selectionReference } from '../lib/fileReferences';
+import { addToChat } from '../lib/editorBridge';
 import { invoke } from '@tauri-apps/api/core';
 import { pendingEditFor } from '../lib/approvals';
 import {
@@ -133,9 +136,15 @@ export default function Editor(props: EditorProps) {
     const initial = editor.getSelection();
     if (initial) reportCursor(initial);
 
+    const addToChatWidget = mountAddToChat(editor, () => ({
+      path: props.currentFilePath,
+      root: props.projectDir(),
+    }));
+
     onCleanup(() => {
       contentDisposable.dispose();
       selectionDisposable.dispose();
+      addToChatWidget.dispose();
     });
 
     // Runs for an already-open file and for one that just opened (this
@@ -239,6 +248,128 @@ export default function Editor(props: EditorProps) {
       }}
     />
   );
+}
+
+/**
+ * "Add to chat" under a non-empty selection, plus the same command in the
+ * editor's context menu. Adds a reference chip ("App.tsx:12-14") to the
+ * chat composer, exactly as mentioning the selection with "@" does.
+ */
+function mountAddToChat(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  file: () => { path: string; root: string | null }
+): monaco.IDisposable {
+  const node = document.createElement('div');
+  node.className = 'editor-add-to-chat';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.title = 'Reference the selected lines in the chat';
+  button.innerHTML = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+    stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M4 2.5h8A1.5 1.5 0 0 1 13.5 4v5.5A1.5 1.5 0 0 1 12 11H7.5l-3 2.5V11H4a1.5 1.5 0 0 1-1.5-1.5V4A1.5 1.5 0 0 1 4 2.5Z"/>
+    <path d="M8 4.75v3.5M6.25 6.5h3.5"/></svg><span>Add to chat</span>`;
+  node.append(button);
+
+  let position: monaco.IPosition | null = null;
+  /** Mouse held down while selecting: the button waits until it's released. */
+  let selecting = false;
+  /** Used for this selection already; shows again once the selection changes. */
+  let used = false;
+
+  const widget: monaco.editor.IContentWidget = {
+    getId: () => 'rovik.addToChat',
+    getDomNode: () => node,
+    // null hides it.
+    getPosition: () =>
+      position && {
+        position,
+        preference: [
+          monaco.editor.ContentWidgetPositionPreference.BELOW,
+          monaco.editor.ContentWidgetPositionPreference.ABOVE,
+        ],
+      },
+  };
+  editor.addContentWidget(widget);
+
+  function update() {
+    const selection = editor.getSelection();
+    const model = editor.getModel();
+    if (!selection || selection.isEmpty() || !model || selecting || used) {
+      position = null;
+    } else {
+      // Under the selection's last line, lined up with that line's code.
+      const { end } = selectedLines({
+        startLine: selection.startLineNumber,
+        startColumn: selection.startColumn,
+        endLine: selection.endLineNumber,
+        endColumn: selection.endColumn,
+      });
+      position = { lineNumber: end, column: model.getLineFirstNonWhitespaceColumn(end) || 1 };
+    }
+    editor.layoutContentWidget(widget);
+  }
+
+  function add() {
+    const selection = editor.getSelection();
+    if (!selection || selection.isEmpty()) return;
+    const { path, root } = file();
+    addToChat(
+      selectionReference(path, root, {
+        startLine: selection.startLineNumber,
+        startColumn: selection.startColumn,
+        endLine: selection.endLineNumber,
+        endColumn: selection.endColumn,
+      })
+    );
+    used = true;
+    update();
+  }
+
+  // Keep the press away from the editor, or it would move the cursor and
+  // drop the selection before the click lands.
+  const swallow = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  button.addEventListener('pointerdown', swallow);
+  button.addEventListener('mousedown', swallow);
+  button.addEventListener('click', (e) => {
+    swallow(e);
+    add();
+  });
+
+  const stopSelecting = () => {
+    if (!selecting) return;
+    selecting = false;
+    update();
+  };
+  window.addEventListener('mouseup', stopSelecting);
+
+  const disposables = [
+    editor.onMouseDown((e) => {
+      if (e.event.leftButton) selecting = true;
+    }),
+    editor.onDidChangeCursorSelection(() => {
+      used = false;
+      update();
+    }),
+    editor.addAction({
+      id: 'rovik.addSelectionToChat',
+      label: 'Add Selection to Chat',
+      precondition: 'editorHasSelection',
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 0,
+      run: add,
+    }),
+  ];
+
+  return {
+    dispose() {
+      window.removeEventListener('mouseup', stopSelecting);
+      disposables.forEach((d) => d.dispose());
+      editor.removeContentWidget(widget);
+    },
+  };
 }
 
 async function loadProjectTypings(projectRoot: string | null): Promise<void> {

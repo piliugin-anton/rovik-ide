@@ -3462,3 +3462,40 @@ body {
 .git-commit-button {
   flex-shrink: 0;
 }
+
+/* "Add to chat" under an editor selection (Editor.tsx, mountAddToChat). */
+.editor-add-to-chat {
+  padding-top: 2px;
+  z-index: 10;
+}
+
+.editor-add-to-chat button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 2px 6px var(--shadow-soft);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.editor-add-to-chat button:hover {
+  background: var(--bg-control-hover);
+  border-color: var(--accent);
+}
+
+.editor-add-to-chat button:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+.editor-add-to-chat svg {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}

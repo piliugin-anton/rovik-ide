@@ -3,6 +3,7 @@ import { commandsAvailable, type AgentPermissions } from './permissions';
 import {
   toolBrowseUrl,
   toolBrowserScreenshot,
+  toolEditFile,
   toolListDir,
   toolReadFileRange,
   toolRunCommand,
@@ -10,7 +11,7 @@ import {
   toolWebSearch,
   toolWriteFile,
 } from './commands';
-import type { CommandOutput } from './commands';
+import type { CommandOutput, EditFileArgs } from './commands';
 
 /**
  * Tool schemas in OpenAI's function-calling format, sent as the `tools`
@@ -52,8 +53,8 @@ export const AGENT_TOOL_SCHEMAS = [
       name: 'write_file',
       description:
         'Write content to a file in the project, creating it (and any missing parent directories) if it ' +
-        'does not exist, or overwriting it if it does. There is no patch/diff tool — for edits to an ' +
-        'existing file, read it first and write back the complete updated content.',
+        'does not exist, or overwriting it entirely if it does. For changes to an existing file use ' +
+        'edit_file instead; use write_file only for new files or rewriting most of a file.',
       parameters: {
         type: 'object',
         properties: {
@@ -61,6 +62,42 @@ export const AGENT_TOOL_SCHEMAS = [
           content: { type: 'string', description: 'The complete new content of the file.' },
         },
         required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description:
+        'Change part of an existing file: replace one exact piece of text (old_text) with new_text. ' +
+        'old_text must match the file exactly once, whitespace and indentation included — read the ' +
+        'lines first and copy them; add surrounding lines to make it unique. Make one call per ' +
+        'separate change. When the user referenced lines of the file (e.g. "App.tsx:12-14"), pass them ' +
+        'as start_line and end_line: old_text must then lie within those lines, and nothing outside ' +
+        'them changes. To delete, use an empty new_text. To insert, quote a neighboring line in ' +
+        'old_text and repeat it in new_text together with the new lines.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File path relative to the project root.' },
+          old_text: {
+            type: 'string',
+            description:
+              'The exact current text to replace. Must occur exactly once (within the line range, if given).',
+          },
+          new_text: { type: 'string', description: 'The replacement text.' },
+          start_line: {
+            type: 'integer',
+            description:
+              'First line (1-indexed) old_text may be in. Use the referenced range when there is one.',
+          },
+          end_line: {
+            type: 'integer',
+            description: 'Last line (1-indexed, inclusive) old_text may be in.',
+          },
+        },
+        required: ['path', 'old_text', 'new_text'],
       },
     },
   },
@@ -209,7 +246,7 @@ function runCommandSchema(permissions?: AgentPermissions) {
       description:
         'Run a shell command in the project root and get its exit code and output (stdout/stderr, capped at 64 KB each). ' +
         'Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. ' +
-        'Prefer read_file/search_code/write_file for reading and editing files.' +
+        'Prefer read_file/search_code/edit_file/write_file for reading and editing files.' +
         allowed,
       parameters: {
         type: 'object',
@@ -270,6 +307,31 @@ export function formatCommandOutput(command: string, out: CommandOutput): string
 export interface ToolResult {
   content: string;
   attachments?: string[];
+  /** edit_file: the file's new content, so open tabs can show it. */
+  written?: { path: string; content: string };
+}
+
+/** edit_file's arguments as the model sent them; an error string when unusable. */
+export function editFileArgs(args: Record<string, unknown>): EditFileArgs | string {
+  const path = asString(args.path);
+  const oldText = asString(args.old_text);
+  const newText = asString(args.new_text);
+  if (!path) return 'Error: "path" is required.';
+  if (oldText === undefined) return 'Error: "old_text" is required.';
+  if (newText === undefined) return 'Error: "new_text" is required.';
+  return {
+    path,
+    oldText,
+    newText,
+    startLine: asLine(args.start_line),
+    endLine: asLine(args.end_line),
+  };
+}
+
+/** A line number; models sometimes send "12" for 12. */
+function asLine(v: unknown): number | undefined {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : asNumber(v);
+  return n !== undefined && Number.isFinite(n) ? Math.floor(n) : undefined;
 }
 
 /** Loosely-typed arguments as parsed from the model's JSON — validated per-tool below. */
@@ -313,6 +375,12 @@ export async function executeAgentTool(
 
     if (!root) {
       return { content: `Error: "${name}" needs an open project folder.` };
+    }
+    if (name === 'edit_file') {
+      const edit = editFileArgs(args);
+      if (typeof edit === 'string') return { content: edit };
+      const outcome = await toolEditFile(root, edit);
+      return { content: outcome.summary, written: { path: edit.path, content: outcome.content } };
     }
     return { content: await executeFileTool(root, name, args) };
   } catch (err) {

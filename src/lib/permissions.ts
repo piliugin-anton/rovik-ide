@@ -28,7 +28,7 @@ export interface AgentPermissions {
   allowedCommands: string[];
   /** run_command. */
   commandApproval: ApprovalRule;
-  /** write_file. */
+  /** write_file and edit_file. */
   editApproval: ApprovalRule;
   /** Every other tool: reading and searching files, web access. */
   toolApproval: ApprovalRule;
@@ -497,7 +497,7 @@ export function checkCommand(command: string, permissions: AgentPermissions): Co
  */
 
 /** Tools that always change files; everything else (reads, web) doesn't. */
-const FILE_MODIFYING_TOOLS = new Set(['write_file']);
+const FILE_MODIFYING_TOOLS = new Set(['write_file', 'edit_file']);
 
 export type ToolVerdict =
   | { permitted: true; modifiesFiles: boolean; approval: Approver | null }
@@ -534,7 +534,7 @@ export function checkToolCall(
   const rule =
     name === 'run_command'
       ? permissions.commandApproval
-      : name === 'write_file'
+      : FILE_MODIFYING_TOOLS.has(name)
         ? permissions.editApproval
         : permissions.toolApproval;
   return { permitted: true, modifiesFiles, approval: rule.required ? rule.by : null };
@@ -570,6 +570,12 @@ export function describeToolCall(name: string, argsJson: string): string {
       const content = str('content');
       const size = content !== undefined ? ` (${content.split('\n').length} lines)` : '';
       return `Write ${str('path') ?? 'a file'}${size}`;
+    }
+    case 'edit_file': {
+      const start = args.start_line;
+      const end = args.end_line ?? start;
+      const range = start !== undefined ? ` (only lines ${start}-${end})` : '';
+      return `Edit ${str('path') ?? 'a file'}${range}`;
     }
     case 'web_search':
       return `Search the web for “${str('query') ?? '…'}”`;

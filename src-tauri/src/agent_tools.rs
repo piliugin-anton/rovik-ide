@@ -267,6 +267,53 @@ pub fn tool_read_file_range(
     Ok(lines[start_idx..end_idx].join("\n"))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditOutcome {
+    /// The whole file after the edit (the frontend diffs it for review and
+    /// refreshes open tabs with it).
+    content: String,
+    /// The tool result for the model.
+    summary: String,
+}
+
+/// Replaces the one occurrence of `old_text` in a project file with
+/// `new_text`, optionally only within lines `start_line..=end_line`
+/// (see edit_file.rs). With `dry_run`, computes the result without writing,
+/// for the approval review.
+#[tauri::command]
+pub fn tool_edit_file(
+    root: String,
+    path: String,
+    old_text: String,
+    new_text: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    dry_run: Option<bool>,
+) -> Result<EditOutcome, String> {
+    let target = resolve_within_root(&root, &path)?;
+    if !target.is_file() {
+        return Err(format!(
+            "{path}: no such file. edit_file changes existing files; use write_file to create one."
+        ));
+    }
+    if looks_binary(&target)? {
+        return Err(format!("{path}: binary file, cannot edit"));
+    }
+    let current = fs::read_to_string(&target).map_err(|e| format!("{path}: {e}"))?;
+    let (content, span) =
+        crate::edit_file::apply_edit(&current, &old_text, &new_text, start_line, end_line)
+            .map_err(|e| format!("{path}: {e}"))?;
+    if !dry_run.unwrap_or(false) {
+        // Plain write, like write_file: keeps the inode (the editor's file id).
+        fs::write(&target, &content).map_err(|e| format!("{path}: {e}"))?;
+    }
+    Ok(EditOutcome {
+        summary: crate::edit_file::describe_edit(&path, &span),
+        content,
+    })
+}
+
 /// Writes (creating parent directories as needed) or overwrites a file
 /// inside the project root.
 #[tauri::command]
