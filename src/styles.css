@@ -2811,51 +2811,81 @@ body {
   white-space: nowrap;
 }
 
-/* Context menu */
+/* Context menu (FileContextMenu.tsx): the same popup look as the model
+   picker. Menu background, soft shadow, rounded items inside a padded box. */
 
 .context-menu {
   position: fixed;
-  background: var(--bg-sidebar);
+  z-index: 9999;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 4px 0;
-  box-shadow: 0px 4px 12px var(--shadow-soft);
-  z-index: 9999;
-  min-width: 160px;
+  box-shadow: 0 6px 20px var(--shadow);
+  font-size: 12px;
+  color: var(--fg);
+  user-select: none;
 }
 
-.context-menu-list {
+.file-context-menu .context-menu-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.context-menu-item {
+.file-context-menu .context-menu-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 12px;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 13px;
-  color: var(--fg);
-  transition: background 0.1s ease;
+  white-space: nowrap;
 }
 
-.context-menu-item:hover {
-  background: var(--row-hover);
+.file-context-menu .context-menu-item:hover {
+  background: var(--hover-strong);
 }
 
-.context-menu-item.danger {
+.file-context-menu .context-menu-icon {
+  display: inline-flex;
+  flex: 0 0 14px;
+  color: var(--fg-muted);
+}
+
+.file-context-menu .context-menu-label {
+  flex: 1;
+}
+
+.file-context-menu .context-menu-shortcut {
+  margin-left: 16px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.file-context-menu .context-menu-item.danger,
+.file-context-menu .context-menu-item.danger .context-menu-icon {
   color: var(--error);
 }
 
-.context-menu-item.danger:hover {
+.file-context-menu .context-menu-item.danger:hover {
   background: var(--error-soft);
 }
-.context-menu-item.disabled {
-  color: var(--fg-dim);
+
+.file-context-menu .context-menu-item.disabled {
   cursor: default;
-  pointer-events: none;
+  opacity: 0.4;
+}
+
+.file-context-menu .context-menu-item.disabled:hover {
+  background: none;
+}
+
+.file-context-menu .context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 /* Terminal panel */
@@ -3328,6 +3358,9 @@ body {
   top: 100%;
   left: 8px;
   z-index: 20;
+  /* It shares .context-menu with the file menu; keep its own spacing. */
+  padding: 4px 0;
+  font-size: 13px;
   min-width: 200px;
   max-height: 260px;
   overflow-y: auto;
@@ -3338,13 +3371,13 @@ body {
   box-shadow: 0 4px 12px var(--shadow);
 }
 
-.context-menu-list {
+.git-branch-dropdown .context-menu-list {
   list-style: none;
   margin: 0;
   padding: 4px 0;
 }
 
-.context-menu-item {
+.git-branch-dropdown .context-menu-item {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3355,11 +3388,11 @@ body {
   text-overflow: ellipsis;
 }
 
-.context-menu-item:hover {
+.git-branch-dropdown .context-menu-item:hover {
   background: var(--hover-strong);
 }
 
-.context-menu-item.git-branch-item-active {
+.git-branch-dropdown .context-menu-item.git-branch-item-active {
   color: var(--fg-on-accent);
   font-weight: 600;
 }

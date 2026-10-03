@@ -42,7 +42,7 @@ import Resizable from './components/ResizableDiv';
 import TerminalPanel from './components/TerminalPanel';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import ContextMenuItem from './components/ContextMenuItem';
+import FileContextMenu from './components/FileContextMenu';
 import { GitPanel } from './components/GitPanel';
 import { ConfirmDialogHost } from './components/ConfirmDialog';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
@@ -722,12 +722,45 @@ export default function App() {
     setLastSelectedId(null);
   }
 
+  /*
+   * Closing the context menu. It used to close only on a window "click",
+   * which a right-click never fires: right-clicking the editor opened
+   * Monaco's menu next to ours. Now any press or right-click outside the
+   * menu closes it. In the capture phase, so it runs before anything that
+   * stops the event (Monaco does); a right-click in the file tree then
+   * reopens the menu where it was clicked (handleContextMenu).
+   */
+  const outsideMenu = (e: Event) => !menuEl()?.contains(e.target as Node);
+  const closeOnPress = (e: Event) => {
+    if (contextMenuVisible() && outsideMenu(e)) closeContextMenu();
+  };
+  const closeOnEscape = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && contextMenuVisible()) {
+      e.preventDefault();
+      closeContextMenu();
+    }
+  };
+  const closeNow = () => {
+    if (contextMenuVisible()) closeContextMenu();
+  };
+
   onMount(() => {
-    window.addEventListener('click', closeContextMenu);
+    window.addEventListener('pointerdown', closeOnPress, true);
+    window.addEventListener('contextmenu', closeOnPress, true);
+    // Scrolling anything but the menu leaves it pointing at nothing.
+    window.addEventListener('scroll', closeOnPress, true);
+    window.addEventListener('keydown', closeOnEscape, true);
+    window.addEventListener('blur', closeNow);
+    window.addEventListener('resize', closeNow);
     window.addEventListener('keydown', handleKeyDown);
 
     onCleanup(() => {
-      window.removeEventListener('click', closeContextMenu);
+      window.removeEventListener('pointerdown', closeOnPress, true);
+      window.removeEventListener('contextmenu', closeOnPress, true);
+      window.removeEventListener('scroll', closeOnPress, true);
+      window.removeEventListener('keydown', closeOnEscape, true);
+      window.removeEventListener('blur', closeNow);
+      window.removeEventListener('resize', closeNow);
       window.removeEventListener('keydown', handleKeyDown);
     });
   });
@@ -868,10 +901,8 @@ export default function App() {
     setCursorPosition({ x: adjustedX, y: adjustedY });
   });
 
-  //  onContextMenu={handleContextMenu}
-
   return (
-    <div class="app">
+    <div class="app" onContextMenu={handleContextMenu}>
       <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
         <div class="sidebar-tabs">
           <button
@@ -918,6 +949,7 @@ export default function App() {
               editingId={editingId}
               onEditSubmit={handleTreeEditSubmit}
               onEditCancel={handleTreeEditCancel}
+              onContextMenu={handleContextMenu}
             />
           </Show>
         </Show>
@@ -974,193 +1006,23 @@ export default function App() {
         />
       </div>
 
-      <Show when={contextMenuVisible() && activePanel() !== null}>
-        <div
+      <Show when={contextMenuVisible() && activePanel() === 'files'}>
+        <FileContextMenu
           ref={setMenuEl}
-          class="context-menu"
-          style={{
-            position: 'fixed',
-            top: `${cursorPosition().y}px`,
-            left: `${cursorPosition().x}px`,
-          }}
-        >
-          <ul class="context-menu-list">
-            <Show when={activePanel() === 'files'}>
-              <ContextMenuItem
-                label={
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                    >
-                      <path d="M4 1.5h5.5L12.5 4.5V14.5H4V1.5Z" stroke-linejoin="round" />
-                      <path d="M9.5 1.5V4.5H12.5" stroke-linejoin="round" />
-                      <path d="M8 7.5V11.5M6 9.5H10" stroke-linecap="round" />
-                    </svg>
-                    New File
-                  </>
-                }
-                onClick={handleNewFile}
-              />
-
-              <ContextMenuItem
-                label={
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                    >
-                      <path
-                        d="M2 4.5a1 1 0 0 1 1-1h3.5l1.2 1.5H13a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5Z"
-                        stroke-linejoin="round"
-                      />
-                      <path d="M8 8v3.5M6.25 9.75h3.5" stroke-linecap="round" />
-                    </svg>
-                    New Folder
-                  </>
-                }
-                onClick={handleNewFolder}
-                disabled={newFolderContextMenuItemDisabled()}
-              />
-
-              <ContextMenuItem
-                label={
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                    >
-                      <path
-                        d="M3 4.5h10M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                      <path
-                        d="M4.5 4.5 5 13.5a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l.5-9"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                      <path d="M6.5 7v5M9.5 7v5" stroke-linecap="round" />
-                    </svg>
-                    Delete
-                  </>
-                }
-                isDanger
-                disabled={selectedFileIds().size === 0}
-                onClick={handleDeleteFile}
-              />
-
-              <ContextMenuItem
-                label={
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                    >
-                      <path
-                        d="M11 2.5 13.5 5 5.5 13 2.5 13.5 3 10.5 11 2.5Z"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
-                    Rename
-                  </>
-                }
-                disabled={selectedFileIds().size !== 1}
-                onClick={handleRenameFile}
-              />
-
-              <ContextMenuItem
-                label={
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                    >
-                      <rect x="5.5" y="5.5" width="8" height="8" rx="1" stroke-linejoin="round" />
-                      <path
-                        d="M2.5 10.5V3a1 1 0 0 1 1-1H10"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
-                    Copy
-                  </>
-                }
-                disabled={selectedFileIds().size === 0}
-                onClick={handleCopyFile}
-              />
-
-              <ContextMenuItem
-                label={
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                    >
-                      <path
-                        d="M6 2.5h4a.5.5 0 0 1 .5.5v1H5.5V3a.5.5 0 0 1 .5-.5Z"
-                        stroke-linejoin="round"
-                      />
-                      <path
-                        d="M4 4.5h8a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1Z"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
-                    Paste
-                  </>
-                }
-                disabled={!clipboard()}
-                onClick={handlePasteFile}
-              />
-
-              <ContextMenuItem
-                label={
-                  <>
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.5"
-                    >
-                      <circle cx="4.5" cy="4.5" r="1.5" />
-                      <circle cx="4.5" cy="11.5" r="1.5" />
-                      <path d="M13 3 5.7 9M13 13 5.7 7" stroke-linecap="round" />
-                    </svg>
-                    Cut
-                  </>
-                }
-                disabled={selectedFileIds().size === 0}
-                onClick={handleCutFile}
-              />
-            </Show>
-          </ul>
-        </div>
+          x={cursorPosition().x}
+          y={cursorPosition().y}
+          canNewFolder={!newFolderContextMenuItemDisabled()}
+          hasSelection={selectedFileIds().size > 0}
+          singleSelection={selectedFileIds().size === 1}
+          canPaste={!!clipboard()}
+          onNewFile={handleNewFile}
+          onNewFolder={handleNewFolder}
+          onRename={handleRenameFile}
+          onCopy={handleCopyFile}
+          onCut={handleCutFile}
+          onPaste={handlePasteFile}
+          onDelete={handleDeleteFile}
+        />
       </Show>
       <ConfirmDialogHost />
     </div>

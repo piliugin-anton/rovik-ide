@@ -25,6 +25,8 @@ interface FileTreeProps {
   onClearSelection: () => void;
 
   editingId: Accessor<string | null>;
+  /** Right-click anywhere in the tree (on a row or empty space). */
+  onContextMenu?: (e: MouseEvent) => void;
   onEditSubmit: (row: TreeRow, name: string) => void;
   onEditCancel: (row: TreeRow) => void;
 }
@@ -103,6 +105,7 @@ export default function FileTree(props: FileTreeProps) {
         props.forwardRef(el);
       }}
       onMouseDown={handleTreeMouseDown}
+      onContextMenu={(e) => props.onContextMenu?.(e)}
       style={{
         'user-select': 'none',
         '-webkit-user-select': 'none',
