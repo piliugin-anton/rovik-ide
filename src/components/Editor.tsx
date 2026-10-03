@@ -419,8 +419,10 @@ function mountAddToChat(
 }
 
 /**
- * Gutter marks for differences from the git base: added (green bar),
- * changed (blue bar) and removed (red marker between lines).
+ * Marks for differences from the git base: added lines tinted green and
+ * changed lines blue (with a bar in the gutter), removed lines a red line
+ * where they were. Tinted, not just gutter bars: the bars alone were easy
+ * to miss.
  */
 export function createGitMarks(
   editor: monaco.editor.IStandaloneCodeEditor,
@@ -457,7 +459,15 @@ export function createGitMarks(
           ),
           options: {
             isWholeLine: true,
+            className: `git-line-${kind}`,
             linesDecorationsClassName: `git-mark git-mark-${kind}`,
+            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+            hoverMessage: {
+              value:
+                kind === 'added'
+                  ? 'Added since the version in git'
+                  : `Changed since the version in git (was ${removed} line${removed === 1 ? '' : 's'})`,
+            },
             overviewRuler: {
               color: kind === 'added' ? '#587c0c' : '#1b81a8',
               position: monaco.editor.OverviewRulerLane.Left,
@@ -471,7 +481,12 @@ export function createGitMarks(
           range: new monaco.Range(line, 1, line, 1),
           options: {
             isWholeLine: true,
+            className: below ? 'git-line-removed-below' : 'git-line-removed-above',
             linesDecorationsClassName: `git-mark git-mark-removed${below ? ' below' : ''}`,
+            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+            hoverMessage: {
+              value: `${removed} line${removed === 1 ? '' : 's'} removed since the version in git`,
+            },
             overviewRuler: { color: '#94151b', position: monaco.editor.OverviewRulerLane.Left },
           },
         });

@@ -4462,12 +4462,30 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   line-height: 1.4;
 }
 
-/* Git change marks in the editor's gutter (lib/gitMarks.ts): bars like
-   VS Code's, so they read as git's view and not the agent's highlights. */
+/* Git change marks in the editor (lib/gitMarks.ts): changed lines tinted
+   green (added) or blue (changed), with a bar in the gutter; the agent's
+   highlights are a stronger green with their own bar. */
 
 .monaco-editor .git-mark {
-  width: 3px !important;
+  width: 4px !important;
   margin-left: 3px;
+}
+
+/* The changed lines themselves. */
+.monaco-editor .git-line-added {
+  background: rgba(88, 124, 12, 0.22);
+}
+
+.monaco-editor .git-line-modified {
+  background: rgba(27, 129, 168, 0.2);
+}
+
+.monaco-editor .git-line-removed-above {
+  box-shadow: inset 0 2px 0 #e06c75;
+}
+
+.monaco-editor .git-line-removed-below {
+  box-shadow: inset 0 -2px 0 #e06c75;
 }
 
 .monaco-editor .git-mark-added {
