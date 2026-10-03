@@ -2,6 +2,7 @@ import { onMount, onCleanup, createEffect, untrack } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import type { MonacoLibEntry, RevealRequest } from '../types';
+import type { CursorInfo } from '../lib/activeContext';
 import { invoke } from '@tauri-apps/api/core';
 import { pendingEditFor } from '../lib/approvals';
 import {
@@ -18,12 +19,7 @@ interface EditorProps {
   language: Accessor<string>;
   onChange: (value: string) => void;
   onSave: () => void;
-  onCursorChange?: (info: {
-    line: number;
-    column: number;
-    selectionStartLine: number | null;
-    selectionEndLine: number | null;
-  }) => void;
+  onCursorChange?: (info: CursorInfo) => void;
   /** Select and center a range (search results); cleared via onRevealed. */
   reveal?: Accessor<RevealRequest | null>;
   onRevealed?: () => void;
@@ -116,16 +112,26 @@ export default function Editor(props: EditorProps) {
       props.onSave();
     });
 
-    const selectionDisposable = editor.onDidChangeCursorSelection((e) => {
-      const sel = e.selection;
-
+    const reportCursor = (sel: monaco.Selection) => {
       props.onCursorChange?.({
+        path: props.currentFilePath,
         line: sel.positionLineNumber,
         column: sel.positionColumn,
-        selectionStartLine: sel.isEmpty() ? null : sel.startLineNumber,
-        selectionEndLine: sel.isEmpty() ? null : sel.endLineNumber,
+        selection: sel.isEmpty()
+          ? null
+          : {
+              startLine: sel.startLineNumber,
+              startColumn: sel.startColumn,
+              endLine: sel.endLineNumber,
+              endColumn: sel.endColumn,
+            },
       });
-    });
+    };
+    const selectionDisposable = editor.onDidChangeCursorSelection((e) => reportCursor(e.selection));
+    // Report right away too: without it, the previous tab's cursor and
+    // selection stayed in the chat context until the cursor first moved.
+    const initial = editor.getSelection();
+    if (initial) reportCursor(initial);
 
     onCleanup(() => {
       contentDisposable.dispose();
@@ -137,8 +143,19 @@ export default function Editor(props: EditorProps) {
     createEffect(() => {
       const request = props.reveal?.();
       if (!request || !editor || request.path !== props.currentFilePath) return;
+      const model = editor.getModel();
+      if (!model) return;
       const end = request.column + Math.max(0, request.length);
-      const selection = new monaco.Selection(request.line, request.column, request.line, end);
+      // Clamped to the file: a line from an older read may be past its end now.
+      const range = model.validateRange(
+        new monaco.Range(request.line, request.column, request.line, end)
+      );
+      const selection = new monaco.Selection(
+        range.startLineNumber,
+        range.startColumn,
+        range.endLineNumber,
+        range.endColumn
+      );
       editor.setSelection(selection);
       editor.revealRangeInCenter(selection, monaco.editor.ScrollType.Smooth);
       editor.focus();

@@ -37,7 +37,7 @@ import type {
   TreeRow,
 } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
-import type { ActiveFileContext } from './lib/activeContext';
+import type { ActiveFileContext, CursorInfo } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
 import TerminalPanel from './components/TerminalPanel';
 import { listen } from '@tauri-apps/api/event';
@@ -47,6 +47,8 @@ import { GitPanel } from './components/GitPanel';
 import { ConfirmDialogHost } from './components/ConfirmDialog';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { onFileWritten, onRevealEdit } from './lib/approvals';
+import { onOpenFileRequest } from './lib/editorBridge';
+import { toAbsolutePath } from './lib/fileTools';
 
 let unlistenFSChanges: (() => void) | undefined;
 
@@ -74,12 +76,7 @@ export default function App() {
   const [searchActive, setSearchActive] = createSignal(false);
   const [revealRequest, setRevealRequest] = createSignal<RevealRequest | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat' | 'git'>('files');
-  const [cursorInfo, setCursorInfo] = createSignal<{
-    line: number;
-    column: number;
-    selectionStartLine: number | null;
-    selectionEndLine: number | null;
-  } | null>(null);
+  const [cursorInfo, setCursorInfo] = createSignal<CursorInfo | null>(null);
 
   const [contextMenuVisible, setContextMenuVisible] = createSignal(false);
   const [activePanel, setActivePanel] = createSignal<'files' | 'something' | null>(null);
@@ -138,15 +135,14 @@ export default function App() {
   const activeFileContext = createMemo<ActiveFileContext | null>(() => {
     const file = activeFile();
     const info = cursorInfo();
-    if (!file || !info) return null;
+    if (!file || !info || info.path !== file.path) return null;
     return {
       path: file.path,
       language: file.language,
       line: info.line,
       column: info.column,
       enclosingSymbol: findEnclosingSymbol(file.content, info.line, file.language),
-      selectionStartLine: info.selectionStartLine,
-      selectionEndLine: info.selectionEndLine,
+      selection: info.selection,
     };
   });
 
@@ -262,10 +258,25 @@ export default function App() {
       )
     )
   );
+  // "Open in editor" on a read_file result: open the file with the line
+  // that was read from centered.
+  const stopOpenRequests = onOpenFileRequest(({ path, line }) => {
+    const root = rootPath();
+    if (!root) return;
+    void openPathAtLine(toAbsolutePath(path, root), line ?? 1);
+  });
   onCleanup(() => {
     stopReveal();
     stopWritten();
+    stopOpenRequests();
   });
+
+  async function openPathAtLine(path: string, line: number) {
+    await openPath(path);
+    // The tab may already be open under the same path; openFile activated it.
+    if (activePath() !== path) return;
+    setRevealRequest({ path, line, column: 1, length: 0, nonce: Date.now() });
+  }
 
   /** Opens a search result with the match selected. */
   async function openSearchMatch(target: SearchMatchTarget) {

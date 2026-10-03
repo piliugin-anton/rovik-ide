@@ -2106,6 +2106,33 @@ body {
   color: var(--fg);
   opacity: 0.7;
 }
+
+.file-suggestion-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.file-suggestion-head .file-suggestion-name {
+  width: auto;
+  flex: 0 1 auto;
+}
+
+.file-suggestion-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  color: var(--fg-muted);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.file-suggestion.selected .file-suggestion-tag {
+  color: var(--fg);
+}
 .chat-input-contenteditable {
   flex: 1;
   min-width: 0;
@@ -2158,6 +2185,15 @@ body {
   max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ":12-14" after the (truncating) name; never cut off itself. */
+.chat-file-reference-lines {
+  flex-shrink: 0;
+  margin-left: -4px; /* undo the chip's gap: "App.tsx:12-14" reads as one */
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -2785,7 +2821,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  flex-shrink: 0;
   padding: 6px 10px;
   background: none;
   border: none;
@@ -2800,9 +2836,112 @@ body {
 }
 
 .terminal-toggle-icon {
-  display: inline-flex;
-  font-size: 10px;
+  flex-shrink: 0;
   transition: transform 0.12s ease;
+}
+
+.terminal-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-control);
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* Terminal tabs, styled after the editor tabs above. */
+.terminal-tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  align-self: stretch;
+  scrollbar-width: none;
+}
+
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 10px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  border-left: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.terminal-tab:last-child {
+  border-right: 1px solid var(--border);
+}
+
+.terminal-tab:hover {
+  color: var(--fg);
+}
+
+.terminal-tab.active {
+  background: var(--bg-editor);
+  color: var(--fg);
+  /* Covers the header's bottom border, so the tab joins the terminal below. */
+  margin-bottom: -1px;
+}
+
+.terminal-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.terminal-tab-icon {
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+
+.terminal-tab-close,
+.terminal-new-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.terminal-tab-close {
+  width: 16px;
+  height: 16px;
+  /* Shown on the active and hovered tab, like the editor's close. */
+  visibility: hidden;
+}
+
+.terminal-tab.active .terminal-tab-close,
+.terminal-tab:hover .terminal-tab-close,
+.terminal-tab-close:focus-visible {
+  visibility: visible;
+}
+
+.terminal-new-button {
+  flex-shrink: 0;
+  width: 24px;
+  height: 22px;
+  margin: 0 6px 0 auto;
+}
+
+.terminal-tab-close:hover,
+.terminal-new-button:hover {
+  background: var(--hover-strong);
+  color: var(--fg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-toggle-icon {
+    transition: none;
+  }
 }
 
 .terminal-toggle-icon.expanded {
@@ -2822,6 +2961,10 @@ body {
   height: 100%;
   width: 100%;
   padding: 4px 0 4px 8px;
+}
+
+.terminal-instance.hidden {
+  display: none;
 }
 
 .terminal-resize-handle {

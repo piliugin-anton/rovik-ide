@@ -9,6 +9,7 @@ import StaticCodeBlock from './StaticCodeBlock';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
 import { describeToolCall } from '../lib/permissions';
+import { requestOpenFile } from '../lib/editorBridge';
 import {
   allow,
   decideRemaining,
@@ -93,6 +94,12 @@ function parseArgsLenient(raw: string): Args {
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
+
+/** A line-number argument; models sometimes send it as a string ("12"). */
+function lineArg(v: unknown): number | undefined {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : num(v);
+  return n !== undefined && Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined;
+}
 
 function countLines(text: string): number {
   if (!text) return 0;
@@ -474,7 +481,14 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                   when={isRead() && status() === 'done'}
                   fallback={<pre class="tool-call-pre">{resultText()}</pre>}
                 >
-                  <StaticCodeBlock code={resultText()!} language={language()} />
+                  <StaticCodeBlock
+                    code={resultText()!}
+                    language={language()}
+                    onOpenInEditor={() => {
+                      const path = str(args().path);
+                      if (path) requestOpenFile({ path, line: lineArg(args().start_line) ?? 1 });
+                    }}
+                  />
                 </Show>
               </Show>
               <For each={props.result?.attachments ?? []}>

@@ -1,12 +1,39 @@
-// src/lib/activeContext.ts — new file
+// src/lib/activeContext.ts
+
+/** A non-empty editor selection, 1-based; the end column is exclusive (Monaco's convention). */
+export interface EditorSelection {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+}
+
+/**
+ * The selection as whole lines, 1-based and inclusive. A selection that ends
+ * at column 1 (lines picked by dragging to the start of the next one) doesn't
+ * include that last line.
+ */
+export function selectedLines(sel: EditorSelection): { start: number; end: number } {
+  const end = sel.endColumn === 1 && sel.endLine > sel.startLine ? sel.endLine - 1 : sel.endLine;
+  return { start: sel.startLine, end };
+}
+
+/** What the editor reports on every cursor/selection change. */
+export interface CursorInfo {
+  /** The file it belongs to, so a report from a previous tab is never applied to another. */
+  path: string;
+  line: number;
+  column: number;
+  selection: EditorSelection | null;
+}
+
 export interface ActiveFileContext {
   path: string;
   language: string;
   line: number;
   column: number;
   enclosingSymbol: string | null;
-  selectionStartLine: number | null;
-  selectionEndLine: number | null;
+  selection: EditorSelection | null;
 }
 
 const SYMBOL_PATTERNS: Record<string, RegExp[]> = {
@@ -48,12 +75,9 @@ export function buildContextHeader(ctx: ActiveFileContext | null): string | null
     `cursor at line ${ctx.line}, col ${ctx.column}`,
   ];
   if (ctx.enclosingSymbol) parts.push(`inside ${ctx.enclosingSymbol}()`);
-  if (
-    ctx.selectionStartLine != null &&
-    ctx.selectionEndLine != null &&
-    ctx.selectionStartLine !== ctx.selectionEndLine
-  ) {
-    parts.push(`selection: lines ${ctx.selectionStartLine}-${ctx.selectionEndLine}`);
-  }
+  // The selection is deliberately not here. A selection that is just lying
+  // around in the editor says nothing about what the message is about, and
+  // models took it as an instruction to edit there. To point at code, the
+  // user mentions it: "@" offers the selection as "file.ts:12-14".
   return `[Active editor context — ${parts.join('; ')}. Call read_file if you need the actual code.]`;
 }

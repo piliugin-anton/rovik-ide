@@ -42,6 +42,11 @@ export default function StaticCodeBlock(props: {
   language?: string;
   /** Still streaming: show plain text, colorize once complete. */
   streaming?: boolean;
+  /**
+   * The code is (part of) a project file: "Open in editor" opens that file
+   * in the main editor instead of turning this block into an inline one.
+   */
+  onOpenInEditor?: () => void;
 }) {
   const [html, setHtml] = createSignal<string | null>(null);
   const [showAll, setShowAll] = createSignal(false);
@@ -123,9 +128,20 @@ export default function StaticCodeBlock(props: {
           </button>
         </Show>
         <Show when={!props.streaming}>
-          <button type="button" onClick={() => setEditing((e) => !e)}>
-            {editing() ? 'Close editor' : 'Open in editor'}
-          </button>
+          <Show
+            when={props.onOpenInEditor}
+            fallback={
+              <button type="button" onClick={() => setEditing((e) => !e)}>
+                {editing() ? 'Close editor' : 'Open in editor'}
+              </button>
+            }
+          >
+            {(open) => (
+              <button type="button" onClick={() => open()()} title="Open the file in the editor">
+                Open in editor
+              </button>
+            )}
+          </Show>
         </Show>
       </div>
 

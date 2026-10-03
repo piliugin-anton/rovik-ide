@@ -25,7 +25,8 @@ import type {
   TreeRow,
 } from '../types';
 import type { ActiveFileContext } from '../lib/activeContext';
-import { buildContextHeader } from '../lib/activeContext';
+import { buildContextHeader, selectedLines } from '../lib/activeContext';
+import { lineRangeLabel, referenceKey, referenceLabel } from '../lib/fileReferences';
 import {
   loadAiSettings,
   reconcileSelection,
@@ -257,13 +258,40 @@ export default function ChatPanel(props: ChatProps) {
       })
   );
 
+  /**
+   * The editor's current selection as a reference ("App.tsx:12-14"). The
+   * editor keeps its selection while focus is in the composer, so this is
+   * whatever was selected before switching to the chat.
+   */
+  const selectionSuggestion = createMemo<FileSuggestion | null>(() => {
+    const ctx = props.activeFileContext();
+    if (!ctx?.selection) return null;
+    const name = ctx.path.split(/[\\/]/).pop() ?? ctx.path;
+    return {
+      id: props.files().find((f) => f.path === ctx.path)?.id ?? ctx.path,
+      path: ctx.path,
+      name,
+      relativePath: toRelativePath(ctx.path, props.rootPath()),
+      lines: selectedLines(ctx.selection),
+    };
+  });
+
   const fileSuggestions = createMemo<FileSuggestion[]>(() => {
     if (!fileSuggestionsOpen()) return [];
 
     const query = fileQuery().trim().toLowerCase();
 
-    return (
-      props
+    // The selection comes first, so "@" + Enter mentions it.
+    const selection = selectionSuggestion();
+    const selectionMatches =
+      selection &&
+      (!query ||
+        selection.name.toLowerCase().includes(query) ||
+        selection.relativePath.toLowerCase().includes(query));
+
+    return [
+      ...(selectionMatches ? [selection] : []),
+      ...props
         .files()
         // Skip ignored rows entirely — they should never be referenceable.
         .filter((file) => !file.ignored)
@@ -297,8 +325,8 @@ export default function ChatPanel(props: ChatProps) {
           path: file.path,
           name: file.name,
           relativePath: toRelativePath(file.path, props.rootPath()),
-        }))
-    );
+        })),
+    ];
   });
 
   /*
@@ -508,11 +536,19 @@ export default function ChatPanel(props: ChatProps) {
     chip.className = 'chat-file-reference';
     chip.contentEditable = 'false';
     chip.dataset.path = suggestion.path;
-    chip.innerHTML = `<span class="chat-file-reference-name" title="${escapeHtml(suggestion.path)}">${escapeHtml(suggestion.name)}</span>
+    chip.dataset.ref = referenceKey(suggestion);
+    // The line range sits outside the name, which truncates: "VeryLongNa…:12-14".
+    const lines = suggestion.lines
+      ? `<span class="chat-file-reference-lines">:${lineRangeLabel(suggestion.lines)}</span>`
+      : '';
+    const title = suggestion.lines
+      ? `${suggestion.relativePath}, lines ${lineRangeLabel(suggestion.lines)}`
+      : suggestion.relativePath;
+    chip.innerHTML = `<span class="chat-file-reference-name" title="${escapeHtml(title)}">${escapeHtml(suggestion.name)}</span>${lines}
     <button
       type="button"
       class="chat-file-reference-remove"
-      aria-label="Remove ${suggestion.name}"
+      aria-label="Remove ${escapeHtml(referenceLabel(suggestion))}"
       title="Remove reference"
     >
       <svg
@@ -536,7 +572,7 @@ export default function ChatPanel(props: ChatProps) {
     chip.querySelector('.chat-file-reference-remove')?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      removeReferencedFile(suggestion.path);
+      removeReferencedFile(referenceKey(suggestion));
       chip.remove();
     });
 
@@ -602,8 +638,9 @@ export default function ChatPanel(props: ChatProps) {
 
     setInput(readComposerText());
 
+    const key = referenceKey(suggestion);
     setReferencedFiles((current) =>
-      current.some((file) => file.path === suggestion.path) ? current : [...current, suggestion]
+      current.some((file) => referenceKey(file) === key) ? current : [...current, suggestion]
     );
 
     setFileSuggestionsOpen(false);
@@ -625,8 +662,22 @@ export default function ChatPanel(props: ChatProps) {
     }, 0);
   }
 
-  function removeReferencedFile(path: string) {
-    setReferencedFiles((current) => current.filter((file) => file.path !== path));
+  /** File references in the composer, in order, once each. */
+  function composerReferences(): FileSuggestion[] {
+    const seen = new Set<string>();
+    const out: FileSuggestion[] = [];
+    for (const segment of serializeComposer()) {
+      if (segment.type !== 'file') continue;
+      const key = referenceKey(segment.file);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(segment.file);
+    }
+    return out;
+  }
+
+  function removeReferencedFile(key: string) {
+    setReferencedFiles((current) => current.filter((file) => referenceKey(file) !== key));
 
     requestAnimationFrame(() => {
       inputTextareaRef?.focus();
@@ -668,8 +719,8 @@ export default function ChatPanel(props: ChatProps) {
         if (!(child instanceof HTMLElement)) return;
 
         if (child.classList.contains('chat-file-reference')) {
-          const path = child.dataset.path ?? '';
-          const file = referencedFiles().find((f) => f.path === path);
+          const key = child.dataset.ref ?? child.dataset.path ?? '';
+          const file = referencedFiles().find((f) => referenceKey(f) === key);
           if (file) segments.push({ type: 'file', file });
           else pushText(child.textContent ?? '');
           return;
@@ -700,7 +751,7 @@ export default function ChatPanel(props: ChatProps) {
    */
   function readComposerText(): string {
     return serializeComposer()
-      .map((segment) => (segment.type === 'text' ? segment.text : segment.file.name))
+      .map((segment) => (segment.type === 'text' ? segment.text : referenceLabel(segment.file)))
       .join('');
   }
 
@@ -823,7 +874,7 @@ export default function ChatPanel(props: ChatProps) {
     setInput(readComposerText());
     setReferencedFiles((current) => [
       ...current,
-      ...files.filter((f) => !current.some((c) => c.path === f.path)),
+      ...files.filter((f) => !current.some((c) => referenceKey(c) === referenceKey(f))),
     ]);
 
     // Caret at the end, ready to edit and resend.
@@ -1727,12 +1778,23 @@ export default function ChatPanel(props: ChatProps) {
     if (contextHeader) contextParts.push(contextHeader);
 
     if (files.length > 0) {
+      const hasLines = files.some((file) => file.lines);
       contextParts.push(
         [
           'The user explicitly referenced these project files:',
-          ...files.map((file) => `- ${file.path}`),
+          ...files.map((file) =>
+            file.lines
+              ? `- ${file.relativePath} (lines ${file.lines.start}-${file.lines.end}, shown in the message as ${referenceLabel(file)})`
+              : `- ${file.relativePath}`
+          ),
           '',
           'Treat these as explicit file references from the user. Use the available file tools to inspect them when relevant.',
+          ...(hasLines
+            ? [
+                'A reference with lines means the user is talking about exactly those lines. Read them with read_file using that start_line and end_line.',
+                'To change them: write_file replaces the whole file, so read the full file first, then write it back with only those lines changed and every other line exactly as it was.',
+              ]
+            : []),
         ].join('\n')
       );
     }
@@ -1749,7 +1811,9 @@ export default function ChatPanel(props: ChatProps) {
     const text = input().trim();
     const profile = activeProfile();
     const dialog = activeDialog();
-    const selectedFiles = referencedFiles();
+    // From the chips actually in the composer: one deleted with Backspace
+    // stays in referencedFiles() and would still be sent.
+    const selectedFiles = composerReferences();
 
     /*
      * A message containing only referenced files is valid.
@@ -2030,7 +2094,12 @@ export default function ChatPanel(props: ChatProps) {
                     }}
                     onClick={() => acceptFileSuggestion(suggestion)}
                   >
-                    <span class="file-suggestion-name">{suggestion.name}</span>
+                    <span class="file-suggestion-head">
+                      <span class="file-suggestion-name">{referenceLabel(suggestion)}</span>
+                      <Show when={suggestion.lines}>
+                        <span class="file-suggestion-tag">Selection</span>
+                      </Show>
+                    </span>
                     <span class="file-suggestion-path">./{suggestion.relativePath}</span>
                   </button>
                 )}

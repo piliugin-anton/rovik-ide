@@ -275,6 +275,8 @@ export type FileSuggestion = {
   path: string;
   relativePath: string;
   name: string;
+  /** A reference to these lines only (1-based, inclusive), e.g. an editor selection. */
+  lines?: { start: number; end: number };
 };
 
 export interface LastProjectOpenFile {

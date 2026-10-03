@@ -1,41 +1,48 @@
-import { onMount, onCleanup, createSignal } from 'solid-js';
+import { onMount, onCleanup, createEffect } from 'solid-js';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import type { UnlistenFn } from '@tauri-apps/api/event';
-import {
-  spawnTerminal,
-  writeToTerminal,
-  resizeTerminal,
-  closeTerminal,
-  onTerminalData,
-  onTerminalExit,
-} from '../lib/terminal';
+import { spawnTerminal, writeToTerminal, resizeTerminal, closeTerminal } from '../lib/terminal';
 
 interface TerminalProps {
   cwd: string | null;
-  onExit?: () => void;
+  /** Shown and focused; inactive terminals stay alive, hidden. */
+  active: boolean;
+  onSpawned?: (shell: string) => void;
+  /** The window title the shell set (OSC 0/2), e.g. "user@host: ~/project". */
+  onTitleChange?: (title: string) => void;
+  onExit?: (code: number | null) => void;
+  /**
+   * Panel shortcuts (new terminal, next/previous). Returning true keeps the
+   * key from xterm, so it isn't also sent to the shell.
+   */
+  isPanelShortcut?: (e: KeyboardEvent) => boolean;
 }
 
 export default function Terminal(props: TerminalProps) {
   let containerEl: HTMLDivElement | undefined;
   let xterm: XTerm | undefined;
   let fitAddon: FitAddon | undefined;
-  let resizeObserver: ResizeObserver | undefined;
-  let unlistenData: UnlistenFn | undefined;
-  let unlistenExit: UnlistenFn | undefined;
+  let terminalId: string | null = null;
+  let disposed = false;
+  let exited = false;
 
-  const [terminalId, setTerminalId] = createSignal<string | null>(null);
+  /** Fit to the container; skipped while hidden (xterm can't lay out at 0×0). */
+  function fit() {
+    if (!containerEl || containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
+    fitAddon?.fit();
+  }
 
-  onMount(async () => {
+  onMount(() => {
     if (!containerEl) return;
 
-    xterm = new XTerm({
+    const term = new XTerm({
       convertEol: true,
       cursorBlink: true,
       fontSize: 13,
       lineHeight: 1.3,
       fontFamily: "Menlo, Consolas, 'Courier New', monospace",
+      scrollback: 5000,
       theme: {
         background: '#1e1e1e',
         foreground: '#d4d4d4',
@@ -43,48 +50,89 @@ export default function Terminal(props: TerminalProps) {
         selectionBackground: '#094771',
       },
     });
-
+    xterm = term;
     fitAddon = new FitAddon();
-    xterm.loadAddon(fitAddon);
-    xterm.open(containerEl);
-    fitAddon.fit();
+    term.loadAddon(fitAddon);
+    term.open(containerEl);
+    fit();
 
-    const id = await spawnTerminal(props.cwd, xterm.cols, xterm.rows);
-    setTerminalId(id);
+    term.attachCustomKeyEventHandler((e) => !(props.isPanelShortcut?.(e) ?? false));
+    term.onTitleChange((title) => props.onTitleChange?.(title));
 
-    unlistenData = await onTerminalData(id, (data) => xterm?.write(data));
-    unlistenExit = await onTerminalExit(id, () => {
-      xterm?.write('\r\n\x1b[2m[process exited]\x1b[0m\r\n');
-      props.onExit?.();
+    // Input typed before the shell is up is kept, not dropped.
+    let queued = '';
+    term.onData((data) => {
+      if (exited) return;
+      if (!terminalId) {
+        queued += data;
+        return;
+      }
+      void writeToTerminal(terminalId, data).catch(() => {});
+    });
+    term.onResize(({ cols, rows }) => {
+      if (terminalId && !exited) void resizeTerminal(terminalId, cols, rows).catch(() => {});
     });
 
-    xterm.onData((data) => {
-      void writeToTerminal(id, data);
-    });
+    spawnTerminal(props.cwd, term.cols, term.rows, (event) => {
+      if (disposed) return;
+      if (event.type === 'output') {
+        term.write(event.data);
+      } else {
+        exited = true;
+        const code = event.code == null ? '' : ` with code ${event.code}`;
+        term.write(`\r\n\x1b[2m[process exited${code}]\x1b[0m\r\n`);
+        props.onExit?.(event.code);
+      }
+    })
+      .then((info) => {
+        if (disposed) {
+          void closeTerminal(info.id);
+          return;
+        }
+        terminalId = info.id;
+        props.onSpawned?.(info.shell);
+        // The size may have changed while spawning (panel opened, refit).
+        void resizeTerminal(info.id, term.cols, term.rows).catch(() => {});
+        if (queued) {
+          void writeToTerminal(info.id, queued).catch(() => {});
+          queued = '';
+        }
+      })
+      .catch((err) => {
+        if (disposed) return;
+        exited = true;
+        term.write(`\x1b[31mCouldn't start a shell: ${String(err)}\x1b[0m\r\n`);
+      });
 
-    xterm.onResize(({ cols, rows }) => {
-      void resizeTerminal(id, cols, rows);
-    });
-
-    // Refit whenever the container changes size (panel expand/collapse,
-    // sidebar resize, window resize). Skip while hidden (0 size) to avoid
-    // xterm choking on a zero-size layout.
-    resizeObserver = new ResizeObserver(() => {
-      if (!containerEl) return;
-      if (containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
-      fitAddon?.fit();
-    });
+    // Refit whenever the container changes size: panel expand, sidebar
+    // resize, window resize, or this terminal becoming the visible one.
+    const resizeObserver = new ResizeObserver(fit);
     resizeObserver.observe(containerEl);
+    onCleanup(() => resizeObserver.disconnect());
+  });
+
+  // Switched to: refit (its size may have changed while hidden) and focus.
+  createEffect(() => {
+    if (!props.active) return;
+    requestAnimationFrame(() => {
+      if (disposed || !props.active) return;
+      fit();
+      xterm?.focus();
+    });
   });
 
   onCleanup(() => {
-    resizeObserver?.disconnect();
-    unlistenData?.();
-    unlistenExit?.();
-    const id = terminalId();
-    if (id) void closeTerminal(id);
+    disposed = true;
+    if (terminalId && !exited) void closeTerminal(terminalId);
     xterm?.dispose();
   });
 
-  return <div class="terminal-instance" ref={containerEl} />;
+  return (
+    <div
+      class="terminal-instance"
+      classList={{ hidden: !props.active }}
+      ref={containerEl}
+      role="tabpanel"
+    />
+  );
 }
