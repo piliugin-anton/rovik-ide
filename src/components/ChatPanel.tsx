@@ -160,9 +160,6 @@ export default function ChatPanel(props: ChatProps) {
    */
   const [referencedFiles, setReferencedFiles] = createSignal<FileSuggestion[]>([]);
 
-  /** Tool calls in the running agent run, shown next to Stop. */
-  const [runToolCalls, setRunToolCalls] = createSignal(0);
-
   let currentChannel: Channel<ChatStreamEvent> | null = null;
   /** The running model request, so the Stop button can cancel it. */
   let currentRequestId: string | null = null;
@@ -1408,7 +1405,6 @@ export default function ChatPanel(props: ChatProps) {
     } = {}
   ): Promise<void> {
     const guard = opts.guard ?? new AgentRunGuard(permissions().toolCallCheckpoint);
-    setRunToolCalls(guard.toolCalls);
     const profile = activeProfile();
 
     if (!profile || !isMounted || stopRequested) {
@@ -1743,7 +1739,6 @@ export default function ChatPanel(props: ChatProps) {
         // The model reads the note with the result; a stop pauses the run
         // once this turn's calls are done (runAgentTurn).
         if (verdict.kind !== 'ok') result.content += verdict.note;
-        setRunToolCalls(guard.toolCalls);
       }
 
       // Open tabs of the file show what was written.
@@ -1840,7 +1835,6 @@ export default function ChatPanel(props: ChatProps) {
     stopRequested = false;
     window.clearTimeout(stopTimer);
     setSending(true);
-    setRunToolCalls(0);
     store.setBusy(dialogId, true);
     runningDialogs.add(dialogId);
     try {
@@ -2285,11 +2279,6 @@ export default function ChatPanel(props: ChatProps) {
             </button>
           }
         >
-          <Show when={runToolCalls() > 0}>
-            <span class="chat-run-steps" title="Tool calls in this run">
-              {runToolCalls()} {runToolCalls() === 1 ? 'call' : 'calls'}
-            </span>
-          </Show>
           <button
             onClick={stopRequest}
             class="chat-send-button stop"

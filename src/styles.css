@@ -879,16 +879,6 @@ body {
   min-width: 160px;
 }
 
-/* Tool calls so far, next to Stop while the agent runs. */
-.chat-run-steps {
-  align-self: center;
-  flex-shrink: 0;
-  color: var(--fg-dim);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
 .chat-message {
   min-height: 32px;
   font-size: 13px;
