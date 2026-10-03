@@ -5,6 +5,7 @@ use tauri::Manager;
 mod agent;
 mod atomic_file;
 mod edit_file;
+mod lsp;
 mod project_profile;
 mod chat_db;
 mod chat_request;
@@ -22,6 +23,7 @@ mod git;
 pub fn run() {
     tauri::Builder::default()
         .manage(TerminalState::default())
+        .manage(lsp::LspState::default())
         .manage(BrowserState::default())
         .manage(chat_request::ChatRequests::default())
         .manage(WatcherState {
@@ -96,6 +98,14 @@ pub fn run() {
             git::git_status,
             typings::nodejs::load_nodejs_project_typings,
             typings::sources::load_project_sources,
+            lsp::lsp_start,
+            lsp::lsp_send,
+            lsp::lsp_stop,
+            lsp::rust_analyzer::ra_find,
+            lsp::rust_analyzer::ra_latest_release,
+            lsp::rust_analyzer::ra_install,
+            lsp::rust_analyzer::ra_rust_src_status,
+            lsp::rust_analyzer::ra_install_rust_src,
             agent::send_chat_message,
             chat_request::cancel_chat_request,
             agent::list_models,

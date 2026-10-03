@@ -7,11 +7,21 @@
 
 import type { FileSuggestion } from '../types';
 
+/**
+ * "Open in editor" anywhere in the chat: opens the file in a tab (switching
+ * to it if it's already open) and centers the start position, if there is
+ * one, in the editor.
+ */
 export interface OpenFileRequest {
   /** As the model gave it: relative to the project root, or absolute. */
   path: string;
-  /** 1-based line to put the cursor on and center in the editor. */
+  /** 1-based line to put the cursor on and center. */
   line?: number;
+  /**
+   * Code from the file, when the line isn't known (a code block in a
+   * reply, an edit not applied yet): the line is where it's found.
+   */
+  snippet?: string;
 }
 
 const listeners = new Set<(request: OpenFileRequest) => void>();
@@ -23,6 +33,25 @@ export function requestOpenFile(request: OpenFileRequest) {
 export function onOpenFileRequest(listener: (request: OpenFileRequest) => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/*
+ * Whether a path the chat mentions is a file in the project, so a code
+ * block offers "Open in editor" only when there's a file to open. App
+ * answers (it knows the project root).
+ */
+
+let fileResolver: ((path: string) => Promise<string | null>) | null = null;
+
+export function setProjectFileResolver(
+  resolver: ((path: string) => Promise<string | null>) | null
+) {
+  fileResolver = resolver;
+}
+
+/** The file's absolute path if it exists in the project, else null. */
+export function resolveProjectFile(path: string): Promise<string | null> {
+  return fileResolver ? fileResolver(path).catch(() => null) : Promise.resolve(null);
 }
 
 /*

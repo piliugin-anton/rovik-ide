@@ -1,5 +1,7 @@
-import { createMemo, Index, Match, Switch } from 'solid-js';
+import { createEffect, createMemo, createSignal, Index, Match, on, Switch } from 'solid-js';
 import { parseMessageSegments } from '../lib/messageSegments';
+import { pathBefore } from '../lib/codeLocation';
+import { requestOpenFile, resolveProjectFile } from '../lib/editorBridge';
 import StaticCodeBlock from './StaticCodeBlock';
 import FormattedText from './FormattedText';
 
@@ -19,7 +21,7 @@ export default function MessageContent(props: { content: string; streaming?: boo
 
   return (
     <Index each={segments()}>
-      {(segment) => {
+      {(segment, index) => {
         const type = createMemo(() => segment().type);
         const text = createMemo(() => segment().content);
         const language = createMemo(() => {
@@ -32,10 +34,41 @@ export default function MessageContent(props: { content: string; streaming?: boo
           return s.type === 'code' && !!s.open && !!props.streaming;
         });
 
+        /*
+         * The project file this block is from, for "Open in editor": named in
+         * the fence (```rust src/main.rs) or on the line right before it
+         * ("In `src/main.rs`:"). Only offered when that file exists.
+         */
+        const candidate = createMemo(() => {
+          const s = segment();
+          if (s.type !== 'code') return undefined;
+          if (s.file) return s.file;
+          const prev = segments()[index - 1];
+          return prev?.type === 'text' ? pathBefore(prev.content) : undefined;
+        });
+        const [file, setFile] = createSignal<string | null>(null);
+        createEffect(
+          on([candidate, open], ([path, streaming]) => {
+            setFile(null);
+            if (!path || streaming) return;
+            void resolveProjectFile(path).then((abs) => {
+              if (candidate() === path) setFile(abs);
+            });
+          })
+        );
+
         return (
           <Switch>
             <Match when={type() === 'code'}>
-              <StaticCodeBlock code={text()} language={language()} streaming={open()} />
+              <StaticCodeBlock
+                code={text()}
+                language={language()}
+                streaming={open()}
+                // Opens the file where this code is found in it.
+                onOpenInEditor={
+                  file() ? () => requestOpenFile({ path: file()!, snippet: text() }) : undefined
+                }
+              />
             </Match>
             <Match when={type() === 'text'}>
               <FormattedText class="message-text" text={text()} />

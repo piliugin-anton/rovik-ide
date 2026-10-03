@@ -2,15 +2,17 @@
 //
 // Code blocks render as static HTML highlighted by Monaco's own tokenizer
 // (monaco.editor.colorize): same colors as the editor, but no editor
-// instance, so scrolling through a code-heavy chat creates none. A real
-// editor is mounted only on "Open in editor", at most MAX_EDITORS at a time,
-// and turned back into static HTML once it scrolls far out of view.
-import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js';
+// instance, so scrolling through a code-heavy chat creates none.
+//
+// "Open in editor" opens the file the code belongs to in the main editor
+// (lib/editorBridge.ts, requestOpenFile); a block that isn't tied to a
+// project file has no such button. It used to turn the block itself into
+// an editable inline editor.
+import { createEffect, createSignal, on, Show } from 'solid-js';
 import * as monaco from 'monaco-editor';
-import CodeBlock, { resolveLanguage } from './CodeBlock';
+import { resolveLanguage } from './CodeBlock';
 
 const COLORIZE_LINES = 400;
-const MAX_EDITORS = 3;
 
 // colorize() uses the current theme's token classes (mtk1, mtk2, ...);
 // set the theme once so they exist before any editor has been created.
@@ -20,17 +22,6 @@ function ensureTheme() {
     monaco.editor.setTheme('vs-dark');
     themeReady = true;
   }
-}
-
-// Open editors, oldest first; opening one more closes the oldest.
-const openEditors: Array<() => void> = [];
-function registerEditor(close: () => void) {
-  openEditors.push(close);
-  while (openEditors.length > MAX_EDITORS) openEditors.shift()?.();
-}
-function unregisterEditor(close: () => void) {
-  const i = openEditors.indexOf(close);
-  if (i >= 0) openEditors.splice(i, 1);
 }
 
 export function escapeHtml(text: string): string {
@@ -57,18 +48,13 @@ export default function StaticCodeBlock(props: {
   language?: string;
   /** Still streaming: show plain text, colorize once complete. */
   streaming?: boolean;
-  /**
-   * The code is (part of) a project file: "Open in editor" opens that file
-   * in the main editor instead of turning this block into an inline one.
-   */
+  /** The code is (part of) a project file: "Open in editor" opens it there. */
   onOpenInEditor?: () => void;
 }) {
   const [html, setHtml] = createSignal<string | null>(null);
   const [showAll, setShowAll] = createSignal(false);
   const [wrap, setWrap] = createSignal(false);
-  const [editing, setEditing] = createSignal(false);
   const [copied, setCopied] = createSignal(false);
-  let rootRef: HTMLDivElement | undefined;
 
   const lines = () => props.code.split('\n').length;
   const visibleCode = () => {
@@ -100,24 +86,6 @@ export default function StaticCodeBlock(props: {
     )
   );
 
-  // An open editor that scrolls far away turns back into static HTML.
-  const close = () => setEditing(false);
-  createEffect(() => {
-    if (!editing() || !rootRef) return;
-    registerEditor(close);
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.every((e) => !e.isIntersecting)) close();
-      },
-      { rootMargin: '1000px 0px' }
-    );
-    observer.observe(rootRef);
-    onCleanup(() => {
-      observer.disconnect();
-      unregisterEditor(close);
-    });
-  });
-
   async function copy() {
     try {
       await navigator.clipboard.writeText(props.code);
@@ -129,7 +97,7 @@ export default function StaticCodeBlock(props: {
   }
 
   return (
-    <div class="static-code" ref={rootRef}>
+    <div class="static-code">
       <div class="static-code-toolbar">
         <Show when={props.language}>
           <span class="static-code-language">{props.language}</span>
@@ -137,47 +105,27 @@ export default function StaticCodeBlock(props: {
         <button type="button" onClick={() => void copy()}>
           {copied() ? 'Copied' : 'Copy'}
         </button>
-        <Show when={!editing()}>
-          <button type="button" aria-pressed={wrap()} onClick={() => setWrap((w) => !w)}>
-            Wrap
-          </button>
-        </Show>
-        <Show when={!props.streaming}>
-          <Show
-            when={props.onOpenInEditor}
-            fallback={
-              <button type="button" onClick={() => setEditing((e) => !e)}>
-                {editing() ? 'Close editor' : 'Open in editor'}
-              </button>
-            }
-          >
-            {(open) => (
-              <button type="button" onClick={() => open()()} title="Open the file in the editor">
-                Open in editor
-              </button>
-            )}
-          </Show>
+        <button type="button" aria-pressed={wrap()} onClick={() => setWrap((w) => !w)}>
+          Wrap
+        </button>
+        <Show when={!props.streaming && props.onOpenInEditor}>
+          {(open) => (
+            <button type="button" onClick={() => open()()} title="Open the file in the editor">
+              Open in editor
+            </button>
+          )}
         </Show>
       </div>
 
-      <Show
-        when={editing()}
-        fallback={
-          <>
-            <pre class="static-code-body" classList={{ wrap: wrap() }}>
-              <Show when={html()} fallback={<code innerHTML={escapeHtml(visibleCode())} />}>
-                {(colored) => <code innerHTML={colored()} />}
-              </Show>
-            </pre>
-            <Show when={!showAll() && lines() > COLORIZE_LINES}>
-              <button type="button" class="static-code-more" onClick={() => setShowAll(true)}>
-                Show all {lines().toLocaleString()} lines
-              </button>
-            </Show>
-          </>
-        }
-      >
-        <CodeBlock code={props.code} language={props.language} />
+      <pre class="static-code-body" classList={{ wrap: wrap() }}>
+        <Show when={html()} fallback={<code innerHTML={escapeHtml(visibleCode())} />}>
+          {(colored) => <code innerHTML={colored()} />}
+        </Show>
+      </pre>
+      <Show when={!showAll() && lines() > COLORIZE_LINES}>
+        <button type="button" class="static-code-more" onClick={() => setShowAll(true)}>
+          Show all {lines().toLocaleString()} lines
+        </button>
       </Show>
     </div>
   );

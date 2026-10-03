@@ -8,6 +8,11 @@ import { selectionReference } from '../lib/fileReferences';
 import { addToChat } from '../lib/editorBridge';
 import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
 import { ensureProjectIntelliSense, modelUriFor } from '../lib/intellisense';
+import {
+  checkForRustAnalyzerUpdate,
+  ensureRustSupport,
+  restartRustAnalyzer,
+} from '../lib/lsp/rustAnalyzer';
 import { pendingEditFor } from '../lib/approvals';
 import {
   hunkLine,
@@ -234,6 +239,28 @@ export default function Editor(props: EditorProps) {
     // Load typings in the background - never block editor creation on it.
     // Once per project (later mounts reuse it).
     void ensureProjectIntelliSense(props.projectDir());
+
+    // Rust: rust-analyzer, started with the project's first Rust file.
+    if (props.language() === 'rust') {
+      ensureRustSupport(props.projectDir());
+      const rustActions = [
+        editor.addAction({
+          id: 'rovik.rustAnalyzer.restart',
+          label: 'Restart rust-analyzer',
+          contextMenuGroupId: 'z_rust',
+          contextMenuOrder: 1,
+          run: () => restartRustAnalyzer(),
+        }),
+        editor.addAction({
+          id: 'rovik.rustAnalyzer.checkUpdate',
+          label: 'Check for rust-analyzer Updates',
+          contextMenuGroupId: 'z_rust',
+          contextMenuOrder: 2,
+          run: () => checkForRustAnalyzerUpdate(),
+        }),
+      ];
+      onCleanup(() => rustActions.forEach((a) => a.dispose()));
+    }
   });
 
   // ------------------------------------------

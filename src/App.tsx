@@ -7,6 +7,7 @@ import {
   onCleanup,
   Switch,
   Match,
+  on,
 } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import FileTree from './components/FileTree';
@@ -47,9 +48,12 @@ import { invoke } from '@tauri-apps/api/core';
 import FileContextMenu from './components/FileContextMenu';
 import { GitPanel } from './components/GitPanel';
 import { confirmDialog, ConfirmDialogHost, type ConfirmOptions } from './components/ConfirmDialog';
+import NotificationHost from './components/NotificationHost';
+import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { onFileWritten, onRevealEdit } from './lib/approvals';
-import { onAddToChat, onOpenFileRequest } from './lib/editorBridge';
+import { onAddToChat, onOpenFileRequest, setProjectFileResolver } from './lib/editorBridge';
+import { findSnippetLine } from './lib/codeLocation';
 import { isProjectSource, updateProjectSource } from './lib/intellisense';
 import { clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
@@ -259,6 +263,16 @@ export default function App() {
   // An unreviewed agent edit: its file opens in a tab so the changes can be
   // seen. In the background while another file is being worked on, so a
   // long run doesn't keep switching tabs; focused when nothing else is open.
+  // Language servers belong to a project: a different one (or none) stops them.
+  createEffect(
+    on(
+      () => rootPath(),
+      () => void stopRustSupport(),
+      { defer: true }
+    )
+  );
+  onCleanup(() => void stopRustSupport());
+
   const stopAgentEdits = onAgentEdit((path) => {
     const open = openFiles().find((f) => f.path === path);
     // The tab has unsaved edits of the user's: it keeps them and doesn't
@@ -272,13 +286,35 @@ export default function App() {
     void openPath(path, { activate: activePath() === null });
   });
 
-  // "Open in editor" on a read_file result: open the file with the line
-  // that was read from centered.
-  const stopOpenRequests = onOpenFileRequest(({ path, line }) => {
+  // "Open in editor" anywhere in the chat (lib/editorBridge.ts): open the
+  // file, then center its start position: the line given, or where the
+  // given code is found. Without either, the file just opens.
+  const stopOpenRequests = onOpenFileRequest(({ path, line, snippet }) => {
     const root = rootPath();
     if (!root) return;
-    void openPathAtLine(toAbsolutePath(path, root), line ?? 1);
+    const abs = toAbsolutePath(path, root);
+    void (async () => {
+      let target = line;
+      if (target === undefined && snippet) {
+        // An open tab's text, unsaved edits included; else the file on disk.
+        const text =
+          openFiles().find((f) => f.path === abs)?.content ??
+          (await readFileContent(abs).catch(() => null));
+        target = text !== null ? (findSnippetLine(text, snippet) ?? undefined) : undefined;
+      }
+      if (target === undefined) await openPath(abs);
+      else await openPathAtLine(abs, target);
+    })();
   });
+  // Which paths mentioned in the chat are files in this project.
+  setProjectFileResolver(async (path) => {
+    const root = rootPath();
+    if (!root) return null;
+    const abs = toAbsolutePath(path, root);
+    if (!(await pathExists(abs))) return null;
+    return (await dirEntryCount(abs, 1)) === null ? abs : null; // a file, not a folder
+  });
+  onCleanup(() => setProjectFileResolver(null));
   // "Add to chat" in the editor: bring the chat up; it takes the reference.
   const stopAddToChat = onAddToChat(() => setSidebarTab('chat'));
   onCleanup(() => {
@@ -349,6 +385,8 @@ export default function App() {
       );
       // Saved: the user has seen the agent's changes in it.
       clearAgentChanges(file.path);
+      // rust-analyzer checks the project (cargo check) on save.
+      rustFileSaved(file.path);
       // Show it in the tree right away, without waiting for the watcher
       // (which can miss files written into a just-created folder).
       if (file.deleted) tree.refreshAncestors(file.path);
@@ -1141,6 +1179,7 @@ export default function App() {
         />
       </Show>
       <ConfirmDialogHost />
+      <NotificationHost />
     </div>
   );
 }

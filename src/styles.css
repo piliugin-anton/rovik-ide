@@ -3960,3 +3960,150 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .monaco-editor .agent-change-removed-below {
   box-shadow: inset 0 -2px 0 var(--diff-deleted-strong);
 }
+
+/* Notifications (NotificationHost.tsx), bottom right. Same popup look as
+   the menus: menu background, border, soft shadow. */
+
+.notifications {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(340px, calc(100vw - 28px));
+  pointer-events: none;
+}
+
+.notification {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px var(--shadow);
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.notification.success {
+  border-left-color: var(--success);
+}
+
+.notification.warning {
+  border-left-color: var(--warning);
+}
+
+.notification.error {
+  border-left-color: var(--error);
+}
+
+.notification-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.notification-title {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.notification-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.notification-close:hover {
+  background: var(--hover-strong);
+  color: var(--fg);
+}
+
+.notification-message {
+  color: var(--fg-muted);
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
+.notification-progress {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.notification-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.notification-progress.busy .notification-progress-fill {
+  width: 30%;
+  animation: notification-busy 1.2s ease-in-out infinite;
+}
+
+@keyframes notification-busy {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-progress.busy .notification-progress-fill {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+.notification-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.notification-action {
+  padding: 3px 10px;
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.notification-action:hover {
+  background: var(--bg-control-hover);
+}
+
+.notification-action.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--fg-on-accent);
+}
+
+.notification-action.primary:hover {
+  filter: brightness(1.1);
+}

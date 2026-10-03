@@ -447,15 +447,25 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
     return Number.isFinite(landed) && landed >= 1 ? landed : undefined;
   };
 
-  const targetLine = (): number => {
+  /** Where to open the file: a known line, else code to find in it. */
+  const openTarget = (): { line?: number; snippet?: string } => {
     const a = args();
     const start = lineArg(a.start_line);
-    if (start !== undefined) return start;
-    return editLandedLine() ?? 1;
+    if (start !== undefined) return { line: start };
+    if (props.toolCall.name === 'edit_file') {
+      const landed = editLandedLine();
+      if (landed !== undefined) return { line: landed };
+      // Not applied (yet): the text it replaces is still in the file.
+      const oldText = str(a.old_text);
+      const failedOrPending = !resultText() || resultText()!.startsWith('Error:');
+      const snippet = failedOrPending ? oldText : str(a.new_text) || oldText;
+      if (snippet) return { snippet };
+    }
+    return { line: 1 };
   };
   const openInEditor = () => {
     const path = str(args().path);
-    if (path) requestOpenFile({ path, line: targetLine() });
+    if (path) requestOpenFile({ path, ...openTarget() });
   };
 
   // Code arguments are shown highlighted below, not as escaped JSON strings.

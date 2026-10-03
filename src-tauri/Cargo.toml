@@ -36,6 +36,9 @@ grep-regex = "0.1.14"
 grep-matcher = "0.1.9"
 # Deleting moves to the system trash (Recycle Bin, macOS Trash, freedesktop.org trash).
 trash = "5"
+# rust-analyzer downloads: .gz (Linux, macOS) and .zip (Windows) releases.
+flate2 = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Keep release builds small and light — matters for a "low memory" tool.
 [profile.release]
