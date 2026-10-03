@@ -25,6 +25,8 @@ export interface OpenFile {
   originalContent: string;
   dirty: boolean;
   language: string;
+  /** The file is gone from disk; the tab keeps its text until saved or closed. */
+  deleted?: boolean;
 }
 
 /**

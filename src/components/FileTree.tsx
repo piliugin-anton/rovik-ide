@@ -1,6 +1,7 @@
 import { createVirtualizer } from '@tanstack/solid-virtual';
 import { For, Show, type Accessor } from 'solid-js';
 import type { TreeRow } from '../types';
+import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
 const ROW_HEIGHT = 22;
 
@@ -146,24 +147,22 @@ export default function FileTree(props: FileTreeProps) {
                     onClick={(e) => handleRowClick(e, currentRow())}
                     title={isEditing() ? undefined : currentRow().name}
                   >
+                    <span class="tree-row-chevron">
+                      <Show when={currentRow().isDir && !currentRow().loading}>
+                        <ChevronIcon open={props.expanded().has(currentRow().path)} />
+                      </Show>
+                    </span>
                     <span class="tree-row-icon">
-                      {currentRow().loading
-                        ? ''
-                        : currentRow().isDir
-                          ? props.expanded().has(currentRow().path)
-                            ? '▾'
-                            : '▸'
-                          : '·'}
+                      <Show when={!currentRow().loading}>
+                        <Show when={currentRow().isDir} fallback={<FileIcon />}>
+                          <FolderIcon open={props.expanded().has(currentRow().path)} />
+                        </Show>
+                      </Show>
                     </span>
 
                     <Show
                       when={isEditing()}
-                      fallback={
-                        <span class="tree-row-name">
-                          {currentRow().name}
-                          {currentRow().ignored}
-                        </span>
-                      }
+                      fallback={<span class="tree-row-name">{currentRow().name}</span>}
                     >
                       <input
                         class="tree-row-input"

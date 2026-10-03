@@ -44,9 +44,18 @@ export function createFileTreeController(rootPath: () => string | null) {
     return out;
   });
 
+  // Directories asked to reload while a read of them was already running.
+  // Dropping those requests lost tree updates: a file created during the
+  // read never showed up until something else touched that folder.
+  const reloadQueued = new Set<string>();
+
   async function loadDir(path: string) {
     const root = rootPath();
-    if (!root || loading().has(path)) return;
+    if (!root) return;
+    if (loading().has(path)) {
+      reloadQueued.add(path);
+      return;
+    }
 
     setLoading((prev) => new Set(prev).add(path));
     try {
@@ -64,6 +73,7 @@ export function createFileTreeController(rootPath: () => string | null) {
         next.delete(path);
         return next;
       });
+      if (reloadQueued.delete(path)) void loadDir(path);
     }
   }
 
@@ -151,6 +161,23 @@ export function createFileTreeController(rootPath: () => string | null) {
     }
   }
 
+  /**
+   * Reloads every loaded directory on the way from `path` up to the root.
+   * For a path whose parent folders were just (re)created, e.g. by saving a
+   * tab whose folder had been deleted: each level gains an entry.
+   */
+  function refreshAncestors(path: string) {
+    const root = rootPath();
+    if (!root) return;
+    const rootTrimmed = root.replace(/[\\/]+$/, '');
+    let dir = parentOf(path);
+    while (dir && dir.length >= rootTrimmed.length) {
+      if (cache().has(dir)) void loadDir(dir);
+      if (dir === rootTrimmed) break;
+      dir = parentOf(dir);
+    }
+  }
+
   const rows = createMemo<TreeRow[]>(() => {
     const root = rootPath();
     if (!root) return [];
@@ -193,5 +220,5 @@ export function createFileTreeController(rootPath: () => string | null) {
     return out;
   });
 
-  return { rows, expanded, toggle, refresh, files, presetExpanded };
+  return { rows, expanded, toggle, refresh, refreshAncestors, files, presetExpanded };
 }

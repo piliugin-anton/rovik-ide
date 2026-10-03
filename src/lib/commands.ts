@@ -29,6 +29,10 @@ export async function writeFileContent(path: string, content: string): Promise<v
   return invoke<void>('write_file_content', { path, content });
 }
 
+export async function pathExists(path: string): Promise<boolean> {
+  return invoke<boolean>('path_exists', { path });
+}
+
 // Bootstraps an id for a path the frontend knows directly (e.g. the project
 // root), which never comes through read_dir_entries on its own.
 export async function getPathId(path: string): Promise<string> {

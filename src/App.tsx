@@ -19,6 +19,7 @@ import {
   pickProjectFolder,
   readFileContent,
   writeFileContent,
+  pathExists,
   getPathId,
   createFile as createFileOnDisk,
   createFolder as createFolderOnDisk,
@@ -172,17 +173,20 @@ export default function App() {
     const lastProject = await loadLastProject();
     if (!lastProject || !lastProject.path) return null;
     const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
-    const openFiles: OpenFile[] = await Promise.all(
-      openedFilesRaw.map(async (f) => {
-        const content = await readFileContent(f.path);
-        return {
-          ...f,
-          content,
-          originalContent: content,
-          dirty: false,
-        };
+    // A file deleted while the app was closed is skipped: one missing file
+    // used to fail the whole restore.
+    const restored = await Promise.all(
+      openedFilesRaw.map(async (f): Promise<OpenFile | null> => {
+        try {
+          const content = await readFileContent(f.path);
+          return { ...f, content, originalContent: content, dirty: false };
+        } catch (err) {
+          console.warn(`Not restoring ${f.path}:`, err);
+          return null;
+        }
       })
     );
+    const openFiles = restored.filter((f): f is OpenFile => f !== null);
 
     return [
       lastProject.path,
@@ -301,17 +305,82 @@ export default function App() {
 
   async function saveActiveFile() {
     const file = activeFile();
-    if (!file || !file.dirty) return;
+    // A deleted file is saved even without edits: saving is how it comes back.
+    if (!file || (!file.dirty && !file.deleted)) return;
     try {
       await writeFileContent(file.path, file.content);
+      // A re-created file is a new inode, so it has a new id.
+      const id = file.deleted ? await getPathId(file.path).catch(() => file.id) : file.id;
       setOpenFiles((prev) =>
         prev.map((f) =>
-          f.path === file.path ? { ...f, originalContent: f.content, dirty: false } : f
+          f.path === file.path
+            ? { ...f, id, originalContent: f.content, dirty: false, deleted: false }
+            : f
         )
       );
+      // Show it in the tree right away, without waiting for the watcher
+      // (which can miss files written into a just-created folder).
+      if (file.deleted) tree.refreshAncestors(file.path);
     } catch (err) {
       console.error(`Failed to save ${file.path}:`, err);
+      window.alert(`Couldn't save ${file.name}: ${String(err)}`);
     }
+  }
+
+  function isAtOrUnder(path: string, base: string) {
+    if (path === base) return true;
+    const trimmed = base.replace(/[\\/]+$/, '');
+    return path.startsWith(`${trimmed}/`) || path.startsWith(`${trimmed}\\`);
+  }
+
+  /**
+   * Re-checks on disk whether open files at or under `changedPath` (all of
+   * them when omitted) still exist, and marks their tabs. Goes by the disk
+   * rather than the event kind: renames arrive as "modify", and a remove and
+   * a re-create in one debounce window can be delivered in either order.
+   */
+  async function syncDeletedTabs(changedPath?: string) {
+    const targets = openFiles().filter((f) => !changedPath || isAtOrUnder(f.path, changedPath));
+    if (targets.length === 0) return;
+    const states = await Promise.all(
+      targets.map(async (f) => {
+        const exists = await pathExists(f.path).catch(() => true);
+        return { path: f.path, deleted: !exists };
+      })
+    );
+    const changed = states.filter(
+      (s) => !!openFiles().find((f) => f.path === s.path)?.deleted !== s.deleted
+    );
+    if (changed.length === 0) return;
+
+    // Came back on disk (git checkout, undo in another tool): take the
+    // disk's text unless the tab has unsaved edits.
+    const restored = await Promise.all(
+      changed
+        .filter((s) => !s.deleted)
+        .map(async (s) => {
+          const [content, id] = await Promise.all([
+            readFileContent(s.path).catch(() => null),
+            getPathId(s.path).catch(() => null),
+          ]);
+          return { path: s.path, content, id };
+        })
+    );
+
+    setOpenFiles((prev) =>
+      prev.map((f) => {
+        const state = changed.find((s) => s.path === f.path);
+        if (!state) return f;
+        if (state.deleted) return { ...f, deleted: true };
+        const back = restored.find((r) => r.path === f.path);
+        const next: OpenFile = { ...f, deleted: false, id: back?.id ?? f.id };
+        if (!f.dirty && back?.content != null) {
+          next.content = back.content;
+          next.originalContent = back.content;
+        }
+        return next;
+      })
+    );
   }
 
   function closeFile(path: string) {
@@ -391,10 +460,14 @@ export default function App() {
     try {
       for (const row of selectedRows) {
         await deletePathOnDisk(row.id);
-        const openTarget = openFiles().find((f) => f.id === row.id);
-        if (openTarget && activePath() === openTarget.path) setActivePath(null);
+        // Tabs stay open, marked deleted (a folder's files too): unsaved
+        // text isn't lost, and saving puts the file back.
+        setOpenFiles((prev) =>
+          prev.map((f) =>
+            f.id === row.id || isAtOrUnder(f.path, row.path) ? { ...f, deleted: true } : f
+          )
+        );
       }
-      setOpenFiles((prev) => prev.filter((f) => !selectedFileIds().has(f.id)));
       setSelectedFileIds(new Set<string>());
       setLastSelectedId(null);
     } catch (err) {
@@ -648,6 +721,7 @@ export default function App() {
           tree.refresh();
           break;
       }
+      void syncDeletedTabs(operation === 'unknown' ? undefined : path);
     });
   });
 

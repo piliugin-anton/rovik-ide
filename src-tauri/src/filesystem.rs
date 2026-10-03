@@ -321,9 +321,26 @@ pub fn read_file_content(path: String) -> Result<String, String> {
     fs::read_to_string(p).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Writes a file, creating any missing parent directories first — saving a
+/// tab whose file (or whole folder) was deleted puts it back. Plain
+/// `fs::write` rather than an atomic rename on purpose: it keeps the inode,
+/// and with it the file's stable id.
 #[tauri::command]
 pub fn write_file_content(path: String, content: String) -> Result<(), String> {
-    fs::write(&path, content).map_err(|e| format!("{path}: {e}"))
+    let p = Path::new(&path);
+    if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    fs::write(p, content).map_err(|e| format!("{path}: {e}"))
+}
+
+/// Whether a path currently exists. Used to tell an open tab's file was
+/// deleted: watcher events can arrive out of order (a remove and a re-create
+/// in the same debounce window), so the frontend checks the disk instead of
+/// trusting the event kind.
+#[tauri::command]
+pub fn path_exists(path: String) -> bool {
+    Path::new(&path).exists()
 }
 
 // --- File tree mutations: create / delete / rename / copy ------------------

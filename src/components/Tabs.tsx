@@ -15,12 +15,12 @@ export default function Tabs(props: TabsProps) {
         {(file) => (
           <div
             class="tab"
-            classList={{ active: file.path === props.activePath() }}
+            classList={{ active: file.path === props.activePath(), deleted: !!file.deleted }}
             onClick={() => props.onSelect(file.path)}
-            title={file.path}
+            title={file.deleted ? `${file.path} (deleted from disk; save to restore)` : file.path}
           >
             <span class="tab-name">
-              {file.name}
+              {file.deleted ? `${file.name} [DELETED]` : file.name}
               {file.dirty ? ' •' : ''}
             </span>
             <span
