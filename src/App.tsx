@@ -20,6 +20,7 @@ import {
   readFileContent,
   writeFileContent,
   pathExists,
+  dirEntryCount,
   getPathId,
   createFile as createFileOnDisk,
   createFolder as createFolderOnDisk,
@@ -44,7 +45,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import FileContextMenu from './components/FileContextMenu';
 import { GitPanel } from './components/GitPanel';
-import { ConfirmDialogHost } from './components/ConfirmDialog';
+import { confirmDialog, ConfirmDialogHost, type ConfirmOptions } from './components/ConfirmDialog';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { onFileWritten, onRevealEdit } from './lib/approvals';
 import { onAddToChat, onOpenFileRequest } from './lib/editorBridge';
@@ -470,21 +471,83 @@ export default function App() {
     setContextMenuVisible(false);
   };
 
+  /** What the delete confirmation says, for the selected rows. */
+  function deleteConfirmation(rows: TreeRow[], counts: (number | null)[]): ConfirmOptions {
+    const items = (n: number) =>
+      n >= 10_000 ? '10,000+ items' : `${n.toLocaleString()} item${n === 1 ? '' : 's'}`;
+    const permanent = 'This deletes it from disk and can’t be undone.';
+    if (rows.length === 1) {
+      const [row] = rows;
+      if (!row.isDir) {
+        return {
+          title: `Delete ${row.name}?`,
+          message: permanent,
+          confirmLabel: 'Delete',
+          danger: true,
+        };
+      }
+      const n = counts[0];
+      return {
+        title: `Delete the ${row.name} folder?`,
+        message:
+          n === null
+            ? `Everything in it is deleted too. ${permanent}`
+            : `It has ${items(n)} in it, deleted with it. ${permanent}`,
+        confirmLabel: 'Delete',
+        danger: true,
+      };
+    }
+    const shown = rows.slice(0, 5).map((r) => (r.isDir ? `${r.name}/` : r.name));
+    const more = rows.length > 5 ? ` and ${rows.length - 5} more` : '';
+    const folders = rows.some((r, i) => r.isDir && counts[i] !== 0)
+      ? '\nFolders are deleted with everything in them.'
+      : '';
+    return {
+      title: `Delete ${rows.length} items?`,
+      message: `${shown.join(', ')}${more}${folders}\n\nThis deletes them from disk and can’t be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    };
+  }
+
+  /** A confirmation is open: a second Ctrl+Delete mustn't open another. */
+  let deleteInProgress = false;
+
+  /**
+   * Deletes the selected files and folders, from the context menu or the
+   * keyboard (Ctrl/Cmd+Delete or Backspace). Asks first, unless everything
+   * selected is an empty folder.
+   */
   async function handleDeleteFile() {
     setContextMenuVisible(false);
-    const selectedRows = effectiveSelectedRows();
-    if (selectedRows.length === 0) return;
+    // Items inside a selected folder go with it: deleting them separately
+    // would fail once the folder is gone.
+    const selected = effectiveSelectedRows();
+    const selectedRows = selected.filter(
+      (r) =>
+        !selected.some(
+          (o) => o !== r && o.isDir && r.path !== o.path && isAtOrUnder(r.path, o.path)
+        )
+    );
+    if (selectedRows.length === 0 || deleteInProgress) return;
+    deleteInProgress = true;
+    try {
+      // Entries in each folder, counted on disk (the tree hides .git, so a
+      // folder with just a repository in it would look empty there).
+      const counts = await Promise.all(
+        selectedRows.map((r) => (r.isDir ? dirEntryCount(r.path).catch(() => null) : null))
+      );
+      const onlyEmptyFolders = selectedRows.every((r, i) => r.isDir && counts[i] === 0);
+      if (!onlyEmptyFolders && !(await confirmDialog(deleteConfirmation(selectedRows, counts)))) {
+        return;
+      }
+      await deleteRows(selectedRows);
+    } finally {
+      deleteInProgress = false;
+    }
+  }
 
-    const names = selectedRows.map((r) => r.name).join(', ');
-    const count = selectedRows.length;
-    const message =
-      count === 1
-        ? `Delete "${names}"? This can't be undone.`
-        : `Delete ${count} items?\n\n${names}\n\nThis can't be undone.`;
-
-    // TODO: show confirmation modal
-    //if (!window.confirm(message)) return;
-
+  async function deleteRows(selectedRows: TreeRow[]) {
     try {
       for (const row of selectedRows) {
         await deletePathOnDisk(row.id);

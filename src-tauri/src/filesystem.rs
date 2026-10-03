@@ -334,6 +334,22 @@ pub fn write_file_content(path: String, content: String) -> Result<(), String> {
     fs::write(p, content).map_err(|e| format!("{path}: {e}"))
 }
 
+/// How many entries a folder has directly in it (hidden ones and `.git`
+/// included, unlike the tree's listing), counting up to `limit`; None when
+/// the path isn't a folder. For the delete confirmation: an empty folder is
+/// deleted without asking, and a folder whose only entry is `.git` must not
+/// look empty.
+#[tauri::command]
+pub fn dir_entry_count(path: String, limit: Option<usize>) -> Result<Option<usize>, String> {
+    let p = Path::new(&path);
+    if !p.is_dir() {
+        return Ok(None);
+    }
+    let limit = limit.unwrap_or(10_000);
+    let entries = fs::read_dir(p).map_err(|e| format!("{path}: {e}"))?;
+    Ok(Some(entries.take(limit).count()))
+}
+
 /// Whether a path currently exists. Used to tell an open tab's file was
 /// deleted: watcher events can arrive out of order (a remove and a re-create
 /// in the same debounce window), so the frontend checks the disk instead of

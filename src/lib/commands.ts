@@ -33,6 +33,14 @@ export async function pathExists(path: string): Promise<boolean> {
   return invoke<boolean>('path_exists', { path });
 }
 
+/**
+ * Entries directly in a folder, hidden ones and .git included, counted up to
+ * `limit`; null when the path isn't a folder.
+ */
+export async function dirEntryCount(path: string, limit = 10_000): Promise<number | null> {
+  return invoke<number | null>('dir_entry_count', { path, limit });
+}
+
 // Bootstraps an id for a path the frontend knows directly (e.g. the project
 // root), which never comes through read_dir_entries on its own.
 export async function getPathId(path: string): Promise<string> {
