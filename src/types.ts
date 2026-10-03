@@ -323,9 +323,15 @@ export type GitStatus = {
   behind: number;
   ahead: number;
   files: {
+    /** Relative to `workdir`. */
     path: string;
     status: GitFileStatusCode;
+    /** Changed in the index / in the working tree. */
+    staged: boolean;
+    unstaged: boolean;
   }[];
+  /** The repository's working folder (may be above the project folder). */
+  workdir: string;
 };
 
 export type GitPanelPhase = 'uninitialized' | 'ready' | 'no-repo' | 'error';

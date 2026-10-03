@@ -4461,3 +4461,78 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg);
   line-height: 1.4;
 }
+
+/* Git change marks in the editor's gutter (lib/gitMarks.ts): bars like
+   VS Code's, so they read as git's view and not the agent's highlights. */
+
+.monaco-editor .git-mark {
+  width: 3px !important;
+  margin-left: 3px;
+}
+
+.monaco-editor .git-mark-added {
+  background: #587c0c;
+}
+
+.monaco-editor .git-mark-modified {
+  background: #1b81a8;
+}
+
+/* Removed lines: a small red wedge at the top (or bottom) edge of the line. */
+.monaco-editor .git-mark-removed {
+  background: none;
+}
+
+.monaco-editor .git-mark-removed::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid #e06c75;
+}
+
+.monaco-editor .git-mark-removed.below::before {
+  top: auto;
+  bottom: -4px;
+}
+
+/* Git tab rows: open on click, revert on hover (GitPanel.tsx) */
+
+.git-file-row.clickable {
+  cursor: pointer;
+}
+
+.git-revert-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 18px;
+  margin-left: auto;
+  margin-right: 4px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.git-file-row:hover .git-revert-button,
+.git-revert-button:focus-visible {
+  visibility: visible;
+}
+
+.git-revert-button:hover {
+  background: var(--hover-strong);
+  color: var(--fg);
+}
+
+.git-revert-button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}

@@ -96,6 +96,8 @@ pub fn run() {
             git::git_checkout,
             git::git_branches,
             git::git_status,
+            git::git_base_content,
+            git::git_revert_file,
             typings::nodejs::load_nodejs_project_typings,
             typings::sources::load_project_sources,
             lsp::lsp_start,

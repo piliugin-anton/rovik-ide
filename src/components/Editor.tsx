@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createEffect, untrack } from 'solid-js';
+import { onMount, onCleanup, createEffect, untrack, createRoot } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import type { RevealRequest } from '../types';
@@ -7,6 +7,8 @@ import { selectedLines } from '../lib/activeContext';
 import { selectionReference } from '../lib/fileReferences';
 import { addToChat } from '../lib/editorBridge';
 import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
+import { gitBaseFor } from '../lib/gitMarks';
+import { diffLines, splitLines } from '../lib/lineDiff';
 import { ensureProjectIntelliSense, modelUriFor } from '../lib/intellisense';
 import {
   checkForRustAnalyzerUpdate,
@@ -236,6 +238,11 @@ export default function Editor(props: EditorProps) {
     });
     onCleanup(() => agentMarks?.clear());
 
+    // Git change marks (lib/gitMarks.ts): recomputed against the base as the
+    // text changes, a moment after typing stops.
+    const gitMarks = createGitMarks(editor, () => gitBaseFor(props.currentFilePath));
+    onCleanup(() => gitMarks.dispose());
+
     // Load typings in the background - never block editor creation on it.
     // Once per project (later mounts reuse it).
     void ensureProjectIntelliSense(props.projectDir());
@@ -407,6 +414,90 @@ function mountAddToChat(
       window.removeEventListener('mouseup', stopSelecting);
       disposables.forEach((d) => d.dispose());
       editor.removeContentWidget(widget);
+    },
+  };
+}
+
+/**
+ * Gutter marks for differences from the git base: added (green bar),
+ * changed (blue bar) and removed (red marker between lines).
+ */
+export function createGitMarks(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  base: () => string | undefined
+): monaco.IDisposable {
+  const marks = editor.createDecorationsCollection();
+  let timer: number | undefined;
+  const update = () => {
+    const model = editor.getModel();
+    const original = base();
+    if (!model || original === undefined) {
+      marks.clear();
+      return;
+    }
+    const hunks = diffLines(splitLines(original).lines, splitLines(model.getValue()).lines);
+    const lineCount = model.getLineCount();
+    const decorations: monaco.editor.IModelDeltaDecoration[] = [];
+    let shift = 0;
+    for (const hunk of hunks) {
+      const start = hunk.origStart + shift;
+      // A new file diffs as "one empty line replaced": all added.
+      const removed =
+        hunk.deleted.join('') === '' && hunk.deleted.length === 1 && original === ''
+          ? 0
+          : hunk.deleted.length;
+      if (hunk.added.length > 0) {
+        const kind = removed > 0 ? 'modified' : 'added';
+        decorations.push({
+          range: new monaco.Range(
+            Math.min(start, lineCount),
+            1,
+            Math.min(start + hunk.added.length - 1, lineCount),
+            1
+          ),
+          options: {
+            isWholeLine: true,
+            linesDecorationsClassName: `git-mark git-mark-${kind}`,
+            overviewRuler: {
+              color: kind === 'added' ? '#587c0c' : '#1b81a8',
+              position: monaco.editor.OverviewRulerLane.Left,
+            },
+          },
+        });
+      } else if (removed > 0) {
+        const below = start > lineCount;
+        const line = Math.max(1, Math.min(start, lineCount));
+        decorations.push({
+          range: new monaco.Range(line, 1, line, 1),
+          options: {
+            isWholeLine: true,
+            linesDecorationsClassName: `git-mark git-mark-removed${below ? ' below' : ''}`,
+            overviewRuler: { color: '#94151b', position: monaco.editor.OverviewRulerLane.Left },
+          },
+        });
+      }
+      shift += hunk.added.length - hunk.deleted.length;
+    }
+    marks.set(decorations);
+  };
+  const sub = editor.onDidChangeModelContent(() => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(update, 250);
+  });
+  // The base arriving or changing (open from the Git tab, a commit): redraw.
+  const stop = createRoot((dispose) => {
+    createEffect(() => {
+      base();
+      update();
+    });
+    return dispose;
+  });
+  return {
+    dispose() {
+      window.clearTimeout(timer);
+      sub.dispose();
+      stop();
+      marks.clear();
     },
   };
 }

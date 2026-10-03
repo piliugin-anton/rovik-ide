@@ -3,12 +3,19 @@ import { createSignal, createMemo, onMount, For, Show, createEffect } from 'soli
 import { createVirtualizer, Virtualizer } from '@tanstack/solid-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { GitFileStatusCode, GitPanelPhase, GitStatus } from '../types';
+import { confirmDialog } from './ConfirmDialog';
 
 const GIT_ROW_HEIGHT = 22;
 
 interface GitPanelProps {
   /** Absolute path to the currently open project/workspace. */
   projectPath: string;
+  /** A changed file was clicked: open it with its changes marked. */
+  onOpenFile?: (absPath: string, file: string) => void;
+  /** A file was reverted on disk (its tab should show the restored text). */
+  onFileReverted?: (absPath: string) => void;
+  /** Git's state may have changed (commit, revert, checkout, refresh). */
+  onChanged?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +185,7 @@ export function GitPanel(props: GitPanelProps) {
       const s = await invoke<GitStatus>('git_status', { path: props.projectPath });
       setStatus(s);
       setPhase('ready');
+      props.onChanged?.();
       return s;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -190,6 +198,39 @@ export function GitPanel(props: GitPanelProps) {
       }
       return null;
     }
+  };
+
+  /** A row's file on disk. */
+  const absPathOf = (file: string) => {
+    const root = status()?.workdir || props.projectPath;
+    const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
+    return `${root}${sep}${file}`;
+  };
+
+  /**
+   * Puts a file back as it was: the staged version, which in this app is
+   * the last commit. The current version goes to the trash first; a new
+   * file goes to the trash (src-tauri/src/git.rs, git_revert_file).
+   */
+  const revertFile = async (file: GitStatus['files'][number]) => {
+    const name = file.path.split('/').pop() ?? file.path;
+    const isNew = file.status === '?' || file.status === 'A';
+    const ok = await confirmDialog({
+      title: isNew ? `Remove the new file ${name}?` : `Revert ${name}?`,
+      message: isNew
+        ? 'It isn’t in git yet, so there’s no earlier version: it’s moved to the trash, where you can restore it.'
+        : file.status === 'D'
+          ? 'The deleted file is restored from git.'
+          : `Your changes are undone. Your current version is moved to the trash as “${name.replace(/(\.[^.]+)?$/, ' (before revert)$1')}”, so you can get it back.`,
+      confirmLabel: isNew ? 'Move to Trash' : 'Revert',
+      danger: true,
+    });
+    if (!ok) return;
+    await withBusy(async () => {
+      await invoke('git_revert_file', { path: props.projectPath, file: file.path });
+      props.onFileReverted?.(absPathOf(file.path));
+      await refreshStatus();
+    });
   };
 
   const initRepo = () =>
@@ -409,8 +450,18 @@ export function GitPanel(props: GitPanelProps) {
                   return (
                     <div
                       data-index={item.index}
-                      class="tree-row"
-                      title={file().path}
+                      class="tree-row git-file-row"
+                      classList={{ clickable: file().status !== 'D' }}
+                      title={
+                        file().status === 'D'
+                          ? `${file().path} (deleted)`
+                          : `${file().path}: click to open with its changes marked`
+                      }
+                      onClick={() => {
+                        // A deleted file has nothing to open; revert brings it back.
+                        if (file().status !== 'D')
+                          props.onOpenFile?.(absPathOf(file().path), file().path);
+                      }}
                       style={{
                         position: 'absolute',
                         top: 0,
@@ -427,6 +478,38 @@ export function GitPanel(props: GitPanelProps) {
                         {meta().label}
                       </span>
                       <span class="tree-row-name">{file().path}</span>
+                      <Show when={file().status !== 'U' && file().status !== 'R'}>
+                        <button
+                          type="button"
+                          class="git-revert-button"
+                          title={
+                            file().status === '?' || file().status === 'A'
+                              ? 'Remove this new file (to the trash)'
+                              : 'Revert to the last committed version'
+                          }
+                          aria-label={`Revert ${file().path}`}
+                          disabled={busy()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void revertFile(file());
+                          }}
+                        >
+                          <svg
+                            width="13"
+                            height="13"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M3.5 6.5h6.25a3.25 3.25 0 0 1 0 6.5H6" />
+                            <path d="M6 3.5 3 6.5l3 3" />
+                          </svg>
+                        </button>
+                      </Show>
                     </div>
                   );
                 }}

@@ -51,9 +51,11 @@ import { confirmDialog, ConfirmDialogHost, type ConfirmOptions } from './compone
 import NotificationHost from './components/NotificationHost';
 import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
-import { onFileWritten, onRevealEdit } from './lib/approvals';
+import { notifyFileWritten, onFileWritten, onRevealEdit } from './lib/approvals';
 import { onAddToChat, onOpenFileRequest, setProjectFileResolver } from './lib/editorBridge';
 import { findSnippetLine } from './lib/codeLocation';
+import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
+import { diffLines, splitLines } from './lib/lineDiff';
 import { isProjectSource, updateProjectSource } from './lib/intellisense';
 import { clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
@@ -452,7 +454,51 @@ export default function App() {
     );
   }
 
+  /*
+   * From the Git tab: open a changed file with its changes marked against
+   * git (lib/gitMarks.ts), centered on the first change.
+   */
+  async function openFromGit(abs: string, file: string) {
+    const root = rootPath();
+    if (!root) return;
+    const base = await invoke<string | null>('git_base_content', { path: root, file }).catch(
+      () => undefined // binary, or git trouble: open without marks
+    );
+    if (base !== undefined) setGitBase(abs, file, base);
+    const current =
+      openFiles().find((f) => f.path === abs)?.content ??
+      (await readFileContent(abs).catch(() => null));
+    const first =
+      base !== undefined && current !== null
+        ? diffLines(splitLines(base ?? '').lines, splitLines(current).lines)[0]
+        : undefined;
+    if (first) await openPathAtLine(abs, first.origStart);
+    else await openPath(abs);
+  }
+
+  /** A reverted file: its tab shows the restored text (unless it has unsaved edits). */
+  async function reloadFromDisk(abs: string) {
+    const content = await readFileContent(abs).catch(() => null);
+    if (content !== null) notifyFileWritten(abs, content);
+  }
+
+  /** Git's state changed: the marked files' bases may have too. */
+  let gitRefresh = 0;
+  function refreshGitBases() {
+    const root = rootPath();
+    if (!root) return;
+    const run = ++gitRefresh;
+    for (const { absPath, file } of markedFiles()) {
+      void invoke<string | null>('git_base_content', { path: root, file })
+        .then((base) => {
+          if (run === gitRefresh) setGitBase(absPath, file, base);
+        })
+        .catch(() => clearGitBase(absPath));
+    }
+  }
+
   function closeFile(path: string) {
+    clearGitBase(path);
     const file = openFiles().find((f) => f.path === path);
     // TODO: show confirmation modal
     if (file?.dirty /*  && !window.confirm(`Discard unsaved changes to ${file.name}?`) */) return;
@@ -1116,7 +1162,12 @@ export default function App() {
         <Show when={sidebarTab() === 'git'}>
           <Switch>
             <Match when={!!rootPath()}>
-              <GitPanel projectPath={rootPath()!} />
+              <GitPanel
+                projectPath={rootPath()!}
+                onOpenFile={(abs, file) => void openFromGit(abs, file)}
+                onFileReverted={(abs) => void reloadFromDisk(abs)}
+                onChanged={refreshGitBases}
+              />
             </Match>
             <Match when={!rootPath()}>
               <p class="text-center">Open a project to see git panel</p>

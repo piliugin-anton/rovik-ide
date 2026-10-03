@@ -16,6 +16,9 @@ use std::path::PathBuf;
 pub struct GitFile {
     pub path: String,
     pub status: String, // "M" | "A" | "D" | "R" | "U" | "?"
+    /// Changed in the index (staged) / in the working tree (not staged).
+    pub staged: bool,
+    pub unstaged: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,6 +27,9 @@ pub struct GitStatus {
     pub ahead: usize,
     pub behind: usize,
     pub files: Vec<GitFile>,
+    /// The repository's working folder: file paths are relative to it,
+    /// which isn't the project folder when the project is inside a repo.
+    pub workdir: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +176,26 @@ pub fn git_status(path: String) -> Result<GitStatus, String> {
     let files = statuses
         .iter()
         .filter(|entry| !entry.status().is_ignored())
-        .map(|entry| GitFile {
-            path: entry.path().unwrap_or_default().to_string(),
-            status: classify_status(entry.status()).to_string(),
+        .map(|entry| {
+            let s = entry.status();
+            GitFile {
+                path: entry.path().unwrap_or_default().to_string(),
+                status: classify_status(s).to_string(),
+                staged: s.intersects(
+                    Status::INDEX_NEW
+                        | Status::INDEX_MODIFIED
+                        | Status::INDEX_DELETED
+                        | Status::INDEX_RENAMED
+                        | Status::INDEX_TYPECHANGE,
+                ),
+                unstaged: s.intersects(
+                    Status::WT_NEW
+                        | Status::WT_MODIFIED
+                        | Status::WT_DELETED
+                        | Status::WT_RENAMED
+                        | Status::WT_TYPECHANGE,
+                ),
+            }
         })
         .collect();
 
@@ -181,6 +204,10 @@ pub fn git_status(path: String) -> Result<GitStatus, String> {
         ahead,
         behind,
         files,
+        workdir: repo
+            .workdir()
+            .map(|w| w.to_string_lossy().trim_end_matches(['/', '\\']).to_string())
+            .unwrap_or_default(),
     })
 }
 
@@ -394,4 +421,231 @@ pub fn git_push(path: String) -> Result<(), String> {
 pub fn git_init(path: String) -> Result<(), String> {
     Repository::init(&path).map_err(|e| format!("Failed to initialize repository: {e}"))?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// One file: its earlier version, and reverting to it
+// ---------------------------------------------------------------------------
+
+/// The version a revert goes back to: the staged one when the file has
+/// unstaged changes (what `git restore` restores), else the last commit's.
+/// None: the file is new (untracked, or added and never committed).
+fn base_blob<'r>(repo: &'r Repository, file: &str) -> Result<Option<git2::Blob<'r>>, String> {
+    let status = repo.status_file(std::path::Path::new(file)).map_err(|e| e.to_string())?;
+    let index = repo.index().map_err(|e| e.to_string())?;
+    let from_index = || -> Option<git2::Oid> { index.get_path(std::path::Path::new(file), 0).map(|e| e.id) };
+    let from_head = || -> Option<git2::Oid> {
+        let tree = repo.head().ok()?.peel_to_tree().ok()?;
+        tree.get_path(std::path::Path::new(file)).ok().map(|e| e.id())
+    };
+    let unstaged = status.intersects(Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE);
+    let oid = if unstaged { from_index().or_else(from_head) } else { from_head() };
+    Ok(match oid {
+        Some(oid) => Some(repo.find_blob(oid).map_err(|e| e.to_string())?),
+        None => None,
+    })
+}
+
+/// The file's earlier version (see base_blob), for the editor's change marks.
+/// `file` is relative to the repository's working folder. None: new file.
+#[tauri::command]
+pub fn git_base_content(path: String, file: String) -> Result<Option<String>, String> {
+    let repo = open_repo(&path)?;
+    let blob = base_blob(&repo, &file)?;
+    let content = match blob {
+        None => None,
+        Some(blob) if blob.is_binary() => return Err(format!("{file}: binary file")),
+        Some(blob) => Some(String::from_utf8_lossy(blob.content()).into_owned()),
+    };
+    Ok(content)
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertOutcome {
+    /// The version before the revert is in the trash (as "<name> (before revert)").
+    pub backed_up: bool,
+    /// A new file was moved to the trash (there was nothing to go back to).
+    pub removed: bool,
+}
+
+/// "name (before revert).ext", next to the file (so it's trashed on the
+/// same drive, and restoring it from the trash can't overwrite anything).
+fn backup_name(path: &std::path::Path) -> PathBuf {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = match path.extension() {
+        Some(ext) => format!("{stem} (before revert).{}", ext.to_string_lossy()),
+        None => format!("{stem} (before revert)"),
+    };
+    path.with_file_name(name)
+}
+
+/// Puts the file back as it was (see base_blob). The current version goes to
+/// the trash first, so a revert can itself be undone; a new file is moved to
+/// the trash, since there is no earlier version.
+#[tauri::command]
+pub fn git_revert_file(path: String, file: String) -> Result<RevertOutcome, String> {
+    let repo = open_repo(&path)?;
+    let workdir = repo.workdir().ok_or("the repository has no working folder")?.to_path_buf();
+    let rel = std::path::Path::new(&file);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("{file}: not a path inside the repository"));
+    }
+    let abs = workdir.join(rel);
+    let status = repo.status_file(rel).map_err(|e| e.to_string())?;
+    if status.is_conflicted() {
+        return Err(format!("{file} has merge conflicts: resolve them first"));
+    }
+
+    // New: nothing to go back to. Out of the index, into the trash.
+    if base_blob(&repo, &file)?.is_none() {
+        if status.is_index_new() {
+            let mut index = repo.index().map_err(|e| e.to_string())?;
+            index.remove_path(rel).map_err(|e| e.to_string())?;
+            index.write().map_err(|e| e.to_string())?;
+        }
+        if abs.exists() {
+            trash::delete(&abs).map_err(|e| format!("{file}: couldn't move it to the trash: {e}"))?;
+        }
+        return Ok(RevertOutcome { backed_up: false, removed: true });
+    }
+
+    // The current version to the trash, under a name of its own.
+    let mut backed_up = false;
+    if abs.is_file() {
+        let copy = backup_name(&abs);
+        std::fs::copy(&abs, &copy).map_err(|e| format!("{file}: couldn't keep a copy: {e}"))?;
+        match trash::delete(&copy) {
+            Ok(()) => backed_up = true,
+            Err(e) => {
+                let _ = std::fs::remove_file(&copy);
+                return Err(format!(
+                    "{file}: couldn't put a copy of your version in the trash ({e}), so nothing was reverted"
+                ));
+            }
+        }
+    }
+
+    let unstaged = status.intersects(Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE);
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force().path(rel);
+    if unstaged {
+        // Back to the staged version.
+        repo.checkout_index(None, Some(&mut checkout)).map_err(|e| e.to_string())?;
+    } else {
+        // Only staged changes: back to the last commit, index included.
+        let head = repo.head().and_then(|h| h.peel_to_commit()).map_err(|e| e.to_string())?;
+        repo.reset_default(Some(head.as_object()), [rel]).map_err(|e| e.to_string())?;
+        repo.checkout_head(Some(&mut checkout)).map_err(|e| e.to_string())?;
+    }
+    Ok(RevertOutcome { backed_up, removed: false })
+}
+
+#[cfg(test)]
+mod revert_tests {
+    use super::*;
+    use std::fs;
+
+    fn repo_with_commit() -> (PathBuf, Repository) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!("git-revert-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
+        fs::write(dir.join("b.txt"), "b\n").unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None).unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = git2::Signature::now("t", "t@t").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        }
+        (dir, repo)
+    }
+
+    fn path(dir: &std::path::Path) -> String {
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn unstaged_change_goes_back_to_the_staged_version() {
+        let (dir, _repo) = repo_with_commit();
+        fs::write(dir.join("src/a.rs"), "fn a() { changed }\n").unwrap();
+        assert_eq!(git_base_content(path(&dir), "src/a.rs".into()).unwrap().as_deref(), Some("fn a() {}\n"));
+        let out = git_revert_file(path(&dir), "src/a.rs".into()).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("src/a.rs")).unwrap(), "fn a() {}\n");
+        assert!(out.backed_up && !out.removed);
+        assert!(!dir.join("src/a (before revert).rs").exists(), "the copy went to the trash");
+    }
+
+    #[test]
+    fn deleted_file_comes_back() {
+        let (dir, _repo) = repo_with_commit();
+        fs::remove_file(dir.join("b.txt")).unwrap();
+        let out = git_revert_file(path(&dir), "b.txt".into()).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
+        assert!(!out.backed_up, "nothing to back up");
+    }
+
+    #[test]
+    fn staged_only_change_goes_back_to_the_last_commit() {
+        let (dir, repo) = repo_with_commit();
+        fs::write(dir.join("b.txt"), "staged\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("b.txt")).unwrap();
+        index.write().unwrap();
+        assert_eq!(git_base_content(path(&dir), "b.txt".into()).unwrap().as_deref(), Some("b\n"));
+        git_revert_file(path(&dir), "b.txt".into()).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
+        let st = git_status(path(&dir)).unwrap();
+        assert!(st.files.iter().all(|f| f.path != "b.txt"), "clean again: {:?}", st.files);
+    }
+
+    #[test]
+    fn staged_and_unstaged_goes_back_to_the_staged_version() {
+        let (dir, repo) = repo_with_commit();
+        fs::write(dir.join("b.txt"), "staged\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("b.txt")).unwrap();
+        index.write().unwrap();
+        fs::write(dir.join("b.txt"), "staged\nand more\n").unwrap();
+        git_revert_file(path(&dir), "b.txt".into()).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "staged\n");
+    }
+
+    #[test]
+    fn new_files_go_to_the_trash() {
+        let (dir, repo) = repo_with_commit();
+        fs::write(dir.join("new.txt"), "x").unwrap();
+        assert_eq!(git_base_content(path(&dir), "new.txt".into()).unwrap(), None);
+        let out = git_revert_file(path(&dir), "new.txt".into()).unwrap();
+        assert!(out.removed && !dir.join("new.txt").exists());
+        // Added to the index but never committed: same, and out of the index.
+        fs::write(dir.join("added.txt"), "y").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("added.txt")).unwrap();
+        index.write().unwrap();
+        git_revert_file(path(&dir), "added.txt".into()).unwrap();
+        assert!(!dir.join("added.txt").exists());
+        assert!(git_status(path(&dir)).unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn refuses_paths_outside_the_repository() {
+        let (dir, _repo) = repo_with_commit();
+        assert!(git_revert_file(path(&dir), "../etc/passwd".into()).is_err());
+    }
+
+    #[test]
+    fn status_reports_workdir_and_staging() {
+        let (dir, _repo) = repo_with_commit();
+        fs::write(dir.join("b.txt"), "changed\n").unwrap();
+        let st = git_status(path(&dir.join("src"))).unwrap();
+        assert_eq!(st.workdir, path(&dir).trim_end_matches('/'));
+        let b = st.files.iter().find(|f| f.path == "b.txt").unwrap();
+        assert!(b.unstaged && !b.staged);
+    }
 }
