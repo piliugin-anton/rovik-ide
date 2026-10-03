@@ -1,13 +1,13 @@
 import { onMount, onCleanup, createEffect, untrack } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
-import type { MonacoLibEntry, RevealRequest } from '../types';
+import type { RevealRequest } from '../types';
 import type { CursorInfo } from '../lib/activeContext';
 import { selectedLines } from '../lib/activeContext';
 import { selectionReference } from '../lib/fileReferences';
 import { addToChat } from '../lib/editorBridge';
 import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
-import { invoke } from '@tauri-apps/api/core';
+import { ensureProjectIntelliSense, modelUriFor } from '../lib/intellisense';
 import { pendingEditFor } from '../lib/approvals';
 import {
   hunkLine,
@@ -29,14 +29,6 @@ interface EditorProps {
   onRevealed?: () => void;
 }
 
-function modelUriFor(filePath: string): monaco.Uri {
-  let normalizedPath = filePath.replace(/\\/g, '/');
-  while (normalizedPath.startsWith('/')) {
-    normalizedPath = normalizedPath.substring(1);
-  }
-  return monaco.Uri.parse(`file:///${normalizedPath}`);
-}
-
 export default function Editor(props: EditorProps) {
   let containerRef!: HTMLDivElement;
 
@@ -55,17 +47,7 @@ export default function Editor(props: EditorProps) {
       // what caused the "reopen -> empty editor" bug.
     });
 
-    const compilerOptions = {
-      target: monaco.typescript.ScriptTarget.ESNext,
-      moduleResolution: monaco.typescript.ModuleResolutionKind.NodeJs,
-      jsx: monaco.typescript.JsxEmit.Preserve,
-      allowNonTsExtensions: true,
-      baseUrl: 'file:///',
-    };
-
-    monaco.typescript.typescriptDefaults.setCompilerOptions(compilerOptions);
-    monaco.typescript.javascriptDefaults.setCompilerOptions(compilerOptions);
-
+    // Compiler options and the project's files: lib/intellisense.ts.
     const uri = modelUriFor(props.currentFilePath);
 
     // Monaco caches models by URI. Reuse a live cached model if there is
@@ -250,7 +232,8 @@ export default function Editor(props: EditorProps) {
     onCleanup(() => agentMarks?.clear());
 
     // Load typings in the background - never block editor creation on it.
-    void loadProjectTypings(props.projectDir());
+    // Once per project (later mounts reuse it).
+    void ensureProjectIntelliSense(props.projectDir());
   });
 
   // ------------------------------------------
@@ -457,22 +440,4 @@ function agentChangeDecorations(
     shift += hunk.added.length - hunk.deleted.length;
   }
   return out;
-}
-
-async function loadProjectTypings(projectRoot: string | null): Promise<void> {
-  if (!projectRoot) return;
-
-  try {
-    const typeLibraries = await invoke<MonacoLibEntry[]>('load_nodejs_project_typings', {
-      projectRoot,
-    });
-
-    for (const lib of typeLibraries) {
-      monaco.typescript.typescriptDefaults.addExtraLib(lib.content, lib.name);
-
-      monaco.typescript.javascriptDefaults.addExtraLib(lib.content, lib.name);
-    }
-  } catch (err) {
-    console.error('Failed to load types:', err);
-  }
 }

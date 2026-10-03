@@ -17,6 +17,16 @@ export default function Tabs(props: TabsProps) {
             class="tab"
             classList={{ active: file.path === props.activePath(), deleted: !!file.deleted }}
             onClick={() => props.onSelect(file.path)}
+            // Middle click closes, as in browsers and most editors. Pressing
+            // the wheel would otherwise start autoscroll.
+            onMouseDown={(e) => {
+              if (e.button === 1) e.preventDefault();
+            }}
+            onAuxClick={(e) => {
+              if (e.button !== 1) return;
+              e.preventDefault();
+              props.onClose(file.path);
+            }}
             title={file.deleted ? `${file.path} (deleted from disk; save to restore)` : file.path}
           >
             <span class="tab-name">

@@ -95,6 +95,7 @@ pub fn run() {
             git::git_branches,
             git::git_status,
             typings::nodejs::load_nodejs_project_typings,
+            typings::sources::load_project_sources,
             agent::send_chat_message,
             chat_request::cancel_chat_request,
             agent::list_models,

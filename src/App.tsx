@@ -50,6 +50,7 @@ import { confirmDialog, ConfirmDialogHost, type ConfirmOptions } from './compone
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { onFileWritten, onRevealEdit } from './lib/approvals';
 import { onAddToChat, onOpenFileRequest } from './lib/editorBridge';
+import { isProjectSource, updateProjectSource } from './lib/intellisense';
 import { clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
 
@@ -898,6 +899,15 @@ export default function App() {
           break;
       }
       void syncDeletedTabs(operation === 'unknown' ? undefined : path);
+      // IntelliSense's copy of the project's sources (lib/intellisense.ts).
+      if (!is_dir && isProjectSource(path)) {
+        if (operation === 'remove') updateProjectSource(path, null);
+        else if (operation === 'create' || operation === 'modify') {
+          readFileContent(path)
+            .then((content) => updateProjectSource(path, content))
+            .catch(() => updateProjectSource(path, null));
+        }
+      }
     });
   });
 
