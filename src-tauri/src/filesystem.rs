@@ -426,16 +426,29 @@ pub fn create_dir(
     Ok(())
 }
 
+/// Starts the error of a delete that couldn't use the trash, so the frontend
+/// can offer to delete permanently instead (lib/commands.ts).
+const TRASH_UNAVAILABLE: &str = "trash-unavailable: ";
+
+/// Deletes a file or folder by moving it to the system trash (Windows'
+/// Recycle Bin, the macOS Trash, the freedesktop.org trash on Linux), so it
+/// can be restored from there. Where there's no trash (some network drives,
+/// or a Linux drive without a trash folder) this fails rather than delete
+/// for good; `permanent` then deletes outright, once the user has agreed.
 #[tauri::command]
-pub fn delete_path(state: State<'_, WatcherState>, id: String) -> Result<(), String> {
+pub fn delete_path(state: State<'_, WatcherState>, id: String, permanent: Option<bool>) -> Result<(), String> {
     let p = resolve_id(&state, &id)?;
     let meta = fs::symlink_metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    let result = if meta.is_dir() {
-        fs::remove_dir_all(&p)
+    if permanent.unwrap_or(false) {
+        let result = if meta.is_dir() {
+            fs::remove_dir_all(&p)
+        } else {
+            fs::remove_file(&p)
+        };
+        result.map_err(|e| format!("{}: {e}", p.display()))?;
     } else {
-        fs::remove_file(&p)
-    };
-    result.map_err(|e| format!("{}: {e}", p.display()))?;
+        trash::delete(&p).map_err(|e| format!("{TRASH_UNAVAILABLE}{}: {e}", p.display()))?;
+    }
     state.id_to_path.lock().unwrap().remove(&id);
     Ok(())
 }

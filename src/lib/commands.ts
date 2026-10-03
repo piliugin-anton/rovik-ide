@@ -55,8 +55,18 @@ export async function createFolder(dirId: string, name: string): Promise<void> {
   await invoke('create_dir', { dirId, name });
 }
 
-export async function deletePath(id: string): Promise<void> {
-  await invoke('delete_path', { id });
+/**
+ * Moves a file or folder to the system trash. Fails with an error that
+ * isTrashUnavailable() recognizes where there's no trash; `permanent` then
+ * deletes it for good (only after the user agreed).
+ */
+export async function deletePath(id: string, permanent = false): Promise<void> {
+  await invoke('delete_path', { id, permanent });
+}
+
+/** The delete failed because the trash can't be used there (see deletePath). */
+export function isTrashUnavailable(err: unknown): boolean {
+  return String(err).startsWith('trash-unavailable: ');
 }
 
 // Rename in place (same parent dir, new name). Returns the new absolute

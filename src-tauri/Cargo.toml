@@ -34,6 +34,8 @@ tauri-plugin-single-instance = "2.5.2"
 grep-searcher = "0.1.17"
 grep-regex = "0.1.14"
 grep-matcher = "0.1.9"
+# Deleting moves to the system trash (Recycle Bin, macOS Trash, freedesktop.org trash).
+trash = "5"
 
 # Keep release builds small and light — matters for a "low memory" tool.
 [profile.release]

@@ -25,6 +25,7 @@ import {
   createFile as createFileOnDisk,
   createFolder as createFolderOnDisk,
   deletePath as deletePathOnDisk,
+  isTrashUnavailable,
   renamePath as renamePathOnDisk,
   movePath as movePathOnDisk,
   copyPath as copyPathOnDisk,
@@ -475,38 +476,35 @@ export default function App() {
   function deleteConfirmation(rows: TreeRow[], counts: (number | null)[]): ConfirmOptions {
     const items = (n: number) =>
       n >= 10_000 ? '10,000+ items' : `${n.toLocaleString()} item${n === 1 ? '' : 's'}`;
-    const permanent = 'This deletes it from disk and can’t be undone.';
+    const ask = { confirmLabel: 'Move to Trash', danger: true };
     if (rows.length === 1) {
       const [row] = rows;
       if (!row.isDir) {
         return {
-          title: `Delete ${row.name}?`,
-          message: permanent,
-          confirmLabel: 'Delete',
-          danger: true,
+          ...ask,
+          title: `Move ${row.name} to the trash?`,
+          message: 'You can restore it from the trash.',
         };
       }
       const n = counts[0];
       return {
-        title: `Delete the ${row.name} folder?`,
+        ...ask,
+        title: `Move the ${row.name} folder to the trash?`,
         message:
           n === null
-            ? `Everything in it is deleted too. ${permanent}`
-            : `It has ${items(n)} in it, deleted with it. ${permanent}`,
-        confirmLabel: 'Delete',
-        danger: true,
+            ? 'Everything in it goes with it. You can restore it from the trash.'
+            : `It has ${items(n)} in it. You can restore it from the trash.`,
       };
     }
     const shown = rows.slice(0, 5).map((r) => (r.isDir ? `${r.name}/` : r.name));
     const more = rows.length > 5 ? ` and ${rows.length - 5} more` : '';
     const folders = rows.some((r, i) => r.isDir && counts[i] !== 0)
-      ? '\nFolders are deleted with everything in them.'
+      ? '\nFolders go with everything in them.'
       : '';
     return {
-      title: `Delete ${rows.length} items?`,
-      message: `${shown.join(', ')}${more}${folders}\n\nThis deletes them from disk and can’t be undone.`,
-      confirmLabel: 'Delete',
-      danger: true,
+      ...ask,
+      title: `Move ${rows.length} items to the trash?`,
+      message: `${shown.join(', ')}${more}${folders}\n\nYou can restore them from the trash.`,
     };
   }
 
@@ -547,17 +545,53 @@ export default function App() {
     }
   }
 
+  /**
+   * Moves the rows to the system trash. Items that can't go there (no trash
+   * on that drive) are listed once, with the choice to delete them for good.
+   */
   async function deleteRows(selectedRows: TreeRow[]) {
+    const markDeleted = (row: TreeRow) =>
+      // Tabs stay open, marked deleted (a folder's files too): unsaved text
+      // isn't lost, and saving puts the file back.
+      setOpenFiles((prev) =>
+        prev.map((f) =>
+          f.id === row.id || isAtOrUnder(f.path, row.path) ? { ...f, deleted: true } : f
+        )
+      );
+
+    const noTrash: TreeRow[] = [];
     try {
       for (const row of selectedRows) {
-        await deletePathOnDisk(row.id);
-        // Tabs stay open, marked deleted (a folder's files too): unsaved
-        // text isn't lost, and saving puts the file back.
-        setOpenFiles((prev) =>
-          prev.map((f) =>
-            f.id === row.id || isAtOrUnder(f.path, row.path) ? { ...f, deleted: true } : f
-          )
-        );
+        try {
+          await deletePathOnDisk(row.id);
+          markDeleted(row);
+        } catch (err) {
+          if (!isTrashUnavailable(err)) throw err;
+          console.warn('No trash for', row.path, err);
+          noTrash.push(row);
+        }
+      }
+
+      if (noTrash.length > 0) {
+        const names = noTrash.map((r) => (r.isDir ? `${r.name}/` : r.name));
+        const permanent = await confirmDialog({
+          title:
+            noTrash.length === 1
+              ? `${names[0]} can’t be moved to the trash`
+              : `${noTrash.length} items can’t be moved to the trash`,
+          message:
+            `${noTrash.length === 1 ? '' : `${names.slice(0, 5).join(', ')}${noTrash.length > 5 ? ` and ${noTrash.length - 5} more` : ''}\n\n`}` +
+            'There’s no trash on that drive (common for network drives). ' +
+            'Delete permanently instead? This can’t be undone.',
+          confirmLabel: 'Delete permanently',
+          danger: true,
+        });
+        if (permanent) {
+          for (const row of noTrash) {
+            await deletePathOnDisk(row.id, true);
+            markDeleted(row);
+          }
+        }
       }
       setSelectedFileIds(new Set<string>());
       setLastSelectedId(null);
