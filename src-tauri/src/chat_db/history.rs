@@ -213,6 +213,15 @@ pub fn build_wire(
         }
     }
 
+    // Messages the IDE added itself (e.g. failed checks after an edit, see
+    // the frontend's verification gate). They are user-role, but never the
+    // user's request, so the request's editor context must not replace them.
+    let harness: std::collections::HashSet<String> = rows
+        .iter()
+        .filter(|m| m.meta.as_ref().is_some_and(|meta| meta.get("harness").is_some()))
+        .map(|m| m.id.clone())
+        .collect();
+
     // What is never sent: failed requests, errors, unfinished placeholders.
     let messages: Vec<Msg> = rows
         .into_iter()
@@ -240,8 +249,10 @@ pub fn build_wire(
 
     // The current request's user message is sent with the editor context
     // the frontend added; it isn't stored that way.
-    if let (Some(content), Some(last_user)) =
-        (current_user_content, messages.iter_mut().rev().find(|m| m.role == "user"))
+    if let (Some(content), Some(last_user)) = (
+        current_user_content,
+        messages.iter_mut().rev().find(|m| m.role == "user" && !harness.contains(&m.id)),
+    )
     {
         last_user.text = content.to_string();
         last_user.full_chars = content.chars().count();

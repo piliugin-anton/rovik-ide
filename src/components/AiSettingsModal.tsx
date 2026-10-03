@@ -8,14 +8,17 @@ import type { Provider } from '../types';
 import type { AgentPermissions, ApprovalRule } from '../lib/permissions';
 import ModelProvidersSettings, { type ProvidersSettingsController } from './ModelProvidersSettings';
 import PermissionsSettings from './PermissionsSettings';
+import ProjectChecksSettings from './ProjectChecksSettings';
 
-export type AiSettingsPage = 'menu' | 'providers' | 'permissions';
+export type AiSettingsPage = 'menu' | 'providers' | 'permissions' | 'project';
 
 interface AiSettingsModalProps {
   providers: Provider[];
   permissions: AgentPermissions;
   /** Opens straight on a page (e.g. "Manage providers…" in the model picker). */
   initialPage?: AiSettingsPage;
+  /** The open project, for its checks page; none without a project. */
+  rootPath?: string | null;
   onSave: (changes: { providers: Provider[]; permissions: AgentPermissions }) => void;
   onClose: () => void;
 }
@@ -24,6 +27,7 @@ const PAGE_TITLE: Record<AiSettingsPage, string> = {
   menu: 'AI Chat settings',
   providers: 'Model providers',
   permissions: 'Permissions & Approval',
+  project: 'Project checks',
 };
 
 export default function AiSettingsModal(props: AiSettingsModalProps) {
@@ -127,6 +131,21 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                     ›
                   </span>
                 </button>
+                <Show when={props.rootPath}>
+                  <button class="settings-menu-item" onClick={() => setPage('project')}>
+                    <span class="settings-menu-text">
+                      <span class="settings-menu-label">Project checks</span>
+                      <span class="settings-menu-sub">
+                        {permissions().verifyChanges
+                          ? 'Changes are checked when the agent finishes'
+                          : 'Checking changes is off'}
+                      </span>
+                    </span>
+                    <span class="settings-menu-chevron" aria-hidden="true">
+                      ›
+                    </span>
+                  </button>
+                </Show>
                 <button class="settings-menu-item" onClick={() => setPage('permissions')}>
                   <span class="settings-menu-text">
                     <span class="settings-menu-label">Permissions &amp; Approval</span>
@@ -143,6 +162,13 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                 providers={providers()}
                 onChange={setProviders}
                 controller={setProvidersApi}
+              />
+            </Match>
+            <Match when={page() === 'project' && props.rootPath}>
+              <ProjectChecksSettings
+                root={props.rootPath!}
+                permissions={permissions()}
+                onPermissionsChange={setPermissions}
               />
             </Match>
             <Match when={page() === 'permissions'}>

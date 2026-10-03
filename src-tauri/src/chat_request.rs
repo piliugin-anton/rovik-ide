@@ -396,6 +396,8 @@ pub struct ReplyParser {
     emitted_call: bool,
     pub text_len: usize,
     finish_reason: Option<String>,
+    /// Token counts, if the provider reported them (usually in the last chunk).
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Default)]
@@ -425,6 +427,9 @@ impl ReplyParser {
     pub fn feed(&mut self, value: &serde_json::Value, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) -> Result<(), ChatError> {
         if let Some(e) = classify_body_error(value) {
             return Err(e);
+        }
+        if let Some(usage) = value.get("usage").filter(|u| u.is_object()) {
+            self.usage = Some(usage.clone());
         }
         let choice = value.pointer("/choices/0");
         if let Some(delta) = choice.and_then(|c| c.get("delta")) {
@@ -512,6 +517,10 @@ impl ReplyParser {
             }
             return Err(ChatError::new(ErrorKind::EmptyResponse, "The model returned an empty response."));
         }
+        emit(ChatStreamEvent::Finished {
+            finish_reason: self.finish_reason.clone(),
+            usage: self.usage.take(),
+        });
         Ok(())
     }
 
@@ -519,6 +528,9 @@ impl ReplyParser {
     pub fn feed_complete(&mut self, body: &serde_json::Value, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) -> Result<(), ChatError> {
         if let Some(e) = classify_body_error(body) {
             return Err(e);
+        }
+        if let Some(usage) = body.get("usage").filter(|u| u.is_object()) {
+            self.usage = Some(usage.clone());
         }
         let message = body.pointer("/choices/0/message");
         let as_delta = serde_json::json!({

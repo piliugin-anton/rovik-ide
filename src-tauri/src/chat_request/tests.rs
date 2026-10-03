@@ -15,9 +15,12 @@ fn collect() -> (Vec<ChatStreamEvent>, impl FnMut(ChatStreamEvent)) {
 fn names(events: &[ChatStreamEvent]) -> Vec<String> {
     events
         .iter()
+        // Diagnostics only; the tests check what the user sees.
+        .filter(|e| !matches!(e, ChatStreamEvent::Finished { .. }))
         .map(|e| match e {
             ChatStreamEvent::Delta { content } => format!("delta:{content}"),
             ChatStreamEvent::Done => "done".into(),
+            ChatStreamEvent::Finished { .. } => "finished".into(),
             ChatStreamEvent::Error { .. } => "error".into(),
             ChatStreamEvent::Retrying { attempt, .. } => format!("retrying:{attempt}"),
             ChatStreamEvent::ToolCallStart { name, .. } => format!("tool_start:{name}"),
@@ -59,7 +62,13 @@ fn missing_tool_call_ids_get_generated() {
         .feed(&json!({"choices":[{"delta":{"tool_calls":[{"function":{"name":"list_dir","arguments":"{}"}}]}}]}), &mut emit)
         .unwrap();
     parser.finish(&mut emit).unwrap();
-    match events.last().unwrap() {
+    // The last event is Finished (diagnostics); the call completes before it.
+    let completed = events
+        .iter()
+        .rev()
+        .find(|e| !matches!(e, ChatStreamEvent::Finished { .. }))
+        .unwrap();
+    match completed {
         ChatStreamEvent::ToolCallComplete { id, arguments, .. } => {
             assert!(id.starts_with("call_0_"));
             assert_eq!(arguments, "{}");

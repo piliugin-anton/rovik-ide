@@ -48,6 +48,11 @@ export interface AgentPermissions {
    * lib/agentGuard.ts.
    */
   toolCallCheckpoint: number | null;
+  /**
+   * When the agent finishes a run in which it changed files, run the
+   * project's checks and send failures back to it (lib/verification.ts).
+   */
+  verifyChanges: boolean;
 }
 
 export const DEFAULT_ALLOWED_COMMANDS = [
@@ -85,6 +90,7 @@ export const DEFAULT_PERMISSIONS: AgentPermissions = {
   approvalFallbacks: [],
   approvalTypedInput: false,
   toolCallCheckpoint: DEFAULT_TOOL_CALL_CHECKPOINT,
+  verifyChanges: true,
 };
 
 const isSelection = (v: unknown): v is ModelSelection =>
@@ -165,6 +171,7 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
         : typeof r.toolCallCheckpoint === 'number' && r.toolCallCheckpoint >= 1
           ? Math.floor(r.toolCallCheckpoint)
           : DEFAULT_TOOL_CALL_CHECKPOINT,
+    verifyChanges: r.verifyChanges !== false,
   };
 }
 

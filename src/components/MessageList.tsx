@@ -31,6 +31,7 @@ import { isBlank } from '../lib/textUtils';
 import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
 import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
+import VerificationRecord from './VerificationRecord';
 
 const BOTTOM_TOLERANCE_PX = 8;
 /** A scroll this soon after wheel/touch/key/scrollbar input is the user's. */
@@ -62,6 +63,10 @@ export default function MessageList(props: {
   onContinue: () => void;
   /** Continue a run that paused (tool-call checkpoint or loop check). */
   onContinueRun: () => void;
+  /** Run checks that waited for the user's approval. */
+  onRunChecks: () => void;
+  /** Open the settings page where the project's checks are set up. */
+  onOpenProjectChecks: () => void;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let innerRef: HTMLDivElement | undefined;
@@ -93,7 +98,7 @@ export default function MessageList(props: {
   const requestUndelivered = () => {
     const list = messages();
     for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].role === 'user') return !!list[i].failed;
+      if (list[i].role === 'user' && !list[i].meta?.harness) return !!list[i].failed;
     }
     return false;
   };
@@ -504,7 +509,9 @@ export default function MessageList(props: {
                 </div>
               </Show>
 
-              <Show when={!m.error && !isBlank(m.content)}>
+              {/* The IDE's messages to the model (check failures) show as the
+                  verification record instead. */}
+              <Show when={!m.error && !isBlank(m.content) && !m.meta?.harness}>
                 <div
                   class="chat-message"
                   classList={{
@@ -570,6 +577,17 @@ export default function MessageList(props: {
                       </button>
                     </Show>
                   </div>
+                )}
+              </Show>
+
+              <Show when={m.meta?.verification}>
+                {(v) => (
+                  <VerificationRecord
+                    meta={v()}
+                    latest={isLatest(m)}
+                    onRunChecks={() => props.onRunChecks()}
+                    onOpenProjectChecks={() => props.onOpenProjectChecks()}
+                  />
                 )}
               </Show>
 

@@ -338,7 +338,11 @@ export function createChatStore() {
     const last = [...stamped]
       .reverse()
       .find(
-        (m) => (m.role === 'user' || m.role === 'assistant') && m.finalized && m.content.trim()
+        (m) =>
+          (m.role === 'user' || m.role === 'assistant') &&
+          m.finalized &&
+          !m.meta?.harness &&
+          m.content.trim()
       );
     updateSummary(dialogId, (d) => {
       d.updatedAt = now;

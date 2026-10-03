@@ -5,6 +5,7 @@ use tauri::Manager;
 mod agent;
 mod atomic_file;
 mod edit_file;
+mod project_profile;
 mod chat_db;
 mod chat_request;
 mod code_search;
@@ -105,6 +106,10 @@ pub fn run() {
             agent_tools::tool_read_file_range,
             agent_tools::tool_write_file,
             agent_tools::tool_edit_file,
+            project_profile::project_profile,
+            project_profile::load_project_settings,
+            project_profile::save_project_settings,
+            project_profile::append_agent_log,
             command_tool::tool_run_command,
             system_one::system_one_request,
         ])

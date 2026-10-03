@@ -47,6 +47,42 @@ import { cancelChatRequest, sendChatMessage, streamEndSignal, untilStreamEnd } f
 import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
 import { agentToolsFor, editFileArgs, executeAgentTool } from '../lib/tools';
 import { AgentRunGuard } from '../lib/agentGuard';
+import { logAgent } from '../lib/agentLog';
+import {
+  detectProject,
+  effectiveChecks,
+  loadProjectSettings,
+  projectContext,
+  type ProjectCheck,
+} from '../lib/projectProfile';
+import {
+  failureReport,
+  isFailed,
+  MAX_VERIFY_ROUNDS,
+  runChecks,
+  type VerificationMeta,
+} from '../lib/verification';
+
+/**
+ * One agent run: a user message (or a Continue) and every turn after it.
+ * Created once, then passed down the turns.
+ */
+interface AgentRun {
+  guard: AgentRunGuard;
+  /** The project's checks and the system-prompt section about it. */
+  checks: ProjectCheck[];
+  projectContext: string;
+  /** Project-relative paths written in this run (for the gate and reports). */
+  changedFiles: Set<string>;
+  /** Files changed since the gate last ran: there is something to check. */
+  writesSinceVerify: boolean;
+  verifyRounds: number;
+  /** The last round failed and was sent back to the agent. */
+  lastVerifyFailed: boolean;
+  startedAt: number;
+  /** Set once the run's log line is written. */
+  ended: boolean;
+}
 import AiSettingsModal, { type AiSettingsPage } from './AiSettingsModal';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
@@ -1085,7 +1121,9 @@ export default function ChatPanel(props: ChatProps) {
     const list = store.messagesOf(dialogId);
     for (let i = list.length - 1; i >= 0; i--) {
       const m = list[i];
-      if (m.role === 'user' && !m.failed) return m.meta?.sentContent ?? m.content;
+      if (m.role === 'user' && !m.failed && !m.meta?.harness) {
+        return m.meta?.sentContent ?? m.content;
+      }
     }
     return '';
   }
@@ -1354,6 +1392,7 @@ export default function ChatPanel(props: ChatProps) {
           !msg.error &&
           !msg.failed &&
           !msg.pending &&
+          !msg.meta?.harness &&
           msg.content.trim()
       )
       .slice(0, 6);
@@ -1393,8 +1432,8 @@ export default function ChatPanel(props: ChatProps) {
     opts: {
       /** The request's user message as sent (with editor context). */
       currentUserContent?: string;
-      /** The run's checkpoint and loop bookkeeping; a new run starts one. */
-      guard?: AgentRunGuard;
+      /** The run this turn belongs to; the first turn of a run starts one. */
+      run?: AgentRun;
       /** Ask the model to continue its interrupted last reply. */
       continueReply?: boolean;
       /**
@@ -1404,13 +1443,18 @@ export default function ChatPanel(props: ChatProps) {
       onSettled?: (ok: boolean) => void;
     } = {}
   ): Promise<void> {
-    const guard = opts.guard ?? new AgentRunGuard(permissions().toolCallCheckpoint);
+    const run = opts.run ?? (await startRun());
+    const guard = run.guard;
     const profile = activeProfile();
 
     if (!profile || !isMounted || stopRequested) {
       opts.onSettled?.(false);
+      endRun(dialogId, run, stopRequested ? 'stopped' : 'no-model');
       return;
     }
+    const replyStartedAt = Date.now();
+    let finishReason: string | null = null;
+    let usage: Record<string, unknown> | null = null;
 
     const pendingMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -1481,6 +1525,11 @@ export default function ChatPanel(props: ChatProps) {
               flushAssistantText();
             });
           }
+          break;
+
+        case 'Finished':
+          finishReason = event.finish_reason;
+          usage = event.usage;
           break;
 
         case 'Done':
@@ -1562,6 +1611,7 @@ export default function ChatPanel(props: ChatProps) {
             requestId,
             channel,
             tools,
+            projectContext: run.projectContext,
           })
             .then(() => untilStreamEnd(stream.ended))
             .then(() => 'done' as const),
@@ -1601,6 +1651,18 @@ export default function ChatPanel(props: ChatProps) {
     const toolCalls = Array.from(toolCallsMap.values());
     const error = failure as ChatError | null;
 
+    logAgent({
+      event: 'reply',
+      dialogId,
+      model: profile.model,
+      finishReason,
+      toolCalls: error ? 0 : toolCalls.length,
+      textChars: assistantText.length,
+      usage,
+      ms: Date.now() - replyStartedAt,
+      ...(error ? { error: error.kind } : {}),
+    });
+
     if (error) {
       const stored = toStoredFailure(error);
       if (assistantText.trim()) {
@@ -1621,17 +1683,34 @@ export default function ChatPanel(props: ChatProps) {
         });
         opts.onSettled?.(false);
       }
+      endRun(dialogId, run, error.kind === 'cancelled' ? 'stopped' : 'error');
       return;
     }
 
     await store.finalizeMessage(dialogId, pendingMsg.id, { content: assistantText, toolCalls });
     opts.onSettled?.(true);
 
-    // Normal final answer, or the user pressed Stop.
-    if (toolCalls.length === 0 || stopRequested) return;
+    if (stopRequested) {
+      endRun(dialogId, run, 'stopped');
+      return;
+    }
 
-    await executeToolCalls(dialogId, toolCalls, undefined, guard);
-    if (stopRequested) return;
+    // The model says it's done: the checks decide (verifyAtEnd).
+    if (toolCalls.length === 0) {
+      const outcome = await verifyAtEnd(dialogId, run);
+      if (outcome === 'continue') {
+        await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
+        return;
+      }
+      endRun(dialogId, run, outcome);
+      return;
+    }
+
+    await executeToolCalls(dialogId, toolCalls, undefined, run);
+    if (stopRequested) {
+      endRun(dialogId, run, 'stopped');
+      return;
+    }
 
     // Every tool call has its result, so the chat can wait here as long as
     // it likes: Continue picks up with the next request (continueRun).
@@ -1647,10 +1726,219 @@ export default function ChatPanel(props: ChatProps) {
           meta: { paused: pause },
         },
       ]);
+      endRun(dialogId, run, `paused-${pause.kind}`);
       return;
     }
 
-    await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, guard });
+    await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
+  }
+
+  /**
+   * Starts a run: the loop guard, and the project's checks and profile for
+   * the system prompt (detected fresh each run: a few file reads).
+   */
+  async function startRun(startAtToolCalls = 0): Promise<AgentRun> {
+    const p = permissions();
+    const root = props.rootPath();
+    let checks: ProjectCheck[] = [];
+    let context = '';
+    if (root) {
+      try {
+        const [profile, settings] = await Promise.all([
+          detectProject(root),
+          loadProjectSettings(root),
+        ]);
+        checks = effectiveChecks(profile, settings);
+        context = projectContext(profile, checks, p.verifyChanges);
+      } catch (err) {
+        console.error('Project detection failed:', err);
+      }
+    }
+    return {
+      guard: new AgentRunGuard(p.toolCallCheckpoint, startAtToolCalls),
+      checks,
+      projectContext: context,
+      changedFiles: new Set(),
+      writesSinceVerify: false,
+      verifyRounds: 0,
+      lastVerifyFailed: false,
+      startedAt: Date.now(),
+      ended: false,
+    };
+  }
+
+  /** The run's diagnostics line (lib/agentLog.ts), once. */
+  function endRun(dialogId: string, run: AgentRun, outcome: string) {
+    if (run.ended) return;
+    run.ended = true;
+    logAgent({
+      event: 'run',
+      dialogId,
+      model: activeProfile()?.model ?? '',
+      outcome,
+      toolCalls: run.guard.toolCalls,
+      filesChanged: run.changedFiles.size,
+      verifyRounds: run.verifyRounds,
+      ms: Date.now() - run.startedAt,
+    });
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Verification gate
+   * -----------------------------------------------------------------------
+   *
+   * When the model finishes a run in which it changed files, the IDE runs
+   * the project's checks. Failures go back to the model as a message it must
+   * act on, up to MAX_VERIFY_ROUNDS times; the record of each round shows in
+   * the chat (an empty assistant message with meta.verification, which is
+   * never sent to the model).
+   */
+
+  /** Appends a verification record and returns a way to update it. */
+  async function addVerificationRecord(dialogId: string, meta: VerificationMeta) {
+    const id = crypto.randomUUID();
+    await store.appendMessages(dialogId, [
+      { id, role: 'assistant', content: '', finalized: true, meta: { verification: meta } },
+    ]);
+    return (next: VerificationMeta) =>
+      store.patchMessage(dialogId, id, { meta: { verification: next } });
+  }
+
+  /**
+   * Runs the gate at the end of a run. 'continue' means the failures were
+   * sent to the model and the run goes on; anything else is the outcome.
+   */
+  async function verifyAtEnd(
+    dialogId: string,
+    run: AgentRun,
+    opts: { approved?: boolean } = {}
+  ): Promise<string> {
+    const p = permissions();
+    const root = props.rootPath();
+    if (!p.verifyChanges || !root) return 'done';
+    const changedFiles = [...run.changedFiles];
+    const base = { round: run.verifyRounds, maxRounds: MAX_VERIFY_ROUNDS, changedFiles };
+
+    if (!run.writesSinceVerify) {
+      // Failures were sent back, and the model finished without touching
+      // anything: it decided not to (or couldn't). Say so; don't loop.
+      if (run.lastVerifyFailed) {
+        await addVerificationRecord(dialogId, { ...base, status: 'unresolved', checks: [] });
+        return 'verify-unresolved';
+      }
+      return 'done';
+    }
+
+    const checks = run.checks.filter((c) => c.enabled && c.command.trim());
+    if (checks.length === 0) {
+      await addVerificationRecord(dialogId, {
+        ...base,
+        status: 'unverified',
+        checks: [],
+        reason: 'no checks are set up for this project',
+      });
+      run.writesSinceVerify = false;
+      return 'unverified';
+    }
+
+    // Command approval is on: the gate's commands need the user's go too.
+    if (p.commandApproval.required && !opts.approved) {
+      await addVerificationRecord(dialogId, {
+        ...base,
+        status: 'needs-approval',
+        checks: checks.map((c) => ({ kind: c.kind, command: c.command, status: 'pending' })),
+      });
+      return 'verify-needs-approval';
+    }
+
+    run.verifyRounds++;
+    run.writesSinceVerify = false;
+    const round = run.verifyRounds;
+    let meta: VerificationMeta = { ...base, round, status: 'running', checks: [] };
+    const update = await addVerificationRecord(dialogId, meta);
+
+    const results = await runChecks(root, checks, p, {
+      shouldStop: () => stopRequested || !isMounted,
+      onProgress: (progress) => {
+        meta = { ...meta, checks: progress };
+        update(meta);
+      },
+    });
+
+    const failed = results.some(isFailed);
+    const ran = results.some((r) => r.status === 'passed' || r.status === 'failed');
+    const status: VerificationMeta['status'] = stopRequested
+      ? 'stopped'
+      : !ran
+        ? 'unverified'
+        : !failed
+          ? 'passed'
+          : round >= MAX_VERIFY_ROUNDS
+            ? 'gave-up'
+            : 'failed';
+    meta = {
+      ...meta,
+      checks: results,
+      status,
+      ...(status === 'unverified' ? { reason: 'none of the checks were allowed to run' } : {}),
+    };
+    update(meta);
+    logAgent({
+      event: 'verify',
+      dialogId,
+      round,
+      status,
+      checks: results.map((r) => ({
+        kind: r.kind,
+        command: r.command,
+        status: r.status,
+        exitCode: r.exitCode,
+        ms: r.durationMs,
+      })),
+    });
+
+    run.lastVerifyFailed = failed;
+    if (status !== 'failed') {
+      return status === 'passed' ? 'verified' : `verify-${status}`;
+    }
+
+    // Back to the model. User-role, so every provider accepts it after an
+    // assistant reply; marked as the IDE's, so it's never shown as the
+    // user's message or replaced by the request's editor context.
+    await store.appendMessages(dialogId, [
+      {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: failureReport(results, changedFiles, round),
+        finalized: true,
+        meta: { harness: 'verification' },
+      },
+    ]);
+    return 'continue';
+  }
+
+  /** "Run checks" on a record that waited for approval. */
+  function runApprovedChecks() {
+    const dialogId = activeDialogId();
+    if (!dialogId || sending()) return;
+    const list = store.messagesOf(dialogId);
+    const pending = list[list.length - 1]?.meta?.verification;
+    if (!pending || pending.status !== 'needs-approval') return;
+    listController?.followLatest();
+    const currentUserContent = lastUserWireContent(dialogId);
+    void runRequest(dialogId, async () => {
+      const run = await startRun();
+      for (const f of pending.changedFiles) run.changedFiles.add(f);
+      run.writesSinceVerify = true;
+      run.verifyRounds = pending.round;
+      const outcome = await verifyAtEnd(dialogId, run, { approved: true });
+      if (outcome === 'continue') {
+        await runAgentTurn(dialogId, { currentUserContent, run });
+      } else {
+        endRun(dialogId, run, outcome);
+      }
+    });
   }
 
   /** Continue a run that paused at a checkpoint or a loop check. */
@@ -1662,9 +1950,11 @@ export default function ChatPanel(props: ChatProps) {
     const paused = last?.meta?.paused;
     listController?.followLatest();
     // Counting goes on from where it paused; loop evidence starts fresh.
-    const guard = new AgentRunGuard(permissions().toolCallCheckpoint, paused?.toolCalls ?? 0);
     const currentUserContent = lastUserWireContent(dialogId);
-    void runRequest(dialogId, () => runAgentTurn(dialogId, { currentUserContent, guard }));
+    void runRequest(dialogId, async () => {
+      const run = await startRun(paused?.toolCalls ?? 0);
+      await runAgentTurn(dialogId, { currentUserContent, run });
+    });
   }
 
   /**
@@ -1678,9 +1968,10 @@ export default function ChatPanel(props: ChatProps) {
     toolCalls: ChatToolCall[],
     /** Interrupted calls being resumed: always asked manually, with this note. */
     resumeNote?: string,
-    /** The run's loop checks; each finished call is recorded with it. */
-    guard?: AgentRunGuard
+    /** The run: loop checks record each finished call, writes are tracked. */
+    run?: AgentRun
   ) {
+    const guard = run?.guard;
     const root = props.rootPath();
     const stoppedResult = (tc: ChatToolCall) =>
       store.appendMessages(dialogId, [
@@ -1739,6 +2030,10 @@ export default function ChatPanel(props: ChatProps) {
         // The model reads the note with the result; a stop pauses the run
         // once this turn's calls are done (runAgentTurn).
         if (verdict.kind !== 'ok') result.content += verdict.note;
+      }
+      if (run && writes && writePath && !result.content.startsWith('Error:')) {
+        run.changedFiles.add(writePath);
+        run.writesSinceVerify = true;
       }
 
       // Open tabs of the file show what was written.
@@ -1876,7 +2171,8 @@ export default function ChatPanel(props: ChatProps) {
     const list = store.messagesOf(dialogId);
     for (let i = list.length - 1; i >= 0; i--) {
       const m = list[i];
-      if (m.role !== 'user' || m.failed) continue;
+      // The IDE's own messages (check failures) aren't the user's request.
+      if (m.role !== 'user' || m.failed || m.meta?.harness) continue;
       if (m.meta?.sentContent) return m.meta.sentContent;
       // Sent before the wire copy was stored: rebuild it from the current editor.
       return buildWireContent(m.content, []);
@@ -2206,6 +2502,8 @@ export default function ChatPanel(props: ChatProps) {
         onRetry={retryLastTurn}
         onContinue={continueReply}
         onContinueRun={continueRun}
+        onRunChecks={runApprovedChecks}
+        onOpenProjectChecks={() => setSettingsPage('project')}
       />
       <div class="chat-input-row">
         <div class="chat-input-container">
@@ -2305,6 +2603,7 @@ export default function ChatPanel(props: ChatProps) {
             providers={providers()}
             permissions={permissions()}
             initialPage={page}
+            rootPath={props.rootPath()}
             onSave={handleSettingsSaved}
             onClose={() => setSettingsPage(null)}
           />

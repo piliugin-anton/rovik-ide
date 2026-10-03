@@ -178,6 +178,13 @@ export interface ToolMeta {
    * model): after a number of tool calls, or because it looked stuck.
    */
   paused?: { kind: 'checkpoint' | 'loop'; toolCalls: number; reason?: string };
+  /** The verification gate's record of a round of checks (lib/verification.ts). */
+  verification?: import('./lib/verification').VerificationMeta;
+  /**
+   * A user-role message the IDE wrote (check failures for the agent). Not
+   * shown as a user message, and never mistaken for the user's request.
+   */
+  harness?: 'verification';
 }
 
 export type ChatErrorKind =
@@ -250,6 +257,8 @@ export interface OpenAIChatOptions {
 export type ChatStreamEvent =
   | { type: 'Delta'; content: string }
   | { type: 'Done' }
+  /** How the reply ended (diagnostics), just before Done. */
+  | { type: 'Finished'; finish_reason: string | null; usage: Record<string, unknown> | null }
   | { type: 'Error'; error: ChatError }
   | { type: 'Retrying'; attempt: number; max_attempts: number; delay_ms: number; reason: ChatError }
   | { type: 'ToolCallStart'; id: string; name: string }

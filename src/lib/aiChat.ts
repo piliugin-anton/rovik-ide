@@ -10,6 +10,8 @@ interface CommonArgs {
   options?: OpenAIChatOptions;
   /** Lets cancelChatRequest stop this request and its retries. */
   requestId?: string;
+  /** The open project's profile (lib/projectProfile.ts), added to the system prompt. */
+  projectContext?: string;
 }
 
 /**
@@ -49,6 +51,7 @@ export async function sendChatMessage(args: SendChatMessageArgs): Promise<void> 
     apiKey: profile.apiKey,
     model: profile.model,
     systemPrompt,
+    projectContext: args.projectContext,
     messages: args.messages?.map((m) => ({ role: m.role, content: m.content ?? '' })),
     dialogId: args.dialogId,
     tokenBudget: historyBudget(profile.contextTokens),

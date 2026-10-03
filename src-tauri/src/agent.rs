@@ -9,6 +9,13 @@ pub enum ChatStreamEvent {
         content: String,
     },
     Done,
+    /// How the reply ended, sent just before `Done`: for diagnostics (the
+    /// frontend's agent log). `usage` is the provider's token counts, when it
+    /// reports them.
+    Finished {
+        finish_reason: Option<String>,
+        usage: Option<serde_json::Value>,
+    },
     /// The request failed for good (after any retries).
     Error {
         error: crate::chat_request::ChatError,
@@ -156,6 +163,9 @@ pub async fn send_chat_message(
     requests: tauri::State<'_, crate::chat_request::ChatRequests>,
     tools: Option<Vec<serde_json::Value>>,
     system_prompt: Option<String>,
+    // About the open project (stack, check commands, its agent instructions),
+    // appended to the default system prompt.
+    project_context: Option<String>,
     options: Option<OpenAIChatOptions>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
@@ -225,10 +235,14 @@ pub async fn send_chat_message(
 
     let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
     let system_prompt = system_prompt.unwrap_or_else(|| {
-        if has_tools {
+        let base = if has_tools {
             CODING_AGENT_SYSTEM_PROMPT.to_string()
         } else {
             without_tool_rules(CODING_AGENT_SYSTEM_PROMPT)
+        };
+        match project_context.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            Some(context) => format!("{base}\n\n{context}"),
+            None => base,
         }
     });
     messages.insert(
