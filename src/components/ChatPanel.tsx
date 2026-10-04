@@ -978,6 +978,74 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /*
+   * Keys that move the caret, while the "@" file list is open, move through
+   * the list instead and never reach the text. A listener on the input
+   * itself, in the capture phase, so it runs before anything else (the
+   * component's own handler goes through Solid's document-level delegation,
+   * and WebKitGTK didn't always respect that). If the webview moves the
+   * caret anyway, it's put back.
+   */
+  const CARET_KEYS = new Set([
+    'ArrowUp',
+    'ArrowDown',
+    'ArrowLeft',
+    'ArrowRight',
+    'Home',
+    'End',
+    'PageUp',
+    'PageDown',
+  ]);
+
+  function handleSuggestionKeys(e: KeyboardEvent) {
+    if (!fileSuggestionsOpen() || !CARET_KEYS.has(e.key) || e.ctrlKey || e.metaKey || e.altKey)
+      return;
+    e.preventDefault();
+    e.stopPropagation();
+    const count = fileSuggestions().length;
+    if (count > 0) {
+      const last = count - 1;
+      const move: Record<string, (i: number) => number> = {
+        ArrowDown: (i) => Math.min(i + 1, last),
+        ArrowUp: (i) => Math.max(i - 1, 0),
+        PageDown: (i) => Math.min(i + 5, last),
+        PageUp: (i) => Math.max(i - 5, 0),
+        Home: () => 0,
+        End: () => last,
+      };
+      const step = move[e.key];
+      if (step) setSelectedSuggestionIndex(step);
+    }
+    keepCaret();
+  }
+
+  /** Puts the caret back if something still moved it during this key. */
+  function keepCaret() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const saved = sel.getRangeAt(0).cloneRange();
+    requestAnimationFrame(() => {
+      const now = window.getSelection();
+      if (!now || now.rangeCount === 0) return;
+      const r = now.getRangeAt(0);
+      if (
+        r.startContainer !== saved.startContainer ||
+        r.startOffset !== saved.startOffset ||
+        !r.collapsed
+      ) {
+        now.removeAllRanges();
+        now.addRange(saved);
+      }
+    });
+  }
+
+  onMount(() => {
+    const el = inputTextareaRef;
+    if (!el) return;
+    el.addEventListener('keydown', handleSuggestionKeys, true);
+    onCleanup(() => el.removeEventListener('keydown', handleSuggestionKeys, true));
+  });
+
+  /*
    * -----------------------------------------------------------------------
    * Undo / redo in the composer
    * -----------------------------------------------------------------------
@@ -2996,28 +3064,9 @@ export default function ChatPanel(props: ChatProps) {
       return;
     }
 
+    // Arrow keys etc. while the list is open: handleSuggestionKeys.
     if (fileSuggestionsOpen()) {
       const suggestions = fileSuggestions();
-
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-
-        if (suggestions.length > 0) {
-          setSelectedSuggestionIndex((index) => Math.min(index + 1, suggestions.length - 1));
-        }
-
-        return;
-      }
-
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-
-        if (suggestions.length > 0) {
-          setSelectedSuggestionIndex((index) => Math.max(index - 1, 0));
-        }
-
-        return;
-      }
 
       if (e.key === 'Enter' && !e.shiftKey) {
         if (suggestions.length > 0) {
