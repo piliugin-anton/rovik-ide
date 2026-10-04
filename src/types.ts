@@ -278,7 +278,7 @@ export type ChatStreamEvent =
   /** The model's reasoning, apart from the reply. */
   | { type: 'Reasoning'; content: string }
   /** Which reasoning forms the provider accepted or rejected (lib/reasoning.ts). */
-  | { type: 'ReasoningSupport'; accepted: string[]; rejected: string[] }
+  | { type: 'ReasoningSupport'; accepted: string[]; rejected: string[]; unresolved: string[] }
   | { type: 'Done' }
   /** How the reply ended (diagnostics), just before Done. */
   | { type: 'Finished'; finish_reason: string | null; usage: Record<string, unknown> | null }

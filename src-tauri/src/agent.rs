@@ -19,6 +19,10 @@ pub enum ChatStreamEvent {
     ReasoningSupport {
         accepted: Vec<String>,
         rejected: Vec<String>,
+        /// Stripped after a 400 that named none of them, and the request then
+        /// worked: one of these broke it, but which isn't known. The frontend
+        /// tries them one at a time on later requests (lib/reasoning.ts).
+        unresolved: Vec<String>,
     },
     Done,
     /// How the reply ended, sent just before `Done`: for diagnostics (the
@@ -159,8 +163,7 @@ pub fn apply_reasoning(body: &mut serde_json::Value, effort: ReasoningEffort, fo
 /// gets one retry without any of them, which counts as a rejection only if
 /// that retry works. Nothing has been shown when this happens.
 ///
-/// Also returns what was learned, `(accepted, rejected)`, when reasoning
-/// fields were sent at all.
+/// Also returns what was learned, when reasoning fields were sent at all.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_with_reasoning(
     client: &Client,
@@ -173,7 +176,7 @@ pub async fn run_with_reasoning(
     mut formats: Vec<String>,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
-) -> (Result<(), crate::chat_request::ChatError>, Option<(Vec<String>, Vec<String>)>) {
+) -> (Result<(), crate::chat_request::ChatError>, Option<ReasoningSupport>) {
     let requested = !formats.is_empty();
     let mut rejected: Vec<String> = Vec::new();
     let mut stripped_blindly: Vec<String> = Vec::new();
@@ -213,12 +216,22 @@ pub async fn run_with_reasoning(
         return (result, None);
     }
     let worked = result.is_ok();
-    if worked {
-        rejected.extend(stripped_blindly);
-    }
+    // A bare 400 then a success: one of the stripped forms was the problem,
+    // not necessarily all of them, so they're reported as unresolved.
+    let unresolved = if worked { stripped_blindly } else { Vec::new() };
     let accepted = if worked { formats } else { Vec::new() };
-    let learned = (!accepted.is_empty() || !rejected.is_empty()).then_some((accepted, rejected));
+    let support = ReasoningSupport { accepted, rejected, unresolved };
+    let learned = (!support.accepted.is_empty() || !support.rejected.is_empty() || !support.unresolved.is_empty())
+        .then_some(support);
     (result, learned)
+}
+
+/// What a request showed about the provider's reasoning fields.
+#[derive(Debug, Default, PartialEq)]
+pub struct ReasoningSupport {
+    pub accepted: Vec<String>,
+    pub rejected: Vec<String>,
+    pub unresolved: Vec<String>,
 }
 
 /// Whether an error message names `field` as a whole word: "reasoning" must
@@ -499,8 +512,12 @@ pub async fn send_chat_message(
         &mut emit,
     )
     .await;
-    if let Some((accepted, rejected)) = support {
-        let _ = on_event.send(ChatStreamEvent::ReasoningSupport { accepted, rejected });
+    if let Some(support) = support {
+        let _ = on_event.send(ChatStreamEvent::ReasoningSupport {
+            accepted: support.accepted,
+            rejected: support.rejected,
+            unresolved: support.unresolved,
+        });
     }
 
     // Saved by the backend itself, before this command returns, so it never
@@ -919,7 +936,7 @@ mod reasoning_tests {
         (url, seen)
     }
 
-    async fn send(url: &str, formats: &[&str]) -> (bool, Option<(Vec<String>, Vec<String>)>) {
+    async fn send(url: &str, formats: &[&str]) -> (bool, Option<ReasoningSupport>) {
         let client = Client::new();
         let body = serde_json::json!({ "model": "m", "messages": [] });
         let (tx, mut rx) = tokio::sync::watch::channel(false);
@@ -952,9 +969,10 @@ mod reasoning_tests {
         let (url, seen) = strict_provider(&["chat_template_kwargs"], true).await;
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
         assert!(ok);
-        let (accepted, rejected) = learned.unwrap();
-        assert_eq!(accepted, ["reasoning_effort", "reasoning"]);
-        assert_eq!(rejected, ["chat_template_kwargs"]);
+        let s = learned.unwrap();
+        assert_eq!(s.accepted, ["reasoning_effort", "reasoning"]);
+        assert_eq!(s.rejected, ["chat_template_kwargs"]);
+        assert!(s.unresolved.is_empty());
         let bodies = seen.lock().unwrap();
         assert_eq!(bodies.len(), 2, "one refusal, one retry");
         assert!(bodies[1].get("chat_template_kwargs").is_none() && bodies[1]["reasoning_effort"] == "high");
@@ -965,22 +983,22 @@ mod reasoning_tests {
         let (url, seen) = strict_provider(&["reasoning", "chat_template_kwargs"], true).await;
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
         assert!(ok);
-        let (accepted, mut rejected) = learned.unwrap();
-        rejected.sort();
-        assert_eq!(accepted, ["reasoning_effort"]);
-        assert_eq!(rejected, ["chat_template_kwargs", "reasoning"]);
+        let mut s = learned.unwrap();
+        s.rejected.sort();
+        assert_eq!(s.accepted, ["reasoning_effort"]);
+        assert_eq!(s.rejected, ["chat_template_kwargs", "reasoning"]);
         assert_eq!(seen.lock().unwrap().len(), 3);
     }
 
     #[tokio::test]
-    async fn a_bare_400_strips_everything_once() {
-        // A non-reasoning model behind a server that only says "Bad Request".
-        let (url, seen) = strict_provider(&["reasoning_effort", "reasoning", "chat_template_kwargs"], false).await;
+    async fn a_bare_400_strips_everything_once_and_blames_none_of_them() {
+        // Only "reasoning" is refused, but the server just says "Bad Request".
+        let (url, seen) = strict_provider(&["reasoning"], false).await;
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning"]).await;
         assert!(ok);
-        let (accepted, rejected) = learned.unwrap();
-        assert!(accepted.is_empty());
-        assert_eq!(rejected, ["reasoning_effort", "reasoning"]);
+        let s = learned.unwrap();
+        assert!(s.accepted.is_empty() && s.rejected.is_empty());
+        assert_eq!(s.unresolved, ["reasoning_effort", "reasoning"], "one of them, not known which");
         let bodies = seen.lock().unwrap();
         assert_eq!(bodies.len(), 2);
         assert!(bodies[1].get("reasoning_effort").is_none() && bodies[1].get("reasoning").is_none());
@@ -991,7 +1009,7 @@ mod reasoning_tests {
         let (url, seen) = strict_provider(&[], true).await;
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
         assert!(ok);
-        assert_eq!(learned.unwrap().0.len(), 3);
+        assert_eq!(learned.unwrap().accepted.len(), 3);
         assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
@@ -1000,5 +1018,21 @@ mod reasoning_tests {
         let (url, _) = strict_provider(&[], true).await;
         let (ok, learned) = send(&url, &[]).await;
         assert!(ok && learned.is_none());
+    }
+
+    /// The frontend's follow-up after a bare 400: known-good forms plus one
+    /// suspect. The suspect is the one refused, and only it is unresolved
+    /// alongside the known-good one, which the frontend then subtracts.
+    #[tokio::test]
+    async fn probing_one_suspect_at_a_time() {
+        let (url, _) = strict_provider(&["reasoning"], false).await;
+        // reasoning_effort is known good; probe "chat_template_kwargs": accepted.
+        let (ok, learned) = send(&url, &["reasoning_effort", "chat_template_kwargs"]).await;
+        assert!(ok);
+        assert_eq!(learned.unwrap().accepted, ["reasoning_effort", "chat_template_kwargs"]);
+        // Then probe "reasoning": the bare 400 again, stripped, works.
+        let (ok, learned) = send(&url, &["reasoning_effort", "reasoning"]).await;
+        assert!(ok);
+        assert_eq!(learned.unwrap().unresolved, ["reasoning_effort", "reasoning"]);
     }
 }

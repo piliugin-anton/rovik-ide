@@ -8,6 +8,10 @@
 //     backend drops any the provider refuses and retries, then reports what
 //     was accepted and rejected (the ReasoningSupport event), which is
 //     stored with the model in the settings and used from then on.
+//   - A 400 that names no field, fixed by sending none of them, shows that
+//     one of the forms broke the request, not which: they become suspects,
+//     tried one at a time (with the forms known to work) on the next
+//     requests, so a working form isn't lost because of a sibling.
 //   - A model that sends its reasoning in the stream is known to reason.
 //   - A model whose provider rejected every form doesn't take an effort:
 //     the selector hides for it.
@@ -37,6 +41,8 @@ export interface ReasoningLearned {
   rejected: { field: ReasoningField; at: number }[];
   /** The model sent reasoning in its reply. */
   reasons?: boolean;
+  /** One of these broke a request (a 400 naming none): tried one at a time. */
+  suspect?: ReasoningField[];
   at: number;
 }
 
@@ -73,6 +79,13 @@ export function formatsToSend(setting: ReasoningSetting, now = Date.now()): Reas
   const rejectedRecently = new Set(
     (setting.learned?.rejected ?? []).filter((r) => now - r.at < RETRY_AFTER_MS).map((r) => r.field)
   );
+  // Suspects are tried one at a time, beside the forms known to work: if it
+  // fails, the suspect is the only unknown, so it's the one to blame.
+  const suspects = (setting.learned?.suspect ?? []).filter((f) => !rejectedRecently.has(f));
+  if (suspects.length > 0) {
+    const working = (setting.learned?.accepted ?? []).filter((f) => !rejectedRecently.has(f));
+    return REASONING_FIELDS.filter((f) => working.includes(f) || f === suspects[0]);
+  }
   return REASONING_FIELDS.filter((f) => !rejectedRecently.has(f));
 }
 
@@ -94,23 +107,34 @@ export function mergeLearned(
   prev: ReasoningLearned | undefined,
   accepted: string[],
   rejected: string[],
+  unresolved: string[] = [],
   now = Date.now()
 ): ReasoningLearned {
   const valid = (f: string): f is ReasoningField => (REASONING_FIELDS as string[]).includes(f);
   const acc = new Set(prev?.accepted ?? []);
   const rej = new Map((prev?.rejected ?? []).map((r) => [r.field, r.at] as const));
+  const suspect = new Set(prev?.suspect ?? []);
+  const reject = (f: ReasoningField) => {
+    rej.set(f, now);
+    acc.delete(f);
+    suspect.delete(f);
+  };
   for (const f of accepted.filter(valid)) {
     acc.add(f);
     rej.delete(f);
+    suspect.delete(f);
   }
-  for (const f of rejected.filter(valid)) {
-    rej.set(f, now);
-    acc.delete(f);
-  }
+  for (const f of rejected.filter(valid)) reject(f);
+  // A bare 400 fixed by stripping these: forms already known to work aren't
+  // to blame. One unknown left: it's the culprit. Several: suspects.
+  const unknown = unresolved.filter(valid).filter((f) => !acc.has(f));
+  if (unknown.length === 1) reject(unknown[0]);
+  else for (const f of unknown) if (!rej.has(f)) suspect.add(f);
   return {
     accepted: REASONING_FIELDS.filter((f) => acc.has(f)),
     rejected: [...rej].map(([field, at]) => ({ field, at })),
     reasons: prev?.reasons,
+    ...(suspect.size ? { suspect: REASONING_FIELDS.filter((f) => suspect.has(f)) } : {}),
     at: now,
   };
 }
@@ -125,6 +149,7 @@ export function describeReasoning(setting: ReasoningSetting): string {
   const parts: string[] = [];
   if (l.accepted.length) parts.push(`Accepted: ${l.accepted.join(', ')}.`);
   if (l.rejected.length) parts.push(`Rejected: ${l.rejected.map((r) => r.field).join(', ')}.`);
+  if (l.suspect?.length) parts.push(`Being checked one at a time: ${l.suspect.join(', ')}.`);
   if (l.reasons) parts.push('The model sends its reasoning.');
   if (!parts.length) parts.push('Nothing learned yet.');
   return `Detected: ${parts.join(' ')}`;

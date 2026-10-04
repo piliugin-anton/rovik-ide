@@ -336,7 +336,7 @@ export default function ChatPanel(props: ChatProps) {
   /** Stores what a reply showed about a model's reasoning support. */
   function learnReasoning(
     profileId: string,
-    outcome: { accepted?: string[]; rejected?: string[]; reasons?: boolean }
+    outcome: { accepted?: string[]; rejected?: string[]; unresolved?: string[]; reasons?: boolean }
   ) {
     const split = profileId.indexOf('::');
     const providerId = profileId.slice(0, split);
@@ -350,8 +350,13 @@ export default function ChatPanel(props: ChatProps) {
           if (m.id !== modelId) return m;
           const setting = m.reasoning ?? { choice: 'auto' as const };
           let learned = setting.learned;
-          if (outcome.accepted || outcome.rejected) {
-            learned = mergeLearned(learned, outcome.accepted ?? [], outcome.rejected ?? []);
+          if (outcome.accepted || outcome.rejected || outcome.unresolved) {
+            learned = mergeLearned(
+              learned,
+              outcome.accepted ?? [],
+              outcome.rejected ?? [],
+              outcome.unresolved ?? []
+            );
           }
           if (outcome.reasons && !learned?.reasons) {
             learned = {
@@ -2150,7 +2155,11 @@ export default function ChatPanel(props: ChatProps) {
           }
           break;
         case 'ReasoningSupport':
-          learnReasoning(profile.id, { accepted: event.accepted, rejected: event.rejected });
+          learnReasoning(profile.id, {
+            accepted: event.accepted,
+            rejected: event.rejected,
+            unresolved: event.unresolved,
+          });
           break;
         case 'Delta':
           markOutput();
