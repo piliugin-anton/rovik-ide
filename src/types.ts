@@ -48,6 +48,8 @@ export interface ModelProfile {
   noTools: boolean;
   /** How long to wait for the first token (default 60 s). */
   firstByteTimeoutMs?: number;
+  /** Reasoning effort support (lib/reasoning.ts). */
+  reasoning: import('./lib/reasoning').ReasoningSetting;
 }
 
 export interface ProviderModel {
@@ -59,6 +61,8 @@ export interface ProviderModel {
   contextOverride?: number; // typed in provider settings; wins over contextLength
   noTools?: boolean; // the model can't use tool calls
   firstTokenTimeoutSec?: number; // override of the 60 s first-token timeout
+  /** How a reasoning effort is sent, and what's been learned (lib/reasoning.ts). */
+  reasoning?: import('./lib/reasoning').ReasoningSetting;
 }
 
 /** One OpenAI-compatible endpoint + credentials, with the models it serves. */
@@ -187,6 +191,8 @@ export interface ToolMeta {
   harness?: 'verification' | 'checklist';
   /** A Plan-mode plan: the file it's saved in (lib/plans.ts). */
   planFile?: string;
+  /** The model's reasoning for this reply, and how long it took. */
+  reasoning?: { text: string; ms?: number };
   /** A user message: the mode it was sent in (lib/chatMode.ts). */
   mode?: import('./lib/chatMode').ChatMode;
   /** An ask_user result: the questions and how they were answered. */
@@ -263,10 +269,16 @@ export interface OpenAIChatOptions {
   top_p?: number | null;
   stop?: string[] | null;
   reasoning_effort?: 'none' | 'low' | 'medium' | 'high' | null;
+  /** The forms to send it in (lib/reasoning.ts); absent: the older default. */
+  reasoning_formats?: string[] | null;
 }
 
 export type ChatStreamEvent =
   | { type: 'Delta'; content: string }
+  /** The model's reasoning, apart from the reply. */
+  | { type: 'Reasoning'; content: string }
+  /** Which reasoning forms the provider accepted or rejected (lib/reasoning.ts). */
+  | { type: 'ReasoningSupport'; accepted: string[]; rejected: string[] }
   | { type: 'Done' }
   /** How the reply ended (diagnostics), just before Done. */
   | { type: 'Finished'; finish_reason: string | null; usage: Record<string, unknown> | null }

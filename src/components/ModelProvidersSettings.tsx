@@ -1,3 +1,10 @@
+import {
+  describeReasoning,
+  FIELD_LABELS,
+  REASONING_FIELDS,
+  settingOf,
+  type ReasoningSetting,
+} from '../lib/reasoning';
 import { createMemo, createSignal, For, Show } from 'solid-js';
 import type { Provider, ProviderModel } from '../types';
 import { fetchModels, formatModelLabel, guessProviderName } from '../lib/aiSettings';
@@ -179,6 +186,28 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
     const valid = value === undefined || (value >= CONTEXT_MIN && value <= CONTEXT_MAX);
     if (!valid) return;
     patch({ models: d.models.map((m) => (m.id === id ? { ...m, contextOverride: value } : m)) });
+  }
+
+  /** How a reasoning effort is sent to this model (lib/reasoning.ts). */
+  function setReasoningChoice(id: string, choice: ReasoningSetting['choice']) {
+    const d = draft();
+    if (!d) return;
+    patch({
+      models: d.models.map((m) =>
+        m.id === id ? { ...m, reasoning: { ...settingOf(m), choice } } : m
+      ),
+    });
+  }
+
+  /** Forgets what was detected: the next request with an effort learns it again. */
+  function resetReasoning(id: string) {
+    const d = draft();
+    if (!d) return;
+    patch({
+      models: d.models.map((m) =>
+        m.id === id ? { ...m, reasoning: { choice: settingOf(m).choice } } : m
+      ),
+    });
   }
 
   function toggleTools(id: string) {
@@ -476,6 +505,47 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                     >
                       tools
                     </button>
+                    <select
+                      class="context-input reasoning-select"
+                      value={settingOf(m).choice}
+                      title={describeReasoning(settingOf(m))}
+                      aria-label={`How a reasoning effort is sent to ${m.id}`}
+                      onChange={(e) =>
+                        setReasoningChoice(
+                          m.id,
+                          e.currentTarget.value as ReasoningSetting['choice']
+                        )
+                      }
+                    >
+                      <option value="auto">reasoning: auto</option>
+                      <option value="off">reasoning: off</option>
+                      <For each={REASONING_FIELDS}>
+                        {(field) => <option value={field}>{FIELD_LABELS[field]}</option>}
+                      </For>
+                    </select>
+                    <Show when={settingOf(m).learned}>
+                      <button
+                        type="button"
+                        class="reasoning-reset"
+                        title={`${describeReasoning(settingOf(m))} Click to forget it and detect again.`}
+                        aria-label={`Detect reasoning support for ${m.id} again`}
+                        onClick={() => resetReasoning(m.id)}
+                      >
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M3 8a5 5 0 1 0 1.5-3.55M3 2.5v3h3" />
+                        </svg>
+                      </button>
+                    </Show>
                     <input
                       class="context-input timeout-input"
                       inputMode="numeric"

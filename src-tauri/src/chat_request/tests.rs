@@ -19,6 +19,8 @@ fn names(events: &[ChatStreamEvent]) -> Vec<String> {
         .filter(|e| !matches!(e, ChatStreamEvent::Finished { .. }))
         .map(|e| match e {
             ChatStreamEvent::Delta { content } => format!("delta:{content}"),
+            ChatStreamEvent::Reasoning { content } => format!("reasoning:{content}"),
+            ChatStreamEvent::ReasoningSupport { .. } => "reasoning_support".into(),
             ChatStreamEvent::Done => "done".into(),
             ChatStreamEvent::Finished { .. } => "finished".into(),
             ChatStreamEvent::Error { .. } => "error".into(),

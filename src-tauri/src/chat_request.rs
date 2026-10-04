@@ -439,6 +439,15 @@ impl ReplyParser {
                     emit(ChatStreamEvent::Delta { content: content.to_string() });
                 }
             }
+            // Reasoning: `reasoning_content` (DeepSeek, vLLM, many gateways)
+            // or `reasoning` (OpenRouter). Shown, but not part of the reply.
+            let reasoning = delta
+                .get("reasoning_content")
+                .or_else(|| delta.get("reasoning"))
+                .and_then(|v| v.as_str());
+            if let Some(reasoning) = reasoning.filter(|r| !r.is_empty()) {
+                emit(ChatStreamEvent::Reasoning { content: reasoning.to_string() });
+            }
             for (pos, tc) in delta.get("tool_calls").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
                 let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 // Gemini omits `index`: tell calls apart by id instead, so
@@ -537,6 +546,10 @@ impl ReplyParser {
             "choices": [{
                 "delta": {
                     "content": message.and_then(|m| m.get("content")).cloned().unwrap_or(serde_json::Value::Null),
+                    "reasoning_content": message
+                        .and_then(|m| m.get("reasoning_content").or_else(|| m.get("reasoning")))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
                     "tool_calls": message
                         .and_then(|m| m.get("tool_calls"))
                         .and_then(|t| t.as_array())

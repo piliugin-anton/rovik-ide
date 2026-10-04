@@ -468,7 +468,14 @@ export default function MessageList(props: {
                 classList={{ flash: flashId() === m.id }}
                 data-id={m.id}
               >
-                <Show when={m.pending && m.content.length === 0 && !m.toolCalls?.length}>
+                <Show
+                  when={
+                    m.pending &&
+                    m.content.length === 0 &&
+                    !m.toolCalls?.length &&
+                    !m.meta?.reasoning
+                  }
+                >
                   <div class="chat-message assistant">
                     <span class="chat-pending" classList={{ status: !!m.status }} role="status">
                       {statusText(m)}
@@ -520,17 +527,34 @@ export default function MessageList(props: {
 
                 {/* The IDE's messages to the model (check failures) show as the
                   verification record instead. */}
+                {/* The model's thinking, apart from the reply. */}
+                <Show when={m.role === 'assistant' && m.meta?.reasoning?.text}>
+                  <ThinkingBlock
+                    text={m.meta!.reasoning!.text}
+                    ms={m.meta?.reasoning?.ms}
+                    thinking={!!m.pending && isBlank(m.content) && !m.toolCalls?.length}
+                  />
+                </Show>
+
                 <Show when={!m.error && !isBlank(m.content) && !m.meta?.harness}>
-                  <div
-                    class="chat-message"
-                    classList={{
-                      user: m.role === 'user',
-                      assistant: m.role === 'assistant',
-                      failed: !!m.failed,
-                    }}
-                    title={m.failed ? 'Not delivered: text was put back into the input' : undefined}
-                  >
-                    <MessageContent content={m.content} streaming={!!m.pending} />
+                  <div class="chat-message-wrap" classList={{ user: m.role === 'user' }}>
+                    <div
+                      class="chat-message"
+                      classList={{
+                        user: m.role === 'user',
+                        assistant: m.role === 'assistant',
+                        failed: !!m.failed,
+                      }}
+                      title={
+                        m.failed ? 'Not delivered: text was put back into the input' : undefined
+                      }
+                    >
+                      <MessageContent content={m.content} streaming={!!m.pending} />
+                    </div>
+                    {/* Messages only: tool calls and results have none. */}
+                    <Show when={!m.pending}>
+                      <CopyMessageButton text={copyableText(m.content)} />
+                    </Show>
                   </div>
                 </Show>
 
@@ -683,6 +707,138 @@ export default function MessageList(props: {
             />
           </svg>
         </button>
+      </Show>
+    </div>
+  );
+}
+
+/**
+ * What "copy" gives for a message: its text as written (Markdown and code
+ * blocks included), with pasted text in full and without the
+ * <pasted_text> markers the model gets.
+ */
+export function copyableText(content: string): string {
+  return content
+    .replace(/<pasted_text(?:\s+lines="\d+")?>\n?([\s\S]*?)\n?<\/pasted_text>/g, '$1')
+    .trim();
+}
+
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Fallback for webviews without the async clipboard API.
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  }
+}
+
+/** Under a message, shown on hover: copies the whole message. */
+function CopyMessageButton(props: { text: string }) {
+  const [copied, setCopied] = createSignal(false);
+  let timer: number | undefined;
+  onCleanup(() => window.clearTimeout(timer));
+  return (
+    <button
+      type="button"
+      class="chat-copy-button"
+      classList={{ copied: copied() }}
+      title={copied() ? 'Copied' : 'Copy message'}
+      aria-label={copied() ? 'Copied' : 'Copy message'}
+      onClick={async () => {
+        if (!(await writeClipboard(props.text))) return;
+        setCopied(true);
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      <Show
+        when={copied()}
+        fallback={
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+            <path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+          </svg>
+        }
+      >
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
+        </svg>
+      </Show>
+    </button>
+  );
+}
+
+/**
+ * The model's reasoning: "Thinking…" with its latest line while it thinks,
+ * "Thought for 12 s" after; opens to the whole text (plain, it can be long).
+ */
+function ThinkingBlock(props: { text: string; ms?: number; thinking: boolean }) {
+  const [open, setOpen] = createSignal(false);
+  const seconds = () => (props.ms ? Math.max(1, Math.round(props.ms / 1000)) : null);
+  const lastLine = () => {
+    const lines = props.text.trimEnd().split('\n');
+    const line = lines[lines.length - 1] ?? '';
+    return line.length > 160 ? `…${line.slice(-160)}` : line;
+  };
+  return (
+    <div class="chat-thinking" classList={{ active: props.thinking }}>
+      <button
+        type="button"
+        class="chat-thinking-toggle"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open()}
+      >
+        <svg
+          class="chat-pasted-caret"
+          classList={{ open: open() }}
+          width="10"
+          height="10"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M6 4l4 4-4 4" />
+        </svg>
+        {props.thinking ? 'Thinking…' : seconds() ? `Thought for ${seconds()} s` : 'Thought'}
+      </button>
+      <Show when={props.thinking && !open()}>
+        <div class="chat-thinking-preview">{lastLine()}</div>
+      </Show>
+      <Show when={open()}>
+        <div class="chat-thinking-text">{props.text}</div>
       </Show>
     </div>
   );

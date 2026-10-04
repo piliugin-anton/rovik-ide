@@ -144,6 +144,32 @@ fn get_or_build_gitignore(state: &WatcherState, root: &Path) -> Result<Arc<Gitig
     Ok(matcher)
 }
 
+/// What a changed path is, for the watcher.
+#[derive(Debug, PartialEq)]
+enum WatchPath {
+    /// Inside `.git/`: git's own bookkeeping, reported as one "git-changed".
+    Git,
+    /// Matched by .gitignore (build output, dependencies): not reported.
+    Ignored,
+    Visible,
+}
+
+fn watch_path_kind(root: &Path, matcher: Option<&Gitignore>, path: &Path) -> WatchPath {
+    let Ok(rel) = path.strip_prefix(root) else { return WatchPath::Visible };
+    if rel.components().any(|c| c.as_os_str() == ".git") {
+        return WatchPath::Git;
+    }
+    match matcher {
+        Some(m) if m.matched_path_or_any_parents(rel, path.is_dir()).is_ignore() => WatchPath::Ignored,
+        _ => WatchPath::Visible,
+    }
+}
+
+/// More changes than this in one burst (a branch switch, an unpacked
+/// archive) are reported as a single "re-check everything" event: the
+/// frontend handles each event, and thousands at once froze it.
+const MAX_EVENTS_PER_FLUSH: usize = 300;
+
 // A Tauri command to start watching a specific directory
 #[tauri::command]
 pub fn start_file_watch(
@@ -169,12 +195,17 @@ pub fn start_file_watch(
     println!("Watching: {:?}", root);
 
     let app_handle = app_handle.clone();
+    let watch_root = root.clone();
+    // The project's .gitignore, rebuilt when it changes.
+    let mut matcher: Option<Arc<Gitignore>> = build_gitignore(&root).ok().map(Arc::new);
 
     // Use Tauri's built-in async runtime to handle async sleeping & debounce intervals smoothly
     tauri::async_runtime::spawn(async move {
         // We'll collect events over a short window and evaluate them on the trailing edge
         let mut event_bucket: HashMap<FileWatchPayload, Instant> = HashMap::new();
         let debounce_duration = Duration::from_millis(300); // 300ms should be enough for file-system quiet down
+        // Last activity inside .git/ (a commit writes hundreds of files there).
+        let mut git_touched: Option<Instant> = None;
 
         loop {
             // Step 1: Drain any available events from the native channel without blocking indefinitely
@@ -192,6 +223,22 @@ pub fn start_file_watch(
                     }
 
                     for path in event.paths {
+                        // Git's own files and ignored paths (target/, node_modules/)
+                        // aren't the user's files: reporting each one flooded the app.
+                        match watch_path_kind(&watch_root, matcher.as_deref(), &path) {
+                            WatchPath::Git => {
+                                git_touched = Some(Instant::now());
+                                continue;
+                            }
+                            WatchPath::Ignored => continue,
+                            WatchPath::Visible => {}
+                        }
+                        if path.file_name().is_some_and(|n| n == ".gitignore") {
+                            matcher = build_gitignore(&watch_root).ok().map(Arc::new);
+                            if let Ok(mut cached) = app_handle.state::<WatcherState>().gitignore.lock() {
+                                *cached = None; // the tree's listing re-reads it too
+                            }
+                        }
                         let is_dir = path.is_dir();
                         let payload = FileWatchPayload {
                             path: path.to_string_lossy().into_owned(),
@@ -219,9 +266,26 @@ pub fn start_file_watch(
                 }
             });
 
-            // Step 3: Emit the stabilized events to the frontend
-            for payload in ready_to_emit {
-                let _ = app_handle.emit("fs-changes", payload);
+            // Step 3: Emit the stabilized events to the frontend. A flood becomes
+            // one "re-check everything" (operation "unknown", the project root).
+            if ready_to_emit.len() > MAX_EVENTS_PER_FLUSH {
+                let _ = app_handle.emit(
+                    "fs-changes",
+                    FileWatchPayload {
+                        path: watch_root.to_string_lossy().into_owned(),
+                        operation: WatchOp::Unknown,
+                        is_dir: true,
+                    },
+                );
+            } else {
+                for payload in ready_to_emit {
+                    let _ = app_handle.emit("fs-changes", payload);
+                }
+            }
+            // Git activity, once it has settled: the Git tab refreshes.
+            if git_touched.is_some_and(|t| now.duration_since(t) >= debounce_duration) {
+                git_touched = None;
+                let _ = app_handle.emit("git-changed", ());
             }
 
             // Step 4: Short pause to rest the CPU before polling for new events/timeouts again
@@ -692,4 +756,29 @@ pub fn save_last_project(
         .map_err(|e| format!("Failed to serialize last project: {e}"))?;
     crate::atomic_file::write_atomic(&project_path, json.as_bytes())
         .map_err(|e| format!("Failed to save last project: {e}"))
+}
+
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    #[test]
+    fn git_files_and_ignored_paths_are_kept_out() {
+        let dir = std::env::temp_dir().join(format!("watch-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("target/debug")).unwrap();
+        std::fs::write(dir.join(".gitignore"), "target/\n*.log\n").unwrap();
+        let m = build_gitignore(&dir).unwrap();
+        let kind = |p: &str| watch_path_kind(&dir, Some(&m), &dir.join(p));
+        assert_eq!(kind(".git/objects/ab/cdef0123"), WatchPath::Git);
+        assert_eq!(kind(".git/index"), WatchPath::Git);
+        assert_eq!(kind("sub/.git/HEAD"), WatchPath::Git);
+        assert_eq!(kind("target/debug/app"), WatchPath::Ignored);
+        assert_eq!(kind("build.log"), WatchPath::Ignored);
+        assert_eq!(kind("src/main.rs"), WatchPath::Visible);
+        assert_eq!(kind(".gitignore"), WatchPath::Visible);
+        assert_eq!(kind(".github/workflows/ci.yml"), WatchPath::Visible);
+        assert_eq!(watch_path_kind(&dir, Some(&m), Path::new("/elsewhere/x")), WatchPath::Visible);
+    }
 }

@@ -8,6 +8,18 @@ pub enum ChatStreamEvent {
     Delta {
         content: String,
     },
+    /// The model's reasoning ("thinking"), when the provider streams it
+    /// (`reasoning_content` / `reasoning`): shown apart from the reply.
+    Reasoning {
+        content: String,
+    },
+    /// Which reasoning fields this request sent that the provider accepted
+    /// or rejected (see `REASONING_FIELDS`): the frontend remembers it per
+    /// model, so later requests send only what works.
+    ReasoningSupport {
+        accepted: Vec<String>,
+        rejected: Vec<String>,
+    },
     Done,
     /// How the reply ended, sent just before `Done`: for diagnostics (the
     /// frontend's agent log). `usage` is the provider's token counts, when it
@@ -101,6 +113,123 @@ pub struct OpenAIChatOptions {
     pub top_p: Option<f32>,
     pub stop: Option<Vec<String>>,
     pub reasoning_effort: Option<ReasoningEffort>, // add more as needed: frequency_penalty, presence_penalty, etc.
+    /// Which forms of the effort to send (`REASONING_FIELDS`). Absent: the
+    /// older default (`reasoning_effort` plus `chat_template_kwargs`), still
+    /// used by background requests.
+    pub reasoning_formats: Option<Vec<String>>,
+}
+
+/// The ways providers take a reasoning effort:
+/// - `reasoning_effort`: OpenAI, Gemini's OpenAI-compatible API, many gateways;
+/// - `reasoning`: OpenRouter (`{ "effort": … }`);
+/// - `chat_template_kwargs`: Qwen-style models on vLLM / SGLang (`enable_thinking`).
+pub const REASONING_FIELDS: [&str; 3] = ["reasoning_effort", "reasoning", "chat_template_kwargs"];
+
+/// Puts the effort into the request in each of `formats`.
+pub fn apply_reasoning(body: &mut serde_json::Value, effort: ReasoningEffort, formats: &[String]) {
+    let level = match effort {
+        ReasoningEffort::None => "none",
+        ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High => "high",
+    };
+    let thinking = !matches!(effort, ReasoningEffort::None);
+    for format in formats {
+        match format.as_str() {
+            "reasoning_effort" => body["reasoning_effort"] = serde_json::json!(level),
+            "reasoning" => {
+                body["reasoning"] = if thinking {
+                    serde_json::json!({ "effort": level })
+                } else {
+                    serde_json::json!({ "enabled": false })
+                }
+            }
+            "chat_template_kwargs" => {
+                body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": thinking })
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Sends the request with the reasoning effort in `formats`, dropping any
+/// the provider rejects: a 400 naming the field ("Unrecognized request
+/// argument", "Unsupported parameter", "Extra inputs are not permitted") is
+/// answered by sending it again without that field. A 400 naming no field
+/// gets one retry without any of them, which counts as a rejection only if
+/// that retry works. Nothing has been shown when this happens.
+///
+/// Also returns what was learned, `(accepted, rejected)`, when reasoning
+/// fields were sent at all.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_with_reasoning(
+    client: &Client,
+    url: &str,
+    api_key: &str,
+    body: &serde_json::Value,
+    streaming: bool,
+    limits: crate::chat_request::Limits,
+    effort: Option<ReasoningEffort>,
+    mut formats: Vec<String>,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+) -> (Result<(), crate::chat_request::ChatError>, Option<(Vec<String>, Vec<String>)>) {
+    let requested = !formats.is_empty();
+    let mut rejected: Vec<String> = Vec::new();
+    let mut stripped_blindly: Vec<String> = Vec::new();
+    let result = loop {
+        let mut attempt_body = body.clone();
+        if let Some(effort) = effort {
+            apply_reasoning(&mut attempt_body, effort, &formats);
+        }
+        let spec = crate::chat_request::RequestSpec {
+            client,
+            url,
+            api_key,
+            body: &attempt_body,
+            streaming,
+            limits,
+        };
+        let result = crate::chat_request::run(&spec, cancel, emit).await;
+        match &result {
+            Err(e) if e.kind == crate::chat_request::ErrorKind::BadRequest && !e.partial && !formats.is_empty() => {
+                let text = format!("{} {}", e.message, e.details.as_deref().unwrap_or(""));
+                let named: Vec<String> = formats.iter().filter(|f| mentions_field(&text, f)).cloned().collect();
+                if !named.is_empty() {
+                    formats.retain(|f| !named.contains(f));
+                    rejected.extend(named);
+                    continue;
+                }
+                if stripped_blindly.is_empty() {
+                    stripped_blindly = std::mem::take(&mut formats);
+                    continue;
+                }
+                break result;
+            }
+            _ => break result,
+        }
+    };
+    if !requested {
+        return (result, None);
+    }
+    let worked = result.is_ok();
+    if worked {
+        rejected.extend(stripped_blindly);
+    }
+    let accepted = if worked { formats } else { Vec::new() };
+    let learned = (!accepted.is_empty() || !rejected.is_empty()).then_some((accepted, rejected));
+    (result, learned)
+}
+
+/// Whether an error message names `field` as a whole word: "reasoning" must
+/// not match inside "reasoning_effort".
+pub fn mentions_field(text: &str, field: &str) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(field).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + field.len()..].chars().next();
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
 }
 
 const CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are a coding agent operating inside a developer's IDE. You have access to tools that let you read, write, and search the user's actual project. Your job is to complete coding tasks by using these tools — not by describing what should be done.
@@ -268,6 +397,21 @@ pub async fn send_chat_message(
         "stream": streaming,
     });
 
+    // The reasoning effort is added per attempt (see below), in the forms
+    // asked for.
+    let reasoning_effort = options.as_ref().and_then(|o| o.reasoning_effort);
+    let reasoning_formats: Vec<String> = match (
+        reasoning_effort,
+        options.as_ref().and_then(|o| o.reasoning_formats.clone()),
+    ) {
+        (None, _) => Vec::new(),
+        (Some(_), Some(formats)) => formats
+            .into_iter()
+            .filter(|f| REASONING_FIELDS.contains(&f.as_str()))
+            .collect(),
+        (Some(_), None) => vec!["reasoning_effort".into(), "chat_template_kwargs".into()],
+    };
+
     // Merge optional OpenAI parameters from `options`
     if let Some(opts) = options {
         if let Some(max_tokens) = opts.max_tokens {
@@ -281,26 +425,6 @@ pub async fn send_chat_message(
         }
         if let Some(stop) = opts.stop.filter(|s| !s.is_empty()) {
             body["stop"] = serde_json::json!(stop);
-        }
-        if let Some(reasoning_effort) = opts.reasoning_effort {
-            match reasoning_effort {
-                ReasoningEffort::None => {
-                    body["reasoning_effort"] = serde_json::json!("none");
-                    body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": false });
-                }
-                ReasoningEffort::Low => {
-                    body["reasoning_effort"] = serde_json::json!("low");
-                    body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
-                }
-                ReasoningEffort::Medium => {
-                    body["reasoning_effort"] = serde_json::json!("medium");
-                    body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
-                }
-                ReasoningEffort::High => {
-                    body["reasoning_effort"] = serde_json::json!("high");
-                    body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": true });
-                }
-            };
         }
     }
 
@@ -316,14 +440,7 @@ pub async fn send_chat_message(
     if let Some(ms) = first_byte_timeout_ms.filter(|ms| *ms >= 5_000) {
         limits.first_byte = std::time::Duration::from_millis(ms);
     }
-    let spec = crate::chat_request::RequestSpec {
-        client: &client,
-        url: &url,
-        api_key: &api_key,
-        body: &body,
-        streaming,
-        limits,
-    };
+
     let log_signatures = is_gemini_target(&base_url, &model);
     // What this request's prompt amounts to, to compare with the provider's
     // token count when it reports one.
@@ -363,7 +480,28 @@ pub async fn send_chat_message(
 
     // Failures are reported as a typed Error event; the command itself only
     // fails for problems before the request (e.g. building the history).
-    let result = crate::chat_request::run(&spec, &mut registration.cancel, &mut emit).await;
+    //
+    // Reasoning fields a provider rejects (a 400 naming the field: "Unrecognized
+    // request argument", "Unsupported parameter", "Extra inputs are not
+    // permitted") are dropped and the request sent again. A 400 naming no
+    // field gets one retry without any of them, which counts as a rejection
+    // only if that retry then works. Nothing has been shown at that point.
+    let (result, support) = run_with_reasoning(
+        &client,
+        &url,
+        &api_key,
+        &body,
+        streaming,
+        limits,
+        reasoning_effort,
+        reasoning_formats,
+        &mut registration.cancel,
+        &mut emit,
+    )
+    .await;
+    if let Some((accepted, rejected)) = support {
+        let _ = on_event.send(ChatStreamEvent::ReasoningSupport { accepted, rejected });
+    }
 
     // Saved by the backend itself, before this command returns, so it never
     // depends on the frontend relaying it back (see chat_db/history.rs). The
@@ -702,5 +840,165 @@ mod tests {
         let plain = json!({ "role": "user", "content": "hi" });
         let message: WireChatMessage = serde_json::from_value(plain.clone()).unwrap();
         assert_eq!(serde_json::to_value(&message).unwrap(), plain);
+    }
+}
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+
+    #[test]
+    fn effort_in_each_format() {
+        let mut body = serde_json::json!({});
+        let all: Vec<String> = REASONING_FIELDS.iter().map(|s| s.to_string()).collect();
+        apply_reasoning(&mut body, ReasoningEffort::High, &all);
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+        let mut off = serde_json::json!({});
+        apply_reasoning(&mut off, ReasoningEffort::None, &["reasoning".into(), "chat_template_kwargs".into()]);
+        assert_eq!(off["reasoning"]["enabled"], false);
+        assert_eq!(off["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(off.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn rejected_fields_are_found_in_provider_errors() {
+        // OpenAI
+        let openai = r#"{"error":{"message":"Unrecognized request argument supplied: chat_template_kwargs","type":"invalid_request_error"}}"#;
+        assert!(mentions_field(openai, "chat_template_kwargs"));
+        assert!(!mentions_field(openai, "reasoning"));
+        let unsupported = "Unsupported parameter: 'reasoning_effort' is not supported with this model.";
+        assert!(mentions_field(unsupported, "reasoning_effort"));
+        assert!(!mentions_field(unsupported, "reasoning"), "not inside reasoning_effort");
+        // pydantic-style servers (Mistral, some gateways)
+        let pydantic = r#"{"detail":[{"type":"extra_forbidden","loc":["body","reasoning"],"msg":"Extra inputs are not permitted"}]}"#;
+        assert!(mentions_field(pydantic, "reasoning"));
+        assert!(!mentions_field(pydantic, "reasoning_effort"));
+        assert!(!mentions_field("Bad Request", "reasoning"));
+    }
+
+    /// A strict provider: refuses any request containing one of `refused`
+    /// (naming it, or with a bare 400 when `name_it` is false), else replies.
+    /// Returns the URL and every request body it saw.
+    async fn strict_provider(
+        refused: &'static [&'static str],
+        name_it: bool,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 65536];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body: serde_json::Value = raw
+                    .split("\r\n\r\n")
+                    .nth(1)
+                    .and_then(|b| serde_json::from_str(b).ok())
+                    .unwrap_or_default();
+                let bad = refused.iter().find(|f| body.get(**f).is_some()).copied();
+                log.lock().unwrap().push(body);
+                let reply = match bad {
+                    Some(field) => {
+                        let msg = if name_it {
+                            format!(r#"{{"error":{{"message":"Unrecognized request argument supplied: {field}"}}}}"#)
+                        } else {
+                            r#"{"error":{"message":"Bad Request"}}"#.to_string()
+                        };
+                        format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}", msg.len())
+                    }
+                    None => "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string(),
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (url, seen)
+    }
+
+    async fn send(url: &str, formats: &[&str]) -> (bool, Option<(Vec<String>, Vec<String>)>) {
+        let client = Client::new();
+        let body = serde_json::json!({ "model": "m", "messages": [] });
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        std::mem::forget(tx);
+        let limits = crate::chat_request::Limits {
+            first_byte: std::time::Duration::from_secs(2),
+            idle: std::time::Duration::from_secs(2),
+            overall: std::time::Duration::from_secs(5),
+        };
+        let mut events = Vec::new();
+        let (result, learned) = run_with_reasoning(
+            &client,
+            url,
+            "k",
+            &body,
+            true,
+            limits,
+            Some(ReasoningEffort::High),
+            formats.iter().map(|s| s.to_string()).collect(),
+            &mut rx,
+            &mut |e| events.push(e),
+        )
+        .await;
+        (result.is_ok(), learned)
+    }
+
+    #[tokio::test]
+    async fn a_rejected_field_is_dropped_and_the_rest_kept() {
+        // Like OpenAI: refuses chat_template_kwargs by name.
+        let (url, seen) = strict_provider(&["chat_template_kwargs"], true).await;
+        let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
+        assert!(ok);
+        let (accepted, rejected) = learned.unwrap();
+        assert_eq!(accepted, ["reasoning_effort", "reasoning"]);
+        assert_eq!(rejected, ["chat_template_kwargs"]);
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "one refusal, one retry");
+        assert!(bodies[1].get("chat_template_kwargs").is_none() && bodies[1]["reasoning_effort"] == "high");
+    }
+
+    #[tokio::test]
+    async fn several_rejections_one_at_a_time() {
+        let (url, seen) = strict_provider(&["reasoning", "chat_template_kwargs"], true).await;
+        let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
+        assert!(ok);
+        let (accepted, mut rejected) = learned.unwrap();
+        rejected.sort();
+        assert_eq!(accepted, ["reasoning_effort"]);
+        assert_eq!(rejected, ["chat_template_kwargs", "reasoning"]);
+        assert_eq!(seen.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_bare_400_strips_everything_once() {
+        // A non-reasoning model behind a server that only says "Bad Request".
+        let (url, seen) = strict_provider(&["reasoning_effort", "reasoning", "chat_template_kwargs"], false).await;
+        let (ok, learned) = send(&url, &["reasoning_effort", "reasoning"]).await;
+        assert!(ok);
+        let (accepted, rejected) = learned.unwrap();
+        assert!(accepted.is_empty());
+        assert_eq!(rejected, ["reasoning_effort", "reasoning"]);
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[1].get("reasoning_effort").is_none() && bodies[1].get("reasoning").is_none());
+    }
+
+    #[tokio::test]
+    async fn everything_accepted_means_one_request() {
+        let (url, seen) = strict_provider(&[], true).await;
+        let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
+        assert!(ok);
+        assert_eq!(learned.unwrap().0.len(), 3);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn nothing_requested_nothing_learned() {
+        let (url, _) = strict_provider(&[], true).await;
+        let (ok, learned) = send(&url, &[]).await;
+        assert!(ok && learned.is_none());
     }
 }

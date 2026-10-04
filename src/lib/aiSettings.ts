@@ -1,3 +1,4 @@
+import { settingOf } from './reasoning';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelProfile, ModelSelection, Provider, ProviderModel } from '../types';
 import { DEFAULT_PERMISSIONS, normalizePermissions, type AgentPermissions } from './permissions';
@@ -153,6 +154,7 @@ export function resolveProfile(
     contextTokens: model.contextOverride ?? model.contextLength,
     noTools: !!model.noTools,
     firstByteTimeoutMs: model.firstTokenTimeoutSec ? model.firstTokenTimeoutSec * 1000 : undefined,
+    reasoning: settingOf(model),
   };
 }
 

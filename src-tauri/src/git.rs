@@ -12,6 +12,15 @@ use git2::{
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Git commands run on a worker thread. As plain commands they ran on the
+/// app's main thread, so a slow commit (hashing every changed file), or a
+/// push waiting on the network, froze the whole window.
+async fn off_main_thread<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GitFile {
     pub path: String,
@@ -151,7 +160,11 @@ fn compute_ahead_behind(repo: &Repository) -> Option<(usize, usize)> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn git_status(path: String) -> Result<GitStatus, String> {
+pub async fn git_status(path: String) -> Result<GitStatus, String> {
+    off_main_thread(move || git_status_blocking(path)).await
+}
+
+pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
     let repo = open_repo(&path)?;
 
     let branch = match repo.head() {
@@ -212,7 +225,11 @@ pub fn git_status(path: String) -> Result<GitStatus, String> {
 }
 
 #[tauri::command]
-pub fn git_branches(path: String) -> Result<Vec<String>, String> {
+pub async fn git_branches(path: String) -> Result<Vec<String>, String> {
+    off_main_thread(move || git_branches_blocking(path)).await
+}
+
+pub fn git_branches_blocking(path: String) -> Result<Vec<String>, String> {
     let repo = open_repo(&path)?;
     let mut names = Vec::new();
 
@@ -232,7 +249,11 @@ pub fn git_branches(path: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub fn git_checkout(path: String, branch: String) -> Result<(), String> {
+pub async fn git_checkout(path: String, branch: String) -> Result<(), String> {
+    off_main_thread(move || git_checkout_blocking(path, branch)).await
+}
+
+pub fn git_checkout_blocking(path: String, branch: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
 
     let (object, reference) = repo
@@ -250,7 +271,11 @@ pub fn git_checkout(path: String, branch: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_commit(path: String, message: String) -> Result<(), String> {
+pub async fn git_commit(path: String, message: String) -> Result<(), String> {
+    off_main_thread(move || git_commit_blocking(path, message)).await
+}
+
+pub fn git_commit_blocking(path: String, message: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
     let mut index = repo.index().map_err(|e| e.to_string())?;
 
@@ -288,7 +313,11 @@ pub fn git_commit(path: String, message: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_fetch(path: String) -> Result<(), String> {
+pub async fn git_fetch(path: String) -> Result<(), String> {
+    off_main_thread(move || git_fetch_blocking(path)).await
+}
+
+pub fn git_fetch_blocking(path: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
     let remote_name = default_remote_name(&repo)?;
     let mut remote = repo.find_remote(&remote_name).map_err(|e| e.to_string())?;
@@ -310,8 +339,12 @@ pub fn git_fetch(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_pull(path: String) -> Result<(), String> {
-    git_fetch(path.clone())?;
+pub async fn git_pull(path: String) -> Result<(), String> {
+    off_main_thread(move || git_pull_blocking(path)).await
+}
+
+pub fn git_pull_blocking(path: String) -> Result<(), String> {
+    git_fetch_blocking(path.clone())?;
 
     let repo = open_repo(&path)?;
     let head = repo.head().map_err(|e| e.to_string())?;
@@ -372,7 +405,11 @@ pub fn git_pull(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_push(path: String) -> Result<(), String> {
+pub async fn git_push(path: String) -> Result<(), String> {
+    off_main_thread(move || git_push_blocking(path)).await
+}
+
+pub fn git_push_blocking(path: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
     let head = repo.head().map_err(|e| e.to_string())?;
 
@@ -418,7 +455,11 @@ pub fn git_push(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_init(path: String) -> Result<(), String> {
+pub async fn git_init(path: String) -> Result<(), String> {
+    off_main_thread(move || git_init_blocking(path)).await
+}
+
+pub fn git_init_blocking(path: String) -> Result<(), String> {
     Repository::init(&path).map_err(|e| format!("Failed to initialize repository: {e}"))?;
     Ok(())
 }
@@ -449,7 +490,11 @@ fn base_blob<'r>(repo: &'r Repository, file: &str) -> Result<Option<git2::Blob<'
 /// The file's earlier version (see base_blob), for the editor's change marks.
 /// `file` is relative to the repository's working folder. None: new file.
 #[tauri::command]
-pub fn git_base_content(path: String, file: String) -> Result<Option<String>, String> {
+pub async fn git_base_content(path: String, file: String) -> Result<Option<String>, String> {
+    off_main_thread(move || git_base_content_blocking(path, file)).await
+}
+
+pub fn git_base_content_blocking(path: String, file: String) -> Result<Option<String>, String> {
     let repo = open_repo(&path)?;
     let blob = base_blob(&repo, &file)?;
     let content = match blob {
@@ -484,7 +529,11 @@ fn backup_name(path: &std::path::Path) -> PathBuf {
 /// the trash first, so a revert can itself be undone; a new file is moved to
 /// the trash, since there is no earlier version.
 #[tauri::command]
-pub fn git_revert_file(path: String, file: String) -> Result<RevertOutcome, String> {
+pub async fn git_revert_file(path: String, file: String) -> Result<RevertOutcome, String> {
+    off_main_thread(move || git_revert_file_blocking(path, file)).await
+}
+
+pub fn git_revert_file_blocking(path: String, file: String) -> Result<RevertOutcome, String> {
     let repo = open_repo(&path)?;
     let workdir = repo.workdir().ok_or("the repository has no working folder")?.to_path_buf();
     let rel = std::path::Path::new(&file);
@@ -574,8 +623,8 @@ mod revert_tests {
     fn unstaged_change_goes_back_to_the_staged_version() {
         let (dir, _repo) = repo_with_commit();
         fs::write(dir.join("src/a.rs"), "fn a() { changed }\n").unwrap();
-        assert_eq!(git_base_content(path(&dir), "src/a.rs".into()).unwrap().as_deref(), Some("fn a() {}\n"));
-        let out = git_revert_file(path(&dir), "src/a.rs".into()).unwrap();
+        assert_eq!(git_base_content_blocking(path(&dir), "src/a.rs".into()).unwrap().as_deref(), Some("fn a() {}\n"));
+        let out = git_revert_file_blocking(path(&dir), "src/a.rs".into()).unwrap();
         assert_eq!(fs::read_to_string(dir.join("src/a.rs")).unwrap(), "fn a() {}\n");
         assert!(out.backed_up && !out.removed);
         assert!(!dir.join("src/a (before revert).rs").exists(), "the copy went to the trash");
@@ -585,7 +634,7 @@ mod revert_tests {
     fn deleted_file_comes_back() {
         let (dir, _repo) = repo_with_commit();
         fs::remove_file(dir.join("b.txt")).unwrap();
-        let out = git_revert_file(path(&dir), "b.txt".into()).unwrap();
+        let out = git_revert_file_blocking(path(&dir), "b.txt".into()).unwrap();
         assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
         assert!(!out.backed_up, "nothing to back up");
     }
@@ -597,10 +646,10 @@ mod revert_tests {
         let mut index = repo.index().unwrap();
         index.add_path(std::path::Path::new("b.txt")).unwrap();
         index.write().unwrap();
-        assert_eq!(git_base_content(path(&dir), "b.txt".into()).unwrap().as_deref(), Some("b\n"));
-        git_revert_file(path(&dir), "b.txt".into()).unwrap();
+        assert_eq!(git_base_content_blocking(path(&dir), "b.txt".into()).unwrap().as_deref(), Some("b\n"));
+        git_revert_file_blocking(path(&dir), "b.txt".into()).unwrap();
         assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
-        let st = git_status(path(&dir)).unwrap();
+        let st = git_status_blocking(path(&dir)).unwrap();
         assert!(st.files.iter().all(|f| f.path != "b.txt"), "clean again: {:?}", st.files);
     }
 
@@ -612,7 +661,7 @@ mod revert_tests {
         index.add_path(std::path::Path::new("b.txt")).unwrap();
         index.write().unwrap();
         fs::write(dir.join("b.txt"), "staged\nand more\n").unwrap();
-        git_revert_file(path(&dir), "b.txt".into()).unwrap();
+        git_revert_file_blocking(path(&dir), "b.txt".into()).unwrap();
         assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "staged\n");
     }
 
@@ -620,30 +669,30 @@ mod revert_tests {
     fn new_files_go_to_the_trash() {
         let (dir, repo) = repo_with_commit();
         fs::write(dir.join("new.txt"), "x").unwrap();
-        assert_eq!(git_base_content(path(&dir), "new.txt".into()).unwrap(), None);
-        let out = git_revert_file(path(&dir), "new.txt".into()).unwrap();
+        assert_eq!(git_base_content_blocking(path(&dir), "new.txt".into()).unwrap(), None);
+        let out = git_revert_file_blocking(path(&dir), "new.txt".into()).unwrap();
         assert!(out.removed && !dir.join("new.txt").exists());
         // Added to the index but never committed: same, and out of the index.
         fs::write(dir.join("added.txt"), "y").unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(std::path::Path::new("added.txt")).unwrap();
         index.write().unwrap();
-        git_revert_file(path(&dir), "added.txt".into()).unwrap();
+        git_revert_file_blocking(path(&dir), "added.txt".into()).unwrap();
         assert!(!dir.join("added.txt").exists());
-        assert!(git_status(path(&dir)).unwrap().files.is_empty());
+        assert!(git_status_blocking(path(&dir)).unwrap().files.is_empty());
     }
 
     #[test]
     fn refuses_paths_outside_the_repository() {
         let (dir, _repo) = repo_with_commit();
-        assert!(git_revert_file(path(&dir), "../etc/passwd".into()).is_err());
+        assert!(git_revert_file_blocking(path(&dir), "../etc/passwd".into()).is_err());
     }
 
     #[test]
     fn status_reports_workdir_and_staging() {
         let (dir, _repo) = repo_with_commit();
         fs::write(dir.join("b.txt"), "changed\n").unwrap();
-        let st = git_status(path(&dir.join("src"))).unwrap();
+        let st = git_status_blocking(path(&dir.join("src"))).unwrap();
         assert_eq!(st.workdir, path(&dir).trim_end_matches('/'));
         let b = st.files.iter().find(|f| f.path == "b.txt").unwrap();
         assert!(b.unstaged && !b.staged);

@@ -1,5 +1,6 @@
 // GitPanel.tsx
-import { createSignal, createMemo, onMount, For, Show, createEffect } from 'solid-js';
+import { createSignal, createMemo, onMount, onCleanup, For, Show, createEffect } from 'solid-js';
+import { listen } from '@tauri-apps/api/event';
 import { createVirtualizer, Virtualizer } from '@tanstack/solid-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { GitFileStatusCode, GitPanelPhase, GitStatus } from '../types';
@@ -298,6 +299,26 @@ export function GitPanel(props: GitPanelProps) {
   const commitButtonText = createMemo(() => {
     const s = status();
     return s && s.ahead > 0 ? 'Push' : 'Commit';
+  });
+
+  /*
+   * Git's own activity (a commit, a checkout, also from a terminal): the
+   * watcher reports it once per burst ("git-changed"), and the status is
+   * read again unless an operation of this panel is running anyway.
+   */
+  onMount(() => {
+    let stop: (() => void) | undefined;
+    let disposed = false;
+    void listen('git-changed', () => {
+      if (!busy() && phase() === 'ready') void refreshStatus();
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stop = unlisten;
+    });
+    onCleanup(() => {
+      disposed = true;
+      stop?.();
+    });
   });
 
   onMount(() => {

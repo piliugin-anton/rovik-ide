@@ -20,6 +20,7 @@ import type {
   DialogSummary,
   FileSuggestion,
   ModelProfile,
+  OpenAIChatOptions,
   ModelSelection,
   Provider,
   ToolApproval,
@@ -76,6 +77,15 @@ import {
 } from '../lib/questions';
 import { dismiss, notify } from '../lib/notifications';
 import ModeSelector from './ModeSelector';
+import EffortSelector from './EffortSelector';
+import {
+  formatsToSend,
+  loadEfforts,
+  mergeLearned,
+  reasoningStatus,
+  saveEfforts,
+  type Effort,
+} from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
 import { describeTodo, isSettled, latestChecklist, parseTodo } from '../lib/todo';
 import {
@@ -292,6 +302,73 @@ export default function ChatPanel(props: ChatProps) {
 
   // Provider + model resolved into what the send path needs.
   const activeProfile = createMemo(() => resolveProfile(providers(), selection()));
+
+  /*
+   * Reasoning effort (lib/reasoning.ts): chosen per model in the chat, sent
+   * only in the forms the model's provider accepts, which is learned from
+   * the replies and kept with the model in the settings.
+   */
+  const [efforts, setEfforts] = createSignal<Record<string, Effort>>(loadEfforts());
+  const effortFor = (profileId: string | undefined): Effort =>
+    (profileId && efforts()[profileId]) || 'default';
+  function setEffort(effort: Effort) {
+    const id = activeProfile()?.id;
+    if (!id) return;
+    const next = { ...efforts(), [id]: effort };
+    setEfforts(next);
+    saveEfforts(next);
+  }
+  /** The effort selector shows unless the model is known not to take one. */
+  const showEffort = createMemo(() => {
+    const p = activeProfile();
+    return !!p && reasoningStatus(p.reasoning) !== 'no';
+  });
+
+  /** The effort for a request: nothing for "Default", or when no form is worth sending. */
+  function reasoningOptions(profile: ModelProfile): OpenAIChatOptions | undefined {
+    const effort = effortFor(profile.id);
+    if (effort === 'default') return undefined;
+    const formats = formatsToSend(profile.reasoning);
+    if (formats.length === 0) return undefined;
+    return { reasoning_effort: effort, reasoning_formats: formats };
+  }
+
+  /** Stores what a reply showed about a model's reasoning support. */
+  function learnReasoning(
+    profileId: string,
+    outcome: { accepted?: string[]; rejected?: string[]; reasons?: boolean }
+  ) {
+    const split = profileId.indexOf('::');
+    const providerId = profileId.slice(0, split);
+    const modelId = profileId.slice(split + 2);
+    let changed = false;
+    const next = providers().map((p) => {
+      if (p.id !== providerId) return p;
+      return {
+        ...p,
+        models: p.models.map((m) => {
+          if (m.id !== modelId) return m;
+          const setting = m.reasoning ?? { choice: 'auto' as const };
+          let learned = setting.learned;
+          if (outcome.accepted || outcome.rejected) {
+            learned = mergeLearned(learned, outcome.accepted ?? [], outcome.rejected ?? []);
+          }
+          if (outcome.reasons && !learned?.reasons) {
+            learned = {
+              ...(learned ?? { accepted: [], rejected: [], at: Date.now() }),
+              reasons: true,
+            };
+          }
+          if (learned === setting.learned) return m;
+          changed = true;
+          return { ...m, reasoning: { ...setting, learned } };
+        }),
+      };
+    });
+    if (!changed) return;
+    setProviders(next);
+    persistAiSettings(next, selection());
+  }
 
   const activeDialog = () => store.state.active;
   const activeChat = () => {
@@ -1946,6 +2023,23 @@ export default function ChatPanel(props: ChatProps) {
       return;
     }
     const replyStartedAt = Date.now();
+    /** The model's reasoning for this reply, shown apart from it. */
+    let reasoningText = '';
+    let reasoningStartedAt = 0;
+    let reasoningEndedAt = 0;
+    let reasoningSeen = false;
+    let pendingReasoningRender = false;
+    /** The message's meta with the reasoning added, for finalizing it. */
+    const withReasoning = (meta?: ChatMessage['meta']): ChatMessage['meta'] | undefined =>
+      reasoningText
+        ? {
+            ...(meta ?? {}),
+            reasoning: {
+              text: reasoningText,
+              ms: (reasoningEndedAt || Date.now()) - reasoningStartedAt,
+            },
+          }
+        : meta;
     /** Where a repeating reply was cut (lib/repetition.ts), once noticed. */
     let repetitionCut: number | null = null;
     let repetitionCheckedAt = 0;
@@ -2031,11 +2125,37 @@ export default function ChatPanel(props: ChatProps) {
 
     channel.onmessage = (event) => {
       if (!isMounted || detached) return;
-      if (event.type === 'Delta' || event.type.startsWith('ToolCall')) noteOutput();
+      if (event.type === 'Delta' || event.type === 'Reasoning' || event.type.startsWith('ToolCall'))
+        noteOutput();
 
       switch (event.type) {
+        case 'Reasoning':
+          markOutput();
+          if (!reasoningText) reasoningStartedAt = Date.now();
+          reasoningText += event.content;
+          if (!reasoningSeen) {
+            reasoningSeen = true;
+            learnReasoning(profile.id, { reasons: true });
+          }
+          if (!pendingReasoningRender) {
+            pendingReasoningRender = true;
+            requestAnimationFrame(() => {
+              pendingReasoningRender = false;
+              if (!isMounted) return;
+              const msg = store.messagesOf(dialogId).find((m) => m.id === pendingMsg.id);
+              store.patchMessage(dialogId, pendingMsg.id, {
+                meta: { ...(msg?.meta ?? {}), reasoning: { text: reasoningText } },
+              });
+            });
+          }
+          break;
+        case 'ReasoningSupport':
+          learnReasoning(profile.id, { accepted: event.accepted, rejected: event.rejected });
+          break;
         case 'Delta':
           markOutput();
+          // The reply started: the thinking before it is over.
+          if (reasoningText && !reasoningEndedAt) reasoningEndedAt = Date.now();
           assistantText += event.content;
           // Every couple of kilobytes: is it stuck repeating itself?
           if (!repetitionCut && assistantText.length - repetitionCheckedAt > 1500) {
@@ -2146,6 +2266,7 @@ export default function ChatPanel(props: ChatProps) {
                     .filter(Boolean)
                     .join('\n\n')
                 : run.projectContext,
+            options: reasoningOptions(profile),
           })
             .then(() => untilStreamEnd(stream.ended))
             .then(() => 'done' as const),
@@ -2205,6 +2326,7 @@ export default function ChatPanel(props: ChatProps) {
       await store.finalizeMessage(dialogId, pendingMsg.id, {
         content: `${assistantText.slice(0, repetitionCut).trimEnd()}\n\n_[Stopped here: the reply kept repeating itself.]_`,
         toolCalls: [],
+        meta: withReasoning(),
       });
       opts.onSettled?.(true);
       logAgent({
@@ -2255,7 +2377,7 @@ export default function ChatPanel(props: ChatProps) {
         await store.finalizeMessage(dialogId, pendingMsg.id, {
           content: assistantText,
           toolCalls: [],
-          meta: { interrupted: stored },
+          meta: withReasoning({ interrupted: stored }),
         });
         opts.onSettled?.(true);
       } else {
@@ -2271,7 +2393,15 @@ export default function ChatPanel(props: ChatProps) {
       return;
     }
 
-    await store.finalizeMessage(dialogId, pendingMsg.id, { content: assistantText, toolCalls });
+    // The reply's meta so far (with its reasoning): finalizing keeps only what it's given.
+    const finishedMeta = withReasoning(
+      store.messagesOf(dialogId).find((m) => m.id === pendingMsg.id)?.meta
+    );
+    await store.finalizeMessage(dialogId, pendingMsg.id, {
+      content: assistantText,
+      toolCalls,
+      meta: finishedMeta,
+    });
     opts.onSettled?.(true);
 
     if (stopRequested) {
@@ -3593,13 +3723,20 @@ export default function ChatPanel(props: ChatProps) {
         </Show>
       </div>
       <div class="chat-model-select">
-        <ModeSelector />
-        <ModelPicker
-          providers={providers()}
-          selection={selection()}
-          onSelect={handleModelChange}
-          onOpenSettings={() => setSettingsPage('providers')}
-        />
+        <div class="chat-model-select-row">
+          <ModeSelector />
+        </div>
+        <div class="chat-model-select-row">
+          <ModelPicker
+            providers={providers()}
+            selection={selection()}
+            onSelect={handleModelChange}
+            onOpenSettings={() => setSettingsPage('providers')}
+          />
+          <Show when={showEffort()}>
+            <EffortSelector value={effortFor(activeProfile()?.id)} onChange={setEffort} />
+          </Show>
+        </div>
       </div>
       <Show when={settingsPage()} keyed>
         {(page) => (
