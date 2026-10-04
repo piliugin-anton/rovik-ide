@@ -827,11 +827,16 @@ export default function ChatPanel(props: ChatProps) {
     if (!startLocation) return;
 
     /*
-     * Delete from the '@' up to the caret.
+     * Delete the '@' and the query typed after it. Located from their known
+     * offsets, not the caret: if focus left the input (Tab onto the list),
+     * refocusing puts the caret at the start in WebKit, and a range "from
+     * the '@' to the caret" then removed nothing, leaving "@ind" behind.
      */
+    const endLocation = findTextOffset(container, triggerStart + 1 + fileQuery().length);
     const deleteRange = document.createRange();
     deleteRange.setStart(startLocation.node, startLocation.offset);
-    deleteRange.setEnd(selection.focusNode ?? container, selection.focusOffset);
+    if (endLocation) deleteRange.setEnd(endLocation.node, endLocation.offset);
+    else deleteRange.setEnd(selection.focusNode ?? container, selection.focusOffset);
     deleteRange.deleteContents();
 
     /*
@@ -997,8 +1002,17 @@ export default function ChatPanel(props: ChatProps) {
   ]);
 
   function handleSuggestionKeys(e: KeyboardEvent) {
-    if (!fileSuggestionsOpen() || !CARET_KEYS.has(e.key) || e.ctrlKey || e.metaKey || e.altKey)
+    if (!fileSuggestionsOpen() || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Tab completes with the selected file, as in editors and terminals,
+    // instead of moving focus out of the input (onto the list).
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      e.stopPropagation();
+      const suggestion = fileSuggestions()[selectedSuggestionIndex()];
+      if (suggestion && !e.shiftKey) acceptFileSuggestion(suggestion);
       return;
+    }
+    if (!CARET_KEYS.has(e.key)) return;
     e.preventDefault();
     e.stopPropagation();
     const count = fileSuggestions().length;
@@ -3271,6 +3285,8 @@ export default function ChatPanel(props: ChatProps) {
                     }}
                     role="option"
                     aria-selected={index() === selectedSuggestionIndex()}
+                    // Never focusable: the input keeps focus and its caret.
+                    tabIndex={-1}
                     onMouseDown={(e) => {
                       e.preventDefault();
                     }}
