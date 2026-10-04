@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import {
   Accessor,
   createEffect,
@@ -160,6 +161,8 @@ import {
   type ReviewHunk,
 } from '../lib/approvals';
 import { readFileContent, toolEditFile } from '../lib/commands';
+
+const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
 
 const NEW_CHAT_TITLE = 'New Chat';
 
@@ -461,42 +464,78 @@ export default function ChatPanel(props: ChatProps) {
 
     return [
       ...(selectionMatches ? [selection] : []),
-      ...props
-        .files()
-        // Skip ignored rows entirely — they should never be referenceable.
-        .filter((file) => !file.ignored)
-        // Only suggest actual files, not directories.
-        .filter((file) => !file.isDir)
+      ...referenceableFiles()
         .filter((file) => {
-          const path = file.path.toLowerCase();
-          const name = file.name.toLowerCase();
-
           if (!query) return true;
-
-          return name.includes(query) || path.includes(query);
+          return (
+            file.name.toLowerCase().includes(query) ||
+            file.relativePath.toLowerCase().includes(query)
+          );
         })
         .sort((a, b) => {
-          const aName = a.name.toLowerCase();
-          const bName = b.name.toLowerCase();
-
           // Prefer filename matches over path-only matches.
-          const aNameMatch = aName.includes(query);
-          const bNameMatch = bName.includes(query);
-
-          if (aNameMatch !== bNameMatch) {
-            return aNameMatch ? -1 : 1;
-          }
-
-          return a.path.localeCompare(b.path);
+          const aNameMatch = a.name.toLowerCase().includes(query);
+          const bNameMatch = b.name.toLowerCase().includes(query);
+          if (aNameMatch !== bNameMatch) return aNameMatch ? -1 : 1;
+          return a.relativePath.localeCompare(b.relativePath);
         })
-        .slice(0, 50)
-        .map((file) => ({
-          id: file.id,
-          path: file.path,
-          name: file.name,
-          relativePath: toRelativePath(file.path, props.rootPath()),
-        })),
+        .slice(0, 50),
     ];
+  });
+
+  /*
+   * Every file in the project, for "@": the backend lists them all
+   * (.gitignore respected). The file tree only knows folders it has loaded,
+   * so in a newly opened project it offered just the root's files. Fetched
+   * when "@" opens, at most every few seconds, merged with the tree's.
+   */
+  const [projectFiles, setProjectFiles] = createSignal<{
+    root: string;
+    files: string[];
+    at: number;
+  } | null>(null);
+  let projectFilesLoading = false;
+  function refreshProjectFiles() {
+    const root = props.rootPath();
+    const cached = projectFiles();
+    if (!root || projectFilesLoading) return;
+    if (cached && cached.root === root && Date.now() - cached.at < 5000) return;
+    projectFilesLoading = true;
+    invoke<{ files: string[]; truncated: boolean }>('list_project_files', { root })
+      .then((r) => setProjectFiles({ root, files: r.files, at: Date.now() }))
+      .catch((err) => console.error('Listing project files failed:', err))
+      .finally(() => (projectFilesLoading = false));
+  }
+  createEffect(() => {
+    if (fileSuggestionsOpen()) refreshProjectFiles();
+  });
+
+  const referenceableFiles = createMemo<FileSuggestion[]>(() => {
+    const root = props.rootPath();
+    const byPath = new Map<string, FileSuggestion>();
+    // The tree's rows first: they carry the ids the rest of the app uses.
+    for (const file of props.files()) {
+      if (file.isDir || file.ignored) continue;
+      byPath.set(file.path, {
+        id: file.id,
+        path: file.path,
+        name: file.name,
+        relativePath: toRelativePath(file.path, root),
+      });
+    }
+    const listed = projectFiles();
+    if (listed && listed.root === root) {
+      for (const path of listed.files) {
+        if (byPath.has(path)) continue;
+        byPath.set(path, {
+          id: path,
+          path,
+          name: path.split(/[\\/]/).pop() ?? path,
+          relativePath: toRelativePath(path, root),
+        });
+      }
+    }
+    return [...byPath.values()];
   });
 
   /*
@@ -717,6 +756,7 @@ export default function ChatPanel(props: ChatProps) {
 
   /** Builds the non-editable "file reference" chip used in the composer. */
   function createFileChip(suggestion: FileSuggestion): HTMLSpanElement {
+    knownReferences.set(referenceKey(suggestion), suggestion);
     const chip = document.createElement('span');
     chip.className = 'chat-file-reference';
     chip.contentEditable = 'false';
@@ -759,6 +799,8 @@ export default function ChatPanel(props: ChatProps) {
       e.stopPropagation();
       removeReferencedFile(referenceKey(suggestion));
       chip.remove();
+      setInput(readComposerText());
+      recordComposerHistory('other');
     });
 
     return chip;
@@ -827,6 +869,7 @@ export default function ChatPanel(props: ChatProps) {
     setReferencedFiles((current) =>
       current.some((file) => referenceKey(file) === key) ? current : [...current, suggestion]
     );
+    recordComposerHistory('other');
 
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
@@ -898,6 +941,7 @@ export default function ChatPanel(props: ChatProps) {
     container.focus();
     selection?.removeAllRanges();
     selection?.addRange(range);
+    recordComposerHistory('other');
   }
 
   /** File references in the composer, in order, once each. */
@@ -930,6 +974,123 @@ export default function ChatPanel(props: ChatProps) {
       inputTextareaRef.innerHTML = '';
       if (focus) inputTextareaRef.focus();
     }
+    resetComposerHistory();
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Undo / redo in the composer
+   * -----------------------------------------------------------------------
+   *
+   * The composer keeps its own history instead of relying on the webview's:
+   * the app changes its content itself (reference chips, clearing after
+   * sending, drafts), which native contenteditable undo doesn't follow, and
+   * WebKitGTK's undo there isn't reliable. Snapshots of the content and the
+   * caret; typing is grouped into word-sized steps (a space or a pause
+   * starts a new one), and chips, pastes and deletions are steps of their own.
+   */
+  interface ComposerSnapshot {
+    html: string;
+    caret: number;
+  }
+  let composerHistory: ComposerSnapshot[] = [];
+  let composerHistoryAt = -1;
+  let lastStepKind: 'typing' | 'deleting' | 'other' = 'other';
+  let lastStepTime = 0;
+  let pastingText = false;
+  /** Every reference chip ever made, so a restored snapshot can rebuild them. */
+  const knownReferences = new Map<string, FileSuggestion>();
+  const HISTORY_STEPS = 200;
+  const GROUP_WITHIN_MS = 1000;
+
+  function composerSnapshot(): ComposerSnapshot | null {
+    const el = inputTextareaRef;
+    if (!el) return null;
+    const sel = window.getSelection();
+    const caret =
+      sel && sel.focusNode && el.contains(sel.focusNode)
+        ? getTextOffset(el, sel.focusNode, sel.focusOffset)
+        : (el.textContent ?? '').length;
+    return { html: el.innerHTML, caret };
+  }
+
+  function resetComposerHistory() {
+    composerHistory = [composerSnapshot() ?? { html: '', caret: 0 }];
+    composerHistoryAt = 0;
+    lastStepKind = 'other';
+  }
+
+  function recordComposerHistory(kind: 'typing' | 'deleting' | 'other') {
+    const snap = composerSnapshot();
+    if (!snap) return;
+    if (composerHistory.length === 0) composerHistory = [{ html: '', caret: 0 }];
+    const current = composerHistory[composerHistoryAt];
+    if (current && current.html === snap.html) {
+      current.caret = snap.caret;
+      return;
+    }
+    // A new change drops whatever could have been redone.
+    composerHistory = composerHistory.slice(0, composerHistoryAt + 1);
+    const now = Date.now();
+    const grouped =
+      kind !== 'other' &&
+      kind === lastStepKind &&
+      now - lastStepTime < GROUP_WITHIN_MS &&
+      composerHistoryAt > 0;
+    if (grouped) {
+      composerHistory[composerHistoryAt] = snap;
+    } else {
+      composerHistory.push(snap);
+      if (composerHistory.length > HISTORY_STEPS) composerHistory.shift();
+      composerHistoryAt = composerHistory.length - 1;
+    }
+    // Typing a space ends the word: the next letter starts a new step.
+    lastStepKind =
+      kind === 'typing' && /\s$/.test(snap.html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' '))
+        ? 'other'
+        : kind;
+    lastStepTime = now;
+  }
+
+  function applyComposerSnapshot(snap: ComposerSnapshot) {
+    const el = inputTextareaRef;
+    if (!el) return;
+    el.innerHTML = snap.html;
+    // Chips come back with their remove buttons (markup alone loses them).
+    for (const old of [...el.querySelectorAll<HTMLElement>('.chat-file-reference')]) {
+      const ref = knownReferences.get(old.dataset.ref ?? '');
+      if (ref) old.replaceWith(createFileChip(ref));
+    }
+    el.focus();
+    const at = findTextOffset(el, snap.caret);
+    const sel = window.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      if (at) range.setStart(at.node, at.offset);
+      else range.selectNodeContents(el);
+      range.collapse(!at ? false : true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    setFileSuggestionsOpen(false);
+    setInput(readComposerText());
+    setReferencedFiles(composerReferences());
+    lastStepKind = 'other';
+  }
+
+  function undoComposer() {
+    if (composerHistory.length === 0) resetComposerHistory();
+    // Text typed since the last step is saved first, so it can be redone.
+    recordComposerHistory('other');
+    if (composerHistoryAt <= 0) return;
+    composerHistoryAt--;
+    applyComposerSnapshot(composerHistory[composerHistoryAt]);
+  }
+
+  function redoComposer() {
+    if (composerHistoryAt >= composerHistory.length - 1) return;
+    composerHistoryAt++;
+    applyComposerSnapshot(composerHistory[composerHistoryAt]);
   }
 
   /*
@@ -993,7 +1154,7 @@ export default function ChatPanel(props: ChatProps) {
       .join('');
   }
 
-  function handleComposerInput(target: HTMLElement) {
+  function handleComposerInput(target: HTMLElement, inputType?: string, data?: string | null) {
     /*
      * Once the composer is visually empty, drop whatever markup is left
      * (stray <br>, empty styled <span>s). Otherwise WebKit keeps applying the
@@ -1004,6 +1165,16 @@ export default function ChatPanel(props: ChatProps) {
     }
 
     setInput(readComposerText());
+    recordComposerHistory(
+      pastingText
+        ? 'other'
+        : // A space belongs to the word it ends; the next letter starts a new step.
+          inputType === 'insertText' && data
+          ? 'typing'
+          : inputType?.startsWith('delete')
+            ? 'deleting'
+            : 'other'
+    );
 
     // Autocomplete works on raw text-node offsets, so keep using textContent here.
     const raw = target.textContent ?? '';
@@ -1023,7 +1194,13 @@ export default function ChatPanel(props: ChatProps) {
     const container = inputTextareaRef;
     if (!container || !text) return;
 
-    if (document.execCommand('insertText', false, text)) return;
+    // A paste is its own undo step, not part of the word being typed.
+    pastingText = true;
+    try {
+      if (document.execCommand('insertText', false, text)) return;
+    } finally {
+      pastingText = false;
+    }
 
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
@@ -1110,6 +1287,8 @@ export default function ChatPanel(props: ChatProps) {
     container.append(fragment);
 
     setInput(readComposerText());
+    // The restored draft is where undo starts.
+    resetComposerHistory();
     setReferencedFiles((current) => [
       ...current,
       ...files.filter((f) => !current.some((c) => referenceKey(c) === referenceKey(f))),
@@ -2204,7 +2383,11 @@ export default function ChatPanel(props: ChatProps) {
   async function verifyAtEnd(
     dialogId: string,
     run: AgentRun,
-    opts: { approved?: boolean } = {}
+    opts: {
+      approved?: boolean;
+      /** The record that waited for approval: updated in place, not a new one. */
+      recordId?: string;
+    } = {}
   ): Promise<string> {
     const p = permissions();
     const root = props.rootPath();
@@ -2248,7 +2431,14 @@ export default function ChatPanel(props: ChatProps) {
     run.writesSinceVerify = false;
     const round = run.verifyRounds;
     let meta: VerificationMeta = { ...base, round, status: 'running', checks: [] };
-    const update = await addVerificationRecord(dialogId, meta);
+    const update = opts.recordId
+      ? ((id: string) => {
+          const set = (next: VerificationMeta) =>
+            store.updateMeta(dialogId, id, { verification: next });
+          void set(meta);
+          return set;
+        })(opts.recordId)
+      : await addVerificationRecord(dialogId, meta);
 
     const results = await runChecks(root, checks, p, {
       changedFiles,
@@ -2316,7 +2506,8 @@ export default function ChatPanel(props: ChatProps) {
     const dialogId = activeDialogId();
     if (!dialogId || sending()) return;
     const list = store.messagesOf(dialogId);
-    const pending = list[list.length - 1]?.meta?.verification;
+    const record = list[list.length - 1];
+    const pending = record?.meta?.verification;
     if (!pending || pending.status !== 'needs-approval') return;
     listController?.followLatest();
     const currentUserContent = lastUserWireContent(dialogId);
@@ -2325,7 +2516,8 @@ export default function ChatPanel(props: ChatProps) {
       for (const f of pending.changedFiles) run.changedFiles.add(f);
       run.writesSinceVerify = true;
       run.verifyRounds = pending.round;
-      const outcome = await verifyAtEnd(dialogId, run, { approved: true });
+      // The waiting record becomes the running one, then the results.
+      const outcome = await verifyAtEnd(dialogId, run, { approved: true, recordId: record.id });
       if (outcome === 'continue') {
         await runAgentTurn(dialogId, { currentUserContent, run });
       } else {
@@ -2789,6 +2981,21 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    // Undo / redo in the composer (composerHistory).
+    const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+    const key = e.key.toLowerCase();
+    if (mod && !e.altKey && key === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) redoComposer();
+      else undoComposer();
+      return;
+    }
+    if (mod && !e.altKey && !IS_MAC && key === 'y') {
+      e.preventDefault();
+      redoComposer();
+      return;
+    }
+
     if (fileSuggestionsOpen()) {
       const suggestions = fileSuggestions();
 
@@ -2973,7 +3180,22 @@ export default function ChatPanel(props: ChatProps) {
             ref={inputTextareaRef as unknown as HTMLDivElement}
             class="chat-input-contenteditable"
             contenteditable
-            onInput={(e) => handleComposerInput(e.currentTarget)}
+            onInput={(e) =>
+              handleComposerInput(
+                e.currentTarget,
+                (e as InputEvent).inputType,
+                (e as InputEvent).data
+              )
+            }
+            // The webview's own undo (e.g. Edit menu on macOS) goes to ours too.
+            onBeforeInput={(e) => {
+              const type = (e as InputEvent).inputType;
+              if (type === 'historyUndo' || type === 'historyRedo') {
+                e.preventDefault();
+                if (type === 'historyUndo') undoComposer();
+                else redoComposer();
+              }
+            }}
             onPaste={handleComposerPaste}
             onDrop={handleComposerDrop}
             onKeyDown={handleKeyDown}

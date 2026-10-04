@@ -100,6 +100,7 @@ pub fn run() {
             git::git_revert_file,
             typings::nodejs::load_nodejs_project_typings,
             typings::sources::load_project_sources,
+            typings::sources::list_project_files,
             lsp::lsp_start,
             lsp::lsp_send,
             lsp::lsp_stop,
