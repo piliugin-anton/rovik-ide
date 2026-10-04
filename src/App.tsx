@@ -54,6 +54,7 @@ import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { notifyFileWritten, onFileWritten, onRevealEdit } from './lib/approvals';
 import { onAddToChat, onOpenFileRequest, setProjectFileResolver } from './lib/editorBridge';
 import { findSnippetLine } from './lib/codeLocation';
+import { isPlanFile, requestImplementPlan } from './lib/plans';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines } from './lib/lineDiff';
 import { isProjectSource, updateProjectSource } from './lib/intellisense';
@@ -474,6 +475,18 @@ export default function App() {
         : undefined;
     if (first) await openPathAtLine(abs, first.origStart);
     else await openPath(abs);
+  }
+
+  /**
+   * "Implement this plan" over a plan file: saves it, then hands its text to
+   * the chat, which starts the run in Agent mode (lib/plans.ts).
+   */
+  async function implementOpenPlan() {
+    const file = activeFile();
+    if (!file || !isPlanFile(file.path)) return;
+    if (file.dirty) await saveActiveFile();
+    setSidebarTab('chat');
+    requestImplementPlan({ path: file.path, content: file.content });
   }
 
   /** A reverted file: its tab shows the restored text (unless it has unsaved edits). */
@@ -1184,6 +1197,22 @@ export default function App() {
           onClose={closeFile}
         />
         <div class="editor-area">
+          {/* A plan from .rovik/plans/: edit it here, then implement it. */}
+          <Show when={activePath() && isPlanFile(activePath()!)}>
+            <div class="plan-editor-bar">
+              <span class="plan-editor-bar-text">
+                Plan. Edit it as you like; implementing uses this text, unsaved edits included.
+              </span>
+              <button
+                type="button"
+                class="chat-action-button primary"
+                onClick={() => void implementOpenPlan()}
+                title="Save the plan, then let the agent carry it out (Agent mode)"
+              >
+                Implement this plan
+              </button>
+            </div>
+          </Show>
           <Show
             when={activePath()}
             keyed

@@ -32,6 +32,7 @@ import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
 import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 import VerificationRecord from './VerificationRecord';
+import { requestOpenFile } from '../lib/editorBridge';
 
 const BOTTOM_TOLERANCE_PX = 8;
 /** A scroll this soon after wheel/touch/key/scrollbar input is the user's. */
@@ -611,6 +612,22 @@ export default function MessageList(props: {
                     </button>
                     <span class="chat-plan-hint">or reply to change it</span>
                   </div>
+                </Show>
+                <Show when={m.meta?.planFile}>
+                  {(file) => (
+                    <div class="chat-plan-hint chat-plan-file">
+                      Saved as{' '}
+                      <button
+                        type="button"
+                        class="link-button"
+                        title={`${file()}: edit it, then implement it from the editor or here`}
+                        onClick={() => requestOpenFile({ path: file() })}
+                      >
+                        {file().split(/[\\/]/).slice(-3).join('/')}
+                      </button>
+                      , where you can edit it before implementing.
+                    </div>
+                  )}
                 </Show>
 
                 <Show when={m.meta?.verification}>

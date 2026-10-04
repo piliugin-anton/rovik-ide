@@ -184,7 +184,9 @@ export interface ToolMeta {
    * A user-role message the IDE wrote (check failures for the agent). Not
    * shown as a user message, and never mistaken for the user's request.
    */
-  harness?: 'verification';
+  harness?: 'verification' | 'checklist';
+  /** A Plan-mode plan: the file it's saved in (lib/plans.ts). */
+  planFile?: string;
   /** A user message: the mode it was sent in (lib/chatMode.ts). */
   mode?: import('./lib/chatMode').ChatMode;
   /** An ask_user result: the questions and how they were answered. */

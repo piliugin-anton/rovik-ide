@@ -13,6 +13,7 @@ import {
 } from './commands';
 import type { CommandOutput, EditFileArgs } from './commands';
 import { PLAN_BLOCKED_TOOLS, type ChatMode } from './chatMode';
+import { TODO_SCHEMA } from './todo';
 import { capOutput, focusFailures, stripAnsi } from './commandOutput';
 
 /**
@@ -291,7 +292,8 @@ export function agentToolsFor(opts: {
     ...WEB_TOOL_SCHEMAS,
     ...(opts.vision ? [SCREENSHOT_TOOL_SCHEMA] : []),
   ];
-  if (opts.mode !== 'plan') return all;
+  // Agent mode: the checklist (lib/todo.ts) on top of the project tools.
+  if (opts.mode !== 'plan') return opts.hasProject ? [...all, TODO_SCHEMA] : all;
   const name = (t: unknown) => (t as { function?: { name?: string } }).function?.name ?? '';
   return [...all.filter((t) => !PLAN_BLOCKED_TOOLS.has(name(t))), ASK_USER_SCHEMA];
 }

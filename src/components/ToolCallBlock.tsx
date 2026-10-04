@@ -8,6 +8,8 @@ import type { ChatMessage, ChatToolCall, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
 import EditDiffBlock from './EditDiffBlock';
 import QuestionCard from './QuestionCard';
+import { StatusIcon } from './TodoPanel';
+import { parseTodo, progressLabel } from '../lib/todo';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
 import { diffRows, snippetLines } from '../lib/lineDiff';
@@ -197,6 +199,17 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       if (count === undefined) return { title, meta: range };
       const lines = plural(count, 'line');
       return { title, meta: range ? `${range}, ${lines}` : lines };
+    }
+
+    case 'todo': {
+      const items = parseTodo(args);
+      const current = items.find((i) => i.status === 'in_progress');
+      return {
+        title: 'Checklist',
+        meta: items.length
+          ? `${progressLabel(items)}${current ? ` · ${current.title}` : ''}`
+          : undefined,
+      };
     }
 
     case 'edit_file': {
@@ -477,7 +490,13 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const callText = () =>
     prettyArgs(
       props.toolCall.arguments,
-      isWrite() ? ['content'] : isEdit() ? ['old_text', 'new_text'] : []
+      isWrite()
+        ? ['content']
+        : isEdit()
+          ? ['old_text', 'new_text']
+          : props.toolCall.name === 'todo'
+            ? ['items']
+            : []
     );
   const hasCallText = () => {
     const t = callText().trim();
@@ -538,6 +557,23 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                 language={language()}
                 onOpenInEditor={openInEditor}
               />
+            </Show>
+            <Show when={props.toolCall.name === 'todo'}>
+              <ol class="todo-list tool-todo-list">
+                <For each={parseTodo(args())}>
+                  {(item) => (
+                    <li class={`todo-item ${item.status}`}>
+                      <StatusIcon status={item.status} />
+                      <span class="todo-item-text">
+                        <span class="todo-item-title">{item.title}</span>
+                        <Show when={item.note}>
+                          <span class="todo-item-note">{item.note}</span>
+                        </Show>
+                      </span>
+                    </li>
+                  )}
+                </For>
+              </ol>
             </Show>
             <Show when={isEdit() && str(args().old_text) !== undefined}>
               <div class="tool-call-label">Change</div>

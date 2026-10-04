@@ -52,10 +52,29 @@ The user chose Plan mode: plan the task, don't carry it out. You can read files,
 
 1. Investigate first: read the relevant code, find the existing patterns and conventions the change should follow.
 2. Ask only what the code can't tell you and what really changes the design, the behavior or the scope (two existing approaches to choose between, an unclear requirement, a trade-off only the user can make). Use the ask_user tool, early, with all your questions in one call, as concrete options with a short reason. Don't ask about names, formatting or anything you can decide from the repository: decide it and say so in the plan. Never ask a question in plain text and stop; use ask_user.
-3. End with the plan as your final message, in Markdown:
+3. End with the plan as your final message, in Markdown. It's saved as a file the user may edit before implementing it, so make it stand on its own:
+   - a "# " title;
    - a one-paragraph summary of the approach;
-   - the steps, in order, each naming the files it changes and what changes in them;
+   - "## Steps": a numbered list, in order; each step a short title, then what changes and in which files (no code). Roughly 3 to 12 steps, each the size of something worth reviewing on its own;
    - "Decisions": what the user answered, and what you decided yourself (with why);
    - how to verify the result (checks, tests, what to try by hand);
    - risks or open points, if any.
 Keep it concrete enough that it can be implemented step by step without re-investigating. The user implements it by switching to Agent mode.`;
+
+/** The text sent to implement a plan (Agent mode): the plan in full, kept in view for the whole run. */
+export function implementationRequest(plan: string, file?: string): string {
+  return [
+    file
+      ? `Implement this plan. It's saved in ${file}; the user may have edited it, and this is its current version.`
+      : 'Implement this plan.',
+    '',
+    '<plan>',
+    plan.trim(),
+    '</plan>',
+    '',
+    "First create your checklist with the todo tool from the plan's steps, then work through them in order, " +
+      'marking each in progress and done. Follow the plan and its decisions. If a step turns out wrong or ' +
+      'unnecessary, mark it skipped or changed with the reason instead of silently doing something else. ' +
+      'If you change files the plan doesn’t mention, say why in your final message.',
+  ].join('\n');
+}

@@ -61,6 +61,7 @@ import {
   MAX_QUESTIONS_PER_RUN,
   PLAN_BLOCKED_TOOLS,
   PLAN_MODE_INSTRUCTIONS,
+  implementationRequest,
   setChatMode,
   type ChatMode,
 } from '../lib/chatMode';
@@ -74,6 +75,14 @@ import {
 } from '../lib/questions';
 import { dismiss, notify } from '../lib/notifications';
 import ModeSelector from './ModeSelector';
+import TodoPanel from './TodoPanel';
+import { describeTodo, isSettled, latestChecklist, parseTodo } from '../lib/todo';
+import {
+  onImplementPlanRequest,
+  relativePlanPath,
+  savePlanFile,
+  takeImplementPlanRequest,
+} from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
 import { logAgent } from '../lib/agentLog';
 import {
@@ -111,6 +120,8 @@ interface AgentRun {
   verifyRounds: number;
   /** The last round failed and was sent back to the agent. */
   lastVerifyFailed: boolean;
+  /** Unfinished checklist steps were pointed out once (checkChecklist). */
+  checklistNudged: boolean;
   startedAt: number;
   /** Set once the run's log line is written. */
   ended: boolean;
@@ -522,6 +533,7 @@ export default function ChatPanel(props: ChatProps) {
         // "Add to chat" may have opened this panel: its references waited
         // until the chat was loaded (opening one resets the composer).
         insertPendingReferences();
+        takePlanFromEditor();
       }
     }
   });
@@ -1852,6 +1864,12 @@ export default function ChatPanel(props: ChatProps) {
 
     // The model says it's done: the checks decide (verifyAtEnd).
     if (toolCalls.length === 0) {
+      if (run.mode === 'plan') {
+        await savePlan(dialogId, pendingMsg.id, assistantText);
+      } else if (await checkChecklist(dialogId, run)) {
+        await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
+        return;
+      }
       const outcome = await verifyAtEnd(dialogId, run);
       if (outcome === 'continue') {
         await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
@@ -1914,6 +1932,7 @@ export default function ChatPanel(props: ChatProps) {
       guard: new AgentRunGuard(p.toolCallCheckpoint, startAtToolCalls),
       mode: runModeFor(dialogId),
       questionsAsked: 0,
+      checklistNudged: false,
       checks,
       projectContext: context,
       changedFiles: new Set(),
@@ -2010,26 +2029,116 @@ export default function ChatPanel(props: ChatProps) {
     await finish(describeOutcome(questions, outcome), { questions: { questions, outcome } });
   }
 
-  /** "Implement this plan": Agent mode, carrying out the plan above. */
-  function implementPlan() {
+  /**
+   * "Implement this plan" under the plan in the chat: the plan file's current
+   * text (edits included), or the reply itself if it has no file.
+   */
+  async function implementPlan() {
     const dialogId = activeDialogId();
+    if (!dialogId) return;
+    const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
+    if (!last) return;
+    const file = last.meta?.planFile;
+    const text = file ? await readFileContent(file).catch(() => null) : null;
+    startImplementation(dialogId, text ?? last.content, text !== null ? file : undefined);
+  }
+
+  /**
+   * Agent mode, carrying out a plan. The plan goes in full with the request,
+   * which keeps it in view for the whole run (the current request is never
+   * dropped from the context); the chat shows a short line.
+   */
+  function startImplementation(dialogId: string, plan: string, file?: string) {
     const profile = activeProfile();
-    if (!dialogId || !profile || sending()) return;
+    if (!profile || sending()) return;
     setChatMode('agent');
-    const text = 'Implement the plan above.';
+    const rel = file ? relativePlanPath(file, props.rootPath()) : undefined;
+    const wire = implementationRequest(plan, rel);
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: text,
+      content: rel ? `Implement the plan in \`${rel}\`.` : 'Implement the plan above.',
       finalized: true,
-      meta: { mode: 'agent' },
+      meta: { mode: 'agent', sentContent: wire },
     };
     listController?.followLatest();
     void runRequest(dialogId, async () => {
       await store.appendMessages(dialogId, [userMsg]);
-      await runAgentTurn(dialogId, { currentUserContent: text });
+      await runAgentTurn(dialogId, { currentUserContent: wire });
     });
   }
+
+  /** "Implement this plan" on a plan file in the editor (App sends it). */
+  function takePlanFromEditor() {
+    const dialogId = activeDialogId();
+    if (!dialogId || sending() || loadingHistory()) return;
+    const request = takeImplementPlanRequest();
+    if (request) startImplementation(dialogId, request.content, request.path);
+  }
+  const stopPlanRequests = onImplementPlanRequest(() => takePlanFromEditor());
+  onCleanup(stopPlanRequests);
+
+  /** A Plan-mode run's plan, saved in .rovik/plans/ (a revision replaces the chat's file). */
+  async function savePlan(dialogId: string, messageId: string, plan: string) {
+    const root = props.rootPath();
+    if (!root || !plan.trim()) return;
+    const list = store.messagesOf(dialogId);
+    const existing = [...list].reverse().find((m) => m.meta?.planFile)?.meta?.planFile;
+    const request =
+      [...list].reverse().find((m) => m.role === 'user' && !m.meta?.harness)?.content ?? 'plan';
+    try {
+      const path = await savePlanFile({ root, request, plan, existing });
+      const msg = store.messagesOf(dialogId).find((m) => m.id === messageId);
+      await store.updateMeta(dialogId, messageId, { ...(msg?.meta ?? {}), planFile: path });
+    } catch (err) {
+      console.error('Saving the plan failed:', err);
+      notify({
+        kind: 'error',
+        title: 'The plan couldn’t be saved to .rovik/plans/',
+        message: String(err),
+        timeout: 10_000,
+      });
+    }
+  }
+
+  /**
+   * The checklist at the end of a run: unfinished steps are pointed out once,
+   * and the run goes on. True: the agent was told, continue.
+   */
+  async function checkChecklist(dialogId: string, run: AgentRun): Promise<boolean> {
+    if (run.checklistNudged) return false;
+    const items = latestChecklist(store.messagesOf(dialogId));
+    const open = (items ?? []).filter((i) => !isSettled(i));
+    if (open.length === 0) return false;
+    run.checklistNudged = true;
+    await store.appendMessages(dialogId, [
+      {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content:
+          '[Automatic check by the IDE, not written by the user]\n' +
+          `Your checklist still has unfinished steps: ${open.map((i) => `"${i.title}"`).join(', ')}. ` +
+          'Finish them, or update the checklist marking each skipped or changed with the reason, then finish.',
+        finalized: true,
+        meta: { harness: 'checklist' },
+      },
+    ]);
+    return true;
+  }
+
+  /** The running request's checklist, for the panel. */
+  const runChecklist = createMemo(() => latestChecklist(messages()));
+  /** The plan file the running request implements, if any. */
+  const runPlanFile = createMemo(() => {
+    const list = messages();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.role === 'user' && !m.meta?.harness) {
+        return /^Implement the plan in `([^`]+)`/.exec(m.content)?.[1];
+      }
+    }
+    return undefined;
+  });
 
   /** A question waiting in the open chat: the composer answers it. */
   const waitingQuestion = () => {
@@ -2272,6 +2381,21 @@ export default function ChatPanel(props: ChatProps) {
     for (const tc of toolCalls) {
       if (stopRequested) {
         await stoppedResult(tc);
+        continue;
+      }
+      // The checklist: shown in the panel, never asks, isn't work the loop
+      // checks or the pause limit count.
+      if (tc.name === 'todo') {
+        const items = parseTodo(parseToolArgsObject(tc.arguments));
+        await store.appendMessages(dialogId, [
+          {
+            id: crypto.randomUUID(),
+            role: 'tool',
+            content: describeTodo(items),
+            tool_call_id: tc.id,
+            finalized: true,
+          },
+        ]);
         continue;
       }
       // Questions to the user: answered in the chat, no approval involved
@@ -2834,6 +2958,10 @@ export default function ChatPanel(props: ChatProps) {
         planMessageId={planMessageId()}
         onImplementPlan={implementPlan}
       />
+      {/* The agent's checklist while it works (read-only). */}
+      <Show when={sending() && !waitingQuestion() && runChecklist()}>
+        {(items) => <TodoPanel items={items()} plan={runPlanFile()} />}
+      </Show>
       {/* The agent's questions, one at a time, above the input. */}
       <Show when={waitingQuestion()} keyed>
         {(pending) => <QuestionPanel pending={pending} />}
