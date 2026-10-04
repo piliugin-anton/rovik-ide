@@ -16,8 +16,8 @@
 //   - A model whose provider rejected every form doesn't take an effort:
 //     the selector hides for it.
 //   - Rejected forms are tried again after 30 days, in case support was added.
-//   - In the model's settings, the form can be chosen by hand, or reasoning
-//     turned off; that's never overwritten by what's learned.
+//   - In the model's settings, reasoning can be turned off ("reasoning"
+//     toggle, beside "vision" and "tools"); turning it on detects afresh.
 //
 // The effort itself is picked in the chat (EffortSelector), per model.
 import type { ProviderModel } from '../types';
@@ -28,12 +28,6 @@ export const REASONING_FIELDS: ReasoningField[] = [
   'reasoning',
   'chat_template_kwargs',
 ];
-
-export const FIELD_LABELS: Record<ReasoningField, string> = {
-  reasoning_effort: 'reasoning_effort (OpenAI, Gemini)',
-  reasoning: 'reasoning (OpenRouter)',
-  chat_template_kwargs: 'chat_template_kwargs (Qwen on vLLM)',
-};
 
 export interface ReasoningLearned {
   accepted: ReasoningField[];

@@ -4996,30 +4996,3 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   line-height: 1.5;
   white-space: pre-wrap;
 }
-
-/* Reasoning per model, in provider settings */
-
-.reasoning-select {
-  width: auto;
-  max-width: 190px;
-  cursor: pointer;
-}
-
-.reasoning-reset {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.reasoning-reset:hover {
-  background: var(--hover-strong);
-  color: var(--fg);
-}
