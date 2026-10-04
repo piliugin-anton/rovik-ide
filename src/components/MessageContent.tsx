@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, Index, Match, on, Switch } from 'solid-js';
+import { createEffect, createMemo, createSignal, Index, Match, on, Show, Switch } from 'solid-js';
 import { parseMessageSegments } from '../lib/messageSegments';
 import { pathBefore } from '../lib/codeLocation';
 import { requestOpenFile, resolveProjectFile } from '../lib/editorBridge';
@@ -73,9 +73,51 @@ export default function MessageContent(props: { content: string; streaming?: boo
             <Match when={type() === 'text'}>
               <FormattedText class="message-text" text={text()} />
             </Match>
+            <Match when={type() === 'pasted'}>
+              <PastedBlock text={text()} lines={(segment() as { lines: number }).lines} />
+            </Match>
           </Switch>
         );
       }}
     </Index>
+  );
+}
+
+/**
+ * A long paste in a sent message: collapsed to its size, and only rendered
+ * when opened (a few thousand lines in the chat were slow).
+ */
+function PastedBlock(props: { text: string; lines: number }) {
+  const [open, setOpen] = createSignal(false);
+  return (
+    <div class="chat-pasted-block">
+      <button
+        type="button"
+        class="chat-pasted-toggle"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open()}
+      >
+        <svg
+          class="chat-pasted-caret"
+          classList={{ open: open() }}
+          width="10"
+          height="10"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M6 4l4 4-4 4" />
+        </svg>
+        Pasted text · {props.lines.toLocaleString()} line{props.lines === 1 ? '' : 's'},{' '}
+        {props.text.length.toLocaleString()} characters
+      </button>
+      <Show when={open()}>
+        <pre class="chat-pasted-text-body">{props.text}</pre>
+      </Show>
+    </div>
   );
 }

@@ -4745,3 +4745,59 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Long pastes: a chip in the input, a collapsed block in the chat */
+
+.chat-pasted-chip .chat-file-reference-name::before {
+  content: '¶ ';
+  color: var(--fg-dim);
+}
+
+.chat-pasted-block {
+  margin: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+
+.chat-pasted-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-pasted-toggle:hover {
+  color: var(--fg);
+}
+
+.chat-pasted-caret {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.chat-pasted-caret.open {
+  transform: rotate(90deg);
+}
+
+.chat-pasted-text-body {
+  max-height: 320px;
+  margin: 0;
+  padding: 6px 10px 8px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-editor);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+}

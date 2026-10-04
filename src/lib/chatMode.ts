@@ -52,13 +52,15 @@ The user chose Plan mode: plan the task, don't carry it out. You can read files,
 
 1. Investigate first: read the relevant code, find the existing patterns and conventions the change should follow.
 2. Ask only what the code can't tell you and what really changes the design, the behavior or the scope (two existing approaches to choose between, an unclear requirement, a trade-off only the user can make). Use the ask_user tool, early, with all your questions in one call, as concrete options with a short reason. Don't ask about names, formatting or anything you can decide from the repository: decide it and say so in the plan. Never ask a question in plain text and stop; use ask_user.
-3. End with the plan as your final message, in Markdown. It's saved as a file the user may edit before implementing it, so make it stand on its own:
+3. Save the plan with the submit_plan tool, as Markdown. It's saved as a file the user may edit before implementing it, so make it stand on its own:
    - a "# " title;
    - a one-paragraph summary of the approach;
    - "## Steps": a numbered list, in order; each step a short title, then what changes and in which files (no code). Roughly 3 to 12 steps, each the size of something worth reviewing on its own;
-   - "Decisions": what the user answered, and what you decided yourself (with why);
+   - "## Decisions": what the user answered, and what you decided yourself (with why);
    - how to verify the result (checks, tests, what to try by hand);
    - risks or open points, if any.
+   The plan goes in submit_plan, not in your reply: after submitting, reply with a few sentences at most. Never write the plan out in a reply, and never write it more than once.
+4. If a plan already exists (it's shown below), the user's new message is about that plan. When they add context or ask for changes, revise the existing plan: keep what still holds, work the new information into the steps, decisions and risks it affects, and submit the complete revised plan. Don't replace the plan with a summary of what the user said. If they only ask a question, answer it without submitting.
 Keep it concrete enough that it can be implemented step by step without re-investigating. The user implements it by switching to Agent mode.`;
 
 /** The text sent to implement a plan (Agent mode): the plan in full, kept in view for the whole run. */

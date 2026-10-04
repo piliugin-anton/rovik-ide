@@ -14,7 +14,9 @@ export type MessageSegment =
    * `open`: the closing fence hasn't arrived yet (still streaming).
    * `file`: the file the fence names (```rust src/main.rs).
    */
-  | { type: 'code'; language?: string; file?: string; content: string; open?: boolean };
+  | { type: 'code'; language?: string; file?: string; content: string; open?: boolean }
+  /** A long paste the user sent as a chip (ChatPanel): shown collapsed. */
+  | { type: 'pasted'; content: string; lines: number };
 
 // Matches a fully-closed ```lang\n...\n``` block. Non-greedy so multiple
 // blocks in one message are split correctly instead of merged into one.
@@ -35,7 +37,29 @@ const OPEN_FENCE_RE = /```([^\s`]*)([ \t][^\n`]*)?\n([\s\S]*)$|```([\w+-]*)\n?([
  * (using whatever content has arrived so far) rather than being left as
  * literal backticks in the text.
  */
+/** `<pasted_text lines="N">…</pasted_text>`, as ChatPanel writes long pastes. */
+const PASTED_RE = /<pasted_text(?:\s+lines="(\d+)")?>\n?([\s\S]*?)\n?<\/pasted_text>/g;
+
+/**
+ * Pasted blocks first, so nothing inside them is read as Markdown or code
+ * fences; the rest is parsed as before.
+ */
 export function parseMessageSegments(content: string): MessageSegment[] {
+  if (!content.includes('<pasted_text')) return parseMarkdownSegments(content);
+  const out: MessageSegment[] = [];
+  let last = 0;
+  PASTED_RE.lastIndex = 0;
+  for (let m = PASTED_RE.exec(content); m; m = PASTED_RE.exec(content)) {
+    if (m.index > last) out.push(...parseMarkdownSegments(content.slice(last, m.index)));
+    const text = m[2];
+    out.push({ type: 'pasted', content: text, lines: Number(m[1]) || text.split('\n').length });
+    last = m.index + m[0].length;
+  }
+  if (last < content.length) out.push(...parseMarkdownSegments(content.slice(last)));
+  return out;
+}
+
+function parseMarkdownSegments(content: string): MessageSegment[] {
   const segments: MessageSegment[] = [];
   let lastIndex = 0;
 

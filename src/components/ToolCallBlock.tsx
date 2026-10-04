@@ -201,6 +201,15 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       return { title, meta: range ? `${range}, ${lines}` : lines };
     }
 
+    case 'submit_plan': {
+      const plan = str(args.plan);
+      const title = plan?.match(/^#\s+(.+)$/m)?.[1];
+      return {
+        title: active ? 'Saving the plan' : 'Saved the plan',
+        meta: title ?? (plan ? plural(countLines(plan), 'line') : undefined),
+      };
+    }
+
     case 'todo': {
       const items = parseTodo(args);
       const current = items.find((i) => i.status === 'in_progress');
@@ -496,7 +505,9 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
           ? ['old_text', 'new_text']
           : props.toolCall.name === 'todo'
             ? ['items']
-            : []
+            : props.toolCall.name === 'submit_plan'
+              ? ['plan']
+              : []
     );
   const hasCallText = () => {
     const t = callText().trim();
@@ -557,6 +568,9 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                 language={language()}
                 onOpenInEditor={openInEditor}
               />
+            </Show>
+            <Show when={props.toolCall.name === 'submit_plan' && str(args().plan)}>
+              {(plan) => <StaticCodeBlock code={plan()} language="markdown" />}
             </Show>
             <Show when={props.toolCall.name === 'todo'}>
               <ol class="todo-list tool-todo-list">

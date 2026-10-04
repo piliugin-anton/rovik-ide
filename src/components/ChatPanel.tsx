@@ -80,10 +80,12 @@ import TodoPanel from './TodoPanel';
 import { describeTodo, isSettled, latestChecklist, parseTodo } from '../lib/todo';
 import {
   onImplementPlanRequest,
+  planProblems,
   relativePlanPath,
   savePlanFile,
   takeImplementPlanRequest,
 } from '../lib/plans';
+import { findRepetition } from '../lib/repetition';
 import QuestionPanel from './QuestionPanel';
 import { logAgent } from '../lib/agentLog';
 import {
@@ -123,6 +125,12 @@ interface AgentRun {
   lastVerifyFailed: boolean;
   /** Unfinished checklist steps were pointed out once (checkChecklist). */
   checklistNudged: boolean;
+  /** Plan mode: the current plan, shown to the model so it revises it. */
+  planContext: string;
+  /** A plan written in a reply instead of submitted was pointed out once. */
+  planNudged: boolean;
+  /** Replies stopped for repeating themselves (lib/repetition.ts). */
+  repetitionStops: number;
   startedAt: number;
   /** Set once the run's log line is written. */
   ended: boolean;
@@ -1140,6 +1148,11 @@ export default function ChatPanel(props: ChatProps) {
     el.innerHTML = snap.html;
     // Chips come back with their remove buttons (markup alone loses them).
     for (const old of [...el.querySelectorAll<HTMLElement>('.chat-file-reference')]) {
+      if (old.dataset.pasteId) {
+        const text = knownPastes.get(old.dataset.pasteId);
+        if (text !== undefined) old.replaceWith(createPastedChip(text, old.dataset.pasteId));
+        continue;
+      }
       const ref = knownReferences.get(old.dataset.ref ?? '');
       if (ref) old.replaceWith(createFileChip(ref));
     }
@@ -1199,6 +1212,11 @@ export default function ChatPanel(props: ChatProps) {
         }
         if (!(child instanceof HTMLElement)) return;
 
+        if (child.classList.contains('chat-pasted-chip')) {
+          const text = knownPastes.get(child.dataset.pasteId ?? '');
+          if (text !== undefined) segments.push({ type: 'pasted', text });
+          return;
+        }
         if (child.classList.contains('chat-file-reference')) {
           const key = child.dataset.ref ?? child.dataset.path ?? '';
           const file = referencedFiles().find((f) => referenceKey(f) === key);
@@ -1232,7 +1250,13 @@ export default function ChatPanel(props: ChatProps) {
    */
   function readComposerText(): string {
     return serializeComposer()
-      .map((segment) => (segment.type === 'text' ? segment.text : referenceLabel(segment.file)))
+      .map((segment) =>
+        segment.type === 'text'
+          ? segment.text
+          : segment.type === 'pasted'
+            ? `\n<pasted_text lines="${segment.text.split('\n').length}">\n${segment.text}\n</pasted_text>\n`
+            : referenceLabel(segment.file)
+      )
       .join('');
   }
 
@@ -1313,7 +1337,74 @@ export default function ChatPanel(props: ChatProps) {
   function handleComposerPaste(e: ClipboardEvent) {
     const text = e.clipboardData?.getData('text/plain');
     e.preventDefault();
-    if (text) insertPlainText(text.replace(/\r\n?/g, '\n'));
+    if (!text) return;
+    const clean = text.replace(/\r\n?/g, '\n');
+    // Long text as a chip: inserting thousands of lines into the editable
+    // input was slow, and every keystroke after it slower still.
+    if (clean.length > PASTE_CHIP_CHARS || clean.split('\n').length > PASTE_CHIP_LINES) {
+      insertPastedChip(clean);
+    } else {
+      insertPlainText(clean);
+    }
+  }
+
+  /*
+   * Long pastes: a "Pasted text" chip in the input, the text itself in
+   * memory (knownPastes). Sent wrapped in <pasted_text> (readComposerText),
+   * shown collapsed in the chat (MessageContent).
+   */
+  const PASTE_CHIP_CHARS = 2000;
+  const PASTE_CHIP_LINES = 30;
+  const knownPastes = new Map<string, string>();
+
+  function createPastedChip(text: string, id: string = crypto.randomUUID()): HTMLSpanElement {
+    knownPastes.set(id, text);
+    const lines = text.split('\n').length;
+    const chip = document.createElement('span');
+    chip.className = 'chat-file-reference chat-pasted-chip';
+    chip.contentEditable = 'false';
+    chip.dataset.pasteId = id;
+    chip.title = text.length > 400 ? `${text.slice(0, 400)}…` : text;
+    chip.innerHTML = `<span class="chat-file-reference-name">Pasted text</span><span class="chat-file-reference-lines">&nbsp;· ${lines.toLocaleString()} line${lines === 1 ? '' : 's'}</span><button type="button" class="chat-file-reference-remove" aria-label="Remove pasted text">\u00d7</button>`;
+    chip.querySelector('button')?.addEventListener('mousedown', (e) => e.preventDefault());
+    chip.querySelector('button')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      chip.remove();
+      setInput(readComposerText());
+      recordComposerHistory('other');
+    });
+    return chip;
+  }
+
+  function insertPastedChip(text: string) {
+    const container = inputTextareaRef;
+    if (!container) return;
+    container.focus();
+    const selection = window.getSelection();
+    let range: Range;
+    if (
+      selection &&
+      selection.rangeCount > 0 &&
+      container.contains(selection.getRangeAt(0).commonAncestorContainer)
+    ) {
+      range = selection.getRangeAt(0);
+      range.deleteContents();
+    } else {
+      range = document.createRange();
+      range.selectNodeContents(container);
+      range.collapse(false);
+    }
+    const chip = createPastedChip(text);
+    const space = document.createTextNode(' ');
+    range.insertNode(space);
+    range.insertNode(chip);
+    range.setStartAfter(space);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    setInput(readComposerText());
+    recordComposerHistory('other');
   }
 
   /** Same for drag-and-drop of selected text. */
@@ -1355,6 +1446,8 @@ export default function ChatPanel(props: ChatProps) {
           if (i > 0) fragment.append(document.createElement('br'));
           if (line) fragment.append(document.createTextNode(line));
         });
+      } else if (segment.type === 'pasted') {
+        fragment.append(createPastedChip(segment.text), document.createTextNode(' '));
       } else {
         fragment.append(createFileChip(segment.file));
         // Chips are followed by a space when inserted; keep exactly one.
@@ -1853,6 +1946,9 @@ export default function ChatPanel(props: ChatProps) {
       return;
     }
     const replyStartedAt = Date.now();
+    /** Where a repeating reply was cut (lib/repetition.ts), once noticed. */
+    let repetitionCut: number | null = null;
+    let repetitionCheckedAt = 0;
     let finishReason: string | null = null;
     let usage: Record<string, unknown> | null = null;
 
@@ -1941,6 +2037,15 @@ export default function ChatPanel(props: ChatProps) {
         case 'Delta':
           markOutput();
           assistantText += event.content;
+          // Every couple of kilobytes: is it stuck repeating itself?
+          if (!repetitionCut && assistantText.length - repetitionCheckedAt > 1500) {
+            repetitionCheckedAt = assistantText.length;
+            const cut = findRepetition(assistantText);
+            if (cut !== null) {
+              repetitionCut = cut;
+              void cancelChatRequest(requestId);
+            }
+          }
           if (!pendingRender) {
             pendingRender = true;
             rafId = requestAnimationFrame(() => {
@@ -2037,7 +2142,9 @@ export default function ChatPanel(props: ChatProps) {
             tools,
             projectContext:
               run.mode === 'plan'
-                ? [run.projectContext, PLAN_MODE_INSTRUCTIONS].filter(Boolean).join('\n\n')
+                ? [run.projectContext, PLAN_MODE_INSTRUCTIONS, run.planContext]
+                    .filter(Boolean)
+                    .join('\n\n')
                 : run.projectContext,
           })
             .then(() => untilStreamEnd(stream.ended))
@@ -2091,6 +2198,55 @@ export default function ChatPanel(props: ChatProps) {
       ...(error ? { error: error.kind } : {}),
     });
 
+    // Stopped for repeating itself: keep the reply up to where it started,
+    // tell the model once, and go on; a second time, the run ends.
+    if (repetitionCut !== null) {
+      run.repetitionStops++;
+      await store.finalizeMessage(dialogId, pendingMsg.id, {
+        content: `${assistantText.slice(0, repetitionCut).trimEnd()}\n\n_[Stopped here: the reply kept repeating itself.]_`,
+        toolCalls: [],
+      });
+      opts.onSettled?.(true);
+      logAgent({
+        event: 'run',
+        dialogId,
+        model: profile.model,
+        outcome: 'repetition',
+        toolCalls: run.guard.toolCalls,
+        filesChanged: run.changedFiles.size,
+        verifyRounds: run.verifyRounds,
+        ms: 0,
+      });
+      if (run.repetitionStops >= 2 || stopRequested) {
+        notify({
+          kind: 'warning',
+          title: 'The model kept repeating itself',
+          message:
+            'Its reply was stopped twice, so the run ended. Try again, or a different model.',
+          timeout: 12_000,
+        });
+        endRun(dialogId, run, 'repetition');
+        return;
+      }
+      await store.appendMessages(dialogId, [
+        {
+          id: crypto.randomUUID(),
+          role: 'user',
+          content:
+            '[Automatic check by the IDE, not written by the user]\n' +
+            'Your last reply started repeating the same text over and over, so it was stopped. ' +
+            "Don't repeat anything. " +
+            (run.mode === 'plan'
+              ? 'If the plan is ready, submit it once with submit_plan and reply in a sentence or two.'
+              : 'Continue with the task from where you were.'),
+          finalized: true,
+          meta: { harness: 'checklist' },
+        },
+      ]);
+      await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
+      return;
+    }
+
     if (error) {
       const stored = toStoredFailure(error);
       if (assistantText.trim()) {
@@ -2126,7 +2282,10 @@ export default function ChatPanel(props: ChatProps) {
     // The model says it's done: the checks decide (verifyAtEnd).
     if (toolCalls.length === 0) {
       if (run.mode === 'plan') {
-        await savePlan(dialogId, pendingMsg.id, assistantText);
+        if (await finishPlanReply(dialogId, pendingMsg.id, assistantText, run)) {
+          await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
+          return;
+        }
       } else if (await checkChecklist(dialogId, run)) {
         await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
         return;
@@ -2172,6 +2331,7 @@ export default function ChatPanel(props: ChatProps) {
    * the system prompt (detected fresh each run: a few file reads).
    */
   async function startRun(dialogId: string, startAtToolCalls = 0): Promise<AgentRun> {
+    const mode = runModeFor(dialogId);
     const p = permissions();
     const root = props.rootPath();
     let checks: ProjectCheck[] = [];
@@ -2191,9 +2351,12 @@ export default function ChatPanel(props: ChatProps) {
     setProjectContextText(context);
     return {
       guard: new AgentRunGuard(p.toolCallCheckpoint, startAtToolCalls),
-      mode: runModeFor(dialogId),
+      mode,
       questionsAsked: 0,
       checklistNudged: false,
+      planContext: mode === 'plan' ? await currentPlanContext(dialogId) : '',
+      planNudged: false,
+      repetitionStops: 0,
       checks,
       projectContext: context,
       changedFiles: new Set(),
@@ -2339,27 +2502,106 @@ export default function ChatPanel(props: ChatProps) {
   const stopPlanRequests = onImplementPlanRequest(() => takePlanFromEditor());
   onCleanup(stopPlanRequests);
 
-  /** A Plan-mode run's plan, saved in .rovik/plans/ (a revision replaces the chat's file). */
-  async function savePlan(dialogId: string, messageId: string, plan: string) {
-    const root = props.rootPath();
-    if (!root || !plan.trim()) return;
-    const list = store.messagesOf(dialogId);
-    const existing = [...list].reverse().find((m) => m.meta?.planFile)?.meta?.planFile;
-    const request =
-      [...list].reverse().find((m) => m.role === 'user' && !m.meta?.harness)?.content ?? 'plan';
-    try {
-      const path = await savePlanFile({ root, request, plan, existing });
-      const msg = store.messagesOf(dialogId).find((m) => m.id === messageId);
-      await store.updateMeta(dialogId, messageId, { ...(msg?.meta ?? {}), planFile: path });
-    } catch (err) {
-      console.error('Saving the plan failed:', err);
-      notify({
-        kind: 'error',
-        title: 'The plan couldn’t be saved to .rovik/plans/',
-        message: String(err),
-        timeout: 10_000,
-      });
+  /** The chat's plan file: the latest one a plan was saved to. */
+  function chatPlanFile(dialogId: string): string | undefined {
+    return [...store.messagesOf(dialogId)].reverse().find((m) => m.meta?.planFile)?.meta?.planFile;
+  }
+
+  /** Plan mode: the current plan (as the file is now), for the model to revise. */
+  async function currentPlanContext(dialogId: string): Promise<string> {
+    const file = chatPlanFile(dialogId);
+    if (!file) return '';
+    const text = await readFileContent(file).catch(() => null);
+    if (!text?.trim()) return '';
+    return [
+      '## The current plan',
+      `Saved in ${relativePlanPath(file, props.rootPath())}; the user may have edited it. This is the version to revise.`,
+      '',
+      '<current_plan>',
+      text.trim(),
+      '</current_plan>',
+    ].join('\n');
+  }
+
+  /**
+   * submit_plan: the plan is checked (planProblems) and, if it holds up,
+   * saved to the chat's plan file (a revision replaces it). Problems go back
+   * to the model to fix. Only this changes the file: a reply never does.
+   */
+  async function submitPlan(dialogId: string, tc: ChatToolCall) {
+    const finish = (content: string, meta?: ChatMessage['meta']) =>
+      store.appendMessages(dialogId, [
+        {
+          id: crypto.randomUUID(),
+          role: 'tool',
+          content,
+          tool_call_id: tc.id,
+          finalized: true,
+          meta,
+        },
+      ]);
+    const plan = toolArg(tc.arguments, 'plan') ?? '';
+    const problems = planProblems(plan);
+    if (problems.length) {
+      await finish(
+        `Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- ${problems.join('\n- ')}`
+      );
+      return;
     }
+    const root = props.rootPath();
+    if (!root) {
+      await finish("Error: no project is open, so the plan can't be saved.");
+      return;
+    }
+    const request =
+      [...store.messagesOf(dialogId)].reverse().find((m) => m.role === 'user' && !m.meta?.harness)
+        ?.content ?? 'plan';
+    try {
+      const path = await savePlanFile({ root, request, plan, existing: chatPlanFile(dialogId) });
+      await finish(`Saved the plan to ${relativePlanPath(path, root)}.`, { planFile: path });
+    } catch (err) {
+      await finish(`Error: the plan couldn't be saved: ${String(err)}`);
+    }
+  }
+
+  /**
+   * The end of a Plan-mode reply. If a plan was submitted in this request,
+   * the reply gets its file (for "Implement"). If none was, but the reply
+   * reads like a plan, the model is asked once to submit it properly.
+   * True: it was asked, the run goes on.
+   */
+  async function finishPlanReply(dialogId: string, messageId: string, text: string, run: AgentRun) {
+    const list = store.messagesOf(dialogId);
+    let submitted: string | undefined;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.role === 'user' && !m.meta?.harness) break;
+      if (m.role === 'tool' && m.meta?.planFile) {
+        submitted = m.meta.planFile;
+        break;
+      }
+    }
+    if (submitted) {
+      const msg = list.find((m) => m.id === messageId);
+      await store.updateMeta(dialogId, messageId, { ...(msg?.meta ?? {}), planFile: submitted });
+      return false;
+    }
+    const looksLikePlan = /^##\s+.*\bsteps?\b/im.test(text) && /^\s*\d+[.)]\s/m.test(text);
+    if (!looksLikePlan || run.planNudged) return false;
+    run.planNudged = true;
+    await store.appendMessages(dialogId, [
+      {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content:
+          '[Automatic check by the IDE, not written by the user]\n' +
+          "You wrote the plan in your reply, so it wasn't saved. Submit it with submit_plan (the complete plan, " +
+          "once), then reply in a sentence or two. Don't write it out again in the reply.",
+        finalized: true,
+        meta: { harness: 'checklist' },
+      },
+    ]);
+    return true;
   }
 
   /**
@@ -2415,7 +2657,8 @@ export default function ChatPanel(props: ChatProps) {
     const last = list[list.length - 1];
     if (!last || last.role !== 'assistant' || last.pending || last.error || last.toolCalls?.length)
       return null;
-    if (!last.content.trim()) return null;
+    // Only once a plan was actually saved (submit_plan): a reply alone isn't one.
+    if (!last.meta?.planFile) return null;
     return runModeFor(dialogId) === 'plan' ? last.id : null;
   });
 
@@ -2655,6 +2898,11 @@ export default function ChatPanel(props: ChatProps) {
     for (const tc of toolCalls) {
       if (stopRequested) {
         await stoppedResult(tc);
+        continue;
+      }
+      // The plan (Plan mode): checked, then saved; problems go back to the model.
+      if (tc.name === 'submit_plan') {
+        await submitPlan(dialogId, tc);
         continue;
       }
       // The checklist: shown in the panel, never asks, isn't work the loop

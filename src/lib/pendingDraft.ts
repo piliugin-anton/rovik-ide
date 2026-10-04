@@ -9,7 +9,11 @@
 
 import type { FileSuggestion } from '../types';
 
-export type DraftSegment = { type: 'text'; text: string } | { type: 'file'; file: FileSuggestion };
+export type DraftSegment =
+  | { type: 'text'; text: string }
+  | { type: 'file'; file: FileSuggestion }
+  /** A long paste, kept as a chip (ChatPanel). */
+  | { type: 'pasted'; text: string };
 
 export interface PendingDraft {
   dialogId: string;

@@ -96,3 +96,64 @@ export function onImplementPlanRequest(listener: () => void): () => void {
 export function takeImplementPlanRequest(): ImplementPlanRequest | undefined {
   return pending.splice(0).pop();
 }
+
+/*
+ * submit_plan (Plan mode): the plan goes in the tool call, not in a reply,
+ * and is checked before it's saved. A reply about the conversation can no
+ * longer overwrite the plan, and "Implement" is only offered once there is
+ * a real plan.
+ */
+
+/** What's wrong with a plan, if anything (empty: it's fine). */
+export function planProblems(markdown: string): string[] {
+  const text = markdown.trim();
+  const problems: string[] = [];
+  if (!text) return ['The plan is empty.'];
+  const first = text.split('\n').find((l) => l.trim());
+  if (!first || !/^#\s+\S/.test(first)) problems.push('Start with a "# " title line.');
+  const steps = /^##\s+.*\bsteps?\b.*$/im.exec(text);
+  if (!steps) {
+    problems.push('Add a "## Steps" section with the steps as a numbered list.');
+  } else {
+    const after = text.slice(steps.index + steps[0].length);
+    const section = after.split(/^##\s/m)[0];
+    const numbered = section.match(/^\s*\d+[.)]\s+\S/gm) ?? [];
+    if (numbered.length < 2)
+      problems.push('List the steps under "## Steps" as a numbered list (1., 2., ...).');
+  }
+  // Code belongs in the implementation, not the plan.
+  let codeLines = 0;
+  let longest = 0;
+  for (const block of text.match(/```[\s\S]*?```/g) ?? []) {
+    const lines = block.split('\n').length - 2;
+    codeLines += lines;
+    longest = Math.max(longest, lines);
+  }
+  if (longest > 15 || codeLines > 40) {
+    problems.push(
+      'Leave the code out: say what changes and where, in words; short snippets (a signature, a config line) are fine.'
+    );
+  }
+  if (text.length > 40_000) problems.push('Shorten it: the plan is over 40,000 characters.');
+  return problems;
+}
+
+export const SUBMIT_PLAN_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'submit_plan',
+    description:
+      'Save your plan. Pass the complete plan as Markdown: a "# " title, a short summary, "## Steps" as a ' +
+      'numbered list (each step: what changes and in which files, no code), "## Decisions", how to verify, and ' +
+      'risks. It is checked and saved to the project, where the user can edit and implement it. When the plan ' +
+      'changes, call it again with the complete revised plan (not just the changes). Keep your chat reply short: ' +
+      'the plan itself goes here, not in the reply.',
+    parameters: {
+      type: 'object',
+      properties: {
+        plan: { type: 'string', description: 'The complete plan in Markdown.' },
+      },
+      required: ['plan'],
+    },
+  },
+};
