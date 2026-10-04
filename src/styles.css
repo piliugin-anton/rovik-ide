@@ -4996,3 +4996,91 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   line-height: 1.5;
   white-space: pre-wrap;
 }
+
+/* Model providers settings: the models as a table. One grid for the whole
+   list, its rows on that grid (subgrid), so a column is as wide as its
+   widest cell in any row: the name column fits the longest model ID, and
+   every row lines up. Names are never cut or wrapped; if one is wider than
+   the dialog, the list scrolls sideways. The header sticks to the top. */
+
+.provider-models-list {
+  display: grid;
+  /* The name column: never narrower than the longest name, and takes any spare room. */
+  grid-template-columns: minmax(max-content, 1fr) 112px 52px 44px 68px 60px 22px;
+  align-content: start;
+  column-gap: 8px;
+  overflow: auto;
+}
+
+.provider-models-head,
+.provider-models-list .provider-model-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  /* The same spacing in the header and every row, so the columns line up. */
+  column-gap: 8px;
+  padding: 0 6px 0 8px;
+}
+
+.provider-models-list .provider-models-empty {
+  grid-column: 1 / -1;
+}
+
+.provider-models-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.provider-models-head > span {
+  text-align: center;
+  cursor: default;
+}
+
+.provider-models-head > span:first-child {
+  /* Lines up with the name, after the checkbox. */
+  padding-left: 21px;
+  text-align: left;
+}
+
+.provider-models-head > span.numeric {
+  text-align: right;
+}
+
+.provider-models-list .provider-model-row .context-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.provider-models-list .model-flag {
+  justify-self: center;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.profile-form .provider-models-list .provider-model-row label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.provider-models-list .provider-model-name {
+  white-space: nowrap;
+  overflow: visible;
+}
+
+/* The AI settings dialog, on the Model providers page: room for the models
+   table with full names (capped to the window). */
+.modal.model-settings.ai-settings.wide {
+  width: min(880px, calc(100vw - 48px));
+}

@@ -97,6 +97,8 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
     >
       <div
         class="modal model-settings ai-settings"
+        // The providers page holds the models table: full names need room.
+        classList={{ wide: page() === 'providers' }}
         role="dialog"
         aria-modal="true"
         aria-label={title()}

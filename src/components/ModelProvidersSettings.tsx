@@ -434,6 +434,47 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
             </Show>
 
             <div class="provider-models-list">
+              {/* Column titles: stay at the top while the list scrolls. */}
+              <Show when={filteredModels().length > 0}>
+                <div class="provider-models-head" role="row">
+                  <span role="columnheader" title="Shown in the chat's model picker when checked">
+                    Model
+                  </span>
+                  <span
+                    role="columnheader"
+                    class="numeric"
+                    title="Context window in tokens: how much of the chat is sent with each request. Empty uses the size the provider reports, or the default."
+                  >
+                    Context
+                  </span>
+                  <span
+                    role="columnheader"
+                    title="The model accepts images (enables screenshots for the agent)"
+                  >
+                    Vision
+                  </span>
+                  <span
+                    role="columnheader"
+                    title="The model can call tools (read and edit files, run commands). Turn off for models without tool-call support."
+                  >
+                    Tools
+                  </span>
+                  <span
+                    role="columnheader"
+                    title="A reasoning effort can be chosen for the model in the chat; the forms its provider accepts are detected automatically"
+                  >
+                    Reasoning
+                  </span>
+                  <span
+                    role="columnheader"
+                    class="numeric"
+                    title="How long to wait for the first token before retrying. Raise it for slow reasoning models."
+                  >
+                    Timeout
+                  </span>
+                  <span role="columnheader" aria-label="Remove" />
+                </div>
+              </Show>
               <For
                 each={filteredModels()}
                 fallback={
@@ -452,7 +493,7 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                         checked={m.enabled}
                         onChange={(e) => toggleModel(m.id, e.currentTarget.checked)}
                       />
-                      <span>{m.id}</span>
+                      <span class="provider-model-name">{m.id}</span>
                     </label>
                     <input
                       class="context-input"
@@ -472,45 +513,38 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                         e.currentTarget.value = stored?.toLocaleString() ?? '';
                       }}
                     />
-                    <button
-                      class="vision-toggle"
-                      classList={{ on: !!m.vision }}
-                      onClick={() => toggleVision(m.id)}
-                      aria-pressed={!!m.vision}
-                      title={
-                        m.vision
-                          ? 'Accepts images: the agent can take browser screenshots'
-                          : 'Mark as accepting images to enable browser screenshots'
-                      }
-                    >
-                      vision
-                    </button>
-                    <button
-                      class="vision-toggle"
-                      classList={{ on: !m.noTools }}
-                      onClick={() => toggleTools(m.id)}
-                      aria-pressed={!m.noTools}
+                    <input
+                      type="checkbox"
+                      class="model-flag"
+                      checked={!!m.vision}
+                      onChange={() => toggleVision(m.id)}
+                      aria-label={`${m.id} accepts images`}
+                      title={m.vision ? 'Accepts images' : 'Text only'}
+                    />
+                    <input
+                      type="checkbox"
+                      class="model-flag"
+                      checked={!m.noTools}
+                      onChange={() => toggleTools(m.id)}
+                      aria-label={`${m.id} can use tools`}
                       title={
                         m.noTools
                           ? 'Tools off: this model is sent no tools (for models without tool-call support)'
                           : 'Tools on. Turn off for models that go silent or fail after tool calls'
                       }
-                    >
-                      tools
-                    </button>
-                    <button
-                      class="vision-toggle"
-                      classList={{ on: settingOf(m).choice !== 'off' }}
-                      onClick={() => toggleReasoning(m.id)}
-                      aria-pressed={settingOf(m).choice !== 'off'}
+                    />
+                    <input
+                      type="checkbox"
+                      class="model-flag"
+                      checked={settingOf(m).choice !== 'off'}
+                      onChange={() => toggleReasoning(m.id)}
+                      aria-label={`${m.id} takes a reasoning effort`}
                       title={
                         settingOf(m).choice === 'off'
                           ? 'Reasoning off: no effort is sent to this model, and the effort selector is hidden'
                           : `Reasoning on: the effort chosen in the chat is sent in the forms this model accepts. ${describeReasoning(settingOf(m))}`
                       }
-                    >
-                      reasoning
-                    </button>
+                    />
                     <input
                       class="context-input timeout-input"
                       inputMode="numeric"
