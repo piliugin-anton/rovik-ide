@@ -145,10 +145,37 @@ export function createChatStore() {
    * -------------------------------------------------------------------------
    */
 
+  /*
+   * The project whose chats are listed and created (chat_db/projects.rs);
+   * null: no folder open, the chats with no project.
+   */
+  let projectId: string | null = null;
+
+  /**
+   * Another project: its chat list, from the start. Chats with a run still
+   * going stay loaded (the run finishes in the background); the rest of the
+   * old project's chats are let go.
+   */
+  async function switchProject(id: string | null) {
+    if (id === projectId && state.list.loaded) return;
+    projectId = id;
+    setState(
+      produce((s) => {
+        s.list = { items: [], nextCursor: null, loading: false, loaded: false };
+        for (const [chatId, chat] of Object.entries(s.open)) if (!chat.busy) delete s.open[chatId];
+        s.activeId = null;
+        s.active = null;
+      })
+    );
+    await loadFirstPage();
+  }
+
   async function loadFirstPage() {
     setState('list', 'loading', true);
+    const forProject = projectId;
     try {
-      const page = await chatApi.listDialogs(null, LIST_PAGE);
+      const page = await chatApi.listDialogs(forProject, null, LIST_PAGE);
+      if (forProject !== projectId) return; // switched meanwhile
       setState('list', { items: page.items, nextCursor: page.nextCursor, loaded: true });
     } finally {
       setState('list', 'loading', false);
@@ -160,7 +187,9 @@ export function createChatStore() {
     if (!nextCursor || loading) return;
     setState('list', 'loading', true);
     try {
-      const page = await chatApi.listDialogs(nextCursor, LIST_PAGE);
+      const forProject = projectId;
+      const page = await chatApi.listDialogs(forProject, nextCursor, LIST_PAGE);
+      if (forProject !== projectId) return;
       setState(
         produce((s) => {
           const known = new Set(s.list.items.map((d) => d.id));
@@ -298,7 +327,8 @@ export function createChatStore() {
         s.active = { ...summary };
       })
     );
-    void persist(() => chatApi.createDialog(summary));
+    const forProject = projectId;
+    void persist(() => chatApi.createDialog({ ...summary, projectId: forProject }));
     evictIfNeeded();
     return summary;
   }
@@ -450,6 +480,9 @@ export function createChatStore() {
     flush,
     loadFirstPage,
     loadMoreDialogs,
+    switchProject,
+    /** The project being shown (null: none). */
+    projectId: () => projectId,
     openChat,
     openChatAround,
     loadOlder,

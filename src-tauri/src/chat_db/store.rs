@@ -85,6 +85,9 @@ pub struct NewDialog {
     pub title: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The project it belongs to (chat_db/projects.rs); none: no folder open.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -167,20 +170,26 @@ fn dialog_from_row(r: &Row) -> rusqlite::Result<DialogSummary> {
 
 const DIALOG_COLUMNS: &str = "id, title, created_at, updated_at, message_count, preview";
 
-/// Newest first; keyset paging so deep pages cost the same as the first.
-pub fn list_dialogs(conn: &Connection, cursor: Option<&Cursor>, limit: usize) -> DbResult<DialogPage> {
+/// A project's chats, newest first (`project` None: the chats with no
+/// project); keyset paging so deep pages cost the same as the first.
+pub fn list_dialogs(
+    conn: &Connection,
+    project: Option<&str>,
+    cursor: Option<&Cursor>,
+    limit: usize,
+) -> DbResult<DialogPage> {
     let limit = limit.clamp(1, 500);
     let fetch = (limit + 1) as i64;
     let mut items: Vec<DialogSummary> = match cursor {
         None => {
             let mut stmt = conn
                 .prepare_cached(&format!(
-                    "SELECT {DIALOG_COLUMNS} FROM dialogs WHERE archived = 0
+                    "SELECT {DIALOG_COLUMNS} FROM dialogs WHERE project_id IS ?2 AND archived = 0
                      ORDER BY updated_at DESC, id DESC LIMIT ?1"
                 ))
                 .map_err(err)?;
             let rows = stmt
-                .query_map(params![fetch], dialog_from_row)
+                .query_map(params![fetch, project], dialog_from_row)
                 .map_err(err)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(err)?;
@@ -189,13 +198,13 @@ pub fn list_dialogs(conn: &Connection, cursor: Option<&Cursor>, limit: usize) ->
         Some(c) => {
             let mut stmt = conn
                 .prepare_cached(&format!(
-                    "SELECT {DIALOG_COLUMNS} FROM dialogs WHERE archived = 0
+                    "SELECT {DIALOG_COLUMNS} FROM dialogs WHERE project_id IS ?4 AND archived = 0
                        AND (updated_at < ?1 OR (updated_at = ?1 AND id < ?2))
                      ORDER BY updated_at DESC, id DESC LIMIT ?3"
                 ))
                 .map_err(err)?;
             let rows = stmt
-                .query_map(params![c.updated_at, c.id, fetch], dialog_from_row)
+                .query_map(params![c.updated_at, c.id, fetch, project], dialog_from_row)
                 .map_err(err)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(err)?;
@@ -212,6 +221,15 @@ pub fn list_dialogs(conn: &Connection, cursor: Option<&Cursor>, limit: usize) ->
     Ok(DialogPage { items, next_cursor })
 }
 
+/// The ids of a project's chats (`project` None: the chats with no project).
+pub fn dialogs_in_project(conn: &Connection, project: Option<&str>) -> DbResult<std::collections::HashSet<String>> {
+    let mut stmt = conn
+        .prepare_cached("SELECT id FROM dialogs WHERE project_id IS ?1")
+        .map_err(err)?;
+    let rows = stmt.query_map(params![project], |r| r.get::<_, String>(0)).map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
+}
+
 pub fn get_dialog(conn: &Connection, id: &str) -> DbResult<Option<DialogSummary>> {
     conn.query_row(
         &format!("SELECT {DIALOG_COLUMNS} FROM dialogs WHERE id = ?1"),
@@ -225,8 +243,8 @@ pub fn get_dialog(conn: &Connection, id: &str) -> DbResult<Option<DialogSummary>
 pub fn create_dialog(conn: &mut Connection, d: &NewDialog) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     tx.execute(
-        "INSERT INTO dialogs (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-        params![d.id, d.title, d.created_at, d.updated_at],
+        "INSERT INTO dialogs (id, title, created_at, updated_at, project_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![d.id, d.title, d.created_at, d.updated_at, d.project_id],
     )
     .map_err(err)?;
     index_title(&tx, &d.id, &d.title)?;

@@ -69,6 +69,7 @@ pub fn run() {
             filesystem::load_ai_settings,
             filesystem::save_ai_settings,
             chat_db::commands::chat_list_dialogs,
+            chat_db::commands::chat_open_project,
             chat_db::commands::chat_get_messages,
             chat_db::commands::chat_get_messages_around,
             chat_db::commands::chat_get_message_body,

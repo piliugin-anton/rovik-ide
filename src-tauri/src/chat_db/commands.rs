@@ -3,16 +3,25 @@
 
 use super::search::{self, SearchHit};
 use super::store::{self, Cursor, DialogPage, MessagePage, MessagePatch, NewDialog, NewMessage};
-use super::{attachments, DbState};
+use super::{attachments, projects, DbState};
 use tauri::State;
 
 #[tauri::command]
 pub async fn chat_list_dialogs(
     db: State<'_, DbState>,
+    project_id: Option<String>,
     cursor: Option<Cursor>,
     limit: Option<usize>,
 ) -> Result<DialogPage, String> {
-    db.read(move |c| store::list_dialogs(c, cursor.as_ref(), limit.unwrap_or(50))).await
+    db.read(move |c| store::list_dialogs(c, project_id.as_deref(), cursor.as_ref(), limit.unwrap_or(50)))
+        .await
+}
+
+/// The project a folder is (chat_db/projects.rs): found by the ID file in
+/// it, or by its path, or created.
+#[tauri::command]
+pub async fn chat_open_project(db: State<'_, DbState>, root: String) -> Result<projects::ProjectInfo, String> {
+    db.write(move |c| projects::open_project(c, std::path::Path::new(&root))).await
 }
 
 #[tauri::command]
@@ -85,9 +94,10 @@ pub async fn chat_delete_dialog(db: State<'_, DbState>, dialog_id: String) -> Re
 pub async fn chat_search(
     db: State<'_, DbState>,
     query: String,
+    project_id: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<SearchHit>, String> {
-    db.read(move |c| search::search(c, &query, limit.unwrap_or(50))).await
+    db.read(move |c| search::search(c, &query, project_id.as_deref(), limit.unwrap_or(50))).await
 }
 
 #[tauri::command]

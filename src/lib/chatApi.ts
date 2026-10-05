@@ -66,8 +66,18 @@ async function page(
 }
 
 export const chatApi = {
-  listDialogs: (cursor: DialogCursor | null, limit = 50) =>
-    invoke<DialogPage>('chat_list_dialogs', { cursor, limit }),
+  /** A project's chats (`projectId` null: the chats with no project). */
+  listDialogs: (projectId: string | null, cursor: DialogCursor | null, limit = 50) =>
+    invoke<DialogPage>('chat_list_dialogs', { projectId, cursor, limit }),
+  /**
+   * The project a folder is: by the ID file in it (.rovik/project.json),
+   * so renaming or moving the folder keeps its chats; else by its path;
+   * else a new one.
+   */
+  openProject: (root: string) =>
+    invoke<{ id: string; name: string; path: string; idFile: boolean }>('chat_open_project', {
+      root,
+    }),
 
   getMessages: (dialogId: string, beforeSeq?: number, limit = 50): Promise<MessagePage> =>
     page(invoke('chat_get_messages', { dialogId, beforeSeq, limit })),
@@ -77,8 +87,13 @@ export const chatApi = {
 
   getMessageBody: (messageId: string) => invoke<string>('chat_get_message_body', { messageId }),
 
-  createDialog: (dialog: { id: string; title: string; createdAt: number; updatedAt: number }) =>
-    invoke<void>('chat_create_dialog', { dialog }),
+  createDialog: (dialog: {
+    id: string;
+    title: string;
+    createdAt: number;
+    updatedAt: number;
+    projectId: string | null;
+  }) => invoke<void>('chat_create_dialog', { dialog }),
 
   appendMessages: (dialogId: string, messages: ChatMessage[]) =>
     invoke<number[]>('chat_append_messages', {
@@ -115,7 +130,9 @@ export const chatApi = {
 
   deleteDialog: (dialogId: string) => invoke<void>('chat_delete_dialog', { dialogId }),
 
-  search: (query: string, limit = 50) => invoke<ChatSearchHit[]>('chat_search', { query, limit }),
+  /** Searches one project's chats (`projectId` null: the chats with no project). */
+  search: (query: string, projectId: string | null, limit = 50) =>
+    invoke<ChatSearchHit[]>('chat_search', { query, projectId, limit }),
 
   messagesAnswered: (messageIds: string[]) =>
     invoke<string[]>('chat_messages_answered', { messageIds }),

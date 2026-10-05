@@ -490,7 +490,7 @@ export default function ChatPanel(props: ChatProps) {
         return;
       }
       chatApi
-        .search(query)
+        .search(query, store.projectId())
         .then((hits) => {
           if (run !== searchRun) return;
           setSearchRows(
@@ -643,7 +643,8 @@ export default function ChatPanel(props: ChatProps) {
       setPermissions(settings.permissions);
 
       try {
-        await store.loadFirstPage();
+        // This project's chats (or, with no folder open, the ones with none).
+        await store.switchProject(await projectIdFor(props.rootPath()));
       } catch (err) {
         console.error('Failed to load chats:', err);
         setHistoryLoadError(String(err));
@@ -651,9 +652,7 @@ export default function ChatPanel(props: ChatProps) {
       }
       if (!isMounted) return;
 
-      const first = store.state.list.items[0];
-      if (first) await store.openChat(first);
-      else createNewDialog();
+      await openNewestChat();
 
       await recoverDraftsAfterRestart();
     } finally {
@@ -666,6 +665,47 @@ export default function ChatPanel(props: ChatProps) {
       }
     }
   });
+
+  /** The project a folder is (by the ID file in it); null without a folder. */
+  async function projectIdFor(root: string | null): Promise<string | null> {
+    if (!root) return null;
+    try {
+      return (await chatApi.openProject(root)).id;
+    } catch (err) {
+      console.error('Opening the project failed:', err);
+      return null;
+    }
+  }
+
+  async function openNewestChat() {
+    const first = store.state.list.items[0];
+    if (first) await store.openChat(first);
+    else createNewDialog();
+  }
+
+  // Another folder opened: its chats instead.
+  createEffect(
+    on(
+      () => props.rootPath(),
+      (root) => {
+        void (async () => {
+          const id = await projectIdFor(root);
+          if (!isMounted || root !== props.rootPath()) return;
+          if (id === store.projectId()) return;
+          setLoadingHistory(true);
+          try {
+            await store.switchProject(id);
+            if (isMounted && root === props.rootPath()) await openNewestChat();
+          } catch (err) {
+            setHistoryLoadError(String(err));
+          } finally {
+            if (isMounted) setLoadingHistory(false);
+          }
+        })();
+      },
+      { defer: true }
+    )
+  );
 
   const stopAddToChat = onAddToChat(() => {
     if (!loadingHistory()) insertPendingReferences();

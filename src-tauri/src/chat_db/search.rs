@@ -163,12 +163,16 @@ fn best_snippet(conn: &Connection, dialog_id: &str, terms: &[Term]) -> DbResult<
     }
 }
 
-pub fn search(conn: &Connection, query: &str, limit: usize) -> DbResult<Vec<SearchHit>> {
+/// Searches the chats of one project (`project` None: the chats with no project).
+pub fn search(conn: &Connection, query: &str, project: Option<&str>, limit: usize) -> DbResult<Vec<SearchHit>> {
     let terms = parse_query(query);
     if terms.is_empty() {
         return Ok(Vec::new());
     }
     let limit = limit.clamp(1, 200);
+    // Filtered before ranking: the pool is cut to RANK_POOL, and other
+    // projects' chats mustn't take the places of this one's.
+    let in_project = super::store::dialogs_in_project(conn, project)?;
 
     // 1. Per term, then intersect: every term somewhere in the chat.
     let mut per_term = Vec::with_capacity(terms.len());
@@ -177,7 +181,7 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> DbResult<Vec<Sear
     }
     let mut candidates: Vec<(String, f64)> = per_term[0]
         .keys()
-        .filter(|d| per_term.iter().all(|m| m.contains_key(*d)))
+        .filter(|d| in_project.contains(*d) && per_term.iter().all(|m| m.contains_key(*d)))
         .map(|d| {
             let text_score: f64 = per_term
                 .iter()
@@ -191,7 +195,7 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> DbResult<Vec<Sear
         .collect();
 
     if candidates.is_empty() {
-        return fuzzy_title_search(conn, &terms, limit);
+        return fuzzy_title_search(conn, &terms, &in_project, limit);
     }
 
     candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -313,7 +317,12 @@ fn trigram_query(term: &str) -> Option<String> {
     Some(grams.join(" OR "))
 }
 
-fn fuzzy_title_search(conn: &Connection, terms: &[Term], limit: usize) -> DbResult<Vec<SearchHit>> {
+fn fuzzy_title_search(
+    conn: &Connection,
+    terms: &[Term],
+    in_project: &HashSet<String>,
+    limit: usize,
+) -> DbResult<Vec<SearchHit>> {
     if terms.iter().any(|t| t.phrase || max_typos(&t.text) == 0) {
         return Ok(Vec::new());
     }
@@ -330,7 +339,9 @@ fn fuzzy_title_search(conn: &Connection, terms: &[Term], limit: usize) -> DbResu
             .map_err(err)?;
         for row in rows {
             let (id, title) = row.map_err(err)?;
-            titles.insert(id, title.to_lowercase());
+            if in_project.contains(&id) {
+                titles.insert(id, title.to_lowercase());
+            }
         }
     }
 

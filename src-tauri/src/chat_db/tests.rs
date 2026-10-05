@@ -16,7 +16,7 @@ const DAY: i64 = 86_400_000;
 
 fn dialog(conn: &mut Connection, id: &str, title: &str, age_days: i64) {
     let t = now_ms() - age_days * DAY;
-    create_dialog(conn, &NewDialog { id: id.into(), title: title.into(), created_at: t, updated_at: t }).unwrap();
+    create_dialog(conn, &NewDialog { id: id.into(), title: title.into(), created_at: t, updated_at: t, project_id: None }).unwrap();
     // Keep the intended age: appends move updated_at forward.
     conn.execute("UPDATE dialogs SET updated_at = ?2 WHERE id = ?1", rusqlite::params![id, t]).unwrap();
 }
@@ -67,11 +67,11 @@ fn paging_dialogs_by_cursor() {
     for i in 0..7 {
         dialog(&mut conn, &format!("d{i}"), &format!("Chat {i}"), i);
     }
-    let first = list_dialogs(&conn, None, 3).unwrap();
+    let first = list_dialogs(&conn, None, None, 3).unwrap();
     assert_eq!(first.items.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["d0", "d1", "d2"]);
-    let second = list_dialogs(&conn, first.next_cursor.as_ref(), 3).unwrap();
+    let second = list_dialogs(&conn, None, first.next_cursor.as_ref(), 3).unwrap();
     assert_eq!(second.items.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["d3", "d4", "d5"]);
-    let third = list_dialogs(&conn, second.next_cursor.as_ref(), 3).unwrap();
+    let third = list_dialogs(&conn, None, second.next_cursor.as_ref(), 3).unwrap();
     assert_eq!(third.items.len(), 1);
     assert!(third.next_cursor.is_none());
 }
@@ -109,10 +109,10 @@ fn streaming_message_is_searchable_only_once_finalized() {
     add(&mut conn, "d", vec![message("u1", "user", "hello"), pending]);
 
     update_message(&mut conn, "a1", &MessagePatch { content: Some("zebra crossing".into()), ..Default::default() }).unwrap();
-    assert!(search(&conn, "zebra", 10).unwrap().is_empty(), "checkpoints are not indexed");
+    assert!(search(&conn, "zebra", None, 10).unwrap().is_empty(), "checkpoints are not indexed");
 
     update_message(&mut conn, "a1", &MessagePatch { finalize: true, ..Default::default() }).unwrap();
-    let hits = search(&conn, "zebra", 10).unwrap();
+    let hits = search(&conn, "zebra", None, 10).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].message_id.as_deref(), Some("a1"));
     assert_eq!(get_dialog(&conn, "d").unwrap().unwrap().preview.as_deref(), Some("zebra crossing"));
@@ -134,7 +134,7 @@ fn search_matches_the_old_in_memory_behaviour() {
     noise.tool_call_id = Some("x".into());
     add(&mut conn, "f", vec![message("f0", "user", "read the file"), noise]);
 
-    let ids = |q: &str| search(&conn, q, 10).unwrap().into_iter().map(|h| h.dialog.id).collect::<Vec<_>>();
+    let ids = |q: &str| search(&conn, q, None, 10).unwrap().into_iter().map(|h| h.dialog.id).collect::<Vec<_>>();
 
     assert_eq!(ids("tauri"), ["a", "b"], "title hit first; tool output never matches");
     assert_eq!(ids("tauri window"), ["a"], "every word must match");
@@ -145,7 +145,7 @@ fn search_matches_the_old_in_memory_behaviour() {
     assert_eq!(ids("Borhs"), ["b"]);
     assert!(ids("tauri xyz").is_empty());
 
-    let hit = search(&conn, "ПРОКСИ reqwest", 10).unwrap().remove(0);
+    let hit = search(&conn, "ПРОКСИ reqwest", None, 10).unwrap().remove(0);
     let snippet = hit.snippet.expect("message snippet");
     assert_eq!(mark(&snippet.text, &snippet.ranges), "Как настроить [прокси] в [reqwest]?");
 }
@@ -163,13 +163,13 @@ fn failed_messages_leave_the_index_and_deletes_clean_up() {
     let mut conn = db();
     dialog(&mut conn, "d", "Pancakes", 0);
     add(&mut conn, "d", vec![message("u1", "user", "blueberry recipe")]);
-    assert_eq!(search(&conn, "blueberry", 10).unwrap().len(), 1);
+    assert_eq!(search(&conn, "blueberry", None, 10).unwrap().len(), 1);
 
     update_message(&mut conn, "u1", &MessagePatch { failed: Some(true), ..Default::default() }).unwrap();
-    assert!(search(&conn, "blueberry", 10).unwrap().is_empty());
+    assert!(search(&conn, "blueberry", None, 10).unwrap().is_empty());
 
     delete_dialog(&mut conn, "d").unwrap();
-    assert!(search(&conn, "pancakes", 10).unwrap().is_empty());
+    assert!(search(&conn, "pancakes", None, 10).unwrap().is_empty());
     let left: i64 = conn.query_row("SELECT COUNT(*) FROM search_rows", [], |r| r.get(0)).unwrap();
     assert_eq!(left, 0);
     let msgs: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
@@ -181,8 +181,8 @@ fn rename_replaces_the_title_row() {
     let mut conn = db();
     dialog(&mut conn, "d", "Old name", 0);
     rename_dialog(&mut conn, "d", "Fresh title").unwrap();
-    assert!(search(&conn, "old", 10).unwrap().is_empty());
-    assert_eq!(search(&conn, "fresh", 10).unwrap().len(), 1);
+    assert!(search(&conn, "old", None, 10).unwrap().is_empty());
+    assert_eq!(search(&conn, "fresh", None, 10).unwrap().len(), 1);
 }
 
 #[test]
