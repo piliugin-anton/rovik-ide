@@ -37,6 +37,19 @@ import { requestOpenFile } from '../lib/editorBridge';
 const BOTTOM_TOLERANCE_PX = 8;
 /** A scroll this soon after wheel/touch/key/scrollbar input is the user's. */
 const USER_INPUT_WINDOW_MS = 300;
+/**
+ * How long the user's last scroll input counts when deciding to follow the
+ * newest message again: longer than USER_INPUT_WINDOW_MS, because a smooth
+ * scroll (End, Page Down) can take most of a second to reach the bottom.
+ */
+const FOLLOW_INTENT_MS = 1200;
+/**
+ * Heading down, this close to the bottom counts as arriving there: the last
+ * messages can still be settling at their real height (rendered as they come
+ * into view), which moves the bottom while a smooth scroll is on its way to
+ * where it was.
+ */
+const FOLLOW_TOLERANCE_PX = 150;
 const AROUND = 25;
 const FLASH_MS = 1600;
 
@@ -145,6 +158,11 @@ export default function MessageList(props: {
    */
 
   function scrollToBottom() {
+    // A pending correction no longer matters once the view goes to the newest.
+    if (pendingCorrection !== 0) {
+      pendingCorrection = 0;
+      if (innerRef) innerRef.style.transform = '';
+    }
     if (scrollRef) scrollRef.scrollTop = scrollRef.scrollHeight;
   }
 
@@ -166,8 +184,15 @@ export default function MessageList(props: {
     change();
     if (!anchorId) return;
     const again = el.querySelector<HTMLElement>(`.chat-item[data-id="${CSS.escape(anchorId)}"]`);
-    if (again) el.scrollTop += again.getBoundingClientRect().top - top - offset;
-    lastScrollTop = el.scrollTop;
+    if (again) queueAnchorCorrection(again.getBoundingClientRect().top - top - offset);
+    // Messages just inserted are laid out at their placeholder height
+    // (content-visibility): the anchoring above used it. Their real height
+    // comes a frame later, and the item observer only corrects *changes* to
+    // a height it has seen: without this, it saw the real height first and
+    // corrected nothing, so every batch of older messages jumped the view.
+    for (const item of el.querySelectorAll<HTMLElement>('.chat-item')) {
+      if (!itemHeights.has(item)) itemHeights.set(item, item.getBoundingClientRect().height);
+    }
   }
 
   /*
@@ -185,23 +210,130 @@ export default function MessageList(props: {
   const markUserInput = () => {
     lastUserInput = performance.now();
   };
+  /** Which way the user last asked to scroll (wheel, keys); null: can't tell. */
+  let userDirection: 'up' | 'down' | null = null;
+  /*
+   * The list keeping the reader's place (messages above changing height,
+   * batches inserted above) by moving the content by `delta`.
+   *
+   * Never by setting the scroll position while a scroll is animating:
+   * WebKitGTK animates wheel scrolling, and a scroll position set during the
+   * animation is lost or fought (measured: 100px to thousands off). Nor by
+   * holding the correction until later: the content visibly jumps meanwhile
+   * (measured: up to 187px), and "input idle" isn't "animation finished".
+   *
+   * While scrolling (scroll events, wheel or keys in the last 150ms), the
+   * correction is a transform on the content: the text stays still at once,
+   * and the animation is left alone. Once scrolling has gone quiet, the
+   * transform becomes a scroll position change in the same frame, so nothing
+   * visibly moves. Otherwise the scroll position is corrected directly.
+   */
+  let pendingCorrection = 0;
+  let lastScrollActivity = 0;
+  /*
+   * Only WebKit (WebKitGTK on Linux, macOS) needs this: Chromium-based
+   * webviews apply a scroll position set during a scroll correctly
+   * (measured: no jumps), and there the transform would stop the user from
+   * scrolling into a batch just inserted at the top until scrolling paused.
+   */
+  const fightsScrollCorrections =
+    /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent);
+  let settleTimer: number | undefined;
+  const SETTLE_MS = 150;
+  const scrollingNow = () => performance.now() - lastScrollActivity < SETTLE_MS;
+  const markScrollActivity = () => {
+    lastScrollActivity = performance.now();
+    if (pendingCorrection !== 0) scheduleSettle();
+  };
+
+  function queueAnchorCorrection(delta: number) {
+    const el = scrollRef;
+    if (!el || Math.abs(delta) < 0.5) return;
+    if (fightsScrollCorrections && (scrollingNow() || pendingCorrection !== 0)) {
+      pendingCorrection += delta;
+      if (innerRef) innerRef.style.transform = `translateY(${-pendingCorrection}px)`;
+      scheduleSettle();
+      return;
+    }
+    el.scrollTop += delta;
+    lastScrollTop = el.scrollTop;
+  }
+
+  function scheduleSettle() {
+    window.clearTimeout(settleTimer);
+    settleTimer = window.setTimeout(() => {
+      if (scrollingNow()) return scheduleSettle();
+      requestAnimationFrame(() => {
+        const el = scrollRef;
+        if (!el || pendingCorrection === 0) return;
+        if (scrollingNow()) return scheduleSettle();
+        const shift = pendingCorrection;
+        pendingCorrection = 0;
+        if (innerRef) innerRef.style.transform = '';
+        el.scrollTop += shift;
+        lastScrollTop = el.scrollTop;
+      });
+    }, SETTLE_MS);
+  }
+  onCleanup(() => window.clearTimeout(settleTimer));
+  /**
+   * Following the newest message resumes only when the user is scrolling
+   * down to the bottom themselves (wheel, keys, scrollbar). Not on any scroll
+   * that happens to end there: one of the list's own corrections landing at
+   * the end while the user scrolled up turned following back on, and the
+   * list then kept snapping to the last message.
+   */
+  const userHeadingDown = () =>
+    draggingScrollbar ||
+    (performance.now() - lastUserInput < FOLLOW_INTENT_MS && userDirection !== 'up');
+
+  function handleKeyInput(e: KeyboardEvent) {
+    markUserInput();
+    markScrollActivity();
+    if (['ArrowDown', 'PageDown', 'End', ' '].includes(e.key)) userDirection = 'down';
+    else if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) userDirection = 'up';
+  }
+
+  // Scrolling keys reach the list even when it isn't focused (browsers send
+  // them to the last scrolled area), so they're watched at the window too:
+  // when focus is on the page itself or inside the list, not in a text field.
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inList = !!scrollRef && !!target && scrollRef.contains(target);
+      const onPage = !target || target === document.body || target === document.documentElement;
+      if (inList || onPage) handleKeyInput(e);
+    };
+    window.addEventListener('keydown', onKey, true);
+    onCleanup(() => window.removeEventListener('keydown', onKey, true));
+  });
   const userIsScrolling = () =>
     draggingScrollbar || performance.now() - lastUserInput < USER_INPUT_WINDOW_MS;
 
   function handleScroll() {
     const el = scrollRef;
     if (!el) return;
+    markScrollActivity();
     const top = el.scrollTop;
     const movedUp = top < lastScrollTop - 1;
     lastScrollTop = top;
     const distance = el.scrollHeight - top - el.clientHeight;
     if (!atNewest()) setStick(false);
-    else if (distance <= BOTTOM_TOLERANCE_PX) setStick(true);
-    else if (movedUp && userIsScrolling()) setStick(false);
+    else if (distance <= FOLLOW_TOLERANCE_PX && !movedUp && userHeadingDown()) {
+      if (!stick()) {
+        setStick(true);
+        // Close the gap the settling messages left.
+        if (distance > BOTTOM_TOLERANCE_PX)
+          requestAnimationFrame(() => stick() && scrollToBottom());
+      }
+    } else if (movedUp && userIsScrolling()) setStick(false);
   }
 
   function handleWheel(e: WheelEvent) {
     markUserInput();
+    // Starts an animated scroll whose first scroll event comes a frame later.
+    markScrollActivity();
+    if (e.deltaY !== 0) userDirection = e.deltaY > 0 ? 'down' : 'up';
     // Upward intent ends following at once, even if a scroll-to-bottom is
     // queued for this frame (it checks stick() before scrolling).
     const el = scrollRef;
@@ -301,32 +433,48 @@ export default function MessageList(props: {
   /*
    * Scroll anchoring, by hand. Items render lazily (content-visibility) and
    * code blocks colorize after mounting, so a message's height changes as it
-   * nears the viewport. When that happens to a message *above* the viewport,
-   * everything being read jumps — the stutter when scrolling up through
-   * history. Compensate by the same amount, before paint. Native anchoring
+   * nears the viewport. When that happens to a message before the one being
+   * read, everything being read jumps (the stutter when scrolling up through
+   * history). Compensate by the same amount, before paint. Native anchoring
    * is off (overflow-anchor: none) so Chromium-based webviews don't do it
    * twice.
    */
   const itemHeights = new WeakMap<Element, number>();
+  /** Real heights by message id, for its placeholder when it's rendered again. */
+  const measuredHeights = new Map<string, number>();
+  const placeholderHeight = (m: ChatMessage) => measuredHeights.get(m.id) ?? estimatedHeight(m);
+
   const itemObserver = new ResizeObserver((entries) => {
     const el = scrollRef;
     let delta = 0;
     const viewTop = el?.getBoundingClientRect().top ?? 0;
+    // The anchor, as browsers' native scroll anchoring picks it: the first
+    // message that starts inside the view. A change in height of anything
+    // before it (above the view, across its top edge, or at the very top of
+    // it while it renders) moves what's being read, so it's compensated.
+    // Never the last message: a reply streaming in grows in the part being
+    // read, where compensating would shove the text.
+    const items = el ? [...el.querySelectorAll<HTMLElement>('.chat-item')] : [];
+    const lastItem = items[items.length - 1];
+    const anchorTop =
+      items.map((i) => i.getBoundingClientRect().top).find((t) => t >= viewTop - 1) ?? Infinity;
     for (const entry of entries) {
       const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
       const before = itemHeights.get(entry.target);
       itemHeights.set(entry.target, height);
-      if (before === undefined || !el || stick()) continue;
-      // Only items that were entirely above the viewport. One straddling
-      // the top edge (a long reply streaming in) grows below it, where
-      // compensating would shove the text being read.
-      const growth = height - before;
-      if (entry.target.getBoundingClientRect().bottom - growth <= viewTop + 1) delta += growth;
+      const item = entry.target as HTMLElement & {
+        checkVisibility?: (options?: { contentVisibilityAuto?: boolean }) => boolean;
+      };
+      // Only real renders: an item skipped by content-visibility reports its
+      // placeholder, not its height.
+      const skipped = item.checkVisibility
+        ? !item.checkVisibility({ contentVisibilityAuto: true })
+        : true;
+      if (item.dataset.id && !skipped) measuredHeights.set(item.dataset.id, height);
+      if (before === undefined || !el || stick() || entry.target === lastItem) continue;
+      if (entry.target.getBoundingClientRect().top < anchorTop) delta += height - before;
     }
-    if (el && delta !== 0) {
-      el.scrollTop += delta;
-      lastScrollTop = el.scrollTop; // ours, not an upward user scroll
-    }
+    if (delta !== 0) queueAnchorCorrection(delta); // ours, not the user's
   });
   onCleanup(() => itemObserver.disconnect());
 
@@ -446,7 +594,10 @@ export default function MessageList(props: {
         class="chat-messages"
         onScroll={handleScroll}
         onWheel={handleWheel}
-        onTouchMove={markUserInput}
+        onTouchMove={() => {
+          markUserInput();
+          userDirection = null; // a swipe's direction isn't known here
+        }}
         onKeyDown={markUserInput}
         onPointerDown={handlePointerDown}
       >
@@ -467,6 +618,9 @@ export default function MessageList(props: {
                 class="chat-item"
                 classList={{ flash: flashId() === m.id }}
                 data-id={m.id}
+                // The placeholder height before it first renders: close to the
+                // real one, so a message rendering late barely moves anything.
+                style={{ 'contain-intrinsic-size': `auto ${placeholderHeight(m)}px` }}
               >
                 <Show
                   when={
@@ -842,4 +996,27 @@ function ThinkingBlock(props: { text: string; ms?: number; thinking: boolean }) 
       </Show>
     </div>
   );
+}
+
+/**
+ * Roughly how tall a message renders, for its placeholder before it's drawn
+ * (content-visibility). A fixed 120px was far off for short user messages
+ * (about 56px) and long replies alike, and the difference moved the view
+ * whenever one rendered late. It only needs to be close, not exact.
+ */
+function estimatedHeight(m: ChatMessage): number {
+  const LINE = 20;
+  const CHARS_PER_LINE = 52;
+  const lines = (text: string) =>
+    text
+      .split('\n')
+      .reduce((n, line) => n + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE)), 0);
+  if (m.role === 'user') return 32 + LINE * lines(m.content) + 24;
+  let height = 0;
+  if (m.content.trim()) {
+    const fences = (m.content.match(/```/g) ?? []).length / 2;
+    height += 24 + LINE * lines(m.content) + fences * 40 + 24;
+  }
+  height += (m.toolCalls?.length ?? 0) * 40;
+  return Math.max(40, Math.round(height));
 }

@@ -596,10 +596,18 @@ body {
   overflow-y: auto;
   /* MessageList anchors by hand; the browser doing it too would double up. */
   overflow-anchor: none;
+  /* Its own corrections must be instant; only explicit actions animate. */
+  scroll-behavior: auto;
+
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  scroll-behavior: auto;
+}
+
+.chat-messages * {
+  overflow-anchor: none;
 }
 
 /* The scroll container's frame: the jump button is placed against it, so
