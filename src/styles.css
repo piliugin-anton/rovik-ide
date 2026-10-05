@@ -5346,3 +5346,21 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+/* Virtual files settings (VirtualFilesSettings.tsx) */
+
+.virtual-files-settings .chat-action-button {
+  margin-top: 6px;
+}
+
+.virtual-files-command {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--bg-control);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}

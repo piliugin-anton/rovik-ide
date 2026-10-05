@@ -42,6 +42,7 @@ src/
 src-tauri/
   src/
     commands.rs     read_dir_entries / read_file_content / write_file_content
+    vfs/            virtual files mounted via FUSE / macFUSE / WinFsp
     lib.rs          Tauri builder, plugin + command registration
   capabilities/
     default.json    permission grants (dialog plugin only — our own fs
@@ -74,6 +75,39 @@ npm run tauri build    # production bundle
 
 See https://v2.tauri.app/start/prerequisites/ for the non-Linux prerequisites
 (Xcode CLT on macOS, MSVC Build Tools on Windows).
+
+## Virtual files
+
+`src-tauri/src/vfs/` gives the app files that live in its memory but are
+real files to every other program — so commands the AI agent runs can
+`cat`, `grep`, `sed -i`, `chmod +x` and execute them, or create and change
+files there that the app reads back. The volume is a user-space filesystem
+mounted through the OS's driver, which is optional software the app installs
+on request (Settings → Virtual files):
+
+| OS      | Driver  | Installed from                                       | Notes                                                                                 |
+| ------- | ------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Linux   | FUSE 3  | the distro's package (`fuse3`) via polkit (`pkexec`) | Mounted with `fusermount3`; no libfuse needed to build or run.                        |
+| macOS   | macFUSE | the official release `.dmg` (signature checked)      | The system extension must then be allowed in System Settings → Privacy & Security.    |
+| Windows | WinFsp  | the official release `.msi` (signature checked)      | winfsp.dll is delay-loaded. Building needs LLVM (`libclang`) for the WinFsp bindings. |
+
+The app starts on every OS without the driver; only mounting needs it.
+
+```rust
+let vfs = app.state::<vfs::VfsState>();
+let path = vfs.create_file("plans/step-1.md", b"...", false)?; // a real path
+```
+
+From the frontend, `src/lib/virtualFiles.ts` wraps the same calls
+(`writeVirtualFile` returns the `realPath` to hand to a command).
+
+- `store.rs` — the in-memory filesystem (POSIX semantics: hard links,
+  symlinks, xattrs, atomic rename, unlinked-but-open files), all unit tested.
+- `fuse.rs` / `macfuse.rs` — Linux and macOS driver; `winfsp_fs.rs` — Windows.
+- `driver.rs` — detecting and installing the driver.
+
+`cargo test vfs -- --ignored` mounts a real volume on Linux and runs shell
+tools and git against it.
 
 ## Notes / things left simple on purpose
 

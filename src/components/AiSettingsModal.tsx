@@ -9,8 +9,9 @@ import type { AgentPermissions, ApprovalRule } from '../lib/permissions';
 import ModelProvidersSettings, { type ProvidersSettingsController } from './ModelProvidersSettings';
 import PermissionsSettings from './PermissionsSettings';
 import ProjectChecksSettings from './ProjectChecksSettings';
+import VirtualFilesSettings from './VirtualFilesSettings';
 
-export type AiSettingsPage = 'menu' | 'providers' | 'permissions' | 'project';
+export type AiSettingsPage = 'menu' | 'providers' | 'permissions' | 'project' | 'vfs';
 
 interface AiSettingsModalProps {
   providers: Provider[];
@@ -28,6 +29,7 @@ const PAGE_TITLE: Record<AiSettingsPage, string> = {
   providers: 'Model providers',
   permissions: 'Permissions & Approval',
   project: 'Project checks',
+  vfs: 'Virtual files',
 };
 
 export default function AiSettingsModal(props: AiSettingsModalProps) {
@@ -157,6 +159,17 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                     ›
                   </span>
                 </button>
+                <button class="settings-menu-item" onClick={() => setPage('vfs')}>
+                  <span class="settings-menu-text">
+                    <span class="settings-menu-label">Virtual files</span>
+                    <span class="settings-menu-sub">
+                      In-memory files commands can use, via FUSE / macFUSE / WinFsp
+                    </span>
+                  </span>
+                  <span class="settings-menu-chevron" aria-hidden="true">
+                    ›
+                  </span>
+                </button>
               </div>
             </Match>
             <Match when={page() === 'providers'}>
@@ -180,6 +193,9 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                 onChange={setPermissions}
                 onOpenProviders={() => setPage('providers')}
               />
+            </Match>
+            <Match when={page() === 'vfs'}>
+              <VirtualFilesSettings />
             </Match>
           </Switch>
         </div>
