@@ -5,7 +5,9 @@
 // would take: the history as it would be sent (after compaction and
 // trimming), the system prompt, tool schemas and project context. It's an
 // estimate from the backend (agent.rs, chat_context_estimate), calibrated
-// per model from the token counts providers report.
+// per model from the token counts providers report. A lighter arc after it
+// is the room kept for the reply, its reasoning included (agent.rs,
+// reply_reserve): the history only gets what that leaves.
 import { Show } from 'solid-js';
 
 export interface ContextUsage {
@@ -18,6 +20,8 @@ export interface ContextUsage {
   /** The history before shortening. */
   fullHistoryTokens: number;
   historyTokens: number;
+  /** Kept free for the reply, its reasoning included. */
+  replyReserveTokens: number;
   /** Messages compacted or turns dropped to fit. */
   shortened: boolean;
 }
@@ -35,12 +39,16 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 export default function ContextMeter(props: { usage: ContextUsage }) {
   const share = () => Math.min(1, props.usage.promptTokens / Math.max(1, props.usage.windowTokens));
   const percent = () => Math.round(share() * 100);
+  /** The reply's share, drawn after the prompt's, within what's left. */
+  const replyShare = () =>
+    Math.min(1 - share(), props.usage.replyReserveTokens / Math.max(1, props.usage.windowTokens));
   const level = () => (percent() >= 85 ? 'high' : percent() >= 60 ? 'mid' : 'low');
 
   const tooltip = () => {
     const u = props.usage;
     const lines = [
       `About ${compact(u.promptTokens)} of ${compact(u.windowTokens)} tokens in the next request (estimated).`,
+      `${compact(u.replyReserveTokens)} more are kept for the reply and the model's reasoning.`,
     ];
     if (u.shortened) {
       lines.push(
@@ -72,6 +80,15 @@ export default function ContextMeter(props: { usage: ContextUsage }) {
         aria-label={`Context used: ${percent()} percent`}
       >
         <circle class="chat-context-track" cx="8" cy="8" r={RADIUS} />
+        <circle
+          class="chat-context-reserve"
+          cx="8"
+          cy="8"
+          r={RADIUS}
+          stroke-dasharray={`${CIRCUMFERENCE * replyShare()} ${CIRCUMFERENCE}`}
+          // Starts where the prompt's arc ends.
+          transform={`rotate(${-90 + share() * 360} 8 8)`}
+        />
         <circle
           class="chat-context-fill"
           cx="8"

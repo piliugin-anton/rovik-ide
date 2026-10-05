@@ -428,6 +428,7 @@ export default function ChatPanel(props: ChatProps) {
           sending(),
           projectContextText(),
           props.rootPath(),
+          efforts(),
         ] as const;
       },
       ([dialogId, profile]) => {
@@ -448,7 +449,12 @@ export default function ChatPanel(props: ChatProps) {
             });
             const extraChars =
               (tools.length ? JSON.stringify(tools).length : 0) + projectContextText().length;
-            const estimate = await estimateContext({ profile, dialogId, extraChars });
+            const estimate = await estimateContext({
+              profile,
+              dialogId,
+              extraChars,
+              reasoningEffort: reasoningOptions(profile)?.reasoning_effort,
+            });
             if (request !== contextRequest) return;
             const known = !!profile.contextTokens && profile.contextTokens > 0;
             setContextUsage({
@@ -457,6 +463,7 @@ export default function ChatPanel(props: ChatProps) {
               windowGuessed: !known,
               fullHistoryTokens: estimate.fullHistoryTokens,
               historyTokens: estimate.historyTokens,
+              replyReserveTokens: estimate.replyReserveTokens,
               shortened:
                 estimate.compacted > 0 ||
                 estimate.droppedTurns > 0 ||

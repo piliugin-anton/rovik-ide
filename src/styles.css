@@ -3924,6 +3924,14 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   stroke: var(--border-color);
 }
 
+/* The room kept for the reply: a lighter arc after the prompt's. */
+.chat-context-reserve {
+  fill: none;
+  stroke-width: 2;
+  stroke: var(--fg-dim);
+  opacity: 0.35;
+}
+
 .chat-context-fill {
   stroke: var(--fg);
   opacity: 0.75;

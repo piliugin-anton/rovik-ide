@@ -287,7 +287,9 @@ pub async fn send_chat_message(
     messages: Option<Vec<WireChatMessage>>,
     // ...or a chat whose history is loaded and fitted to the budget here.
     dialog_id: Option<String>,
-    token_budget: Option<usize>,
+    // The model's context window: the history gets what's left of it after
+    // the system prompt, tool schemas and the room kept for the reply.
+    context_tokens: Option<usize>,
     vision: Option<bool>,
     // The current user message as sent (with editor context), which differs
     // from what is stored.
@@ -324,13 +326,39 @@ pub async fn send_chat_message(
     let calibration_key = calibration::key(&base_url, &model);
     let chars_per_token = calibration::chars_per_token(&calibration_key);
 
+    let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
+    let system_prompt = system_prompt.unwrap_or_else(|| {
+        let base = if has_tools {
+            CODING_AGENT_SYSTEM_PROMPT.to_string()
+        } else {
+            without_tool_rules(CODING_AGENT_SYSTEM_PROMPT)
+        };
+        match project_context.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            Some(context) => format!("{base}\n\n{context}"),
+            None => base,
+        }
+    });
+    let reasoning_effort = options.as_ref().and_then(|o| o.reasoning_effort);
+    // Room kept for the reply (its reasoning included): learned per model
+    // and effort from what providers report, see `reply_reserve`.
+    let reply_key = reply_reserve::key(&calibration_key, reasoning_effort);
+    let window = context_tokens.filter(|t| *t > 0).unwrap_or(DEFAULT_CONTEXT_TOKENS);
+    let max_tokens = options.as_ref().and_then(|o| o.max_tokens);
+    let fixed_chars = system_prompt.chars().count()
+        + tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
+    let budget = history_budget(
+        window,
+        fixed_chars,
+        chars_per_token,
+        reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens),
+    );
+
     let mut messages: Vec<WireChatMessage> = match (messages, dialog_id) {
         (Some(explicit), _) => explicit,
         (None, Some(dialog_id)) => {
             let data_dir = db.data_dir().to_path_buf();
             // Gemini 3 needs a thought signature on tool calls it didn't sign.
             let gemini = is_gemini_target(&base_url, &model);
-            let budget = token_budget.unwrap_or(22_400);
             let vision = vision.unwrap_or(false);
             let build = db.read(move |conn| {
                 crate::chat_db::history::build_wire(
@@ -381,18 +409,6 @@ pub async fn send_chat_message(
         });
     }
 
-    let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
-    let system_prompt = system_prompt.unwrap_or_else(|| {
-        let base = if has_tools {
-            CODING_AGENT_SYSTEM_PROMPT.to_string()
-        } else {
-            without_tool_rules(CODING_AGENT_SYSTEM_PROMPT)
-        };
-        match project_context.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-            Some(context) => format!("{base}\n\n{context}"),
-            None => base,
-        }
-    });
     messages.insert(
         0,
         WireChatMessage {
@@ -412,7 +428,6 @@ pub async fn send_chat_message(
 
     // The reasoning effort is added per attempt (see below), in the forms
     // asked for.
-    let reasoning_effort = options.as_ref().and_then(|o| o.reasoning_effort);
     let reasoning_formats: Vec<String> = match (
         reasoning_effort,
         options.as_ref().and_then(|o| o.reasoning_formats.clone()),
@@ -459,6 +474,7 @@ pub async fn send_chat_message(
     // token count when it reports one.
     let (prompt_chars, prompt_images) = calibration::prompt_size(&body);
     let mut reported_prompt_tokens: Option<u64> = None;
+    let mut reported_output_tokens: Option<u64> = None;
     // Provider data of each completed tool call, saved to the database below.
     let mut call_extras: Vec<(String, serde_json::Value)> = Vec::new();
     let mut emit = |event: ChatStreamEvent| {
@@ -467,6 +483,7 @@ pub async fn send_chat_message(
         }
         if let ChatStreamEvent::Finished { usage: Some(usage), .. } = &event {
             reported_prompt_tokens = calibration::prompt_tokens(usage);
+            reported_output_tokens = reply_reserve::output_tokens(usage);
         }
         // Diagnostics: Gemini 3 must sign its tool calls; show whether it did.
         if log_signatures {
@@ -534,6 +551,9 @@ pub async fn send_chat_message(
 
     if let Some(tokens) = reported_prompt_tokens {
         calibration::learn(&calibration_key, prompt_chars, prompt_images, tokens);
+    }
+    if let Some(tokens) = reported_output_tokens {
+        reply_reserve::learn(&reply_key, tokens);
     }
 
     if let Err(error) = result {
@@ -670,6 +690,210 @@ pub mod calibration {
     }
 }
 
+/// Used when neither the server nor the user gave a context window.
+pub const DEFAULT_CONTEXT_TOKENS: usize = 32_000;
+const MIN_HISTORY_TOKENS: usize = 2_000;
+
+/// What's left of the window for the history: the window minus the system
+/// prompt and tool schemas (`fixed_chars`) and the room kept for the reply.
+fn history_budget(window: usize, fixed_chars: usize, chars_per_token: f64, reply: usize) -> usize {
+    let fixed = (fixed_chars as f64 / chars_per_token).ceil() as usize;
+    window.saturating_sub(fixed + reply).max(MIN_HISTORY_TOKENS)
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Room for the reply
+ * ---------------------------------------------------------------------------
+ *
+ * The context window holds the prompt and everything the model writes for
+ * this reply, its reasoning included. So that much is kept free of history:
+ * a default by effort until the model's real usage is known, learned from
+ * the output counts providers report (per model and effort).
+ *
+ * Where providers report it (`usage`):
+ * - `completion_tokens`, reasoning included, with the reasoning alone in
+ *   `completion_tokens_details.reasoning_tokens`: OpenAI, Azure, OpenRouter,
+ *   xAI, DeepSeek, Qwen (DashScope), Groq, Vertex AI's OpenAI endpoint;
+ * - `output_tokens` with `output_tokens_details.reasoning_tokens`: OpenAI's
+ *   Responses API and gateways that mirror it;
+ * - `reasoning_tokens` at the top level: Perplexity, some gateways;
+ * - `thoughts_token_count` / `thoughtsTokenCount`, not included in the
+ *   output count: Gemini's native usage, passed through by some proxies;
+ * - nothing: Gemini's OpenAI-compatible API leaves its reasoning out of
+ *   `completion_tokens` but counts it in `total_tokens`, so the output is
+ *   taken as `total_tokens - prompt_tokens` when that's larger. Anthropic's
+ *   OpenAI-compatible API counts thinking in `completion_tokens` and leaves
+ *   the details empty.
+ */
+pub mod reply_reserve {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    use super::ReasoningEffort;
+
+    /// A slowly decaying peak of the output tokens seen, and how many.
+    #[derive(Clone, Copy)]
+    struct Learned {
+        peak: f64,
+        samples: u32,
+    }
+
+    static LEARNED: LazyLock<Mutex<HashMap<String, Learned>>> = LazyLock::new(Default::default);
+    /// The reply never takes more than this share of the window.
+    const MAX_SHARE: f64 = 0.4;
+    const MIN_RESERVE: usize = 2_000;
+    /// Until this many replies were seen, the learned size only raises the
+    /// default (a few short answers say little about the next one).
+    const TRUST_AFTER: u32 = 5;
+    /// Headroom over the peak seen.
+    const MARGIN: f64 = 1.25;
+
+    /// The model's calibration key (`calibration::key`) plus the effort.
+    pub fn key(model_key: &str, effort: Option<ReasoningEffort>) -> String {
+        let effort = match effort {
+            None => "default",
+            Some(ReasoningEffort::None) => "none",
+            Some(ReasoningEffort::Low) => "low",
+            Some(ReasoningEffort::Medium) => "medium",
+            Some(ReasoningEffort::High) => "high",
+        };
+        format!("{model_key}|{effort}")
+    }
+
+    /// Before anything is learned. "Default" sends no effort, so the
+    /// provider picks one: usually medium.
+    pub fn default_for(effort: Option<ReasoningEffort>) -> usize {
+        match effort {
+            Some(ReasoningEffort::None | ReasoningEffort::Low) => 4_000,
+            None | Some(ReasoningEffort::Medium) => 8_000,
+            Some(ReasoningEffort::High) => 16_000,
+        }
+    }
+
+    /// Tokens to keep free for the reply.
+    pub fn reserve(key: &str, effort: Option<ReasoningEffort>, window: usize, max_tokens: Option<u32>) -> usize {
+        let default = default_for(effort);
+        let learned = LEARNED.lock().ok().and_then(|m| m.get(key).copied());
+        let mut wanted = match learned {
+            Some(l) => {
+                let seen = (l.peak * MARGIN).ceil() as usize;
+                if l.samples >= TRUST_AFTER { seen.max(MIN_RESERVE) } else { seen.max(default) }
+            }
+            None => default,
+        };
+        // The reply can't be longer than the limit sent with the request.
+        if let Some(max) = max_tokens.filter(|m| *m > 0) {
+            wanted = wanted.min(max as usize);
+        }
+        wanted.min((window as f64 * MAX_SHARE) as usize)
+    }
+
+    /// Records one reply's output size. The peak follows a larger reply at
+    /// once and decays slowly after it.
+    pub fn learn(key: &str, output_tokens: u64) {
+        if output_tokens == 0 {
+            return;
+        }
+        let observed = output_tokens as f64;
+        if let Ok(mut learned) = LEARNED.lock() {
+            let next = match learned.get(key) {
+                Some(old) => Learned {
+                    peak: (old.peak * 0.9 + observed * 0.1).max(observed),
+                    samples: old.samples.saturating_add(1),
+                },
+                None => Learned { peak: observed, samples: 1 },
+            };
+            learned.insert(key.to_string(), next);
+        }
+    }
+
+    fn count(usage: &serde_json::Value, pointers: &[&str]) -> Option<u64> {
+        pointers.iter().find_map(|p| usage.pointer(p).and_then(|v| v.as_u64()))
+    }
+
+    /// The reasoning tokens a provider reported, and whether its output count
+    /// already includes them.
+    pub fn reasoning_tokens(usage: &serde_json::Value) -> Option<(u64, bool)> {
+        if let Some(n) = count(
+            usage,
+            &["/completion_tokens_details/reasoning_tokens", "/output_tokens_details/reasoning_tokens"],
+        ) {
+            return Some((n, true));
+        }
+        count(usage, &["/reasoning_tokens", "/thoughts_token_count", "/thoughtsTokenCount"]).map(|n| (n, false))
+    }
+
+    /// Everything the model generated for the reply, reasoning included.
+    pub fn output_tokens(usage: &serde_json::Value) -> Option<u64> {
+        let completion = count(
+            usage,
+            &["/completion_tokens", "/output_tokens", "/candidates_token_count", "/candidatesTokenCount"],
+        );
+        let prompt = count(usage, &["/prompt_tokens", "/input_tokens", "/prompt_token_count", "/promptTokenCount"]);
+        let total = count(usage, &["/total_tokens", "/total_token_count", "/totalTokenCount"]);
+        // Reasoning left out of the output count still shows in the total.
+        let beyond_prompt = total.zip(prompt).map(|(t, p)| t.saturating_sub(p));
+        let mut output = completion.max(beyond_prompt)?;
+        if let Some((reasoning, false)) = reasoning_tokens(usage) {
+            if beyond_prompt.is_none() || reasoning > output {
+                output = completion.unwrap_or(0) + reasoning;
+            }
+        }
+        Some(output)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn reads_each_providers_usage() {
+            // OpenAI: reasoning included in completion_tokens.
+            let openai = json!({ "prompt_tokens": 100, "completion_tokens": 900, "total_tokens": 1000,
+                "completion_tokens_details": { "reasoning_tokens": 700 } });
+            assert_eq!(reasoning_tokens(&openai), Some((700, true)));
+            assert_eq!(output_tokens(&openai), Some(900));
+            // Responses API.
+            let responses = json!({ "input_tokens": 100, "output_tokens": 500,
+                "output_tokens_details": { "reasoning_tokens": 300 } });
+            assert_eq!(reasoning_tokens(&responses), Some((300, true)));
+            assert_eq!(output_tokens(&responses), Some(500));
+            // Gemini's OpenAI-compatible API: reasoning only in the total.
+            let gemini = json!({ "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 1150 });
+            assert_eq!(reasoning_tokens(&gemini), None);
+            assert_eq!(output_tokens(&gemini), Some(1050));
+            // Gemini's native counts, without a total: thoughts added.
+            let native = json!({ "promptTokenCount": 100, "candidatesTokenCount": 50, "thoughtsTokenCount": 400 });
+            assert_eq!(reasoning_tokens(&native), Some((400, false)));
+            assert_eq!(output_tokens(&native), Some(450));
+            // Top-level reasoning_tokens with a consistent total: the total decides.
+            let perplexity = json!({ "prompt_tokens": 10, "completion_tokens": 300, "total_tokens": 310, "reasoning_tokens": 200 });
+            assert_eq!(output_tokens(&perplexity), Some(300));
+            assert_eq!(output_tokens(&json!({ "prompt_tokens": 10 })), None);
+        }
+
+        #[test]
+        fn reserve_defaults_learns_and_caps() {
+            let key = key("https://example.test/v1|m", Some(ReasoningEffort::High));
+            assert_eq!(reserve(&key, Some(ReasoningEffort::High), 200_000, None), 16_000);
+            // Capped at 40% of a small window, and by max_tokens.
+            assert_eq!(reserve(&key, Some(ReasoningEffort::High), 32_000, None), 12_800);
+            assert_eq!(reserve(&key, Some(ReasoningEffort::High), 200_000, Some(4_000)), 4_000);
+            // A long reply raises it at once.
+            learn(&key, 20_000);
+            assert_eq!(reserve(&key, Some(ReasoningEffort::High), 200_000, None), 25_000);
+            // Short replies only lower it once enough were seen.
+            for _ in 0..30 {
+                learn(&key, 1_000);
+            }
+            let after = reserve(&key, Some(ReasoningEffort::High), 200_000, None);
+            assert!(after < 16_000 && after >= MIN_RESERVE, "{after}");
+        }
+    }
+}
+
 /// How much of the model's context the chat's next request would use: the
 /// history as it would be sent (after compaction and trimming), plus the
 /// system prompt and `extra_chars` (tool schemas and project context, which
@@ -683,6 +907,8 @@ pub struct ContextEstimate {
     history_tokens: usize,
     /// The history before anything was compacted or trimmed.
     full_history_tokens: usize,
+    /// Kept free for the reply, its reasoning included (`reply_reserve`).
+    reply_reserve_tokens: usize,
     compacted: usize,
     dropped_turns: usize,
 }
@@ -693,13 +919,24 @@ pub async fn chat_context_estimate(
     dialog_id: String,
     base_url: String,
     model: String,
-    token_budget: usize,
+    context_tokens: Option<usize>,
+    reasoning_effort: Option<ReasoningEffort>,
     vision: bool,
     extra_chars: usize,
 ) -> Result<ContextEstimate, String> {
     let data_dir = db.data_dir().to_path_buf();
     let gemini = is_gemini_target(&base_url, &model);
-    let chars_per_token = calibration::chars_per_token(&calibration::key(&base_url, &model));
+    let calibration_key = calibration::key(&base_url, &model);
+    let chars_per_token = calibration::chars_per_token(&calibration_key);
+    let window = context_tokens.filter(|t| *t > 0).unwrap_or(DEFAULT_CONTEXT_TOKENS);
+    let reply = reply_reserve::reserve(
+        &reply_reserve::key(&calibration_key, reasoning_effort),
+        reasoning_effort,
+        window,
+        None,
+    );
+    let fixed_chars = CODING_AGENT_SYSTEM_PROMPT.chars().count() + extra_chars;
+    let token_budget = history_budget(window, fixed_chars, chars_per_token, reply);
     let (_, info) = db
         .read(move |conn| {
             crate::chat_db::history::build_wire(
@@ -714,11 +951,12 @@ pub async fn chat_context_estimate(
             )
         })
         .await?;
-    let fixed = (CODING_AGENT_SYSTEM_PROMPT.chars().count() + extra_chars) as f64 / chars_per_token;
+    let fixed = fixed_chars as f64 / chars_per_token;
     Ok(ContextEstimate {
         prompt_tokens: info.estimated_tokens + fixed.ceil() as usize,
         history_tokens: info.estimated_tokens,
         full_history_tokens: info.full_tokens,
+        reply_reserve_tokens: reply,
         compacted: info.compacted,
         dropped_turns: info.dropped_turns,
     })
