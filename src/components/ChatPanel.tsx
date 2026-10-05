@@ -10,6 +10,7 @@ import {
   onMount,
   Show,
   untrack,
+  createRoot,
 } from 'solid-js';
 import { Channel } from '@tauri-apps/api/core';
 import type {
@@ -194,6 +195,11 @@ interface ChatProps {
   rootPath: Accessor<string | null>;
   activeFileContext: Accessor<ActiveFileContext | null>;
   files: Accessor<TreeRow[]>;
+  /**
+   * The open project, whose chats are shown (lib/projects.ts, resolved by
+   * App): undefined while it's being resolved, null with no folder open.
+   */
+  projectId: Accessor<string | null | undefined>;
 }
 
 export default function ChatPanel(props: ChatProps) {
@@ -644,7 +650,7 @@ export default function ChatPanel(props: ChatProps) {
 
       try {
         // This project's chats (or, with no folder open, the ones with none).
-        await store.switchProject(await projectIdFor(props.rootPath()));
+        await store.switchProject(await projectReady());
       } catch (err) {
         console.error('Failed to load chats:', err);
         setHistoryLoadError(String(err));
@@ -666,15 +672,20 @@ export default function ChatPanel(props: ChatProps) {
     }
   });
 
-  /** The project a folder is (by the ID file in it); null without a folder. */
-  async function projectIdFor(root: string | null): Promise<string | null> {
-    if (!root) return null;
-    try {
-      return (await chatApi.openProject(root)).id;
-    } catch (err) {
-      console.error('Opening the project failed:', err);
-      return null;
-    }
+  /** The project, once App has resolved it. */
+  function projectReady(): Promise<string | null> {
+    const now = props.projectId();
+    if (now !== undefined) return Promise.resolve(now);
+    return new Promise((resolve) => {
+      createRoot((dispose) => {
+        createEffect(() => {
+          const id = props.projectId();
+          if (id === undefined) return;
+          dispose();
+          resolve(id);
+        });
+      });
+    });
   }
 
   async function openNewestChat() {
@@ -683,19 +694,17 @@ export default function ChatPanel(props: ChatProps) {
     else createNewDialog();
   }
 
-  // Another folder opened: its chats instead.
+  // Another project (another folder, or a copy given its own history): its chats.
   createEffect(
     on(
-      () => props.rootPath(),
-      (root) => {
+      () => props.projectId(),
+      (id) => {
+        if (id === undefined || id === store.projectId() || loadingHistory()) return;
         void (async () => {
-          const id = await projectIdFor(root);
-          if (!isMounted || root !== props.rootPath()) return;
-          if (id === store.projectId()) return;
           setLoadingHistory(true);
           try {
             await store.switchProject(id);
-            if (isMounted && root === props.rootPath()) await openNewestChat();
+            if (isMounted && props.projectId() === id) await openNewestChat();
           } catch (err) {
             setHistoryLoadError(String(err));
           } finally {

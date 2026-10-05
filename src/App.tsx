@@ -49,6 +49,10 @@ import FileContextMenu from './components/FileContextMenu';
 import { GitPanel } from './components/GitPanel';
 import { confirmDialog, ConfirmDialogHost, type ConfirmOptions } from './components/ConfirmDialog';
 import NotificationHost from './components/NotificationHost';
+import ProjectSwitcher from './components/ProjectSwitcher';
+import ProjectList from './components/ProjectList';
+import { currentProject, projectList, refreshProjects, resolveProject } from './lib/projects';
+import { chatApi, type ProjectSummary } from './lib/chatApi';
 import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { notifyFileWritten, onFileWritten, onRevealEdit } from './lib/approvals';
@@ -197,15 +201,82 @@ export default function App() {
 
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
-    if (folder) {
-      for (const m of monaco.editor.getModels()) m.dispose();
-      setRootPath(folder);
-      setOpenFiles([]);
-      setActivePath(null);
-      setSelectedFileIds(new Set<string>());
-      setLastSelectedId(null);
+    if (folder) openProjectAt(folder);
+  }
+
+  /** Opens a project folder: Files, Chat and Git switch to it. */
+  function openProjectAt(folder: string) {
+    if (folder === rootPath()) return;
+    for (const m of monaco.editor.getModels()) m.dispose();
+    setRootPath(folder);
+    setOpenFiles([]);
+    setActivePath(null);
+    setSelectedFileIds(new Set<string>());
+    setLastSelectedId(null);
+  }
+
+  // Which project the open folder is, and so whose chats are shown.
+  createEffect(on(rootPath, (root) => void resolveProject(root)));
+
+  /** A project whose folder is gone: point it at its folder (lib/projects.ts). */
+  async function relinkProject(p: ProjectSummary) {
+    const folder = await pickProjectFolder();
+    if (!folder) return;
+    try {
+      let result = await chatApi.relinkProject(p.id, folder, false);
+      if (result.kind === 'isOtherProject') {
+        const merge = await confirmDialog({
+          title: `${result.other.name} is already a project`,
+          message:
+            `That folder has its own chat history (${result.other.chatCount}). ` +
+            `Move ${p.name}'s chats (${p.chatCount}) into it?`,
+          confirmLabel: 'Move chats',
+        });
+        if (!merge) return;
+        result = await chatApi.relinkProject(p.id, folder, true);
+      }
+      await refreshProjects();
+      if (folder === rootPath()) void resolveProject(folder);
+      else openProjectAt(folder);
+    } catch (err) {
+      window.alert(`Relinking failed: ${String(err)}`);
     }
   }
+
+  async function deleteProject(p: ProjectSummary) {
+    const ok = await confirmDialog({
+      title: `Delete ${p.name}'s chat history?`,
+      message: `Its ${p.chatCount} chat${p.chatCount === 1 ? '' : 's'} are deleted for good. The project folder itself isn't touched.`,
+      confirmLabel: 'Delete chats',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await chatApi.deleteProject(p.id);
+      await refreshProjects();
+    } catch (err) {
+      window.alert(`Deleting failed: ${String(err)}`);
+    }
+  }
+
+  // Ctrl/Cmd+O: open a project, also while typing (nothing else uses it).
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().includes('MAC');
+      if (
+        (isMac ? e.metaKey : e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === 'o'
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        void handlePickFolder();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    onCleanup(() => window.removeEventListener('keydown', onKey, true));
+  });
 
   /** `activate: false` opens it in a tab without switching to it. */
   async function openFile(row: TreeRow, opts: { activate?: boolean } = {}) {
@@ -1118,6 +1189,12 @@ export default function App() {
   return (
     <div class="app" onContextMenu={handleContextMenu}>
       <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
+        <ProjectSwitcher
+          onOpenFolder={() => void handlePickFolder()}
+          onOpen={(p) => openProjectAt(p.path)}
+          onRelink={(p) => void relinkProject(p)}
+          onDelete={(p) => void deleteProject(p)}
+        />
         <div class="sidebar-tabs">
           <button
             classList={{ active: sidebarTab() === 'files' }}
@@ -1140,10 +1217,29 @@ export default function App() {
         </div>
 
         <Show when={sidebarTab() === 'files'}>
-          <div class="sidebar-header">
-            <button onClick={handlePickFolder}>Open project...</button>
-          </div>
-          <Show when={rootPath()} fallback={<div class="empty-state">No project open</div>}>
+          <Show
+            when={rootPath()}
+            fallback={
+              <div class="files-empty">
+                <button
+                  type="button"
+                  class="files-empty-open"
+                  onClick={() => void handlePickFolder()}
+                >
+                  Open project…
+                </button>
+                <Show when={projectList().length > 0}>
+                  <div class="files-empty-heading">Recent projects</div>
+                  <ProjectList
+                    projects={projectList()}
+                    onOpen={(p) => openProjectAt(p.path)}
+                    onRelink={(p) => void relinkProject(p)}
+                    onDelete={(p) => void deleteProject(p)}
+                  />
+                </Show>
+              </div>
+            }
+          >
             <SearchPanel
               rootPath={rootPath}
               onOpenMatch={(target) => void openSearchMatch(target)}
@@ -1169,7 +1265,15 @@ export default function App() {
         </Show>
 
         <Show when={sidebarTab() === 'chat'}>
-          <ChatPanel rootPath={rootPath} activeFileContext={activeFileContext} files={tree.files} />
+          <ChatPanel
+            rootPath={rootPath}
+            activeFileContext={activeFileContext}
+            files={tree.files}
+            projectId={() => {
+              const p = currentProject();
+              return p === undefined ? undefined : (p?.id ?? null);
+            }}
+          />
         </Show>
 
         <Show when={sidebarTab() === 'git'}>

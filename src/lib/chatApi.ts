@@ -74,10 +74,20 @@ export const chatApi = {
    * so renaming or moving the folder keeps its chats; else by its path;
    * else a new one.
    */
-  openProject: (root: string) =>
-    invoke<{ id: string; name: string; path: string; idFile: boolean }>('chat_open_project', {
-      root,
-    }),
+  openProject: (root: string) => invoke<OpenedProject>('chat_open_project', { root }),
+  /** "Looks like a copy": share the original's chats, or a separate history. */
+  answerCopy: (root: string, originalId: string, share: boolean) =>
+    invoke<ProjectInfo>('chat_answer_copy', { root, originalId, share }),
+  /** "Looks like a moved project": use its chats here. */
+  answerMoved: (root: string, currentId: string, targetId: string) =>
+    invoke<ProjectInfo>('chat_answer_moved', { root, currentId, targetId }),
+  /** Not suggested for this folder again. */
+  declineProjects: (root: string, projectIds: string[]) =>
+    invoke<void>('chat_decline_projects', { root, projectIds }),
+  listProjects: () => invoke<ProjectSummary[]>('chat_list_projects'),
+  relinkProject: (projectId: string, root: string, merge: boolean) =>
+    invoke<Relinked>('chat_relink_project', { projectId, root, merge }),
+  deleteProject: (projectId: string) => invoke<void>('chat_delete_project', { projectId }),
 
   getMessages: (dialogId: string, beforeSeq?: number, limit = 50): Promise<MessagePage> =>
     page(invoke('chat_get_messages', { dialogId, beforeSeq, limit })),
@@ -146,3 +156,34 @@ export function attachmentUrl(id: string): string {
   const windows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
   return windows ? `http://chat-attachment.localhost/${id}` : `chat-attachment://localhost/${id}`;
 }
+
+/* Projects (src-tauri/src/chat_db/projects.rs) */
+
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  path: string;
+  /** The ID file is in the folder (else it's known by its path only). */
+  idFile: boolean;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  path: string;
+  chatCount: number;
+  lastOpenedAt: number;
+  /** None of its folders exist (or have its ID) anymore. */
+  missing: boolean;
+}
+
+export type ProjectSuggestion =
+  { kind: 'copy'; original: ProjectSummary } | { kind: 'moved'; candidates: ProjectSummary[] };
+
+export interface OpenedProject {
+  project: ProjectInfo;
+  suggestion: ProjectSuggestion | null;
+}
+
+export type Relinked =
+  { kind: 'done'; project: ProjectInfo } | { kind: 'isOtherProject'; other: ProjectSummary };

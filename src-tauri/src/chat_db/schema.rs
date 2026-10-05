@@ -109,6 +109,32 @@ DROP INDEX dialogs_recent;
 CREATE INDEX dialogs_recent ON dialogs (project_id, archived, updated_at DESC, id DESC);
 "#;
 
+/// Recovering projects (chat_db/projects.rs): every folder a project was
+/// opened from (to tell a move from a copy), answers to "this looks like a
+/// copy / a moved project" so they aren't asked again, and the project's
+/// place inside its git repository (subfolders of one repo are different
+/// projects with the same root commit).
+const SCHEMA_V4: &str = r#"
+CREATE TABLE project_paths (
+  project_id     TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+  path           TEXT NOT NULL,
+  last_opened_at INTEGER NOT NULL,
+  PRIMARY KEY (project_id, path)
+) STRICT;
+CREATE INDEX project_paths_by_path ON project_paths (path);
+
+CREATE TABLE project_decisions (
+  path       TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  decision   TEXT NOT NULL,
+  decided_at INTEGER NOT NULL,
+  PRIMARY KEY (path, project_id)
+) STRICT;
+
+ALTER TABLE projects ADD COLUMN git_subpath TEXT;
+INSERT INTO project_paths (project_id, path, last_opened_at) SELECT id, path, last_opened_at FROM projects;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -142,6 +168,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", 3)?;
         tx.commit()?;
     }
+    if version < 4 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V4)?;
+        tx.pragma_update(None, "user_version", 4)?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -167,7 +199,7 @@ mod tests {
         migrate(&mut conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let project: Option<String> =
             conn.query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| r.get(0)).unwrap();
         assert_eq!(project, None);
