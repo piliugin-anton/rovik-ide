@@ -279,12 +279,61 @@ fn submit_plan_schema() -> Value {
     })
 }
 
+fn restore_context_schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "restore_context",
+            "description": "Put an earlier state of your own context back (CLM mode), without reading it into your context first. A revision number makes that revision your context file again, followed by the messages that came after it: use it when an edit removed more than you should have. \"stored\" drops your edits: the chat is sent as stored (trimmed to fit if needed). Either applies when your next request is sent; the state you leave stays a revision.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "revision": {
+                        "type": "string",
+                        "description": "A revision number from read_file @context/revisions, e.g. \"12\", or \"stored\"."
+                    }
+                },
+                "required": ["revision"]
+            }
+        }
+    })
+}
+
+/// The tools on the agent's context folder (CLM mode): those that aren't
+/// offered for the project here (Plan mode, no project) are offered for
+/// `@context/…` only, and restore_context.
+fn context_tool_schemas(offered: &[Value]) -> Vec<Value> {
+    let mut out: Vec<Value> = file_tool_schemas()
+        .into_iter()
+        .filter(|t| !offered.iter().any(|o| tool_name(o) == tool_name(t)))
+        .map(|mut t| {
+            if let Some(Value::String(d)) = t.pointer_mut("/function/description") {
+                *d = format!("Only for your context folder here: paths under @context/ (no project files). {d}");
+            }
+            if let Some(Value::String(d)) = t.pointer_mut("/function/parameters/properties/path/description") {
+                *d = "A path under @context/, e.g. \"@context/LIVE_CONTEXT.md\".".into();
+            }
+            t
+        })
+        .collect();
+    out.push(restore_context_schema());
+    out
+}
+
 fn tool_name(t: &Value) -> &str {
     t.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or("")
 }
 
-/// The tool list for one request, depending on what's available.
-pub fn tools_for(has_project: bool, vision: bool, no_tools: bool, permissions: &Permissions, plan_mode: bool) -> Vec<Value> {
+/// The tool list for one request, depending on what's available. `clm`:
+/// the agent manages its own context (CLM mode), so it gets the tools for it.
+pub fn tools_for(
+    has_project: bool,
+    vision: bool,
+    no_tools: bool,
+    permissions: &Permissions,
+    plan_mode: bool,
+    clm: bool,
+) -> Vec<Value> {
     // Models marked "no tools" in settings get none (and no tool instructions).
     if no_tools {
         return Vec::new();
@@ -305,11 +354,15 @@ pub fn tools_for(has_project: bool, vision: bool, no_tools: bool, permissions: &
         if has_project {
             all.push(todo_schema());
         }
-        return all;
+    } else {
+        all.retain(|t| !PLAN_BLOCKED_TOOLS.contains(&tool_name(t)));
+        all.push(ask_user_schema());
+        all.push(submit_plan_schema());
     }
-    all.retain(|t| !PLAN_BLOCKED_TOOLS.contains(&tool_name(t)));
-    all.push(ask_user_schema());
-    all.push(submit_plan_schema());
+    if clm {
+        let context = context_tool_schemas(&all);
+        all.extend(context);
+    }
     all
 }
 
@@ -786,15 +839,43 @@ mod tests {
     fn tool_lists_by_mode() {
         let p = Permissions::default();
         let names = |tools: Vec<Value>| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
-        let agent = names(tools_for(true, false, false, &p, false));
+        let agent = names(tools_for(true, false, false, &p, false, false));
         assert!(agent.contains(&"run_command".to_string()) && agent.last().unwrap() == "todo");
-        let plan = names(tools_for(true, true, false, &p, true));
+        let plan = names(tools_for(true, true, false, &p, true, false));
         assert!(!plan.iter().any(|n| PLAN_BLOCKED_TOOLS.contains(&n.as_str())));
         assert!(plan.contains(&"browser_screenshot".to_string()) && plan.ends_with(&["ask_user".into(), "submit_plan".into()]));
-        assert_eq!(names(tools_for(false, false, false, &p, false)), vec!["web_search", "browse_url"]);
-        assert!(tools_for(true, true, true, &p, false).is_empty());
+        assert_eq!(names(tools_for(false, false, false, &p, false, false)), vec!["web_search", "browse_url"]);
+        assert!(tools_for(true, true, true, &p, false, false).is_empty());
+        assert!(tools_for(true, true, true, &p, false, true).is_empty());
         let none = Permissions { allowed_commands: vec![], ..Permissions::default() };
-        assert!(!names(tools_for(true, false, false, &none, false)).contains(&"run_command".to_string()));
+        assert!(!names(tools_for(true, false, false, &none, false, false)).contains(&"run_command".to_string()));
+    }
+
+    #[test]
+    fn context_tools_in_clm_mode() {
+        let p = Permissions::default();
+        let names = |tools: &[Value]| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
+        let count = |tools: &[Value], name: &str| names(tools).iter().filter(|n| *n == name).count();
+        // Agent mode with a project: the project's file tools, once, and restore_context.
+        let agent = tools_for(true, false, false, &p, false, true);
+        for name in ["read_file", "edit_file", "write_file", "list_dir", "restore_context"] {
+            assert_eq!(count(&agent, name), 1, "{name}");
+        }
+        let description = |tools: &[Value], name: &str| {
+            tools.iter().find(|t| tool_name(t) == name).unwrap()["function"]["description"].as_str().unwrap().to_string()
+        };
+        assert!(!description(&agent, "edit_file").contains("context folder"));
+        // Plan mode: edits are offered for the context folder only.
+        let plan = tools_for(true, false, false, &p, true, true);
+        assert!(description(&plan, "edit_file").starts_with("Only for your context folder"));
+        assert!(!description(&plan, "read_file").contains("context folder"));
+        assert!(names(&plan).contains(&"restore_context".to_string()));
+        // No project: all file tools, for the context folder only.
+        let none = tools_for(false, false, false, &p, false, true);
+        for name in ["read_file", "edit_file", "write_file", "list_dir"] {
+            assert!(description(&none, name).starts_with("Only for your context folder"), "{name}");
+        }
+        assert!(!names(&none).contains(&"todo".to_string()));
     }
 
     #[test]

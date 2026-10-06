@@ -226,11 +226,12 @@ impl<R: Runtime> Run<R> {
         let args = permissions::parse_args(&tc.arguments);
         let path_arg = args.get("path").and_then(|p| p.as_str());
 
-        // The agent's own context file: no approval, no editor review, not
-        // a project change. It applies to the next request.
+        // The agent's own context: no approval, no editor review, not a
+        // project change. It applies to the next request.
         if clm
-            && matches!(tc.name.as_str(), "read_file" | "edit_file" | "write_file")
-            && is_context_path(path_arg, context_dir)
+            && (tc.name == "restore_context"
+                || matches!(tc.name.as_str(), "read_file" | "edit_file" | "write_file" | "list_dir")
+                    && is_context_path(path_arg, context_dir))
         {
             let mut content = self.context_tool(&tc.name, &args).await;
             if let Some(note) = self.guard.record(FinishedCall {
@@ -384,7 +385,8 @@ impl<R: Runtime> Run<R> {
         self.add_tool_result(&tc.id, "Error: stopped by the user before this ran.".into(), None, Vec::new()).await
     }
 
-    /// read_file / edit_file / write_file on the agent's context folder.
+    /// read_file / edit_file / write_file / list_dir on the agent's context
+    /// folder, and restore_context.
     async fn context_tool(&self, name: &str, args: &Map<String, Value>) -> String {
         let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("");
         let text = |k: &str| args.get(k).and_then(|v| v.as_str());
@@ -412,6 +414,8 @@ impl<R: Runtime> Run<R> {
                 None => return "Error: \"content\" is required.".into(),
                 Some(content) => crate::clm::tool_write(&vfs, &self.dialog_id, path, content),
             },
+            "list_dir" => crate::clm::tool_list(&db, &vfs, &self.dialog_id, path).await,
+            "restore_context" => crate::clm::tool_restore(&db, &vfs, &self.dialog_id, args.get("revision")).await,
             _ => return format!("Error: {name} can't be used on your context folder."),
         };
         result.unwrap_or_else(|e| format!("Error: {e}"))

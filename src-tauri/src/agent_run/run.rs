@@ -436,12 +436,15 @@ impl<R: Runtime> Run<R> {
         // An effort picked since the last request applies from this one.
         self.take_effort();
         let config = self.state.config();
+        let clm = self.context_mode == crate::clm::MODE_CLM
+            && crate::clm::availability(&self.app.state::<crate::vfs::VfsState>()).is_ok();
         let tools = tools::tools_for(
             self.root.is_some(),
             self.profile.vision,
             self.profile.no_tools,
             &config.permissions,
             self.plan_mode,
+            clm,
         );
         let project_context = if self.plan_mode {
             [self.project_context.as_str(), plan::PLAN_MODE_INSTRUCTIONS, self.plan_context.as_str()]
