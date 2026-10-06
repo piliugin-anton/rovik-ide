@@ -10,7 +10,7 @@ interface CommonArgs {
   options?: OpenAIChatOptions;
   /** Lets cancelChatRequest stop this request and its retries. */
   requestId?: string;
-  /** The open project's profile (lib/projectProfile.ts), added to the system prompt. */
+  /** About the open project, added to the system prompt. */
   projectContext?: string;
   /** How the chat's context is managed (lib/contextMode.ts); trimming by default. */
   contextMode?: 'trimming' | 'clm';
@@ -71,11 +71,6 @@ export async function sendChatMessage(args: SendChatMessageArgs): Promise<void> 
   });
 }
 
-/** Stops a running request (and any pending retry). */
-export function cancelChatRequest(requestId: string): Promise<boolean> {
-  return invoke<boolean>('cancel_chat_request', { requestId });
-}
-
 /*
  * Tauri delivers Channel events separately from a command's result, and
  * events of 8 KB or more take an extra asynchronous fetch. So the last
@@ -126,13 +121,16 @@ export interface ContextEstimate {
 
 /**
  * How many tokens the chat's next request would use (agent.rs): its history
- * as it would be sent, the system prompt, and `extraChars` more (tool
- * schemas, project context). The effort decides the room kept for the reply.
+ * as it would be sent, the system prompt, the tools the model would be
+ * offered and the project's section of the prompt. The effort decides the
+ * room kept for the reply.
  */
 export function estimateContext(args: {
   profile: ModelProfile;
   dialogId: string;
-  extraChars: number;
+  /** The open project (its tools and prompt section are counted). */
+  root: string | null;
+  mode: 'agent' | 'plan';
   reasoningEffort?: OpenAIChatOptions['reasoning_effort'];
 }): Promise<ContextEstimate> {
   return invoke<ContextEstimate>('chat_context_estimate', {
@@ -142,6 +140,8 @@ export function estimateContext(args: {
     contextTokens: knownContextTokens(args.profile.contextTokens),
     reasoningEffort: args.reasoningEffort ?? undefined,
     vision: args.profile.vision,
-    extraChars: args.extraChars,
+    noTools: args.profile.noTools,
+    root: args.root,
+    mode: args.mode,
   });
 }

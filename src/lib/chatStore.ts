@@ -3,17 +3,23 @@
 // Chat state for the UI: one page of the chat list and up to MAX_OPEN open
 // chats. Everything else stays in the database (src-tauri/src/chat_db).
 //
-// Actions update the store first, so the UI never waits, then persist.
-// Writes go through one queue, so the database sees them in the order they
-// were made, even though Tauri may run concurrent commands in parallel.
+// One store for the app (`chatStore`), not one per chat panel: agent runs
+// go on in the backend while the panel isn't mounted, and what they store
+// arrives here (lib/agentRuns.ts) either way.
+//
+// The UI's own actions update the store first, so the UI never waits, then
+// persist. Writes go through one queue, so the database sees them in the
+// order they were made, even though Tauri may run concurrent commands in
+// parallel. What a run stores is already in the database when it arrives.
 import { createStore, produce } from 'solid-js/store';
-import type { ChatMessage, ChatToolCall, DialogCursor, DialogSummary, ToolMeta } from '../types';
-import { chatApi } from './chatApi';
+import type { ChatMessage, DialogCursor, DialogSummary, MessageStatus } from '../types';
+import { chatApi, fromRow, type MessageRow } from './chatApi';
+
+export type { MessageRow };
 
 const MAX_OPEN = 5;
 const PAGE = 50;
 const LIST_PAGE = 50;
-const CHECKPOINT_MS = 2000;
 const PREVIEW_CHARS = 200;
 
 export interface OpenChat {
@@ -23,8 +29,6 @@ export interface OpenChat {
   hasNewer: boolean;
   loadingOlder: boolean;
   lastUsed: number;
-  /** An agent run targets this chat; it is never evicted. */
-  busy: boolean;
 }
 
 interface ChatState {
@@ -40,14 +44,15 @@ interface ChatState {
   active: DialogSummary | null;
   /** Last persistence error, shown in the UI. */
   error: string | null;
+  /** Chats with an agent run going on: never evicted, never switched away from. */
+  running: Record<string, true>;
+  /** Chats whose run is being started (until the backend answers). */
+  starting: Record<string, number>;
 }
 
 export type MessagePatch = Partial<
-  Pick<
-    ChatMessage,
-    'content' | 'toolCalls' | 'error' | 'failed' | 'pending' | 'meta' | 'finalized' | 'status'
-  >
->;
+  Pick<ChatMessage, 'content' | 'toolCalls' | 'error' | 'failed' | 'pending' | 'meta' | 'finalized'>
+> & { status?: MessageStatus | null };
 
 function previewOf(text: string): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_CHARS);
@@ -60,6 +65,8 @@ export function createChatStore() {
     activeId: null,
     active: null,
     error: null,
+    running: {},
+    starting: {},
   });
 
   /*
@@ -129,7 +136,7 @@ export function createChatStore() {
     const ids = Object.keys(state.open);
     if (ids.length <= MAX_OPEN) return;
     const candidates = ids
-      .filter((id) => id !== state.activeId && !state.open[id].busy)
+      .filter((id) => id !== state.activeId && !isRunning(id))
       .sort((a, b) => state.open[a].lastUsed - state.open[b].lastUsed);
     for (const id of candidates.slice(0, ids.length - MAX_OPEN)) {
       setState(
@@ -162,7 +169,7 @@ export function createChatStore() {
     setState(
       produce((s) => {
         s.list = { items: [], nextCursor: null, loading: false, loaded: false };
-        for (const [chatId, chat] of Object.entries(s.open)) if (!chat.busy) delete s.open[chatId];
+        for (const chatId of Object.keys(s.open)) if (!s.running[chatId]) delete s.open[chatId];
         s.activeId = null;
         s.active = null;
       })
@@ -229,7 +236,6 @@ export function createChatStore() {
       hasNewer: false,
       loadingOlder: false,
       lastUsed: Date.now(),
-      busy: existing?.busy ?? false,
     });
     evictIfNeeded();
   }
@@ -244,7 +250,6 @@ export function createChatStore() {
       hasNewer: page.hasNewer,
       loadingOlder: false,
       lastUsed: Date.now(),
-      busy: state.open[summary.id]?.busy ?? false,
     });
     evictIfNeeded();
   }
@@ -292,9 +297,30 @@ export function createChatStore() {
     return newer.length;
   }
 
-  function setBusy(dialogId: string, busy: boolean) {
-    if (state.open[dialogId]) setState('open', dialogId, 'busy', busy);
+  function setRunning(dialogId: string, running: boolean) {
+    setState(
+      'running',
+      produce((r) => {
+        if (running) r[dialogId] = true;
+        else delete r[dialogId];
+      })
+    );
   }
+
+  /** A run is being started in the chat (counted: starts can overlap). */
+  function setStarting(dialogId: string, starting: boolean) {
+    setState(
+      'starting',
+      produce((s) => {
+        const n = (s[dialogId] ?? 0) + (starting ? 1 : -1);
+        if (n > 0) s[dialogId] = n;
+        else delete s[dialogId];
+      })
+    );
+  }
+
+  /** A run is going on in the chat, or being started. */
+  const isRunning = (dialogId: string) => !!state.running[dialogId] || !!state.starting[dialogId];
 
   /*
    * -------------------------------------------------------------------------
@@ -321,7 +347,6 @@ export function createChatStore() {
           hasNewer: false,
           loadingOlder: false,
           lastUsed: now,
-          busy: false,
         };
         s.activeId = summary.id;
         s.active = { ...summary };
@@ -354,18 +379,10 @@ export function createChatStore() {
     return persist(() => chatApi.deleteDialog(dialogId));
   }
 
-  /**
-   * Adds messages to a chat. Resolves once they are stored, which matters
-   * before a request: the backend builds the model's history from the
-   * database.
-   */
-  function appendMessages(dialogId: string, messages: ChatMessage[]) {
+  /** The chat list's summary after messages were added at the end. */
+  function noteAdded(dialogId: string, added: ChatMessage[]) {
     const now = Date.now();
-    const stamped = messages.map((m) => ({ ...m, createdAt: m.createdAt ?? now }));
-    if (state.open[dialogId]) {
-      setState('open', dialogId, 'messages', (list) => [...list, ...stamped]);
-    }
-    const last = [...stamped]
+    const last = [...added]
       .reverse()
       .find(
         (m) =>
@@ -376,93 +393,71 @@ export function createChatStore() {
       );
     updateSummary(dialogId, (d) => {
       d.updatedAt = now;
-      d.messageCount += stamped.length;
+      d.messageCount += added.length;
       if (last) d.preview = previewOf(last.content);
     });
     moveToTop(dialogId);
-
-    return persist(async () => {
-      const seqs = await chatApi.appendMessages(dialogId, stamped);
-      // Record the database positions; paging for older messages uses them.
-      setState(
-        'open',
-        dialogId,
-        produce((c) => {
-          if (!c) return;
-          stamped.forEach((m, i) => {
-            const target = c.messages.find((x) => x.id === m.id);
-            if (target) target.seq = seqs[i];
-          });
-        })
-      );
-    });
   }
 
-  /** Store-only change, e.g. each streamed token. */
-  function patchMessage(dialogId: string, messageId: string, patch: MessagePatch) {
-    const i = indexOfMessage(dialogId, messageId);
-    if (i >= 0) setState('open', dialogId, 'messages', i, patch);
-  }
-
-  /*
-   * Streaming checkpoints: at most one write per message per CHECKPOINT_MS,
-   * so a crash mid-reply loses seconds, not the reply.
+  /**
+   * Shows a message before the backend stores it (a sent message: the run
+   * stores it first thing). The stored copy replaces it when it arrives.
    */
-  const checkpoints = new Map<string, { timer: number; dialogId: string }>();
-
-  function checkpoint(dialogId: string, messageId: string) {
-    if (checkpoints.has(messageId)) return;
-    const timer = window.setTimeout(() => {
-      checkpoints.delete(messageId);
-      const message = messagesOf(dialogId).find((m) => m.id === messageId);
-      if (!message || message.finalized) return;
-      const content = message.content;
-      const toolCalls = message.toolCalls ? [...message.toolCalls] : undefined;
-      void persist(() => chatApi.updateMessage(messageId, { content, toolCalls }));
-    }, CHECKPOINT_MS);
-    checkpoints.set(messageId, { timer, dialogId });
+  function addLocal(dialogId: string, message: ChatMessage) {
+    const stamped = { ...message, createdAt: message.createdAt ?? Date.now() };
+    if (state.open[dialogId]) {
+      setState('open', dialogId, 'messages', (list) => [...list, stamped]);
+    }
+    noteAdded(dialogId, [stamped]);
   }
 
-  /** Final content of a message: stored, indexed for search, and previewed. */
-  function finalizeMessage(
-    dialogId: string,
-    messageId: string,
-    fields: { content?: string; toolCalls?: ChatToolCall[]; error?: string; meta?: ToolMeta }
-  ) {
-    const pending = checkpoints.get(messageId);
-    if (pending) {
-      window.clearTimeout(pending.timer);
-      checkpoints.delete(messageId);
+  /** Messages a run stored (lib/agentRuns.ts); ones shown already are updated. */
+  function receiveMessages(dialogId: string, rows: (MessageRow & { pending?: boolean })[]) {
+    const chat = state.open[dialogId];
+    const known = new Set(chat?.messages.map((m) => m.id) ?? []);
+    const added: ChatMessage[] = [];
+    // Opened around a search hit: the newest aren't loaded, so these wait for that.
+    const showNew = !!chat && !chat.hasNewer;
+    for (const row of rows) {
+      const message: ChatMessage = { ...fromRow(row), ...(row.pending ? { pending: true } : {}) };
+      if (known.has(message.id)) {
+        patchMessage(dialogId, message.id, { seq: message.seq, finalized: message.finalized });
+        continue;
+      }
+      added.push(message);
     }
-    patchMessage(dialogId, messageId, { ...fields, pending: false, finalized: true });
+    if (added.length === 0) return;
+    if (showNew) setState('open', dialogId, 'messages', (list) => [...list, ...added]);
+    noteAdded(dialogId, added);
+  }
 
-    const message = messagesOf(dialogId).find((m) => m.id === messageId);
-    const content = fields.content ?? message?.content;
-    if (message?.role === 'assistant' && !fields.error && content?.trim()) {
+  /** A change a run made to a stored message (streamed text, its final state). */
+  function applyPatch(dialogId: string, messageId: string, patch: MessagePatch) {
+    const i = indexOfMessage(dialogId, messageId);
+    if (i < 0) return;
+    const message = messagesOf(dialogId)[i];
+    const { status, ...fields } = patch;
+    const next: Partial<ChatMessage> = { ...fields };
+    if ('status' in patch) next.status = status ?? undefined;
+    // A reply still being written (also after a reload, when its stored copy
+    // didn't say so).
+    if (!fields.finalized && !message.finalized && message.role === 'assistant')
+      next.pending = true;
+    setState('open', dialogId, 'messages', i, next);
+
+    const content = fields.content ?? message.content;
+    if (fields.finalized && message.role === 'assistant' && !fields.error && content.trim()) {
       updateSummary(dialogId, (d) => {
         d.preview = previewOf(content);
         d.updatedAt = Date.now();
       });
     }
-    return persist(() =>
-      chatApi.updateMessage(messageId, {
-        content,
-        toolCalls: fields.toolCalls ?? message?.toolCalls,
-        error: fields.error,
-        meta: fields.meta,
-        finalize: true,
-      })
-    );
   }
 
-  /**
-   * Replaces a stored message's meta and saves it: for records that change
-   * after they're added (the verification gate's rounds). patchMessage alone
-   * only changes what's on screen.
-   */
-  function updateMeta(dialogId: string, messageId: string, meta: ToolMeta) {
-    patchMessage(dialogId, messageId, { meta });
-    return persist(() => chatApi.updateMessage(messageId, { meta }));
+  /** Store-only change. */
+  function patchMessage(dialogId: string, messageId: string, patch: Partial<ChatMessage>) {
+    const i = indexOfMessage(dialogId, messageId);
+    if (i >= 0) setState('open', dialogId, 'messages', i, patch);
   }
 
   function markFailed(dialogId: string, messageId: string) {
@@ -487,18 +482,21 @@ export function createChatStore() {
     openChatAround,
     loadOlder,
     loadNewer,
-    setBusy,
+    setRunning,
+    setStarting,
+    isRunning,
     createDialog,
     renameDialog,
     deleteDialog,
-    appendMessages,
-    patchMessage,
-    updateMeta,
-    checkpoint,
-    finalizeMessage,
+    addLocal,
+    receiveMessages,
+    applyPatch,
     markFailed,
     clearError,
   };
 }
 
 export type ChatStore = ReturnType<typeof createChatStore>;
+
+/** The app's chats. */
+export const chatStore = createChatStore();

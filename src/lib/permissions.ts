@@ -9,9 +9,16 @@
 //      their own rule: whether approval is required, and who gives it (the
 //      user, or the AI reviewer model).
 //
-// Stored with the AI settings (lib/aiSettings.ts).
+// Stored with the AI settings (lib/aiSettings.ts), and sent to the backend,
+// which enforces them (src-tauri/src/agent_run/permissions.rs). The command
+// analysis below is a copy of the backend's, for the settings' hints: keep
+// the two in step.
 import type { ModelSelection } from '../types';
-import { DEFAULT_TOOL_CALL_CHECKPOINT } from './agentGuard';
+
+/** Default for the "pause every N tool calls" setting (agent_run/guard.rs). */
+export const DEFAULT_TOOL_CALL_CHECKPOINT = 50;
+/** The setting's choices; null = never pause on count alone. */
+export const TOOL_CALL_CHECKPOINT_CHOICES: (number | null)[] = [25, 50, 100, 200, null];
 
 /** Who approves: the user, or the AI reviewer. */
 export type Approver = 'user' | 'ai';
@@ -39,18 +46,18 @@ export interface AgentPermissions {
   approvalFallbacks: ModelSelection[];
   /**
    * Send the review as a JSON object instead of a text prompt (the input
-   * format of the Typesafe Jev model). See lib/aiApproval.ts.
+   * format of the Typesafe Jev model). See src-tauri/src/agent_run/review.rs.
    */
   approvalTypedInput: boolean;
   /**
    * Pause the agent for the user after every this many tool calls in one
    * run; null never pauses on count (loop detection still does). See
-   * lib/agentGuard.ts.
+   * src-tauri/src/agent_run/guard.rs.
    */
   toolCallCheckpoint: number | null;
   /**
    * When the agent finishes a run in which it changed files, run the
-   * project's checks and send failures back to it (lib/verification.ts).
+   * project's checks and send failures back to it (agent_run/verify.rs).
    */
   verifyChanges: boolean;
 }
@@ -517,13 +524,6 @@ export function checkCommand(command: string, permissions: AgentPermissions): Co
  * ---------------------------------------------------------------------------
  */
 
-/** Tools that always change files; everything else (reads, web) doesn't. */
-const FILE_MODIFYING_TOOLS = new Set(['write_file', 'edit_file']);
-
-export type ToolVerdict =
-  | { permitted: true; modifiesFiles: boolean; approval: Approver | null }
-  | { permitted: false; reason: string };
-
 function parseToolArgs(argsJson: string): Record<string, unknown> {
   try {
     const parsed = argsJson.trim() ? JSON.parse(argsJson) : {};
@@ -533,34 +533,6 @@ function parseToolArgs(argsJson: string): Record<string, unknown> {
   }
 }
 
-/** Permission first, then who (if anyone) has to approve. */
-export function checkToolCall(
-  name: string,
-  argsJson: string,
-  permissions: AgentPermissions
-): ToolVerdict {
-  let modifiesFiles = FILE_MODIFYING_TOOLS.has(name);
-
-  if (name === 'run_command') {
-    const command = parseToolArgs(argsJson).command;
-    if (typeof command !== 'string' || !command.trim()) {
-      // The executor reports the missing argument.
-      return { permitted: true, modifiesFiles: false, approval: null };
-    }
-    const verdict = checkCommand(command, permissions);
-    if (!verdict.permitted) return verdict;
-    modifiesFiles = verdict.modifiesFiles;
-  }
-
-  const rule =
-    name === 'run_command'
-      ? permissions.commandApproval
-      : FILE_MODIFYING_TOOLS.has(name)
-        ? permissions.editApproval
-        : permissions.toolApproval;
-  return { permitted: true, modifiesFiles, approval: rule.required ? rule.by : null };
-}
-
 /** Whether some approval is set to be done by the AI reviewer. */
 export function usesAiReview(p: AgentPermissions): boolean {
   return [p.commandApproval, p.editApproval, p.toolApproval].some(
@@ -568,12 +540,7 @@ export function usesAiReview(p: AgentPermissions): boolean {
   );
 }
 
-/** Whether the model should be offered run_command at all. */
-export function commandsAvailable(p: AgentPermissions): boolean {
-  return p.allowAnyCommand || p.allowedCommands.some((c) => c.trim());
-}
-
-/** One line describing a tool call, for approval prompts and reviews. */
+/** One line describing a tool call, as the chat's tool blocks show it. */
 export function describeToolCall(name: string, argsJson: string): string {
   const args = parseToolArgs(argsJson);
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : undefined);
@@ -607,72 +574,4 @@ export function describeToolCall(name: string, argsJson: string): string {
     default:
       return `${name}(${argsJson.slice(0, 200)})`;
   }
-}
-
-/*
- * ---------------------------------------------------------------------------
- * Never left to the AI reviewer
- * ---------------------------------------------------------------------------
- *
- * A reviewer model only sees the text it's given: it can't tell that a
- * command reads a credential file or that a remote is production. These
- * shapes always go to the user, whatever the reviewer would say. Adapted
- * from OpenRouter's "Auto-Approve Coding Agent Permission Prompts with Jev"
- * recipe.
- */
-
-const RISKY_COMMANDS = [
-  // Hidden program names: quotes, escapes, variables, leading dashes/digits.
-  /^(\S*['"\\=$]|[-0-9])/,
-  /^(sudo|doas|su)\b/,
-  // Running a string through another shell or interpreter hides its content.
-  /^(bash|sh|zsh|fish|eval|xargs)\b/,
-  /^(node|bun|deno|python3?)\s+(-\S+\s+)*(-c|-e|-p|--eval)\b/,
-  /^rm\s+(-\S*[rRf]\S*\s+)+/,
-  /^git\b.*\b(push|reset\s+--hard|clean\s+-\S*[fd]|branch\s+-D|checkout\s+--\s|restore\b)/,
-  /^(npm|pnpm|yarn|bun|cargo)\s+publish\b/,
-  /^(wrangler|vercel|fly|flyctl|netlify)\s+deploy\b|^terraform\s+(apply|destroy)\b|^kubectl\s+(delete|apply)\b/,
-  /^(curl|wget)\b.*\s(-d|--data\S*|-F|--form|-T|--upload-file|-X\s*(POST|PUT|PATCH|DELETE))\b/,
-  /^(chmod|chown)\s+-\S*R/,
-  /\.env\b|\.ssh\b|\.aws\b|\.npmrc\b|\.netrc\b|id_rsa|credentials/i,
-];
-
-/** Paths whose contents are secrets: edits to them always go to the user. */
-const SECRET_PATH =
-  /(^|[\\/])(\.env(\.[^\\/]*)?|\.npmrc|\.netrc|id_[a-z0-9]+|[^\\/]*\.(pem|key|pfx|p12))$|(^|[\\/])(\.ssh|\.aws|\.gnupg)([\\/]|$)|credentials/i;
-
-/** Strips wrappers and prefixes until the program name is bare. */
-function bareCommand(part: string): string {
-  let current = part;
-  for (;;) {
-    const next = current
-      .trim()
-      .replace(/^(if|then|elif|else|fi|while|until|do|done|for|in|case|esac|!)\s+/, '')
-      .replace(
-        /^(command|builtin|exec|env|nohup|time|timeout(\s+\S+)?|nice|watch|npx|bunx|pnpx)\s+/,
-        ''
-      )
-      .replace(/^[A-Za-z_][A-Za-z0-9_]*=[^\s'"\\$]*\s+/, '')
-      .replace(/^\\/, '')
-      .replace(/^[^\s'"\\$]*\//, '');
-    if (next === current) return current;
-    current = next;
-  }
-}
-
-/** A command the AI reviewer must never approve on its own. */
-export function isRiskyCommand(command: string): boolean {
-  // Substitutions and line continuations can hide anything.
-  if (/\$\(|[<>]\(|`|\\\r?\n/.test(command)) return true;
-  // Splitting ignores quotes on purpose: a separator inside a quoted
-  // argument can only add a prompt, never hide a command.
-  return command
-    .split(/\s*(?:&&|\|\||;|\||&|\n|[(){}])\s*/)
-    .map(bareCommand)
-    .some((part) => RISKY_COMMANDS.some((pattern) => pattern.test(part)));
-}
-
-/** A file whose edits the AI reviewer must never approve on its own. */
-export function isSecretPath(path: string): boolean {
-  return SECRET_PATH.test(path.trim());
 }

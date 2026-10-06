@@ -100,6 +100,20 @@ pub struct WireChatMessage {
 }
 
 
+impl WireChatMessage {
+    /// A plain text message, for one-off requests.
+    pub fn text(role: &str, content: impl Into<String>) -> Self {
+        WireChatMessage {
+            role: role.to_string(),
+            content: serde_json::Value::String(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            other: Default::default(),
+        }
+    }
+}
+
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
@@ -335,42 +349,67 @@ fn request_system_prompt(plain: String, clm: Option<String>, clm_used: bool) -> 
     }
 }
 
+/// One chat completion request, as `send_chat_message` takes it: either a
+/// stored chat (its history is loaded and fitted to the window here) or
+/// explicit messages for one-off requests such as title generation.
+#[derive(Default)]
+pub struct ChatParams {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    // Either explicit messages (one-off requests such as title generation)...
+    pub messages: Option<Vec<WireChatMessage>>,
+    // ...or a chat whose history is loaded and fitted to the budget here.
+    pub dialog_id: Option<String>,
+    // The model's context window: the history gets what's left of it after
+    // the system prompt, tool schemas and the room kept for the reply.
+    pub context_tokens: Option<usize>,
+    pub vision: Option<bool>,
+    // The current user message as sent (with editor context), which differs
+    // from what is stored.
+    pub current_user_content: Option<String>,
+    pub streaming: bool,
+    // Per-model override of the first-token timeout, for slow reasoning models.
+    pub first_byte_timeout_ms: Option<u64>,
+    // Ask the model to continue its last, interrupted reply (not stored).
+    pub continue_reply: Option<bool>,
+    // The pending assistant message this reply fills: provider data for its
+    // tool calls (Gemini thought signatures) is saved against it.
+    pub assistant_message_id: Option<String>,
+    pub tools: Option<Vec<serde_json::Value>>,
+    pub system_prompt: Option<String>,
+    // About the open project (stack, check commands, its agent instructions),
+    // appended to the default system prompt.
+    pub project_context: Option<String>,
+    pub options: Option<OpenAIChatOptions>,
+    // How the chat's context is managed: "trimming" (default) or "clm"
+    // (Context Language Models: the agent edits its context as a file, src/clm).
+    pub context_mode: Option<String>,
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_chat_message(
     db: tauri::State<'_, crate::chat_db::DbState>,
     base_url: String,
     api_key: String,
     model: String,
-    // Either explicit messages (one-off requests such as title generation)...
     messages: Option<Vec<WireChatMessage>>,
-    // ...or a chat whose history is loaded and fitted to the budget here.
     dialog_id: Option<String>,
-    // The model's context window: the history gets what's left of it after
-    // the system prompt, tool schemas and the room kept for the reply.
     context_tokens: Option<usize>,
     vision: Option<bool>,
-    // The current user message as sent (with editor context), which differs
-    // from what is stored.
     current_user_content: Option<String>,
     streaming: bool,
     // Lets `cancel_chat_request` stop this request (and its retries).
     request_id: Option<String>,
-    // Per-model override of the first-token timeout, for slow reasoning models.
     first_byte_timeout_ms: Option<u64>,
-    // Ask the model to continue its last, interrupted reply (not stored).
     continue_reply: Option<bool>,
-    // The pending assistant message this reply fills: provider data for its
-    // tool calls (Gemini thought signatures) is saved against it.
     assistant_message_id: Option<String>,
     requests: tauri::State<'_, crate::chat_request::ChatRequests>,
     tools: Option<Vec<serde_json::Value>>,
     system_prompt: Option<String>,
-    // About the open project (stack, check commands, its agent instructions),
-    // appended to the default system prompt.
     project_context: Option<String>,
     options: Option<OpenAIChatOptions>,
-    // How the chat's context is managed: "trimming" (default) or "clm"
-    // (Context Language Models: the agent edits its context as a file, src/clm).
     context_mode: Option<String>,
     vfs: tauri::State<'_, crate::vfs::VfsState>,
     on_event: Channel<ChatStreamEvent>,
@@ -378,6 +417,61 @@ pub async fn send_chat_message(
     // Registered first, so a Stop pressed while the history is still being
     // loaded is not lost.
     let mut registration = requests.register(request_id);
+    let params = ChatParams {
+        base_url,
+        api_key,
+        model,
+        messages,
+        dialog_id,
+        context_tokens,
+        vision,
+        current_user_content,
+        streaming,
+        first_byte_timeout_ms,
+        continue_reply,
+        assistant_message_id,
+        tools,
+        system_prompt,
+        project_context,
+        options,
+        context_mode,
+    };
+    let mut emit = |event: ChatStreamEvent| {
+        let _ = on_event.send(event);
+    };
+    run_chat(&db, &vfs, params, &mut registration.cancel, &mut emit).await
+}
+
+/// Runs one request: builds the history (for a chat), sends it with
+/// retries, and reports everything through `emit`. Failures of the request
+/// itself are reported as an Error event; only problems before it (e.g.
+/// building the history) are returned as `Err`.
+pub async fn run_chat(
+    db: &crate::chat_db::DbState,
+    vfs: &crate::vfs::VfsState,
+    params: ChatParams,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    on_event: &mut (dyn FnMut(ChatStreamEvent) + Send),
+) -> Result<(), String> {
+    let ChatParams {
+        base_url,
+        api_key,
+        model,
+        messages,
+        dialog_id,
+        context_tokens,
+        vision,
+        current_user_content,
+        streaming,
+        first_byte_timeout_ms,
+        continue_reply,
+        assistant_message_id,
+        tools,
+        system_prompt,
+        project_context,
+        options,
+        context_mode,
+    } = params;
 
     let client = Client::new();
 
@@ -414,7 +508,7 @@ pub async fn send_chat_message(
     // edits the file there); without it the chat falls back to trimming.
     let clm = match (context_mode.as_deref(), dialog_id.as_deref()) {
         (Some(crate::clm::MODE_CLM), Some(_)) if !has_tools => false,
-        (Some(crate::clm::MODE_CLM), Some(_)) => match crate::clm::availability(&vfs) {
+        (Some(crate::clm::MODE_CLM), Some(_)) => match crate::clm::availability(vfs) {
             Ok(_) => true,
             Err(why) => {
                 eprintln!("context: CLM mode unavailable ({why}); using trimming for this request");
@@ -427,7 +521,7 @@ pub async fn send_chat_message(
     // CLM history is built: a request that falls back to trimming is sent
     // as a plain trimming request, without instructions that don't hold.
     let clm_prompt = match clm {
-        true => crate::clm::system_section(&db, &vfs, dialog_id.as_deref().unwrap_or(""), budget)
+        true => crate::clm::system_section(db, vfs, dialog_id.as_deref().unwrap_or(""), budget)
             .await
             .map(|section| format!("{system_prompt}\n\n{section}")),
         false => None,
@@ -451,7 +545,7 @@ pub async fn send_chat_message(
                     return Err(String::new());
                 };
                 let prepared =
-                    crate::clm::prepare(&db, &vfs, dialog_id.clone(), clm_budget, cost, current_user_content.clone())
+                    crate::clm::prepare(db, vfs, dialog_id.clone(), clm_budget, cost, current_user_content.clone())
                         .await?;
                 let mut messages = prepared.messages;
                 // Notes for the model ride on the request's last message (not stored).
@@ -462,8 +556,8 @@ pub async fn send_chat_message(
                 Ok((crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini), prepared.info))
             };
             let clm_built = tokio::select! {
-                _ = crate::chat_request::cancelled(&mut registration.cancel) => {
-                    let _ = on_event.send(ChatStreamEvent::Error {
+                _ = crate::chat_request::cancelled(cancel) => {
+                    on_event(ChatStreamEvent::Error {
                         error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
                     });
                     return Ok(());
@@ -497,8 +591,8 @@ pub async fn send_chat_message(
             let (wire, info) = match clm_built {
                 Some(built) => built,
                 None => tokio::select! {
-                    _ = crate::chat_request::cancelled(&mut registration.cancel) => {
-                        let _ = on_event.send(ChatStreamEvent::Error {
+                    _ = crate::chat_request::cancelled(cancel) => {
+                        on_event(ChatStreamEvent::Error {
                             error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
                         });
                         return Ok(());
@@ -634,7 +728,7 @@ pub async fn send_chat_message(
                 }
             }
         }
-        let _ = on_event.send(event);
+        on_event(event);
     };
 
     // Failures are reported as a typed Error event; the command itself only
@@ -654,12 +748,12 @@ pub async fn send_chat_message(
         limits,
         reasoning_effort,
         reasoning_formats,
-        &mut registration.cancel,
+        cancel,
         &mut emit,
     )
     .await;
     if let Some(support) = support {
-        let _ = on_event.send(ChatStreamEvent::ReasoningSupport {
+        on_event(ChatStreamEvent::ReasoningSupport {
             accepted: support.accepted,
             rejected: support.rejected,
             unresolved: support.unresolved,
@@ -686,7 +780,7 @@ pub async fn send_chat_message(
     }
 
     if let Err(error) = result {
-        let _ = on_event.send(ChatStreamEvent::Error { error });
+        on_event(ChatStreamEvent::Error { error });
     }
     Ok(())
 }
@@ -1044,16 +1138,46 @@ pub struct ContextEstimate {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn chat_context_estimate(
+    app: tauri::AppHandle,
     db: tauri::State<'_, crate::chat_db::DbState>,
+    agents: tauri::State<'_, crate::agent_run::AgentState>,
     dialog_id: String,
     base_url: String,
     model: String,
     context_tokens: Option<usize>,
     reasoning_effort: Option<ReasoningEffort>,
     vision: bool,
-    extra_chars: usize,
+    // What the next request would offer: tools depend on the project, the
+    // model and the mode; the project's section of the system prompt.
+    no_tools: Option<bool>,
+    root: Option<String>,
+    mode: Option<String>,
+    extra_chars: Option<usize>,
 ) -> Result<ContextEstimate, String> {
+    let permissions = agents.config().permissions;
+    let root = root.filter(|r| !r.trim().is_empty());
+    let tools = crate::agent_run::tools::tools_for(
+        root.is_some(),
+        vision,
+        no_tools.unwrap_or(false),
+        &permissions,
+        mode.as_deref() == Some("plan"),
+    );
+    let tool_chars = if tools.is_empty() { 0 } else { serde_json::to_string(&tools).map_or(0, |j| j.chars().count()) };
+    let project_chars = match root {
+        Some(root) => {
+            let verify = permissions.verify_changes;
+            tauri::async_runtime::spawn_blocking(move || crate::agent_run::project::cached_context(&app, &root, verify))
+                .await
+                .unwrap_or_default()
+                .chars()
+                .count()
+        }
+        None => 0,
+    };
+    let extra_chars = extra_chars.unwrap_or(0) + tool_chars + project_chars;
     let data_dir = db.data_dir().to_path_buf();
     let gemini = is_gemini_target(&base_url, &model);
     let calibration_key = calibration::key(&base_url, &model);

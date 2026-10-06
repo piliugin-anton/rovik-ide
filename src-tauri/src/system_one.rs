@@ -4,23 +4,21 @@
 // {base_url}/systemone`, the same way chat requests go to
 // `{base_url}/chat/completions`. The body is a `state` plus named typed
 // `questions`, answered with probabilities.
-// Used by the AI reviewer when "Use typed input" is on (src/lib/aiApproval.ts).
-// The webview can't call these hosts itself (CORS), so the request goes
-// through here, like chat requests do.
+// Used by the AI reviewer when "Use typed input" is on (agent_run/review.rs).
 
 use reqwest::Client;
 use std::time::Duration;
 
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 
-#[tauri::command]
-pub async fn system_one_request(
-    base_url: String,
-    api_key: String,
-    model: String,
+pub async fn request(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
     mut body: serde_json::Value,
     timeout_ms: Option<u64>,
 ) -> Result<serde_json::Value, String> {
+    let model = model.to_string();
     let trimmed = base_url.trim().trim_end_matches('/');
     let is_cloudflare_needs_url_rewrite = trimmed.contains("api.cloudflare.com") && !trimmed.ends_with("/run");
     // For Cloudflare, keep only up to "...ai/" and drop anything after it

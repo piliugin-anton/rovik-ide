@@ -3,7 +3,8 @@
 // What the agent is told about the open project, and which commands check
 // its changes. Detection is in the backend (src-tauri/src/project_profile.rs);
 // the user can correct the detected checks per project (ProjectChecksSettings),
-// which is stored separately and wins once saved.
+// which is stored separately and wins once saved. The backend builds the
+// agent's prompt section from them (src-tauri/src/agent_run/project.rs).
 import { invoke } from '@tauri-apps/api/core';
 
 export type CheckKind = 'typecheck' | 'lint' | 'test' | 'build';
@@ -94,47 +95,4 @@ export function effectiveChecks(
 /** Checks in the order they run: cheap and broad first. */
 export function orderedChecks(checks: ProjectCheck[]): ProjectCheck[] {
   return [...checks].sort((a, b) => CHECK_KINDS.indexOf(a.kind) - CHECK_KINDS.indexOf(b.kind));
-}
-
-/**
- * The "## Project" section of the system prompt: stack, the check commands
- * (and that the IDE runs them when verification is on), and the project's
- * own agent instructions.
- */
-export function projectContext(
-  profile: ProjectProfile | null,
-  checks: ProjectCheck[],
-  verifyOn: boolean
-): string {
-  const parts: string[] = ['## Project'];
-  if (profile?.stack.length) parts.push(`Stack: ${profile.stack.join(', ')}.`);
-
-  const enabled = orderedChecks(checks).filter((c) => c.enabled);
-  if (enabled.length > 0) {
-    parts.push(
-      [
-        verifyOn
-          ? 'Checks: when you finish and have changed files, the IDE runs these itself and sends you any failures to fix:'
-          : 'Checks you can run with run_command after changing code:',
-        ...enabled.map((c) => `- ${CHECK_LABEL[c.kind]}: \`${c.command}\``),
-      ].join('\n')
-    );
-    if (verifyOn) {
-      parts.push(
-        'Run a relevant check yourself before finishing when it helps you get the change right. ' +
-          'If a check fails for reasons unrelated to your change (it fails on the original code too), ' +
-          "say so plainly and don't change unrelated code to make it pass. " +
-          'In your final message, say what was verified.'
-      );
-    }
-  }
-
-  const notes = profile?.instructions;
-  if (notes) {
-    const label = notes.file.toLowerCase().startsWith('readme')
-      ? `From the project's ${notes.file} (beginning):`
-      : `The project's instructions for agents (${notes.file}); follow them:`;
-    parts.push(`${label}\n\n${notes.text}${notes.truncated ? '\n[…truncated]' : ''}`);
-  }
-  return parts.length > 1 ? parts.join('\n\n') : '';
 }

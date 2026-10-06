@@ -4,7 +4,7 @@
 // root and returns its exit code and (capped) output.
 //
 // Whether a command may run at all, and whether it needs approval first, is
-// decided in the frontend (src/lib/permissions.ts) before this is invoked.
+// decided by the agent's run before this is invoked (agent_run/permissions.rs).
 // This side only guarantees a bounded run: the project root as working
 // directory, no stdin, a timeout, and capped output.
 

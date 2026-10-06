@@ -2,9 +2,9 @@ import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import { formatModelLabel } from '../lib/aiSettings';
 import { APPROVE_AT, isJevModel, REJECT_AT } from '../lib/aiApproval';
-import { TOOL_CALL_CHECKPOINT_CHOICES } from '../lib/agentGuard';
 import {
   DEFAULT_ALLOWED_COMMANDS,
+  TOOL_CALL_CHECKPOINT_CHOICES,
   sameModel,
   splitWords,
   usesAiReview,

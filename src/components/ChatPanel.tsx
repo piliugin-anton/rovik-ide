@@ -12,11 +12,8 @@ import {
   untrack,
   createRoot,
 } from 'solid-js';
-import { Channel } from '@tauri-apps/api/core';
 import type {
   ChatMessage,
-  ChatStreamEvent,
-  ChatError,
   ChatToolCall,
   DialogSummary,
   FileSuggestion,
@@ -24,7 +21,6 @@ import type {
   OpenAIChatOptions,
   ModelSelection,
   Provider,
-  ToolApproval,
   TreeRow,
 } from '../types';
 import type { ActiveFileContext } from '../lib/activeContext';
@@ -42,53 +38,20 @@ import {
   resolveProfile,
   saveAiSettings,
 } from '../lib/aiSettings';
-import { createChatStore } from '../lib/chatStore';
+import { chatStore } from '../lib/chatStore';
 import { chatApi } from '../lib/chatApi';
 import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
-import {
-  cancelChatRequest,
-  estimateContext,
-  sendChatMessage,
-  streamEndSignal,
-  untilStreamEnd,
-} from '../lib/aiChat';
+import { estimateContext } from '../lib/aiChat';
 import { DEFAULT_CONTEXT_TOKENS } from '../lib/contextBudget';
 import ContextMeter, { type ContextUsage } from './ContextMeter';
-import { describeFailure, retryReason, toStoredFailure } from '../lib/chatErrors';
-import { agentToolsFor, editFileArgs, executeAgentTool } from '../lib/tools';
-import { AgentRunGuard } from '../lib/agentGuard';
-import { recordAgentEdit } from '../lib/agentChanges';
-import {
-  chatMode,
-  MAX_QUESTIONS_PER_RUN,
-  PLAN_BLOCKED_TOOLS,
-  PLAN_MODE_INSTRUCTIONS,
-  implementationRequest,
-  setChatMode,
-  type ChatMode,
-} from '../lib/chatMode';
-import {
-  answerQuestions,
-  askUser,
-  describeOutcome,
-  parseQuestions,
-  pendingQuestionsIn,
-  stopQuestions,
-} from '../lib/questions';
-import { dismiss, notify } from '../lib/notifications';
+import { chatMode, implementationRequest, setChatMode, type ChatMode } from '../lib/chatMode';
+import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
+import { notify } from '../lib/notifications';
 import ModeSelector from './ModeSelector';
 import EffortSelector from './EffortSelector';
 import ContextControls from './ContextControls';
-import {
-  clmStatus,
-  contextDirOf,
-  contextModeFor,
-  ensureContextMode,
-  executeContextTool,
-  isContextPath,
-  recallHint,
-} from '../lib/contextMode';
+import { contextModeFor, ensureContextMode } from '../lib/contextMode';
 import {
   formatsToSend,
   loadEfforts,
@@ -98,69 +61,27 @@ import {
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
-import { describeTodo, isSettled, latestChecklist, parseTodo } from '../lib/todo';
-import {
-  onImplementPlanRequest,
-  planProblems,
-  relativePlanPath,
-  savePlanFile,
-  takeImplementPlanRequest,
-} from '../lib/plans';
-import { findRepetition } from '../lib/repetition';
+import { latestChecklist } from '../lib/todo';
+import { onImplementPlanRequest, relativePlanPath, takeImplementPlanRequest } from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
-import { logAgent } from '../lib/agentLog';
 import {
-  detectProject,
-  effectiveChecks,
-  loadProjectSettings,
-  projectContext,
-  type ProjectCheck,
-} from '../lib/projectProfile';
-import {
-  failureReport,
-  isFailed,
-  MAX_VERIFY_ROUNDS,
-  runChecks,
-  type VerificationMeta,
-} from '../lib/verification';
-
-/**
- * One agent run: a user message (or a Continue) and every turn after it.
- * Created once, then passed down the turns.
- */
-interface AgentRun {
-  guard: AgentRunGuard;
-  /** The mode of the message that started the run (lib/chatMode.ts). */
-  mode: ChatMode;
-  /** ask_user calls so far (Plan mode caps them). */
-  questionsAsked: number;
-  /** The project's checks and the system-prompt section about it. */
-  checks: ProjectCheck[];
-  projectContext: string;
-  /** Project-relative paths written in this run (for the gate and reports). */
-  changedFiles: Set<string>;
-  /** Files changed since the gate last ran: there is something to check. */
-  writesSinceVerify: boolean;
-  verifyRounds: number;
-  /** The last round failed and was sent back to the agent. */
-  lastVerifyFailed: boolean;
-  /** Unfinished checklist steps were pointed out once (checkChecklist). */
-  checklistNudged: boolean;
-  /** Plan mode: the current plan, shown to the model so it revises it. */
-  planContext: string;
-  /** A plan written in a reply instead of submitted was pointed out once. */
-  planNudged: boolean;
-  /** Replies stopped for repeating themselves (lib/repetition.ts). */
-  repetitionStops: number;
-  startedAt: number;
-  /** Set once the run's log line is written. */
-  ended: boolean;
-}
+  configureAgent,
+  initAgentRuns,
+  isRunning,
+  localDate,
+  onMessageUnanswered,
+  onReasoningLearned,
+  onShowChat,
+  startRun,
+  stopRun,
+  toolNotes,
+  type AgentConfig,
+  type StartKind,
+} from '../lib/agentRuns';
 import AiSettingsModal, { type AiSettingsPage } from './AiSettingsModal';
 import { clearVfsSettingsRequest, vfsSettingsRequested } from '../lib/virtualFilesStartup';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
-import { toolResultMeta } from './ToolCallBlock';
 import ChatList, { type ChatListRow } from './ChatList';
 import MessageList, { type MessageListController } from './MessageList';
 import {
@@ -171,36 +92,16 @@ import {
   type DraftSegment,
   type PendingDraft,
 } from '../lib/pendingDraft';
-import { toAbsolutePath, toRelativePath } from '../lib/fileTools';
-import {
-  checkToolCall,
-  DEFAULT_PERMISSIONS,
-  describeToolCall,
-  isRiskyCommand,
-  isSecretPath,
-  sameModel,
-  type AgentPermissions,
-} from '../lib/permissions';
-import { compactDiff, isJevModel, reviewWithAi } from '../lib/aiApproval';
-import {
-  buildEditReview,
-  denyAll,
-  notifyFileWritten,
-  requestApproval,
-  type EditReview,
-  type ReviewHunk,
-} from '../lib/approvals';
-import { readFileContent, toolEditFile } from '../lib/commands';
+import { toRelativePath } from '../lib/fileTools';
+import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
+import { readFileContent } from '../lib/commands';
 
 const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
 
 const NEW_CHAT_TITLE = 'New Chat';
 
-/**
- * Chats with an agent run in progress, across ChatPanel instances: the
- * panel unmounts when the sidebar switches tabs while its run goes on.
- */
-const runningDialogs = new Set<string>();
+/** Chats whose interrupted tool calls were offered again this session: once each. */
+const resumed = new Set<string>();
 
 interface ChatProps {
   rootPath: Accessor<string | null>;
@@ -217,18 +118,10 @@ export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
-  /** Live notes on tool calls waiting for approval, by tool call id. */
-  const [toolNotes, setToolNotes] = createSignal<Record<string, string>>({});
-  const setToolNote = (id: string, note?: string) =>
-    setToolNotes((notes) => {
-      const next = { ...notes };
-      if (note) next[id] = note;
-      else delete next[id];
-      return next;
-    });
 
-  // Chat list page + open chats; everything else stays in the database.
-  const store = createChatStore();
+  // Chat list page + open chats (the app's, kept while the panel is away);
+  // everything else stays in the database.
+  const store = chatStore;
   const activeDialogId = () => store.state.activeId;
 
   const [input, setInput] = createSignal('');
@@ -244,7 +137,8 @@ export default function ChatPanel(props: ChatProps) {
   const [historyQuery, setHistoryQuery] = createSignal('');
   /** Lags historyQuery slightly so fast typing doesn't search on every key. */
   const [searchQuery, setSearchQuery] = createSignal('');
-  const [sending, setSending] = createSignal(false);
+  /** The open chat's agent run is going on (it runs in the backend). */
+  const sending = () => isRunning(activeDialogId());
   const [loadingHistory, setLoadingHistory] = createSignal(true);
   /** Set when the chat database couldn't be read at startup. */
   const [historyLoadError, setHistoryLoadError] = createSignal<string | null>(null);
@@ -289,37 +183,8 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  /** The open project's "## Project" prompt section, as the last run sent it. */
-  const [projectContextText, setProjectContextText] = createSignal('');
   const [contextUsage, setContextUsage] = createSignal<ContextUsage | null>(null);
 
-  let currentChannel: Channel<ChatStreamEvent> | null = null;
-  /** The running model request, so the Stop button can cancel it. */
-  let currentRequestId: string | null = null;
-  /** Stop pressed: no further tool steps or turns in this agent run. */
-  let stopRequested = false;
-  /** The pending reply of the running request, for the "Stopping…" status. */
-  let currentPending: { dialogId: string; messageId: string } | null = null;
-  /** Gives up waiting on the running request (see stopRequest). */
-  let abandonCurrent: (() => void) | null = null;
-  let stopTimer: number | undefined;
-  /** How long Stop waits for the backend to confirm before giving up on it. */
-  const STOP_GRACE_MS = 2000;
-
-  const stoppedError = (): ChatError => ({
-    kind: 'cancelled',
-    message: 'Stopped.',
-    retryable: false,
-    retryAfterMs: null,
-    attempts: 0,
-    status: null,
-    details: null,
-    partial: false,
-  });
-
-  /** User message currently waiting for its first answer; its draft must not be restored. */
-  let inFlightMessageId: string | null = null;
-  let rafId: number | null = null;
   let isMounted = true;
   let inputTextareaRef: HTMLTextAreaElement | undefined;
 
@@ -361,6 +226,9 @@ export default function ChatPanel(props: ChatProps) {
     profileId: string,
     outcome: { accepted?: string[]; rejected?: string[]; unresolved?: string[]; reasons?: boolean }
   ) {
+    if (outcome.accepted?.length === 0) delete outcome.accepted;
+    if (outcome.rejected?.length === 0) delete outcome.rejected;
+    if (outcome.unresolved?.length === 0) delete outcome.unresolved;
     const split = profileId.indexOf('::');
     const providerId = profileId.slice(0, split);
     const modelId = profileId.slice(split + 2);
@@ -405,27 +273,6 @@ export default function ChatPanel(props: ChatProps) {
   };
   const messages = (): ChatMessage[] => activeChat()?.messages ?? [];
 
-  // The project section of the prompt, for the estimate before any run.
-  createEffect(
-    on(
-      () => [props.rootPath(), permissions().verifyChanges] as const,
-      ([root, verify]) => {
-        if (!root) {
-          setProjectContextText('');
-          return;
-        }
-        Promise.all([detectProject(root), loadProjectSettings(root)])
-          .then(([profile, settings]) => {
-            if (props.rootPath() !== root) return;
-            setProjectContextText(
-              projectContext(profile, effectiveChecks(profile, settings), verify)
-            );
-          })
-          .catch((err) => console.error('Project detection failed:', err));
-      }
-    )
-  );
-
   /*
    * Re-estimated whenever what the next request would send changes: another
    * chat or model, a message added or finished, a run starting or ending.
@@ -443,9 +290,10 @@ export default function ChatPanel(props: ChatProps) {
           list.length,
           list[list.length - 1]?.finalized,
           sending(),
-          projectContextText(),
           props.rootPath(),
           efforts(),
+          chatMode(),
+          permissions(),
         ] as const;
       },
       ([dialogId, profile]) => {
@@ -457,19 +305,12 @@ export default function ChatPanel(props: ChatProps) {
         const request = ++contextRequest;
         contextTimer = window.setTimeout(async () => {
           try {
-            const tools = agentToolsFor({
-              hasProject: !!props.rootPath(),
-              vision: profile.vision,
-              noTools: profile.noTools,
-              permissions: permissions(),
-              mode: chatMode(),
-            });
-            const extraChars =
-              (tools.length ? JSON.stringify(tools).length : 0) + projectContextText().length;
+            // Tools and the project's prompt section are counted by the backend.
             const estimate = await estimateContext({
               profile,
               dialogId,
-              extraChars,
+              root: props.rootPath(),
+              mode: chatMode(),
               reasoningEffort: reasoningOptions(profile)?.reasoning_effort,
             });
             if (request !== contextRequest) return;
@@ -682,8 +523,11 @@ export default function ChatPanel(props: ChatProps) {
       }
       if (!isMounted) return;
 
-      await openNewestChat();
+      // Back to the panel: the chat that was open stays open.
+      if (!store.state.activeId) await openNewestChat();
 
+      // Runs going on are known before drafts are judged unanswered.
+      await initAgentRuns();
       await recoverDraftsAfterRestart();
     } finally {
       if (isMounted) {
@@ -757,15 +601,6 @@ export default function ChatPanel(props: ChatProps) {
 
   onCleanup(() => {
     isMounted = false;
-
-    if (currentChannel) {
-      currentChannel = null;
-    }
-
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
   });
 
   /*
@@ -773,10 +608,6 @@ export default function ChatPanel(props: ChatProps) {
    * Persistence
    * -----------------------------------------------------------------------
    */
-
-  async function flushDialogPersistence() {
-    await store.flush();
-  }
 
   onCleanup(() => {
     void store.flush();
@@ -803,7 +634,7 @@ export default function ChatPanel(props: ChatProps) {
       !!chat &&
       chat.messages.length === 0 &&
       !chat.hasOlder &&
-      !chat.busy &&
+      !store.isRunning(dialogId) &&
       (summary?.id !== dialogId || summary.messageCount === 0)
     );
   }
@@ -871,6 +702,7 @@ export default function ChatPanel(props: ChatProps) {
 
   async function deleteDialog(id: string) {
     const wasActive = activeDialogId() === id;
+    if (store.isRunning(id)) await stopRun(id);
     takePendingDraft(id);
     // A deleted chat leaves search results right away.
     setSearchRows((rows) => rows?.filter((r) => r.dialog.id !== id) ?? null);
@@ -1636,7 +1468,8 @@ export default function ChatPanel(props: ChatProps) {
 
   function restoreDraftForDialog(dialogId: string) {
     const stored = listPendingDrafts().find((d) => d.dialogId === dialogId);
-    if (!stored || stored.messageId === inFlightMessageId) return;
+    // A run is going on: its message may still be answered.
+    if (!stored || store.isRunning(dialogId)) return;
 
     const draft = takePendingDraft(dialogId);
     if (draft) queueMicrotask(() => restoreDraftToComposer(draft));
@@ -1645,6 +1478,17 @@ export default function ChatPanel(props: ChatProps) {
   function markMessageFailed(dialogId: string, messageId: string) {
     void store.markFailed(dialogId, messageId);
   }
+
+  // A sent message got no answer: its draft comes back while its chat is open.
+  onCleanup(
+    onMessageUnanswered((dialogId, messageId) => {
+      if (!isMounted || activeDialogId() !== dialogId) return;
+      if (!listPendingDrafts().some((d) => d.dialogId === dialogId && d.messageId === messageId))
+        return;
+      const draft = takePendingDraft(dialogId);
+      if (draft) queueMicrotask(() => restoreDraftToComposer(draft));
+    })
+  );
 
   /**
    * Drafts still in storage at startup were never answered: the app closed
@@ -1664,6 +1508,8 @@ export default function ChatPanel(props: ChatProps) {
     }
 
     for (const draft of drafts) {
+      // Its run is still going (the page was reloaded): it may yet be answered.
+      if (store.isRunning(draft.dialogId)) continue;
       if (answered.has(draft.messageId)) {
         // The answer made it into the database before the draft was cleared.
         clearPendingDraft(draft.dialogId, draft.messageId);
@@ -1741,7 +1587,7 @@ export default function ChatPanel(props: ChatProps) {
 
   /*
    * -----------------------------------------------------------------------
-   * Tool approval
+   * Agent settings
    * -----------------------------------------------------------------------
    */
 
@@ -1760,248 +1606,6 @@ export default function ChatPanel(props: ChatProps) {
       .filter(enabled)
       .map((sel) => resolveProfile(providers(), sel))
       .filter((profile): profile is ModelProfile => !!profile);
-  }
-
-  /** The latest delivered user request in a chat, for the AI reviewer. */
-  function latestUserRequest(dialogId: string): string {
-    const list = store.messagesOf(dialogId);
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i];
-      if (m.role === 'user' && !m.failed && !m.meta?.harness) {
-        return m.meta?.sentContent ?? m.content;
-      }
-    }
-    return '';
-  }
-
-  /**
-   * Permission first (refused calls never reach approval), then approval
-   * when the settings require it: by the user, or by the approval model.
-   * Returns the refusal to send back to the model (null: run it) and the
-   * decision to show on the tool block.
-   */
-  async function authorizeToolCall(
-    dialogId: string,
-    tc: ChatToolCall,
-    /** Resuming an interrupted call: ask the user, with this note. */
-    resumeNote?: string
-  ): Promise<{
-    refusal: string | null;
-    approval?: ToolApproval;
-    /** Partially accepted edit: the arguments to run instead. */
-    argsOverride?: string;
-    /** Run as this tool instead (a partly accepted edit_file is written whole). */
-    toolOverride?: string;
-    /** Added to the tool result for the model. */
-    resultNote?: string;
-  }> {
-    const p = permissions();
-    const verdict = checkToolCall(tc.name, tc.arguments, p);
-    if (!verdict.permitted) {
-      return { refusal: `Error: blocked by the user's permission settings. ${verdict.reason}` };
-    }
-    // An interrupted call is always confirmed by the user.
-    const approver = resumeNote ? 'user' : verdict.approval;
-    if (!approver) return { refusal: null };
-
-    const summary = describeToolCall(tc.name, tc.arguments);
-    const command = tc.name === 'run_command' ? toolArg(tc.arguments, 'command') : undefined;
-    // Edits are diffed once: the AI reviewer reads the diff, the user
-    // reviews it in the editor.
-    const isFileEdit = tc.name === 'write_file' || tc.name === 'edit_file';
-    const prepared = isFileEdit ? await prepareEditReview(tc.name, tc.arguments) : null;
-    // Writing the same content changes nothing: no need to ask.
-    if (prepared?.kind === 'unchanged') return { refusal: null };
-    // An edit_file that can't apply (text not found, outside its lines):
-    // the model gets the reason; there's nothing for anyone to approve.
-    if (prepared?.kind === 'invalid') return { refusal: prepared.error };
-    const edit = prepared?.kind === 'diff' ? prepared.review : null;
-    let manualReason: string | null = resumeNote ?? null;
-
-    if (approver === 'ai') {
-      const models = approvalProfiles(p);
-      const editPath = isFileEdit ? toolArg(tc.arguments, 'path') : undefined;
-
-      // Shapes no reviewer model may approve on its own (see permissions.ts).
-      if (command !== undefined && isRiskyCommand(command)) {
-        manualReason =
-          'Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets always need your approval.';
-      } else if (editPath !== undefined && isSecretPath(editPath)) {
-        manualReason = 'Edits to credential or secret files always need your approval.';
-      } else if (models.length === 0) {
-        manualReason = 'No AI reviewer model is set, so this needs your approval.';
-      } else {
-        setToolNote(tc.id, `Reviewing with ${models[0].label}…`);
-        const primary = models[0];
-        const review = await reviewWithAi(
-          models,
-          {
-            reviewId: tc.id,
-            group: tc.name === 'run_command' ? 'commands' : isFileEdit ? 'edits' : 'tools',
-            userRequest: latestUserRequest(dialogId),
-            project: props.rootPath() ?? '',
-            toolName: tc.name,
-            summary,
-            argsJson: tc.arguments,
-            editPath,
-            editDiff: edit ? compactDiff(edit.hunks) : undefined,
-            isNewFile: prepared?.kind === 'new',
-          },
-          // The reviewer model follows the setting; a Jev fallback can only
-          // be asked with typed input.
-          (profile) => (profile === primary ? p.approvalTypedInput : isJevModel(profile.model))
-        );
-        setToolNote(tc.id);
-
-        if (review.decided) {
-          const approval: ToolApproval = {
-            by: 'ai',
-            approved: review.approved,
-            model: review.model,
-            reason: review.reason,
-          };
-          return review.approved
-            ? { refusal: null, approval }
-            : {
-                refusal: `Error: rejected by the user's AI reviewer (${review.model}): ${review.reason} Do not retry the same action; adjust the approach or ask the user.`,
-                approval,
-              };
-        }
-        if (review.unsure) {
-          manualReason = `${review.reason} This needs your approval.`;
-        } else {
-          console.warn('AI approval gave no decision:', review.errors);
-          manualReason = 'The AI reviewer couldn’t answer, so this needs your approval.';
-        }
-      }
-    }
-
-    // Manual: the request shows in the chat (and, for an edit of an existing
-    // file, in the editor as changes to accept or reject one by one).
-    const note =
-      [manualReason, prepared?.kind === 'new' ? 'New file: expand to see its content.' : null]
-        .filter(Boolean)
-        .join(' ') || undefined;
-
-    const decision = await requestApproval({
-      toolCallId: tc.id,
-      dialogId,
-      toolName: tc.name,
-      summary,
-      command,
-      note,
-      edit: edit ?? undefined,
-    });
-
-    if (decision.kind === 'allow') {
-      return { refusal: null, approval: { by: 'user', approved: true } };
-    }
-    if (decision.kind === 'deny') {
-      return {
-        refusal: edit
-          ? `Error: the user rejected every change to ${edit.relPath}; the file was not modified. Do not retry the same edit; ask the user or take another approach.`
-          : `Error: the user denied this "${tc.name}" call. Do not retry it; continue without it or ask the user how to proceed.`,
-        approval: { by: 'user', approved: false },
-      };
-    }
-
-    // Some changes accepted: write the original with only those applied.
-    const args = parseToolArgsObject(tc.arguments);
-    const total = decision.accepted.length + decision.rejected.length;
-    const path = typeof args.path === 'string' ? args.path : '';
-    return {
-      refusal: null,
-      approval: {
-        by: 'user',
-        approved: true,
-        reason: `Accepted ${decision.accepted.length} of ${total} changes.`,
-      },
-      // edit_file's partial result is a whole new file: written as one.
-      argsOverride:
-        tc.name === 'edit_file'
-          ? JSON.stringify({ path, content: decision.content })
-          : JSON.stringify({ ...args, content: decision.content }),
-      toolOverride: tc.name === 'edit_file' ? 'write_file' : undefined,
-      resultNote: describeRejectedHunks(edit?.relPath ?? 'the file', decision.rejected, total),
-    };
-  }
-
-  /** One string argument of a tool call. */
-  function toolArg(argsJson: string, key: string): string | undefined {
-    const value = parseToolArgsObject(argsJson)[key];
-    return typeof value === 'string' ? value : undefined;
-  }
-
-  function parseToolArgsObject(argsJson: string): Record<string, unknown> {
-    try {
-      const parsed = argsJson.trim() ? JSON.parse(argsJson) : {};
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-      return {};
-    }
-  }
-
-  /**
-   * The diff of a write_file or edit_file call against the file on disk. A
-   * new file has nothing to compare against: it's approved as a whole.
-   * edit_file's result is computed (not written) by the backend first.
-   */
-  async function prepareEditReview(
-    toolName: string,
-    argsJson: string
-  ): Promise<
-    | { kind: 'diff'; review: EditReview }
-    | { kind: 'new' }
-    | { kind: 'unchanged' }
-    | { kind: 'invalid'; error: string }
-    | null
-  > {
-    const root = props.rootPath();
-    const path = toolArg(argsJson, 'path');
-    if (!root || !path) return null;
-    let content = toolArg(argsJson, 'content');
-    if (toolName === 'edit_file') {
-      const edit = editFileArgs(parseToolArgsObject(argsJson));
-      if (typeof edit === 'string') return { kind: 'invalid', error: edit };
-      try {
-        content = (await toolEditFile(root, edit, true)).content;
-      } catch (err) {
-        return { kind: 'invalid', error: `Error: ${String(err)}` };
-      }
-    }
-    if (content === undefined) return null;
-    const absPath = toAbsolutePath(path, root);
-    let current: string;
-    try {
-      current = await readFileContent(absPath);
-    } catch {
-      return { kind: 'new' };
-    }
-    const review = buildEditReview(absPath, path, current, content);
-    return review ? { kind: 'diff', review } : { kind: 'unchanged' };
-  }
-
-  /** Tells the model which of its changes were not applied. */
-  function describeRejectedHunks(path: string, rejected: ReviewHunk[], total: number): string {
-    const preview = (lines: string[]) => {
-      const shown = lines.slice(0, 3).map((l) => `    ${l}`);
-      if (lines.length > 3) shown.push(`    … (${lines.length - 3} more lines)`);
-      return shown.join('\n');
-    };
-    const items = rejected.map((h) => {
-      const where = `around original line ${h.origStart}`;
-      if (h.added.length === 0)
-        return `- ${where}: deleting these lines (kept):\n${preview(h.deleted)}`;
-      if (h.deleted.length === 0)
-        return `- ${where}: inserting these lines (not added):\n${preview(h.added)}`;
-      return `- ${where}: replacing\n${preview(h.deleted)}\n  with (not applied):\n${preview(h.added)}`;
-    });
-    return [
-      '',
-      `The user reviewed this edit and accepted ${total - rejected.length} of ${total} changes; the file now has only those. Rejected changes:`,
-      ...items,
-      `Read ${path} again before editing it further, and don't redo the rejected changes unless the user asks.`,
-    ].join('\n');
   }
 
   /*
@@ -2062,523 +1666,75 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    * Agent
    * -----------------------------------------------------------------------
+   *
+   * Runs happen in the backend (src-tauri/src/agent_run, lib/agentRuns.ts):
+   * the panel starts and stops them, and what they store arrives in the chat
+   * store whether the panel is mounted or not.
    */
 
-  /** Wait this long without any output before saying so. */
-  const STILL_WAITING_MS = 15_000;
-  /** Mid-reply silence before "Still generating" shows. */
-  const REPLY_IDLE_MS = 2_500;
+  /** The settings runs follow; sent again whenever they change. */
+  const agentConfig = (): AgentConfig => ({
+    permissions: permissions(),
+    approvalProfiles: approvalProfiles(permissions()),
+  });
+  createEffect(() => configureAgent(agentConfig()));
+
+  // What replies show about the model's reasoning is kept with it.
+  onCleanup(onReasoningLearned((learned) => learnReasoning(learned.profileId, learned)));
+  // A question's notification: "Show".
+  onCleanup(onShowChat(() => listController?.followLatest()));
 
   /**
-   * One request to the model. The backend reads the chat's history from the
-   * database, so everything up to this point must already be stored. It
-   * also retries failed attempts on its own (src-tauri/src/chat_request.rs),
-   * reporting each retry, then succeeds or fails for good.
+   * Starts a run in a chat. The backend reads the chat from the database,
+   * so writes still queued go first. False when it didn't start (no model,
+   * or the backend refused: shown).
    */
-  async function runAgentTurn(
+  async function beginRun(
     dialogId: string,
-    opts: {
-      /** The request's user message as sent (with editor context). */
-      currentUserContent?: string;
-      /** The run this turn belongs to; the first turn of a run starts one. */
-      run?: AgentRun;
-      /** Ask the model to continue its interrupted last reply. */
-      continueReply?: boolean;
-      /**
-       * Called once the first turn's outcome is known: true when the model
-       * answered (fully or partly), false when nothing came back.
-       */
-      onSettled?: (ok: boolean) => void;
-    } = {}
-  ): Promise<void> {
-    const run = opts.run ?? (await startRun(dialogId));
-    const guard = run.guard;
+    start: StartKind,
+    currentUserContent?: string
+  ): Promise<boolean> {
     const profile = activeProfile();
-
-    if (!profile || !isMounted || stopRequested) {
-      opts.onSettled?.(false);
-      endRun(dialogId, run, stopRequested ? 'stopped' : 'no-model');
-      return;
-    }
-    const replyStartedAt = Date.now();
-    /** The model's reasoning for this reply, shown apart from it. */
-    let reasoningText = '';
-    let reasoningStartedAt = 0;
-    let reasoningEndedAt = 0;
-    let reasoningSeen = false;
-    let pendingReasoningRender = false;
-    /** The message's meta with the reasoning added, for finalizing it. */
-    const withReasoning = (meta?: ChatMessage['meta']): ChatMessage['meta'] | undefined =>
-      reasoningText
-        ? {
-            ...(meta ?? {}),
-            reasoning: {
-              text: reasoningText,
-              ms: (reasoningEndedAt || Date.now()) - reasoningStartedAt,
-            },
-          }
-        : meta;
-    /** Where a repeating reply was cut (lib/repetition.ts), once noticed. */
-    let repetitionCut: number | null = null;
-    let repetitionCheckedAt = 0;
-    let finishReason: string | null = null;
-    let usage: Record<string, unknown> | null = null;
-
-    const pendingMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: '',
-      pending: true,
-      finalized: false,
-    };
-    // Unfinished placeholders are skipped when the history is built.
-    await store.appendMessages(dialogId, [pendingMsg]);
-
-    const channel = new Channel<ChatStreamEvent>();
-    const requestId = crypto.randomUUID();
-    currentRequestId = requestId;
-
-    let assistantText = '';
-    const toolCallsMap = new Map<string, ChatToolCall>();
-    let pendingRender = false;
-    let failure: ChatError | null = null;
-    let gotOutput = false;
-    /** Set once we stop listening to this request (Stop wasn't confirmed). */
-    let detached = false;
-    // The command can return before its last events (see untilStreamEnd).
-    const stream = streamEndSignal();
-
-    const setStatus = (status: ChatMessage['status']) =>
-      store.patchMessage(dialogId, pendingMsg.id, { status });
-
-    // "Still waiting" once a while has passed without any output.
-    const waitingTimer = window.setTimeout(() => {
-      if (!gotOutput && !stopRequested && isMounted)
-        setStatus({ text: 'Still waiting for a response…' });
-    }, STILL_WAITING_MS);
-
-    const markOutput = () => {
-      if (gotOutput) return;
-      gotOutput = true;
-      window.clearTimeout(waitingTimer);
-      setStatus(undefined);
-    };
-
-    /*
-     * Output that stops mid-reply. Some providers send a tool call only once
-     * it's complete, so while the model writes a whole file nothing arrives
-     * and the chat looked finished after "Let me fix the test file:". Say
-     * it's still going, with the time since the last output.
-     */
-    let lastOutputAt = Date.now();
-    let idleShown = false;
-    const noteOutput = () => {
-      lastOutputAt = Date.now();
-      if (idleShown) {
-        idleShown = false;
-        setStatus(undefined);
-      }
-    };
-    const idleTimer = window.setInterval(() => {
-      if (!gotOutput || idleShown || stopRequested || detached) return;
-      if (Date.now() - lastOutputAt < REPLY_IDLE_MS) return;
-      idleShown = true;
-      setStatus({ text: 'Still generating', since: lastOutputAt });
-    }, 500);
-
-    // One store update per animation frame, and a checkpoint every couple
-    // of seconds so a crash mid-reply loses little.
-    const flushAssistantText = () => {
-      pendingRender = false;
-      if (!isMounted) return;
-      store.patchMessage(dialogId, pendingMsg.id, { content: assistantText });
-      store.checkpoint(dialogId, pendingMsg.id);
-    };
-
-    const publishToolCalls = () => {
-      store.patchMessage(dialogId, pendingMsg.id, {
-        toolCalls: Array.from(toolCallsMap.values(), (tc) => ({ ...tc })),
-      });
-    };
-
-    channel.onmessage = (event) => {
-      if (!isMounted || detached) return;
-      if (event.type === 'Delta' || event.type === 'Reasoning' || event.type.startsWith('ToolCall'))
-        noteOutput();
-
-      switch (event.type) {
-        case 'Reasoning':
-          markOutput();
-          if (!reasoningText) reasoningStartedAt = Date.now();
-          reasoningText += event.content;
-          if (!reasoningSeen) {
-            reasoningSeen = true;
-            learnReasoning(profile.id, { reasons: true });
-          }
-          if (!pendingReasoningRender) {
-            pendingReasoningRender = true;
-            requestAnimationFrame(() => {
-              pendingReasoningRender = false;
-              if (!isMounted) return;
-              const msg = store.messagesOf(dialogId).find((m) => m.id === pendingMsg.id);
-              store.patchMessage(dialogId, pendingMsg.id, {
-                meta: { ...(msg?.meta ?? {}), reasoning: { text: reasoningText } },
-              });
-            });
-          }
-          break;
-        case 'ReasoningSupport':
-          learnReasoning(profile.id, {
-            accepted: event.accepted,
-            rejected: event.rejected,
-            unresolved: event.unresolved,
-          });
-          break;
-        case 'Delta':
-          markOutput();
-          // The reply started: the thinking before it is over.
-          if (reasoningText && !reasoningEndedAt) reasoningEndedAt = Date.now();
-          assistantText += event.content;
-          // Every couple of kilobytes: is it stuck repeating itself?
-          if (!repetitionCut && assistantText.length - repetitionCheckedAt > 1500) {
-            repetitionCheckedAt = assistantText.length;
-            const cut = findRepetition(assistantText);
-            if (cut !== null) {
-              repetitionCut = cut;
-              void cancelChatRequest(requestId);
-            }
-          }
-          if (!pendingRender) {
-            pendingRender = true;
-            rafId = requestAnimationFrame(() => {
-              rafId = null;
-              flushAssistantText();
-            });
-          }
-          break;
-
-        case 'Finished':
-          finishReason = event.finish_reason;
-          usage = event.usage;
-          break;
-
-        case 'Done':
-          stream.end();
-          break;
-
-        case 'Retrying':
-          window.clearTimeout(waitingTimer);
-          if (stopRequested) break;
-          setStatus({
-            text: `${retryReason(event.reason)} Retrying (attempt ${event.attempt} of ${event.max_attempts})`,
-            until: Date.now() + event.delay_ms,
-          });
-          break;
-
-        case 'Error':
-          failure = event.error;
-          stream.end();
-          break;
-
-        case 'ToolCallStart':
-          markOutput();
-          toolCallsMap.set(event.id, { id: event.id, name: event.name, arguments: '' });
-          publishToolCalls();
-          break;
-
-        case 'ToolCallArgumentsDelta': {
-          const tc = toolCallsMap.get(event.id);
-          if (tc) {
-            tc.arguments += event.arguments_delta;
-            publishToolCalls();
-          }
-          break;
-        }
-
-        case 'ToolCallComplete':
-          toolCallsMap.set(event.id, {
-            id: event.id,
-            name: event.name,
-            arguments: event.arguments,
-            // Sent back unchanged in the next request (Gemini 3 requires it).
-            ...(event.extra_content !== undefined ? { extraContent: event.extra_content } : {}),
-          });
-          publishToolCalls();
-          break;
-      }
-    };
-
-    const root = props.rootPath();
-
-    // File tools need an open project; web tools are always available, the
-    // screenshot tool only for vision models, and none for "no tools" models.
-    const tools = agentToolsFor({
-      hasProject: !!root,
-      vision: profile.vision,
-      noTools: profile.noTools,
-      permissions: permissions(),
-      mode: run.mode,
-    });
-
-    let abandon!: () => void;
-    const abandoned = new Promise<'abandoned'>((resolve) => {
-      abandon = () => resolve('abandoned');
-    });
-    abandonCurrent = abandon;
-    currentPending = { dialogId, messageId: pendingMsg.id };
-
+    if (!profile) return false;
+    listController?.followLatest();
     try {
-      if (stopRequested) {
-        // Stop was pressed while this turn was being prepared: don't send.
-        failure = stoppedError();
-      } else {
-        const outcome = await Promise.race([
-          sendChatMessage({
-            profile,
-            dialogId,
-            currentUserContent: opts.currentUserContent,
-            continueReply: opts.continueReply,
-            assistantMessageId: pendingMsg.id,
-            requestId,
-            channel,
-            tools,
-            projectContext:
-              run.mode === 'plan'
-                ? [run.projectContext, PLAN_MODE_INSTRUCTIONS, run.planContext]
-                    .filter(Boolean)
-                    .join('\n\n')
-                : run.projectContext,
-            options: reasoningOptions(profile),
-            contextMode: ensureContextMode(dialogId),
-          })
-            .then(() => untilStreamEnd(stream.ended))
-            .then(() => 'done' as const),
-          abandoned,
-        ]);
-        if (outcome === 'abandoned') {
-          // The backend didn't confirm the stop in time. Stop waiting for it
-          // and ignore anything this request still sends.
-          detached = true;
-          failure = stoppedError();
-        }
-      }
-    } catch (err) {
-      // Only problems before the request (e.g. building the history) land here.
-      failure = {
-        kind: 'provider',
-        message: String(err),
-        retryable: false,
-        retryAfterMs: null,
-        attempts: 0,
-        status: null,
-        details: String(err),
-        partial: false,
-      };
-    } finally {
-      window.clearTimeout(waitingTimer);
-      window.clearInterval(idleTimer);
-      if (abandonCurrent === abandon) abandonCurrent = null;
-      if (currentPending?.messageId === pendingMsg.id) currentPending = null;
-      if (currentRequestId === requestId) currentRequestId = null;
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      setStatus(undefined);
-    }
-
-    const toolCalls = Array.from(toolCallsMap.values());
-    const error = failure as ChatError | null;
-
-    logAgent({
-      event: 'reply',
-      dialogId,
-      model: profile.model,
-      finishReason,
-      toolCalls: error ? 0 : toolCalls.length,
-      textChars: assistantText.length,
-      usage,
-      ms: Date.now() - replyStartedAt,
-      ...(error ? { error: error.kind } : {}),
-    });
-
-    // Stopped for repeating itself: keep the reply up to where it started,
-    // tell the model once, and go on; a second time, the run ends.
-    if (repetitionCut !== null) {
-      run.repetitionStops++;
-      await store.finalizeMessage(dialogId, pendingMsg.id, {
-        content: `${assistantText.slice(0, repetitionCut).trimEnd()}\n\n_[Stopped here: the reply kept repeating itself.]_`,
-        toolCalls: [],
-        meta: withReasoning(),
-      });
-      opts.onSettled?.(true);
-      logAgent({
-        event: 'run',
+      await store.flush();
+      await startRun({
         dialogId,
-        model: profile.model,
-        outcome: 'repetition',
-        toolCalls: run.guard.toolCalls,
-        filesChanged: run.changedFiles.size,
-        verifyRounds: run.verifyRounds,
-        ms: 0,
+        start,
+        profile,
+        options: reasoningOptions(profile),
+        mode: chatMode(),
+        contextMode: ensureContextMode(dialogId),
+        root: props.rootPath(),
+        currentUserContent,
+        localDate: localDate(),
+        config: agentConfig(),
       });
-      if (run.repetitionStops >= 2 || stopRequested) {
-        notify({
-          kind: 'warning',
-          title: 'The model kept repeating itself',
-          message:
-            'Its reply was stopped twice, so the run ended. Try again, or a different model.',
-          timeout: 12_000,
-        });
-        endRun(dialogId, run, 'repetition');
-        return;
-      }
-      await store.appendMessages(dialogId, [
-        {
-          id: crypto.randomUUID(),
-          role: 'user',
-          content:
-            '[Automatic check by the IDE, not written by the user]\n' +
-            'Your last reply started repeating the same text over and over, so it was stopped. ' +
-            "Don't repeat anything. " +
-            (run.mode === 'plan'
-              ? 'If the plan is ready, submit it once with submit_plan and reply in a sentence or two.'
-              : 'Continue with the task from where you were.'),
-          finalized: true,
-          meta: { harness: 'checklist' },
-        },
-      ]);
-      await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
-      return;
+      return true;
+    } catch (err) {
+      console.error('Agent run not started:', err);
+      notify({
+        kind: 'error',
+        title: "The agent couldn't start",
+        message: String(err),
+        timeout: 12_000,
+      });
+      return false;
     }
-
-    if (error) {
-      const stored = toStoredFailure(error);
-      if (assistantText.trim()) {
-        // Part of the reply arrived: keep it (it stays in the history) and
-        // let the user continue. Incomplete tool calls are dropped.
-        await store.finalizeMessage(dialogId, pendingMsg.id, {
-          content: assistantText,
-          toolCalls: [],
-          meta: withReasoning({ interrupted: stored }),
-        });
-        opts.onSettled?.(true);
-      } else {
-        await store.finalizeMessage(dialogId, pendingMsg.id, {
-          content: '',
-          toolCalls: [],
-          error: describeFailure(stored),
-          meta: { failure: stored },
-        });
-        opts.onSettled?.(false);
-      }
-      endRun(dialogId, run, error.kind === 'cancelled' ? 'stopped' : 'error');
-      return;
-    }
-
-    // The reply's meta so far (with its reasoning): finalizing keeps only what it's given.
-    const finishedMeta = withReasoning(
-      store.messagesOf(dialogId).find((m) => m.id === pendingMsg.id)?.meta
-    );
-    await store.finalizeMessage(dialogId, pendingMsg.id, {
-      content: assistantText,
-      toolCalls,
-      meta: finishedMeta,
-    });
-    opts.onSettled?.(true);
-
-    if (stopRequested) {
-      endRun(dialogId, run, 'stopped');
-      return;
-    }
-
-    // The model says it's done: the checks decide (verifyAtEnd).
-    if (toolCalls.length === 0) {
-      if (run.mode === 'plan') {
-        if (await finishPlanReply(dialogId, pendingMsg.id, assistantText, run)) {
-          await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
-          return;
-        }
-      } else if (await checkChecklist(dialogId, run)) {
-        await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
-        return;
-      }
-      const outcome = await verifyAtEnd(dialogId, run);
-      if (outcome === 'continue') {
-        await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
-        return;
-      }
-      endRun(dialogId, run, outcome);
-      return;
-    }
-
-    await executeToolCalls(dialogId, toolCalls, undefined, run);
-    if (stopRequested) {
-      endRun(dialogId, run, 'stopped');
-      return;
-    }
-
-    // Every tool call has its result, so the chat can wait here as long as
-    // it likes: Continue picks up with the next request (continueRun).
-    const pause = guard.pause();
-    if (pause) {
-      await store.appendMessages(dialogId, [
-        {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          // Empty, no tool calls: kept out of what the model is sent.
-          content: '',
-          finalized: true,
-          meta: { paused: pause },
-        },
-      ]);
-      endRun(dialogId, run, `paused-${pause.kind}`);
-      return;
-    }
-
-    await runAgentTurn(dialogId, { currentUserContent: opts.currentUserContent, run });
   }
 
-  /**
-   * Starts a run: the loop guard, and the project's checks and profile for
-   * the system prompt (detected fresh each run: a few file reads).
-   */
-  async function startRun(dialogId: string, startAtToolCalls = 0): Promise<AgentRun> {
-    const mode = runModeFor(dialogId);
-    const p = permissions();
-    const root = props.rootPath();
-    let checks: ProjectCheck[] = [];
-    let context = '';
-    if (root) {
-      try {
-        const [profile, settings] = await Promise.all([
-          detectProject(root),
-          loadProjectSettings(root),
-        ]);
-        checks = effectiveChecks(profile, settings);
-        context = projectContext(profile, checks, p.verifyChanges);
-      } catch (err) {
-        console.error('Project detection failed:', err);
-      }
-    }
-    setProjectContextText(context);
-    return {
-      guard: new AgentRunGuard(p.toolCallCheckpoint, startAtToolCalls),
-      mode,
-      questionsAsked: 0,
-      checklistNudged: false,
-      planContext: mode === 'plan' ? await currentPlanContext(dialogId) : '',
-      planNudged: false,
-      repetitionStops: 0,
-      checks,
-      projectContext: context,
-      changedFiles: new Set(),
-      writesSinceVerify: false,
-      verifyRounds: 0,
-      lastVerifyFailed: false,
-      startedAt: Date.now(),
-      ended: false,
-    };
+  /** Sends a user message (shown at once; the run stores it first thing). */
+  async function sendMessage(
+    dialogId: string,
+    message: { id: string; content: string; meta: ChatMessage['meta'] },
+    wireContent: string | undefined
+  ): Promise<boolean> {
+    store.addLocal(dialogId, { ...message, role: 'user', finalized: true });
+    const started = await beginRun(dialogId, { kind: 'send', message }, wireContent);
+    // Never stored: shown as failed.
+    if (!started) store.applyPatch(dialogId, message.id, { failed: true });
+    return started;
   }
 
   /** The mode of the request a run belongs to: its starting message's. */
@@ -2589,81 +1745,6 @@ export default function ChatPanel(props: ChatProps) {
       if (m.role === 'user' && !m.meta?.harness) return m.meta?.mode ?? 'agent';
     }
     return chatMode();
-  }
-
-  /**
-   * ask_user: shows the questions in the chat and waits for the answer
-   * (lib/questions.ts). Only in Plan mode, a few per run; the answer is
-   * the tool's result, kept with the questions in its meta for the card.
-   */
-  async function answerAskUser(dialogId: string, tc: ChatToolCall, mode: ChatMode, run?: AgentRun) {
-    const finish = (content: string, meta?: ChatMessage['meta']) =>
-      store.appendMessages(dialogId, [
-        {
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content,
-          tool_call_id: tc.id,
-          finalized: true,
-          meta,
-        },
-      ]);
-    const log = (questions: number, answers: string[]) =>
-      logAgent({
-        event: 'question',
-        dialogId,
-        model: activeProfile()?.model ?? '',
-        questions,
-        answers,
-      });
-
-    if (mode !== 'plan') {
-      await finish(
-        'Error: asking the user is only available in Plan mode. Decide yourself and say what you assumed.'
-      );
-      return;
-    }
-    if (run && run.questionsAsked >= MAX_QUESTIONS_PER_RUN) {
-      log(0, ['over-limit']);
-      await finish(
-        `You've already asked ${run.questionsAsked} times in this task. Decide the rest yourself ` +
-          'and list your assumptions under "Decisions" in the plan.'
-      );
-      return;
-    }
-    const questions = parseQuestions(parseToolArgsObject(tc.arguments));
-    if (questions.length === 0) {
-      await finish(
-        'Error: no question to ask. Pass questions: [{ question, options: [{ label }] }].'
-      );
-      return;
-    }
-    if (run) run.questionsAsked++;
-
-    // In the chat; and in the corner, in case the user is working elsewhere.
-    const note = notify({
-      id: `question-${tc.id}`,
-      title:
-        questions.length === 1
-          ? 'The agent has a question'
-          : `The agent has ${questions.length} questions`,
-      message: questions[0].question,
-      actions: [{ label: 'Show', primary: true, run: () => listController?.followLatest() }],
-    });
-    const outcome = await askUser({ toolCallId: tc.id, dialogId, questions });
-    note.close();
-    dismiss(`question-${tc.id}`);
-
-    log(
-      questions.length,
-      'answers' in outcome
-        ? outcome.answers.map((a) => a.kind)
-        : 'reply' in outcome
-          ? ['reply']
-          : ['stopped']
-    );
-    if ('stopped' in outcome) stopRequest();
-    await finish(describeOutcome(questions, outcome), { questions: { questions, outcome } });
   }
 
   /**
@@ -2686,23 +1767,19 @@ export default function ChatPanel(props: ChatProps) {
    * dropped from the context); the chat shows a short line.
    */
   function startImplementation(dialogId: string, plan: string, file?: string) {
-    const profile = activeProfile();
-    if (!profile || sending()) return;
+    if (!activeProfile() || isRunning(dialogId)) return;
     setChatMode('agent');
     const rel = file ? relativePlanPath(file, props.rootPath()) : undefined;
     const wire = implementationRequest(plan, rel);
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: rel ? `Implement the plan in \`${rel}\`.` : 'Implement the plan above.',
-      finalized: true,
-      meta: { mode: 'agent', sentContent: wire },
-    };
-    listController?.followLatest();
-    void runRequest(dialogId, async () => {
-      await store.appendMessages(dialogId, [userMsg]);
-      await runAgentTurn(dialogId, { currentUserContent: wire });
-    });
+    void sendMessage(
+      dialogId,
+      {
+        id: crypto.randomUUID(),
+        content: rel ? `Implement the plan in \`${rel}\`.` : 'Implement the plan above.',
+        meta: { mode: 'agent', sentContent: wire },
+      },
+      wire
+    );
   }
 
   /** "Implement this plan" on a plan file in the editor (App sends it). */
@@ -2714,133 +1791,6 @@ export default function ChatPanel(props: ChatProps) {
   }
   const stopPlanRequests = onImplementPlanRequest(() => takePlanFromEditor());
   onCleanup(stopPlanRequests);
-
-  /** The chat's plan file: the latest one a plan was saved to. */
-  function chatPlanFile(dialogId: string): string | undefined {
-    return [...store.messagesOf(dialogId)].reverse().find((m) => m.meta?.planFile)?.meta?.planFile;
-  }
-
-  /** Plan mode: the current plan (as the file is now), for the model to revise. */
-  async function currentPlanContext(dialogId: string): Promise<string> {
-    const file = chatPlanFile(dialogId);
-    if (!file) return '';
-    const text = await readFileContent(file).catch(() => null);
-    if (!text?.trim()) return '';
-    return [
-      '## The current plan',
-      `Saved in ${relativePlanPath(file, props.rootPath())}; the user may have edited it. This is the version to revise.`,
-      '',
-      '<current_plan>',
-      text.trim(),
-      '</current_plan>',
-    ].join('\n');
-  }
-
-  /**
-   * submit_plan: the plan is checked (planProblems) and, if it holds up,
-   * saved to the chat's plan file (a revision replaces it). Problems go back
-   * to the model to fix. Only this changes the file: a reply never does.
-   */
-  async function submitPlan(dialogId: string, tc: ChatToolCall) {
-    const finish = (content: string, meta?: ChatMessage['meta']) =>
-      store.appendMessages(dialogId, [
-        {
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content,
-          tool_call_id: tc.id,
-          finalized: true,
-          meta,
-        },
-      ]);
-    const plan = toolArg(tc.arguments, 'plan') ?? '';
-    const problems = planProblems(plan);
-    if (problems.length) {
-      await finish(
-        `Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- ${problems.join('\n- ')}`
-      );
-      return;
-    }
-    const root = props.rootPath();
-    if (!root) {
-      await finish("Error: no project is open, so the plan can't be saved.");
-      return;
-    }
-    const request =
-      [...store.messagesOf(dialogId)].reverse().find((m) => m.role === 'user' && !m.meta?.harness)
-        ?.content ?? 'plan';
-    try {
-      const path = await savePlanFile({ root, request, plan, existing: chatPlanFile(dialogId) });
-      await finish(`Saved the plan to ${relativePlanPath(path, root)}.`, { planFile: path });
-    } catch (err) {
-      await finish(`Error: the plan couldn't be saved: ${String(err)}`);
-    }
-  }
-
-  /**
-   * The end of a Plan-mode reply. If a plan was submitted in this request,
-   * the reply gets its file (for "Implement"). If none was, but the reply
-   * reads like a plan, the model is asked once to submit it properly.
-   * True: it was asked, the run goes on.
-   */
-  async function finishPlanReply(dialogId: string, messageId: string, text: string, run: AgentRun) {
-    const list = store.messagesOf(dialogId);
-    let submitted: string | undefined;
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i];
-      if (m.role === 'user' && !m.meta?.harness) break;
-      if (m.role === 'tool' && m.meta?.planFile) {
-        submitted = m.meta.planFile;
-        break;
-      }
-    }
-    if (submitted) {
-      const msg = list.find((m) => m.id === messageId);
-      await store.updateMeta(dialogId, messageId, { ...(msg?.meta ?? {}), planFile: submitted });
-      return false;
-    }
-    const looksLikePlan = /^##\s+.*\bsteps?\b/im.test(text) && /^\s*\d+[.)]\s/m.test(text);
-    if (!looksLikePlan || run.planNudged) return false;
-    run.planNudged = true;
-    await store.appendMessages(dialogId, [
-      {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content:
-          '[Automatic check by the IDE, not written by the user]\n' +
-          "You wrote the plan in your reply, so it wasn't saved. Submit it with submit_plan (the complete plan, " +
-          "once), then reply in a sentence or two. Don't write it out again in the reply.",
-        finalized: true,
-        meta: { harness: 'checklist' },
-      },
-    ]);
-    return true;
-  }
-
-  /**
-   * The checklist at the end of a run: unfinished steps are pointed out once,
-   * and the run goes on. True: the agent was told, continue.
-   */
-  async function checkChecklist(dialogId: string, run: AgentRun): Promise<boolean> {
-    if (run.checklistNudged) return false;
-    const items = latestChecklist(store.messagesOf(dialogId));
-    const open = (items ?? []).filter((i) => !isSettled(i));
-    if (open.length === 0) return false;
-    run.checklistNudged = true;
-    await store.appendMessages(dialogId, [
-      {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content:
-          '[Automatic check by the IDE, not written by the user]\n' +
-          `Your checklist still has unfinished steps: ${open.map((i) => `"${i.title}"`).join(', ')}. ` +
-          'Finish them, or update the checklist marking each skipped or changed with the reason, then finish.',
-        finalized: true,
-        meta: { harness: 'checklist' },
-      },
-    ]);
-    return true;
-  }
 
   /** The running request's checklist, for the panel. */
   const runChecklist = createMemo(() => latestChecklist(messages()));
@@ -2875,401 +1825,25 @@ export default function ChatPanel(props: ChatProps) {
     return runModeFor(dialogId) === 'plan' ? last.id : null;
   });
 
-  /** The run's diagnostics line (lib/agentLog.ts), once. */
-  function endRun(dialogId: string, run: AgentRun, outcome: string) {
-    if (run.ended) return;
-    run.ended = true;
-    logAgent({
-      event: 'run',
-      dialogId,
-      model: activeProfile()?.model ?? '',
-      outcome,
-      toolCalls: run.guard.toolCalls,
-      filesChanged: run.changedFiles.size,
-      verifyRounds: run.verifyRounds,
-      ms: Date.now() - run.startedAt,
-    });
-  }
-
-  /*
-   * -----------------------------------------------------------------------
-   * Verification gate
-   * -----------------------------------------------------------------------
-   *
-   * When the model finishes a run in which it changed files, the IDE runs
-   * the project's checks. Failures go back to the model as a message it must
-   * act on, up to MAX_VERIFY_ROUNDS times; the record of each round shows in
-   * the chat (an empty assistant message with meta.verification, which is
-   * never sent to the model).
-   */
-
-  /** Appends a verification record and returns a way to update it. */
-  async function addVerificationRecord(dialogId: string, meta: VerificationMeta) {
-    const id = crypto.randomUUID();
-    await store.appendMessages(dialogId, [
-      { id, role: 'assistant', content: '', finalized: true, meta: { verification: meta } },
-    ]);
-    // Saved on every change, not just shown: the record has to read the
-    // same after a restart.
-    return (next: VerificationMeta) => store.updateMeta(dialogId, id, { verification: next });
-  }
-
-  /**
-   * Runs the gate at the end of a run. 'continue' means the failures were
-   * sent to the model and the run goes on; anything else is the outcome.
-   */
-  async function verifyAtEnd(
-    dialogId: string,
-    run: AgentRun,
-    opts: {
-      approved?: boolean;
-      /** The record that waited for approval: updated in place, not a new one. */
-      recordId?: string;
-    } = {}
-  ): Promise<string> {
-    const p = permissions();
-    const root = props.rootPath();
-    if (!p.verifyChanges || !root) return 'done';
-    const changedFiles = [...run.changedFiles];
-    const base = { round: run.verifyRounds, maxRounds: MAX_VERIFY_ROUNDS, changedFiles };
-
-    if (!run.writesSinceVerify) {
-      // Failures were sent back, and the model finished without touching
-      // anything: it decided not to (or couldn't). Say so; don't loop.
-      if (run.lastVerifyFailed) {
-        await addVerificationRecord(dialogId, { ...base, status: 'unresolved', checks: [] });
-        return 'verify-unresolved';
-      }
-      return 'done';
-    }
-
-    const checks = run.checks.filter((c) => c.enabled && c.command.trim());
-    if (checks.length === 0) {
-      await addVerificationRecord(dialogId, {
-        ...base,
-        status: 'unverified',
-        checks: [],
-        reason: 'no checks are set up for this project',
-      });
-      run.writesSinceVerify = false;
-      return 'unverified';
-    }
-
-    // Command approval is on: the gate's commands need the user's go too.
-    if (p.commandApproval.required && !opts.approved) {
-      await addVerificationRecord(dialogId, {
-        ...base,
-        status: 'needs-approval',
-        checks: checks.map((c) => ({ kind: c.kind, command: c.command, status: 'pending' })),
-      });
-      return 'verify-needs-approval';
-    }
-
-    run.verifyRounds++;
-    run.writesSinceVerify = false;
-    const round = run.verifyRounds;
-    let meta: VerificationMeta = { ...base, round, status: 'running', checks: [] };
-    const update = opts.recordId
-      ? ((id: string) => {
-          const set = (next: VerificationMeta) =>
-            store.updateMeta(dialogId, id, { verification: next });
-          void set(meta);
-          return set;
-        })(opts.recordId)
-      : await addVerificationRecord(dialogId, meta);
-
-    const results = await runChecks(root, checks, p, {
-      changedFiles,
-      shouldStop: () => stopRequested || !isMounted,
-      onProgress: (progress) => {
-        meta = { ...meta, checks: progress };
-        update(meta);
-      },
-    });
-
-    const failed = results.some(isFailed);
-    const ran = results.some((r) => r.status === 'passed' || r.status === 'failed');
-    const status: VerificationMeta['status'] = stopRequested
-      ? 'stopped'
-      : !ran
-        ? 'unverified'
-        : !failed
-          ? 'passed'
-          : round >= MAX_VERIFY_ROUNDS
-            ? 'gave-up'
-            : 'failed';
-    meta = {
-      ...meta,
-      checks: results,
-      status,
-      ...(status === 'unverified' ? { reason: 'none of the checks were allowed to run' } : {}),
-    };
-    update(meta);
-    logAgent({
-      event: 'verify',
-      dialogId,
-      round,
-      status,
-      checks: results.map((r) => ({
-        kind: r.kind,
-        command: r.command,
-        status: r.status,
-        exitCode: r.exitCode,
-        ms: r.durationMs,
-      })),
-    });
-
-    run.lastVerifyFailed = failed;
-    if (status !== 'failed') {
-      return status === 'passed' ? 'verified' : `verify-${status}`;
-    }
-
-    // Back to the model. User-role, so every provider accepts it after an
-    // assistant reply; marked as the IDE's, so it's never shown as the
-    // user's message or replaced by the request's editor context.
-    await store.appendMessages(dialogId, [
-      {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: failureReport(results, changedFiles, round),
-        finalized: true,
-        meta: { harness: 'verification' },
-      },
-    ]);
-    return 'continue';
-  }
-
-  /** "Run checks" on a record that waited for approval. */
+  /** "Run checks" on a verification record that waited for approval. */
   function runApprovedChecks() {
     const dialogId = activeDialogId();
     if (!dialogId || sending()) return;
     const list = store.messagesOf(dialogId);
     const record = list[list.length - 1];
-    const pending = record?.meta?.verification;
-    if (!pending || pending.status !== 'needs-approval') return;
-    listController?.followLatest();
-    const currentUserContent = lastUserWireContent(dialogId);
-    void runRequest(dialogId, async () => {
-      const run = await startRun(dialogId);
-      for (const f of pending.changedFiles) run.changedFiles.add(f);
-      run.writesSinceVerify = true;
-      run.verifyRounds = pending.round;
-      // The waiting record becomes the running one, then the results.
-      const outcome = await verifyAtEnd(dialogId, run, { approved: true, recordId: record.id });
-      if (outcome === 'continue') {
-        await runAgentTurn(dialogId, { currentUserContent, run });
-      } else {
-        endRun(dialogId, run, outcome);
-      }
-    });
+    if (record?.meta?.verification?.status !== 'needs-approval') return;
+    void beginRun(
+      dialogId,
+      { kind: 'runChecks', recordId: record.id },
+      lastUserWireContent(dialogId)
+    );
   }
 
   /** Continue a run that paused at a checkpoint or a loop check. */
   function continueRun() {
     const dialogId = activeDialogId();
     if (!dialogId || sending()) return;
-    const list = store.messagesOf(dialogId);
-    const last = list[list.length - 1];
-    const paused = last?.meta?.paused;
-    listController?.followLatest();
-    // Counting goes on from where it paused; loop evidence starts fresh.
-    const currentUserContent = lastUserWireContent(dialogId);
-    void runRequest(dialogId, async () => {
-      const run = await startRun(dialogId, paused?.toolCalls ?? 0);
-      await runAgentTurn(dialogId, { currentUserContent, run });
-    });
-  }
-
-  /**
-   * Authorizes, runs and records each tool call; each result is stored
-   * before the next turn, which reads the history from the database.
-   * Every call gets a result, even after Stop: providers reject a history
-   * with tool calls left unanswered.
-   */
-  async function executeToolCalls(
-    dialogId: string,
-    toolCalls: ChatToolCall[],
-    /** Interrupted calls being resumed: always asked manually, with this note. */
-    resumeNote?: string,
-    /** The run: loop checks record each finished call, writes are tracked. */
-    run?: AgentRun
-  ) {
-    const guard = run?.guard;
-    const root = props.rootPath();
-    const stoppedResult = (tc: ChatToolCall) =>
-      store.appendMessages(dialogId, [
-        {
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: 'Error: stopped by the user before this ran.',
-          tool_call_id: tc.id,
-          finalized: true,
-        },
-      ]);
-
-    const mode = run?.mode ?? runModeFor(dialogId);
-    // CLM mode: the agent's context folder (lib/contextMode.ts).
-    const clm =
-      contextModeFor(dialogId) === 'clm' ? await clmStatus(dialogId).catch(() => null) : null;
-    const contextDir = clm?.available ? contextDirOf(clm.realPath) : null;
-    for (const tc of toolCalls) {
-      if (stopRequested) {
-        await stoppedResult(tc);
-        continue;
-      }
-      // The agent's own context file: no approval, no editor review, not
-      // a project change. It applies to the next request.
-      if (
-        clm?.available &&
-        (tc.name === 'read_file' || tc.name === 'edit_file' || tc.name === 'write_file') &&
-        isContextPath(toolArg(tc.arguments, 'path'), contextDir)
-      ) {
-        let content: string;
-        try {
-          content = await executeContextTool(dialogId, tc.name, parseToolArgsObject(tc.arguments));
-        } catch (err) {
-          content = `Error: ${String(err)}`;
-        }
-        if (guard) {
-          const verdict = guard.record({ name: tc.name, argsJson: tc.arguments, result: content });
-          if (verdict.kind !== 'ok') content += verdict.note;
-        }
-        await store.appendMessages(dialogId, [
-          {
-            id: crypto.randomUUID(),
-            role: 'tool',
-            content,
-            tool_call_id: tc.id,
-            meta: toolResultMeta(tc.name, content),
-            finalized: true,
-          },
-        ]);
-        continue;
-      }
-      // The plan (Plan mode): checked, then saved; problems go back to the model.
-      if (tc.name === 'submit_plan') {
-        await submitPlan(dialogId, tc);
-        continue;
-      }
-      // The checklist: shown in the panel, never asks, isn't work the loop
-      // checks or the pause limit count.
-      if (tc.name === 'todo') {
-        const items = parseTodo(parseToolArgsObject(tc.arguments));
-        await store.appendMessages(dialogId, [
-          {
-            id: crypto.randomUUID(),
-            role: 'tool',
-            content: describeTodo(items),
-            tool_call_id: tc.id,
-            finalized: true,
-          },
-        ]);
-        continue;
-      }
-      // Questions to the user: answered in the chat, no approval involved
-      // (a resumed one after a restart is simply asked again).
-      if (tc.name === 'ask_user') {
-        await answerAskUser(dialogId, tc, mode, run);
-        continue;
-      }
-      // Plan mode doesn't offer these; a model that calls them anyway is told why.
-      if (mode === 'plan' && PLAN_BLOCKED_TOOLS.has(tc.name)) {
-        await store.appendMessages(dialogId, [
-          {
-            id: crypto.randomUUID(),
-            role: 'tool',
-            content:
-              `Error: ${tc.name} isn't available in Plan mode, which doesn't change anything. ` +
-              'Finish the plan; the user implements it in Agent mode.',
-            tool_call_id: tc.id,
-            finalized: true,
-          },
-        ]);
-        continue;
-      }
-      const { refusal, approval, argsOverride, toolOverride, resultNote } = await authorizeToolCall(
-        dialogId,
-        tc,
-        resumeNote
-      );
-      // Stop may have been pressed while approval was pending.
-      if (stopRequested && (refusal || !approval)) {
-        await stoppedResult(tc);
-        continue;
-      }
-      const args = argsOverride ?? tc.arguments;
-      const toolName = toolOverride ?? tc.name;
-      const writes = !refusal && (toolName === 'write_file' || toolName === 'edit_file');
-      // The file before a write, so the guard can tell an edit undoing earlier ones.
-      const writePath = writes ? toolArg(args, 'path') : undefined;
-      const before =
-        writePath && root
-          ? await readFileContent(toAbsolutePath(writePath, root)).catch(() => null)
-          : null;
-      const result = refusal
-        ? { content: refusal, attachments: undefined, written: undefined }
-        : await executeAgentTool(root, toolName, args);
-      if (resultNote && !result.content.startsWith('Error:')) result.content += resultNote;
-      // Redoing work it compacted away: offer the revision that still has it.
-      if (clm?.available && !refusal && !result.content.startsWith('Error:')) {
-        result.content += await recallHint(dialogId, tc.id, toolName, args);
-      }
-
-      const writeFailed = result.content.startsWith('Error:');
-      const after =
-        result.written?.content ??
-        (toolName === 'write_file' ? toolArg(args, 'content') : undefined);
-      // An edit the user didn't review shows in the editor until they save.
-      if (writes && !writeFailed && writePath && root && after !== undefined) {
-        if (approval?.by !== 'user') {
-          recordAgentEdit(toAbsolutePath(writePath, root), before, after);
-        }
-      }
-
-      if (guard) {
-        const failed = writeFailed;
-        const verdict = guard.record({
-          name: tc.name,
-          argsJson: tc.arguments,
-          result: result.content,
-          write:
-            writes && !failed && writePath && after !== undefined
-              ? { path: writePath, before, after }
-              : undefined,
-        });
-        // The model reads the note with the result; a stop pauses the run
-        // once this turn's calls are done (runAgentTurn).
-        if (verdict.kind !== 'ok') result.content += verdict.note;
-      }
-      if (run && writes && writePath && !result.content.startsWith('Error:')) {
-        run.changedFiles.add(writePath);
-        run.writesSinceVerify = true;
-      }
-
-      // Open tabs of the file show what was written.
-      if (!refusal && root && !result.content.startsWith('Error:')) {
-        if (result.written) {
-          notifyFileWritten(toAbsolutePath(result.written.path, root), result.written.content);
-        } else if ((toolOverride ?? tc.name) === 'write_file') {
-          const path = toolArg(args, 'path');
-          const content = toolArg(args, 'content');
-          if (path && content !== undefined) notifyFileWritten(toAbsolutePath(path, root), content);
-        }
-      }
-
-      const resultMeta = toolResultMeta(tc.name, result.content);
-      await store.appendMessages(dialogId, [
-        {
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: result.content,
-          attachments: result.attachments,
-          tool_call_id: tc.id,
-          meta: approval ? { ...resultMeta, approval } : resultMeta,
-          finalized: true,
-        },
-      ]);
-    }
+    void beginRun(dialogId, { kind: 'continueRun' }, lastUserWireContent(dialogId));
   }
 
   /*
@@ -3277,12 +1851,12 @@ export default function ChatPanel(props: ChatProps) {
    * Interrupted tool calls
    * -----------------------------------------------------------------------
    *
-   * Approvals live in memory. When the app closes while one waits (or
-   * mid-way through a turn's tool calls), the stored chat ends with tool
-   * calls that never ran and have no result. When such a chat is opened,
-   * the run picks up where it stopped: each of those calls asks the user
-   * again (manually, whatever the settings say, since the user wasn't
-   * there to decide), runs if allowed, and the agent continues.
+   * When the app closes while an approval waits (or mid-way through a
+   * turn's tool calls), the stored chat ends with tool calls that never ran
+   * and have no result. When such a chat is opened, the run picks up where
+   * it stopped: each of those calls asks the user again (manually, whatever
+   * the settings say, since the user wasn't there to decide), runs if
+   * allowed, and the agent continues.
    */
 
   /** Tool calls of the chat's last agent step that have no result yet. */
@@ -3304,73 +1878,21 @@ export default function ChatPanel(props: ChatProps) {
     return [];
   }
 
-  /** Chats already resumed in this session: each is offered once. */
-  const resumed = new Set<string>();
-
   createEffect(() => {
     const dialogId = activeDialogId();
     const chat = activeChat();
     // Wait until the newest messages are loaded and nothing is running.
-    if (!dialogId || !chat || chat.hasNewer || chat.busy || sending()) return;
-    if (resumed.has(dialogId) || runningDialogs.has(dialogId)) return;
-    const calls = unansweredToolCalls(chat.messages);
-    if (calls.length === 0) return;
+    if (!dialogId || !chat || chat.hasNewer || sending() || !activeProfile()) return;
+    if (resumed.has(dialogId)) return;
+    if (unansweredToolCalls(chat.messages).length === 0) return;
     resumed.add(dialogId);
-    untrack(() => void resumeInterrupted(dialogId, calls));
+    untrack(() => void beginRun(dialogId, { kind: 'resume' }, lastUserWireContent(dialogId)));
   });
 
-  async function resumeInterrupted(dialogId: string, calls: ChatToolCall[]) {
-    listController?.followLatest();
-    await runRequest(dialogId, async () => {
-      await executeToolCalls(
-        dialogId,
-        calls,
-        'Interrupted: the app was closed before this ran. Allow it to continue the task.'
-      );
-      if (stopRequested || !isMounted) return;
-      await runAgentTurn(dialogId, { currentUserContent: lastUserWireContent(dialogId) });
-    });
-  }
-
-  /**
-   * Runs an agent request with the shared "sending" state: the send button
-   * becomes Stop, the chat stays open in memory, writes are flushed after.
-   */
-  async function runRequest(dialogId: string, run: () => Promise<void>) {
-    stopRequested = false;
-    window.clearTimeout(stopTimer);
-    setSending(true);
-    store.setBusy(dialogId, true);
-    runningDialogs.add(dialogId);
-    try {
-      await run();
-    } finally {
-      runningDialogs.delete(dialogId);
-      window.clearTimeout(stopTimer);
-      store.setBusy(dialogId, false);
-      if (isMounted) setSending(false);
-      await flushDialogPersistence();
-    }
-  }
-
-  /** Stop: cancels the running request and any further tool steps. */
+  /** Stop: the run ends as soon as it can; what it waits on is answered "no". */
   function stopRequest() {
-    stopRequested = true;
-    // Waiting approvals count as denied, waiting questions as stopped.
-    denyAll();
-    stopQuestions();
-    if (currentRequestId) {
-      void cancelChatRequest(currentRequestId).catch((err) => console.error('Cancel failed:', err));
-    }
-    if (currentPending) {
-      store.patchMessage(currentPending.dialogId, currentPending.messageId, {
-        status: { text: 'Stopping…' },
-      });
-    }
-    // Normally the request ends within a moment. If the backend doesn't
-    // confirm, stop waiting for it anyway: Stop must always work.
-    window.clearTimeout(stopTimer);
-    stopTimer = window.setTimeout(() => abandonCurrent?.(), STOP_GRACE_MS);
+    const dialogId = activeDialogId();
+    if (dialogId) void stopRun(dialogId).catch((err) => console.error('Stop failed:', err));
   }
 
   /**
@@ -3395,20 +1917,14 @@ export default function ChatPanel(props: ChatProps) {
   function retryLastTurn() {
     const dialogId = activeDialogId();
     if (!dialogId || sending()) return;
-    listController?.followLatest();
-    const currentUserContent = lastUserWireContent(dialogId);
-    void runRequest(dialogId, () => runAgentTurn(dialogId, { currentUserContent }));
+    void beginRun(dialogId, { kind: 'retry' }, lastUserWireContent(dialogId));
   }
 
   /** Continue an interrupted reply. */
   function continueReply() {
     const dialogId = activeDialogId();
     if (!dialogId || sending()) return;
-    listController?.followLatest();
-    const currentUserContent = lastUserWireContent(dialogId);
-    void runRequest(dialogId, () =>
-      runAgentTurn(dialogId, { continueReply: true, currentUserContent })
-    );
+    void beginRun(dialogId, { kind: 'continueReply' }, lastUserWireContent(dialogId));
   }
 
   /*
@@ -3495,12 +2011,9 @@ export default function ChatPanel(props: ChatProps) {
      * the same thing instead of the bare text.
      */
     const wireContent = buildWireContent(text, selectedFiles);
-
-    const userMsg: ChatMessage = {
+    const message = {
       id: crypto.randomUUID(),
-      role: 'user',
       content: text,
-      finalized: true,
       meta: {
         mode: chatMode(),
         ...(wireContent && wireContent !== text ? { sentContent: wireContent } : {}),
@@ -3509,18 +2022,17 @@ export default function ChatPanel(props: ChatProps) {
 
     /*
      * Save the composer before anything else: from here until the model
-     * answers, this is the only copy of what the user typed.
+     * answers, this is the only copy of what the user typed. The run clears
+     * it once the message is answered (lib/agentRuns.ts), or it comes back.
      */
     savePendingDraft({
       dialogId: dialog.id,
-      messageId: userMsg.id,
+      messageId: message.id,
       segments: serializeComposer(),
       createdAt: new Date().toISOString(),
     });
-    inFlightMessageId = userMsg.id;
 
     // Sending always brings the conversation back into view.
-    listController?.followLatest();
     setFocusMessageId(null);
 
     // Clear right away; the draft brings it back if the request fails.
@@ -3530,34 +2042,10 @@ export default function ChatPanel(props: ChatProps) {
     setFileQuery('');
     setSelectedSuggestionIndex(0);
 
-    await runRequest(dialog.id, async () => {
-      try {
-        // Stored first: the backend builds the request from the database.
-        await store.appendMessages(dialog.id, [userMsg]);
-
-        await runAgentTurn(dialog.id, {
-          currentUserContent: wireContent,
-          onSettled: (ok) => {
-            inFlightMessageId = null;
-
-            if (ok) {
-              clearPendingDraft(dialog.id, userMsg.id);
-              return;
-            }
-
-            markMessageFailed(dialog.id, userMsg.id);
-
-            // Restore now if the user is still in this dialog; otherwise the
-            // draft waits in storage until they switch back to it.
-            if (isMounted && activeDialogId() === dialog.id) {
-              restoreDraftForDialog(dialog.id);
-            }
-          },
-        });
-      } finally {
-        inFlightMessageId = null;
-      }
-    });
+    if (!(await sendMessage(dialog.id, message, wireContent))) {
+      if (activeDialogId() === dialog.id) restoreDraftForDialog(dialog.id);
+      else clearPendingDraft(dialog.id, message.id);
+    }
   }
 
   function handleKeyDown(e: KeyboardEvent) {

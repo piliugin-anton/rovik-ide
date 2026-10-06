@@ -260,9 +260,9 @@ fn tidy_text(text: &str) -> String {
 
 #[derive(Serialize, Deserialize)]
 pub struct SearchHit {
-    title: String,
-    url: String,
-    snippet: String,
+    pub(crate) title: String,
+    pub(crate) url: String,
+    pub(crate) snippet: String,
 }
 
 /// DuckDuckGo's HTML endpoint: server-rendered, no JavaScript needed.
@@ -332,17 +332,17 @@ pub async fn web_search(
 
 #[derive(Serialize, Deserialize)]
 pub struct PageLink {
-    text: String,
-    url: String,
+    pub(crate) text: String,
+    pub(crate) url: String,
 }
 
 #[derive(Serialize)]
 pub struct BrowsedPage {
-    url: String,
-    title: String,
-    text: String,
-    truncated: bool,
-    links: Vec<PageLink>,
+    pub(crate) url: String,
+    pub(crate) title: String,
+    pub(crate) text: String,
+    pub(crate) truncated: bool,
+    pub(crate) links: Vec<PageLink>,
 }
 
 #[derive(Deserialize)]
@@ -410,13 +410,13 @@ pub async fn browse_url(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Screenshot {
-    url: String,
-    title: String,
+    pub(crate) url: String,
+    pub(crate) title: String,
     /// Stored in the chat database's attachments; shown by URL, and only
     /// base64-encoded when a request to a vision model is built.
-    attachment_id: String,
-    width: u32,
-    height: u32,
+    pub(crate) attachment_id: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 /// Screenshots the viewport, opening `url` first when given (otherwise the
