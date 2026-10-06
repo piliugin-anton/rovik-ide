@@ -42,6 +42,7 @@ src/
 src-tauri/
   src/
     commands.rs     read_dir_entries / read_file_content / write_file_content
+    vfs/            virtual files mounted via FUSE / macFUSE / WinFsp
     lib.rs          Tauri builder, plugin + command registration
   capabilities/
     default.json    permission grants (dialog plugin only — our own fs
@@ -74,6 +75,81 @@ npm run tauri build    # production bundle
 
 See https://v2.tauri.app/start/prerequisites/ for the non-Linux prerequisites
 (Xcode CLT on macOS, MSVC Build Tools on Windows).
+
+## Virtual files
+
+`src-tauri/src/vfs/` gives the app files that live in its memory but are
+real files to every other program — so commands the AI agent runs can
+`cat`, `grep`, `sed -i`, `chmod +x` and execute them, or create and change
+files there that the app reads back. The volume is a user-space filesystem
+mounted through the OS's driver, which is optional software the app installs
+on request (Settings → Virtual files):
+
+| OS      | Driver  | Installed from                                       | Notes                                                                                                                                                                                                              |
+| ------- | ------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Linux   | FUSE 3  | the distro's package (`fuse3`) via polkit (`pkexec`) | Mounted with `fusermount3`; no libfuse needed to build or run.                                                                                                                                                     |
+| macOS   | macFUSE | the official release `.dmg` (signature checked)      | macOS 15.4+ with macFUSE 5.1+ uses FSKit (no kernel extension; switch macFUSE on once in System Settings), mounted at `/Volumes/RovikVirtualFiles`; older systems use the kernel extension, which must be allowed. |
+| Windows | WinFsp  | the official release `.msi` (signature checked)      | winfsp.dll is delay-loaded. Building needs LLVM (`libclang`) for the WinFsp bindings.                                                                                                                              |
+
+The app starts on every OS without the driver; only mounting needs it. At
+start it checks in the background: with the driver installed it mounts the
+volume; without it, one notification offers to install it (then mounts).
+Either can be silenced with "Don't ask again" (`src/lib/virtualFilesStartup.ts`).
+When a mount fails, Settings → Virtual files shows why and what to do (on
+macOS, with a button to the right System Settings page) and keeps retrying
+while the fix is up to the user; after installing, it mounts right away so
+those steps show up at once (`problem.rs`).
+
+```rust
+let vfs = app.state::<vfs::VfsState>();
+let path = vfs.create_file("plans/step-1.md", b"...", false)?; // a real path
+```
+
+From the frontend, `src/lib/virtualFiles.ts` wraps the same calls
+(`writeVirtualFile` returns the `realPath` to hand to a command).
+
+Callbacks report what programs (and the app) do to the files — created,
+opened, read, written, truncated, closed (with whether it was modified),
+removed, renamed — with the path used:
+
+```rust
+let id = vfs.subscribe(EventMask::CLOSED, |e| {
+    if let Op::Closed { modified: true } = e.op { /* a program finished writing e.path */ }
+});
+```
+
+`subscribe_batched` (and `subscribeVirtualFiles` in the frontend) deliver
+batches on a background thread instead. Without subscribers the file
+operations pay one atomic check; paths are found by walking up from the
+file, so the cost doesn't grow with the number of files. See
+`src-tauri/src/vfs/events.rs` for what a callback may do.
+
+Files are versioned: a revision is saved when a program closes a file it
+modified, or when the app writes one. History follows a file through
+renames and "safe saves" (temporary file renamed over the original, as
+`sed -i` and editors do), and outlives deleting it:
+
+```rust
+let revisions = vfs.revisions("notes.md")?;      // number, size, time, source
+let old = vfs.read_revision("notes.md", 2)?;
+vfs.restore_revision("notes.md", 2)?;            // itself a new revision
+```
+
+(`listRevisions` / `readRevision` / `restoreRevision` in the frontend.)
+At most 64 revisions per file and 256 MiB in all are kept, oldest dropped
+first; files over 32 MiB aren't versioned (`set_history_limits`).
+
+- `store.rs` — the in-memory filesystem (POSIX semantics: hard links,
+  symlinks, xattrs, atomic rename, unlinked-but-open files), all unit tested.
+- `fuse.rs` / `macfuse.rs` — Linux and macOS driver (macOS through macFUSE's
+  library, loaded at run time); `winfsp_fs.rs` — Windows.
+- `problem.rs` — why a mount failed and what to do; the macOS backend choice.
+- `events.rs` — callbacks for what happens to the files.
+- `history.rs` — revisions of files.
+- `driver.rs` — detecting and installing the driver.
+
+`cargo test vfs -- --ignored` mounts a real volume on Linux and runs shell
+tools and git against it.
 
 ## Notes / things left simple on purpose
 

@@ -17,6 +17,7 @@ mod system_one;
 mod filesystem;
 mod terminal;
 mod typings;
+mod vfs;
 mod git;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,6 +27,7 @@ pub fn run() {
         .manage(lsp::LspState::default())
         .manage(BrowserState::default())
         .manage(chat_request::ChatRequests::default())
+        .manage(vfs::VfsState::default())
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
             gitignore: Mutex::new(None),
@@ -135,6 +137,21 @@ pub fn run() {
             agent::chat_context_estimate,
             command_tool::tool_run_command,
             system_one::system_one_request,
+            vfs::vfs_status,
+            vfs::vfs_install_driver,
+            vfs::vfs_mount,
+            vfs::vfs_unmount,
+            vfs::vfs_open_settings,
+            vfs::vfs_write_file,
+            vfs::vfs_read_file,
+            vfs::vfs_list,
+            vfs::vfs_remove,
+            vfs::vfs_revisions,
+            vfs::vfs_read_revision,
+            vfs::vfs_restore_revision,
+            vfs::vfs_set_history_limits,
+            vfs::vfs_subscribe,
+            vfs::vfs_unsubscribe,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -143,6 +160,8 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let browser = app.state::<BrowserState>().inner().clone();
                 tauri::async_runtime::block_on(browser.shutdown());
+                // Unmount the virtual files, or the folder stays a dead mount.
+                let _ = app.state::<vfs::VfsState>().unmount();
                 if let Some(db) = app.try_state::<chat_db::DbState>() {
                     db.mark_clean_exit();
                 }

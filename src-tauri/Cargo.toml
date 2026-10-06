@@ -40,6 +40,35 @@ trash = "5"
 flate2 = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# Virtual files (src/vfs): a user-space filesystem through the OS's driver.
+# Linux: FUSE via the fusermount helper (no libfuse needed at build or run time).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = "0.18"
+
+# macOS: macFUSE, mounted through its helper (src/vfs/macfuse.rs) instead of
+# linking libfuse, so the app starts on Macs without macFUSE installed.
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { version = "0.18", features = ["macos-no-mount", "macfuse-4-compat"] }
+
+# Windows: WinFsp, delay-loaded for the same reason. Building needs LLVM
+# (libclang) for winfsp-sys's bindings.
+[target.'cfg(windows)'.dependencies]
+winfsp = { version = "0.13", default-features = false, features = ["delayload"] }
+winfsp-sys = "0.12"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+winfsp = { version = "0.13", default-features = false, features = ["delayload"] }
+
 # Keep release builds small and light — matters for a "low memory" tool.
 [profile.release]
 panic = "abort"
