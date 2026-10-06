@@ -1,8 +1,9 @@
 // contextMode.ts
 //
 // How a chat's context is managed (src-tauri/src/clm):
-// - "compaction": the app trims and compacts older history to fit the
-//   model's context window (chat_db/history.rs);
+// - "trimming": the app trims older history to fit the model's context
+//   window: out-of-date content is cut to a note, old tool results to
+//   their start, the oldest turns dropped (chat_db/history.rs);
 // - "clm": Context Language Models. The agent's context is mirrored to a
 //   file on the virtual volume (lib/virtualFiles.ts) that the agent edits
 //   with its ordinary file tools; the edited file is its next context.
@@ -13,13 +14,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createSignal } from 'solid-js';
 
-export type ContextMode = 'compaction' | 'clm';
+export type ContextMode = 'trimming' | 'clm';
 
 export const CONTEXT_MODES: { id: ContextMode; label: string; hint: string }[] = [
   {
-    id: 'compaction',
-    label: 'Compaction',
-    hint: 'The app trims and compacts older history to fit the context window.',
+    id: 'trimming',
+    label: 'Trimming',
+    hint: 'The app trims older history to fit the context window: stale outputs are cut, the oldest turns dropped.',
   },
   {
     id: 'clm',
@@ -59,9 +60,9 @@ const DEFAULT_KEY = 'rovik.contextMode.default';
 
 function readDefault(): ContextMode {
   try {
-    return localStorage.getItem(DEFAULT_KEY) === 'clm' ? 'clm' : 'compaction';
+    return localStorage.getItem(DEFAULT_KEY) === 'clm' ? 'clm' : 'trimming';
   } catch {
-    return 'compaction';
+    return 'trimming';
   }
 }
 

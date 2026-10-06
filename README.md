@@ -157,8 +157,9 @@ The row under the model and effort in the AI Chat tab chooses, per chat, how
 the agent's context is managed (`src/lib/contextMode.ts`,
 `src/components/ContextControls.tsx`):
 
-- **Compaction** — the app trims and compacts older history to fit the
-  model's window (`src-tauri/src/chat_db/history.rs`).
+- **Trimming** — the app trims older history to fit the model's window:
+  out-of-date content becomes a short note, old tool results are cut to
+  their start, the oldest turns are dropped (`src-tauri/src/chat_db/history.rs`).
 - **CLMs** — [Context Language Models](https://github.com/facebookresearch/context-language-models):
   the agent manages its own context by editing it as a file
   (`src-tauri/src/clm/`). Before every request the context is written to
@@ -182,10 +183,10 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   reset to the stored chat. Requests carry a size readout and reminders at
   25/50/75% of the budget, then every request from 90%. Past the budget,
   older tool outputs are withheld; if it's still over, that request is trimmed
-  like Compaction.
+  like Trimming.
 
   CLMs need virtual files. Without the driver, the row explains how to
-  install it (Settings → Virtual files) and the chat uses Compaction.
+  install it (Settings → Virtual files) and the chat uses Trimming.
 
 ## Notes / things left simple on purpose
 

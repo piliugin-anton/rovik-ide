@@ -1,5 +1,5 @@
 // ContextControls.tsx: the chat's context management, the row under the
-// model and effort (lib/contextMode.ts). "Compaction" or "CLMs"; for CLMs,
+// model and effort (lib/contextMode.ts). "Trimming" or "CLMs"; for CLMs,
 // the context file's size and revisions (view, restore), or why it can't
 // run here and how to fix that (virtual files).
 import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js';
@@ -339,7 +339,7 @@ export default function ContextControls(props: {
           </p>
           <p>
             Install or enable the driver in Settings → Virtual files (FUSE on Linux, macFUSE on
-            macOS, WinFsp on Windows). Until then this chat uses Compaction.
+            macOS, WinFsp on Windows). Until then this chat uses Trimming.
           </p>
           <div class="context-unavailable-actions">
             <button type="button" class="link-button" onClick={props.onOpenVirtualFiles}>

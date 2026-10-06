@@ -136,7 +136,7 @@ INSERT INTO project_paths (project_id, path, last_opened_at) SELECT id, path, la
 "#;
 
 /// Context management per chat (src/clm): the mode (NULL until chosen:
-/// "compaction" or "clm"), and for Context Language Models the model's
+/// "trimming" or "clm"), and for Context Language Models the model's
 /// accepted context (`projection`, covering stored messages up to
 /// `anchor_id`), what was last written to its context file, and the file's
 /// revisions, which outlive the in-memory virtual volume.

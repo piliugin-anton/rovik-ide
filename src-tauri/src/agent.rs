@@ -359,7 +359,7 @@ pub async fn send_chat_message(
     // appended to the default system prompt.
     project_context: Option<String>,
     options: Option<OpenAIChatOptions>,
-    // How the chat's context is managed: "compaction" (default) or "clm"
+    // How the chat's context is managed: "trimming" (default) or "clm"
     // (Context Language Models: the agent edits its context as a file, src/clm).
     context_mode: Option<String>,
     vfs: tauri::State<'_, crate::vfs::VfsState>,
@@ -401,13 +401,13 @@ pub async fn send_chat_message(
     let mut budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
 
     // Context Language Models need the virtual volume (the agent's shell
-    // edits the file there); without it the chat falls back to compaction.
+    // edits the file there); without it the chat falls back to trimming.
     let clm = match (context_mode.as_deref(), dialog_id.as_deref()) {
         (Some(crate::clm::MODE_CLM), Some(_)) if !has_tools => false,
         (Some(crate::clm::MODE_CLM), Some(_)) => match crate::clm::availability(&vfs) {
             Ok(_) => true,
             Err(why) => {
-                eprintln!("context: CLM mode unavailable ({why}); using compaction for this request");
+                eprintln!("context: CLM mode unavailable ({why}); using trimming for this request");
                 false
             }
         },
@@ -456,7 +456,7 @@ pub async fn send_chat_message(
                 Ok(built) => Some(built),
                 Err(e) if e.is_empty() => None,
                 Err(e) => {
-                    eprintln!("context: CLM failed ({e}); using compaction for this request");
+                    eprintln!("context: CLM failed ({e}); using trimming for this request");
                     None
                 }
             };

@@ -12,8 +12,8 @@ interface CommonArgs {
   requestId?: string;
   /** The open project's profile (lib/projectProfile.ts), added to the system prompt. */
   projectContext?: string;
-  /** How the chat's context is managed (lib/contextMode.ts); compaction by default. */
-  contextMode?: 'compaction' | 'clm';
+  /** How the chat's context is managed (lib/contextMode.ts); trimming by default. */
+  contextMode?: 'trimming' | 'clm';
 }
 
 /**

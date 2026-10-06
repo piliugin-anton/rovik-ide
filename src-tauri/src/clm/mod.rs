@@ -1,8 +1,8 @@
 //! Context Language Models (Shao et al. 2026): the agent manages its own
 //! context by editing it as a file.
 //!
-//! A chat's context mode is "compaction" (chat_db/history.rs trims and
-//! compacts the history to fit) or "clm". In CLM mode, before every request:
+//! A chat's context mode is "trimming" (chat_db/history.rs trims and
+//! shortens the history to fit) or "clm". In CLM mode, before every request:
 //!
 //! 1. The context file on the virtual volume (`context/<chat>/LIVE_CONTEXT.md`,
 //!    `src/vfs`) is read back. If the agent changed it since it was written,
@@ -12,7 +12,7 @@
 //! 2. The context sent is the projection plus every message stored since.
 //!    Stored messages are never changed: the projection is a view.
 //! 3. If that is over budget, the oldest tool outputs since the projection
-//!    are withheld; still over, this request is trimmed like Compaction.
+//!    are withheld; still over, this request is trimmed as in Trimming mode.
 //! 4. The file is rewritten with that context, so the agent always edits
 //!    what it sees. Every state of the file is a revision (vfs/history.rs);
 //!    revisions are also saved in the database so they survive a restart.
@@ -36,7 +36,7 @@ use document::CtxMsg;
 use serde::Serialize;
 use tauri::State;
 
-pub const MODE_COMPACTION: &str = "compaction";
+pub const MODE_TRIMMING: &str = "trimming";
 pub const MODE_CLM: &str = "clm";
 
 /// Revisions put back on the volume after a restart.
@@ -351,7 +351,7 @@ pub async fn prepare(
         notes.push(nudge);
     }
 
-    // Last resort: still over, this request is trimmed like Compaction.
+    // Last resort: still over, this request is trimmed as in Trimming mode.
     let msgs: Vec<Msg> = effective.iter().map(CtxMsg::to_msg).collect();
     let (messages, info) = if tokens > budget {
         notes.push(
@@ -820,7 +820,7 @@ pub async fn clm_set_mode(
     dialog_id: String,
     mode: String,
 ) -> Result<(), String> {
-    if mode != MODE_COMPACTION && mode != MODE_CLM {
+    if mode != MODE_TRIMMING && mode != MODE_CLM {
         return Err(format!("unknown context mode {mode}"));
     }
     db.write(move |conn| store::set_context_mode(conn, &dialog_id, &mode))
