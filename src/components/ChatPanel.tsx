@@ -206,8 +206,8 @@ export default function ChatPanel(props: ChatProps) {
     const next = { ...efforts(), [profile.id]: effort };
     setEfforts(next);
     saveEfforts(next);
-    // Runs with this model follow it, a stuck request right away.
-    setRunEffort(profile.id, reasoningOptions(profile));
+    // Runs with this model follow it; this chat's, if stuck, right away.
+    setRunEffort(profile.id, reasoningOptions(profile), activeDialogId());
   }
   /** The effort selector shows unless the model is known not to take one. */
   const showEffort = createMemo(() => {

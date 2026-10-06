@@ -608,6 +608,18 @@ fn effort(level: &str) -> Option<crate::agent::OpenAIChatOptions> {
     serde_json::from_value(json!({ "reasoning_effort": level, "reasoning_formats": ["reasoning_effort"] })).unwrap()
 }
 
+impl Harness {
+    /// The effort picked in this chat's selector.
+    fn pick_effort(&self, level: &str) -> usize {
+        self.pick_effort_with(effort(level))
+    }
+
+    fn pick_effort_with(&self, options: Option<crate::agent::OpenAIChatOptions>) -> usize {
+        let app = self.app.handle().clone();
+        agent_set_effort(app.state(), "p::m".into(), options, Some(self.dialog_id.clone()))
+    }
+}
+
 /// Waits until the model has been asked `n` times.
 async fn requests_seen(seen: &Arc<Mutex<Vec<Value>>>, n: usize) {
     for _ in 0..400 {
@@ -629,12 +641,18 @@ async fn a_stuck_request_is_asked_again_with_a_new_effort() {
     requests_seen(&seen, 1).await;
 
     let app = h.app.handle().clone();
-    // Another model's effort changes nothing here, nor does the same effort again.
-    assert_eq!(agent_set_effort(app.state(), "other::model".into(), effort("low")), 0);
-    agent_set_effort(app.state(), "p::m".into(), effort("high"));
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(seen.lock().unwrap().len(), 1);
-    assert_eq!(agent_set_effort(app.state(), "p::m".into(), effort("low")), 1);
+    // Another model's effort changes nothing here; nor does picking it for
+    // this model in another chat (that applies to the next request), nor
+    // the same level again, sent in other forms.
+    assert_eq!(agent_set_effort(app.state(), "other::model".into(), effort("low"), Some(h.dialog_id.clone())), 0);
+    assert_eq!(agent_set_effort(app.state(), "p::m".into(), effort("medium"), Some("another-chat".into())), 1);
+    let same_level = serde_json::from_value(json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort", "reasoning"] })).unwrap();
+    h.pick_effort_with(Some(same_level));
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(seen.lock().unwrap().len(), 1, "nothing asked again yet");
+
+    // Picked here: the request is long past "still waiting", so it's asked again.
+    assert_eq!(h.pick_effort("low"), 1);
     assert_eq!(h.run_end().await, "done");
 
     let requests = seen.lock().unwrap().clone();
@@ -653,6 +671,23 @@ async fn a_stuck_request_is_asked_again_with_a_new_effort() {
         .collect();
     assert!(statuses.iter().any(|s| s["text"] == "Asking again with low effort…"), "{statuses:?}");
     assert_eq!(h.events_of("userMessageSettled")[0]["ok"], true);
+}
+
+#[tokio::test]
+async fn an_effort_picked_early_waits_until_the_request_is_stuck() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Hang(None), Reply::Text("Hello.")]).await;
+    let mut request = h.request(&url, Harness::send("Hi"), quiet_permissions());
+    request.options = effort("high");
+    h.start(request).await;
+    requests_seen(&seen, 1).await;
+    // Picked right away: the model may still answer, so it isn't cut short...
+    h.pick_effort("low");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    // ...until it's past the usual wait.
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(seen.lock().unwrap()[1]["reasoning_effort"], "low");
 }
 
 #[tokio::test]
@@ -675,7 +710,7 @@ async fn an_effort_picked_mid_run_applies_to_the_next_request() {
     h.start(request).await;
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
     let app = h.app.handle().clone();
-    agent_set_effort(app.state(), "p::m".into(), effort("low"));
+    h.pick_effort("low");
     agent_resolve_approval(app.clone(), app.state(), "r1".into(), ApprovalDecision::Allow);
     assert_eq!(h.run_end().await, "done");
     let requests = seen.lock().unwrap().clone();
@@ -693,11 +728,12 @@ async fn a_reply_under_way_is_not_thrown_away_for_a_new_effort() {
     h.start(request).await;
     h.wait_for("streamed text", |e| e["type"] == "messagePatched" && e["patch"]["content"] == "Part of the answer").await;
 
-    let app = h.app.handle().clone();
-    agent_set_effort(app.state(), "p::m".into(), effort("low"));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Silent since: stalled, but part of the reply is there.
+    h.pick_effort("low");
+    tokio::time::sleep(Duration::from_millis(700)).await;
     assert_eq!(seen.lock().unwrap().len(), 1, "not asked again: the reply was coming");
 
+    let app = h.app.handle().clone();
     agent_stop(app.clone(), app.state(), h.dialog_id.clone());
     assert_eq!(h.run_end().await, "stopped");
     let messages = h.messages().await;

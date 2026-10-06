@@ -51,6 +51,12 @@ pub enum ChatStreamEvent {
         id: String,
         arguments_delta: String,
     },
+    /// One-time notes about the agent's own context (CLM mode) that went
+    /// with this request. A request sent again for the same turn has to carry
+    /// them (`ChatParams::carried_notes`): they aren't produced twice.
+    ContextNotes {
+        notes: Vec<String>,
+    },
     ToolCallComplete {
         id: String,
         name: String,
@@ -385,6 +391,9 @@ pub struct ChatParams {
     // How the chat's context is managed: "trimming" (default) or "clm"
     // (Context Language Models: the agent edits its context as a file, src/clm).
     pub context_mode: Option<String>,
+    // Context notes an earlier attempt at this turn was sent with (see
+    // ChatStreamEvent::ContextNotes), carried into this one.
+    pub carried_notes: Vec<String>,
 }
 
 #[tauri::command]
@@ -435,6 +444,7 @@ pub async fn send_chat_message(
         project_context,
         options,
         context_mode,
+        carried_notes: Vec::new(),
     };
     let mut emit = |event: ChatStreamEvent| {
         let _ = on_event.send(event);
@@ -471,6 +481,7 @@ pub async fn run_chat(
         project_context,
         options,
         context_mode,
+        carried_notes,
     } = params;
 
     let client = Client::new();
@@ -548,12 +559,14 @@ pub async fn run_chat(
                     crate::clm::prepare(db, vfs, dialog_id.clone(), clm_budget, cost, current_user_content.clone())
                         .await?;
                 let mut messages = prepared.messages;
+                let fresh = prepared.notes;
+                let notes = with_carried_notes(&carried_notes, &fresh);
                 // Notes for the model ride on the request's last message (not stored).
-                if let (Some(last), false) = (messages.last_mut(), prepared.notes.is_empty()) {
-                    last.text = format!("{}\n\n{}", last.text.trim_end(), prepared.notes.join("\n"));
+                if let (Some(last), false) = (messages.last_mut(), notes.is_empty()) {
+                    last.text = format!("{}\n\n{}", last.text.trim_end(), notes.join("\n"));
                     last.full_chars = last.text.chars().count();
                 }
-                Ok((crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini), prepared.info))
+                Ok((crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini), prepared.info, fresh))
             };
             let clm_built = tokio::select! {
                 _ = crate::chat_request::cancelled(cancel) => {
@@ -565,9 +578,12 @@ pub async fn run_chat(
                 built = build => built,
             };
             let clm_built = match clm_built {
-                Ok(built) => {
+                Ok((wire, info, notes)) => {
                     clm_used = true;
-                    Some(built)
+                    if !notes.is_empty() {
+                        on_event(ChatStreamEvent::ContextNotes { notes });
+                    }
+                    Some((wire, info))
                 }
                 Err(e) if e.is_empty() => None,
                 Err(e) => {
@@ -1216,6 +1232,13 @@ pub async fn chat_context_estimate(
     })
 }
 
+/// An earlier attempt's context notes, then this one's new ones.
+fn with_carried_notes(carried: &[String], fresh: &[String]) -> Vec<String> {
+    let mut notes = carried.to_vec();
+    notes.extend(fresh.iter().filter(|n| !carried.contains(n)).cloned());
+    notes
+}
+
 /// Google's OpenAI-compatible endpoints, or a Gemini model behind a gateway.
 fn is_gemini_target(base_url: &str, model: &str) -> bool {
     let url = base_url.to_ascii_lowercase();
@@ -1342,6 +1365,15 @@ mod tests {
             Some(&json!("SIG-A"))
         );
         assert_eq!(body["messages"][0], history, "the message reaches the body unchanged");
+    }
+
+    #[test]
+    fn notes_of_an_earlier_attempt_are_carried_once() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // The second preparation no longer produces the edit note; the readout repeats.
+        let notes = with_carried_notes(&s(&["edit REJECTED", "readout"]), &s(&["readout"]));
+        assert_eq!(notes, s(&["edit REJECTED", "readout"]));
+        assert_eq!(with_carried_notes(&[], &s(&["a"])), s(&["a"]));
     }
 
     #[test]

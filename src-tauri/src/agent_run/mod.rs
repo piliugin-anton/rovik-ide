@@ -121,14 +121,24 @@ struct RunControl {
     profile_id: String,
     stop: Arc<StopSignal>,
     /// The reasoning effort picked while the run goes on (see `set_effort`).
-    effort: watch::Sender<Option<OpenAIChatOptions>>,
+    effort: watch::Sender<EffortPick>,
+}
+
+/// A reasoning effort picked while a run goes on.
+#[derive(Clone, Debug, Default)]
+pub struct EffortPick {
+    pub options: Option<OpenAIChatOptions>,
+    /// Picked in this run's chat: a request that stopped answering is asked
+    /// again with it. Picked elsewhere (the effort is per model), it waits
+    /// for the next request.
+    pub here: bool,
 }
 
 /// What a run is handed when it's registered.
 pub(super) struct Controls {
     pub run_id: String,
     pub stop: Arc<StopSignal>,
-    pub effort: watch::Receiver<Option<OpenAIChatOptions>>,
+    pub effort: watch::Receiver<EffortPick>,
 }
 
 struct Waiting<T, R> {
@@ -169,7 +179,7 @@ impl AgentState {
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         let stop = Arc::new(StopSignal::new());
-        let (effort_tx, effort_rx) = watch::channel(options);
+        let (effort_tx, effort_rx) = watch::channel(EffortPick { options, here: false });
         inner.runs.insert(
             dialog_id.to_string(),
             RunControl { run_id: run_id.clone(), profile_id: profile_id.to_string(), stop: stop.clone(), effort: effort_tx },
@@ -178,13 +188,15 @@ impl AgentState {
     }
 
     /// A reasoning effort chosen for a model: the runs using it take it for
-    /// their next request, or at once if the model hasn't shown anything of
-    /// its current reply (run.rs). Returns how many runs it reached.
-    pub fn set_effort(&self, profile_id: &str, options: Option<OpenAIChatOptions>) -> usize {
+    /// their next request. The run in the chat it was picked in (`dialog_id`)
+    /// also asks again at once if its request stopped answering before any of
+    /// the reply arrived (run.rs). Returns how many runs it reached.
+    pub fn set_effort(&self, profile_id: &str, options: Option<OpenAIChatOptions>, dialog_id: Option<&str>) -> usize {
         let inner = self.lock();
         let mut reached = 0;
-        for run in inner.runs.values().filter(|r| r.profile_id == profile_id) {
-            run.effort.send_replace(options.clone());
+        for (dialog, run) in inner.runs.iter().filter(|(_, r)| r.profile_id == profile_id) {
+            let here = dialog_id == Some(dialog.as_str());
+            run.effort.send_replace(EffortPick { options: options.clone(), here });
             reached += 1;
         }
         reached
@@ -429,15 +441,16 @@ pub async fn agent_start<R: Runtime>(
     Ok(Some(run_id))
 }
 
-/// A reasoning effort the user picked for a model (src/lib/reasoning.ts):
-/// runs using that model follow it. Returns how many runs it reached.
+/// A reasoning effort the user picked for a model (src/lib/reasoning.ts) in
+/// a chat: runs using that model follow it. Returns how many runs it reached.
 #[tauri::command]
 pub fn agent_set_effort(
     state: State<'_, AgentState>,
     profile_id: String,
     options: Option<OpenAIChatOptions>,
+    dialog_id: Option<String>,
 ) -> usize {
-    state.set_effort(&profile_id, options)
+    state.set_effort(&profile_id, options, dialog_id.as_deref())
 }
 
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;

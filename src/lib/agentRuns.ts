@@ -130,12 +130,17 @@ export function stopRun(dialogId: string): Promise<boolean> {
 }
 
 /**
- * A reasoning effort picked for a model: runs using it take it for their
- * next request, or ask again with it at once when the model hasn't shown
- * anything of its reply yet (waiting, stalled, retrying).
+ * A reasoning effort picked for a model in a chat: runs using the model take
+ * it for their next request. The run in that chat also asks again with it at
+ * once if its request stopped answering before any of the reply arrived
+ * (waiting long for it, stalled, between retries).
  */
-export function setRunEffort(profileId: string, options: OpenAIChatOptions | undefined): void {
-  void invoke('agent_set_effort', { profileId, options: options ?? null }).catch((err) =>
+export function setRunEffort(
+  profileId: string,
+  options: OpenAIChatOptions | undefined,
+  dialogId: string | null
+): void {
+  void invoke('agent_set_effort', { profileId, options: options ?? null, dialogId }).catch((err) =>
     console.error('Effort not sent to the agent:', err)
   );
 }

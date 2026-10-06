@@ -11,22 +11,27 @@
 use super::events::{emit, AgentEvent, OutMessage, Patch, Status};
 use super::guard::Guard;
 use super::project::{self, ProjectCheck};
-use super::{failure, log, plan, repetition, tools, AgentState, Controls, ModelProfile, StartKind, StartRequest, StopSignal};
+use super::{failure, log, plan, repetition, tools, AgentState, Controls, EffortPick, ModelProfile, StartKind, StartRequest, StopSignal};
 use crate::agent::{ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS};
 use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage, ToolCall};
 use crate::chat_db::DbState;
 use crate::chat_request::{ChatError, ErrorKind};
 use serde_json::{json, Value};
-use std::ops::Not;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::watch;
 
 /// Wait this long without any output before saying so.
+#[cfg(not(test))]
 const STILL_WAITING: Duration = Duration::from_secs(15);
+#[cfg(test)]
+const STILL_WAITING: Duration = Duration::from_millis(400);
 /// Mid-reply silence before "Still generating" shows.
+#[cfg(not(test))]
 const REPLY_IDLE: Duration = Duration::from_millis(2_500);
+#[cfg(test)]
+const REPLY_IDLE: Duration = Duration::from_millis(300);
 /// After Stop, how long the request gets to end before it's dropped.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 /// A reply on screen is updated at most this often.
@@ -79,7 +84,10 @@ pub struct Run<R: Runtime> {
     pub(super) started_at: Instant,
     pub(super) stop: Arc<StopSignal>,
     /// The reasoning effort the user picks while the run goes on.
-    effort: watch::Receiver<Option<OpenAIChatOptions>>,
+    effort: watch::Receiver<EffortPick>,
+    /// Reasoning forms the provider refused in this run: never sent again,
+    /// whatever effort is picked.
+    refused_formats: Vec<String>,
     /// The sent message waiting for its first answer.
     pub(super) settle_message: Option<String>,
     continue_reply: bool,
@@ -214,6 +222,7 @@ impl<R: Runtime> Run<R> {
             started_at: Instant::now(),
             stop: controls.stop,
             effort: controls.effort,
+            refused_formats: Vec::new(),
             settle_message,
             continue_reply,
         };
@@ -421,6 +430,9 @@ impl<R: Runtime> Run<R> {
         let continue_reply = std::mem::take(&mut self.continue_reply);
         // Shown when the request starts (asking again with another effort).
         let mut opening_status: Option<Status> = None;
+        // One-time context notes (CLM) an attempt at this turn went out with:
+        // asking again has to repeat them, they aren't produced twice.
+        let mut carried_notes: Vec<String> = Vec::new();
 
         loop {
             let params = ChatParams {
@@ -441,6 +453,7 @@ impl<R: Runtime> Run<R> {
                 project_context: Some(project_context.clone()),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
+                carried_notes: carried_notes.clone(),
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -453,7 +466,9 @@ impl<R: Runtime> Run<R> {
             let mut on_event = move |event: ChatStreamEvent| lock(&sink).on_event(event);
 
             let mut effort_rx = self.effort.clone();
-            // The user picked another effort before the model showed anything.
+            // Another effort was picked in this chat: once the request has
+            // stopped answering (and none of the reply has arrived), ask again.
+            let mut wants_again = false;
             let mut ask_again = false;
             let vfs = self.app.state::<crate::vfs::VfsState>();
             let result = {
@@ -471,6 +486,11 @@ impl<R: Runtime> Run<R> {
                         r = &mut request => break Some(r),
                         _ = ticker.tick() => {
                             lock(&stream).tick(started, stop_deadline.is_some());
+                            if wants_again && !ask_again && stop_deadline.is_none() && lock(&stream).may_ask_again() {
+                                ask_again = true;
+                                again_deadline = Some(Instant::now() + STOP_GRACE);
+                                let _ = cancel_tx.send(true);
+                            }
                             // The request didn't end after Stop: stop waiting for it
                             // (dropping it ends the connection).
                             if [stop_deadline, again_deadline].iter().flatten().any(|at| Instant::now() >= *at) {
@@ -482,17 +502,20 @@ impl<R: Runtime> Run<R> {
                             stop_deadline = Some(Instant::now() + STOP_GRACE);
                             lock(&stream).set_status(Some(Status::text("Stopping…")));
                         }
-                        // Waiting, stalled or retrying, with nothing of the reply
-                        // shown: no need to wait it out, ask again with the new
-                        // effort. Once the reply is coming, it applies to the next
-                        // request (what has arrived isn't thrown away).
+                        // Picked in this chat while the request is waiting for a
+                        // first answer past the usual, stalled, or between
+                        // retries, with none of the reply shown: no need to wait
+                        // it out, ask again with the new effort (the ticker does
+                        // once it gets there). A request that is answering keeps
+                        // going; the effort applies to the next one.
                         changed = effort_rx.changed(), if effort_open && !ask_again && stop_deadline.is_none() => {
                             match changed {
                                 Err(_) => effort_open = false,
                                 Ok(()) => {
+                                    let pick = effort_rx.borrow_and_update().clone();
                                     // The same effort picked again changes nothing.
-                                    let other = same_options(&effort_rx.borrow_and_update(), &self.options).not();
-                                    if other && !lock(&stream).reply_started() {
+                                    wants_again = pick.here && !same_effort(&pick.options, &self.options);
+                                    if wants_again && lock(&stream).may_ask_again() {
                                         ask_again = true;
                                         again_deadline = Some(Instant::now() + STOP_GRACE);
                                         let _ = cancel_tx.send(true);
@@ -519,6 +542,11 @@ impl<R: Runtime> Run<R> {
                 && failure.as_ref().is_some_and(|e| e.kind == ErrorKind::Cancelled);
             if asked_again {
                 let shown = s.shown_anything();
+                for note in std::mem::take(&mut s.notes) {
+                    if !carried_notes.contains(&note) {
+                        carried_notes.push(note);
+                    }
+                }
                 drop(s);
                 if let Some((_, rejected, unresolved)) = learned {
                     self.drop_reasoning_formats(&rejected, &unresolved);
@@ -597,19 +625,23 @@ impl<R: Runtime> Run<R> {
     /// Takes the effort the user picked since it was last looked at, if any.
     fn take_effort(&mut self) {
         if self.effort.has_changed().unwrap_or(false) {
-            self.options = self.effort.borrow_and_update().clone();
+            self.options = self.effort.borrow_and_update().options.clone();
+            self.prune_formats();
         }
     }
 
+    /// Reasoning forms the provider refused aren't sent again in this run.
     fn drop_reasoning_formats(&mut self, rejected: &[String], unresolved: &[String]) {
-        let Some(options) = self.options.as_mut() else { return };
-        if rejected.is_empty() && unresolved.is_empty() {
-            return;
+        for f in rejected.iter().chain(unresolved) {
+            if !self.refused_formats.contains(f) {
+                self.refused_formats.push(f.clone());
+            }
         }
-        let formats = options
-            .reasoning_formats
-            .get_or_insert_with(|| vec!["reasoning_effort".to_string(), "chat_template_kwargs".to_string()]);
-        formats.retain(|f| !rejected.contains(f) && !unresolved.contains(f) && REASONING_FIELDS.contains(&f.as_str()));
+        self.prune_formats();
+    }
+
+    fn prune_formats(&mut self) {
+        without_refused(&mut self.options, &self.refused_formats);
     }
 
     /*
@@ -866,6 +898,12 @@ struct Stream<R: Runtime> {
     got_output: bool,
     /// "Still waiting" no longer applies (a retry is shown instead).
     waiting_done: bool,
+    /// Waiting to try again after a failed attempt (chat_request.rs).
+    retrying: bool,
+    /// When this attempt started.
+    started: Instant,
+    /// One-time context notes this request carries (CLM).
+    notes: Vec<String>,
     last_output: Instant,
     last_output_ms: i64,
     idle_shown: bool,
@@ -905,6 +943,9 @@ impl<R: Runtime> Stream<R> {
             learned: None,
             got_output: false,
             waiting_done: false,
+            retrying: false,
+            started: now,
+            notes: Vec::new(),
             last_output: now,
             last_output_ms: store::now_ms(),
             idle_shown: false,
@@ -950,6 +991,7 @@ impl<R: Runtime> Stream<R> {
     }
 
     fn note_output(&mut self) {
+        self.retrying = false;
         self.last_output = Instant::now();
         self.last_output_ms = store::now_ms();
         if self.idle_shown {
@@ -1028,6 +1070,7 @@ impl<R: Runtime> Stream<R> {
             ChatStreamEvent::Done => {}
             ChatStreamEvent::Retrying { attempt, max_attempts, delay_ms, reason } => {
                 self.waiting_done = true;
+                self.retrying = true;
                 if !self.stop.is_set() {
                     self.set_status(Some(Status {
                         text: format!(
@@ -1040,6 +1083,7 @@ impl<R: Runtime> Stream<R> {
                 }
             }
             ChatStreamEvent::Error { error } => self.failure = Some(error),
+            ChatStreamEvent::ContextNotes { notes } => self.notes = notes,
             ChatStreamEvent::ToolCallStart { id, name } => {
                 self.mark_output();
                 let call = ToolCall { id: id.clone(), name, arguments: String::new(), extra_content: None };
@@ -1074,6 +1118,19 @@ impl<R: Runtime> Stream<R> {
     /// its reasoning.
     fn reply_started(&self) -> bool {
         !self.text.is_empty() || !self.tool_calls.is_empty()
+    }
+
+    /// The request stopped answering: no first output past the usual wait,
+    /// silent since its last output, or between retries.
+    fn stuck(&self) -> bool {
+        self.retrying
+            || (!self.got_output && self.started.elapsed() >= STILL_WAITING)
+            || (self.got_output && self.last_output.elapsed() >= REPLY_IDLE)
+    }
+
+    /// Asking again loses nothing of the reply and spares a wait.
+    fn may_ask_again(&self) -> bool {
+        !self.reply_started() && self.stuck()
     }
 
     /// Anything of this reply was shown, its reasoning included.
@@ -1157,8 +1214,22 @@ impl<R: Runtime> Stream<R> {
  * ---------------------------------------------------------------------------
  */
 
-fn same_options(a: &Option<OpenAIChatOptions>, b: &Option<OpenAIChatOptions>) -> bool {
-    serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
+/// The effort's forms without those the provider refused.
+fn without_refused(options: &mut Option<OpenAIChatOptions>, refused: &[String]) {
+    if refused.is_empty() {
+        return;
+    }
+    let Some(options) = options.as_mut().filter(|o| o.reasoning_effort.is_some()) else { return };
+    let formats = options
+        .reasoning_formats
+        .get_or_insert_with(|| vec!["reasoning_effort".to_string(), "chat_template_kwargs".to_string()]);
+    formats.retain(|f| !refused.contains(f) && REASONING_FIELDS.contains(&f.as_str()));
+}
+
+/// The same effort level (the forms it's sent in follow what's learned).
+fn same_effort(a: &Option<OpenAIChatOptions>, b: &Option<OpenAIChatOptions>) -> bool {
+    let level = |o: &Option<OpenAIChatOptions>| serde_json::to_value(o.as_ref().and_then(|o| o.reasoning_effort)).ok();
+    level(a) == level(b)
 }
 
 /// "low effort", as the chat's effort selector words it.
@@ -1277,6 +1348,25 @@ mod tests {
         assert!(unanswered_tool_calls(&done).is_empty());
         step.finalized = false;
         assert!(unanswered_tool_calls(&[step]).is_empty(), "a reply cut off mid-stream isn't resumed");
+    }
+
+    #[test]
+    fn efforts_compare_by_level_and_keep_refused_forms_out() {
+        let options = |v: Value| serde_json::from_value::<Option<OpenAIChatOptions>>(v).unwrap();
+        let high = options(json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort"] }));
+        let high_more = options(json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort", "reasoning"] }));
+        assert!(same_effort(&high, &high_more));
+        assert!(!same_effort(&high, &options(json!({ "reasoning_effort": "low" }))));
+        assert!(!same_effort(&high, &None));
+
+        // A new pick still listing a form refused earlier in the run.
+        let mut picked = options(json!({ "reasoning_effort": "low", "reasoning_formats": ["reasoning_effort", "chat_template_kwargs"] }));
+        without_refused(&mut picked, &["chat_template_kwargs".to_string()]);
+        assert_eq!(picked.unwrap().reasoning_formats.unwrap(), ["reasoning_effort"]);
+        // No forms given: the default ones, minus the refused.
+        let mut default_forms = options(json!({ "reasoning_effort": "low" }));
+        without_refused(&mut default_forms, &["reasoning_effort".to_string()]);
+        assert_eq!(default_forms.unwrap().reasoning_formats.unwrap(), ["chat_template_kwargs"]);
     }
 
     #[test]
