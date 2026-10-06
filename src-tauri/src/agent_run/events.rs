@@ -206,6 +206,12 @@ pub enum AgentEvent {
         message_id: String,
         ok: bool,
     },
+    /// The chat's CLM state after a request's context was prepared (each
+    /// turn of a run), so the context row doesn't wait for the run to end.
+    ContextUpdated {
+        dialog_id: String,
+        status: crate::clm::ClmStatus,
+    },
     Notice {
         kind: String,
         title: String,
