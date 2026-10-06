@@ -1,0 +1,7 @@
+1-9 call App.User | defmodule App.User
+3-3   call defstruct | defstruct [:name]
+4-4   call new | def new(name), do: %__MODULE__{name: name}
+5-7   call helper | defp helper(x)
+8-8   call m | defmacro m(x), do: x
+10-12 call Size | defprotocol Size
+11-11   call size | def size(data)

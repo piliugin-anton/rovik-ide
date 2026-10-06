@@ -1,0 +1,6 @@
+1-1 variable_declaration std | const std = @import("std");
+2-5 variable_declaration Point | pub const Point = struct {
+4-4   function_declaration init | pub fn init(x: i32) Point
+6-6 variable_declaration Color | const Color = enum { red, green };
+7-9 function_declaration main | pub fn main() !void
+10-10 test_declaration test "basic" {} | test "basic"

@@ -1,0 +1,14 @@
+2-2 top_level_variable_declaration maxSize | const int maxSize = 10;
+3-5 function_declaration topLevel | int topLevel(int x)
+6-6 getter_declaration name | String get name
+7-15 class_declaration Point | class Point extends Base with M implements I
+8-8   declaration x | final int x
+9-9   declaration Point | Point(this.x)
+10-10   method_declaration Point | factory Point.zero()
+11-13   method_declaration distance | int distance(Point other)
+14-14   method_declaration helper | static void helper()
+16-16 mixin_declaration M | mixin M on Base
+17-17 enum_declaration Color | enum Color
+18-18 extension_declaration Ext | extension Ext on String
+18-18   method_declaration twice | int twice()
+19-19 type_alias Fn | typedef Fn = int Function(int);

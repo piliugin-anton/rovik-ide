@@ -1,0 +1,10 @@
+3-3 expression_statement CONSTANT | CONSTANT = 1
+4-4 expression_statement x | x: int = 2
+5-11 function_definition handler | def handler(request):
+8-9   function_definition inner | def inner():
+13-24 class_definition Base | class Base(object):
+16-18   function_definition value | def value(self):
+20-21   function_definition run | async def run(self):
+23-24   class_definition Inner | class Inner:
+26-27 function_definition top | async def top():
+29-29 type_alias_statement Alias | type Alias = list[int]

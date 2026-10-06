@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<project>
+  <dependencies>
+    <dependency><groupId>a</groupId></dependency>
+  </dependencies>
+  <build/>
+</project>

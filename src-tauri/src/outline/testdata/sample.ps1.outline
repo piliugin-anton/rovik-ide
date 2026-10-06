@@ -1,0 +1,5 @@
+1-4 function_statement Get-Thing | function Get-Thing {
+5-8 class_statement Widget | class Widget {
+6-6   class_property_definition string | [string]$Name
+7-7   class_method_definition void | [void] Render() {}
+9-9 enum_statement Mode | enum Mode { On; Off }

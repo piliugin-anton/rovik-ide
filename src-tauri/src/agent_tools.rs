@@ -225,9 +225,9 @@ pub async fn tool_search_code(
     .map_err(|e| e.to_string())?
 }
 
-/// Reads a text file, optionally a 1-indexed inclusive line range. Full-file
-/// reads are truncated past ~20k characters — the model should ask for a
-/// range on large files rather than pulling the whole thing into context.
+/// Reads a text file, optionally a 1-indexed inclusive line range. A file
+/// too large to read whole comes back as its start and a map of its
+/// declarations, and long ranges stop with a note (see read_file.rs).
 #[tauri::command]
 pub fn tool_read_file_range(
     root: String,
@@ -243,28 +243,7 @@ pub fn tool_read_file_range(
         return Err(format!("{path}: binary file, cannot read"));
     }
     let content = fs::read_to_string(&target).map_err(|e| format!("{path}: {e}"))?;
-
-    if start_line.is_none() && end_line.is_none() {
-        const MAX_CHARS: usize = 20_000;
-        if content.chars().count() > MAX_CHARS {
-            let truncated: String = content.chars().take(MAX_CHARS).collect();
-            let remaining = content.chars().count() - MAX_CHARS;
-            return Ok(format!(
-                "{truncated}\n\n[...truncated, {remaining} more characters — request a line range to see more]"
-            ));
-        }
-        return Ok(content);
-    }
-
-    let lines: Vec<&str> = content.lines().collect();
-    let start = start_line.unwrap_or(1).max(1);
-    let end = end_line.unwrap_or(lines.len());
-    let start_idx = start - 1;
-    if start_idx >= lines.len() {
-        return Ok(String::new());
-    }
-    let end_idx = end.min(lines.len());
-    Ok(lines[start_idx..end_idx].join("\n"))
+    crate::read_file::read(&path, &content, start_line, end_line)
 }
 
 #[derive(Serialize)]

@@ -1,0 +1,6 @@
+1-1 list_lit :app | (defpackage :app (:use :cl))
+2-2 list_lit *count* | (defvar *count* 0)
+3-3 list_lit add | (defun add (a b) (+ a b))
+4-4 list_lit twice | (defmacro twice (x) `(progn ,x ,x))
+5-5 list_lit point | (defclass point () ((x :initarg :x)))
+6-6 list_lit area | (defmethod area ((p point)) 0)

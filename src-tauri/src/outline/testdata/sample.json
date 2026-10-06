@@ -1,0 +1,5 @@
+{
+  "name": "app",
+  "scripts": { "build": "x", "test": "y" },
+  "list": [ { "inner": 1 } ]
+}

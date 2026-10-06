@@ -1,0 +1,4 @@
+1-13 program Hello | program Hello;
+3-3   declType TPoint | TPoint = record x: Integer; end;
+4-7   defProc Greet | procedure Greet(name: string);
+8-11   defProc Add | function Add(a, b: Integer): Integer;

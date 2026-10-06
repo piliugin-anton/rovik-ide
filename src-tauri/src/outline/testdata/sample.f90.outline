@@ -1,0 +1,5 @@
+1-14 module geometry | module geometry
+3-5   derived_type_definition point | type :: point
+7-10   function area | function area(r) result(a)
+11-13   subroutine show | subroutine show(p)
+15-17 program main | program main

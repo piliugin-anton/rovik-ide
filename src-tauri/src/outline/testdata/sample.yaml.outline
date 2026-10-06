@@ -1,0 +1,11 @@
+1-1 block_mapping_pair name | name: app
+2-4 block_mapping_pair on | on:
+3-4   block_mapping_pair push | push:
+4-4     block_mapping_pair branches | branches: [main]
+5-11 block_mapping_pair jobs | jobs:
+6-11   block_mapping_pair build | build:
+7-7     block_mapping_pair runs-on | runs-on: ubuntu
+8-11     block_mapping_pair steps | steps:
+9-9       block_mapping_pair uses | uses: actions/checkout
+10-11       block_mapping_pair with | with:
+11-11         block_mapping_pair depth | depth: 1

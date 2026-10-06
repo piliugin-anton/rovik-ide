@@ -1,0 +1,8 @@
+2-6 class_interface Point | @interface Point : NSObject
+3-3   property_declaration x | @property (nonatomic) int x;
+4-4   method_declaration distance | - (int)distance:(Point *)other;
+5-5   method_declaration origin | + (instancetype)origin;
+7-10 class_implementation Point | @implementation Point
+8-8   method_definition distance | - (int)distance:(Point *)other
+9-9   method_definition origin | + (instancetype)origin
+11-11 function_definition helper | int helper(void)

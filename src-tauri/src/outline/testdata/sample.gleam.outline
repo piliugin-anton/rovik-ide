@@ -1,0 +1,5 @@
+2-2 type_definition Shape | pub type Shape { Circle(r: Float) }
+3-3 type_alias Name | pub type Name = String
+4-4 constant max | const max = 10
+5-5 function main | pub fn main() {
+6-6 function helper | fn helper(x) {

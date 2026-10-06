@@ -1,0 +1,11 @@
+2-18 namespace_declaration App.Core | namespace App.Core
+4-14   class_declaration Service | [Serializable] public class Service : IService
+8-8     constructor_declaration Service | public Service()
+9-9     property_declaration Name | public string Name { get; set; }
+10-10     method_declaration RunAsync | public async Task<int> RunAsync(int x)
+12-12     operator_declaration Service | public static Service operator +(Service a, Service b)
+13-13     record_declaration Point | private record struct Point(int X, int Y);
+15-15   interface_declaration IService | public interface IService
+15-15     method_declaration Run | void Run();
+16-16   enum_declaration Kind | public enum Kind
+17-17   delegate_declaration Handler | public delegate void Handler(int x);

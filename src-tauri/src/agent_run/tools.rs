@@ -19,7 +19,7 @@ fn file_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a text file from the open project, optionally a specific 1-indexed inclusive line range. Full-file reads are truncated past ~20,000 characters — request a line range for large files.",
+                "description": "Read a text file from the open project, optionally a specific 1-indexed inclusive line range. A file over ~20,000 characters isn't returned whole: you get its first lines and a map of its declarations with their line numbers, then read the part you need by line range. A range over ~20,000 characters stops early and says where to continue.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -590,14 +590,29 @@ pub fn format_search_result(result: &SearchResult) -> String {
     if result.match_count == 0 {
         return "No matches.".into();
     }
-    let matches = if result.match_count == 1 { "match" } else { "matches" };
-    let files = if result.file_count == 1 { "file" } else { "files" };
-    let mut out = vec![format!(
-        "{} {matches} in {} {files}{}",
-        result.match_count,
-        result.file_count,
-        if result.truncated { " (result limit reached; narrow the query or path_glob)" } else { "" }
-    )];
+    let matches = |n: usize| if n == 1 { "match" } else { "matches" };
+    let files = |n: usize| if n == 1 { "file" } else { "files" };
+    // The first line starts with the total ("12 matches"): the UI reads it.
+    let header = if !result.truncated {
+        format!("{} {} in {} {}", result.match_count, matches(result.match_count), result.file_count, files(result.file_count))
+    } else {
+        let (more, counted) = if result.totals_complete {
+            ("", "")
+        } else {
+            (" or more", "; counting stopped there")
+        };
+        format!(
+            "{} {}{more} in {} {}{counted}. Shown: the first {} by path, in {} {}. Narrow the query or path_glob to see the rest.",
+            result.total_matches,
+            matches(result.total_matches),
+            result.total_files,
+            files(result.total_files),
+            result.match_count,
+            result.file_count,
+            files(result.file_count),
+        )
+    };
+    let mut out = vec![header];
     let mut prev: Option<(&str, u64)> = None;
     for l in &result.lines {
         if let Some((path, line)) = prev {
@@ -733,15 +748,36 @@ mod tests {
             ranges: vec![],
             column: None,
         };
+        let lines = vec![line("a.rs", 1, true), line("a.rs", 2, false), line("a.rs", 9, true), line("b.rs", 3, true)];
         let result = SearchResult {
-            lines: vec![line("a.rs", 1, true), line("a.rs", 2, false), line("a.rs", 9, true), line("b.rs", 3, true)],
+            lines: lines.clone(),
             match_count: 3,
             file_count: 2,
             truncated: false,
+            total_matches: 3,
+            total_files: 2,
+            totals_complete: true,
         };
         let text = format_search_result(&result);
         assert_eq!(text, "3 matches in 2 files\na.rs:1: x\na.rs-2- x\n--\na.rs:9: x\n--\nb.rs:3: x");
         assert_eq!(result_meta("search_code", &text).unwrap()["count"], json!(3));
+
+        // Over the limit: the totals, and which ones are shown.
+        let result = SearchResult { truncated: true, total_matches: 2345, total_files: 87, ..result };
+        let text = format_search_result(&result);
+        assert_eq!(
+            text.lines().next().unwrap(),
+            "2345 matches in 87 files. Shown: the first 3 by path, in 2 files. Narrow the query or path_glob to see the rest."
+        );
+        assert_eq!(result_meta("search_code", &text).unwrap()["count"], json!(2345));
+
+        // Counting stopped: the totals are lower bounds.
+        let result = SearchResult { totals_complete: false, total_matches: 200_000, total_files: 1, lines, ..result };
+        let text = format_search_result(&result);
+        assert!(
+            text.starts_with("200000 matches or more in 1 file; counting stopped there. Shown: the first 3 by path, in 2 files."),
+            "{text}"
+        );
     }
 
     #[test]
@@ -765,7 +801,15 @@ mod tests {
         // Truncated by the runner: said so.
         let out = CommandOutput { exit_code: Some(0), stdout: "x".into(), stderr: String::new(), timed_out: false, truncated: true, duration_ms: 1 };
         assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read_file for the rest)"));
-        assert_eq!(format_search_result(&SearchResult { lines: vec![], match_count: 0, file_count: 0, truncated: false }), "No matches.");
+        assert_eq!(format_search_result(&SearchResult {
+                lines: vec![],
+                match_count: 0,
+                file_count: 0,
+                truncated: false,
+                total_matches: 0,
+                total_files: 0,
+                totals_complete: true,
+            }), "No matches.");
         assert_eq!(result_meta("web_search", "1. A\n   u\n\n2. B\n   v").unwrap()["count"], json!(2));
         assert_eq!(result_meta("list_dir", "(empty, or everything under this path is ignored)").unwrap()["count"], json!(0));
         assert!(result_meta("todo", "x").is_none());

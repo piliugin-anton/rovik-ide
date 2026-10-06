@@ -1,0 +1,12 @@
+3-3 data_type Shape | data Shape = Circle Double | Square Double
+4-4 newtype Wrapper | newtype Wrapper = Wrapper Int
+5-5 type_synonym Name | type Name = String
+6-7 class Describe | class Describe a where
+7-7   signature describe | describe :: a -> String
+8-9 instance Describe | instance Describe Shape where
+9-9   function describe | describe _ = "shape"
+10-10 signature area | area :: Shape -> Double
+11-11 function area | area (Circle r) = pi * r * r
+12-12 function area | area (Square s) = s * s
+13-13 signature main | main :: IO ()
+14-14 bind main | main = print 1

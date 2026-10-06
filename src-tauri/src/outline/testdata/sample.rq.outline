@@ -1,0 +1,1 @@
+2-2 SelectQuery SELECT ?name WHERE { ?p foaf:name ?name . } | SELECT ?name WHERE { ?p foaf:name ?name . }

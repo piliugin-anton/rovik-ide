@@ -1,0 +1,7 @@
+1-1 variable_assignment CC | CC = gcc
+2-2 variable_assignment CFLAGS | CFLAGS := -O2
+3-3 rule all | all: build test
+4-5 rule build | build: main.o
+6-7 rule test | test:
+8-10 define_directive HELP | define HELP
+11-11 rule .PHONY | .PHONY: all build test

@@ -1,0 +1,6 @@
+1-3 package_declaration pkg | package pkg;
+4-5 module_declaration top | module top(input logic clk);
+6-9 class_declaration Packet | class Packet;
+7-7   class_constructor_declaration function new(); endfunction | function new(); endfunction
+8-8   task_declaration send | task send(); endtask
+10-10 interface_declaration bus_if | interface bus_if; logic a; endinterface

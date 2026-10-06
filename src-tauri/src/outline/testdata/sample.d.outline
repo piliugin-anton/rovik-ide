@@ -1,0 +1,12 @@
+1-1 module_declaration app | module app.main;
+3-3 struct_declaration Point | struct Point
+4-4 class_declaration Shape | class Shape
+4-4   constructor this() {} | this()
+4-4   destructor ~this() {} | ~this()
+4-4   function_declaration area | abstract double area()
+5-5 interface_declaration Drawable | interface Drawable
+5-5   function_declaration draw | void draw()
+6-6 enum_declaration Color | enum Color { red, green }
+7-7 function_declaration main | void main()
+8-8 unittest_declaration unittest { assert(true); } | unittest { assert(true); }
+9-9 alias_declaration Name | alias Name = string;

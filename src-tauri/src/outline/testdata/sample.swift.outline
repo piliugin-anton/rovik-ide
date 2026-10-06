@@ -1,0 +1,16 @@
+2-2 property_declaration globalConstant | let globalConstant = 1
+3-3 protocol_declaration Shape | protocol Shape
+3-3   protocol_function_declaration area | func area() -> Double
+3-3   protocol_property_declaration var name | var name: String { get }
+4-8 class_declaration Point | struct Point: Shape
+5-5   property_declaration x | var x: Double
+6-6   init_declaration init | init(x: Double)
+7-7   function_declaration area | func area() -> Double
+9-12 class_declaration Node | class Node<T>
+10-10   deinit_declaration deinit {} | deinit
+11-11   subscript_declaration T? | subscript(i: Int) -> T? { nil }
+13-13 class_declaration Direction | enum Direction
+14-14 class_declaration Point | extension Point
+14-14   function_declaration moved | func moved() -> Point
+15-15 typealias_declaration Distance | typealias Distance = Double
+16-16 function_declaration topLevel | func topLevel()

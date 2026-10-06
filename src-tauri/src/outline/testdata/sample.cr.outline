@@ -1,0 +1,4 @@
+2-5 class_declaration User | class User
+3-3   method_definition initialize | def initialize(@name : String); end
+4-4   method_definition greet | def greet; end
+7-7 method_definition top | def top; end

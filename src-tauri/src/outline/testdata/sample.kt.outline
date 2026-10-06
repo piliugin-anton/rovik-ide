@@ -1,0 +1,15 @@
+3-3 property_declaration MAX | const val MAX = 10
+4-4 class_declaration Point | data class Point(val x: Int, val y: Int)
+5-5 class_declaration Shape | interface Shape
+5-5   function_declaration area | fun area(): Double
+6-9 object_declaration Registry | object Registry
+7-7   property_declaration items | val items = mutableListOf<String>()
+8-8   function_declaration add | fun add(item: String)
+10-14 class_declaration Circle | class Circle(private val r: Double) : Shape
+11-11   companion_object companion object { fun unit() = Circle(1.0) } | companion object
+11-11     function_declaration unit | fun unit()
+12-12   function_declaration area | override fun area(): Double
+13-13   secondary_constructor constructor() : this(1.0) | constructor() : this(1.0)
+15-15 class_declaration Color | enum class Color
+16-16 type_alias Names | typealias Names = List<String>
+17-20 function_declaration topLevel | fun topLevel(x: Int): Int

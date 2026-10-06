@@ -2,6 +2,9 @@
 //! result is stored before the next turn, which reads the history from the
 //! database. Every call gets a result, even after Stop: providers reject a
 //! history with tool calls left unanswered.
+//!
+//! A run of consecutive local reads that need no approval runs at the same
+//! time (parallel.rs); their results are still recorded in the calls' order.
 
 use super::diff::{self, Hunk};
 use super::events::{emit, AgentEvent, ApprovalRequest, EditProposal, QuestionsRequest};
@@ -9,6 +12,7 @@ use super::guard::{FinishedCall, GuardVerdict, Write};
 use super::permissions::{self, Approver, ToolVerdict};
 use super::review::{self, Group, ReviewInput, ReviewResult};
 use super::run::{chat_plan_file, Run};
+use super::parallel::{self, InOrder};
 use super::{log, plan, tools, ApprovalDecision};
 use crate::chat_db::store::ToolCall;
 use serde_json::{json, Map, Value};
@@ -34,6 +38,22 @@ struct Authorized {
 
 fn refused(text: impl Into<String>) -> Authorized {
     Authorized { refusal: Some(text.into()), ..Default::default() }
+}
+
+/// How a call ran: as which tool, with which arguments (an approval may
+/// have changed both), and the file it writes.
+struct Ran {
+    tool_name: String,
+    args_json: String,
+    write: Option<WriteTarget>,
+}
+
+struct WriteTarget {
+    /// As the call gave it, and absolute.
+    path: String,
+    abs_path: Option<String>,
+    /// The file before the write, so the guard can tell an edit undoing earlier ones.
+    before: Option<String>,
 }
 
 enum Prepared {
@@ -115,149 +135,249 @@ impl<R: Runtime> Run<R> {
         let clm = self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(&vfs).is_ok();
         let context_dir = if clm { crate::clm::real_paths(&vfs, &self.dialog_id).map(|(_, dir)| dir) } else { None };
 
-        for tc in calls {
-            if self.stopped() {
-                self.stopped_result(tc).await?;
-                continue;
+        let mut rest = calls;
+        while !rest.is_empty() {
+            // Decided when it's this call's turn: an approval before it may
+            // have taken a while, and Stop may have come.
+            let n = parallel::batch_len(rest, |tc| self.runs_in_parallel(tc, resume_note, clm, context_dir.as_deref()));
+            if n > 0 {
+                self.execute_parallel(&rest[..n], clm).await?;
+                rest = &rest[n..];
+            } else {
+                self.execute_one(&rest[0], resume_note, clm, context_dir.as_deref()).await?;
+                rest = &rest[1..];
             }
-            let args = permissions::parse_args(&tc.arguments);
-            let path_arg = args.get("path").and_then(|p| p.as_str());
-
-            // The agent's own context file: no approval, no editor review, not
-            // a project change. It applies to the next request.
-            if clm
-                && matches!(tc.name.as_str(), "read_file" | "edit_file" | "write_file")
-                && is_context_path(path_arg, context_dir.as_deref())
-            {
-                let mut content = self.context_tool(&tc.name, &args).await;
-                if let Some(note) = self.guard.record(FinishedCall {
-                    name: &tc.name,
-                    args_json: &tc.arguments,
-                    result: &content,
-                    write: None,
-                })
-                .note()
-                {
-                    content.push_str(note);
-                }
-                let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
-                self.add_tool_result(&tc.id, content, meta, Vec::new()).await?;
-                continue;
-            }
-            match tc.name.as_str() {
-                // The plan (Plan mode): checked, then saved; problems go back to the model.
-                "submit_plan" => {
-                    self.submit_plan(tc, &args).await?;
-                    continue;
-                }
-                // The checklist: shown in the panel, never asks, isn't work the
-                // loop checks or the pause limit count.
-                "todo" => {
-                    let content = plan::describe_todo(&plan::parse_todo(&args));
-                    self.add_tool_result(&tc.id, content, None, Vec::new()).await?;
-                    continue;
-                }
-                // Questions to the user: answered in the chat, no approval
-                // involved (a resumed one after a restart is simply asked again).
-                "ask_user" => {
-                    self.ask_user(tc, &args).await?;
-                    continue;
-                }
-                name if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&name) => {
-                    let content = format!(
-                        "Error: {name} isn't available in Plan mode, which doesn't change anything. \
-                         Finish the plan; the user implements it in Agent mode."
-                    );
-                    self.add_tool_result(&tc.id, content, None, Vec::new()).await?;
-                    continue;
-                }
-                _ => {}
-            }
-
-            let auth = self.authorize(tc, resume_note).await;
-            // Stop may have been pressed while approval was pending.
-            if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
-                self.stopped_result(tc).await?;
-                continue;
-            }
-            let args_json = auth.args_override.clone().unwrap_or_else(|| tc.arguments.clone());
-            let tool_name = auth.tool_override.clone().unwrap_or_else(|| tc.name.clone());
-            let writes = auth.refusal.is_none() && permissions::modifies_files(&tool_name);
-            let write_path = if writes { permissions::str_arg(&args_json, "path") } else { None };
-            let abs_write_path = match (&write_path, &self.root) {
-                (Some(p), Some(root)) => Some(tools::to_absolute_path(p, root)),
-                _ => None,
-            };
-            // The file before a write, so the guard can tell an edit undoing earlier ones.
-            let before = abs_write_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
-
-            let mut result = match &auth.refusal {
-                Some(refusal) => tools::ToolResult { content: refusal.clone(), ..Default::default() },
-                None => tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json).await,
-            };
-            if let Some(note) = &auth.result_note {
-                if !tools::is_error(&result.content) {
-                    result.content.push_str(note);
-                }
-            }
-            // Redoing work it compacted away: offer the revision that still has it.
-            if clm && auth.refusal.is_none() && !tools::is_error(&result.content) {
-                let (d, id, name, a) = (self.dialog_id.clone(), tc.id.clone(), tool_name.clone(), args_json.clone());
-                let hint = self.db.read(move |c| crate::clm::recall_hint(c, &d, &id, &name, &a)).await;
-                if let Ok(Some(hint)) = hint {
-                    result.content.push_str(&hint);
-                }
-            }
-
-            let failed = tools::is_error(&result.content);
-            let after = result.written.as_ref().map(|(_, c)| c.clone()).or_else(|| {
-                (tool_name == "write_file").then(|| permissions::str_arg(&args_json, "content")).flatten()
-            });
-
-            let verdict = self.guard.record(FinishedCall {
-                name: &tc.name,
-                args_json: &tc.arguments,
-                result: &result.content,
-                write: match (&write_path, &after) {
-                    (Some(path), Some(after)) if writes && !failed => {
-                        Some(Write { path, before: before.as_deref(), after })
-                    }
-                    _ => None,
-                },
-            });
-            // The model reads the note with the result; a stop pauses the run
-            // once this turn's calls are done.
-            if !matches!(verdict, GuardVerdict::Ok) {
-                result.content.push_str(verdict.note().unwrap_or(""));
-            }
-            if writes && !tools::is_error(&result.content) {
-                if let Some(path) = &write_path {
-                    if !self.changed_files.contains(path) {
-                        self.changed_files.push(path.clone());
-                    }
-                    self.writes_since_verify = true;
-                }
-            }
-
-            // Open tabs of the file show what was written; an edit the user
-            // didn't review is marked in the editor until they save.
-            if writes && !failed {
-                if let (Some(abs), Some(after)) = (&abs_write_path, &after) {
-                    let reviewed = auth.approval.as_ref().and_then(|a| a.get("by")).and_then(|b| b.as_str()) == Some("user");
-                    emit(
-                        &self.app,
-                        AgentEvent::FileWritten { abs_path: abs.clone(), before, content: after.clone(), reviewed },
-                    );
-                }
-            }
-
-            let mut meta = tools::result_meta(&tc.name, &result.content);
-            if let Some(approval) = auth.approval {
-                meta.get_or_insert_with(Map::new).insert("approval".into(), approval);
-            }
-            self.add_tool_result(&tc.id, result.content, meta.map(Value::Object), result.attachments).await?;
         }
         Ok(())
+    }
+
+    /// Whether a call can run alongside its neighbours: a local read that
+    /// is permitted without asking, outside the agent's context folder.
+    fn runs_in_parallel(&self, tc: &ToolCall, resume_note: Option<&str>, clm: bool, context_dir: Option<&str>) -> bool {
+        if resume_note.is_some() || self.stopped() || !parallel::PARALLEL_TOOLS.contains(&tc.name.as_str()) {
+            return false;
+        }
+        if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&tc.name.as_str()) {
+            return false;
+        }
+        let args = permissions::parse_args(&tc.arguments);
+        if clm && is_context_path(args.get("path").and_then(|p| p.as_str()), context_dir) {
+            return false;
+        }
+        let config = self.state.config();
+        matches!(
+            permissions::check_tool_call(&tc.name, &tc.arguments, &config.permissions),
+            ToolVerdict::Permitted { approval: None }
+        )
+    }
+
+    /// Calls that run together: each as a task of its own, at most
+    /// MAX_PARALLEL at once, recorded in order as they finish. A call still
+    /// running when Stop comes is aborted and recorded as stopped.
+    async fn execute_parallel(&mut self, calls: &[ToolCall], clm: bool) -> Result<(), String> {
+        #[cfg(test)]
+        parallel::BATCHES.lock().unwrap().push((self.dialog_id.clone(), calls.iter().map(|c| c.id.clone()).collect()));
+        let started = std::time::Instant::now();
+        let jobs: Vec<_> = calls
+            .iter()
+            .map(|tc| {
+                let (app, root) = (self.app.clone(), self.root.clone());
+                let (name, args) = (tc.name.clone(), tc.arguments.clone());
+                async move {
+                    parallel::spawned(async move { tools::execute(&app, root.as_deref(), &name, &args).await })
+                        .await
+                        .unwrap_or_else(|e| tools::ToolResult { content: format!("Error: {e}"), ..Default::default() })
+                }
+            })
+            .collect();
+        let mut results = InOrder::new(jobs, parallel::MAX_PARALLEL, self.stop.subscribe());
+        for tc in calls {
+            match results.next().await.flatten() {
+                Some(result) => {
+                    let run = Ran { tool_name: tc.name.clone(), args_json: tc.arguments.clone(), write: None };
+                    self.record(tc, Authorized::default(), run, result, clm).await?;
+                }
+                None => self.stopped_result(tc).await?,
+            }
+        }
+        log::write(
+            &self.app,
+            json!({
+                "event": "parallelTools",
+                "dialogId": self.dialog_id,
+                "calls": calls.len(),
+                "ms": started.elapsed().as_millis(),
+            }),
+        );
+        Ok(())
+    }
+
+    /// One call: authorized (asking if the settings say so), run, recorded.
+    async fn execute_one(
+        &mut self,
+        tc: &ToolCall,
+        resume_note: Option<&str>,
+        clm: bool,
+        context_dir: Option<&str>,
+    ) -> Result<(), String> {
+        if self.stopped() {
+            return self.stopped_result(tc).await;
+        }
+        let args = permissions::parse_args(&tc.arguments);
+        let path_arg = args.get("path").and_then(|p| p.as_str());
+
+        // The agent's own context file: no approval, no editor review, not
+        // a project change. It applies to the next request.
+        if clm
+            && matches!(tc.name.as_str(), "read_file" | "edit_file" | "write_file")
+            && is_context_path(path_arg, context_dir)
+        {
+            let mut content = self.context_tool(&tc.name, &args).await;
+            if let Some(note) = self.guard.record(FinishedCall {
+                name: &tc.name,
+                args_json: &tc.arguments,
+                result: &content,
+                write: None,
+            })
+            .note()
+            {
+                content.push_str(note);
+            }
+            let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
+            return self.add_tool_result(&tc.id, content, meta, Vec::new()).await;
+        }
+        match tc.name.as_str() {
+            // The plan (Plan mode): checked, then saved; problems go back to the model.
+            "submit_plan" => {
+                return self.submit_plan(tc, &args).await;
+            }
+            // The checklist: shown in the panel, never asks, isn't work the
+            // loop checks or the pause limit count.
+            "todo" => {
+                let content = plan::describe_todo(&plan::parse_todo(&args));
+                return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+            }
+            // Questions to the user: answered in the chat, no approval
+            // involved (a resumed one after a restart is simply asked again).
+            "ask_user" => {
+                return self.ask_user(tc, &args).await;
+            }
+            name if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&name) => {
+                let content = format!(
+                    "Error: {name} isn't available in Plan mode, which doesn't change anything. \
+                     Finish the plan; the user implements it in Agent mode."
+                );
+                return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+            }
+            _ => {}
+        }
+
+        let auth = self.authorize(tc, resume_note).await;
+        // Stop may have been pressed while approval was pending.
+        if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
+            return self.stopped_result(tc).await;
+        }
+        let args_json = auth.args_override.clone().unwrap_or_else(|| tc.arguments.clone());
+        let tool_name = auth.tool_override.clone().unwrap_or_else(|| tc.name.clone());
+        let writes = auth.refusal.is_none() && permissions::modifies_files(&tool_name);
+        let write_path = if writes { permissions::str_arg(&args_json, "path") } else { None };
+        let abs_write_path = match (&write_path, &self.root) {
+            (Some(p), Some(root)) => Some(tools::to_absolute_path(p, root)),
+            _ => None,
+        };
+        // The file before a write, so the guard can tell an edit undoing earlier ones.
+        let before = abs_write_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+
+        let result = match &auth.refusal {
+            Some(refusal) => tools::ToolResult { content: refusal.clone(), ..Default::default() },
+            None => tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json).await,
+        };
+        let write = match (writes, write_path) {
+            (true, Some(path)) => Some(WriteTarget { path, abs_path: abs_write_path, before }),
+            _ => None,
+        };
+        let run = Ran { tool_name, args_json, write };
+        self.record(tc, auth, run, result, clm).await
+    }
+
+    /// Everything after a call ran: notes for the model (an approval's,
+    /// CLM's recall hint, the guard's), the files it changed, the editor,
+    /// and its result stored.
+    async fn record(
+        &mut self,
+        tc: &ToolCall,
+        auth: Authorized,
+        run: Ran,
+        mut result: tools::ToolResult,
+        clm: bool,
+    ) -> Result<(), String> {
+        let Ran { tool_name, args_json, write } = run;
+        let writes = write.is_some();
+        let (write_path, abs_write_path, before) = match write {
+            Some(w) => (Some(w.path), w.abs_path, w.before),
+            None => (None, None, None),
+        };
+        if let Some(note) = &auth.result_note {
+            if !tools::is_error(&result.content) {
+                result.content.push_str(note);
+            }
+        }
+        // Redoing work it compacted away: offer the revision that still has it.
+        if clm && auth.refusal.is_none() && !tools::is_error(&result.content) {
+            let (d, id, name, a) = (self.dialog_id.clone(), tc.id.clone(), tool_name.clone(), args_json.clone());
+            let hint = self.db.read(move |c| crate::clm::recall_hint(c, &d, &id, &name, &a)).await;
+            if let Ok(Some(hint)) = hint {
+                result.content.push_str(&hint);
+            }
+        }
+
+        let failed = tools::is_error(&result.content);
+        let after = result.written.as_ref().map(|(_, c)| c.clone()).or_else(|| {
+            (tool_name == "write_file").then(|| permissions::str_arg(&args_json, "content")).flatten()
+        });
+
+        let verdict = self.guard.record(FinishedCall {
+            name: &tc.name,
+            args_json: &tc.arguments,
+            result: &result.content,
+            write: match (&write_path, &after) {
+                (Some(path), Some(after)) if writes && !failed => {
+                    Some(Write { path, before: before.as_deref(), after })
+                }
+                _ => None,
+            },
+        });
+        // The model reads the note with the result; a stop pauses the run
+        // once this turn's calls are done.
+        if !matches!(verdict, GuardVerdict::Ok) {
+            result.content.push_str(verdict.note().unwrap_or(""));
+        }
+        if writes && !tools::is_error(&result.content) {
+            if let Some(path) = &write_path {
+                if !self.changed_files.contains(path) {
+                    self.changed_files.push(path.clone());
+                }
+                self.writes_since_verify = true;
+            }
+        }
+
+        // Open tabs of the file show what was written; an edit the user
+        // didn't review is marked in the editor until they save.
+        if writes && !failed {
+            if let (Some(abs), Some(after)) = (&abs_write_path, &after) {
+                let reviewed = auth.approval.as_ref().and_then(|a| a.get("by")).and_then(|b| b.as_str()) == Some("user");
+                emit(
+                    &self.app,
+                    AgentEvent::FileWritten { abs_path: abs.clone(), before, content: after.clone(), reviewed },
+                );
+            }
+        }
+
+        let mut meta = tools::result_meta(&tc.name, &result.content);
+        if let Some(approval) = auth.approval {
+            meta.get_or_insert_with(Map::new).insert("approval".into(), approval);
+        }
+        self.add_tool_result(&tc.id, result.content, meta.map(Value::Object), result.attachments).await
     }
 
     async fn stopped_result(&self, tc: &ToolCall) -> Result<(), String> {

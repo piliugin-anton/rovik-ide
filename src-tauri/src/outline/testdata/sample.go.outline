@@ -1,0 +1,10 @@
+6-6 type_spec A | A struct{ x int }
+7-7 type_spec B | B int
+10-12 type_spec Shape | type Shape interface {
+11-11   method_elem Area | Area() float64
+14-14 method_declaration Area | func (s *Square) Area() float64
+16-19 function_declaration main | func main()
+22-22 const_spec X | X = 1
+23-23 const_spec Y | Y = 2
+26-26 var_spec z | var z = 3
+28-28 type_alias Alias | type Alias = int

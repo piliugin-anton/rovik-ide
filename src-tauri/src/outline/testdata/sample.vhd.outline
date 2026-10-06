@@ -1,0 +1,3 @@
+3-5 entity_declaration counter | entity counter is
+6-10 architecture_definition rtl | architecture rtl of counter is signal count : integer;
+9-9   process_statement clk | process (clk)

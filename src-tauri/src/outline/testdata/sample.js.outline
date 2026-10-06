@@ -1,0 +1,14 @@
+2-6 function_declaration App | export default function App()
+3-3   function_declaration inner | function inner()
+4-4   lexical_declaration handler | const handler = () => {};
+7-7 lexical_declaration routes | export const routes = [1, 2];
+8-8 lexical_declaration arrow | const arrow = async (x) => x;
+9-9 lexical_declaration a | let a = 1, b = function named() {};
+10-16 class_declaration Foo | class Foo extends Bar
+12-12   field_definition handle | handle = (e) => {}
+13-13   method_definition constructor | constructor()
+14-14   method_definition value | get value()
+15-15   method_definition gen | static async *gen()
+17-17 expression_statement module.exports.helper | module.exports.helper = function () {};
+18-18 generator_function_declaration generator | function* generator()
+20-20 function_declaration conditional | function conditional()

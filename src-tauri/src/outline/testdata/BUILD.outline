@@ -1,0 +1,4 @@
+1-1 expression_statement load | load("@rules_cc//cc:defs.bzl", "cc_library")
+2-5 expression_statement cc_library | cc_library(
+6-7 function_definition _impl | def _impl(ctx):
+8-8 expression_statement VERSION | VERSION = "1"

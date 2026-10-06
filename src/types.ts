@@ -118,11 +118,18 @@ export interface RevealRequest {
 }
 
 export interface ToolSearchResult {
+  /** The first matches in path order, up to the result limit. */
   lines: ToolSearchLine[];
+  /** Matches and files in `lines`. */
   matchCount: number;
   fileCount: number;
-  /** Stopped at the result limit; more matches exist. */
+  /** More matches exist than are in `lines`. */
   truncated: boolean;
+  /** Matches and files in the whole project, shown or not. */
+  totalMatches: number;
+  totalFiles: number;
+  /** false when counting stopped early: the totals are at least this many. */
+  totalsComplete: boolean;
 }
 
 export interface ChatMessage {

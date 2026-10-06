@@ -1,0 +1,16 @@
+1-1 schema_definition schema { query: Query } | schema { query: Query }
+2-5 object_type_definition Query | type Query {
+3-3   field_definition user | user(id: ID!): User
+4-4   field_definition users | users: [User]
+6-6 object_type_definition User | type User implements Node { id: ID! name: String }
+6-6   field_definition id | id: ID!
+6-6   field_definition name | name: String
+7-7 interface_type_definition Node | interface Node { id: ID! }
+7-7   field_definition id | id: ID!
+8-8 enum_type_definition Role | enum Role { ADMIN USER }
+9-9 input_object_type_definition NewUser | input NewUser { name: String }
+10-10 union_type_definition Result | union Result = User | Error
+11-11 scalar_type_definition Date | scalar Date
+12-12 operation_definition GetUser | query GetUser($id: ID!) { user(id: $id) { name } }
+13-13 fragment_definition Fields | fragment Fields on User { name }
+14-14 directive_definition auth | directive @auth on FIELD_DEFINITION
