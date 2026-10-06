@@ -302,9 +302,10 @@ export function GitPanel(props: GitPanelProps) {
   });
 
   /*
-   * Git's own activity (a commit, a checkout, also from a terminal): the
-   * watcher reports it once per burst ("git-changed"), and the status is
-   * read again unless an operation of this panel is running anyway.
+   * Git's own activity (a commit, a checkout, also from a terminal) and
+   * edits to the project's files: the watcher reports them once per burst
+   * ("git-changed"), and the status is read again unless an operation of
+   * this panel is running anyway.
    */
   onMount(() => {
     let stop: (() => void) | undefined;
