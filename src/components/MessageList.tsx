@@ -354,6 +354,61 @@ export default function MessageList(props: {
     window.addEventListener('pointercancel', stop);
   }
 
+  /*
+   * Clearing a selection of message text. WebKit doesn't always drop one on
+   * a click: a press inside it waits to start a drag, and a press between
+   * messages (the list's gaps and padding) leaves it be, so a drag that ran
+   * on into other messages couldn't be undone. A click (no drag, not a
+   * double click) on the list now clears it, and so does Escape.
+   */
+  const CLICK_SLOP_PX = 4;
+  let clickStart: { x: number; y: number; hadSelection: boolean } | null = null;
+
+  function listSelection(): Selection | null {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !scrollRef) return null;
+    return scrollRef.contains(sel.getRangeAt(0).commonAncestorContainer) ||
+      (sel.anchorNode && scrollRef.contains(sel.anchorNode)) ||
+      (sel.focusNode && scrollRef.contains(sel.focusNode))
+      ? sel
+      : null;
+  }
+
+  function onScrollbar(e: MouseEvent) {
+    const el = scrollRef;
+    if (!el || e.target !== el) return false;
+    const rect = el.getBoundingClientRect();
+    return e.clientX - rect.left >= el.clientWidth || e.clientY - rect.top >= el.clientHeight;
+  }
+
+  function handleSelectMouseDown(e: MouseEvent) {
+    clickStart =
+      e.button === 0 && e.detail <= 1 && !e.shiftKey && !onScrollbar(e)
+        ? { x: e.clientX, y: e.clientY, hadSelection: !!listSelection() }
+        : null;
+  }
+
+  function handleSelectMouseUp(e: MouseEvent) {
+    const start = clickStart;
+    clickStart = null;
+    if (!start?.hadSelection || e.button !== 0 || e.detail > 1) return;
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > CLICK_SLOP_PX) return;
+    // After the browser's own handling of the click, in case it did clear it.
+    requestAnimationFrame(() => listSelection()?.removeAllRanges());
+  }
+
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const sel = listSelection();
+      if (!sel) return;
+      sel.removeAllRanges();
+      e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    onCleanup(() => window.removeEventListener('keydown', onKey));
+  });
+
   async function jumpToLatest() {
     if (props.chat?.hasNewer) await props.onReloadLatest();
     setWin(initialWindow(messages().length));
@@ -613,6 +668,8 @@ export default function MessageList(props: {
         }}
         onKeyDown={markUserInput}
         onPointerDown={handlePointerDown}
+        onMouseDown={handleSelectMouseDown}
+        onMouseUp={handleSelectMouseUp}
       >
         <div ref={topSentinel} class="chat-sentinel" aria-hidden="true" />
         {/* Overlaid, not in the flow: showing and hiding it used to push the
