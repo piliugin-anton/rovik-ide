@@ -17,11 +17,30 @@ export interface DriverStatus {
   canInstall: boolean;
 }
 
+/** A System Settings page the app can open (macOS). */
+export type SettingsPane = 'extensions' | 'privacySecurity';
+
+/** Why the volume couldn't be mounted, and what to do about it. */
+export interface MountProblem {
+  kind: 'notInstalled' | 'enableExtension' | 'approveKernelExtension' | 'updateDriver' | 'failed';
+  title: string;
+  /** What to do, in order. */
+  steps: string[];
+  /** The page `openVfsSettings` opens for it. */
+  settings: SettingsPane | null;
+  /** The fix happens outside the app: keep trying to mount. */
+  retry: boolean;
+  /** The underlying error. */
+  detail: string | null;
+}
+
 export interface VfsStatus {
   driver: DriverStatus;
   /** Where the volume is mounted, if it is. */
   mountpoint: string | null;
   defaultMountpoint: string;
+  /** Why the last mount failed (until one succeeds). */
+  problem: MountProblem | null;
   capacity: number;
   used: number;
 }
@@ -29,7 +48,6 @@ export interface VfsStatus {
 export type InstallOutcome =
   | { status: 'installed'; version: string | null }
   | { status: 'needsRestart'; message: string }
-  | { status: 'needsApproval'; message: string }
   | { status: 'manual'; message: string; command: string | null };
 
 export interface VirtualFile {
@@ -58,6 +76,11 @@ export function installVfsDriver(): Promise<InstallOutcome> {
 /** Mounts the volume (at the default place unless given) and returns where. */
 export function mountVfs(mountpoint?: string): Promise<string> {
   return invoke<string>('vfs_mount', { mountpoint: mountpoint ?? null });
+}
+
+/** Opens the System Settings page a mount problem points to (macOS). */
+export function openVfsSettings(pane: SettingsPane): Promise<void> {
+  return invoke<void>('vfs_open_settings', { pane });
 }
 
 export function unmountVfs(): Promise<void> {

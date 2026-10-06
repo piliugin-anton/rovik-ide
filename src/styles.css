@@ -5364,3 +5364,23 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   word-break: break-all;
   user-select: text;
 }
+
+.virtual-files-steps {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.virtual-files-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.virtual-files-detail {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}

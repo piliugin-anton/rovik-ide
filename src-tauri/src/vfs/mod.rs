@@ -28,6 +28,7 @@
 
 pub mod driver;
 pub mod events;
+pub mod problem;
 pub mod store;
 
 #[cfg(unix)]
@@ -48,6 +49,7 @@ use tauri::State;
 #[allow(unused_imports)] // re-exported for app code
 pub use events::{EventBatch, EventMask, FsEvent, Op, Source, SubscriptionId};
 
+use problem::{MountProblem, SettingsPane};
 use store::{Kind, Options, VfsError, VirtualFs};
 
 /// Total bytes the virtual files may hold.
@@ -72,19 +74,21 @@ impl Mount {
     }
 }
 
-fn platform_mount(fs: Arc<VirtualFs>, at: &Path) -> Result<Mount, String> {
+/// Mounts at `requested`, or the platform's default place; returns where.
+fn platform_mount(fs: Arc<VirtualFs>, requested: Option<&Path>) -> Result<(Mount, PathBuf), MountProblem> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        fuse::mount(fs, at)
+        fuse::mount(fs, requested)
     }
     #[cfg(windows)]
     {
-        winfsp_fs::mount(fs, at)
+        let at = requested.map(Path::to_path_buf).unwrap_or_else(default_mountpoint);
+        winfsp_fs::mount(fs, &at).map(|m| (m, at)).map_err(MountProblem::failed)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        let _ = (fs, at);
-        Err("virtual files aren't supported on this system".into())
+        let _ = (fs, requested);
+        Err(MountProblem::failed("virtual files aren't supported on this system"))
     }
 }
 
@@ -98,9 +102,14 @@ pub fn default_mountpoint() -> PathBuf {
             None => std::env::temp_dir().join(format!("rovik-ide-{}", unsafe { libc::getuid() })).join("vfs"),
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        // macOS: $TMPDIR is per user. Windows: %TEMP% is too.
+        // /Volumes/RovikVirtualFiles with FSKit, else under $TMPDIR (per user).
+        macfuse::plan(None).mountpoint
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        // Windows: %TEMP% is per user.
         std::env::temp_dir().join("rovik-ide-vfs")
     }
 }
@@ -113,6 +122,10 @@ struct Mounted {
 pub struct VfsState {
     fs: Arc<VirtualFs>,
     mounted: Mutex<Option<Mounted>>,
+    /// Held while a mount is in progress.
+    mounting: Mutex<()>,
+    /// Why the last mount attempt failed, until one succeeds.
+    problem: Mutex<Option<MountProblem>>,
 }
 
 impl Default for VfsState {
@@ -124,6 +137,8 @@ impl Default for VfsState {
         VfsState {
             fs: VirtualFs::new(Options { capacity: CAPACITY, uid, gid, ..Options::default() }),
             mounted: Mutex::new(None),
+            mounting: Mutex::new(()),
+            problem: Mutex::new(None),
         }
     }
 }
@@ -166,26 +181,43 @@ impl VfsState {
     /// Mounts the volume (at the default place unless `at` is given) and
     /// returns where. Already mounted: returns the current place.
     pub fn mount(&self, at: Option<PathBuf>) -> Result<PathBuf, String> {
-        let mut mounted = self.lock();
-        if let Some(m) = mounted.as_ref() {
-            if at.as_ref().is_none_or(|a| a == &m.at) {
-                return Ok(m.at.clone());
+        self.try_mount(at).map_err(|p| p.message())
+    }
+
+    /// Like `mount`, with what went wrong and how to fix it. The problem is
+    /// also kept for `vfs_status` until a mount succeeds.
+    pub fn try_mount(&self, at: Option<PathBuf>) -> Result<PathBuf, MountProblem> {
+        let result = self.mount_inner(at);
+        *self.problem.lock().unwrap_or_else(|e| e.into_inner()) = result.as_ref().err().cloned();
+        result
+    }
+
+    fn mount_inner(&self, at: Option<PathBuf>) -> Result<PathBuf, MountProblem> {
+        // One mount at a time, without holding `mounted` while it runs (it
+        // can wait on macFUSE for a while; status reads mustn't).
+        let _one_at_a_time = self.mounting.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = {
+            let mut mounted = self.lock();
+            match mounted.as_ref() {
+                Some(m) if at.as_ref().is_none_or(|a| a == &m.at) => return Ok(m.at.clone()),
+                Some(_) => mounted.take(),
+                None => None,
             }
-            let previous = mounted.take().expect("checked above");
-            previous.mount.unmount()?;
+        };
+        if let Some(previous) = previous {
+            previous.mount.unmount().map_err(MountProblem::failed)?;
         }
         let status = driver::status();
         if !status.installed {
-            return Err(format!(
-                "{} {} is needed for virtual files; install it first.",
-                status.detail.unwrap_or_default(),
-                status.driver
-            ));
+            return Err(MountProblem::not_installed(status.driver, status.detail));
         }
-        let at = at.unwrap_or_else(default_mountpoint);
-        let mount = platform_mount(self.fs.clone(), &at)?;
-        *mounted = Some(Mounted { at: at.clone(), mount });
+        let (mount, at) = platform_mount(self.fs.clone(), at.as_deref())?;
+        *self.lock() = Some(Mounted { at: at.clone(), mount });
         Ok(at)
+    }
+
+    pub fn problem(&self) -> Option<MountProblem> {
+        self.problem.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn unmount(&self) -> Result<(), String> {
@@ -258,6 +290,8 @@ pub struct VfsStatus {
     /// Where the volume is mounted, if it is.
     pub mountpoint: Option<String>,
     pub default_mountpoint: String,
+    /// Why the last mount failed and what to do (until one succeeds).
+    pub problem: Option<MountProblem>,
     pub capacity: u64,
     pub used: u64,
 }
@@ -287,7 +321,12 @@ pub async fn vfs_status(state: State<'_, VfsState>) -> Result<VfsStatus, String>
     Ok(VfsStatus {
         driver,
         mountpoint: state.mountpoint().map(|p| p.to_string_lossy().into_owned()),
-        default_mountpoint: default_mountpoint().to_string_lossy().into_owned(),
+        default_mountpoint: tauri::async_runtime::spawn_blocking(default_mountpoint)
+            .await
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned(),
+        problem: state.problem(),
         capacity,
         used,
     })
@@ -299,9 +338,28 @@ pub async fn vfs_install_driver() -> Result<driver::InstallOutcome, String> {
 }
 
 #[tauri::command]
-pub async fn vfs_mount(state: State<'_, VfsState>, mountpoint: Option<String>) -> Result<String, String> {
+pub async fn vfs_mount(app: tauri::AppHandle, mountpoint: Option<String>) -> Result<String, String> {
+    use tauri::Manager;
     let at = mountpoint.filter(|m| !m.trim().is_empty()).map(PathBuf::from);
-    state.mount(at).map(|p| p.to_string_lossy().into_owned())
+    // Can wait on macFUSE for a while; not on the async runtime.
+    tauri::async_runtime::spawn_blocking(move || app.state::<VfsState>().mount(at).map(|p| p.to_string_lossy().into_owned()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Opens the System Settings page a mount problem points to (macOS).
+#[tauri::command]
+pub async fn vfs_open_settings(pane: SettingsPane) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open").arg(pane.url()).status().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pane;
+        Err("only on macOS".into())
+    }
 }
 
 #[tauri::command]
@@ -411,7 +469,12 @@ mod mount_tests {
     fn common_tools_work_on_virtual_files() {
         let state = VfsState::default();
         let at = std::env::temp_dir().join(format!("rovik-vfs-test-{}", std::process::id()));
+        // A failed attempt is kept, with what went wrong, until one works.
+        let failed = state.try_mount(Some(PathBuf::from("/proc/rovik-vfs-test"))).unwrap_err();
+        assert_eq!(failed.kind, problem::ProblemKind::Failed);
+        assert!(failed.detail.is_some() && state.problem() == Some(failed));
         state.mount(Some(at.clone())).expect("mount (is FUSE installed?)");
+        assert_eq!(state.problem(), None);
 
         // The app creates files; commands see them.
         let path = state.create_file("notes/hello.txt", b"hello\nworld\n", false).unwrap();

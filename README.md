@@ -85,13 +85,17 @@ files there that the app reads back. The volume is a user-space filesystem
 mounted through the OS's driver, which is optional software the app installs
 on request (Settings → Virtual files):
 
-| OS      | Driver  | Installed from                                       | Notes                                                                                 |
-| ------- | ------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Linux   | FUSE 3  | the distro's package (`fuse3`) via polkit (`pkexec`) | Mounted with `fusermount3`; no libfuse needed to build or run.                        |
-| macOS   | macFUSE | the official release `.dmg` (signature checked)      | The system extension must then be allowed in System Settings → Privacy & Security.    |
-| Windows | WinFsp  | the official release `.msi` (signature checked)      | winfsp.dll is delay-loaded. Building needs LLVM (`libclang`) for the WinFsp bindings. |
+| OS      | Driver  | Installed from                                       | Notes                                                                                                                                                                                                              |
+| ------- | ------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Linux   | FUSE 3  | the distro's package (`fuse3`) via polkit (`pkexec`) | Mounted with `fusermount3`; no libfuse needed to build or run.                                                                                                                                                     |
+| macOS   | macFUSE | the official release `.dmg` (signature checked)      | macOS 15.4+ with macFUSE 5.1+ uses FSKit (no kernel extension; switch macFUSE on once in System Settings), mounted at `/Volumes/RovikVirtualFiles`; older systems use the kernel extension, which must be allowed. |
+| Windows | WinFsp  | the official release `.msi` (signature checked)      | winfsp.dll is delay-loaded. Building needs LLVM (`libclang`) for the WinFsp bindings.                                                                                                                              |
 
 The app starts on every OS without the driver; only mounting needs it.
+When a mount fails, Settings → Virtual files shows why and what to do (on
+macOS, with a button to the right System Settings page) and keeps retrying
+while the fix is up to the user; after installing, it mounts right away so
+those steps show up at once (`problem.rs`).
 
 ```rust
 let vfs = app.state::<vfs::VfsState>();
@@ -119,7 +123,9 @@ file, so the cost doesn't grow with the number of files. See
 
 - `store.rs` — the in-memory filesystem (POSIX semantics: hard links,
   symlinks, xattrs, atomic rename, unlinked-but-open files), all unit tested.
-- `fuse.rs` / `macfuse.rs` — Linux and macOS driver; `winfsp_fs.rs` — Windows.
+- `fuse.rs` / `macfuse.rs` — Linux and macOS driver (macOS through macFUSE's
+  library, loaded at run time); `winfsp_fs.rs` — Windows.
+- `problem.rs` — why a mount failed and what to do; the macOS backend choice.
 - `events.rs` — callbacks for what happens to the files.
 - `driver.rs` — detecting and installing the driver.
 

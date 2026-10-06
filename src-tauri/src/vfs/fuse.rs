@@ -1,9 +1,9 @@
 //! The FUSE driver (Linux, macOS): kernel requests → [`VirtualFs`].
 //!
 //! Linux mounts through the `fusermount3`/`fusermount` helper (fuser's pure
-//! Rust mount, no libfuse needed). macOS mounts through macFUSE's
-//! `mount_macfuse` helper (see `macfuse.rs`) — the app never links against
-//! macFUSE's library, so it starts on a Mac that doesn't have it yet.
+//! Rust mount, no libfuse needed). macOS mounts through macFUSE's library,
+//! loaded at run time (see `macfuse.rs`), so the app starts on a Mac that
+//! doesn't have macFUSE yet.
 //!
 //! The kernel enforces permissions (`default_permissions`), so modes and
 //! owners behave like on a disk filesystem. Attributes are cached for a
@@ -24,6 +24,7 @@ use fuser::{
     ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, SessionACL, TimeOrNow, WriteFlags,
 };
 
+use super::problem::MountProblem;
 use super::store::{Attr, Change, Kind, RenameMode, SetAttr, VfsError, VirtualFs};
 
 const TTL: Duration = Duration::from_secs(1);
@@ -44,6 +45,16 @@ fn errno(e: VfsError) -> Errno {
         VfsError::NoAttr => Errno::NO_XATTR,
         VfsError::Range => Errno::ERANGE,
     }
+}
+
+/// Who a new file belongs to. macFUSE's FSKit backend doesn't tell who
+/// made a request (it arrives as root); files are then the user's.
+fn owner(req: &Request) -> (u32, u32) {
+    #[cfg(target_os = "macos")]
+    if req.uid() == 0 && unsafe { libc::geteuid() } != 0 {
+        return unsafe { (libc::getuid(), libc::getgid()) };
+    }
+    (req.uid(), req.gid())
 }
 
 fn kind(k: Kind) -> FileType {
@@ -222,7 +233,7 @@ impl fuser::Filesystem for FuseFs {
             Err(e) => return reply.error(e),
         };
         let perm = (mode & !umask & 0o7777) as u16;
-        self.entry(reply, self.vfs.create(parent.0, name, Kind::File, perm, req.uid(), req.gid(), None));
+        self.entry(reply, self.vfs.create(parent.0, name, Kind::File, perm, owner(req).0, owner(req).1, None));
     }
 
     fn mkdir(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
@@ -231,7 +242,7 @@ impl fuser::Filesystem for FuseFs {
             Err(e) => return reply.error(e),
         };
         let perm = (mode & !umask & 0o7777) as u16;
-        self.entry(reply, self.vfs.create(parent.0, name, Kind::Dir, perm, req.uid(), req.gid(), None));
+        self.entry(reply, self.vfs.create(parent.0, name, Kind::Dir, perm, owner(req).0, owner(req).1, None));
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
@@ -252,7 +263,7 @@ impl fuser::Filesystem for FuseFs {
         let (Ok(name), Some(target)) = (name_str(link_name), target.to_str()) else {
             return reply.error(Errno::EINVAL);
         };
-        self.entry(reply, self.vfs.create(parent.0, name, Kind::Symlink, 0o777, req.uid(), req.gid(), Some(target)));
+        self.entry(reply, self.vfs.create(parent.0, name, Kind::Symlink, 0o777, owner(req).0, owner(req).1, Some(target)));
     }
 
     fn rename(
@@ -487,7 +498,7 @@ impl fuser::Filesystem for FuseFs {
             Err(e) => return reply.error(e),
         };
         let perm = (mode & !umask & 0o7777) as u16;
-        let attr = match self.vfs.create(parent.0, name, Kind::File, perm, req.uid(), req.gid(), None) {
+        let attr = match self.vfs.create(parent.0, name, Kind::File, perm, owner(req).0, owner(req).1, None) {
             Ok(attr) => attr,
             Err(e) => return reply.error(errno(e)),
         };
@@ -526,7 +537,6 @@ fn mount_options() -> Config {
     config.mount_options.push(MountOption::Subtype("rovik".into()));
     #[cfg(target_os = "macos")]
     config.mount_options.extend([
-        MountOption::CUSTOM("volname=Rovik Virtual Files".into()),
         // No ._* AppleDouble files: xattrs are stored natively.
         MountOption::CUSTOM("noappledouble".into()),
     ]);
@@ -548,6 +558,8 @@ pub struct FuseMount {
     vfs: Arc<VirtualFs>,
     #[cfg_attr(target_os = "linux", allow(dead_code))]
     mountpoint: std::path::PathBuf,
+    #[cfg(target_os = "macos")]
+    mac: Option<super::macfuse::MacMount>,
 }
 
 impl FuseMount {
@@ -580,7 +592,9 @@ impl FuseMount {
         }
         #[cfg(target_os = "macos")]
         {
-            super::macfuse::unmount(&self.mountpoint)?;
+            if let Some(mac) = self.mac.take() {
+                mac.unmount(&self.mountpoint)?;
+            }
             session.join().map_err(|e| format!("unmounting: {e}"))
         }
     }
@@ -611,23 +625,26 @@ fn clear_stale_mount(mountpoint: &Path) {
     }
 }
 
-pub fn mount(vfs: Arc<VirtualFs>, mountpoint: &Path) -> Result<FuseMount, String> {
+/// Mounts at `requested`, or where the platform mounts by default; returns
+/// where it mounted.
+pub fn mount(vfs: Arc<VirtualFs>, requested: Option<&Path>) -> Result<(FuseMount, std::path::PathBuf), MountProblem> {
     #[cfg(target_os = "linux")]
     {
-        clear_stale_mount(mountpoint);
-        std::fs::create_dir_all(mountpoint).map_err(|e| format!("{}: {e}", mountpoint.display()))?;
+        let mountpoint = requested.map(Path::to_path_buf).unwrap_or_else(super::default_mountpoint);
+        clear_stale_mount(&mountpoint);
+        std::fs::create_dir_all(&mountpoint).map_err(|e| MountProblem::failed(format!("{}: {e}", mountpoint.display())))?;
         let fs = FuseFs::new(vfs.clone());
-        let session = fuser::Session::new(fs, mountpoint, &mount_options())
-            .map_err(|e| format!("mounting {}: {e}", mountpoint.display()))?
+        let session = fuser::Session::new(fs, &mountpoint, &mount_options())
+            .map_err(|e| MountProblem::failed(format!("mounting {}: {e}", mountpoint.display())))?
             .spawn()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| MountProblem::failed(e.to_string()))?;
         FuseMount::watch(&session, &vfs);
-        Ok(FuseMount { session: Some(session), vfs, mountpoint: mountpoint.to_path_buf() })
+        Ok((FuseMount { session: Some(session), vfs, mountpoint: mountpoint.clone() }, mountpoint))
     }
     #[cfg(target_os = "macos")]
     {
-        let session = super::macfuse::mount(FuseFs::new(vfs.clone()), mountpoint, &mount_options())?;
+        let (session, mac, mountpoint) = super::macfuse::mount(FuseFs::new(vfs.clone()), requested, &mount_options())?;
         FuseMount::watch(&session, &vfs);
-        Ok(FuseMount { session: Some(session), vfs, mountpoint: mountpoint.to_path_buf() })
+        Ok((FuseMount { session: Some(session), vfs, mountpoint: mountpoint.clone(), mac: Some(mac) }, mountpoint))
     }
 }

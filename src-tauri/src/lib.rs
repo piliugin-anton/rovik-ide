@@ -141,6 +141,7 @@ pub fn run() {
             vfs::vfs_install_driver,
             vfs::vfs_mount,
             vfs::vfs_unmount,
+            vfs::vfs_open_settings,
             vfs::vfs_write_file,
             vfs::vfs_read_file,
             vfs::vfs_list,

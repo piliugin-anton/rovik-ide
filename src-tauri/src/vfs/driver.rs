@@ -37,9 +37,6 @@ pub enum InstallOutcome {
     Installed { version: Option<String> },
     /// Installed; the OS must restart before it can be used.
     NeedsRestart { message: String },
-    /// Installed; the user must approve it in the OS settings first.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    NeedsApproval { message: String },
     /// The app couldn't install it; the user has to.
     Manual { message: String, command: Option<String> },
 }
@@ -255,7 +252,7 @@ mod download {
 // --- macOS ------------------------------------------------------------------
 
 #[cfg(target_os = "macos")]
-fn macfuse_version() -> Option<String> {
+pub fn macfuse_version() -> Option<String> {
     let plist = std::fs::read_to_string(Path::new(super::macfuse::BUNDLE).join("Contents/version.plist"))
         .or_else(|_| std::fs::read_to_string(Path::new(super::macfuse::BUNDLE).join("Contents/Info.plist")))
         .ok()?;
@@ -331,13 +328,9 @@ pub async fn install() -> Result<InstallOutcome, String> {
                 }
                 return Err(format!("installing macFUSE failed: {}", stderr.trim()));
             }
-            Ok(InstallOutcome::NeedsApproval {
-                message: "macFUSE is installed. Before the first mount, macOS has to allow its system extension: open \
-                          System Settings → Privacy & Security, click Allow next to the macFUSE (Benjamin Fleischer) \
-                          message, and restart if asked. On Apple silicon, kernel extensions may first have to be \
-                          enabled in Startup Security Utility (Recovery mode)."
-                    .to_string(),
-            })
+            // What macOS still needs (switching the extension on, or
+            // allowing it) comes from the first mount attempt.
+            Ok(InstallOutcome::Installed { version: macfuse_version() })
         })();
         let _ = run("/usr/bin/hdiutil", &["detach", "-force", &mnt_s]);
         let _ = std::fs::remove_dir_all(&dir);
