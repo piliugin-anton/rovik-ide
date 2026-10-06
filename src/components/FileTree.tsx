@@ -1,5 +1,5 @@
 import { createVirtualizer } from '@tanstack/solid-virtual';
-import { For, Show, type Accessor } from 'solid-js';
+import { createEffect, createMemo, For, on, Show, type Accessor } from 'solid-js';
 import type { TreeRow } from '../types';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
@@ -42,6 +42,20 @@ export default function FileTree(props: FileTreeProps) {
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
   });
+
+  // Keep the row being edited (a new entry or a rename) in view: the tree is
+  // virtualized, so an off-screen row has no input to type into. The index
+  // can shift while editing (e.g. a folder's children load under a draft).
+  const editingIndex = createMemo(() => {
+    const id = props.editingId();
+    return id === null ? -1 : props.rows().findIndex((r) => r.id === id);
+  });
+
+  createEffect(
+    on(editingIndex, (index) => {
+      if (index >= 0) virtualizer.scrollToIndex(index, { align: 'auto' });
+    })
+  );
 
   function handleRowMouseDown(e: MouseEvent, row: TreeRow) {
     if (row.loading || props.editingId() === row.id) return;

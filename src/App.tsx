@@ -144,8 +144,9 @@ export default function App() {
       ignored: false,
     } as TreeRow;
 
+    // The draft goes last in its folder, after the folder's whole subtree.
     if (draft.depth === 0) {
-      return [draftRow, ...rows];
+      return [...rows, draftRow];
     }
 
     const idx = rows.findIndex((r) => r.depth === draft.depth - 1 && draft.parentPath === r.path);
