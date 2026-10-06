@@ -230,7 +230,17 @@ pub async fn prepare(
                             )
                         })
                         .unwrap_or_default();
-                    if ctx_tokens(&whole, cost) > budget {
+                    if !whole.iter().any(|m| m.role == "user") {
+                        notes.push(format!(
+                            "[context: your edit was REJECTED, not applied: it would leave your context with no \
+                             messages. The file was rewritten with your context as it was; your edited version is \
+                             revision {}. Keep at least a short note of the task and where you are.]",
+                            latest.map_or("?".into(), |n| n.to_string())
+                        ));
+                    } else if after > before && ctx_tokens(&whole, cost) > budget {
+                        // The paper's "fit" gate: an edit may grow the context
+                        // only while it still fits. One that shrinks it is
+                        // always taken, even if the context is still over.
                         notes.push(format!(
                             "[context: your edit was REJECTED, not applied: the context would be ~{after} tokens, \
                              over the ~{budget}-token budget. The file was rewritten with your context as it was \
@@ -252,8 +262,16 @@ pub async fn prepare(
                         } else {
                             String::new()
                         };
+                        let still_over = if ctx_tokens(&whole, cost) > budget {
+                            format!(
+                                " The context is STILL OVER the ~{budget}-token budget: compact more now (delete stale \
+                                 outputs and finished work)."
+                            )
+                        } else {
+                            String::new()
+                        };
                         notes.push(format!(
-                            "[context: edit applied as revision {}: ~{before} → ~{after} tokens; blocks: {}.{flattened}{grew}{backup_note}]",
+                            "[context: edit applied as revision {}: ~{before} → ~{after} tokens; blocks: {}.{flattened}{grew}{still_over}{backup_note}]",
                             latest.map_or("?".into(), |n| n.to_string()),
                             summary.describe()
                         ));
@@ -586,9 +604,21 @@ pub async fn clm_tool_read(
     start_line: Option<usize>,
     end_line: Option<usize>,
 ) -> Result<String, String> {
-    match target(&vfs, &dialog_id, &path)? {
+    tool_read(&db, &vfs, &dialog_id, &path, start_line, end_line).await
+}
+
+/// read_file on `@context/…`.
+pub async fn tool_read(
+    db: &DbState,
+    vfs: &VfsState,
+    dialog_id: &str,
+    path: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> Result<String, String> {
+    match target(vfs, dialog_id, path)? {
         Target::Live => {
-            let text = read_text(&vfs, &context_file(&dialog_id)).ok_or(
+            let text = read_text(vfs, &context_file(dialog_id)).ok_or(
                 "Your context file is written before the next request; it doesn't exist yet.",
             )?;
             let note = if start_line.is_none() && end_line.is_none() {
@@ -598,9 +628,9 @@ pub async fn clm_tool_read(
             };
             Ok(format!("{}{note}", line_range(&text, start_line, end_line)))
         }
-        Target::Revisions => revisions_listing(&db, &dialog_id).await,
+        Target::Revisions => revisions_listing(db, dialog_id).await,
         Target::Revision(number, turn) => {
-            let text = revision_text(&db, &vfs, &dialog_id, number).await?;
+            let text = revision_text(db, vfs, dialog_id, number).await?;
             match turn {
                 Some(t) => document::turn_text(&text, t)
                     .ok_or_else(|| format!("revision {number} has no block {t}")),
@@ -608,8 +638,8 @@ pub async fn clm_tool_read(
             }
         }
         Target::Other(rel) => {
-            let p = format!("{}/{rel}", context_dir(&dialog_id));
-            let text = read_text(&vfs, &p).ok_or_else(|| format!("{path}: not found"))?;
+            let p = format!("{}/{rel}", context_dir(dialog_id));
+            let text = read_text(vfs, &p).ok_or_else(|| format!("{path}: not found"))?;
             Ok(line_range(&text, start_line, end_line))
         }
     }
@@ -627,17 +657,41 @@ pub async fn clm_tool_edit(
     start_line: Option<usize>,
     end_line: Option<usize>,
 ) -> Result<String, String> {
-    let file = match target(&vfs, &dialog_id, &path)? {
-        Target::Live => context_file(&dialog_id),
-        Target::Other(rel) => format!("{}/{rel}", context_dir(&dialog_id)),
-        _ => return Err("Revisions can't be changed. Edit @context/LIVE_CONTEXT.md (copy what you need from a revision into it).".into()),
-    };
-    let content = read_text(&vfs, &file).ok_or_else(|| format!("{path}: not found"))?;
+    tool_edit(
+        &vfs, &dialog_id, &path, &old_text, &new_text, start_line, end_line,
+    )
+}
+
+/// The file a write to `path` changes: the context file or one of the
+/// agent's own files, never a revision.
+fn writable(vfs: &VfsState, dialog_id: &str, path: &str) -> Result<String, String> {
+    match target(vfs, dialog_id, path)? {
+        Target::Live => Ok(context_file(dialog_id)),
+        Target::Other(rel) => Ok(format!("{}/{rel}", context_dir(dialog_id))),
+        _ => Err(format!(
+            "Revisions can't be changed. Edit {} (copy what you need from a revision into it).",
+            prompt::CONTEXT_PATH
+        )),
+    }
+}
+
+/// edit_file on `@context/…`.
+pub fn tool_edit(
+    vfs: &VfsState,
+    dialog_id: &str,
+    path: &str,
+    old_text: &str,
+    new_text: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> Result<String, String> {
+    let file = writable(vfs, dialog_id, path)?;
+    let content = read_text(vfs, &file).ok_or_else(|| format!("{path}: not found"))?;
     let (updated, span) =
-        crate::edit_file::apply_edit(&content, &old_text, &new_text, start_line, end_line)?;
+        crate::edit_file::apply_edit(&content, old_text, new_text, start_line, end_line)?;
     vfs.write_unmounted(&file, updated.as_bytes())?;
-    let what = crate::edit_file::describe_edit(&path, &span);
-    Ok(if file == context_file(&dialog_id) {
+    let what = crate::edit_file::describe_edit(path, &span);
+    Ok(if file == context_file(dialog_id) {
         format!("{what} {APPLIES}")
     } else {
         what
@@ -651,14 +705,20 @@ pub async fn clm_tool_write(
     path: String,
     content: String,
 ) -> Result<String, String> {
-    let file = match target(&vfs, &dialog_id, &path)? {
-        Target::Live => context_file(&dialog_id),
-        Target::Other(rel) => format!("{}/{rel}", context_dir(&dialog_id)),
-        _ => return Err("Revisions can't be changed.".into()),
-    };
+    tool_write(&vfs, &dialog_id, &path, &content)
+}
+
+/// write_file on `@context/…`.
+pub fn tool_write(
+    vfs: &VfsState,
+    dialog_id: &str,
+    path: &str,
+    content: &str,
+) -> Result<String, String> {
+    let file = writable(vfs, dialog_id, path)?;
     vfs.write_unmounted(&file, content.as_bytes())?;
     let lines = content.lines().count();
-    Ok(if file == context_file(&dialog_id) {
+    Ok(if file == context_file(dialog_id) {
         format!("Wrote {path} ({lines} lines). {APPLIES}")
     } else {
         format!("Wrote {path} ({lines} lines).")
@@ -876,8 +936,60 @@ pub async fn clm_restore_revision(
     dialog_id: String,
     number: u64,
 ) -> Result<(), String> {
-    let text = revision_text(&db, &vfs, &dialog_id, number).await?;
-    let path = context_file(&dialog_id);
+    restore_revision(&db, &vfs, &dialog_id, number).await
+}
+
+/// An older revision to put back, followed by the blocks of the current
+/// context for messages stored after the newest one it has: restoring
+/// brings old content back without losing what happened since (the user's
+/// latest message, say).
+fn restored_text(old: &str, current: &[CtxMsg], stored: &[String]) -> String {
+    let position = |id: &str| {
+        stored
+            .iter()
+            .position(|s| s == id.strip_suffix(document::EDITED).unwrap_or(id))
+    };
+    let newest = document::blocks(old)
+        .iter()
+        .filter_map(|(h, _)| h.as_ref()?.id.as_deref().and_then(position))
+        .max();
+    let after: Vec<CtxMsg> = current
+        .iter()
+        .filter(|m| match (position(&m.id), newest) {
+            (Some(at), Some(newest)) => at > newest,
+            (Some(_), None) => true,
+            (None, _) => false,
+        })
+        .cloned()
+        .collect();
+    if after.is_empty() {
+        return old.to_string();
+    }
+    let tail = document::render(&after, 0);
+    let blocks = tail.split_once('\n').map_or("", |(_, rest)| rest);
+    format!("{}\n{blocks}", old.trim_end())
+}
+
+pub async fn restore_revision(
+    db: &DbState,
+    vfs: &VfsState,
+    dialog_id: &str,
+    number: u64,
+) -> Result<(), String> {
+    let old = revision_text(db, vfs, dialog_id, number).await?;
+    let d = dialog_id.to_string();
+    let (rendered, stored) = db
+        .read(move |conn| {
+            let state = store::load_state(conn, &d)?;
+            let stored: Vec<String> = load_messages(conn, &d, None)?
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
+            Ok((state.rendered_messages.unwrap_or_default(), stored))
+        })
+        .await?;
+    let text = restored_text(&old, &rendered, &stored);
+    let path = context_file(dialog_id);
     vfs.write_unmounted(&path, text.as_bytes())?;
     let Some(latest) = vfs.revisions(&path).ok().and_then(|r| r.last().cloned()) else {
         return Ok(());
@@ -893,9 +1005,13 @@ pub async fn clm_restore_revision(
         .tokens(text.chars().count()),
         content: text,
     };
-    db.write(move |conn| store::insert_revisions(conn, &dialog_id, &[row]))
+    let d = dialog_id.to_string();
+    db.write(move |conn| store::insert_revisions(conn, &d, &[row]))
         .await
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod edge_tests;

@@ -144,4 +144,42 @@ mod tests {
             "urgent repeats"
         );
     }
+
+    #[test]
+    fn edges_of_the_reminder_maths() {
+        assert_eq!(percent(0, 0), 0, "no budget known");
+        assert_eq!(percent(250, 1000), 25);
+        assert_eq!(percent(2000, 1000), 200);
+        let mut fired = Vec::new();
+        assert!(nudge(5, 0, &mut fired).is_none(), "no budget, no reminder");
+        assert!(
+            nudge(250, 1000, &mut fired).unwrap().contains("No action"),
+            "exactly at a tier fires"
+        );
+        assert!(
+            nudge(1500, 1000, &mut fired).unwrap().contains("URGENT"),
+            "over the budget"
+        );
+        assert_eq!(
+            readout(512, 1000, Some(3)),
+            "[context: ~512/1000 tokens (51%), revision 3]"
+        );
+        assert_eq!(readout(5, 1000, None), "[context: ~5/1000 tokens (1%)]");
+    }
+
+    #[test]
+    fn the_system_section_names_both_paths_and_the_revisions() {
+        let text = system_section(
+            "/mnt/v/context/c/LIVE_CONTEXT.md",
+            "/mnt/v/context/c",
+            32_000,
+            Some(7),
+        );
+        assert!(text.contains("@context/LIVE_CONTEXT.md"));
+        assert!(text.contains("`/mnt/v/context/c/LIVE_CONTEXT.md`"));
+        assert!(text.contains("now revision 7"));
+        assert!(text.contains("32000 tokens"));
+        assert!(text.contains("@context/revisions/12.md#7"));
+        assert!(!system_section("/f", "/d", 1, None).contains("now revision"));
+    }
 }

@@ -351,6 +351,41 @@ mod tests {
     }
 
     #[test]
+    fn import_skips_what_it_cannot_keep() {
+        let mut h = h(1000, 3);
+        h.import(
+            2,
+            "ctx",
+            vec![
+                (5, b"five".to_vec(), 1, Source::App),
+                (3, b"three, out of order".to_vec(), 2, Source::App),
+                (5, b"five again".to_vec(), 3, Source::App),
+                (6, vec![0; 101], 4, Source::App),
+                (7, b"seven".to_vec(), 5, Source::App),
+                (8, b"eight".to_vec(), 6, Source::App),
+                (9, b"nine".to_vec(), 7, Source::App),
+            ],
+        );
+        assert_eq!(numbers(&h, 2), [7, 8, 9], "older first out, duplicates and oversize skipped");
+        assert_eq!(h.record(2, "ctx", b"ten", Source::App), Some(10));
+        // Importing nothing clears the history.
+        h.import(2, "ctx", Vec::new());
+        assert!(h.list(2).is_empty());
+        assert_eq!(h.usage(), (0, 0));
+        assert_eq!(h.record(2, "ctx", b"again", Source::App), Some(1));
+    }
+
+    #[test]
+    fn import_respects_the_byte_budget_across_files() {
+        let mut h = h(12, 10);
+        h.record(3, "other", b"aaaaaa", Source::App);
+        h.import(2, "ctx", vec![(1, b"bbbbbb".to_vec(), 1, Source::App), (2, b"cccccc".to_vec(), 2, Source::App)]);
+        assert!(h.usage().1 <= 12);
+        assert_eq!(numbers(&h, 2), [1, 2], "the other file's older revision is evicted first");
+        assert!(h.list(3).is_empty());
+    }
+
+    #[test]
     fn a_replacing_file_continues_the_history() {
         let mut h = h(1000, 10);
         h.record(2, "f", b"v1", Source::App);

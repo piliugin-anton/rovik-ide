@@ -170,8 +170,10 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   the file says when the next request goes out is its context from then on.
   Edits are read back tolerantly (`clm/document.rs`): untouched blocks stay
   the original messages, rewritten ones become text, a tool call keeps its
-  structure only with all its results. An edit that wouldn't fit the budget
-  is rejected and the agent is told why. Stored messages are never changed.
+  structure only with all its results. An edit that grows the context past
+  the budget, or leaves it with no messages, is rejected and the agent is
+  told why; one that shrinks it is always taken. Stored messages are never
+  changed. Restoring an older revision keeps everything stored after it.
 
   Every state of the file is a revision (the volume's file history), also
   saved in the chat database so it survives a restart. The agent reads them
