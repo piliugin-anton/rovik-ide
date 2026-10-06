@@ -89,7 +89,7 @@ fn estimate(m: &Msg, cost: Cost) -> usize {
 
 /// Images count only for the messages to_wire actually attaches them to
 /// (the last MAX_IMAGES): older screenshots are sent as a note.
-fn total(messages: &[Msg], cost: Cost) -> usize {
+pub fn total(messages: &[Msg], cost: Cost) -> usize {
     let text: usize = messages.iter().map(|m| estimate(m, cost)).sum();
     if !cost.vision {
         return text;
@@ -104,7 +104,7 @@ fn total(messages: &[Msg], cost: Cost) -> usize {
     text + images * IMAGE_TOKENS
 }
 
-fn truncate_tool_result(m: &mut Msg) {
+pub fn truncate_tool_result(m: &mut Msg) {
     let mut parts = Vec::new();
     if m.full_chars > TOOL_KEEP_CHARS {
         parts.push(char_prefix(&m.text, TOOL_KEEP_CHARS).to_string());
@@ -343,7 +343,7 @@ fn compact(messages: &mut [Msg]) -> usize {
 }
 
 /// A user message that starts a request (not one the IDE wrote).
-fn starts_request(m: &Msg) -> bool {
+pub fn starts_request(m: &Msg) -> bool {
     m.role == "user" && !m.harness
 }
 
@@ -450,6 +450,28 @@ pub fn build_wire(
     gemini: bool,
     chars_per_token: f64,
 ) -> DbResult<(Vec<Value>, FitInfo)> {
+    let messages = load_messages(conn, dialog_id, current_user_content)?;
+    let cost = Cost { vision, chars_per_token };
+    let (mut fitted, info) = fit_with(messages, token_budget, cost);
+    load_bodies(conn, &mut fitted)?;
+    Ok((to_wire(&fitted, data_dir, vision, gemini), info))
+}
+
+/// Full texts of messages whose body is stored apart (long ones).
+pub fn load_bodies(conn: &Connection, messages: &mut [Msg]) -> DbResult<()> {
+    for m in messages.iter_mut().filter(|m| m.needs_body) {
+        m.text = get_message_body(conn, &m.id)?;
+        m.full_chars = m.text.chars().count();
+        m.needs_body = false;
+    }
+    Ok(())
+}
+
+/// The chat's history as it can be sent, before any budget: what is never
+/// sent is left out, unanswered tool calls get a result, and the current
+/// request carries `current_user_content`. Long bodies may still need
+/// `load_bodies`.
+pub fn load_messages(conn: &Connection, dialog_id: &str, current_user_content: Option<&str>) -> DbResult<Vec<Msg>> {
     // Newest pages first, until the cap.
     let mut rows = Vec::new();
     let mut before = None;
@@ -526,17 +548,9 @@ pub fn build_wire(
     {
         last_user.text = content.to_string();
         last_user.full_chars = content.chars().count();
+        last_user.needs_body = false;
     }
-
-    let cost = Cost { vision, chars_per_token };
-    let (mut fitted, info) = fit_with(std::mem::take(&mut messages), token_budget, cost);
-
-    for m in fitted.iter_mut().filter(|m| m.needs_body) {
-        m.text = get_message_body(conn, &m.id)?;
-        m.needs_body = false;
-    }
-
-    Ok((to_wire(&fitted, data_dir, vision, gemini), info))
+    Ok(messages)
 }
 
 const UNANSWERED_NOTE: &str =
@@ -605,7 +619,7 @@ fn with_placeholder_signature(extra: Option<Value>) -> Value {
 /// Chat Completions only allows text in role:"tool" messages, so images go
 /// in a user message after the whole run of tool results (all results for
 /// one assistant turn must directly follow it).
-fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) -> Vec<Value> {
+pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) -> Vec<Value> {
     let with_images: Vec<usize> = messages
         .iter()
         .enumerate()

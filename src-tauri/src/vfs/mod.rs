@@ -296,6 +296,19 @@ impl VfsState {
         Ok(real)
     }
 
+    /// Replaces the history of the file at `path` with saved revisions
+    /// (number, content, time in ms, source), oldest first.
+    pub fn import_history(&self, path: &str, revisions: Vec<(u64, Vec<u8>, u64, Source)>) -> Result<(), String> {
+        let rel = clean(path)?;
+        self.fs.import_history(&rel, revisions).map_err(|e| err(&rel, e))
+    }
+
+    /// Writes a file without mounting (the volume may be mounted or not).
+    pub fn write_unmounted(&self, path: &str, data: &[u8]) -> Result<(), String> {
+        let rel = clean(path)?;
+        self.fs.write_file(&rel, data, None).map(|_| ()).map_err(|e| err(&rel, e))
+    }
+
     pub fn remove(&self, path: &str) -> Result<(), String> {
         let rel = clean(path)?;
         if rel.is_empty() {

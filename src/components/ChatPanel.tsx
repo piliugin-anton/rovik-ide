@@ -79,6 +79,16 @@ import {
 import { dismiss, notify } from '../lib/notifications';
 import ModeSelector from './ModeSelector';
 import EffortSelector from './EffortSelector';
+import ContextControls from './ContextControls';
+import {
+  clmStatus,
+  contextDirOf,
+  contextModeFor,
+  ensureContextMode,
+  executeContextTool,
+  isContextPath,
+  recallHint,
+} from '../lib/contextMode';
 import {
   formatsToSend,
   loadEfforts,
@@ -2339,6 +2349,7 @@ export default function ChatPanel(props: ChatProps) {
                     .join('\n\n')
                 : run.projectContext,
             options: reasoningOptions(profile),
+            contextMode: ensureContextMode(dialogId),
           })
             .then(() => untilStreamEnd(stream.ended))
             .then(() => 'done' as const),
@@ -3097,9 +3108,42 @@ export default function ChatPanel(props: ChatProps) {
       ]);
 
     const mode = run?.mode ?? runModeFor(dialogId);
+    // CLM mode: the agent's context folder (lib/contextMode.ts).
+    const clm =
+      contextModeFor(dialogId) === 'clm' ? await clmStatus(dialogId).catch(() => null) : null;
+    const contextDir = clm?.available ? contextDirOf(clm.realPath) : null;
     for (const tc of toolCalls) {
       if (stopRequested) {
         await stoppedResult(tc);
+        continue;
+      }
+      // The agent's own context file: no approval, no editor review, not
+      // a project change. It applies to the next request.
+      if (
+        clm?.available &&
+        (tc.name === 'read_file' || tc.name === 'edit_file' || tc.name === 'write_file') &&
+        isContextPath(toolArg(tc.arguments, 'path'), contextDir)
+      ) {
+        let content: string;
+        try {
+          content = await executeContextTool(dialogId, tc.name, parseToolArgsObject(tc.arguments));
+        } catch (err) {
+          content = `Error: ${String(err)}`;
+        }
+        if (guard) {
+          const verdict = guard.record({ name: tc.name, argsJson: tc.arguments, result: content });
+          if (verdict.kind !== 'ok') content += verdict.note;
+        }
+        await store.appendMessages(dialogId, [
+          {
+            id: crypto.randomUUID(),
+            role: 'tool',
+            content,
+            tool_call_id: tc.id,
+            meta: toolResultMeta(tc.name, content),
+            finalized: true,
+          },
+        ]);
         continue;
       }
       // The plan (Plan mode): checked, then saved; problems go back to the model.
@@ -3166,6 +3210,10 @@ export default function ChatPanel(props: ChatProps) {
         ? { content: refusal, attachments: undefined, written: undefined }
         : await executeAgentTool(root, toolName, args);
       if (resultNote && !result.content.startsWith('Error:')) result.content += resultNote;
+      // Redoing work it compacted away: offer the revision that still has it.
+      if (clm?.available && !refusal && !result.content.startsWith('Error:')) {
+        result.content += await recallHint(dialogId, tc.id, toolName, args);
+      }
 
       const writeFailed = result.content.startsWith('Error:');
       const after =
@@ -3686,7 +3734,10 @@ export default function ChatPanel(props: ChatProps) {
       <Show when={waitingQuestion()} keyed>
         {(pending) => <QuestionPanel pending={pending} />}
       </Show>
-      <Show when={contextUsage()}>{(usage) => <ContextMeter usage={usage()} />}</Show>
+      {/* In CLM mode the context row shows the size of the agent's own context. */}
+      <Show when={contextModeFor(activeDialogId()) !== 'clm' && contextUsage()}>
+        {(usage) => <ContextMeter usage={usage()} />}
+      </Show>
       <div class="chat-input-row">
         <div class="chat-input-container">
           <div
@@ -3809,6 +3860,11 @@ export default function ChatPanel(props: ChatProps) {
             <EffortSelector value={effortFor(activeProfile()?.id)} onChange={setEffort} />
           </Show>
         </div>
+        <ContextControls
+          dialogId={activeDialogId()}
+          sending={sending()}
+          onOpenVirtualFiles={() => setSettingsPage('vfs')}
+        />
       </div>
       <Show when={settingsPage()} keyed>
         {(page) => (

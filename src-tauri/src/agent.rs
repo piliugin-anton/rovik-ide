@@ -359,6 +359,10 @@ pub async fn send_chat_message(
     // appended to the default system prompt.
     project_context: Option<String>,
     options: Option<OpenAIChatOptions>,
+    // How the chat's context is managed: "compaction" (default) or "clm"
+    // (Context Language Models: the agent edits its context as a file, src/clm).
+    context_mode: Option<String>,
+    vfs: tauri::State<'_, crate::vfs::VfsState>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
     // Registered first, so a Stop pressed while the history is still being
@@ -392,14 +396,30 @@ pub async fn send_chat_message(
     let reply_key = reply_reserve::key(&calibration_key, reasoning_effort);
     let window = context_tokens.filter(|t| *t > 0).unwrap_or(DEFAULT_CONTEXT_TOKENS);
     let max_tokens = options.as_ref().and_then(|o| o.max_tokens);
-    let fixed_chars = system_prompt.chars().count()
-        + tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
-    let budget = history_budget(
-        window,
-        fixed_chars,
-        chars_per_token,
-        reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens),
-    );
+    let reserve = reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens);
+    let tool_chars = tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
+    let mut budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
+
+    // Context Language Models need the virtual volume (the agent's shell
+    // edits the file there); without it the chat falls back to compaction.
+    let clm = match (context_mode.as_deref(), dialog_id.as_deref()) {
+        (Some(crate::clm::MODE_CLM), Some(_)) if !has_tools => false,
+        (Some(crate::clm::MODE_CLM), Some(_)) => match crate::clm::availability(&vfs) {
+            Ok(_) => true,
+            Err(why) => {
+                eprintln!("context: CLM mode unavailable ({why}); using compaction for this request");
+                false
+            }
+        },
+        _ => false,
+    };
+    let mut system_prompt = system_prompt;
+    if clm {
+        if let Some(section) = crate::clm::system_section(&db, &vfs, dialog_id.as_deref().unwrap_or(""), budget).await {
+            system_prompt = format!("{system_prompt}\n\n{section}");
+            budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
+        }
+    }
 
     let mut messages: Vec<WireChatMessage> = match (messages, dialog_id) {
         (Some(explicit), _) => explicit,
@@ -408,6 +428,39 @@ pub async fn send_chat_message(
             // Gemini 3 needs a thought signature on tool calls it didn't sign.
             let gemini = is_gemini_target(&base_url, &model);
             let vision = vision.unwrap_or(false);
+            let cost = crate::chat_db::history::Cost { vision, chars_per_token };
+            let build = async {
+                if !clm {
+                    return Err(String::new());
+                }
+                let prepared =
+                    crate::clm::prepare(&db, &vfs, dialog_id.clone(), budget, cost, current_user_content.clone()).await?;
+                let mut messages = prepared.messages;
+                // Notes for the model ride on the request's last message (not stored).
+                if let (Some(last), false) = (messages.last_mut(), prepared.notes.is_empty()) {
+                    last.text = format!("{}\n\n{}", last.text.trim_end(), prepared.notes.join("\n"));
+                    last.full_chars = last.text.chars().count();
+                }
+                Ok((crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini), prepared.info))
+            };
+            let clm_built = tokio::select! {
+                _ = crate::chat_request::cancelled(&mut registration.cancel) => {
+                    let _ = on_event.send(ChatStreamEvent::Error {
+                        error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                    });
+                    return Ok(());
+                }
+                built = build => built,
+            };
+            let clm_built = match clm_built {
+                Ok(built) => Some(built),
+                Err(e) if e.is_empty() => None,
+                Err(e) => {
+                    eprintln!("context: CLM failed ({e}); using compaction for this request");
+                    None
+                }
+            };
+            let data_dir = db.data_dir().to_path_buf();
             let build = db.read(move |conn| {
                 crate::chat_db::history::build_wire(
                     conn,
@@ -420,14 +473,17 @@ pub async fn send_chat_message(
                     chars_per_token,
                 )
             });
-            let (wire, info) = tokio::select! {
-                _ = crate::chat_request::cancelled(&mut registration.cancel) => {
-                    let _ = on_event.send(ChatStreamEvent::Error {
-                        error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
-                    });
-                    return Ok(());
-                }
-                built = build => built?,
+            let (wire, info) = match clm_built {
+                Some(built) => built,
+                None => tokio::select! {
+                    _ = crate::chat_request::cancelled(&mut registration.cancel) => {
+                        let _ = on_event.send(ChatStreamEvent::Error {
+                            error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                        });
+                        return Ok(());
+                    }
+                    built = build => built?,
+                },
             };
             if info.trimmed || info.compacted > 0 {
                 eprintln!(

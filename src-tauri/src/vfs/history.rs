@@ -241,6 +241,41 @@ impl Histories {
         self.trim_file(into);
     }
 
+    /// Replaces the file's history with saved revisions (number, content,
+    /// time in ms since the epoch, source), oldest first: history kept
+    /// elsewhere comes back after a restart under the same numbers. New
+    /// revisions are numbered after the highest. Limits apply as usual.
+    pub fn import(&mut self, ino: Ino, path: &str, revisions: Vec<(u64, Vec<u8>, u64, Source)>) {
+        if let Some(old) = self.files.remove(&ino) {
+            for rev in old.revisions {
+                self.order.remove(&rev.id);
+                self.bytes -= rev.data.len() as u64;
+            }
+        }
+        let mut history =
+            FileHistory { revisions: VecDeque::new(), next_number: 1, path: path.to_string(), deleted: false };
+        for (number, data, time, source) in revisions {
+            if !self.accepts(data.len()) || number < history.next_number {
+                continue;
+            }
+            let id = self.next_id;
+            self.next_id += 1;
+            self.order.insert(id, ino);
+            self.bytes += data.len() as u64;
+            history.next_number = number + 1;
+            history.revisions.push_back(Revision {
+                id,
+                number,
+                data: Arc::from(data),
+                time: UNIX_EPOCH + std::time::Duration::from_millis(time),
+                source,
+            });
+        }
+        self.files.insert(ino, history);
+        self.trim_file(ino);
+        self.evict();
+    }
+
     /// (revisions, bytes) held.
     pub fn usage(&self) -> (usize, u64) {
         (self.order.len(), self.bytes)
@@ -301,6 +336,18 @@ mod tests {
         assert_eq!(h.find_deleted("DIR/A", false), None);
         h.mark_deleted(9, "never/versioned");
         assert_eq!(h.find_deleted("never/versioned", false), None);
+    }
+
+    #[test]
+    fn imported_history_keeps_its_numbers() {
+        let mut h = h(1000, 10);
+        h.record(2, "ctx", b"stale", Source::App);
+        h.import(2, "ctx", vec![(4, b"four".to_vec(), 1_000, Source::App), (7, b"seven".to_vec(), 2_000, Source::Process)]);
+        assert_eq!(numbers(&h, 2), [4, 7]);
+        assert_eq!(&*h.get(2, 7).unwrap(), b"seven");
+        assert_eq!(h.list(2)[0].time, 1_000);
+        assert_eq!(h.record(2, "ctx", b"eight", Source::App), Some(8));
+        assert_eq!(h.usage(), (3, 14));
     }
 
     #[test]

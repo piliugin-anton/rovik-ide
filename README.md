@@ -151,6 +151,42 @@ first; files over 32 MiB aren't versioned (`set_history_limits`).
 `cargo test vfs -- --ignored` mounts a real volume on Linux and runs shell
 tools and git against it.
 
+## Context management
+
+The row under the model and effort in the AI Chat tab chooses, per chat, how
+the agent's context is managed (`src/lib/contextMode.ts`,
+`src/components/ContextControls.tsx`):
+
+- **Compaction** — the app trims and compacts older history to fit the
+  model's window (`src-tauri/src/chat_db/history.rs`).
+- **CLMs** — [Context Language Models](https://github.com/facebookresearch/context-language-models):
+  the agent manages its own context by editing it as a file
+  (`src-tauri/src/clm/`). Before every request the context is written to
+  `context/<chat>/LIVE_CONTEXT.md` on the virtual volume, one
+  `[[CTX_TURN n role=… id=…]]` block per message. The agent edits it with its
+  ordinary tools — `read_file` / `edit_file` / `write_file` on
+  `@context/LIVE_CONTEXT.md`, or shell tools on its real path — and whatever
+  the file says when the next request goes out is its context from then on.
+  Edits are read back tolerantly (`clm/document.rs`): untouched blocks stay
+  the original messages, rewritten ones become text, a tool call keeps its
+  structure only with all its results. An edit that wouldn't fit the budget
+  is rejected and the agent is told why. Stored messages are never changed.
+
+  Every state of the file is a revision (the volume's file history), also
+  saved in the chat database so it survives a restart. The agent reads them
+  at `@context/revisions` and `@context/revisions/<n>.md[#block]`. Its
+  system prompt tells it to check for a revision before redoing work it
+  compacted away. When it repeats a call whose earlier result it removed,
+  the result names the revision and block that still hold it. The context
+  row shows the revision and size, lists revisions (view, restore) and can
+  reset to the stored chat. Requests carry a size readout and reminders at
+  25/50/75% of the budget, then every request from 90%. Past the budget,
+  older tool outputs are withheld; if it's still over, that request is trimmed
+  like Compaction.
+
+  CLMs need virtual files. Without the driver, the row explains how to
+  install it (Settings → Virtual files) and the chat uses Compaction.
+
 ## Notes / things left simple on purpose
 
 - No file-system watcher — the tree doesn't auto-refresh if files change on
