@@ -464,76 +464,83 @@ export function GitPanel(props: GitPanelProps) {
               }}
             >
               <For each={gitFilesVirtualizer()?.getVirtualItems() ?? []}>
-                {(item) => {
-                  const file = () => status()!.files[item.index];
-                  const meta = () => statusMeta(file().status);
+                {(item) => (
+                  // The rows outlive a status refresh by a tick: when the list
+                  // shrinks (a revert, a commit) the virtualizer is recreated
+                  // only after the rows have re-read status, so an index can
+                  // briefly point past the end. Render nothing for it then.
+                  <Show when={status()?.files[item.index]}>
+                    {(file) => {
+                      const meta = () => statusMeta(file().status);
 
-                  return (
-                    <div
-                      data-index={item.index}
-                      class="tree-row git-file-row"
-                      classList={{ clickable: file().status !== 'D' }}
-                      title={
-                        file().status === 'D'
-                          ? `${file().path} (deleted)`
-                          : `${file().path}: click to open with its changes marked`
-                      }
-                      onClick={() => {
-                        // A deleted file has nothing to open; revert brings it back.
-                        if (file().status !== 'D')
-                          props.onOpenFile?.(absPathOf(file().path), file().path);
-                      }}
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        height: `${GIT_ROW_HEIGHT}px`,
-                        transform: `translateY(${item.start}px)`,
-                        'padding-left': '8px', // match your git-files .tree-row padding
-                        'user-select': 'none',
-                        '-webkit-user-select': 'none',
-                      }}
-                    >
-                      <span class={`tree-row-badge ${meta().className}`} title={meta().title}>
-                        {meta().label}
-                      </span>
-                      <span class="tree-row-name">{file().path}</span>
-                      <Show when={file().status !== 'U' && file().status !== 'R'}>
-                        <button
-                          type="button"
-                          class="git-revert-button"
+                      return (
+                        <div
+                          data-index={item.index}
+                          class="tree-row git-file-row"
+                          classList={{ clickable: file().status !== 'D' }}
                           title={
-                            file().status === '?' || file().status === 'A'
-                              ? 'Remove this new file (to the trash)'
-                              : 'Revert to the last committed version'
+                            file().status === 'D'
+                              ? `${file().path} (deleted)`
+                              : `${file().path}: click to open with its changes marked`
                           }
-                          aria-label={`Revert ${file().path}`}
-                          disabled={busy()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void revertFile(file());
+                          onClick={() => {
+                            // A deleted file has nothing to open; revert brings it back.
+                            if (file().status !== 'D')
+                              props.onOpenFile?.(absPathOf(file().path), file().path);
+                          }}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '100%',
+                            height: `${GIT_ROW_HEIGHT}px`,
+                            transform: `translateY(${item.start}px)`,
+                            'padding-left': '8px', // match your git-files .tree-row padding
+                            'user-select': 'none',
+                            '-webkit-user-select': 'none',
                           }}
                         >
-                          <svg
-                            width="13"
-                            height="13"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            aria-hidden="true"
-                          >
-                            <path d="M3.5 6.5h6.25a3.25 3.25 0 0 1 0 6.5H6" />
-                            <path d="M6 3.5 3 6.5l3 3" />
-                          </svg>
-                        </button>
-                      </Show>
-                    </div>
-                  );
-                }}
+                          <span class={`tree-row-badge ${meta().className}`} title={meta().title}>
+                            {meta().label}
+                          </span>
+                          <span class="tree-row-name">{file().path}</span>
+                          <Show when={file().status !== 'U' && file().status !== 'R'}>
+                            <button
+                              type="button"
+                              class="git-revert-button"
+                              title={
+                                file().status === '?' || file().status === 'A'
+                                  ? 'Remove this new file (to the trash)'
+                                  : 'Revert to the last committed version'
+                              }
+                              aria-label={`Revert ${file().path}`}
+                              disabled={busy()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void revertFile(file());
+                              }}
+                            >
+                              <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.5"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M3.5 6.5h6.25a3.25 3.25 0 0 1 0 6.5H6" />
+                                <path d="M6 3.5 3 6.5l3 3" />
+                              </svg>
+                            </button>
+                          </Show>
+                        </div>
+                      );
+                    }}
+                  </Show>
+                )}
               </For>
             </div>
           </div>
