@@ -1438,3 +1438,284 @@ async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skippe
     assert_eq!(record["checks"][0]["status"], "skipped");
     assert_eq!(record["checks"][0]["reason"], "not in your allowed commands");
 }
+
+/*
+ * Tool calls that run at the same time
+ */
+
+fn tool_results(messages: &[MessageRow]) -> Vec<(&str, &str)> {
+    messages
+        .iter()
+        .filter(|m| m.role == "tool")
+        .map(|m| (m.tool_call_id.as_deref().unwrap_or(""), m.content.as_str()))
+        .collect()
+}
+
+fn ids(batches: &[Vec<String>]) -> Vec<Vec<&str>> {
+    batches.iter().map(|b| b.iter().map(String::as_str).collect()).collect()
+}
+
+#[tokio::test]
+async fn reads_in_one_turn_run_together_and_are_recorded_in_order() {
+    let h = harness(&[("a.txt", "alpha\n"), ("b.txt", "beta needle\n"), ("sub/c.txt", "gamma\n")]).await;
+    let (url, seen) = model(vec![
+        Reply::Calls(vec![
+            ("c1", "read_file", json!({ "path": "a.txt" })),
+            ("c2", "search_code", json!({ "query": "needle" })),
+            ("c3", "list_dir", json!({ "path": "sub" })),
+            ("c4", "read_file", json!({ "path": "b.txt" })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Look"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [["c1", "c2", "c3", "c4"]]);
+    let messages = h.messages().await;
+    let results = tool_results(&messages);
+    let order: Vec<&str> = results.iter().map(|(id, _)| *id).collect();
+    assert_eq!(order, ["c1", "c2", "c3", "c4"], "stored in the calls' order");
+    assert_eq!(results[0].1, "alpha\n");
+    assert!(results[1].1.starts_with("1 match in 1 file") && results[1].1.contains("b.txt:1: beta needle"), "{}", results[1].1);
+    assert!(results[2].1.contains("sub/c.txt") || results[2].1.contains("c.txt"), "{}", results[2].1);
+    assert_eq!(results[3].1, "beta needle\n");
+    assert!(messages.iter().all(|m| m.finalized));
+
+    // The next request answers the calls in the order they were made.
+    let sent = seen.lock().unwrap()[1]["messages"].as_array().unwrap().clone();
+    let sent_ids: Vec<&str> = sent.iter().filter(|m| m["role"] == "tool").map(|m| m["tool_call_id"].as_str().unwrap()).collect();
+    assert_eq!(sent_ids, ["c1", "c2", "c3", "c4"]);
+}
+
+#[tokio::test]
+async fn a_write_splits_the_reads_around_it_and_later_reads_see_it() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("r1", "read_file", json!({ "path": "a.txt" })),
+            ("r2", "list_dir", json!({})),
+            ("w1", "write_file", json!({ "path": "a.txt", "content": "new\n" })),
+            ("r3", "read_file", json!({ "path": "a.txt" })),
+            ("r4", "search_code", json!({ "query": "new" })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Change it"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [vec!["r1", "r2"], vec!["r3", "r4"]]);
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "r1").content, "old\n", "read before the write");
+    assert_eq!(result_of(&messages, "r3").content, "new\n", "read after the write sees it");
+    assert!(result_of(&messages, "r4").content.starts_with("1 match"));
+    let order: Vec<&str> = tool_results(&messages).iter().map(|(id, _)| *id).collect();
+    assert_eq!(order, ["r1", "r2", "w1", "r3", "r4"]);
+}
+
+#[tokio::test]
+async fn reads_that_need_approval_are_asked_one_at_a_time() {
+    let h = harness(&[("a.txt", "x")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("c1", "read_file", json!({ "path": "a.txt" })),
+            ("c2", "read_file", json!({ "path": "a.txt", "start_line": 1 })),
+            ("c3", "list_dir", json!({})),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Look"), ask_approval("tools"))).await;
+    let app = h.app.handle().clone();
+    for id in ["c1", "c2", "c3"] {
+        h.wait_for(id, |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == id).await;
+        // Only this one is waiting: the next isn't asked before it's decided.
+        let asked: Vec<Value> = h.events_of("approvalRequested");
+        assert_eq!(asked.last().unwrap()["request"]["toolCallId"], id);
+        agent_resolve_approval(app.clone(), app.state(), id.into(), ApprovalDecision::Allow);
+    }
+    assert_eq!(h.run_end().await, "done");
+    assert!(parallel::batches_of(&h.dialog_id).is_empty());
+    let messages = h.messages().await;
+    let order: Vec<&str> = tool_results(&messages).iter().map(|(id, _)| *id).collect();
+    assert_eq!(order, ["c1", "c2", "c3"]);
+}
+
+#[tokio::test]
+async fn a_call_that_isnt_a_local_read_ends_a_batch() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("c1", "read_file", json!({ "path": "a.txt" })),
+            ("c2", "read_file", json!({ "path": "../outside.txt" })),
+            ("c3", "read_file", json!({ "path": "a.txt" })),
+            ("c4", "list_dir", json!({})),
+            ("c5", "todo", json!({ "items": [{ "title": "one", "status": "pending" }] })),
+            ("c6", "list_dir", json!({})),
+            ("c7", "read_file", json!({ "path": "a.txt", "start_line": 1 })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Look"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    // The todo runs on its own between two batches. A read outside the
+    // project is still a read: it runs with the others and gets its error.
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [vec!["c1", "c2", "c3", "c4"], vec!["c6", "c7"]]);
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "c2").content.starts_with("Error: path must not contain"), "{}", result_of(&messages, "c2").content);
+    assert!(result_of(&messages, "c5").content.contains("one"), "{}", result_of(&messages, "c5").content);
+    assert_eq!(result_of(&messages, "c7").content, "x");
+    let order: Vec<&str> = tool_results(&messages).iter().map(|(id, _)| *id).collect();
+    assert_eq!(order, ["c1", "c2", "c3", "c4", "c5", "c6", "c7"]);
+}
+
+#[tokio::test]
+async fn a_refused_command_between_reads_splits_them() {
+    let h = harness(&[("a.txt", "x")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("r1", "read_file", json!({ "path": "a.txt" })),
+            ("r2", "list_dir", json!({})),
+            ("x1", "run_command", json!({ "command": "rm -rf /" })),
+            ("r3", "read_file", json!({ "path": "a.txt" })),
+            ("r4", "read_file", json!({ "path": "a.txt", "start_line": 1 })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Look"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [vec!["r1", "r2"], vec!["r3", "r4"]]);
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "x1").content.starts_with("Error: blocked by the user's permission settings"));
+    let order: Vec<&str> = tool_results(&messages).iter().map(|(id, _)| *id).collect();
+    assert_eq!(order, ["r1", "r2", "x1", "r3", "r4"]);
+}
+
+#[tokio::test]
+async fn bad_calls_in_a_batch_get_their_errors_and_the_rest_runs() {
+    let h = harness(&[("a.txt", "fine\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("c1", "read_file", json!({})),
+            ("c2", "read_file", json!({ "path": "missing.txt" })),
+            ("c3", "search_code", json!({ "query": "(unclosed", "regex": true })),
+            ("c4", "read_file", json!({ "path": "a.txt", "start_line": 5, "end_line": 1 })),
+            ("c5", "read_file", json!({ "path": "a.txt" })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Look"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [["c1", "c2", "c3", "c4", "c5"]]);
+    let messages = h.messages().await;
+    for id in ["c1", "c2", "c3", "c4"] {
+        assert!(result_of(&messages, id).content.starts_with("Error:"), "{id}: {}", result_of(&messages, id).content);
+    }
+    assert_eq!(result_of(&messages, "c5").content, "fine\n");
+}
+
+#[tokio::test]
+async fn more_reads_than_run_at_once_all_come_back_in_order() {
+    let files: Vec<(String, String)> = (0..25).map(|i| (format!("f{i:02}.txt"), format!("content {i}"))).collect();
+    let refs: Vec<(&str, &str)> = files.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+    let h = harness(&refs).await;
+    let ids_owned: Vec<String> = (0..25).map(|i| format!("c{i:02}")).collect();
+    let paths: Vec<String> = files.iter().map(|(p, _)| p.clone()).collect();
+    let calls: Vec<(&'static str, &'static str, Value)> = ids_owned
+        .iter()
+        .zip(&paths)
+        .map(|(id, path)| (&*Box::leak(id.clone().into_boxed_str()), "read_file", json!({ "path": path })))
+        .collect();
+    let (url, _) = model(vec![Reply::Calls(calls), Reply::Text("Done.")]).await;
+    h.start(h.request(&url, Harness::send("Read all"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(parallel::batches_of(&h.dialog_id).len(), 1);
+    assert_eq!(parallel::batches_of(&h.dialog_id)[0].len(), 25);
+    let messages = h.messages().await;
+    let results = tool_results(&messages);
+    for (i, (id, content)) in results.iter().enumerate() {
+        assert_eq!(*id, format!("c{i:02}"));
+        assert_eq!(*content, format!("content {i}"));
+    }
+}
+
+#[tokio::test]
+async fn the_guard_sees_a_batchs_calls_in_order() {
+    let h = harness(&[("a.txt", "same\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("c1", "read_file", json!({ "path": "a.txt" })),
+            ("c2", "read_file", json!({ "path": "a.txt" })),
+            ("c3", "read_file", json!({ "path": "a.txt" })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Look"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [["c1", "c2", "c3"]]);
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "c1").content, "same\n");
+    assert_eq!(result_of(&messages, "c2").content, "same\n");
+    // The third identical call is the one the guard notes, as when they ran one by one.
+    assert!(result_of(&messages, "c3").content.contains("was called 3 times"), "{}", result_of(&messages, "c3").content);
+}
+
+#[tokio::test]
+async fn stop_before_a_batch_records_every_call_as_stopped() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    let (url, _) = model(vec![Reply::Calls(vec![
+        ("e1", "edit_file", json!({ "path": "a.txt", "old_text": "one", "new_text": "ONE" })),
+        ("r1", "read_file", json!({ "path": "a.txt" })),
+        ("r2", "list_dir", json!({})),
+    ])])
+    .await;
+    h.start(h.request(&url, Harness::send("Edit"), ask_approval("edits"))).await;
+    h.wait_for("approval e1", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e1").await;
+    let app = h.app.handle().clone();
+    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    assert_eq!(h.run_end().await, "stopped");
+    assert!(parallel::batches_of(&h.dialog_id).is_empty(), "nothing runs after Stop");
+    let messages = h.messages().await;
+    for id in ["e1", "r1", "r2"] {
+        assert_eq!(result_of(&messages, id).content, "Error: stopped by the user before this ran.");
+    }
+    assert_eq!(h.file("a.txt").as_deref(), Some("one\n"));
+}
+
+#[tokio::test]
+async fn reads_after_an_approved_edit_run_together_and_see_the_edit() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("e1", "edit_file", json!({ "path": "a.txt", "old_text": "one", "new_text": "ONE" })),
+            ("r1", "read_file", json!({ "path": "a.txt" })),
+            ("r2", "search_code", json!({ "query": "ONE", "case_sensitive": true })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Edit"), ask_approval("edits"))).await;
+    h.wait_for("approval e1", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e1").await;
+    let app = h.app.handle().clone();
+    agent_resolve_approval(app.clone(), app.state(), "e1".into(), ApprovalDecision::Allow);
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [["r1", "r2"]]);
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "r1").content, "ONE\n");
+    assert!(result_of(&messages, "r2").content.starts_with("1 match"));
+}
+
+#[tokio::test]
+async fn a_single_read_runs_as_before() {
+    let h = harness(&[("a.txt", "x")]).await;
+    let (url, _) = model(vec![Reply::Call { id: "c1", name: "read_file", args: json!({ "path": "a.txt" }) }, Reply::Text("Done.")]).await;
+    h.start(h.request(&url, Harness::send("Look"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(parallel::batches_of(&h.dialog_id).is_empty());
+    assert_eq!(result_of(&h.messages().await, "c1").content, "x");
+}
