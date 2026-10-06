@@ -147,7 +147,8 @@ fn get_or_build_gitignore(state: &WatcherState, root: &Path) -> Result<Arc<Gitig
 /// What a changed path is, for the watcher.
 #[derive(Debug, PartialEq)]
 enum WatchPath {
-    /// Inside `.git/`: git's own bookkeeping, reported as one "git-changed".
+    /// Inside `.git/`: git's own bookkeeping, reported as one "git-changed"
+    /// (visible changes are followed by one too: they change the status).
     Git,
     /// Matched by .gitignore (build output, dependencies): not reported.
     Ignored,
@@ -266,6 +267,9 @@ pub fn start_file_watch(
                 }
             });
 
+            // A visible file changed: git's status of the working tree did too.
+            let tree_changed = !ready_to_emit.is_empty();
+
             // Step 3: Emit the stabilized events to the frontend. A flood becomes
             // one "re-check everything" (operation "unknown", the project root).
             if ready_to_emit.len() > MAX_EVENTS_PER_FLUSH {
@@ -282,9 +286,13 @@ pub fn start_file_watch(
                     let _ = app_handle.emit("fs-changes", payload);
                 }
             }
-            // Git activity, once it has settled: the Git tab refreshes.
-            if git_touched.is_some_and(|t| now.duration_since(t) >= debounce_duration) {
+            // Git activity once it has settled, or a change to the working tree:
+            // the Git tab refreshes.
+            let git_settled = git_touched.is_some_and(|t| now.duration_since(t) >= debounce_duration);
+            if git_settled {
                 git_touched = None;
+            }
+            if git_settled || tree_changed {
                 let _ = app_handle.emit("git-changed", ());
             }
 
