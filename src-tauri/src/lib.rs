@@ -8,6 +8,7 @@ mod atomic_file;
 mod edit_file;
 mod read_file;
 mod outline;
+mod repo_map;
 mod lsp;
 mod project_profile;
 mod chat_db;
