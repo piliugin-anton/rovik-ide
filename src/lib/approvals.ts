@@ -1,14 +1,16 @@
 // approvals.ts
 //
-// Manual approvals waiting for the user. The agent loop (ChatPanel) asks
-// with `requestApproval` and waits; the chat (ToolCallBlock) and, for file
-// edits, the editor (Editor + editorReview) show the request and answer it.
-// Module-level, like ConfirmDialog, so no props need threading through.
+// Manual approvals waiting for the user. A run in the backend asks
+// (src-tauri/src/agent_run/execute.rs) and waits; the request arrives here
+// (lib/agentRuns.ts), the chat (ToolCallBlock) and, for file edits, the
+// editor (Editor + editorReview) show it, and the answer goes back to the
+// run. Module-level, like ConfirmDialog, so no props need threading through.
 //
 // A file edit (write_file) is reviewed as hunks: each can be accepted or
 // rejected on its own. Once none is left pending, the approval resolves:
 // everything accepted → allow, everything rejected → deny, otherwise
 // a partial result with the merged content.
+import { invoke } from '@tauri-apps/api/core';
 import { createStore, produce } from 'solid-js/store';
 import { applyHunks, diffLines, splitLines, type DiffHunk } from './lineDiff';
 
@@ -46,6 +48,12 @@ export interface PendingApproval {
   edit?: EditReview;
 }
 
+/** As a run asks: an edit comes with the file's text before and after it. */
+export interface ApprovalRequest extends Omit<PendingApproval, 'edit'> {
+  edit?: { absPath: string; relPath: string; current: string; proposed: string };
+}
+
+/** The answer the run gets (agent_run::ApprovalDecision). */
 export type ManualDecision =
   | { kind: 'allow' }
   | { kind: 'deny' }
@@ -53,15 +61,14 @@ export type ManualDecision =
       kind: 'partial';
       /** The original with only the accepted changes applied. */
       content: string;
-      accepted: ReviewHunk[];
-      rejected: ReviewHunk[];
+      total: number;
+      rejected: DiffHunk[];
     };
 
 const [state, setState] = createStore<{ pending: Record<string, PendingApproval> }>({
   pending: {},
 });
 
-const resolvers = new Map<string, (decision: ManualDecision) => void>();
 const revealListeners = new Set<(absPath: string) => void>();
 const writtenListeners = new Set<(absPath: string, content: string) => void>();
 
@@ -93,13 +100,26 @@ export function buildEditReview(
   };
 }
 
-/** Waits for the user's decision on one tool call. File edits open in the editor. */
-export function requestApproval(request: PendingApproval): Promise<ManualDecision> {
-  return new Promise((resolve) => {
-    resolvers.set(request.toolCallId, resolve);
-    setState('pending', request.toolCallId, request);
-    if (request.edit) revealEdit(request.toolCallId);
-  });
+/** A run waits for the user's decision on a tool call. File edits open in the editor. */
+export function registerApproval(request: ApprovalRequest) {
+  if (state.pending[request.toolCallId]) return;
+  const { edit, ...rest } = request;
+  const review = edit
+    ? buildEditReview(edit.absPath, edit.relPath, edit.current, edit.proposed)
+    : null;
+  setState('pending', request.toolCallId, { ...rest, ...(review ? { edit: review } : {}) });
+  if (review) revealEdit(request.toolCallId);
+}
+
+/** Answered, or no longer waited for (the run stopped). */
+export function clearApproval(toolCallId: string) {
+  if (!state.pending[toolCallId]) return;
+  setState(
+    'pending',
+    produce((pending) => {
+      delete pending[toolCallId];
+    })
+  );
 }
 
 /*
@@ -139,15 +159,10 @@ const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+/g, '/');
  */
 
 function settle(toolCallId: string, decision: ManualDecision) {
-  const resolve = resolvers.get(toolCallId);
-  resolvers.delete(toolCallId);
-  setState(
-    'pending',
-    produce((pending) => {
-      delete pending[toolCallId];
-    })
+  clearApproval(toolCallId);
+  void invoke('agent_resolve_approval', { toolCallId, decision }).catch((err) =>
+    console.error('Approval not delivered:', err)
   );
-  resolve?.(decision);
 }
 
 export const allow = (toolCallId: string) => settle(toolCallId, { kind: 'allow' });
@@ -171,8 +186,10 @@ function finishIfDecided(toolCallId: string) {
   settle(toolCallId, {
     kind: 'partial',
     content: merged.join(edit.eol),
-    accepted: hunks.filter((h) => h.state === 'accepted'),
-    rejected: hunks.filter((h) => h.state === 'rejected'),
+    total: hunks.length,
+    rejected: hunks
+      .filter((h) => h.state === 'rejected')
+      .map(({ origStart, deleted, added }) => ({ origStart, deleted, added })),
   });
 }
 
@@ -188,13 +205,6 @@ export function decideRemaining(toolCallId: string, next: 'accepted' | 'rejected
   if (!edit) return;
   setState('pending', toolCallId, 'edit', 'hunks', (h) => h.state === 'pending', 'state', next);
   finishIfDecided(toolCallId);
-}
-
-/** Every waiting approval answered "deny" (Stop pressed). */
-export function denyAll(dialogId?: string) {
-  for (const p of Object.values(state.pending)) {
-    if (!dialogId || p.dialogId === dialogId) deny(p.toolCallId);
-  }
 }
 
 /*

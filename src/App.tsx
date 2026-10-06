@@ -65,6 +65,7 @@ import { isProjectSource, updateProjectSource } from './lib/intellisense';
 import { clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
 import { startVirtualFiles, vfsSettingsRequested } from './lib/virtualFilesStartup';
+import { initAgentRuns, onShowChat } from './lib/agentRuns';
 
 let unlistenFSChanges: (() => void) | undefined;
 
@@ -73,6 +74,9 @@ export default function App() {
 
   // Virtual files: mount, or offer to install the driver (in the background).
   onMount(() => void startVirtualFiles());
+  // Agent runs live in the backend: follow them from the start, whichever
+  // sidebar tab is open (approvals show in the editor too).
+  onMount(() => void initAgentRuns());
 
   // Load last opened project on startup
   onMount(async () => {
@@ -399,6 +403,8 @@ export default function App() {
   onCleanup(() => setProjectFileResolver(null));
   // "Add to chat" in the editor: bring the chat up; it takes the reference.
   const stopAddToChat = onAddToChat(() => setSidebarTab('chat'));
+  // "Show" on an agent question's notification.
+  onCleanup(onShowChat(() => setSidebarTab('chat')));
   onCleanup(() => {
     stopReveal();
     stopWritten();

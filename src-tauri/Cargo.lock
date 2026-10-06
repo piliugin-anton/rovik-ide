@@ -4629,6 +4629,7 @@ dependencies = [
  "libc",
  "notify",
  "portable-pty",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

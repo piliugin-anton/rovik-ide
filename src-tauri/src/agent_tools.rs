@@ -270,11 +270,11 @@ pub fn tool_read_file_range(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditOutcome {
-    /// The whole file after the edit (the frontend diffs it for review and
-    /// refreshes open tabs with it).
-    content: String,
+    /// The whole file after the edit (diffed for review; open tabs refresh
+    /// with it).
+    pub(crate) content: String,
     /// The tool result for the model.
-    summary: String,
+    pub(crate) summary: String,
 }
 
 /// Replaces the one occurrence of `old_text` in a project file with

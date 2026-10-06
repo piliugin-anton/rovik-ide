@@ -108,6 +108,22 @@ impl DbState {
         rx.await.map_err(|_| "Chat database writer dropped the request".to_string())?
     }
 
+    /// Queues `f` on the writer thread without waiting for it: ordered with
+    /// every write queued after it. Errors are logged.
+    pub fn write_detached<F>(&self, f: F)
+    where
+        F: FnOnce(&mut Connection) -> Result<(), String> + Send + 'static,
+    {
+        let job: Job = Box::new(move |conn| {
+            if let Err(e) = f(conn) {
+                eprintln!("chat_db: {e}");
+            }
+        });
+        if let Ok(writer) = self.0.writer.lock() {
+            let _ = writer.send(job);
+        }
+    }
+
     /// Runs `f` on a read-only connection in the blocking pool.
     pub async fn read<T, F>(&self, f: F) -> Result<T, String>
     where

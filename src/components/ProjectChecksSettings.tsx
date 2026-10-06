@@ -1,9 +1,9 @@
 // ProjectChecksSettings.tsx
 //
 // Settings page for the open project's checks: what the verification gate
-// runs when the agent finishes a change (lib/verification.ts). Shows what
-// was detected and lets the user correct it; the corrected list is saved
-// per project right away and wins over detection from then on.
+// runs when the agent finishes a change (src-tauri/src/agent_run/verify.rs).
+// Shows what was detected and lets the user correct it; the corrected list
+// is saved per project right away and wins over detection from then on.
 import { createSignal, For, onMount, Show } from 'solid-js';
 import {
   CHECK_KINDS,

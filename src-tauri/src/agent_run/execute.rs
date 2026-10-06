@@ -1,0 +1,642 @@
+//! One turn's tool calls: authorized, run and recorded in order. Each
+//! result is stored before the next turn, which reads the history from the
+//! database. Every call gets a result, even after Stop: providers reject a
+//! history with tool calls left unanswered.
+
+use super::diff::{self, Hunk};
+use super::events::{emit, AgentEvent, ApprovalRequest, EditProposal, QuestionsRequest};
+use super::guard::{FinishedCall, GuardVerdict, Write};
+use super::permissions::{self, Approver, ToolVerdict};
+use super::review::{self, Group, ReviewInput, ReviewResult};
+use super::run::{chat_plan_file, Run};
+use super::{log, plan, tools, ApprovalDecision};
+use crate::chat_db::store::ToolCall;
+use serde_json::{json, Map, Value};
+use tauri::{Manager, Runtime};
+
+/// The agent's own context folder, as its file tools name it (CLM mode).
+const CONTEXT_PATH_PREFIX: &str = "@context";
+
+/// What authorizing a call decided.
+#[derive(Default)]
+struct Authorized {
+    /// The refusal to send back to the model; None: run it.
+    refusal: Option<String>,
+    /// The decision to show on the tool block.
+    approval: Option<Value>,
+    /// Partially accepted edit: the arguments to run instead.
+    args_override: Option<String>,
+    /// Run as this tool instead (a partly accepted edit_file is written whole).
+    tool_override: Option<String>,
+    /// Added to the tool result for the model.
+    result_note: Option<String>,
+}
+
+fn refused(text: impl Into<String>) -> Authorized {
+    Authorized { refusal: Some(text.into()), ..Default::default() }
+}
+
+enum Prepared {
+    Diff { proposal: EditProposal, hunks: Vec<Hunk> },
+    New,
+    Unchanged,
+    Invalid(String),
+}
+
+fn approval_json(by: Approver, approved: bool, model: Option<String>, reason: Option<String>) -> Value {
+    let mut v = json!({ "by": by, "approved": approved });
+    if let Some(m) = model {
+        v["model"] = json!(m);
+    }
+    if let Some(r) = reason {
+        v["reason"] = json!(r);
+    }
+    v
+}
+
+/// Whether a file tool's path means the agent's context folder.
+fn is_context_path(path: Option<&str>, real_dir: Option<&str>) -> bool {
+    let Some(path) = path else { return false };
+    let p = path.trim().replace('\\', "/");
+    if p == CONTEXT_PATH_PREFIX || p.starts_with(&format!("{CONTEXT_PATH_PREFIX}/")) {
+        return true;
+    }
+    let Some(dir) = real_dir else { return false };
+    let dir = dir.replace('\\', "/");
+    let dir = dir.trim_end_matches('/');
+    p == dir || p.starts_with(&format!("{dir}/"))
+}
+
+fn line(v: Option<&Value>) -> Option<usize> {
+    let n = match v? {
+        Value::String(s) if !s.trim().is_empty() => s.trim().parse::<f64>().ok()?,
+        Value::Number(n) => n.as_f64()?,
+        _ => return None,
+    };
+    (n.is_finite() && n >= 0.0).then(|| n.floor() as usize)
+}
+
+/// Tells the model which of its changes were not applied.
+fn describe_rejected_hunks(path: &str, rejected: &[Hunk], total: usize) -> String {
+    let preview = |lines: &[String]| {
+        let mut shown: Vec<String> = lines.iter().take(3).map(|l| format!("    {l}")).collect();
+        if lines.len() > 3 {
+            shown.push(format!("    … ({} more lines)", lines.len() - 3));
+        }
+        shown.join("\n")
+    };
+    let mut out = vec![
+        String::new(),
+        format!(
+            "The user reviewed this edit and accepted {} of {total} changes; the file now has only those. Rejected changes:",
+            total.saturating_sub(rejected.len())
+        ),
+    ];
+    for h in rejected {
+        let at = format!("around original line {}", h.orig_start);
+        out.push(if h.added.is_empty() {
+            format!("- {at}: deleting these lines (kept):\n{}", preview(&h.deleted))
+        } else if h.deleted.is_empty() {
+            format!("- {at}: inserting these lines (not added):\n{}", preview(&h.added))
+        } else {
+            format!("- {at}: replacing\n{}\n  with (not applied):\n{}", preview(&h.deleted), preview(&h.added))
+        });
+    }
+    out.push(format!(
+        "Read {path} again before editing it further, and don't redo the rejected changes unless the user asks."
+    ));
+    out.join("\n")
+}
+
+impl<R: Runtime> Run<R> {
+    pub(super) async fn execute_tool_calls(&mut self, calls: &[ToolCall], resume_note: Option<&str>) -> Result<(), String> {
+        // CLM mode: the agent's context folder.
+        let vfs = self.app.state::<crate::vfs::VfsState>();
+        let clm = self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(&vfs).is_ok();
+        let context_dir = if clm { crate::clm::real_paths(&vfs, &self.dialog_id).map(|(_, dir)| dir) } else { None };
+
+        for tc in calls {
+            if self.stopped() {
+                self.stopped_result(tc).await?;
+                continue;
+            }
+            let args = permissions::parse_args(&tc.arguments);
+            let path_arg = args.get("path").and_then(|p| p.as_str());
+
+            // The agent's own context file: no approval, no editor review, not
+            // a project change. It applies to the next request.
+            if clm
+                && matches!(tc.name.as_str(), "read_file" | "edit_file" | "write_file")
+                && is_context_path(path_arg, context_dir.as_deref())
+            {
+                let mut content = self.context_tool(&tc.name, &args).await;
+                if let Some(note) = self.guard.record(FinishedCall {
+                    name: &tc.name,
+                    args_json: &tc.arguments,
+                    result: &content,
+                    write: None,
+                })
+                .note()
+                {
+                    content.push_str(note);
+                }
+                let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
+                self.add_tool_result(&tc.id, content, meta, Vec::new()).await?;
+                continue;
+            }
+            match tc.name.as_str() {
+                // The plan (Plan mode): checked, then saved; problems go back to the model.
+                "submit_plan" => {
+                    self.submit_plan(tc, &args).await?;
+                    continue;
+                }
+                // The checklist: shown in the panel, never asks, isn't work the
+                // loop checks or the pause limit count.
+                "todo" => {
+                    let content = plan::describe_todo(&plan::parse_todo(&args));
+                    self.add_tool_result(&tc.id, content, None, Vec::new()).await?;
+                    continue;
+                }
+                // Questions to the user: answered in the chat, no approval
+                // involved (a resumed one after a restart is simply asked again).
+                "ask_user" => {
+                    self.ask_user(tc, &args).await?;
+                    continue;
+                }
+                name if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&name) => {
+                    let content = format!(
+                        "Error: {name} isn't available in Plan mode, which doesn't change anything. \
+                         Finish the plan; the user implements it in Agent mode."
+                    );
+                    self.add_tool_result(&tc.id, content, None, Vec::new()).await?;
+                    continue;
+                }
+                _ => {}
+            }
+
+            let auth = self.authorize(tc, resume_note).await;
+            // Stop may have been pressed while approval was pending.
+            if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
+                self.stopped_result(tc).await?;
+                continue;
+            }
+            let args_json = auth.args_override.clone().unwrap_or_else(|| tc.arguments.clone());
+            let tool_name = auth.tool_override.clone().unwrap_or_else(|| tc.name.clone());
+            let writes = auth.refusal.is_none() && permissions::modifies_files(&tool_name);
+            let write_path = if writes { permissions::str_arg(&args_json, "path") } else { None };
+            let abs_write_path = match (&write_path, &self.root) {
+                (Some(p), Some(root)) => Some(tools::to_absolute_path(p, root)),
+                _ => None,
+            };
+            // The file before a write, so the guard can tell an edit undoing earlier ones.
+            let before = abs_write_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+
+            let mut result = match &auth.refusal {
+                Some(refusal) => tools::ToolResult { content: refusal.clone(), ..Default::default() },
+                None => tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json).await,
+            };
+            if let Some(note) = &auth.result_note {
+                if !tools::is_error(&result.content) {
+                    result.content.push_str(note);
+                }
+            }
+            // Redoing work it compacted away: offer the revision that still has it.
+            if clm && auth.refusal.is_none() && !tools::is_error(&result.content) {
+                let (d, id, name, a) = (self.dialog_id.clone(), tc.id.clone(), tool_name.clone(), args_json.clone());
+                let hint = self.db.read(move |c| crate::clm::recall_hint(c, &d, &id, &name, &a)).await;
+                if let Ok(Some(hint)) = hint {
+                    result.content.push_str(&hint);
+                }
+            }
+
+            let failed = tools::is_error(&result.content);
+            let after = result.written.as_ref().map(|(_, c)| c.clone()).or_else(|| {
+                (tool_name == "write_file").then(|| permissions::str_arg(&args_json, "content")).flatten()
+            });
+
+            let verdict = self.guard.record(FinishedCall {
+                name: &tc.name,
+                args_json: &tc.arguments,
+                result: &result.content,
+                write: match (&write_path, &after) {
+                    (Some(path), Some(after)) if writes && !failed => {
+                        Some(Write { path, before: before.as_deref(), after })
+                    }
+                    _ => None,
+                },
+            });
+            // The model reads the note with the result; a stop pauses the run
+            // once this turn's calls are done.
+            if !matches!(verdict, GuardVerdict::Ok) {
+                result.content.push_str(verdict.note().unwrap_or(""));
+            }
+            if writes && !tools::is_error(&result.content) {
+                if let Some(path) = &write_path {
+                    if !self.changed_files.contains(path) {
+                        self.changed_files.push(path.clone());
+                    }
+                    self.writes_since_verify = true;
+                }
+            }
+
+            // Open tabs of the file show what was written; an edit the user
+            // didn't review is marked in the editor until they save.
+            if writes && !failed {
+                if let (Some(abs), Some(after)) = (&abs_write_path, &after) {
+                    let reviewed = auth.approval.as_ref().and_then(|a| a.get("by")).and_then(|b| b.as_str()) == Some("user");
+                    emit(
+                        &self.app,
+                        AgentEvent::FileWritten { abs_path: abs.clone(), before, content: after.clone(), reviewed },
+                    );
+                }
+            }
+
+            let mut meta = tools::result_meta(&tc.name, &result.content);
+            if let Some(approval) = auth.approval {
+                meta.get_or_insert_with(Map::new).insert("approval".into(), approval);
+            }
+            self.add_tool_result(&tc.id, result.content, meta.map(Value::Object), result.attachments).await?;
+        }
+        Ok(())
+    }
+
+    async fn stopped_result(&self, tc: &ToolCall) -> Result<(), String> {
+        self.add_tool_result(&tc.id, "Error: stopped by the user before this ran.".into(), None, Vec::new()).await
+    }
+
+    /// read_file / edit_file / write_file on the agent's context folder.
+    async fn context_tool(&self, name: &str, args: &Map<String, Value>) -> String {
+        let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("");
+        let text = |k: &str| args.get(k).and_then(|v| v.as_str());
+        let db = self.db.clone();
+        let vfs = self.app.state::<crate::vfs::VfsState>();
+        let result = match name {
+            "read_file" => {
+                crate::clm::tool_read(&db, &vfs, &self.dialog_id, path, line(args.get("start_line")), line(args.get("end_line")))
+                    .await
+            }
+            "edit_file" => match (text("old_text"), text("new_text")) {
+                (None, _) => return "Error: \"old_text\" is required.".into(),
+                (_, None) => return "Error: \"new_text\" is required.".into(),
+                (Some(old), Some(new)) => crate::clm::tool_edit(
+                    &vfs,
+                    &self.dialog_id,
+                    path,
+                    old,
+                    new,
+                    line(args.get("start_line")),
+                    line(args.get("end_line")),
+                ),
+            },
+            "write_file" => match text("content") {
+                None => return "Error: \"content\" is required.".into(),
+                Some(content) => crate::clm::tool_write(&vfs, &self.dialog_id, path, content),
+            },
+            _ => return format!("Error: {name} can't be used on your context folder."),
+        };
+        result.unwrap_or_else(|e| format!("Error: {e}"))
+    }
+
+    /*
+     * -----------------------------------------------------------------------
+     * Permission and approval
+     * -----------------------------------------------------------------------
+     */
+
+    /// Permission first (refused calls never reach approval), then approval
+    /// when the settings require it: by the user, or by the AI reviewer.
+    async fn authorize(&self, tc: &ToolCall, resume_note: Option<&str>) -> Authorized {
+        let config = self.state.config();
+        let p = &config.permissions;
+        let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
+            ToolVerdict::Refused(reason) => {
+                return refused(format!("Error: blocked by the user's permission settings. {reason}"))
+            }
+            // An interrupted call is always confirmed by the user.
+            ToolVerdict::Permitted { approval } => match resume_note {
+                Some(_) => Approver::User,
+                None => match approval {
+                    Some(a) => a,
+                    None => return Authorized::default(),
+                },
+            },
+        };
+
+        let summary = permissions::describe_tool_call(&tc.name, &tc.arguments);
+        let command = (tc.name == "run_command").then(|| permissions::str_arg(&tc.arguments, "command")).flatten();
+        // Edits are diffed once: the AI reviewer reads the diff, the user
+        // reviews it in the editor.
+        let is_file_edit = permissions::modifies_files(&tc.name);
+        let prepared = if is_file_edit { self.prepare_edit_review(&tc.name, &tc.arguments) } else { None };
+        let mut is_new_file = false;
+        let (proposal, hunks) = match prepared {
+            // Writing the same content changes nothing: no need to ask.
+            Some(Prepared::Unchanged) => return Authorized::default(),
+            // An edit_file that can't apply (text not found, outside its lines):
+            // the model gets the reason; there's nothing for anyone to approve.
+            Some(Prepared::Invalid(error)) => return refused(error),
+            Some(Prepared::Diff { proposal, hunks }) => (Some(proposal), hunks),
+            Some(Prepared::New) => {
+                is_new_file = true;
+                (None, Vec::new())
+            }
+            None => (None, Vec::new()),
+        };
+        let mut manual_reason: Option<String> = resume_note.map(str::to_string);
+
+        if approver == Approver::Ai {
+            let models = &config.approval_profiles;
+            let edit_path = if is_file_edit { permissions::str_arg(&tc.arguments, "path") } else { None };
+
+            // Shapes no reviewer model may approve on its own.
+            if command.as_deref().is_some_and(permissions::is_risky_command) {
+                manual_reason = Some(
+                    "Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets always need your approval."
+                        .into(),
+                );
+            } else if edit_path.as_deref().is_some_and(permissions::is_secret_path) {
+                manual_reason = Some("Edits to credential or secret files always need your approval.".into());
+            } else if models.is_empty() {
+                manual_reason = Some("No AI reviewer model is set, so this needs your approval.".into());
+            } else {
+                self.tool_note(&tc.id, Some(format!("Reviewing with {}…", models[0].label)));
+                let input = ReviewInput {
+                    group: if tc.name == "run_command" {
+                        Group::Commands
+                    } else if is_file_edit {
+                        Group::Edits
+                    } else {
+                        Group::Tools
+                    },
+                    user_request: self.latest_user_request().await,
+                    project: self.root.clone().unwrap_or_default(),
+                    tool_name: tc.name.clone(),
+                    summary: summary.clone(),
+                    args_json: tc.arguments.clone(),
+                    edit_diff: (!hunks.is_empty()).then(|| diff::compact_diff(&hunks)),
+                    edit_path,
+                    is_new_file,
+                };
+                // The reviewer model follows the setting; a Jev fallback can
+                // only be asked with typed input.
+                let typed = p.approval_typed_input;
+                let review = review::review(&self.app, models, &input, |i, profile| {
+                    if i == 0 {
+                        typed
+                    } else {
+                        review::is_jev_model(&profile.model)
+                    }
+                })
+                .await;
+                self.tool_note(&tc.id, None);
+
+                match review {
+                    ReviewResult::Decided { approved, reason, model } => {
+                        let approval = approval_json(Approver::Ai, approved, Some(model.clone()), Some(reason.clone()));
+                        return if approved {
+                            Authorized { approval: Some(approval), ..Default::default() }
+                        } else {
+                            Authorized {
+                                refusal: Some(format!(
+                                    "Error: rejected by the user's AI reviewer ({model}): {reason} Do not retry the same action; adjust the approach or ask the user."
+                                )),
+                                approval: Some(approval),
+                                ..Default::default()
+                            }
+                        };
+                    }
+                    ReviewResult::Unsure { reason } => manual_reason = Some(format!("{reason} This needs your approval.")),
+                    ReviewResult::Failed { errors } => {
+                        eprintln!("agent: AI approval gave no decision: {errors:?}");
+                        manual_reason = Some("The AI reviewer couldn’t answer, so this needs your approval.".into());
+                    }
+                }
+            }
+        }
+
+        // Manual: the request shows in the chat (and, for an edit of an
+        // existing file, in the editor as changes to accept or reject one by one).
+        let note = [manual_reason, is_new_file.then(|| "New file: expand to see its content.".to_string())]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let rel_path = proposal.as_ref().map(|p| p.rel_path.clone());
+        let request = ApprovalRequest {
+            tool_call_id: tc.id.clone(),
+            dialog_id: self.dialog_id.clone(),
+            tool_name: tc.name.clone(),
+            summary,
+            command,
+            note: (!note.is_empty()).then_some(note),
+            edit: proposal,
+        };
+        let decision = self.state.wait_for_approval(&self.app, request, &self.stop).await;
+
+        match decision {
+            ApprovalDecision::Allow => {
+                Authorized { approval: Some(approval_json(Approver::User, true, None, None)), ..Default::default() }
+            }
+            ApprovalDecision::Deny => Authorized {
+                refusal: Some(match &rel_path {
+                    Some(rel) => format!(
+                        "Error: the user rejected every change to {rel}; the file was not modified. Do not retry the same edit; ask the user or take another approach."
+                    ),
+                    None => format!(
+                        "Error: the user denied this \"{}\" call. Do not retry it; continue without it or ask the user how to proceed.",
+                        tc.name
+                    ),
+                }),
+                approval: Some(approval_json(Approver::User, false, None, None)),
+                ..Default::default()
+            },
+            // Some changes accepted: write the original with only those applied.
+            ApprovalDecision::Partial { content, total, rejected } => {
+                let mut args = permissions::parse_args(&tc.arguments);
+                let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string();
+                // edit_file's partial result is a whole new file: written as one.
+                let args_override = if tc.name == "edit_file" {
+                    json!({ "path": path, "content": content }).to_string()
+                } else {
+                    args.insert("content".into(), json!(content));
+                    Value::Object(args).to_string()
+                };
+                Authorized {
+                    refusal: None,
+                    approval: Some(approval_json(
+                        Approver::User,
+                        true,
+                        None,
+                        Some(format!("Accepted {} of {total} changes.", total.saturating_sub(rejected.len()))),
+                    )),
+                    args_override: Some(args_override),
+                    tool_override: (tc.name == "edit_file").then(|| "write_file".to_string()),
+                    result_note: Some(describe_rejected_hunks(
+                        rel_path.as_deref().unwrap_or("the file"),
+                        &rejected,
+                        total,
+                    )),
+                }
+            }
+        }
+    }
+
+    /// The diff of a write_file or edit_file call against the file on disk.
+    /// A new file has nothing to compare against: it's approved as a whole.
+    /// edit_file's result is computed (not written) first.
+    fn prepare_edit_review(&self, tool_name: &str, args_json: &str) -> Option<Prepared> {
+        let root = self.root.as_deref()?;
+        let args = permissions::parse_args(args_json);
+        let path = args.get("path").and_then(|p| p.as_str())?.to_string();
+        let proposed = if tool_name == "edit_file" {
+            let edit = match tools::edit_args(&args) {
+                Ok(edit) => edit,
+                Err(e) => return Some(Prepared::Invalid(e)),
+            };
+            match tools::apply_edit(root, &edit, true) {
+                Ok(outcome) => outcome.content,
+                Err(e) => return Some(Prepared::Invalid(format!("Error: {e}"))),
+            }
+        } else {
+            args.get("content").and_then(|c| c.as_str())?.to_string()
+        };
+        let abs_path = tools::to_absolute_path(&path, root);
+        let Ok(current) = std::fs::read_to_string(&abs_path) else { return Some(Prepared::New) };
+        let hunks = diff::diff_lines(&diff::split_lines(&current), &diff::split_lines(&proposed));
+        if hunks.is_empty() {
+            return Some(Prepared::Unchanged);
+        }
+        Some(Prepared::Diff { proposal: EditProposal { abs_path, rel_path: path, current, proposed }, hunks })
+    }
+
+    fn tool_note(&self, tool_call_id: &str, note: Option<String>) {
+        emit(
+            &self.app,
+            AgentEvent::ToolNote { dialog_id: self.dialog_id.clone(), tool_call_id: tool_call_id.to_string(), note },
+        );
+    }
+
+    /*
+     * -----------------------------------------------------------------------
+     * Plan mode's tools
+     * -----------------------------------------------------------------------
+     */
+
+    /// ask_user: shows the questions in the chat and waits for the answer.
+    /// Only in Plan mode, a few per run; the answer is the tool's result,
+    /// kept with the questions in its meta for the card.
+    async fn ask_user(&mut self, tc: &ToolCall, args: &Map<String, Value>) -> Result<(), String> {
+        let log_question = |run: &Run<R>, questions: usize, answers: Vec<String>| {
+            log::write(
+                &run.app,
+                json!({
+                    "event": "question",
+                    "dialogId": run.dialog_id,
+                    "model": run.profile.model,
+                    "questions": questions,
+                    "answers": answers,
+                }),
+            );
+        };
+        if !self.plan_mode {
+            let content =
+                "Error: asking the user is only available in Plan mode. Decide yourself and say what you assumed.";
+            return self.add_tool_result(&tc.id, content.into(), None, Vec::new()).await;
+        }
+        if self.questions_asked >= plan::MAX_QUESTIONS_PER_RUN {
+            log_question(self, 0, vec!["over-limit".into()]);
+            let content = format!(
+                "You've already asked {} times in this task. Decide the rest yourself and list your assumptions under \"Decisions\" in the plan.",
+                self.questions_asked
+            );
+            return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+        }
+        let questions = plan::parse_questions(args);
+        if questions.is_empty() {
+            let content = "Error: no question to ask. Pass questions: [{ question, options: [{ label }] }].";
+            return self.add_tool_result(&tc.id, content.into(), None, Vec::new()).await;
+        }
+        self.questions_asked += 1;
+
+        let request =
+            QuestionsRequest { tool_call_id: tc.id.clone(), dialog_id: self.dialog_id.clone(), questions: questions.clone() };
+        let outcome = self.state.wait_for_answers(&self.app, request, &self.stop).await;
+        log_question(self, questions.len(), plan::outcome_kinds(&outcome));
+        if matches!(outcome, plan::QuestionsOutcome::Stopped { .. }) {
+            self.state.stop(&self.app, &self.dialog_id);
+        }
+        let content = plan::describe_outcome(&questions, &outcome);
+        let meta = json!({ "questions": { "questions": questions, "outcome": outcome } });
+        self.add_tool_result(&tc.id, content, Some(meta), Vec::new()).await
+    }
+
+    /// submit_plan: the plan is checked and, if it holds up, saved to the
+    /// chat's plan file (a revision replaces it). Problems go back to the
+    /// model to fix. Only this changes the file: a reply never does.
+    async fn submit_plan(&self, tc: &ToolCall, args: &Map<String, Value>) -> Result<(), String> {
+        let plan_text = args.get("plan").and_then(|p| p.as_str()).unwrap_or("");
+        let problems = plan::plan_problems(plan_text);
+        if !problems.is_empty() {
+            let content = format!(
+                "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- {}",
+                problems.join("\n- ")
+            );
+            return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+        }
+        let Some(root) = self.root.clone() else {
+            return self
+                .add_tool_result(&tc.id, "Error: no project is open, so the plan can't be saved.".into(), None, Vec::new())
+                .await;
+        };
+        let recent = self.recent().await?;
+        let request = recent
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && !plan::is_harness(m))
+            .map(|m| m.content.clone())
+            .unwrap_or_else(|| "plan".into());
+        let existing = chat_plan_file(&recent);
+        match plan::save_plan_file(&root, &request, plan_text, existing.as_deref(), &self.local_date) {
+            Ok(path) => {
+                let content = format!("Saved the plan to {}.", plan::relative_plan_path(&path, Some(&root)));
+                // Open tabs of the plan show the new version.
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    emit(
+                        &self.app,
+                        AgentEvent::FileWritten { abs_path: path.clone(), before: None, content: text, reviewed: true },
+                    );
+                }
+                self.add_tool_result(&tc.id, content, Some(json!({ "planFile": path })), Vec::new()).await
+            }
+            Err(e) => {
+                self.add_tool_result(&tc.id, format!("Error: the plan couldn't be saved: {e}"), None, Vec::new()).await
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_paths() {
+        assert!(is_context_path(Some("@context/LIVE_CONTEXT.md"), None));
+        assert!(is_context_path(Some(" @context "), None));
+        assert!(is_context_path(Some("/mnt/v/context/d/x.md"), Some("/mnt/v/context/d/")));
+        assert!(!is_context_path(Some("src/a.ts"), Some("/mnt/v/context/d")));
+        assert!(!is_context_path(None, None));
+    }
+
+    #[test]
+    fn rejected_hunks_for_the_model() {
+        let hunks = vec![
+            Hunk { orig_start: 3, deleted: vec!["a".into()], added: vec![] },
+            Hunk { orig_start: 9, deleted: vec!["b".into()], added: vec!["c".into(), "d".into()] },
+        ];
+        let text = describe_rejected_hunks("x.ts", &hunks, 5);
+        assert!(text.contains("accepted 3 of 5 changes"));
+        assert!(text.contains("- around original line 3: deleting these lines (kept):\n    a"));
+        assert!(text.contains("replacing\n    b\n  with (not applied):\n    c\n    d"));
+    }
+}

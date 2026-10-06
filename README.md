@@ -42,6 +42,10 @@ src/
 src-tauri/
   src/
     commands.rs     read_dir_entries / read_file_content / write_file_content
+    agent_run/      the AI agent's runs: model turns, tool calls, approvals,
+                     verification. They run here, not in the webview, so a
+                     run goes on whatever the UI does (src/lib/agentRuns.ts
+                     starts, stops and follows them)
     vfs/            virtual files mounted via FUSE / macFUSE / WinFsp
     lib.rs          Tauri builder, plugin + command registration
   capabilities/

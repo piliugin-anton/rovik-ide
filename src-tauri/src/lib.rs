@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Mutex};
 use tauri::Manager;
 
 mod agent;
+mod agent_run;
 mod atomic_file;
 mod edit_file;
 mod lsp;
@@ -28,6 +29,7 @@ pub fn run() {
         .manage(lsp::LspState::default())
         .manage(BrowserState::default())
         .manage(chat_request::ChatRequests::default())
+        .manage(agent_run::AgentState::default())
         .manage(vfs::VfsState::default())
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
@@ -121,6 +123,13 @@ pub fn run() {
             lsp::rust_analyzer::ra_install_rust_src,
             agent::send_chat_message,
             chat_request::cancel_chat_request,
+            agent_run::agent_configure,
+            agent_run::agent_start,
+            agent_run::agent_stop,
+            agent_run::agent_set_effort,
+            agent_run::agent_resolve_approval,
+            agent_run::agent_answer_questions,
+            agent_run::agent_status,
             agent::list_models,
             browser_tools::web_search,
             browser_tools::browse_url,
@@ -134,10 +143,8 @@ pub fn run() {
             project_profile::project_profile,
             project_profile::load_project_settings,
             project_profile::save_project_settings,
-            project_profile::append_agent_log,
             agent::chat_context_estimate,
             command_tool::tool_run_command,
-            system_one::system_one_request,
             vfs::vfs_status,
             vfs::vfs_install_driver,
             vfs::vfs_mount,

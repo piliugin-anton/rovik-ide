@@ -1,10 +1,12 @@
 // questions.ts
 //
 // The agent's questions to the user (the ask_user tool, Plan mode). Like an
-// approval, a question suspends the run: the tool call waits here until the
-// user answers in its card in the chat (QuestionCard), types a reply in the
-// composer, or stops. The answer goes back to the model as the tool's result.
-import { createStore } from 'solid-js/store';
+// approval, a question suspends the run (in the backend: agent_run): the
+// tool call waits until the user answers in the panel above the input
+// (QuestionPanel), types a reply in the composer, or stops. The answer goes
+// back to the run, and to the model as the tool's result.
+import { invoke } from '@tauri-apps/api/core';
+import { createStore, produce } from 'solid-js/store';
 
 export interface QuestionOption {
   label: string;
@@ -48,14 +50,21 @@ const MAX_OPTIONS = 6;
 const [state, setState] = createStore<{ pending: Record<string, PendingQuestions> }>({
   pending: {},
 });
-const resolvers = new Map<string, (outcome: QuestionsOutcome) => void>();
 
-/** Waits for the user's answer to a call's questions. */
-export function askUser(request: PendingQuestions): Promise<QuestionsOutcome> {
-  return new Promise((resolve) => {
-    resolvers.set(request.toolCallId, resolve);
-    setState('pending', request.toolCallId, request);
-  });
+/** A run waits for the user's answer to a call's questions. */
+export function registerQuestions(request: PendingQuestions) {
+  setState('pending', request.toolCallId, request);
+}
+
+/** Answered, or no longer waited for (the run stopped). */
+export function clearQuestions(toolCallId: string) {
+  if (!state.pending[toolCallId]) return;
+  setState(
+    'pending',
+    produce((pending) => {
+      delete pending[toolCallId];
+    })
+  );
 }
 
 export function pendingQuestions(toolCallId: string): PendingQuestions | undefined {
@@ -68,17 +77,10 @@ export function pendingQuestionsIn(dialogId: string): PendingQuestions | undefin
 }
 
 export function answerQuestions(toolCallId: string, outcome: QuestionsOutcome) {
-  const resolve = resolvers.get(toolCallId);
-  resolvers.delete(toolCallId);
-  setState('pending', toolCallId, undefined!);
-  resolve?.(outcome);
-}
-
-/** Stop pressed: every waiting question ends the run. */
-export function stopQuestions(dialogId?: string) {
-  for (const p of Object.values(state.pending)) {
-    if (!dialogId || p.dialogId === dialogId) answerQuestions(p.toolCallId, { stopped: true });
-  }
+  clearQuestions(toolCallId);
+  void invoke('agent_answer_questions', { toolCallId, outcome }).catch((err) =>
+    console.error('Answer not delivered:', err)
+  );
 }
 
 /**
@@ -118,29 +120,4 @@ export function parseQuestions(args: Record<string, unknown>): Question[] {
     });
   }
   return out;
-}
-
-/** What the model reads as the tool's result. */
-export function describeOutcome(questions: Question[], outcome: QuestionsOutcome): string {
-  if ('stopped' in outcome) return 'Error: the user stopped the task instead of answering.';
-  if ('reply' in outcome) {
-    return (
-      'The user replied in their own words instead of picking options:\n\n' +
-      `${outcome.reply}\n\n` +
-      'Treat this as their answer to your questions. For anything it leaves open, decide yourself and say so in the plan.'
-    );
-  }
-  const lines = ['The user answered:'];
-  questions.forEach((q, i) => {
-    const a = outcome.answers[i] ?? { kind: 'agent' };
-    const answer =
-      a.kind === 'option'
-        ? a.label
-        : a.kind === 'custom'
-          ? `"${a.text}" (in their own words)`
-          : 'left it to you: decide, and say what you chose and why in the plan';
-    lines.push(`${i + 1}. ${q.question}\n   → ${answer}`);
-  });
-  lines.push('', 'Treat these answers as requirements. Continue planning.');
-  return lines.join('\n');
 }

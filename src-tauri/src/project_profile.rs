@@ -4,8 +4,8 @@
 //!
 //! Detection reads a handful of manifest files, no model and no network, so
 //! it runs at the start of every agent run instead of being cached. The
-//! frontend puts the result in the system prompt and the verification gate
-//! runs the checks when the agent says it's done (lib/projectProfile.ts).
+//! agent puts the result in its system prompt and the verification gate runs
+//! the checks when the agent says it's done (agent_run/project.rs, verify.rs).
 //!
 //! Also here: per-project settings (the user's corrections to the detected
 //! checks) and the agent diagnostics log.
@@ -320,7 +320,7 @@ pub fn project_profile(root: String) -> Result<ProjectProfile, String> {
     Ok(detect(root))
 }
 
-fn project_settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn project_settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
     use tauri::Manager;
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("project-settings.json"))
@@ -329,7 +329,7 @@ fn project_settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
 /// The user's settings for one project (e.g. corrected check commands), as
 /// the JSON the frontend stored; null when there are none.
 #[tauri::command]
-pub fn load_project_settings(app: tauri::AppHandle, root: String) -> Result<serde_json::Value, String> {
+pub fn load_project_settings<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String) -> Result<serde_json::Value, String> {
     let path = project_settings_path(&app)?;
     let all: serde_json::Value = fs::read_to_string(&path)
         .ok()
@@ -361,8 +361,7 @@ pub fn save_project_settings(
 
 /// Agent diagnostics: one JSON object per line in agent-log.jsonl in the
 /// app's data folder. Rotated to agent-log.1.jsonl at 5 MB.
-#[tauri::command]
-pub fn append_agent_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
+pub fn append_agent_log<R: tauri::Runtime>(app: tauri::AppHandle<R>, line: String) -> Result<(), String> {
     use std::io::Write;
     use tauri::Manager;
     const MAX_BYTES: u64 = 5 * 1024 * 1024;

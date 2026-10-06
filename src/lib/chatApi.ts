@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import type { ChatMessage, ChatToolCall, DialogCursor, DialogSummary, ToolMeta } from '../types';
 import type { Highlighted } from './chatSearch';
 
-interface MessageRow {
+/** A message as the database returns it (chat_db/store.rs). */
+export interface MessageRow {
   id: string;
   dialogId: string;
   seq: number;
@@ -39,7 +40,7 @@ export interface ChatSearchHit {
   snippet: Highlighted | null;
 }
 
-function fromRow(r: MessageRow): ChatMessage {
+export function fromRow(r: MessageRow): ChatMessage {
   return {
     id: r.id,
     role: r.role,
