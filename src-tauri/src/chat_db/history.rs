@@ -9,8 +9,9 @@
 //!  3. As a last resort, earlier tool results in the current request are
 //!     cut, keeping the latest one whole.
 //!
-//! Before any of that, once the history passes COMPACT_AT of the budget,
-//! content that later events made out of date is compacted (`compact`): a
+//! Before any of that, once the history passes OUTDATED_AT of the budget,
+//! content that later events made out of date is replaced with a short
+//! note (`replace_outdated`): a
 //! file read since re-read or edited, a command run again, an earlier
 //! round of check failures, old write_file contents. Most of it can be
 //! fetched again, so this costs the model little. It works in batches of
@@ -130,29 +131,29 @@ pub struct FitInfo {
     pub trimmed: bool,
     pub dropped_turns: usize,
     pub estimated_tokens: usize,
-    /// The whole history, before anything was compacted or trimmed.
+    /// The whole history, before anything was replaced or trimmed.
     pub full_tokens: usize,
-    /// Messages compacted because later ones made them out of date.
-    pub compacted: usize,
+    /// Messages replaced with a note because later ones made them out of date.
+    pub outdated: usize,
 }
 
 /*
  * ---------------------------------------------------------------------------
- * Compaction: content later events made out of date
+ * Outdated content: what later events made out of date
  * ---------------------------------------------------------------------------
  */
 
-/// Compaction starts once the history passes this share of the budget, not
+/// Replacing starts once the history passes this share of the budget, not
 /// at the limit: models get worse with long contexts well before they're full.
-const COMPACT_AT: f64 = 0.75;
-/// The newest tool results are never compacted: the model is working with them.
+const OUTDATED_AT: f64 = 0.75;
+/// The newest tool results are never replaced: the model is working with them.
 const KEEP_RECENT_RESULTS: usize = 8;
-/// Older results become compactable this many at a time, so the start of the
+/// Older results become replaceable this many at a time, so the start of the
 /// history changes only every few steps (providers cache the prompt prefix).
-const COMPACT_BATCH: usize = 8;
-/// Listings and page text keep this much when compacted.
+const OUTDATED_BATCH: usize = 8;
+/// Listings and page text keep this much when replaced.
 const LISTING_KEEP_CHARS: usize = 600;
-/// write_file / edit_file arguments longer than this are compacted.
+/// write_file / edit_file arguments longer than this are shortened.
 const ARGS_KEEP_CHARS: usize = 300;
 
 /// What one finished tool call did, for the supersession rules.
@@ -205,10 +206,10 @@ fn shorten_arg(args: &mut Value, key: &str, what: &str) -> bool {
     true
 }
 
-/// Compacts out-of-date content in place; returns how many messages changed.
-/// Results of the newest tool calls are left alone; the rest become
-/// compactable in batches (see COMPACT_BATCH).
-fn compact(messages: &mut [Msg]) -> usize {
+/// Replaces out-of-date content in place with short notes; returns how many
+/// messages changed. Results of the newest tool calls are left alone; the
+/// rest become replaceable in batches (see OUTDATED_BATCH).
+fn replace_outdated(messages: &mut [Msg]) -> usize {
     // Each call's name and arguments, by id.
     let mut calls: std::collections::HashMap<String, (String, Value)> = Default::default();
     for m in messages.iter() {
@@ -239,12 +240,12 @@ fn compact(messages: &mut [Msg]) -> usize {
         })
         .collect();
 
-    let compactable = events.len().saturating_sub(KEEP_RECENT_RESULTS) / COMPACT_BATCH * COMPACT_BATCH;
-    // Messages before this index are old enough to compact.
-    let horizon = events.get(compactable).map_or(messages.len(), |e| e.at);
+    let replaceable = events.len().saturating_sub(KEEP_RECENT_RESULTS) / OUTDATED_BATCH * OUTDATED_BATCH;
+    // Messages before this index are old enough to replace.
+    let horizon = events.get(replaceable).map_or(messages.len(), |e| e.at);
     let mut changed = 0;
 
-    for (i, e) in events[..compactable].iter().enumerate() {
+    for (i, e) in events[..replaceable].iter().enumerate() {
         let later = &events[i + 1..];
         let new_text = match e.name.as_str() {
             // A read is out of date once the file was read again (covering
@@ -357,12 +358,12 @@ pub fn fit(messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, FitInf
 pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>, FitInfo) {
     let full_tokens = total(&messages, cost);
     let mut sum = full_tokens;
-    let mut compacted = 0;
+    let mut outdated = 0;
 
     // 0. Out-of-date content, once the history is getting long.
-    if sum as f64 > budget as f64 * COMPACT_AT {
-        compacted = compact(&mut messages);
-        if compacted > 0 {
+    if sum as f64 > budget as f64 * OUTDATED_AT {
+        outdated = replace_outdated(&mut messages);
+        if outdated > 0 {
             sum = total(&messages, cost);
         }
     }
@@ -371,7 +372,7 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
         dropped_turns,
         estimated_tokens,
         full_tokens,
-        compacted,
+        outdated,
     };
     if sum <= budget {
         return (messages, info(false, 0, sum));
@@ -879,7 +880,7 @@ mod tests {
         assert!(other[9]["tool_calls"][0].get("extra_content").is_none());
     }
 
-    // ---- requests, the IDE's messages, compaction ----
+    // ---- requests, the IDE's messages, outdated content ----
 
     fn call_with(id: &str, name: &str, args: Value) -> Msg {
         let mut m = msg("assistant", "");
@@ -930,19 +931,19 @@ mod tests {
     }
 
     #[test]
-    fn compaction_waits_for_its_threshold() {
+    fn outdated_content_waits_for_its_threshold() {
         let mut history = vec![msg("user", "q")];
         history.extend(reads(20, "src/a.ts", 100));
         let (out, info) = fit_with(history.clone(), 1_000_000, generous(false));
-        assert_eq!(info.compacted, 0);
+        assert_eq!(info.outdated, 0);
         assert_eq!(out.len(), history.len());
     }
 
     #[test]
-    fn out_of_date_reads_are_compacted_in_batches_and_recent_ones_kept() {
+    fn out_of_date_reads_are_replaced_in_batches_and_recent_ones_kept() {
         let mut history = vec![msg("user", "q")];
         history.extend(reads(20, "src/a.ts", 3_000));
-        // 20 results, 8 kept recent: 12 compactable, rounded down to 8.
+        // 20 results, 8 kept recent: 12 replaceable, rounded down to 8.
         let (out, info) = fit_with(history, 10_000, generous(false));
         let stubs: Vec<usize> = out
             .iter()
@@ -951,7 +952,7 @@ mod tests {
             .map(|(i, _)| i)
             .collect();
         assert_eq!(stubs.len(), 8, "one batch of 8");
-        assert!(info.compacted >= 8);
+        assert!(info.outdated >= 8);
         assert_eq!(out.last().unwrap().text.len(), 3_000, "the latest read is whole");
         assert!(pairing_ok(&out));
     }

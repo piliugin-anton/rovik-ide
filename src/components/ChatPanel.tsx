@@ -482,7 +482,7 @@ export default function ChatPanel(props: ChatProps) {
               historyTokens: estimate.historyTokens,
               replyReserveTokens: estimate.replyReserveTokens,
               shortened:
-                estimate.compacted > 0 ||
+                estimate.outdated > 0 ||
                 estimate.droppedTurns > 0 ||
                 estimate.fullHistoryTokens > estimate.historyTokens,
             });

@@ -370,7 +370,7 @@ pub async fn prepare(
                 dropped_turns: 0,
                 estimated_tokens: tokens,
                 full_tokens,
-                compacted: 0,
+                outdated: 0,
             },
         )
     };

@@ -485,10 +485,10 @@ pub async fn send_chat_message(
                     built = build => built?,
                 },
             };
-            if info.trimmed || info.compacted > 0 {
+            if info.trimmed || info.outdated > 0 {
                 eprintln!(
-                    "context budget: ~{}/{} tokens (history ~{}), {} compacted, {} oldest turn(s) omitted",
-                    info.estimated_tokens, budget, info.full_tokens, info.compacted, info.dropped_turns
+                    "context budget: ~{}/{} tokens (history ~{}), {} outdated replaced, {} oldest turn(s) omitted",
+                    info.estimated_tokens, budget, info.full_tokens, info.outdated, info.dropped_turns
                 );
             }
             wire.into_iter()
@@ -999,7 +999,7 @@ pub mod reply_reserve {
 }
 
 /// How much of the model's context the chat's next request would use: the
-/// history as it would be sent (after compaction and trimming), plus the
+/// history as it would be sent (after trimming), plus the
 /// system prompt and `extra_chars` (tool schemas and project context, which
 /// the frontend knows). Estimated, with the model's learned ratio.
 #[derive(Serialize)]
@@ -1009,11 +1009,12 @@ pub struct ContextEstimate {
     prompt_tokens: usize,
     /// The history alone, as sent.
     history_tokens: usize,
-    /// The history before anything was compacted or trimmed.
+    /// The history before anything was replaced or trimmed.
     full_history_tokens: usize,
     /// Kept free for the reply, its reasoning included (`reply_reserve`).
     reply_reserve_tokens: usize,
-    compacted: usize,
+    /// Out-of-date messages replaced with a note.
+    outdated: usize,
     dropped_turns: usize,
 }
 
@@ -1061,7 +1062,7 @@ pub async fn chat_context_estimate(
         history_tokens: info.estimated_tokens,
         full_history_tokens: info.full_tokens,
         reply_reserve_tokens: reply,
-        compacted: info.compacted,
+        outdated: info.outdated,
         dropped_turns: info.dropped_turns,
     })
 }

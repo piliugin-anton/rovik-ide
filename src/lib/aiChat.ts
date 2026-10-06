@@ -119,7 +119,8 @@ export interface ContextEstimate {
   fullHistoryTokens: number;
   /** Kept free for the reply, its reasoning included. */
   replyReserveTokens: number;
-  compacted: number;
+  /** Out-of-date messages replaced with a note. */
+  outdated: number;
   droppedTurns: number;
 }
 
