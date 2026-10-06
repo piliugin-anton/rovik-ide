@@ -146,6 +146,10 @@ pub fn run() {
             vfs::vfs_read_file,
             vfs::vfs_list,
             vfs::vfs_remove,
+            vfs::vfs_revisions,
+            vfs::vfs_read_revision,
+            vfs::vfs_restore_revision,
+            vfs::vfs_set_history_limits,
             vfs::vfs_subscribe,
             vfs::vfs_unsubscribe,
         ])

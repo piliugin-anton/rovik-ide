@@ -43,6 +43,30 @@ export interface VfsStatus {
   problem: MountProblem | null;
   capacity: number;
   used: number;
+  history: { revisions: number; bytes: number; limits: HistoryLimits };
+}
+
+/** How much history is kept. `maxBytes: 0` turns versioning off. */
+export interface HistoryLimits {
+  /** All revisions together. */
+  maxBytes: number;
+  /** Revisions kept per file (the oldest go first). */
+  perFile: number;
+  /** Larger files aren't versioned. */
+  maxFileSize: number;
+}
+
+/**
+ * A saved state of a file: taken when a program closes a file it modified,
+ * or when the app writes one.
+ */
+export interface Revision {
+  /** 1, 2, 3… per file (older ones may have been dropped). */
+  number: number;
+  size: number;
+  /** Milliseconds since the Unix epoch. */
+  time: number;
+  source: 'process' | 'app';
 }
 
 export type InstallOutcome =
@@ -114,6 +138,37 @@ export function listVirtualFiles(path = ''): Promise<VirtualEntry[]> {
 
 export function removeVirtualFile(path: string): Promise<void> {
   return invoke<void>('vfs_remove', { path });
+}
+
+/**
+ * A file's revisions, oldest first. History follows the file through
+ * renames and "safe saves"; a deleted file's history is found by the path
+ * it had.
+ */
+export function listRevisions(path: string): Promise<Revision[]> {
+  return invoke<Revision[]>('vfs_revisions', { path });
+}
+
+/** A revision's content: text, or base64 with `{ base64: true }`. */
+export function readRevision(
+  path: string,
+  revision: number,
+  options: { base64?: boolean } = {}
+): Promise<string> {
+  return invoke<string>('vfs_read_revision', {
+    path,
+    revision,
+    encoding: options.base64 ? 'base64' : null,
+  });
+}
+
+/** Makes a revision the file's content again (recreating a deleted file). */
+export function restoreRevision(path: string, revision: number): Promise<VirtualFile> {
+  return invoke<VirtualFile>('vfs_restore_revision', { path, revision });
+}
+
+export function setHistoryLimits(limits: HistoryLimits): Promise<void> {
+  return invoke<void>('vfs_set_history_limits', { limits });
 }
 
 export type VirtualFileEventKind =

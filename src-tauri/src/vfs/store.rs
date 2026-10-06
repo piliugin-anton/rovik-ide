@@ -17,6 +17,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::SystemTime;
 
 use super::events::{Callback, EventMask, FsEvent, Hub, Op, Pending, Source, SubscriptionId};
+use super::history::{Histories, HistoryLimits, RevisionInfo};
 
 pub type Ino = u64;
 pub const ROOT: Ino = 1;
@@ -246,6 +247,8 @@ struct Tree {
     /// Bytes of file contents held, counted against `Options::capacity`.
     used: u64,
     opts: Options,
+    /// Revisions (see `history.rs`).
+    history: Histories,
 }
 
 impl Tree {
@@ -353,11 +356,28 @@ impl Tree {
     fn collect(&mut self, ino: Ino) {
         let dead = self.nodes.get(&ino).is_some_and(|n| n.nlink == 0 && n.open == 0);
         if dead {
+            if self.history.contains(ino) {
+                let path = self.event_path(ino);
+                self.history.mark_deleted(ino, &path);
+            }
             if let Some(node) = self.nodes.remove(&ino) {
                 if node.kind == Kind::File {
                     self.used -= node.data.len() as u64;
                 }
             }
+        }
+    }
+
+    /// Records the file's current content as a revision (if versioned).
+    fn record_revision(&mut self, ino: Ino, source: Source) {
+        let size = self.nodes.get(&ino).map_or(0, |n| n.data.len());
+        if !self.history.accepts(size) {
+            return;
+        }
+        let path = self.event_path(ino);
+        let Tree { nodes, history, .. } = self;
+        if let Some(node) = nodes.get(&ino).filter(|n| n.kind == Kind::File) {
+            history.record(ino, &path, &node.data, source);
         }
     }
 
@@ -461,7 +481,7 @@ impl VirtualFs {
         let mut nodes = HashMap::new();
         nodes.insert(ROOT, root);
         Arc::new(VirtualFs {
-            tree: RwLock::new(Tree { nodes, next_ino: ROOT + 1, used: 0, opts }),
+            tree: RwLock::new(Tree { nodes, next_ino: ROOT + 1, used: 0, opts, history: Histories::new(HistoryLimits::default()) }),
             listener: RwLock::new(None),
             hub: Hub::default(),
         })
@@ -706,6 +726,11 @@ impl VirtualFs {
                 (true, true) if !dst_node.children.is_empty() => return Err(VfsError::NotEmpty),
                 _ => {}
             }
+            // A file renamed over another (a "safe save") continues the
+            // replaced file's history.
+            if !src_is_dir && dst_node.kind == Kind::File {
+                tree.history.merge_into(dst, src);
+            }
             tree.detach(new_parent, new_name)?;
             tree.unlink_node(dst);
         }
@@ -905,6 +930,9 @@ impl VirtualFs {
             node.open = node.open.saturating_sub(1);
             if node.kind == Kind::File {
                 let modified = std::mem::take(&mut node.dirty);
+                if modified {
+                    tree.record_revision(ino, Source::Process);
+                }
                 ev.add(ino, Op::Closed { modified }, || tree.event_path(ino));
             }
             tree.collect(ino);
@@ -1110,6 +1138,7 @@ impl VirtualFs {
                 node.perm = perm & 0o7777;
             }
             let attr = node.attr(ino);
+            tree.record_revision(ino, Source::App);
             if ev.wants(EventMask::WRITTEN | EventMask::CLOSED) {
                 let path = tree.event_path(ino);
                 ev.add(ino, Op::Written { offset: 0, len: data.len() as u64 }, || path.clone());
@@ -1127,7 +1156,6 @@ impl VirtualFs {
         self.with_events(Source::App, |ev| self.read_in(ev, ino, 0, usize::MAX))
     }
 
-    #[allow(dead_code)] // app-side API, not used by the app yet
     pub fn metadata(&self, path: &str) -> VfsResult<Attr> {
         self.getattr(self.resolve_nofollow(path)?)
     }
@@ -1208,6 +1236,66 @@ impl VirtualFs {
     pub fn set_permissions(&self, path: &str, perm: u16) -> VfsResult<Attr> {
         let ino = self.resolve(path)?;
         self.with_events(Source::App, |ev| self.setattr_in(ev, ino, &SetAttr { perm: Some(perm), ..Default::default() }))
+    }
+}
+
+
+// --- Revisions (see `history.rs`) ---------------------------------------------
+
+impl VirtualFs {
+    /// The file a history lookup means: the one at `path`, or the latest
+    /// deleted one that was there.
+    fn history_ino(&self, path: &str) -> VfsResult<Ino> {
+        match self.resolve(path) {
+            Ok(ino) => Ok(ino),
+            Err(VfsError::NotFound) => {
+                let tree = self.tree();
+                let normalized = components(path).collect::<Vec<_>>().join("/");
+                tree.history.find_deleted(&normalized, tree.opts.case_insensitive).ok_or(VfsError::NotFound)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The revisions of the file at `path` (or of the deleted file that was
+    /// there), oldest first.
+    pub fn revisions(&self, path: &str) -> VfsResult<Vec<RevisionInfo>> {
+        let ino = self.history_ino(path)?;
+        Ok(self.tree().history.list(ino))
+    }
+
+    /// The content of revision `number` of the file at `path`.
+    pub fn read_revision(&self, path: &str, number: u64) -> VfsResult<Arc<[u8]>> {
+        let ino = self.history_ino(path)?;
+        self.tree().history.get(ino, number).ok_or(VfsError::NotFound)
+    }
+
+    /// Writes revision `number` back as the file's content (a new revision
+    /// itself). A deleted file is recreated at `path`, keeping its history.
+    pub fn restore_revision(&self, path: &str, number: u64) -> VfsResult<Attr> {
+        let old = self.history_ino(path)?;
+        let data = self.tree().history.get(old, number).ok_or(VfsError::NotFound)?;
+        let attr = self.write_file(path, &data, None)?;
+        if attr.ino != old {
+            let mut tree = self.tree_mut();
+            tree.history.merge_into(old, attr.ino);
+        }
+        Ok(attr)
+    }
+
+    pub fn history_limits(&self) -> HistoryLimits {
+        self.tree().history.limits()
+    }
+
+    /// Changes the limits, dropping what no longer fits (`max_bytes: 0`
+    /// turns versioning off and drops all revisions).
+    pub fn set_history_limits(&self, limits: HistoryLimits) {
+        self.tree_mut().history.set_limits(limits);
+    }
+
+    /// (revisions, bytes) held.
+    pub fn history_usage(&self) -> (usize, u64) {
+        self.tree().history.usage()
     }
 }
 
@@ -1591,5 +1679,84 @@ mod tests {
         assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 30_000);
         assert!(quiet < std::time::Duration::from_secs(2), "{quiet:?}");
         assert!(observed < std::time::Duration::from_secs(2), "{observed:?}");
+    }
+
+    /// What a program does: open, write, close.
+    fn program_writes(fs: &VirtualFs, ino: Ino, data: &[u8]) {
+        fs.open(ino, true).unwrap();
+        fs.setattr(ino, &SetAttr { size: Some(0), ..Default::default() }).unwrap();
+        fs.write(ino, 0, data).unwrap();
+        fs.release(ino);
+    }
+
+    fn contents(fs: &VirtualFs, path: &str) -> Vec<(u64, String)> {
+        fs.revisions(path)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.number, String::from_utf8_lossy(&fs.read_revision(path, r.number).unwrap()).into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_revision_per_finished_change() {
+        let fs = fs();
+        let f = file(&fs, ROOT, "notes.md");
+        program_writes(&fs, f.ino, b"one");
+        fs.open(f.ino, false).unwrap();
+        fs.release(f.ino); // read only: no revision
+        program_writes(&fs, f.ino, b"one"); // same content: no revision
+        program_writes(&fs, f.ino, b"two");
+        fs.write_file("notes.md", b"three", None).unwrap();
+        assert_eq!(contents(&fs, "notes.md"), [(1, "one".into()), (2, "two".into()), (3, "three".into())]);
+        let sources: Vec<Source> = fs.revisions("notes.md").unwrap().into_iter().map(|r| r.source).collect();
+        assert_eq!(sources, [Source::Process, Source::Process, Source::App]);
+        assert_eq!(fs.read_revision("notes.md", 9), Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn safe_saves_and_renames_keep_the_history() {
+        let fs = fs();
+        fs.write_file("f.txt", b"v1", None).unwrap();
+        // An editor: write a temporary file, rename it over the original.
+        let tmp = file(&fs, ROOT, ".f.txt.swp");
+        program_writes(&fs, tmp.ino, b"v2");
+        fs.rename(ROOT, ".f.txt.swp", ROOT, "f.txt", RenameMode::Replace).unwrap();
+        assert_eq!(contents(&fs, "f.txt"), [(1, "v1".into()), (2, "v2".into())]);
+        fs.rename_path("f.txt", "g.txt").unwrap();
+        assert_eq!(fs.revisions("g.txt").unwrap().len(), 2);
+        assert_eq!(fs.revisions("f.txt"), Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn deleted_files_can_be_restored() {
+        let fs = fs();
+        fs.write_file("d/a", b"first", None).unwrap();
+        fs.write_file("d/a", b"second", None).unwrap();
+        fs.remove("d/a").unwrap();
+        assert_eq!(contents(&fs, "d/a"), [(1, "first".into()), (2, "second".into())]);
+        let restored = fs.restore_revision("d/a", 1).unwrap();
+        assert_eq!(fs.read_file("d/a").unwrap(), b"first");
+        assert_eq!(fs.resolve("d/a").unwrap(), restored.ino);
+        assert_eq!(
+            contents(&fs, "d/a"),
+            [(1, "first".into()), (2, "second".into()), (3, "first".into())],
+            "the restore is a revision too"
+        );
+    }
+
+    #[test]
+    fn history_has_limits() {
+        let fs = fs();
+        fs.set_history_limits(HistoryLimits { max_bytes: 10, per_file: 2, max_file_size: 8 });
+        for v in ["a1", "a2", "a3"] {
+            fs.write_file("a", v.as_bytes(), None).unwrap();
+        }
+        assert_eq!(contents(&fs, "a"), [(2, "a2".into()), (3, "a3".into())]);
+        fs.write_file("big", b"123456789", None).unwrap();
+        assert!(fs.revisions("big").unwrap().is_empty(), "over max_file_size");
+        assert!(fs.history_usage().1 <= 10);
+        fs.set_history_limits(HistoryLimits { max_bytes: 0, ..fs.history_limits() });
+        fs.write_file("a", b"a4", None).unwrap();
+        assert_eq!(fs.history_usage(), (0, 0));
     }
 }

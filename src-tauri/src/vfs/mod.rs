@@ -28,6 +28,7 @@
 
 pub mod driver;
 pub mod events;
+pub mod history;
 pub mod problem;
 pub mod store;
 
@@ -49,6 +50,7 @@ use tauri::State;
 #[allow(unused_imports)] // re-exported for app code
 pub use events::{EventBatch, EventMask, FsEvent, Op, Source, SubscriptionId};
 
+use history::{HistoryLimits, RevisionInfo};
 use problem::{MountProblem, SettingsPane};
 use store::{Kind, Options, VfsError, VirtualFs};
 
@@ -272,6 +274,28 @@ impl VfsState {
         self.fs.unsubscribe(id)
     }
 
+    /// Revisions of the file at `path` (or of the deleted file that was
+    /// there), oldest first.
+    pub fn revisions(&self, path: &str) -> Result<Vec<RevisionInfo>, String> {
+        let rel = clean(path)?;
+        self.fs.revisions(&rel).map_err(|e| err(&rel, e))
+    }
+
+    /// The content of revision `number` of the file at `path`.
+    pub fn read_revision(&self, path: &str, number: u64) -> Result<Arc<[u8]>, String> {
+        let rel = clean(path)?;
+        self.fs.read_revision(&rel, number).map_err(|e| err(&rel, e))
+    }
+
+    /// Makes revision `number` the file's content again (recreating a
+    /// deleted file); returns its real path.
+    pub fn restore_revision(&self, path: &str, number: u64) -> Result<PathBuf, String> {
+        let rel = clean(path)?;
+        let real = self.real_path(&rel)?;
+        self.fs.restore_revision(&rel, number).map_err(|e| err(&rel, e))?;
+        Ok(real)
+    }
+
     pub fn remove(&self, path: &str) -> Result<(), String> {
         let rel = clean(path)?;
         if rel.is_empty() {
@@ -294,6 +318,16 @@ pub struct VfsStatus {
     pub problem: Option<MountProblem>,
     pub capacity: u64,
     pub used: u64,
+    pub history: HistoryStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStatus {
+    /// Revisions held, over all files.
+    pub revisions: usize,
+    pub bytes: u64,
+    pub limits: HistoryLimits,
 }
 
 #[derive(Serialize)]
@@ -318,6 +352,7 @@ pub struct VfsEntry {
 pub async fn vfs_status(state: State<'_, VfsState>) -> Result<VfsStatus, String> {
     let driver = tauri::async_runtime::spawn_blocking(driver::status).await.map_err(|e| e.to_string())?;
     let (capacity, used, _) = state.fs.usage();
+    let (revisions, history_bytes) = state.fs.history_usage();
     Ok(VfsStatus {
         driver,
         mountpoint: state.mountpoint().map(|p| p.to_string_lossy().into_owned()),
@@ -329,6 +364,7 @@ pub async fn vfs_status(state: State<'_, VfsState>) -> Result<VfsStatus, String>
         problem: state.problem(),
         capacity,
         used,
+        history: HistoryStatus { revisions, bytes: history_bytes, limits: state.fs.history_limits() },
     })
 }
 
@@ -432,6 +468,43 @@ pub async fn vfs_unsubscribe(state: State<'_, VfsState>, id: u64) -> Result<bool
     Ok(state.unsubscribe(SubscriptionId(id)))
 }
 
+/// A file's revisions, oldest first.
+#[tauri::command]
+pub async fn vfs_revisions(state: State<'_, VfsState>, path: String) -> Result<Vec<RevisionInfo>, String> {
+    state.revisions(&path)
+}
+
+/// A revision's content: text (lossy UTF-8), or `encoding: "base64"`.
+#[tauri::command]
+pub async fn vfs_read_revision(
+    state: State<'_, VfsState>,
+    path: String,
+    revision: u64,
+    encoding: Option<String>,
+) -> Result<String, String> {
+    let data = state.read_revision(&path, revision)?;
+    match encoding.as_deref() {
+        Some("base64") => Ok(base64::engine::general_purpose::STANDARD.encode(&data)),
+        None | Some("utf8") | Some("utf-8") => Ok(String::from_utf8_lossy(&data).into_owned()),
+        Some(other) => Err(format!("unknown encoding {other}")),
+    }
+}
+
+/// Makes a revision the file's content again (itself a new revision).
+#[tauri::command]
+pub async fn vfs_restore_revision(state: State<'_, VfsState>, path: String, revision: u64) -> Result<VfsFile, String> {
+    let real = state.restore_revision(&path, revision)?;
+    let size = state.fs.metadata(&clean(&path)?).map(|a| a.size).unwrap_or(0);
+    Ok(VfsFile { path: clean(&path)?, real_path: real.to_string_lossy().into_owned(), size })
+}
+
+/// Changes how much history is kept (`maxBytes: 0` turns it off).
+#[tauri::command]
+pub async fn vfs_set_history_limits(state: State<'_, VfsState>, limits: HistoryLimits) -> Result<(), String> {
+    state.fs.set_history_limits(limits);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn vfs_remove(state: State<'_, VfsState>, path: String) -> Result<(), String> {
     state.remove(&path)
@@ -530,6 +603,21 @@ mod mount_tests {
         assert!(has("ev.txt", &Op::Opened { write: false }), "{seen:?}");
         assert!(has("ev2.txt", &Op::Renamed { from: "ev.txt".into() }), "{seen:?}");
         assert!(has("ev2.txt", &Op::Removed { kind: Kind::File }), "{seen:?}");
+
+        // Revisions of what commands did, safe saves (sed -i) included.
+        let (ok, out) = sh(&at, "printf 'a\\n' > rev.txt && printf 'b\\n' >> rev.txt && sed -i 's/b/c/' rev.txt && rm rev.txt");
+        assert!(ok, "{out}");
+        let revs: Vec<String> = state
+            .revisions("rev.txt")
+            .unwrap()
+            .iter()
+            .map(|r| String::from_utf8_lossy(&state.read_revision("rev.txt", r.number).unwrap()).into_owned())
+            .collect();
+        assert_eq!(revs, ["a\n", "a\nb\n", "a\nc\n"]);
+        let path = state.restore_revision("rev.txt", 2).unwrap();
+        let (_, out) = sh(&at, &format!("cat {}", path.display()));
+        assert_eq!(out, "a\nb\n");
+        state.remove("rev.txt").unwrap();
 
         // Many files, read in parallel by several processes.
         for i in 0..2000 {

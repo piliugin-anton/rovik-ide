@@ -124,12 +124,28 @@ operations pay one atomic check; paths are found by walking up from the
 file, so the cost doesn't grow with the number of files. See
 `src-tauri/src/vfs/events.rs` for what a callback may do.
 
+Files are versioned: a revision is saved when a program closes a file it
+modified, or when the app writes one. History follows a file through
+renames and "safe saves" (temporary file renamed over the original, as
+`sed -i` and editors do), and outlives deleting it:
+
+```rust
+let revisions = vfs.revisions("notes.md")?;      // number, size, time, source
+let old = vfs.read_revision("notes.md", 2)?;
+vfs.restore_revision("notes.md", 2)?;            // itself a new revision
+```
+
+(`listRevisions` / `readRevision` / `restoreRevision` in the frontend.)
+At most 64 revisions per file and 256 MiB in all are kept, oldest dropped
+first; files over 32 MiB aren't versioned (`set_history_limits`).
+
 - `store.rs` — the in-memory filesystem (POSIX semantics: hard links,
   symlinks, xattrs, atomic rename, unlinked-but-open files), all unit tested.
 - `fuse.rs` / `macfuse.rs` — Linux and macOS driver (macOS through macFUSE's
   library, loaded at run time); `winfsp_fs.rs` — Windows.
 - `problem.rs` — why a mount failed and what to do; the macOS backend choice.
 - `events.rs` — callbacks for what happens to the files.
+- `history.rs` — revisions of files.
 - `driver.rs` — detecting and installing the driver.
 
 `cargo test vfs -- --ignored` mounts a real volume on Linux and runs shell
