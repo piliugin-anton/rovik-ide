@@ -1,0 +1,2 @@
+2-4 binary_operator add | add <- function(a, b) {
+5-5 binary_operator mul | mul = function(a, b) a * b

@@ -1,0 +1,17 @@
+4-6 struct_item Point | pub struct Point<T>
+7-16 impl_item Point<T> | impl<T: Clone> fmt::Display for Point<T>
+8-8   const_item N | const N: usize = 1;
+9-15   function_item new | pub(crate) fn new( x: T, ) -> Self
+12-12     function_item helper | fn helper()
+17-17 trait_item Shape | pub trait Shape
+17-17   function_signature_item area | fn area(&self) -> f64;
+17-17   function_item name | fn name(&self) -> &str
+18-18 enum_item Kind | pub enum Kind
+19-22 mod_item tests | mod tests
+21-21   function_item works | fn works()
+23-23 macro_definition square | macro_rules! square { ($x:expr) => { $x * $x }; }
+24-24 foreign_mod_item extern "C" { fn abs(x: i32) -> i32; } | extern "C"
+24-24   function_signature_item abs | fn abs(x: i32) -> i32;
+25-25 type_item Alias | type Alias = Vec<u8>;
+26-26 static_item GLOBAL | static GLOBAL: u8 = 1;
+27-27 union_item U | union U

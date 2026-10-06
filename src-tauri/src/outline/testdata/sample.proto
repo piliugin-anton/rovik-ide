@@ -1,0 +1,9 @@
+syntax = "proto3";
+package app;
+message User {
+  string name = 1;
+  message Address { string city = 1; }
+  oneof contact { string email = 2; }
+}
+enum Role { ADMIN = 0; }
+service Users { rpc Get (User) returns (User); }

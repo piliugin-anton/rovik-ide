@@ -1,0 +1,12 @@
+2-10 contract_declaration Token | contract Token is ERC20
+3-3   state_variable_declaration totalSupply | uint256 public totalSupply;
+4-4   event_definition Transfer | event Transfer(address from, address to);
+5-5   error_declaration Unauthorized | error Unauthorized();
+6-6   modifier_definition onlyOwner | modifier onlyOwner()
+7-7   constructor_definition constructor() {} | constructor()
+8-8   function_definition transfer | function transfer(address to) public returns (bool)
+9-9   struct_declaration Account | struct Account
+11-11 interface_declaration IToken | interface IToken
+11-11   function_definition f | function f() external;
+12-12 library_declaration Math | library Math
+12-12   function_definition add | function add(uint a) internal pure returns (uint)

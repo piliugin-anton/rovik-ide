@@ -1,0 +1,7 @@
+body { margin: 0; }
+.button, .link:hover { color: red; }
+@media (max-width: 600px) {
+  .button { display: none; }
+}
+@keyframes spin { from { transform: rotate(0); } }
+@import url("x.css");

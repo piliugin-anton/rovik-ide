@@ -1,0 +1,4 @@
+1-1 struct_specifier VSInput | struct VSInput
+3-3 function_definition VSMain | float4 VSMain(VSInput input) : SV_POSITION
+4-4 namespace_definition util | namespace util
+4-4   function_definition sq | float sq(float x)

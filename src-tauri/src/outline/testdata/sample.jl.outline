@@ -1,0 +1,7 @@
+1-13 module_definition App | module App
+3-3   const_statement MAX | const MAX = 10
+4-4   abstract_definition Shape | abstract type Shape end
+5-7   struct_definition Circle | struct Circle <: Shape
+8-10   function_definition area | function area(c::Circle)
+11-11   assignment square | square(x) = x * x
+12-12   macro_definition m | macro m(x) x end

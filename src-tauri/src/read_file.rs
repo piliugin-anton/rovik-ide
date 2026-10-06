@@ -10,11 +10,13 @@
 //! so the history (chat_db/history.rs) doesn't take it for a full copy of
 //! the file.
 //!
-//! The map is a stopgap until there's a real symbol index: a line counts as
-//! a declaration when it starts with a declaring keyword (`fn`, `class`,
-//! `def`, …) after any modifiers (`pub`, `export`, `async`, …), or is a
-//! Markdown heading. It misses declarations that start with a type (C and
-//! Java functions), which is fine for a map.
+//! The map is the file's outline (src/outline): each declaration with its
+//! line range, nested as in the syntax tree, for every language with a
+//! grammar. For other code it falls back to keywords: a line counts as a
+//! declaration when it starts with a declaring keyword (`fn`, `class`,
+//! `def`, …) after any modifiers (`pub`, `export`, `async`, …). That misses
+//! declarations that start with a type (C and Java functions), and gives
+//! start lines only.
 //!
 //! Pure string work, tested below.
 
@@ -34,8 +36,10 @@ const TAB_WIDTH: usize = 4;
 /// Deeper nesting is shown at this indent in the map.
 const MAP_MAX_INDENT: usize = 16;
 
-/// Extensions the declaration keywords make sense for.
+/// Extensions the declaration keywords make sense for: languages without a
+/// grammar, and the rest for when parsing fails (too large, too slow).
 const CODE_EXTENSIONS: &[&str] = &[
+    "vue", "svelte", "astro", "coffee", "fish", "pony", "hack", "hx", "mojo", "v", "sql",
     "rs", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "pyi", "go", "java", "kt", "kts", "swift", "rb",
     "php", "cs", "scala", "c", "h", "cc", "cpp", "hpp", "m", "mm", "lua", "ex", "exs", "dart", "vue", "svelte",
 ];
@@ -64,7 +68,7 @@ pub fn read(path: &str, content: &str, start_line: Option<usize>, end_line: Opti
         if chars <= MAX_CHARS {
             return Ok(content.to_string());
         }
-        return Ok(overview(path, &lines, chars));
+        return Ok(overview(path, content, &lines, chars));
     }
     if lines.is_empty() {
         return Ok(String::new());
@@ -111,17 +115,17 @@ fn range(lines: &[&str], start: usize, end: usize) -> String {
 }
 
 /// A file too large to read whole: its first lines and its map.
-fn overview(path: &str, lines: &[&str], chars: usize) -> String {
+fn overview(path: &str, content: &str, lines: &[&str], chars: usize) -> String {
     let (head, last) = head(lines);
-    let map = map(path, lines);
+    let map = map(path, content, lines);
     let mut out = format!(
         "{PARTIAL_PREFIX}{path} has {} lines ({chars} characters), too large to read whole. Shown: lines 1-{last}{}. Read the part you need with start_line and end_line (up to ~{MAX_CHARS} characters per read).]\n{head}",
         lines.len(),
         if map.is_some() { ", then a map of its declarations by line number" } else { "" },
     );
     match map {
-        Some(map) => out.push_str(&format!("\n\n[Map of {path} (line: declaration)]\n{map}")),
-        None => out.push_str("\n\n[No map for this kind of file: read it in ranges.]"),
+        Some(map) => out.push_str(&format!("\n\n[Map of {path} (lines: declaration)]\n{map}")),
+        None => out.push_str("\n\n[No map of declarations for this file: read it in ranges.]"),
     }
     out
 }
@@ -146,16 +150,42 @@ fn head(lines: &[&str]) -> (String, usize) {
 }
 
 struct Decl {
-    line: usize,
-    /// Nesting: indent columns in code, heading level in Markdown.
+    /// `12` or `12-40`.
+    lines: String,
+    /// Nesting: depth in the outline; indent columns or heading level in
+    /// the keyword map.
     depth: usize,
+    /// Indentation shown before `text`.
+    indent: usize,
     text: String,
 }
 
 /// Where the file's declarations are, one per line, within MAP_CHARS: the
-/// most deeply nested ones are left out first. None when the file isn't a
-/// kind the map knows or has no declarations.
-fn map(path: &str, lines: &[&str]) -> Option<String> {
+/// most deeply nested ones are left out first. None when there's no map:
+/// a kind of file neither the outline nor the keywords know, or no
+/// declarations.
+fn map(path: &str, content: &str, lines: &[&str]) -> Option<String> {
+    let decls = match crate::outline::outline(path, content) {
+        Some(symbols) => symbols
+            .into_iter()
+            .map(|s| Decl {
+                lines: if s.end_line > s.start_line {
+                    format!("{}-{}", s.start_line, s.end_line)
+                } else {
+                    s.start_line.to_string()
+                },
+                depth: s.depth,
+                indent: s.depth * 2,
+                text: s.signature,
+            })
+            .collect(),
+        None => keyword_decls(path, lines)?,
+    };
+    render(decls)
+}
+
+/// The keyword map's declarations, for files the outline can't parse.
+fn keyword_decls(path: &str, lines: &[&str]) -> Option<Vec<Decl>> {
     let ext = extension(path);
     let markdown = MARKDOWN_EXTENSIONS.contains(&ext.as_str());
     if !markdown && !CODE_EXTENSIONS.contains(&ext.as_str()) {
@@ -170,22 +200,27 @@ fn map(path: &str, lines: &[&str]) -> Option<String> {
             if text.starts_with("```") || text.starts_with("~~~") {
                 in_fence = !in_fence;
             } else if let Some(level) = heading_level(text).filter(|_| !in_fence) {
-                decls.push(Decl { line: i + 1, depth: (level - 1) * 2, text: text.trim_end().to_string() });
+                let depth = (level - 1) * 2;
+                decls.push(Decl { lines: (i + 1).to_string(), depth, indent: depth, text: text.trim_end().to_string() });
             }
         } else {
             let indent = width(&line[..line.len() - text.len()]);
             if is_declaration(text, indent) {
-                decls.push(Decl { line: i + 1, depth: indent, text: text.trim_end().to_string() });
+                decls.push(Decl { lines: (i + 1).to_string(), depth: indent, indent, text: text.trim_end().to_string() });
             }
         }
     }
+    Some(decls)
+}
+
+/// The map's text: as many declarations as fit, the deepest left out first.
+fn render(decls: Vec<Decl>) -> Option<String> {
     if decls.is_empty() {
         return None;
     }
-
     let rendered: Vec<String> = decls
         .iter()
-        .map(|d| format!("{}: {}{}", d.line, " ".repeat(d.depth.min(MAP_MAX_INDENT)), shorten(&d.text)))
+        .map(|d| format!("{}: {}{}", d.lines, " ".repeat(d.indent.min(MAP_MAX_INDENT)), shorten(&d.text)))
         .collect();
     let size = |max_depth: usize| -> usize {
         decls.iter().zip(&rendered).filter(|(d, _)| d.depth <= max_depth).map(|(_, r)| r.chars().count() + 1).sum()
@@ -197,13 +232,23 @@ fn map(path: &str, lines: &[&str]) -> Option<String> {
     // top level up to the limit.
     let max_depth = depths.iter().rev().copied().find(|&d| size(d) <= MAP_CHARS).unwrap_or(depths[0]);
 
+    // The room left takes the next level down, in order, as far as it goes.
+    let next_depth = depths.iter().copied().find(|&d| d > max_depth);
+    let mut room = MAP_CHARS.saturating_sub(size(max_depth));
     let mut out: Vec<&str> = Vec::new();
     let mut used = 0;
     for (d, r) in decls.iter().zip(&rendered) {
+        let len = r.chars().count() + 1;
         if d.depth > max_depth {
+            if Some(d.depth) == next_depth && len <= room {
+                room -= len;
+                used += len;
+                out.push(r);
+            } else if Some(d.depth) == next_depth {
+                room = 0; // the first that doesn't fit ends the level
+            }
             continue;
         }
-        let len = r.chars().count() + 1;
         if used + len > MAP_CHARS {
             break;
         }
@@ -291,6 +336,18 @@ fn shorten(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Prints what read_file returns for a whole file: READ_FILE=path cargo test read_file::tests::show -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn show() {
+        let path = std::env::var("READ_FILE").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let start = std::time::Instant::now();
+        let out = read(&path, &content, None, None).unwrap();
+        println!("{out}");
+        eprintln!("{} characters from {} in {:?}", out.chars().count(), content.chars().count(), start.elapsed());
+    }
+
     /// A Rust file of `n` functions, each 30 lines long.
     fn big_rust(n: usize) -> String {
         let mut s = String::from("use std::fs;\n\n");
@@ -310,20 +367,26 @@ mod tests {
         assert_eq!(read("src/main.rs", content, None, None).unwrap(), content);
     }
 
+    /// The map part of a large file's overview.
+    fn map_of(out: &str) -> &str {
+        out.split("(lines: declaration)]\n").nth(1).unwrap_or_else(|| panic!("no map in {out}"))
+    }
+
     #[test]
-    fn a_large_file_gets_its_start_and_a_map_of_all_of_it() {
+    fn a_large_file_gets_its_start_and_an_outline_of_all_of_it() {
         let content = big_rust(40);
         let lines = content.lines().count();
         let out = read("src/big.rs", &content, None, None).unwrap();
         assert!(out.starts_with(PARTIAL_PREFIX));
         assert!(out.contains(&format!("src/big.rs has {lines} lines")));
-        assert!(out.contains("Shown: lines 1-60"));
+        assert!(out.contains("Shown: lines 1-60, then a map of its declarations"));
         assert!(out.contains("\nuse std::fs;\n"), "the start of the file");
-        assert!(out.contains("[Map of src/big.rs (line: declaration)]"));
-        assert!(out.contains("\n3: pub fn f0(x: u32) -> u32 {"));
+        assert!(out.contains("[Map of src/big.rs (lines: declaration)]"));
+        let map = map_of(&out);
+        // Line ranges and signatures, from the syntax tree.
+        assert!(map.starts_with("3-32: pub fn f0(x: u32) -> u32\n"), "{map}");
         // The last function, far past the first 20,000 characters.
-        let last = 3 + 39 * 30;
-        assert!(out.contains(&format!("\n{last}: pub fn f39(x: u32) -> u32 {{")), "{out}");
+        assert!(map.contains("\n1173-1202: pub fn f39(x: u32) -> u32"), "{map}");
         assert!(out.chars().count() < MAX_CHARS);
     }
 
@@ -334,33 +397,67 @@ mod tests {
             content.push_str(&format!("impl Thing{i} {{\n    pub fn method_with_a_long_name_{i}(&self) {{}}\n{}}}\n", "    // filler line\n".repeat(5)));
         }
         let out = read("src/t.rs", &content, None, None).unwrap();
-        let map = out.split("(line: declaration)]\n").nth(1).unwrap();
-        assert!(map.contains("1: impl Thing0 {"));
-        assert!(map.contains(": impl Thing299 {"), "every top-level block fits");
-        assert!(!map.contains("method_with_a_long_name_"), "nested methods are left out");
-        assert!(map.contains("[+300 more declarations"));
+        let map = map_of(&out);
+        assert!(map.starts_with("1-8: impl Thing0\n2:   pub fn method_with_a_long_name_0(&self)\n"), "{map}");
+        assert!(map.contains("2393-2400: impl Thing299"), "every top-level block fits");
+        assert!(!map.contains("method_with_a_long_name_299"), "the methods that don't fit are left out");
+        assert!(map.contains("more declarations, nested deeper"));
+        assert!(map.chars().count() < MAP_CHARS + 200);
+    }
+
+    #[test]
+    fn nested_declarations_are_indented_under_their_parent() {
+        let mut content = String::from("pub struct S;\nimpl S {\n");
+        for i in 0..400 {
+            content.push_str(&format!("    pub fn method_{i}(&self) -> u32 {{\n        {i}\n    }}\n"));
+        }
+        content.push_str("}\n");
+        let out = read("src/s.rs", &content, None, None).unwrap();
+        let map = map_of(&out);
+        assert!(map.starts_with("1: pub struct S;\n2-1203: impl S\n3-5:   pub fn method_0(&self) -> u32\n"), "{map}");
+        assert!(map.contains("pub fn method_100(&self)"), "the room left goes to the methods: {map}");
+        assert!(!map.contains("pub fn method_399("), "not all 400 fit: {map}");
+        assert!(map.contains("more declarations"));
     }
 
     #[test]
     fn a_map_too_big_even_at_the_top_level_stops_at_its_limit() {
         let content: String = (0..2_000).map(|i| format!("fn function_number_{i}() {{}}\n")).collect();
         let out = read("src/many.rs", &content, None, None).unwrap();
-        let map = out.split("(line: declaration)]\n").nth(1).unwrap();
+        let map = map_of(&out);
         assert!(map.chars().count() < MAP_CHARS + 200);
-        assert!(map.contains("1: fn function_number_0() {}"));
+        assert!(map.starts_with("1: fn function_number_0()\n"), "{map}");
         assert!(map.contains("more declarations"));
     }
 
     #[test]
-    fn markdown_maps_headings_outside_code_blocks() {
+    fn markdown_maps_its_sections_outside_code_blocks() {
         let mut content = String::from("# Title\n\n```sh\n# not a heading\n```\n\n## Part\n");
         content.push_str(&"text text text text text text\n".repeat(1_000));
         content.push_str("### Deep\n");
         let out = read("docs/guide.md", &content, None, None).unwrap();
-        assert!(out.contains("\n1: # Title"));
-        assert!(out.contains("\n7:   ## Part"));
-        assert!(out.contains(&format!("\n{}:     ### Deep", 1_008)));
-        assert!(!out.contains(": # not a heading"));
+        let map = map_of(&out);
+        assert_eq!(map, "1-1008: # Title\n7-1008:   ## Part\n1008:     ### Deep");
+    }
+
+    #[test]
+    fn code_without_a_grammar_gets_the_keyword_map() {
+        let mut content = String::from("<script>\nexport default {\n");
+        for i in 0..800 {
+            content.push_str(&format!("  // filler {i} filler filler\n"));
+        }
+        content.push_str("}\nfunction helper() {}\n</script>\n");
+        let out = read("src/App.vue", &content, None, None).unwrap();
+        let map = map_of(&out);
+        assert_eq!(map, "804: function helper() {}");
+    }
+
+    #[test]
+    fn a_file_with_no_declarations_has_no_map() {
+        let content = "console.log(1);\n".repeat(2_000);
+        let out = read("src/script.js", &content, None, None).unwrap();
+        assert!(out.ends_with("[No map of declarations for this file: read it in ranges.]"));
+        assert!(!out.contains(", then a map"));
     }
 
     #[test]
@@ -368,8 +465,19 @@ mod tests {
         let content = "type this line\n".repeat(2_000);
         let out = read("logs/run.log", &content, None, None).unwrap();
         assert!(out.starts_with(PARTIAL_PREFIX));
-        assert!(out.ends_with("[No map for this kind of file: read it in ranges.]"));
+        assert!(out.ends_with("[No map of declarations for this file: read it in ranges.]"));
         assert!(!out.contains(", then a map"));
+    }
+
+    #[test]
+    fn a_file_that_doesnt_parse_cleanly_is_still_mapped() {
+        // An unclosed brace halfway: what parses is still outlined.
+        let mut content = String::from("fn first() {}\nfn broken( {\n");
+        content.push_str(&"    let x = 1;\n".repeat(2_000));
+        content.push_str("fn last() {}\n");
+        let out = read("src/broken.rs", &content, None, None).unwrap();
+        let map = map_of(&out);
+        assert!(map.starts_with("1: fn first()"), "{map}");
     }
 
     #[test]

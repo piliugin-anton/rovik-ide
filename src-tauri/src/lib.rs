@@ -7,6 +7,7 @@ mod agent_run;
 mod atomic_file;
 mod edit_file;
 mod read_file;
+mod outline;
 mod lsp;
 mod project_profile;
 mod chat_db;

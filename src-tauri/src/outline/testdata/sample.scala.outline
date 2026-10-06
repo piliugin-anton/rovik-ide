@@ -1,0 +1,10 @@
+3-6 object_definition Main | object Main extends App
+4-4   val_definition config | val config = load()
+5-5   function_definition run | def run(args: Array[String]): Unit =
+7-7 trait_definition Shape | trait Shape
+7-7   function_declaration area | def area: Double
+8-8 class_definition Circle | case class Circle(r: Double) extends Shape
+8-8   function_definition area | def area =
+9-9 trait_definition Color | sealed trait Color
+10-10 enum_definition Planet | enum Planet
+11-11 type_definition Name | type Name = String

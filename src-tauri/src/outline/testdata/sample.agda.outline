@@ -1,0 +1,9 @@
+1-1 module Main | module Main where
+2-4 data Nat | data Nat : Set where
+3-3   function zero | zero : Nat
+4-4   function suc | suc : Nat -> Nat
+5-5 function _+_ | _+_ : Nat -> Nat -> Nat
+6-6 function zero + n = n | zero + n = n
+7-7 function suc m + n = suc (m + n) | suc m + n = suc (m + n)
+8-9 record Point | record Point : Set
+9-9   signature x | x : Nat

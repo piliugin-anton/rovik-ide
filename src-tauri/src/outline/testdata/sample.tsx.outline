@@ -1,0 +1,2 @@
+1-3 function_declaration Button | export function Button({ label }: Props)
+4-4 lexical_declaration Card | export const Card = ({ title }: { title: string }) => <div>{title}</div>;

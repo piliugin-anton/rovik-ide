@@ -1,0 +1,4 @@
+1-1 type_definition t | type t
+2-2 value_specification create | val create : unit -> t
+3-3 module_definition Sub | module Sub : sig val x : int end
+3-3   value_specification x | val x : int

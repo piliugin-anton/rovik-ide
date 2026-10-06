@@ -1,0 +1,3 @@
+2-2 struct_specifier Light | struct Light
+4-4 function_definition shade | vec3 shade(vec3 n)
+5-5 function_definition main | void main()

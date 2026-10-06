@@ -1,0 +1,2 @@
+4-5 proc_declaration add | proc add(a, b: int): int =
+6-6 func_declaration pure | func pure(x: int): int =

@@ -1,0 +1,4 @@
+1-6 named_module App | module App
+2-4   type_definition Shape | type Shape =
+5-5   value_definition area | val area : Shape -> float
+6-6   exception_definition MyError | exception MyError of string

@@ -1,0 +1,6 @@
+3-3 element head | <head><title>T</title><style>body{}</style></head>
+4-11 element body | <body>
+5-5   element header | <header id="top"><h1>Title</h1></header>
+6-9   element main | <main>
+8-8     element section | <section id="about"><h2>About</h2></section>
+10-10   script_element script | <script>console.log(1)</script>

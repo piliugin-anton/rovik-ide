@@ -1,0 +1,6 @@
+(defpackage :app (:use :cl))
+(defvar *count* 0)
+(defun add (a b) (+ a b))
+(defmacro twice (x) `(progn ,x ,x))
+(defclass point () ((x :initarg :x)))
+(defmethod area ((p point)) 0)

@@ -1,0 +1,4 @@
+1-1 list x | (define x 1)
+2-2 list add | (define (add a b) (+ a b))
+3-3 list point | (define-record-type point (make-point x y) point? (x point-x))
+4-4 list my-if | (define-syntax my-if (syntax-rules () ((_ c a b) (cond (c a) (else b)))))

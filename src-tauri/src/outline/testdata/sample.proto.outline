@@ -1,0 +1,5 @@
+3-7 message User | message User
+5-5   message Address | message Address
+6-6   oneof contact | oneof contact { string email = 2; }
+8-8 enum Role | enum Role
+9-9 service Users | service Users { rpc Get (User) returns (User); }

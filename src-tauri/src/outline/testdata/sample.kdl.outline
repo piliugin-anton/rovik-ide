@@ -1,0 +1,5 @@
+1-4 node package | package {
+2-2   node name | name "app"
+3-3   node version | version "1.0"
+5-7 node dependencies | dependencies {
+6-6   node serde | serde "1"

@@ -1,0 +1,7 @@
+1-8 named_module App | module App
+3-3   type_definition Shape | type Shape = Circle of float | Square of float
+4-4   function_or_value_defn area | let area shape =
+5-5   function_or_value_defn fact | let rec fact n =
+6-7   type_definition Point | type Point(x: int) =
+7-7     member_defn this.X | member this.X = x
+8-8   exception_definition MyError | exception MyError of string

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.10)
+project(App)
+function(add_tool name)
+  message(${name})
+endfunction()
+macro(setup)
+endmacro()
+add_executable(app main.c)

@@ -1,0 +1,8 @@
+2-2 assignment VERSION | VERSION = "1.0"
+3-15 module App | module App
+4-14   class User | class User < Base
+6-8     method initialize | def initialize(name)
+9-10     singleton_method find | def self.find(id)
+11-13     singleton_class build | class << self
+12-12       method build | def build; end
+16-16 method top_level | def top_level; end

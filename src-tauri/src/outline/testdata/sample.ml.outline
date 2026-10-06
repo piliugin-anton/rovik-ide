@@ -1,0 +1,10 @@
+2-2 type_definition shape | type shape = Circle of float | Square of float
+3-3 value_definition area | let area = function Circle r -> r | Square s -> s
+4-4 value_definition fact | let rec fact n = if n = 0 then 1 else n * fact (n - 1)
+5-8 module_definition Stack | module Stack = struct
+6-6   type_definition t | type t = int list
+7-7   value_definition empty | let empty = []
+9-9 module_type_definition S | module type S =
+10-10 exception_definition Not_found_here | exception Not_found_here
+11-11 class_definition point | class point = object method x = 0 end
+11-11   method_definition x | method x =

@@ -1,0 +1,8 @@
+title = "x"
+[package]
+name = "app"
+version = "1.0"
+[dependencies]
+serde = "1"
+[[bin]]
+name = "tool"

@@ -1,0 +1,20 @@
+2-5 function_declaration App | export default function App(props: P): JSX.Element
+3-3   lexical_declaration inner | const inner = () => 1;
+6-6 lexical_declaration routes | export const routes: Route[] = [];
+7-12 class_declaration Foo | export class Foo<T> extends Bar implements Baz
+9-9   public_field_definition handle | handle = (e: E) => {}
+10-10   method_definition constructor | constructor(a: number)
+11-11   abstract_method_signature m | abstract m(): void
+13-13 interface_declaration Props | export interface Props
+13-13   method_signature m | m(): void
+14-14 type_alias_declaration Alias | export type Alias = { a: string };
+15-15 enum_declaration Color | enum Color
+16-16 module 'x' | declare module 'x'
+16-16   function_signature f | export function f(): void;
+17-17 internal_module NS | namespace NS
+17-17   function_declaration z | function z()
+18-18 abstract_class_declaration Abs | export abstract class Abs
+18-18   abstract_method_signature m | abstract m(): void
+19-19 function_signature overload | function overload(a: string): void;
+20-20 function_declaration overload | function overload(a: any)
+21-21 class class {} | export default class

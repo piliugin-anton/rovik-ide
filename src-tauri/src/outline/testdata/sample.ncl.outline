@@ -1,0 +1,4 @@
+1-1 let_binding config | config = { name = "x", port = 8080 }
+1-1   field_def name | name = "x"
+1-1   field_def port | port = 8080
+2-2 let_binding helper | helper = fun x => x + 1

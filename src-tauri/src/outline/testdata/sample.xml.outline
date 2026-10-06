@@ -1,0 +1,5 @@
+2-7 element <project> | <project>
+3-5   element <dependencies> | <dependencies>
+4-4     element <dependency><groupId>a</groupId></dependency> | <dependency><groupId>a</groupId></dependency>
+4-4       element <groupId>a</groupId> | <groupId>a</groupId>
+6-6   element <build/> | <build/>

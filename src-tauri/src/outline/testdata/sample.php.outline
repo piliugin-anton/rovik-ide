@@ -1,0 +1,10 @@
+2-2 namespace_definition App\Models | namespace App\Models;
+4-4 interface_declaration HasName | interface HasName
+4-4   method_declaration name | public function name(): string;
+5-5 trait_declaration Greets | trait Greets
+5-5   method_declaration greet | public function greet()
+6-11 class_declaration User | final class User extends Model implements HasName
+9-9   method_declaration __construct | public function __construct(private string $name)
+10-10   method_declaration name | public function name(): string
+12-12 enum_declaration Status | enum Status: string
+13-13 function_definition helper | function helper($x)

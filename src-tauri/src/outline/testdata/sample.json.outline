@@ -1,0 +1,6 @@
+2-2 pair "name" | "name": "app"
+3-3 pair "scripts" | "scripts": { "build": "x", "test": "y" }
+3-3   pair "build" | "build": "x"
+3-3   pair "test" | "test": "y"
+4-4 pair "list" | "list": [ { "inner": 1 } ]
+4-4   pair "inner" | "inner": 1

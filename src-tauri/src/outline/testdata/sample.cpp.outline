@@ -1,0 +1,13 @@
+2-19 namespace_definition app | namespace app
+3-3   namespace_definition detail | namespace detail
+3-3     declaration helper | int helper();
+4-13   class_specifier Box | class Box : public Base
+7-7     declaration Box | Box();
+8-8     declaration ~Box | ~Box();
+9-9     function_definition get | T get() const
+10-10     field_declaration set | void set(T v);
+14-15   function_definition Box<T>::set | void Box<T>::set(T v)
+16-16   struct_specifier Pair | struct Pair
+17-17   alias_declaration Vec | using Vec = std::vector<int>;
+18-18   enum_specifier Mode | enum class Mode
+20-20 function_definition main | int main()

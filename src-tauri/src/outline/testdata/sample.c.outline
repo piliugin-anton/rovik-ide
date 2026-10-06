@@ -1,0 +1,9 @@
+2-2 preproc_function_def MAX | #define MAX(a, b) ((a) > (b) ? (a) : (b))
+4-4 type_definition Point | typedef struct { int x; } Point;
+5-5 struct_specifier node | struct node
+6-6 enum_specifier color | enum color
+8-8 declaration add | int add(int a, int b);
+9-9 declaration name | char *name(void);
+10-15 function_definition mul | static inline int mul(int a, int b)
+17-17 function_definition debug_log | void debug_log(const char *msg)
+19-19 function_definition main | int main(int argc, char **argv)

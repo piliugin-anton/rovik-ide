@@ -1,0 +1,11 @@
+3-12 class_declaration Outer | @Annotated public class Outer<T> extends Base implements I
+6-6   constructor_declaration Outer | public Outer()
+7-8   method_declaration toString | @Override public String toString()
+9-9   class_declaration Inner | static class Inner
+10-10   interface_declaration Nested | interface Nested
+10-10     method_declaration m | void m();
+11-11   enum_declaration E | enum E
+11-11     method_declaration m | void m()
+13-13 record_declaration Point | record Point(int x, int y)
+13-13   compact_constructor_declaration Point | Point
+14-14 annotation_type_declaration Ann | @interface Ann

@@ -1,0 +1,4 @@
+2-2 function_definition kernel | __global__ void kernel(float *a, int n)
+3-3 function_definition helper | __device__ float helper(float x)
+4-4 struct_specifier Params | struct Params
+5-5 function_definition main | int main()

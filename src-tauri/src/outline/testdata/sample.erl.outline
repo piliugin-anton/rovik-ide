@@ -1,0 +1,7 @@
+3-3 record_decl user | -record(user, {name, age}).
+4-4 pp_define MAX | -define(MAX, 10).
+5-5 type_alias id() | -type id() :: integer().
+6-6 spec -spec start() -> ok. | -spec start() -> ok.
+7-8 fun_decl start | start() ->
+9-9 fun_decl helper | helper(X) -> X;
+10-10 fun_decl helper | helper(_) -> none.
