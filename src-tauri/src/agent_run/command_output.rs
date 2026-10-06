@@ -171,7 +171,7 @@ static LOCATION: LazyLock<Regex> = LazyLock::new(|| {
 static PY_LOCATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"File "([^"]+\.[A-Za-z0-9]{1,6})", line \d+"#).unwrap());
 static NOT_SOURCE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(https?|node|file):|^\d+(\.\d+)+$|/node_modules/|\.min\.js$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(https?|node|file):|^\d+(\.\d+)+$|(^|/)node_modules/|\.min\.js$").unwrap());
 
 /// Source files the output points at: "src/a.ts:12:5", "src/a.ts(12,5)",
 /// "--> src/main.rs:3:1", 'File "app/x.py", line 9'. Returned as written
@@ -249,5 +249,25 @@ mod tests {
     #[test]
     fn strips_colors() {
         assert_eq!(strip_ansi("\x1b[31merror\x1b[0m"), "error");
+    }
+
+    #[test]
+    fn output_edge_cases() {
+        assert_eq!(cap_output("", 2, 2, 100), "");
+        // One huge line over the limit: nothing fits whole, so nothing of it is kept.
+        let long = "x".repeat(10_000);
+        assert!(cap_output(&long, 2, 2, 100).starts_with("[… output shortened to its last 0 lines …]"));
+        // Short failing output is kept whole, CRLF normalized, colors gone.
+        assert_eq!(focus_failures("\x1b[31merror\x1b[0m: x\r\nnext\r\n", 8_000), "error: x\nnext");
+        // Long output with no error words: start and end.
+        let plain: String = (0..300).map(|i| format!("line {i}\n")).collect();
+        assert!(focus_failures(&plain, 8_000).contains("lines omitted"));
+        // "0 failed" is a summary, not an error.
+        let mut lines: Vec<String> = (0..200).map(|i| format!("ok {i}")).collect();
+        lines.insert(10, "test result: ok. 3 passed; 0 failed".into());
+        assert!(!focus_failures(&lines.join("\n"), 8_000).contains("[… 9 lines …]"));
+        // Libraries and versions aren't source the agent wrote.
+        assert!(error_locations("node_modules/a/b.js:3\n  at ./node_modules/x/y.ts:1:2\nv 1.2.3:4").is_empty());
+        assert_eq!(error_locations("src/a.ts:1:1\nsrc/a.ts:9:9"), ["src/a.ts"], "each once");
     }
 }

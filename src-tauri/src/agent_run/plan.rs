@@ -459,4 +459,51 @@ mod tests {
         assert_eq!(items[2].status, "pending");
         assert_eq!(describe_todo(&items), "Checklist updated: 0 of 3 done; now: b.");
     }
+
+    #[test]
+    fn plan_and_question_edge_cases() {
+        // A steps heading with more words, steps with ")".
+        assert!(plan_problems("# T\n## Implementation steps\n1) a\n2) b").is_empty());
+        // Steps belong under the steps heading, not a later section.
+        assert_eq!(plan_problems("# T\n## Steps\nnone\n## Other\n1. a\n2. b").len(), 1);
+        assert!(plan_problems(&format!("# T\n## Steps\n1. a\n2. b\n{}", "x".repeat(40_001)))
+            .iter()
+            .any(|p| p.contains("over 40,000")));
+        // Leading blank lines before the title are fine.
+        assert!(plan_problems("\n\n# T\n## Steps\n1. a\n2. b").is_empty());
+
+        // At most 3 questions, 6 options; junk skipped.
+        let many = json!({ "questions": [
+            { "question": "1", "options": ["a","b","c","d","e","f","g"] },
+            { "question": "2", "options": [1, null, { "label": " " }, { "label": "ok" }] },
+            "not an object",
+            { "question": "3" },
+            { "question": "4" }
+        ]});
+        let qs = parse_questions(many.as_object().unwrap());
+        assert_eq!(qs.len(), 2, "the string and the 4th are out");
+        assert_eq!(qs[0].options.len(), 6);
+        assert_eq!(qs[1].options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["ok"]);
+        assert!(parse_questions(json!({}).as_object().unwrap()).is_empty());
+        // Fewer answers than questions: the rest are left to the agent.
+        let qs = parse_questions(json!({ "questions": [{ "question": "A?" }, { "question": "B?" }] }).as_object().unwrap());
+        let outcome = QuestionsOutcome::Answers { answers: vec![QuestionAnswer::Custom { text: "mine".into() }] };
+        let text = describe_outcome(&qs, &outcome);
+        assert!(text.contains("\"mine\" (in their own words)") && text.contains("B?\n   → left it to you"));
+        assert_eq!(outcome_kinds(&outcome), ["custom"]);
+    }
+
+    #[test]
+    fn checklist_edge_cases() {
+        assert_eq!(describe_todo(&[]), "Error: the checklist is empty. Pass items: [{ title, status }].");
+        let many: Vec<Value> = (0..40).map(|i| json!(format!("step {i}"))).collect();
+        assert_eq!(parse_todo(json!({ "items": many }).as_object().unwrap()).len(), MAX_TODO_ITEMS);
+        let all_settled = parse_todo(
+            json!({ "items": [{ "title": "a", "status": "done" }, { "title": "b", "status": "skipped" }, { "title": "c", "status": "changed" }] })
+                .as_object()
+                .unwrap(),
+        );
+        assert!(all_settled.iter().all(is_settled));
+        assert_eq!(describe_todo(&all_settled), "Checklist updated: 3 of 3 done.");
+    }
 }

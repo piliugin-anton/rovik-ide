@@ -170,4 +170,26 @@ mod tests {
         assert_eq!(compact_diff(&hunks), "@@ line 2 @@\n-b\n+B\n@@ line 5 @@\n+x");
         assert!(diff_lines(&split_lines("a\r\nb"), &split_lines("a\nb")).is_empty());
     }
+
+    #[test]
+    fn diff_edge_cases() {
+        fn lines(t: &str) -> Vec<&str> {
+            split_lines(t)
+        }
+        // Insertion at the end, deletion of everything, an empty file.
+        assert_eq!(diff_lines(&lines("a"), &lines("a\nb")), vec![Hunk { orig_start: 2, deleted: vec![], added: vec!["b".into()] }]);
+        assert_eq!(diff_lines(&lines("a\nb"), &lines("")), vec![Hunk { orig_start: 1, deleted: vec!["a".into(), "b".into()], added: vec!["".into()] }]);
+        assert!(diff_lines(&lines(""), &lines("")).is_empty());
+        // Repeated lines: the change lands on one of them only.
+        let hunks = diff_lines(&lines("x\nx\nx"), &lines("x\nx"));
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].deleted, ["x"]);
+        // Past the edit-distance limit: one hunk for the whole middle.
+        let a: Vec<String> = (0..2_100).map(|i| format!("a{i}")).collect();
+        let b: Vec<String> = (0..2_100).map(|i| format!("b{i}")).collect();
+        let (a, b): (Vec<&str>, Vec<&str>) = (a.iter().map(|s| s.as_str()).collect(), b.iter().map(|s| s.as_str()).collect());
+        let hunks = diff_lines(&a, &b);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].deleted.len(), 2_100);
+    }
 }

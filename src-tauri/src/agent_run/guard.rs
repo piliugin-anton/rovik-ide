@@ -324,4 +324,45 @@ mod tests {
         g.record(call("read_file", "last", "r"));
         assert_eq!(g.pause(), Some(PauseInfo { kind: "checkpoint", tool_calls: 50, reason: None }));
     }
+
+    #[test]
+    fn different_errors_in_a_row_are_a_streak() {
+        let mut g = Guard::new(None, 0);
+        for i in 0..4 {
+            let err = format!("Error: problem {i}");
+            assert_eq!(g.record(call("x", &i.to_string(), &err)), GuardVerdict::Ok);
+        }
+        assert!(matches!(g.record(call("x", "9", "Error: other")), GuardVerdict::Nudge(n) if n.contains("last 5 tool calls all failed")));
+    }
+
+    #[test]
+    fn a_success_breaks_the_streak_and_unparseable_args_still_compare() {
+        let mut g = Guard::new(None, 0);
+        for i in 0..4 {
+            g.record(call("x", &i.to_string(), &format!("Error: {i}")));
+        }
+        g.record(call("x", "ok", "fine"));
+        assert_eq!(g.record(call("x", "5", "Error: 5")), GuardVerdict::Ok);
+        let mut g = Guard::new(None, 0);
+        g.record(call("x", "{broken", "r"));
+        g.record(call("x", " {broken ", "r"));
+        assert!(matches!(g.record(call("x", "{broken", "r")), GuardVerdict::Nudge(_)));
+    }
+
+    #[test]
+    fn writes_reset_repeated_reads_and_no_checkpoint_means_none() {
+        let mut g = Guard::new(None, 0);
+        g.record(call("read_file", "{}", "same"));
+        g.record(call("read_file", "{}", "same"));
+        let w = FinishedCall { name: "write_file", args_json: "{}", result: "ok", write: Some(Write { path: "a", before: None, after: "1" }) };
+        g.record(w);
+        // Reading again after a write is expected.
+        assert_eq!(g.record(call("read_file", "{}", "same")), GuardVerdict::Ok);
+        assert_eq!(g.record(call("read_file", "{}", "same")), GuardVerdict::Ok);
+        for _ in 0..500 {
+            g.record(call("x", &g.tool_calls.to_string(), "r"));
+        }
+        assert!(g.pause().is_none(), "no checkpoint set");
+        assert!(Guard::new(Some(0), 0).pause().is_none());
+    }
 }

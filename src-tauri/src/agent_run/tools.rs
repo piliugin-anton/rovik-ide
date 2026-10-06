@@ -754,4 +754,30 @@ mod tests {
         assert_eq!(result_meta("browse_url", "# (untitled)\nURL: x").unwrap().len(), 0);
         assert!(edit_args(&Map::new()).is_err());
     }
+
+    #[test]
+    fn tool_text_edge_cases() {
+        // A command killed by a timeout, with no output.
+        let out = CommandOutput { exit_code: None, stdout: " ".into(), stderr: String::new(), timed_out: true, truncated: false, duration_ms: 120_000 };
+        let text = format_command_output("sleep 999", &out);
+        assert_eq!(text, "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)");
+        assert_eq!(result_meta("run_command", &text).unwrap()["exitCode"], Value::Null);
+        // Truncated by the runner: said so.
+        let out = CommandOutput { exit_code: Some(0), stdout: "x".into(), stderr: String::new(), timed_out: false, truncated: true, duration_ms: 1 };
+        assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read_file for the rest)"));
+        assert_eq!(format_search_result(&SearchResult { lines: vec![], match_count: 0, file_count: 0, truncated: false }), "No matches.");
+        assert_eq!(result_meta("web_search", "1. A\n   u\n\n2. B\n   v").unwrap()["count"], json!(2));
+        assert_eq!(result_meta("list_dir", "(empty, or everything under this path is ignored)").unwrap()["count"], json!(0));
+        assert!(result_meta("todo", "x").is_none());
+        // Line numbers as strings, floats, negatives.
+        let args = json!({ "path": "a", "old_text": "x", "new_text": "y", "start_line": "12", "end_line": 14.7 });
+        let edit = edit_args(args.as_object().unwrap()).ok().unwrap();
+        assert_eq!((edit.start_line, edit.end_line), (Some(12), Some(14)));
+        let args = json!({ "path": "a", "old_text": "x", "new_text": "y", "start_line": -3, "end_line": "abc" });
+        let edit = edit_args(args.as_object().unwrap()).ok().unwrap();
+        assert_eq!((edit.start_line, edit.end_line), (None, None));
+        assert!(matches!(edit_args(json!({ "path": "", "old_text": "", "new_text": "" }).as_object().unwrap()), Err(e) if e.contains("path")));
+        assert_eq!(to_absolute_path("C:\\abs\\x", "/p"), "C:\\abs\\x");
+        assert_eq!(to_absolute_path("a/", "/p"), "/p/a");
+    }
 }

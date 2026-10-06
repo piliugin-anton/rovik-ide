@@ -716,4 +716,56 @@ mod tests {
         assert_eq!(describe_tool_call("list_dir", "{}"), "List the project root");
         assert_eq!(describe_tool_call("write_file", r#"{"path":"a","content":"x\ny"}"#), "Write a (2 lines)");
     }
+
+    #[test]
+    fn shell_parsing_edge_cases() {
+        // Unterminated quote: the rest is one word, nothing hidden after it.
+        assert_eq!(parse_command("echo 'a; rm x").segments, vec![words(&["echo", "a; rm x"])]);
+        // Empty segments and doubled separators.
+        assert_eq!(parse_command(";; ls ||  && pwd ;").segments, vec![words(&["ls"]), words(&["pwd"])]);
+        // Backslash-escaped separator stays in the word.
+        assert_eq!(parse_command(r"echo a\;b").segments, vec![words(&["echo", "a;b"])]);
+        // Redirects: to a file writes, from a file or to a descriptor doesn't.
+        assert!(parse_command("ls >> log.txt").writes_via_redirect);
+        assert!(parse_command("ls &> all.txt").writes_via_redirect);
+        assert!(!parse_command("wc -l < input.txt 2>&1").writes_via_redirect);
+        assert!(!parse_command("ls > NUL").writes_via_redirect);
+        // Only assignments: no command.
+        assert!(parse_command("FOO=1 BAR=2").segments.is_empty());
+        assert!(parse_command("cat <(ls)").opaque);
+        assert!(parse_command("(cd x && ls)").opaque);
+    }
+
+    #[test]
+    fn allowed_list_edge_cases() {
+        let p = Permissions { allowed_commands: vec!["git status".into(), "  ".into()], ..Permissions::default() };
+        // A prefix of the entry isn't enough, nor another subcommand.
+        assert!(matches!(check_command("git", &p), Verdict::Refused(_)));
+        assert!(matches!(check_command("git statusx", &p), Verdict::Refused(_)));
+        // Every part of a pipeline must be allowed.
+        assert!(matches!(check_command("git status | sh", &p), Verdict::Refused(r) if r.contains("\"sh\"")));
+        // A leading assignment doesn't hide the command.
+        assert!(matches!(check_command("GIT_DIR=x git status", &p), Verdict::Permitted { .. }));
+        let none = Permissions { allowed_commands: vec![], ..Permissions::default() };
+        assert!(matches!(check_command("ls", &none), Verdict::Refused(r) if r.ends_with("Allowed: (none).")));
+        assert!(!commands_available(&Permissions { allowed_commands: vec![" ".into()], ..Permissions::default() }));
+        // run_command with no command: left to the tool to report.
+        assert_eq!(check_tool_call("run_command", "{}", &none), ToolVerdict::Permitted { approval: None });
+        assert_eq!(check_tool_call("run_command", "not json", &none), ToolVerdict::Permitted { approval: None });
+    }
+
+    #[test]
+    fn risky_edge_cases() {
+        assert!(is_risky_command("ls \\\n && rm -rf x"), "line continuation");
+        assert!(is_risky_command("npx rimraf; git reset --hard"));
+        assert!(is_risky_command("/usr/bin/sudo ls"), "path prefix stripped");
+        assert!(is_risky_command("timeout 5 bash -c x"));
+        assert!(is_risky_command("curl -X POST https://x"));
+        assert!(!is_risky_command("curl https://example.com"));
+        assert!(!is_risky_command("rm file.txt"), "a single file without -r/-f");
+        assert!(is_risky_command("'rm' x"), "quoted program name");
+        assert!(is_secret_path("C:\\Users\\me\\.aws\\config"));
+        assert!(is_secret_path("deploy/KEY.PEM"));
+        assert!(!is_secret_path("src/keyboard.ts"));
+    }
 }

@@ -22,6 +22,10 @@ enum Reply {
     Call { id: &'static str, name: &'static str, args: Value },
     /// Some text (or nothing), then silence: the model stopped answering.
     Hang(Option<&'static str>),
+    /// Several tool calls in one reply.
+    Calls(Vec<(&'static str, &'static str, Value)>),
+    /// An HTTP error with this body.
+    Status(u16, &'static str),
 }
 
 impl Reply {
@@ -34,9 +38,11 @@ impl Reply {
                     + "data: [DONE]\n\n"
             }
             Reply::Call { id, name, args } => {
+                // A string is the arguments' raw text (to send broken JSON).
+                let arguments = args.as_str().map(str::to_string).unwrap_or_else(|| args.to_string());
                 let delta = json!({ "tool_calls": [{
                     "index": 0, "id": id, "type": "function",
-                    "function": { "name": name, "arguments": args.to_string() }
+                    "function": { "name": name, "arguments": arguments }
                 }]});
                 chunk(json!({ "choices": [{ "delta": delta, "finish_reason": null }] }))
                     + &chunk(json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }))
@@ -45,6 +51,34 @@ impl Reply {
             Reply::Hang(text) => text
                 .map(|t| chunk(json!({ "choices": [{ "delta": { "content": t }, "finish_reason": null }] })))
                 .unwrap_or_default(),
+            Reply::Calls(calls) => {
+                let calls: Vec<Value> = calls
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (id, name, args))| json!({
+                        "index": i, "id": id, "type": "function",
+                        "function": { "name": name, "arguments": args.to_string() }
+                    }))
+                    .collect();
+                chunk(json!({ "choices": [{ "delta": { "tool_calls": calls }, "finish_reason": null }] }))
+                    + &chunk(json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }))
+                    + "data: [DONE]\n\n"
+            }
+            Reply::Status(..) => String::new(),
+        }
+    }
+
+    /// The whole HTTP response.
+    fn response(&self) -> String {
+        match self {
+            Reply::Status(code, body) => format!(
+                "HTTP/1.1 {code} Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ),
+            _ => format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
+                self.sse()
+            ),
         }
     }
 
@@ -61,7 +95,7 @@ async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    let bodies: Vec<(String, bool)> = replies.iter().map(|r| (r.sse(), r.hangs())).collect();
+    let bodies: Vec<(String, bool)> = replies.iter().map(|r| (r.response(), r.hangs())).collect();
     tokio::spawn(async move {
         let mut n = 0;
         while let Ok((mut socket, _)) = listener.accept().await {
@@ -69,8 +103,7 @@ async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
             log.lock().unwrap().push(body);
             let (reply, hangs) = bodies[n.min(bodies.len() - 1)].clone();
             n += 1;
-            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
-            let _ = socket.write_all(format!("{head}{reply}").as_bytes()).await;
+            let _ = socket.write_all(reply.as_bytes()).await;
             if hangs {
                 // Keeps the connection open, saying nothing more.
                 tokio::spawn(async move {
@@ -739,4 +772,669 @@ async fn a_reply_under_way_is_not_thrown_away_for_a_new_effort() {
     let messages = h.messages().await;
     assert_eq!(messages[1].content, "Part of the answer");
     assert_eq!(messages[1].meta.as_ref().unwrap()["interrupted"]["kind"], "cancelled");
+}
+
+/*
+ * Edge cases
+ */
+
+fn plan_send(text: &str) -> StartKind {
+    StartKind::Send {
+        message: UserMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            content: text.into(),
+            meta: Some(json!({ "mode": "plan" })),
+        },
+    }
+}
+
+fn result_of<'a>(messages: &'a [MessageRow], call: &str) -> &'a MessageRow {
+    messages
+        .iter()
+        .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(call))
+        .unwrap_or_else(|| panic!("no result for {call}: {messages:#?}"))
+}
+
+fn harness_notes(messages: &[MessageRow]) -> Vec<&MessageRow> {
+    messages.iter().filter(|m| m.role == "user" && plan::is_harness(m)).collect()
+}
+
+fn ask_approval(group: &str) -> Permissions {
+    let rule = permissions::ApprovalRule { required: true, by: permissions::Approver::User };
+    match group {
+        "commands" => Permissions { command_approval: rule, ..quiet_permissions() },
+        "edits" => Permissions { edit_approval: rule, ..quiet_permissions() },
+        _ => Permissions { tool_approval: rule, ..quiet_permissions() },
+    }
+}
+
+#[tokio::test]
+async fn every_call_of_a_turn_gets_a_result_when_stopped_midway() {
+    let h = harness(&[("a.txt", "x")]).await;
+    let (url, seen) = model(vec![Reply::Calls(vec![
+        ("c1", "read_file", json!({ "path": "a.txt" })),
+        ("c2", "list_dir", json!({})),
+        ("c3", "read_file", json!({ "path": "a.txt", "start_line": 1 })),
+    ])])
+    .await;
+    h.start(h.request(&url, Harness::send("Look"), ask_approval("tools"))).await;
+    h.wait_for("approval c1", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "c1").await;
+    let app = h.app.handle().clone();
+    agent_resolve_approval(app.clone(), app.state(), "c1".into(), ApprovalDecision::Allow);
+    h.wait_for("approval c2", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "c2").await;
+    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    assert_eq!(h.run_end().await, "stopped");
+
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "c1").content, "x");
+    assert_eq!(result_of(&messages, "c2").content, "Error: stopped by the user before this ran.");
+    assert_eq!(result_of(&messages, "c3").content, "Error: stopped by the user before this ran.");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    // The history sent next time answers every call: a new run goes on fine.
+    let (url, seen) = model(vec![Reply::Text("Ok.")]).await;
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Go on"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let sent = seen.lock().unwrap()[0]["messages"].as_array().unwrap().clone();
+    let results = sent.iter().filter(|m| m["role"] == "tool").count();
+    assert_eq!(results, 3);
+}
+
+#[tokio::test]
+async fn refused_and_broken_calls_are_reported_without_running() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("c1", "run_command", json!({ "command": "rm -rf /" })),
+            ("c2", "no_such_tool", json!({})),
+            ("c3", "write_file", json!({ "path": "../outside.txt", "content": "x" })),
+            ("c4", "read_file", json!({})),
+            ("c5", "run_command", json!({ "command": "echo $(whoami)" })),
+        ]),
+        Reply::Text("Understood."),
+    ])
+    .await;
+    // Approval required: refused calls must never reach it.
+    h.start(h.request(&url, Harness::send("Do things"), ask_approval("commands"))).await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(h.events_of("approvalRequested").is_empty());
+    let messages = h.messages().await;
+    let c1 = &result_of(&messages, "c1").content;
+    assert!(c1.starts_with("Error: blocked by the user's permission settings. Not in the user's allowed commands: \"rm -rf /\""), "{c1}");
+    assert_eq!(result_of(&messages, "c2").content, "Error: unknown tool \"no_such_tool\".");
+    assert!(result_of(&messages, "c3").content.contains("must not contain '..'"));
+    assert_eq!(result_of(&messages, "c4").content, "Error: \"path\" is required.");
+    assert!(result_of(&messages, "c5").content.contains("Command substitution"));
+    assert!(!h.project.parent().unwrap().join("outside.txt").exists());
+}
+
+#[tokio::test]
+async fn arguments_that_arent_json_are_an_error_for_the_model() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "c1", name: "list_dir", args: json!("{not json") },
+        Reply::Text("Oops."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("List"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "c1").content.starts_with("Error: could not parse arguments as JSON"));
+}
+
+#[tokio::test]
+async fn without_a_project_only_web_tools_are_offered() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Call { id: "c1", name: "read_file", args: json!({ "path": "a.txt" }) },
+        Reply::Text("No project."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Read"), Permissions::default());
+    request.root = None;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let tools: Vec<String> = seen.lock().unwrap()[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(tools, ["web_search", "browse_url"]);
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "c1").content, "Error: \"read_file\" needs an open project folder.");
+    // No project: no verification either.
+    assert!(messages.iter().all(|m| m.meta.as_ref().is_none_or(|x| x.get("verification").is_none())));
+}
+
+#[tokio::test]
+async fn a_model_without_tools_gets_none_and_no_tool_rules() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("Hi.")]).await;
+    let mut request = h.request(&url, Harness::send("Hi"), quiet_permissions());
+    request.profile.no_tools = true;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let body = seen.lock().unwrap()[0].clone();
+    assert!(body.get("tools").is_none() && body.get("tool_choice").is_none());
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(!system.contains("## Tool use rules"));
+}
+
+#[tokio::test]
+async fn plan_mode_refuses_changes_and_extra_questions() {
+    let h = harness(&[("a.txt", "keep")]).await;
+    let ask = |id: &'static str| Reply::Call {
+        id,
+        name: "ask_user",
+        args: json!({ "questions": [{ "question": "Q?", "options": ["A"] }] }),
+    };
+    let (url, seen) = model(vec![
+        Reply::Calls(vec![
+            ("w1", "write_file", json!({ "path": "a.txt", "content": "changed" })),
+            ("r1", "run_command", json!({ "command": "ls" })),
+        ]),
+        ask("q1"),
+        ask("q2"),
+        ask("q3"),
+        ask("q4"),
+        Reply::Text("I'll decide."),
+    ])
+    .await;
+    h.start(h.request(&url, plan_send("Plan it"), quiet_permissions())).await;
+    let app = h.app.handle().clone();
+    for id in ["q1", "q2", "q3"] {
+        h.wait_for(id, |e| e["type"] == "questionsAsked" && e["request"]["toolCallId"] == id).await;
+        let outcome: plan::QuestionsOutcome = serde_json::from_value(json!({ "reply": "whatever" })).unwrap();
+        assert!(agent_answer_questions(app.clone(), app.state(), id.into(), outcome));
+        // Answering twice does nothing.
+        let again: plan::QuestionsOutcome = serde_json::from_value(json!({ "reply": "again" })).unwrap();
+        assert!(!agent_answer_questions(app.clone(), app.state(), id.into(), again));
+    }
+    assert_eq!(h.run_end().await, "done");
+
+    assert_eq!(h.file("a.txt").as_deref(), Some("keep"));
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "w1").content.starts_with("Error: write_file isn't available in Plan mode"));
+    assert!(result_of(&messages, "r1").content.starts_with("Error: run_command isn't available in Plan mode"));
+    assert!(result_of(&messages, "q4").content.starts_with("You've already asked 3 times"));
+    assert_eq!(h.events_of("questionsAsked").len(), 3, "the fourth isn't shown");
+    // Plan mode offers no tool that changes anything.
+    let tools = seen.lock().unwrap()[0]["tools"].to_string();
+    assert!(!tools.contains("\"write_file\"") && tools.contains("\"submit_plan\""));
+    assert!(seen.lock().unwrap()[0]["messages"][0]["content"].as_str().unwrap().contains("## Plan mode"));
+}
+
+#[tokio::test]
+async fn ask_user_outside_plan_mode_is_refused() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "q1", name: "ask_user", args: json!({ "questions": [{ "question": "Q?", "options": [] }] }) },
+        Reply::Text("Decided."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Do it"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(h.events_of("questionsAsked").is_empty());
+    assert!(result_of(&h.messages().await, "q1").content.starts_with("Error: asking the user is only available in Plan mode"));
+}
+
+#[tokio::test]
+async fn stop_while_a_question_waits_ends_the_run() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Call {
+        id: "q1",
+        name: "ask_user",
+        args: json!({ "questions": [{ "question": "Which?", "options": ["A", "B"] }] }),
+    }])
+    .await;
+    h.start(h.request(&url, plan_send("Plan"), quiet_permissions())).await;
+    h.wait_for("questionsAsked", |e| e["type"] == "questionsAsked").await;
+    let app = h.app.handle().clone();
+    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    assert_eq!(h.run_end().await, "stopped");
+    assert_eq!(h.events_of("questionsSettled").len(), 1);
+    let answer = result_of(&h.messages().await, "q1").clone();
+    assert_eq!(answer.content, "Error: the user stopped the task instead of answering.");
+    assert_eq!(answer.meta.unwrap()["questions"]["outcome"], json!({ "stopped": true }));
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_bad_plan_is_sent_back_and_a_written_out_plan_nudged_once() {
+    let h = harness(&[]).await;
+    let written = "Here it is:\n\n## Steps\n1. One\n2. Two";
+    let (url, _) = model(vec![
+        Reply::Call { id: "p1", name: "submit_plan", args: json!({ "plan": "no title, no steps" }) },
+        Reply::Text(written),
+        Reply::Text(written),
+    ])
+    .await;
+    h.start(h.request(&url, plan_send("Plan"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let rejected = &result_of(&messages, "p1").content;
+    assert!(rejected.starts_with("Error: the plan wasn't saved.") && rejected.contains("\"# \" title"), "{rejected}");
+    assert!(!h.project.join(".rovik/plans").exists());
+    // Written in the reply instead: pointed out once, then the run ends.
+    let notes = harness_notes(&messages);
+    assert_eq!(notes.len(), 1, "{notes:#?}");
+    assert!(notes[0].content.contains("Submit it with submit_plan"));
+    assert!(messages.last().unwrap().meta.as_ref().is_none_or(|m| m.get("planFile").is_none()));
+}
+
+#[tokio::test]
+async fn a_revised_plan_replaces_the_chats_plan_file() {
+    let h = harness(&[]).await;
+    let plan = |title: &str| format!("# {title}\n\n## Steps\n1. a\n2. b");
+    let first: &'static str = Box::leak(plan("First").into_boxed_str());
+    let second: &'static str = Box::leak(plan("Second").into_boxed_str());
+    let (url, _) = model(vec![
+        Reply::Call { id: "p1", name: "submit_plan", args: json!({ "plan": first }) },
+        Reply::Text("Saved."),
+    ])
+    .await;
+    h.start(h.request(&url, plan_send("Make a plan"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let (url, _) = model(vec![
+        Reply::Call { id: "p2", name: "submit_plan", args: json!({ "plan": second }) },
+        Reply::Text("Revised."),
+    ])
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, plan_send("Change it"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let plans: Vec<_> = std::fs::read_dir(h.project.join(".rovik/plans")).unwrap().flatten().collect();
+    assert_eq!(plans.len(), 1, "the revision went to the same file");
+    assert!(std::fs::read_to_string(plans[0].path()).unwrap().starts_with("# Second"));
+}
+
+#[tokio::test]
+async fn unfinished_checklist_steps_are_pointed_out_once() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Write it", "status": "done" }, { "title": "Test it", "status": "pending" }] }),
+        },
+        Reply::Text("Done."),
+        Reply::Text("Really done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Do"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "t1").content, "Checklist updated: 1 of 2 done.");
+    let notes = harness_notes(&messages);
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].content.contains("\"Test it\""));
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn a_loop_is_noted_then_paused() {
+    let h = harness(&[("a.txt", "same")]).await;
+    let read = |id: &'static str| Reply::Call { id, name: "read_file", args: json!({ "path": "a.txt" }) };
+    let (url, _) = model(vec![read("r1"), read("r2"), read("r3"), read("r4"), read("r5"), read("r6"), Reply::Text("x")])
+        .await;
+    h.start(h.request(&url, Harness::send("Read"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "paused-loop");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "r3").content.contains("This looks like a loop"));
+    assert!(result_of(&messages, "r6").content.contains("the run was paused here for the user"));
+    let paused = messages.last().unwrap().meta.as_ref().unwrap()["paused"].clone();
+    assert_eq!(paused["kind"], "loop");
+    assert_eq!(paused["toolCalls"], 6);
+    assert!(paused["reason"].as_str().unwrap().contains("read_file (a.txt)"));
+}
+
+#[tokio::test]
+async fn edits_that_change_nothing_or_cant_apply_skip_approval() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("w1", "write_file", json!({ "path": "a.txt", "content": "one\n" })),
+            ("e1", "edit_file", json!({ "path": "a.txt", "old_text": "missing", "new_text": "x" })),
+            ("e2", "edit_file", json!({ "path": "nope.txt", "old_text": "a", "new_text": "b" })),
+        ]),
+        Reply::Text("Ok."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Edit"), ask_approval("edits"))).await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(h.events_of("approvalRequested").is_empty(), "nothing to approve");
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "w1").content, "wrote 4 bytes to a.txt");
+    assert!(result_of(&messages, "e1").content.starts_with("Error:"));
+    assert!(result_of(&messages, "e2").content.contains("no such file"));
+    assert_eq!(h.file("a.txt").as_deref(), Some("one\n"));
+}
+
+#[tokio::test]
+async fn a_new_file_is_approved_whole_and_an_allowed_edit_is_recorded_as_reviewed() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "dir/new.txt", "content": "hello" }) },
+        Reply::Text("Created."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Create"), ask_approval("edits"))).await;
+    let asked = h.wait_for("approval", |e| e["type"] == "approvalRequested").await;
+    assert!(asked["request"].get("edit").is_none(), "nothing to diff against");
+    assert!(asked["request"]["note"].as_str().unwrap().contains("New file"));
+    let app = h.app.handle().clone();
+    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Allow);
+    // Unknown and repeated answers do nothing.
+    assert!(!agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Deny));
+    assert!(!agent_resolve_approval(app.clone(), app.state(), "nope".into(), ApprovalDecision::Allow));
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("dir/new.txt").as_deref(), Some("hello"));
+    let written = h.events_of("fileWritten");
+    assert_eq!(written[0]["reviewed"], true);
+    assert!(written[0]["before"].is_null());
+}
+
+#[tokio::test]
+async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
+    let h = harness(&[("a.txt", "x\n"), (".env", "SECRET=1\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("e1", "edit_file", json!({ "path": "a.txt", "old_text": "x", "new_text": "y" })),
+            ("e2", "edit_file", json!({ "path": ".env", "old_text": "1", "new_text": "2" })),
+            ("e3", "write_file", json!({ "path": "b.txt", "content": "b" })),
+        ]),
+        Reply::Text("Ok."),
+    ])
+    .await;
+    // The reviewer rejects the first, then can't answer at all.
+    let (rejecting, _) = model(vec![
+        Reply::Text("{\"decision\": \"reject\", \"reason\": \"Not asked for.\"}"),
+        Reply::Status(500, "{\"error\":{\"message\":\"down\"}}"),
+    ])
+    .await;
+    let mut request = h.request(
+        &url,
+        Harness::send("Edit"),
+        Permissions {
+            edit_approval: permissions::ApprovalRule { required: true, by: permissions::Approver::Ai },
+            ..quiet_permissions()
+        },
+    );
+    let mut reviewer = request.profile.clone();
+    reviewer.base_url = rejecting;
+    reviewer.label = "Reviewer".into();
+    request.config.as_mut().unwrap().approval_profiles = vec![reviewer];
+    h.start(request).await;
+
+    let app = h.app.handle().clone();
+    // .env: never left to the reviewer.
+    let asked = h.wait_for("approval e2", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e2").await;
+    assert!(asked["request"]["note"].as_str().unwrap().starts_with("Edits to credential or secret files"));
+    agent_resolve_approval(app.clone(), app.state(), "e2".into(), ApprovalDecision::Deny);
+    // The reviewer failed: the user decides.
+    let asked = h.wait_for("approval e3", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e3").await;
+    assert!(asked["request"]["note"].as_str().unwrap().contains("couldn’t answer"), "{asked}");
+    agent_resolve_approval(app.clone(), app.state(), "e3".into(), ApprovalDecision::Allow);
+    assert_eq!(h.run_end().await, "done");
+
+    let messages = h.messages().await;
+    let e1 = result_of(&messages, "e1");
+    assert!(e1.content.starts_with("Error: rejected by the user's AI reviewer (Reviewer): Not asked for."));
+    assert_eq!(e1.meta.as_ref().unwrap()["approval"]["by"], "ai");
+    assert_eq!(h.file("a.txt").as_deref(), Some("x\n"));
+    assert_eq!(h.file(".env").as_deref(), Some("SECRET=1\n"));
+    assert_eq!(h.file("b.txt").as_deref(), Some("b"));
+}
+
+#[tokio::test]
+async fn no_reviewer_model_means_the_user_approves() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![Reply::Call { id: "r1", name: "list_dir", args: json!({}) }, Reply::Text("Ok.")]).await;
+    let permissions = Permissions {
+        tool_approval: permissions::ApprovalRule { required: true, by: permissions::Approver::Ai },
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("List"), permissions)).await;
+    let asked = h.wait_for("approval", |e| e["type"] == "approvalRequested").await;
+    assert!(asked["request"]["note"].as_str().unwrap().starts_with("No AI reviewer model is set"));
+    let app = h.app.handle().clone();
+    agent_resolve_approval(app.clone(), app.state(), "r1".into(), ApprovalDecision::Allow);
+    assert_eq!(h.run_end().await, "done");
+}
+
+#[tokio::test]
+async fn a_repeating_model_ends_the_run_the_second_time() {
+    let h = harness(&[]).await;
+    let looping: &'static str =
+        Box::leak(format!("Thinking. {}", "Let me try again now. ".repeat(80)).into_boxed_str());
+    let (url, seen) = model(vec![Reply::Text(looping)]).await;
+    h.start(h.request(&url, Harness::send("Go"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "repetition");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    assert_eq!(h.events_of("notice")[0]["title"], "The model kept repeating itself");
+    let messages = h.messages().await;
+    assert_eq!(roles(&messages), ["user", "assistant", "user", "assistant"]);
+    assert!(messages[3].content.contains("_[Stopped here"));
+}
+
+#[tokio::test]
+async fn a_rejected_request_is_not_retried_and_reported() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}")]).await;
+    h.start(h.request(&url, Harness::send("Hi"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "error");
+    assert_eq!(seen.lock().unwrap().len(), 1, "auth errors aren't retried");
+    let messages = h.messages().await;
+    assert_eq!(messages[1].error.as_deref(), Some("The API key was rejected. Check it in Model Settings."));
+    assert_eq!(messages[1].meta.as_ref().unwrap()["failure"]["kind"], "auth");
+    assert!(messages[0].failed);
+}
+
+#[tokio::test]
+async fn a_refused_reasoning_form_isnt_sent_again_in_the_run() {
+    let h = harness(&[]).await;
+    let refusal = "{\"error\":{\"message\":\"Unrecognized request argument supplied: chat_template_kwargs\"}}";
+    let (url, seen) = model(vec![
+        Reply::Status(400, refusal),
+        Reply::Call { id: "c1", name: "list_dir", args: json!({}) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("List"), quiet_permissions());
+    request.options = serde_json::from_value(
+        json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort", "chat_template_kwargs"] }),
+    )
+    .unwrap();
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].get("chat_template_kwargs").is_some());
+    assert!(requests[1].get("chat_template_kwargs").is_none() && requests[1]["reasoning_effort"] == "high");
+    assert!(requests[2].get("chat_template_kwargs").is_none(), "not tried again on the next turn");
+    let learned = h.events_of("reasoningLearned");
+    assert!(learned.iter().any(|l| l["rejected"] == json!(["chat_template_kwargs"])));
+}
+
+#[tokio::test]
+async fn continue_and_retry_reuse_the_requests_wire_text() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("Answer.")]).await;
+    let message = UserMessage {
+        id: "u1".into(),
+        content: "Fix it".into(),
+        meta: Some(json!({ "mode": "agent", "sentContent": "Editor context\n\nFix it" })),
+    };
+    h.start(h.request(&url, StartKind::Send { message }, quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    h.events.lock().unwrap().clear();
+    // No wire text from the frontend: the stored one is used.
+    h.start(h.request(&url, StartKind::ContinueReply, quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap().clone();
+    let user = |r: &Value| {
+        r["messages"].as_array().unwrap().iter().find(|m| m["role"] == "user").unwrap()["content"].clone()
+    };
+    assert_eq!(user(&requests[0]), "Editor context\n\nFix it");
+    assert_eq!(user(&requests[1]), "Editor context\n\nFix it");
+    let last = requests[1]["messages"].as_array().unwrap().last().unwrap().clone();
+    assert!(last["content"].as_str().unwrap().starts_with("Your previous reply was interrupted"));
+}
+
+#[tokio::test]
+async fn runs_in_two_chats_go_on_independently() {
+    let a = harness(&[]).await;
+    // The second chat in the same app and database.
+    let b_id = uuid::Uuid::new_v4().to_string();
+    let dialog = NewDialog { id: b_id.clone(), title: "B".into(), created_at: 0, updated_at: 0, project_id: None };
+    let db = a.app.state::<DbState>().inner().clone();
+    db.write(move |c| store::create_dialog(c, &dialog)).await.unwrap();
+
+    let (hang, _) = model(vec![Reply::Hang(None)]).await;
+    let (quick, _) = model(vec![Reply::Text("B done.")]).await;
+    a.start(a.request(&hang, Harness::send("A"), quiet_permissions())).await;
+    let mut b = a.request(&quick, Harness::send("B"), quiet_permissions());
+    b.dialog_id = b_id.clone();
+    a.start(b).await;
+    a.wait_for("B ends", |e| e["type"] == "runEnded" && e["dialogId"] == b_id.as_str()).await;
+
+    let app = a.app.handle().clone();
+    let status = agent_status(app.state());
+    assert_eq!(status.runs.len(), 1, "A still runs");
+    assert!(!agent_stop(app.clone(), app.state(), b_id.clone()), "B is done: nothing to stop");
+    assert!(agent_stop(app.clone(), app.state(), a.dialog_id.clone()));
+    a.wait_for("A ends", |e| e["type"] == "runEnded" && e["dialogId"] == a.dialog_id.as_str()).await;
+    assert!(agent_status(app.state()).runs.is_empty());
+}
+
+#[tokio::test]
+async fn status_lists_what_a_run_waits_on() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![Reply::Call { id: "r1", name: "list_dir", args: json!({}) }, Reply::Text("Ok.")]).await;
+    h.start(h.request(&url, Harness::send("List"), ask_approval("tools"))).await;
+    h.wait_for("approval", |e| e["type"] == "approvalRequested").await;
+    let app = h.app.handle().clone();
+    let status = agent_status(app.state());
+    assert_eq!(status.runs[0].dialog_id, h.dialog_id);
+    assert_eq!(status.approvals[0].tool_call_id, "r1");
+    assert!(status.questions.is_empty());
+    agent_resolve_approval(app.clone(), app.state(), "r1".into(), ApprovalDecision::Allow);
+    h.run_end().await;
+    let status = agent_status(app.state());
+    assert!(status.runs.is_empty() && status.approvals.is_empty());
+}
+
+#[tokio::test]
+async fn a_chat_that_doesnt_exist_cant_start() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("x")]).await;
+    let mut request = h.request(&url, Harness::send("Hi"), quiet_permissions());
+    request.dialog_id = "no-such-chat".into();
+    let app = h.app.handle().clone();
+    let started = agent_start(app.clone(), app.state(), app.state(), request).await;
+    assert!(started.is_err());
+    assert!(agent_status(app.state()).runs.is_empty(), "not left registered");
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn nothing_to_continue_or_check_starts_no_run() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("x")]).await;
+    let none = h.start(h.request(&url, StartKind::RunChecks { record_id: "missing".into() }, Permissions::default())).await;
+    assert!(none.is_none());
+    assert!(h.events_of("runStarted").is_empty());
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn checks_wait_for_approval_then_run_when_started() {
+    let h = harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(0)\"" } }"#),
+    ])
+    .await;
+    if std::process::Command::new("npm").arg("--version").output().is_err() {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "x.txt", "content": "x" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule { required: true, by: permissions::Approver::User },
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Write"), permissions.clone())).await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let messages = h.messages().await;
+    let record = messages.last().unwrap();
+    let waiting = record.meta.as_ref().unwrap()["verification"].clone();
+    assert_eq!(waiting["status"], "needs-approval");
+    assert_eq!(waiting["checks"][0]["status"], "pending");
+    assert_eq!(waiting["changedFiles"], json!(["x.txt"]));
+
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, StartKind::RunChecks { record_id: record.id.clone() }, permissions)).await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let records: Vec<_> = messages.iter().filter_map(|m| m.meta.as_ref()?.get("verification")).collect();
+    assert_eq!(records.len(), 1, "the waiting record became the result");
+    assert_eq!(records[0]["status"], "passed");
+}
+
+#[tokio::test]
+async fn checks_that_keep_failing_give_up_and_a_model_that_stops_fixing_is_unresolved() {
+    let h = harness(&[("package.json", r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(1)\"" } }"#)]).await;
+    if std::process::Command::new("npm").arg("--version").output().is_err() {
+        return;
+    }
+    let write = |id: &'static str| Reply::Call { id, name: "write_file", args: json!({ "path": "x.txt", "content": id }) };
+    let (url, _) = model(vec![write("w1"), Reply::Text("Done."), write("w2"), Reply::Text("Done."), write("w3"), Reply::Text("Done.")])
+        .await;
+    h.start(h.request(&url, Harness::send("Fix"), Permissions::default())).await;
+    assert_eq!(h.run_end().await, "verify-gave-up");
+    let messages = h.messages().await;
+    let statuses: Vec<_> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").map(|v| v["status"].clone()))
+        .collect();
+    assert_eq!(statuses, [json!("failed"), json!("failed"), json!("gave-up")]);
+
+    // Another chat: the model gives up after the first failure without changing anything.
+    let h = harness(&[("package.json", r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(1)\"" } }"#)]).await;
+    let (url, _) = model(vec![write("w1"), Reply::Text("Done."), Reply::Text("It fails anyway.")]).await;
+    h.start(h.request(&url, Harness::send("Fix"), Permissions::default())).await;
+    assert_eq!(h.run_end().await, "verify-unresolved");
+}
+
+#[tokio::test]
+async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skipped() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "x.txt", "content": "x" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Write"), Permissions::default())).await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    let record = messages.last().unwrap().meta.as_ref().unwrap()["verification"].clone();
+    assert_eq!(record["reason"], "no checks are set up for this project");
+
+    // A check the allowed commands don't cover isn't run.
+    let h = harness(&[("package.json", r#"{ "name": "t", "scripts": { "lint": "node -e 1" } }"#)]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "x.txt", "content": "x" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions { allowed_commands: vec!["ls".into()], ..Permissions::default() };
+    h.start(h.request(&url, Harness::send("Write"), permissions)).await;
+    assert_eq!(h.run_end().await, "verify-unverified");
+    let messages = h.messages().await;
+    let record = messages.last().unwrap().meta.as_ref().unwrap()["verification"].clone();
+    assert_eq!(record["checks"][0]["status"], "skipped");
+    assert_eq!(record["checks"][0]["reason"], "not in your allowed commands");
 }

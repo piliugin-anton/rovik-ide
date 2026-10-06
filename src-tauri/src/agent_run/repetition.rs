@@ -151,4 +151,24 @@ mod tests {
         assert_eq!(find_repetition(&table), None);
         assert_eq!(find_repetition("short"), None);
     }
+
+    #[test]
+    fn repetition_edge_cases() {
+        // Five repeats aren't enough.
+        let five = format!("{}{}", "Intro that is long enough to look at, for sure, yes. ".repeat(3), "I will now do it. ".repeat(5));
+        assert_eq!(find_repetition(&five), None);
+        // Non-ASCII text: the cut lands on a character boundary.
+        let text = format!("Начинаем работу над задачей прямо сейчас, без промедления. {}", "Повторяю ещё раз. ".repeat(10));
+        let cut = find_repetition(&text).unwrap();
+        assert!(text.is_char_boundary(cut));
+        assert!(text[..cut].ends_with("Повторяю ещё раз. "));
+        // An unclosed code fence blanks to the end.
+        let code = format!("Here is the output of the program:\n```\n{}", "same line\n".repeat(50));
+        assert_eq!(find_repetition(&code), None);
+        // A short line coming back with other text between is fine...
+        let varied: String = (0..10).map(|i| format!("Step {i} finished, moving on to the next one.\n\nDone.\n\n")).collect();
+        assert_eq!(find_repetition(&varied), None);
+        // ...but the same few words dozens of times in a row are a loop.
+        assert!(find_repetition(&"Done.\n\n".repeat(30)).is_some());
+    }
 }
