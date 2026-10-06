@@ -10,6 +10,7 @@ const isMac = navigator.platform.toUpperCase().includes('MAC');
 
 export default function ProjectSwitcher(props: {
   onOpenFolder: () => void;
+  onNewProject: () => void;
   onOpen: (p: ProjectSummary) => void;
   onRelink: (p: ProjectSummary) => void;
   onDelete: (p: ProjectSummary) => void;
@@ -127,6 +128,16 @@ export default function ProjectSwitcher(props: {
           >
             Open project…
             <span class="project-switcher-shortcut">{isMac ? '⌘O' : 'Ctrl+O'}</span>
+          </button>
+          <button
+            type="button"
+            class="project-switcher-open project-switcher-new"
+            onClick={() => {
+              close();
+              props.onNewProject();
+            }}
+          >
+            New project…
           </button>
         </div>
       </Show>
