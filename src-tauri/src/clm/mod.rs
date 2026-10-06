@@ -9,7 +9,8 @@
 //!    the edit is parsed (document.rs) and, if it fits the budget, becomes
 //!    the chat's context: the `projection`, covering stored messages up to
 //!    the one the file was written after. Rejected edits are reported.
-//! 2. The context sent is the projection plus every message stored since.
+//! 2. The context sent is the projection plus every message stored since
+//!    (each once).
 //!    Stored messages are never changed: the projection is a view.
 //! 3. If that is over budget, the oldest tool outputs since the projection
 //!    are withheld; still over, this request is trimmed as in Trimming mode.
@@ -88,6 +89,24 @@ pub fn real_paths(vfs: &VfsState, dialog_id: &str) -> Option<(String, String)> {
 fn ctx_tokens(messages: &[CtxMsg], cost: Cost) -> usize {
     let msgs: Vec<Msg> = messages.iter().map(CtxMsg::to_msg).collect();
     total(&msgs, cost)
+}
+
+/// The agent's version of the context followed by the messages stored
+/// after it, each message once: a stored message the agent's version
+/// already has (as it was, or rewritten) isn't added again. That happens
+/// when the file was written but the state saying so wasn't saved, so a
+/// newer rendering is read back as an edit.
+fn with_later(mut base: Vec<CtxMsg>, later: &[CtxMsg]) -> Vec<CtxMsg> {
+    let covered: std::collections::HashSet<String> = base
+        .iter()
+        .map(|m| {
+            m.id.strip_suffix(document::EDITED)
+                .unwrap_or(&m.id)
+                .to_string()
+        })
+        .collect();
+    base.extend(later.iter().filter(|m| !covered.contains(&m.id)).cloned());
+    base
 }
 
 /// The document without its metadata line, to tell real changes apart.
@@ -195,8 +214,7 @@ pub async fn prepare(
                 }
                 Some(at) => {
                     let (candidate, summary) = document::parse_back(text, rendered_messages, &raw);
-                    let mut whole = candidate.clone();
-                    whole.extend(raw[at + 1..].iter().cloned());
+                    let whole = with_later(candidate.clone(), &raw[at + 1..]);
                     let before = ctx_tokens(rendered_messages, cost);
                     let after = ctx_tokens(&candidate, cost);
                     let latest = vfs
@@ -253,11 +271,7 @@ pub async fn prepare(
         &state.projection,
         state.anchor_id.as_deref().map(index_of),
     ) {
-        (Some(p), Some(Some(at))) => {
-            let mut e = p.clone();
-            e.extend(raw[at + 1..].iter().cloned());
-            (e, p.len())
-        }
+        (Some(p), Some(Some(at))) => (with_later(p.clone(), &raw[at + 1..]), p.len()),
         (Some(_), _) => {
             notes.push(
                 "[context: the chat's stored history changed (messages were retried or removed), so your \

@@ -325,6 +325,16 @@ const CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are a coding agent operating ins
 - All file paths are relative to the project root and confined to it — you cannot and should not attempt to access anything outside the opened project folder.
 - Don't create or modify config/dependency files unless the task calls for it."#;
 
+/// The system prompt a request is sent with: the one with the CLM section
+/// only when CLM built its history. A request that fell back to trimming
+/// mustn't tell the model its context is a file it manages.
+fn request_system_prompt(plain: String, clm: Option<String>, clm_used: bool) -> String {
+    match (clm_used, clm) {
+        (true, Some(prompt)) => prompt,
+        _ => plain,
+    }
+}
+
 #[tauri::command]
 pub async fn send_chat_message(
     db: tauri::State<'_, crate::chat_db::DbState>,
@@ -398,7 +408,7 @@ pub async fn send_chat_message(
     let max_tokens = options.as_ref().and_then(|o| o.max_tokens);
     let reserve = reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens);
     let tool_chars = tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
-    let mut budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
+    let budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
 
     // Context Language Models need the virtual volume (the agent's shell
     // edits the file there); without it the chat falls back to trimming.
@@ -413,13 +423,20 @@ pub async fn send_chat_message(
         },
         _ => false,
     };
-    let mut system_prompt = system_prompt;
-    if clm {
-        if let Some(section) = crate::clm::system_section(&db, &vfs, dialog_id.as_deref().unwrap_or(""), budget).await {
-            system_prompt = format!("{system_prompt}\n\n{section}");
-            budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
-        }
-    }
+    // The CLM system prompt and the budget that leaves. Used only once the
+    // CLM history is built: a request that falls back to trimming is sent
+    // as a plain trimming request, without instructions that don't hold.
+    let clm_prompt = match clm {
+        true => crate::clm::system_section(&db, &vfs, dialog_id.as_deref().unwrap_or(""), budget)
+            .await
+            .map(|section| format!("{system_prompt}\n\n{section}")),
+        false => None,
+    };
+    let clm_budget = clm_prompt
+        .as_ref()
+        .map(|p| history_budget(window, p.chars().count() + tool_chars, chars_per_token, reserve));
+    // Set when the history below was built by CLM.
+    let mut clm_used = false;
 
     let mut messages: Vec<WireChatMessage> = match (messages, dialog_id) {
         (Some(explicit), _) => explicit,
@@ -430,11 +447,12 @@ pub async fn send_chat_message(
             let vision = vision.unwrap_or(false);
             let cost = crate::chat_db::history::Cost { vision, chars_per_token };
             let build = async {
-                if !clm {
+                let Some(clm_budget) = clm_budget else {
                     return Err(String::new());
-                }
+                };
                 let prepared =
-                    crate::clm::prepare(&db, &vfs, dialog_id.clone(), budget, cost, current_user_content.clone()).await?;
+                    crate::clm::prepare(&db, &vfs, dialog_id.clone(), clm_budget, cost, current_user_content.clone())
+                        .await?;
                 let mut messages = prepared.messages;
                 // Notes for the model ride on the request's last message (not stored).
                 if let (Some(last), false) = (messages.last_mut(), prepared.notes.is_empty()) {
@@ -453,7 +471,10 @@ pub async fn send_chat_message(
                 built = build => built,
             };
             let clm_built = match clm_built {
-                Ok(built) => Some(built),
+                Ok(built) => {
+                    clm_used = true;
+                    Some(built)
+                }
                 Err(e) if e.is_empty() => None,
                 Err(e) => {
                     eprintln!("context: CLM failed ({e}); using trimming for this request");
@@ -488,7 +509,11 @@ pub async fn send_chat_message(
             if info.trimmed || info.outdated > 0 {
                 eprintln!(
                     "context budget: ~{}/{} tokens (history ~{}), {} outdated replaced, {} oldest turn(s) omitted",
-                    info.estimated_tokens, budget, info.full_tokens, info.outdated, info.dropped_turns
+                    info.estimated_tokens,
+                    clm_budget.filter(|_| clm_used).unwrap_or(budget),
+                    info.full_tokens,
+                    info.outdated,
+                    info.dropped_turns
                 );
             }
             wire.into_iter()
@@ -517,7 +542,7 @@ pub async fn send_chat_message(
         0,
         WireChatMessage {
             role: "system".to_string(),
-            content: serde_json::Value::String(system_prompt),
+            content: serde_json::Value::String(request_system_prompt(system_prompt, clm_prompt, clm_used)),
             tool_calls: None,
             tool_call_id: None,
             other: Default::default(),
@@ -1410,5 +1435,19 @@ mod reasoning_tests {
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning"]).await;
         assert!(ok);
         assert_eq!(learned.unwrap().unresolved, ["reasoning_effort", "reasoning"]);
+    }
+}
+
+#[cfg(test)]
+mod context_mode_tests {
+    use super::request_system_prompt;
+
+    #[test]
+    fn the_clm_prompt_only_goes_with_a_clm_history() {
+        let clm = || Some("plain\n\n## Your context is a file".to_string());
+        assert_eq!(request_system_prompt("plain".into(), clm(), true), "plain\n\n## Your context is a file");
+        // CLM failed partway: the request is a plain trimming request.
+        assert_eq!(request_system_prompt("plain".into(), clm(), false), "plain");
+        assert_eq!(request_system_prompt("plain".into(), None, false), "plain");
     }
 }

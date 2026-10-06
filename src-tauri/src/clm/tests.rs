@@ -244,3 +244,92 @@ fn repeated_calls() {
         r#"{"query":"a","max_results":3}"#
     ));
 }
+
+#[test]
+fn later_messages_are_added_once() {
+    let m = |id: &str| CtxMsg {
+        id: id.into(),
+        role: "user".into(),
+        label: None,
+        text: id.into(),
+        tool_calls: None,
+        tool_call_id: None,
+        attachments: vec![],
+        harness: false,
+    };
+    // The agent's version already has m2 (rewritten) and m3.
+    let base = vec![m("m1"), m("m2~e"), m("m3")];
+    let later = vec![m("m2"), m("m3"), m("m4")];
+    let ids: Vec<String> = with_later(base, &later).into_iter().map(|m| m.id).collect();
+    assert_eq!(ids, ["m1", "m2~e", "m3", "m4"]);
+}
+
+/// The file was rewritten but the state saying so wasn't saved (a failed
+/// database write): the newer rendering is read back as an edit, and must
+/// not put the messages after the older one in the context twice.
+#[test]
+fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
+    tauri::async_runtime::block_on(async {
+        let dir = std::env::temp_dir().join(format!("clm-test-{}", uuid::Uuid::new_v4()));
+        let db = DbState::open(&dir).unwrap();
+        db.write(|conn| {
+            create_dialog(
+                conn,
+                &NewDialog {
+                    id: "chat".into(),
+                    title: "t".into(),
+                    created_at: 1,
+                    updated_at: 1,
+                    project_id: None,
+                },
+            )
+        })
+        .await
+        .unwrap();
+        let vfs = VfsState::default();
+        add(
+            &db,
+            vec![
+                message("u1", "user", "first"),
+                message("a1", "assistant", "one"),
+            ],
+        )
+        .await;
+        prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+            .await
+            .unwrap();
+
+        add(
+            &db,
+            vec![
+                message("u2", "user", "second"),
+                message("a2", "assistant", "two"),
+            ],
+        )
+        .await;
+        let saved = db
+            .read(|conn| store::load_state(conn, "chat"))
+            .await
+            .unwrap();
+        prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+            .await
+            .unwrap();
+        // That request's state never reached the database.
+        db.write(move |conn| store::save_state(conn, "chat", &saved))
+            .await
+            .unwrap();
+
+        add(&db, vec![message("u3", "user", "third")]).await;
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = p.messages.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["u1", "a1", "u2", "a2", "u3"],
+            "every message once, in order"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    });
+}

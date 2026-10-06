@@ -365,7 +365,8 @@ pub fn edited_id(id: &str) -> String {
     }
 }
 
-const EDITED: &str = "~e";
+/// Marks a rewritten message's id (see `edited_id`).
+pub const EDITED: &str = "~e";
 
 /// A block the model wrote or rewrote, as plain text in a sendable role.
 fn lowered(id: String, role: &str, text: String) -> CtxMsg {
