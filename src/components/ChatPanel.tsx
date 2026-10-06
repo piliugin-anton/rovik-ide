@@ -147,6 +147,7 @@ interface AgentRun {
   ended: boolean;
 }
 import AiSettingsModal, { type AiSettingsPage } from './AiSettingsModal';
+import { clearVfsSettingsRequest, vfsSettingsRequested } from '../lib/virtualFilesStartup';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
 import { toolResultMeta } from './ToolCallBlock';
@@ -223,6 +224,12 @@ export default function ChatPanel(props: ChatProps) {
   const [input, setInput] = createSignal('');
   /** The open settings page, or null when the settings modal is closed. */
   const [settingsPage, setSettingsPage] = createSignal<AiSettingsPage | null>(null);
+  // A virtual files notification's "Show steps" (lib/virtualFilesStartup.ts).
+  createEffect(() => {
+    if (!vfsSettingsRequested()) return;
+    clearVfsSettingsRequest();
+    setSettingsPage('vfs');
+  });
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const [historyQuery, setHistoryQuery] = createSignal('');
   /** Lags historyQuery slightly so fast typing doesn't search on every key. */

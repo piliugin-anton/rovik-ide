@@ -64,11 +64,15 @@ import { diffLines, splitLines } from './lib/lineDiff';
 import { isProjectSource, updateProjectSource } from './lib/intellisense';
 import { clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
+import { startVirtualFiles, vfsSettingsRequested } from './lib/virtualFilesStartup';
 
 let unlistenFSChanges: (() => void) | undefined;
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
+
+  // Virtual files: mount, or offer to install the driver (in the background).
+  onMount(() => void startVirtualFiles());
 
   // Load last opened project on startup
   onMount(async () => {
@@ -91,6 +95,10 @@ export default function App() {
   const [searchActive, setSearchActive] = createSignal(false);
   const [revealRequest, setRevealRequest] = createSignal<RevealRequest | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat' | 'git'>('files');
+  // "Show steps" for virtual files: their settings live in the chat panel.
+  createEffect(() => {
+    if (vfsSettingsRequested()) setSidebarTab('chat');
+  });
   const [cursorInfo, setCursorInfo] = createSignal<CursorInfo | null>(null);
 
   const [contextMenuVisible, setContextMenuVisible] = createSignal(false);

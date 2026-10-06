@@ -91,7 +91,10 @@ on request (Settings → Virtual files):
 | macOS   | macFUSE | the official release `.dmg` (signature checked)      | macOS 15.4+ with macFUSE 5.1+ uses FSKit (no kernel extension; switch macFUSE on once in System Settings), mounted at `/Volumes/RovikVirtualFiles`; older systems use the kernel extension, which must be allowed. |
 | Windows | WinFsp  | the official release `.msi` (signature checked)      | winfsp.dll is delay-loaded. Building needs LLVM (`libclang`) for the WinFsp bindings.                                                                                                                              |
 
-The app starts on every OS without the driver; only mounting needs it.
+The app starts on every OS without the driver; only mounting needs it. At
+start it checks in the background: with the driver installed it mounts the
+volume; without it, one notification offers to install it (then mounts).
+Either can be silenced with "Don't ask again" (`src/lib/virtualFilesStartup.ts`).
 When a mount fails, Settings → Virtual files shows why and what to do (on
 macOS, with a button to the right System Settings page) and keeps retrying
 while the fix is up to the user; after installing, it mounts right away so
