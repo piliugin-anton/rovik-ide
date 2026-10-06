@@ -5594,6 +5594,29 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--error);
 }
 
+.new-project-existing {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.new-project-open-existing {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.new-project-open-existing:hover {
+  background: var(--bg-control-hover);
+}
+
 .modal .confirm-dialog-actions button:disabled {
   opacity: 0.5;
   cursor: default;

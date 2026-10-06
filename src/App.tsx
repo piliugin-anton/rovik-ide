@@ -1396,6 +1396,10 @@ export default function App() {
             setNewProjectOpen(false);
             openProjectAt(path);
           }}
+          onOpenExisting={(path) => {
+            setNewProjectOpen(false);
+            openProjectAt(path);
+          }}
           onCancel={() => setNewProjectOpen(false)}
         />
       </Show>

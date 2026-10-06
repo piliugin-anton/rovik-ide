@@ -1,12 +1,12 @@
 // NewProjectDialog.tsx: creates an empty project folder. The user picks
 // the folder it goes in (prefilled with the current project's parent, or
 // the last one used) and types the new folder's name; a folder that already
-// exists is flagged before anything is created.
+// exists is offered for opening instead.
 import { homeDir, sep } from '@tauri-apps/api/path';
 import { open } from '@tauri-apps/plugin-dialog';
 import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js';
 import { Portal } from 'solid-js/web';
-import { createFolder, getPathId, pathExists } from '../lib/commands';
+import { createFolder, dirEntryCount, getPathId, pathExists } from '../lib/commands';
 
 const LAST_ROOT_KEY = 'rovik.newProject.lastRoot';
 
@@ -37,6 +37,18 @@ function parentOf(path: string): string | null {
   return parent;
 }
 
+type Existing = 'folder' | 'file' | null;
+
+/** What's already at `path`, if anything. */
+async function existingAt(path: string): Promise<Existing> {
+  try {
+    if (!(await pathExists(path))) return null;
+    return (await dirEntryCount(path, 1)) === null ? 'file' : 'folder';
+  } catch {
+    return null;
+  }
+}
+
 function joinPath(root: string, name: string): string {
   return root.replace(/[\\/]+$/, '') + sep() + name;
 }
@@ -56,6 +68,8 @@ export default function NewProjectDialog(props: {
   /** The open project, if any: its parent is the default location. */
   currentPath?: string | null;
   onCreated: (path: string) => void;
+  /** Opens a folder that's already there as the project. */
+  onOpenExisting: (path: string) => void;
   onCancel: () => void;
 }) {
   const [root, setRoot] = createSignal(
@@ -63,7 +77,7 @@ export default function NewProjectDialog(props: {
   );
   const [name, setName] = createSignal('');
   const [rootMissing, setRootMissing] = createSignal(false);
-  const [exists, setExists] = createSignal(false);
+  const [existing, setExisting] = createSignal<Existing>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
   let nameInput: HTMLInputElement | undefined;
@@ -95,21 +109,21 @@ export default function NewProjectDialog(props: {
       setError(null);
       if (!r) {
         setRootMissing(false);
-        setExists(false);
+        setExisting(null);
         return;
       }
       const [rootOk, taken] = await Promise.all([
         pathExists(r).catch(() => false),
-        n && !nameProblem(n) ? pathExists(joinPath(r, n)).catch(() => false) : false,
+        n && !nameProblem(n) ? existingAt(joinPath(r, n)) : null,
       ]);
       if (seq !== checkSeq) return;
       setRootMissing(!rootOk);
-      setExists(taken);
+      setExisting(taken);
     })
   );
 
   const canCreate = () =>
-    !busy() && !!root() && !!trimmedName() && !problem() && !exists() && !rootMissing();
+    !busy() && !!root() && !!trimmedName() && !problem() && !existing() && !rootMissing();
 
   async function browse() {
     const picked = await open({
@@ -132,8 +146,9 @@ export default function NewProjectDialog(props: {
     setError(null);
     try {
       // Re-check: the folder may have appeared since the last check.
-      if (await pathExists(path)) {
-        setExists(true);
+      const taken = await existingAt(path);
+      if (taken) {
+        setExisting(taken);
         return;
       }
       await createFolder(await getPathId(r), n);
@@ -215,16 +230,27 @@ export default function NewProjectDialog(props: {
             <Show when={problem()}>
               <div class="new-project-note error">{problem()}</div>
             </Show>
-            <Show when={!problem() && exists()}>
+            <Show when={!problem() && existing() === 'folder'}>
+              <div class="new-project-note warning new-project-existing" role="alert">
+                <span>⚠ This folder already exists.</span>
+                <button
+                  type="button"
+                  class="new-project-open-existing"
+                  onClick={() => props.onOpenExisting(fullPath())}
+                >
+                  Open existing
+                </button>
+              </div>
+            </Show>
+            <Show when={!problem() && existing() === 'file'}>
               <div class="new-project-note warning" role="alert">
-                ⚠ A file or folder with this name already exists here. Choose another name, or use
-                “Open project…” to open it.
+                ⚠ A file with this name already exists here.
               </div>
             </Show>
             <Show when={error()}>
               <div class="new-project-note error">Couldn’t create the folder: {error()}</div>
             </Show>
-            <Show when={fullPath() && !problem() && !exists()}>
+            <Show when={fullPath() && !problem() && !existing()}>
               <div class="new-project-note">
                 Will create <strong>{fullPath()}</strong>
               </div>
