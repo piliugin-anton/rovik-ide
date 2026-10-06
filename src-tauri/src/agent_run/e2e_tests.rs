@@ -1757,3 +1757,33 @@ async fn a_project_without_code_has_no_map() {
     assert_eq!(h.run_end().await, "done");
     assert!(!system_prompt(&seen.lock().unwrap()[0]).contains("## Repository map"));
 }
+
+/*
+ * Reading by symbol
+ */
+
+#[tokio::test]
+async fn the_model_reads_one_declaration_by_symbol() {
+    let src = "use std::fmt;\n\npub struct Parser;\n\nimpl Parser {\n    /// Parses it.\n    pub fn parse(&self) -> u8 {\n        1\n    }\n\n    pub fn other(&self) {}\n}\n";
+    let h = harness(&[("src/parser.rs", src)]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("s1", "read_file", json!({ "path": "src/parser.rs", "symbol": "Parser::parse" })),
+            ("s2", "read_file", json!({ "path": "src/parser.rs", "symbol": "missing_fn" })),
+            ("s3", "read_file", json!({ "path": "src/parser.rs", "symbol": "parse", "start_line": 1 })),
+        ]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Show parse"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let s1 = result_of(&messages, "s1");
+    assert_eq!(
+        s1.content,
+        "[Symbol read: Parser > parse, lines 6-9 of src/parser.rs]\n    /// Parses it.\n    pub fn parse(&self) -> u8 {\n        1\n    }"
+    );
+    assert_eq!(s1.meta.as_ref().unwrap()["range"], json!([6, 9]));
+    assert!(result_of(&messages, "s2").content.starts_with("Error: No declaration \"missing_fn\" in src/parser.rs."));
+    assert_eq!(result_of(&messages, "s3").content, "Error: give either \"symbol\" or start_line/end_line, not both");
+}

@@ -522,7 +522,13 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
 
     match name {
         "run_command" => format!("Run `{}`", s("command").unwrap_or_else(|| "…".into())),
-        "read_file" => format!("Read {}", s("path").unwrap_or_else(|| "a file".into())),
+        "read_file" => {
+            let path = s("path").unwrap_or_else(|| "a file".into());
+            match s("symbol").filter(|x| !x.trim().is_empty()) {
+                Some(symbol) => format!("Read {} in {path}", symbol.trim()),
+                None => format!("Read {path}"),
+            }
+        }
         "list_dir" => format!("List {}", s("path").filter(|p| !p.is_empty()).unwrap_or_else(|| "the project root".into())),
         "search_code" => format!("Search the project for “{}”", s("query").unwrap_or_else(|| "…".into())),
         "write_file" => {
@@ -636,6 +642,13 @@ mod tests {
 
     fn words(seg: &[&str]) -> Vec<String> {
         seg.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_symbol_read_is_described_with_its_symbol() {
+        assert_eq!(describe_tool_call("read_file", r#"{"path":"src/a.rs"}"#), "Read src/a.rs");
+        assert_eq!(describe_tool_call("read_file", r#"{"path":"src/a.rs","symbol":" Parser::parse "}"#), "Read Parser::parse in src/a.rs");
+        assert_eq!(describe_tool_call("read_file", r#"{"path":"src/a.rs","symbol":"  "}"#), "Read src/a.rs");
     }
 
     #[test]

@@ -19,13 +19,14 @@ fn file_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a text file from the open project, optionally a specific 1-indexed inclusive line range. A file over ~20,000 characters isn't returned whole: you get its first lines and a map of its declarations with their line numbers, then read the part you need by line range. A range over ~20,000 characters stops early and says where to continue.",
+                "description": "Read a text file from the open project: all of it, a 1-indexed inclusive line range, or one declaration by name (symbol). A file over ~20,000 characters isn't returned whole: you get its first lines and a map of its declarations with their line numbers, then read the part you need by line range or symbol. A range over ~20,000 characters stops early and says where to continue.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "File path relative to the project root, e.g. \"src/lib/foo.ts\"." },
                         "start_line": { "type": "integer", "description": "First line to include (1-indexed). Omit to read from the start." },
-                        "end_line": { "type": "integer", "description": "Last line to include (1-indexed, inclusive). Omit to read to the end." }
+                        "end_line": { "type": "integer", "description": "Last line to include (1-indexed, inclusive). Omit to read to the end." },
+                        "symbol": { "type": "string", "description": "Read just this declaration (function, method, class, type, section…) with the comments and attributes above it, instead of lines: \"parse\", or with what it's in to tell same-named ones apart: \"Parser::parse\", \"ChatStore.append\". Not with start_line/end_line." }
                     },
                     "required": ["path"]
                 }
@@ -480,7 +481,13 @@ async fn run<R: Runtime>(app: &AppHandle<R>, root: Option<&str>, name: &str, arg
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"path\" is required."));
             };
-            crate::agent_tools::tool_read_file_range(root_owned, path.into(), uint(args, "start_line"), uint(args, "end_line"))?
+            crate::agent_tools::tool_read_file_range(
+                root_owned,
+                path.into(),
+                uint(args, "start_line"),
+                uint(args, "end_line"),
+                text(args, "symbol").map(|s| s.trim().to_string()),
+            )?
         }
         "write_file" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
@@ -676,7 +683,15 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
         Some(m)
     };
     match name {
-        "read_file" => one("count", json!(count_lines(result))),
+        "read_file" => {
+            let mut meta = Map::new();
+            meta.insert("count".into(), json!(count_lines(result)));
+            // A symbol read: the lines it found, for the header and the editor.
+            if let Some((start, end)) = crate::read_symbol::covered_lines(result) {
+                meta.insert("range".into(), json!([start, end]));
+            }
+            Some(meta)
+        }
         "list_dir" => one("count", json!(if result.starts_with("(empty") { 0 } else { count_lines(result) })),
         "search_code" => {
             // First line: "12 matches in 3 files" (context lines aren't matches).
@@ -786,6 +801,10 @@ mod tests {
         assert_eq!(to_absolute_path("/abs/x", "/p"), "/abs/x");
         assert_eq!(to_absolute_path("src/a.ts", "C:\\p"), "C:\\p\\src\\a.ts");
         assert_eq!(result_meta("read_file", "a\nb").unwrap()["count"], json!(2));
+        assert!(result_meta("read_file", "a\nb").unwrap().get("range").is_none());
+        let symbol = result_meta("read_file", "[Symbol read: f, lines 7-9 of a.rs]\nfn f() {\n}").unwrap();
+        assert_eq!(symbol["range"], json!([7, 9]));
+        assert_eq!(symbol["count"], json!(3));
         assert!(result_meta("read_file", "Error: nope").is_none());
         assert_eq!(result_meta("browse_url", "# (untitled)\nURL: x").unwrap().len(), 0);
         assert!(edit_args(&Map::new()).is_err());

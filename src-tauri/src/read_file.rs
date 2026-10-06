@@ -119,7 +119,7 @@ fn overview(path: &str, content: &str, lines: &[&str], chars: usize) -> String {
     let (head, last) = head(lines);
     let map = map(path, content, lines);
     let mut out = format!(
-        "{PARTIAL_PREFIX}{path} has {} lines ({chars} characters), too large to read whole. Shown: lines 1-{last}{}. Read the part you need with start_line and end_line (up to ~{MAX_CHARS} characters per read).]\n{head}",
+        "{PARTIAL_PREFIX}{path} has {} lines ({chars} characters), too large to read whole. Shown: lines 1-{last}{}. Read the part you need by symbol (a declaration's name) or with start_line and end_line (up to ~{MAX_CHARS} characters per read).]\n{head}",
         lines.len(),
         if map.is_some() { ", then a map of its declarations by line number" } else { "" },
     );

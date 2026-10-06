@@ -111,7 +111,7 @@ pub fn repo_map(root: &Path, focus: &Focus, options: &Options) -> Option<String>
 const HEADER: &str = "## Repository map\n\
 The project's most relevant files for this request and their declarations, with line ranges (`start-end`), \
 nested ones indented under their parent. It's a starting point, not the whole project: \
-read what you need with read_file and start_line/end_line, and search for anything not shown.";
+read what you need with read_file by symbol (a declaration's name) or start_line/end_line, and search for anything not shown.";
 
 /// The project's source files and their tags, by project-relative path.
 fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {

@@ -225,16 +225,22 @@ pub async fn tool_search_code(
     .map_err(|e| e.to_string())?
 }
 
-/// Reads a text file, optionally a 1-indexed inclusive line range. A file
-/// too large to read whole comes back as its start and a map of its
-/// declarations, and long ranges stop with a note (see read_file.rs).
+/// Reads a text file: a 1-indexed inclusive line range, one declaration by
+/// name (`symbol`, see read_symbol.rs), or all of it. A file too large to
+/// read whole comes back as its start and a map of its declarations, and
+/// long ranges stop with a note (see read_file.rs).
 #[tauri::command]
 pub fn tool_read_file_range(
     root: String,
     path: String,
     start_line: Option<usize>,
     end_line: Option<usize>,
+    symbol: Option<String>,
 ) -> Result<String, String> {
+    let symbol = symbol.filter(|s| !s.is_empty());
+    if symbol.is_some() && (start_line.is_some() || end_line.is_some()) {
+        return Err("give either \"symbol\" or start_line/end_line, not both".into());
+    }
     let target = resolve_within_root(&root, &path)?;
     if !target.is_file() {
         return Err(format!("{path}: not a file"));
@@ -243,7 +249,10 @@ pub fn tool_read_file_range(
         return Err(format!("{path}: binary file, cannot read"));
     }
     let content = fs::read_to_string(&target).map_err(|e| format!("{path}: {e}"))?;
-    crate::read_file::read(&path, &content, start_line, end_line)
+    match symbol {
+        Some(symbol) => crate::read_symbol::read(&path, &content, &symbol),
+        None => crate::read_file::read(&path, &content, start_line, end_line),
+    }
 }
 
 #[derive(Serialize)]
