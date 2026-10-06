@@ -1477,7 +1477,7 @@ async fn reads_in_one_turn_run_together_and_are_recorded_in_order() {
     let order: Vec<&str> = results.iter().map(|(id, _)| *id).collect();
     assert_eq!(order, ["c1", "c2", "c3", "c4"], "stored in the calls' order");
     assert_eq!(results[0].1, "alpha\n");
-    assert!(results[1].1.starts_with("1 match in 1 file") && results[1].1.contains("b.txt:1: beta needle"), "{}", results[1].1);
+    assert!(results[1].1.starts_with("1 match in 1 file") && results[1].1.contains("b.txt (1 match)\n  1: beta needle"), "{}", results[1].1);
     assert!(results[2].1.contains("sub/c.txt") || results[2].1.contains("c.txt"), "{}", results[2].1);
     assert_eq!(results[3].1, "beta needle\n");
     assert!(messages.iter().all(|m| m.finalized));
@@ -1786,4 +1786,41 @@ async fn the_model_reads_one_declaration_by_symbol() {
     assert_eq!(s1.meta.as_ref().unwrap()["range"], json!([6, 9]));
     assert!(result_of(&messages, "s2").content.starts_with("Error: No declaration \"missing_fn\" in src/parser.rs."));
     assert_eq!(result_of(&messages, "s3").content, "Error: give either \"symbol\" or start_line/end_line, not both");
+}
+
+/*
+ * Search results by declaration
+ */
+
+#[tokio::test]
+async fn search_results_name_the_declaration_each_match_is_in() {
+    let src = "pub struct Parser;\n\nimpl Parser {\n    pub fn parse(&self) {\n        build_tree();\n    }\n}\n\nfn build_tree() {}\n";
+    let h = harness(&[("src/parser.rs", src), ("notes.txt", "build_tree notes\n")]).await;
+    let (url, seen) = model(vec![
+        Reply::Call { id: "s1", name: "search_code", args: json!({ "query": "build_tree" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Where is build_tree used?"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert_eq!(
+        result_of(&messages, "s1").content,
+        "3 matches in 2 files
+notes.txt (1 match)
+  1: build_tree notes
+src/parser.rs (2 matches)
+  Parser > parse [4-6]:
+    5: build_tree();
+  build_tree [9]:
+    9: fn build_tree() {}   (declaration)"
+    );
+
+    // What the model was told about it, in the first request.
+    let request = seen.lock().unwrap()[0].clone();
+    let search = request["tools"].as_array().unwrap().iter().find(|t| t["function"]["name"] == "search_code").unwrap();
+    assert!(search["function"]["description"].as_str().unwrap().contains("works as read_file's symbol"));
+    let prompt = request["messages"][0]["content"].as_str().unwrap();
+    assert!(prompt.contains("results are grouped by the declaration each match is in"), "{prompt}");
+    assert!(prompt.contains("call read_file with the group's name as `symbol`"));
 }
