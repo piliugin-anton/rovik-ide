@@ -87,6 +87,22 @@ body {
 .sidebar {
   background: var(--bg-sidebar);
   overflow: hidden;
+  /* Tabs, pickers, toolbars: a drag over them shouldn't select text. Only
+     the content below opts back in. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.sidebar .chat-messages,
+.sidebar .modal-body,
+.sidebar .chat-history-error,
+.sidebar .git-inline-error,
+.sidebar .git-panel-error,
+.sidebar input,
+.sidebar textarea,
+.sidebar [contenteditable]:not([contenteditable='false']) {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .sidebar-header {
