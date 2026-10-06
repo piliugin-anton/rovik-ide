@@ -72,6 +72,8 @@ let unlistenFSChanges: (() => void) | undefined;
 
 export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
+  /** Until the last project is restored, the Files tab shows no empty state. */
+  const [restoringProject, setRestoringProject] = createSignal(true);
 
   // Virtual files: mount, or offer to install the driver (in the background).
   onMount(() => void startVirtualFiles());
@@ -81,16 +83,20 @@ export default function App() {
 
   // Load last opened project on startup
   onMount(async () => {
-    const projectData = await getLastProject();
-    if (!projectData) return;
-    const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
-    for (const m of monaco.editor.getModels()) m.dispose();
-    tree.presetExpanded(path, expandedPaths);
-    setRootPath(path);
-    setOpenFiles(openFiles);
-    setTerminalCollapsed(terminalCollapsed);
-    if (openFiles.length > 0) {
-      setActivePath(openFiles[openFiles.length - 1].path);
+    try {
+      const projectData = await getLastProject();
+      if (!projectData) return;
+      const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
+      for (const m of monaco.editor.getModels()) m.dispose();
+      tree.presetExpanded(path, expandedPaths);
+      setRootPath(path);
+      setOpenFiles(openFiles);
+      setTerminalCollapsed(terminalCollapsed);
+      if (openFiles.length > 0) {
+        setActivePath(openFiles[openFiles.length - 1].path);
+      }
+    } finally {
+      setRestoringProject(false);
     }
   });
   const [rootId, setRootId] = createSignal<string | null>(null);
@@ -1239,31 +1245,33 @@ export default function App() {
           <Show
             when={rootPath()}
             fallback={
-              <div class="files-empty">
-                <button
-                  type="button"
-                  class="files-empty-open"
-                  onClick={() => void handlePickFolder()}
-                >
-                  Open project…
-                </button>
-                <button
-                  type="button"
-                  class="files-empty-new"
-                  onClick={() => setNewProjectOpen(true)}
-                >
-                  New project…
-                </button>
-                <Show when={projectList().length > 0}>
-                  <div class="files-empty-heading">Recent projects</div>
-                  <ProjectList
-                    projects={projectList()}
-                    onOpen={(p) => openProjectAt(p.path)}
-                    onRelink={(p) => void relinkProject(p)}
-                    onDelete={(p) => void deleteProject(p)}
-                  />
-                </Show>
-              </div>
+              <Show when={!restoringProject()}>
+                <div class="files-empty">
+                  <button
+                    type="button"
+                    class="files-empty-open"
+                    onClick={() => void handlePickFolder()}
+                  >
+                    Open project…
+                  </button>
+                  <button
+                    type="button"
+                    class="files-empty-new"
+                    onClick={() => setNewProjectOpen(true)}
+                  >
+                    New project…
+                  </button>
+                  <Show when={projectList().length > 0}>
+                    <div class="files-empty-heading">Recent projects</div>
+                    <ProjectList
+                      projects={projectList()}
+                      onOpen={(p) => openProjectAt(p.path)}
+                      onRelink={(p) => void relinkProject(p)}
+                      onDelete={(p) => void deleteProject(p)}
+                    />
+                  </Show>
+                </div>
+              </Show>
             }
           >
             <SearchPanel
