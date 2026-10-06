@@ -8,18 +8,27 @@
 //! - Matching: `grep-searcher` + `grep-regex`. Literal or regex, case-
 //!   insensitive unless asked; binary files skipped (NUL byte), non-UTF-8
 //!   text still searched (lossy), files streamed rather than read whole.
+//! - The result limit: every match in the project is counted, and the ones
+//!   returned are the first `max_results` in path order, so the same search
+//!   always returns the same matches whatever order the parallel walk ran
+//!   in. Only matches that can still be among those are kept in memory.
+//!   Counting stops at COUNT_LIMIT matches; the totals then say so.
 
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ignore::{overrides::OverrideBuilder, WalkBuilder, WalkState};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 const MAX_LINE_CHARS: usize = 300;
 const MAX_FILE_BYTES: u64 = 2_000_000;
+/// Counting all matches stops here: a query like "e" in a large project
+/// would otherwise read all of it.
+const COUNT_LIMIT: usize = 200_000;
 
 pub struct SearchOptions {
     pub query: String,
@@ -53,25 +62,65 @@ pub struct SearchLine {
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
+    /// The matches returned (the first `max_results` in path order) and
+    /// their context lines.
     pub lines: Vec<SearchLine>,
+    /// Matches and files in `lines`.
     pub match_count: usize,
     pub file_count: usize,
-    /// Stopped at `max_results`; more matches exist.
+    /// More matches exist than are returned.
     pub truncated: bool,
+    /// Matches and files in the whole project, returned or not.
+    pub total_matches: usize,
+    pub total_files: usize,
+    /// false when counting stopped at COUNT_LIMIT: the totals are at least
+    /// this many, and the matches returned are the first in path order among
+    /// the files searched by then.
+    pub totals_complete: bool,
 }
 
 struct FileHits {
-    path: String,
     lines: Vec<SearchLine>,
+    /// Matches in `lines`.
+    matches: usize,
 }
 
-/// Collects one file's matches and context lines.
+/// The files whose matches can still be among the first `cap` in path
+/// order. A file that sorts after enough matches is dropped.
+struct Kept {
+    files: BTreeMap<String, FileHits>,
+    matches: usize,
+}
+
+impl Kept {
+    fn add(&mut self, path: String, hits: FileHits, cap: usize) {
+        if self.matches >= cap && self.files.last_key_value().is_some_and(|(last, _)| &path > last) {
+            return; // enough matches before it already
+        }
+        self.matches += hits.matches;
+        self.files.insert(path, hits);
+        while let Some((_, last)) = self.files.last_key_value() {
+            if self.matches - last.matches < cap {
+                break;
+            }
+            self.matches -= last.matches;
+            self.files.pop_last();
+        }
+    }
+}
+
+/// Collects one file's matches and context lines: all of them counted, at
+/// most `cap` matches kept (no file can show more).
 struct Collector<'a> {
     matcher: &'a RegexMatcher,
     path: String,
     lines: Vec<SearchLine>,
-    total: &'a AtomicUsize,
+    /// Matches in the file, and how many of them are in `lines`.
+    matches: usize,
+    kept: usize,
     cap: usize,
+    total: &'a AtomicUsize,
+    count_limit: usize,
     stop: &'a AtomicBool,
 }
 
@@ -107,10 +156,15 @@ impl Sink for Collector<'_> {
     fn matched(&mut self, _: &Searcher, m: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         let first = m.line_number().unwrap_or(0);
         for (i, line) in m.lines().enumerate() {
-            if self.total.fetch_add(1, Ordering::SeqCst) >= self.cap {
+            if self.total.fetch_add(1, Ordering::SeqCst) >= self.count_limit {
                 self.stop.store(true, Ordering::SeqCst);
                 return Ok(false);
             }
+            self.matches += 1;
+            if self.kept >= self.cap {
+                continue; // counted, not kept
+            }
+            self.kept += 1;
             let text = clean(line);
             let (ranges, column) = locate(self.matcher, line, &text);
             self.lines.push(SearchLine {
@@ -126,6 +180,9 @@ impl Sink for Collector<'_> {
     }
 
     fn context(&mut self, _: &Searcher, c: &SinkContext<'_>) -> Result<bool, Self::Error> {
+        if self.kept >= self.cap && self.matches > self.kept {
+            return Ok(true); // around matches that aren't kept
+        }
         self.lines.push(SearchLine {
             path: self.path.clone(),
             line: c.line_number().unwrap_or(0),
@@ -139,6 +196,15 @@ impl Sink for Collector<'_> {
 }
 
 pub fn search(root: &Path, opts: &SearchOptions, skip_name: fn(&str) -> bool) -> Result<SearchResult, String> {
+    search_counting_to(root, opts, skip_name, COUNT_LIMIT)
+}
+
+fn search_counting_to(
+    root: &Path,
+    opts: &SearchOptions,
+    skip_name: fn(&str) -> bool,
+    count_limit: usize,
+) -> Result<SearchResult, String> {
     if opts.query.is_empty() {
         return Err("query must not be empty".into());
     }
@@ -166,8 +232,10 @@ pub fn search(root: &Path, opts: &SearchOptions, skip_name: fn(&str) -> bool) ->
 
     let cap = opts.max_results.max(1);
     let total = AtomicUsize::new(0);
+    let total_files = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
-    let files: Mutex<Vec<FileHits>> = Mutex::new(Vec::new());
+    let kept = Mutex::new(Kept { files: BTreeMap::new(), matches: 0 });
+    let context_lines = opts.context_lines as u64;
 
     WalkBuilder::new(root)
         .hidden(true)
@@ -182,7 +250,7 @@ pub fn search(root: &Path, opts: &SearchOptions, skip_name: fn(&str) -> bool) ->
         .run(|| {
             let matcher = matcher.clone();
             let mut searcher = searcher.build();
-            let (total, stop, files) = (&total, &stop, &files);
+            let (total, total_files, stop, kept) = (&total, &total_files, &stop, &kept);
             Box::new(move |entry| {
                 if stop.load(Ordering::SeqCst) {
                     return WalkState::Quit;
@@ -193,12 +261,28 @@ pub fn search(root: &Path, opts: &SearchOptions, skip_name: fn(&str) -> bool) ->
                 }
                 let path = entry.path();
                 let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().into_owned();
-                let mut sink = Collector { matcher: &matcher, path: rel.clone(), lines: Vec::new(), total, cap, stop };
+                let mut sink = Collector {
+                    matcher: &matcher,
+                    path: rel.clone(),
+                    lines: Vec::new(),
+                    matches: 0,
+                    kept: 0,
+                    cap,
+                    total,
+                    count_limit,
+                    stop,
+                };
                 // Unreadable files are skipped, like ripgrep does.
                 let _ = searcher.search_path(&matcher, path, &mut sink);
-                if sink.lines.iter().any(|l| l.is_match) {
-                    if let Ok(mut f) = files.lock() {
-                        f.push(FileHits { path: rel, lines: sink.lines });
+                if sink.matches > 0 {
+                    total_files.fetch_add(1, Ordering::SeqCst);
+                    let mut lines = sink.lines;
+                    lines.sort_by_key(|l| l.line);
+                    if sink.matches > sink.kept {
+                        trim_context(&mut lines, context_lines);
+                    }
+                    if let Ok(mut k) = kept.lock() {
+                        k.add(rel, FileHits { lines, matches: sink.kept }, cap);
                     }
                 }
                 if stop.load(Ordering::SeqCst) { WalkState::Quit } else { WalkState::Continue }
@@ -206,20 +290,62 @@ pub fn search(root: &Path, opts: &SearchOptions, skip_name: fn(&str) -> bool) ->
         });
 
     drop(matcher);
-    let mut files = files.into_inner().map_err(|e| e.to_string())?;
-    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let kept = kept.into_inner().map_err(|e| e.to_string())?;
+    let totals_complete = !stop.load(Ordering::SeqCst);
+    let total_matches = total.load(Ordering::SeqCst).min(count_limit);
+    let total_files = total_files.load(Ordering::SeqCst);
 
-    let truncated = stop.load(Ordering::SeqCst);
+    // The first `cap` matches in path order: whole files, then part of the
+    // last one.
     let mut lines = Vec::new();
     let mut match_count = 0;
-    let file_count = files.len();
-    for file in files {
+    let mut file_count = 0;
+    for (_, file) in kept.files {
+        let room = cap - match_count;
+        if room == 0 {
+            break;
+        }
         let mut file_lines = file.lines;
-        file_lines.sort_by_key(|l| l.line);
-        match_count += file_lines.iter().filter(|l| l.is_match).count();
+        if file.matches > room {
+            let mut seen = 0;
+            let end = file_lines
+                .iter()
+                .position(|l| {
+                    if l.is_match {
+                        seen += 1;
+                    }
+                    seen > room
+                })
+                .unwrap_or(file_lines.len());
+            file_lines.truncate(end);
+            trim_context(&mut file_lines, context_lines);
+        }
+        match_count += file.matches.min(room);
+        file_count += 1;
         lines.extend(file_lines);
     }
-    Ok(SearchResult { lines, match_count, file_count, truncated })
+    Ok(SearchResult {
+        lines,
+        match_count,
+        file_count,
+        truncated: match_count < total_matches || !totals_complete,
+        total_matches,
+        total_files,
+        totals_complete,
+    })
+}
+
+/// Drops context lines after the last match's own `context` lines: the
+/// lines before a match that isn't kept.
+fn trim_context(lines: &mut Vec<SearchLine>, context: u64) {
+    let Some(last) = lines.iter().rposition(|l| l.is_match) else {
+        lines.clear();
+        return;
+    };
+    let limit = lines[last].line + context;
+    while lines.last().is_some_and(|l| !l.is_match && l.line > limit) {
+        lines.pop();
+    }
 }
 
 /// Search for the Files tab: larger result limit, include/exclude globs,
@@ -373,6 +499,127 @@ mod tests {
         let r = search(&root, &o, skip).unwrap();
         assert_eq!(r.match_count, 2);
         assert!(r.truncated);
+    }
+
+    #[test]
+    fn the_limit_keeps_the_first_matches_by_path_and_counts_them_all() {
+        let root = fixture();
+        let mut o = opts("foo");
+        o.max_results = 2;
+        let r = search(&root, &o, skip).unwrap();
+        assert_eq!(paths(&r), ["README.md", "latin1.txt"], "the first files by path, not the first found");
+        assert_eq!((r.match_count, r.file_count), (2, 2));
+        assert_eq!((r.total_matches, r.total_files), (6, 5), "every match counted");
+        assert!(r.truncated && r.totals_complete);
+
+        // Within the limit: everything, and the totals agree.
+        let r = search(&root, &opts("foo"), skip).unwrap();
+        assert_eq!((r.match_count, r.total_matches, r.file_count, r.total_files), (6, 6, 5, 5));
+        assert!(!r.truncated);
+    }
+
+    /// A project of `n` files in nested folders, file i holding i % 5 + 1
+    /// matches.
+    fn many_files(n: usize) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("code-search-many-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = fs::remove_dir_all(&root);
+        for i in 0..n {
+            let path = root.join(format!("d{}/e{}/f{i:03}.txt", i % 7, i % 3));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let body: String = (0..i % 5 + 1).map(|j| format!("needle {j}\nfiller\n")).collect();
+            fs::write(path, body).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn the_same_search_returns_the_same_matches_every_time() {
+        let root = many_files(300);
+        let mut o = opts("needle");
+        o.max_results = 37;
+        let first = search(&root, &o, skip).unwrap();
+        for _ in 0..25 {
+            let again = search(&root, &o, skip).unwrap();
+            assert_eq!(again.lines, first.lines, "the parallel walk's order must not matter");
+        }
+        assert_eq!(first.match_count, 37);
+        assert_eq!(first.total_matches, (0..300).map(|i| i % 5 + 1).sum::<usize>());
+        assert_eq!(first.total_files, 300);
+        // And they're the first in path order.
+        let mut all = o;
+        all.max_results = 10_000;
+        let everything = search(&root, &all, skip).unwrap();
+        let expected: Vec<&SearchLine> = everything.lines.iter().filter(|l| l.is_match).take(37).collect();
+        let got: Vec<&SearchLine> = first.lines.iter().filter(|l| l.is_match).collect();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn the_limit_can_fall_inside_a_file_and_its_context_stays_tidy() {
+        let root = std::env::temp_dir().join(format!("code-search-one-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // Matches on lines 2, 5, 8, 11, 14.
+        let body: String = (1..=15).map(|n| if n % 3 == 2 { format!("hit {n}\n") } else { format!("other {n}\n") }).collect();
+        fs::write(root.join("a.txt"), body).unwrap();
+        let mut o = opts("hit");
+        o.context_lines = 1;
+        o.max_results = 2;
+        let r = search(&root, &o, skip).unwrap();
+        let shape: Vec<(u64, bool)> = r.lines.iter().map(|l| (l.line, l.is_match)).collect();
+        // No context of line 8's match (line 7) without the match itself.
+        assert_eq!(shape, [(1, false), (2, true), (3, false), (4, false), (5, true), (6, false)]);
+        assert_eq!((r.match_count, r.total_matches), (2, 5));
+    }
+
+    #[test]
+    fn a_file_with_many_matches_keeps_only_what_can_be_shown() {
+        let root = std::env::temp_dir().join(format!("code-search-dense-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("dense.txt"), "x\n".repeat(5_000)).unwrap();
+        let mut o = opts("x");
+        o.max_results = 5;
+        let r = search(&root, &o, skip).unwrap();
+        assert_eq!(r.lines.len(), 5);
+        assert_eq!(r.lines.last().unwrap().line, 5);
+        assert_eq!((r.total_matches, r.total_files), (5_000, 1));
+    }
+
+    #[test]
+    fn counting_stops_at_its_limit_and_says_so() {
+        let root = many_files(50);
+        let mut o = opts("needle");
+        o.max_results = 10;
+        let r = search_counting_to(&root, &o, skip, 20).unwrap();
+        assert!(!r.totals_complete);
+        assert!(r.truncated);
+        assert_eq!(r.total_matches, 20, "at least this many");
+        assert!(r.match_count <= 10);
+    }
+
+    #[test]
+    fn kept_files_are_pruned_to_what_can_still_be_shown() {
+        let hits = |n: usize| FileHits {
+            lines: (0..n as u64)
+                .map(|i| SearchLine { path: String::new(), line: i + 1, text: String::new(), is_match: true, ranges: vec![], column: None })
+                .collect(),
+            matches: n,
+        };
+        let mut kept = Kept { files: BTreeMap::new(), matches: 0 };
+        // Arriving in any order; cap 4.
+        for (path, n) in [("m", 2), ("z", 3), ("b", 1), ("y", 5), ("a", 2), ("c", 1)] {
+            kept.add(path.to_string(), hits(n), 4);
+        }
+        // a(2) + b(1) + c(1) = 4: nothing after them can be shown.
+        assert_eq!(kept.files.keys().collect::<Vec<_>>(), ["a", "b", "c"]);
+        assert_eq!(kept.matches, 4);
+        // A file sorting after a full set isn't even stored.
+        kept.add("q".into(), hits(9), 4);
+        assert_eq!(kept.files.len(), 3);
+        // One sorting before it pushes the last out.
+        kept.add("0".into(), hits(3), 4);
+        assert_eq!(kept.files.keys().collect::<Vec<_>>(), ["0", "a"]);
     }
 
     #[test]

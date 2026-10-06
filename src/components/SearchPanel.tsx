@@ -152,9 +152,11 @@ export default function SearchPanel(props: {
     const r = result();
     if (!r) return '';
     if (r.matchCount === 0) return 'No results';
-    const results = `${r.matchCount.toLocaleString()} ${r.matchCount === 1 ? 'result' : 'results'}`;
-    const files = `${r.fileCount.toLocaleString()} ${r.fileCount === 1 ? 'file' : 'files'}`;
-    return `${results} in ${files}${r.truncated ? ` (first ${MAX_RESULTS.toLocaleString()} shown)` : ''}`;
+    // The whole project's counts; "+" when counting stopped before the end.
+    const more = r.totalsComplete ? '' : '+';
+    const results = `${r.totalMatches.toLocaleString()}${more} ${r.totalMatches === 1 && !more ? 'result' : 'results'}`;
+    const files = `${r.totalFiles.toLocaleString()}${more} ${r.totalFiles === 1 && !more ? 'file' : 'files'}`;
+    return `${results} in ${files}${r.truncated ? ` (first ${r.matchCount.toLocaleString()} shown)` : ''}`;
   };
 
   return (
