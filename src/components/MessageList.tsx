@@ -423,8 +423,21 @@ export default function MessageList(props: {
   // Content that resizes after rendering (code colorized, images loaded).
   onMount(() => {
     if (!innerRef) return;
+    let lastHeight = innerRef.offsetHeight;
     const observer = new ResizeObserver(() => {
-      if (stick()) scrollToBottom();
+      const height = innerRef?.offsetHeight ?? 0;
+      const shrank = height < lastHeight;
+      lastHeight = height;
+      if (stick()) return scrollToBottom();
+      // Content shrinking under the view (a tool result collapsed) can leave
+      // it at the very end: nothing is below any more, so follow again, or
+      // "Scroll to latest" stays up with nothing to scroll to.
+      const el = scrollRef;
+      if (!el || !shrank || !atNewest() || pendingCorrection !== 0) return;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_TOLERANCE_PX) {
+        lastScrollTop = el.scrollTop;
+        setStick(true);
+      }
     });
     observer.observe(innerRef);
     onCleanup(() => observer.disconnect());
