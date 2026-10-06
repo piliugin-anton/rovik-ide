@@ -11,10 +11,12 @@
 //! One lock guards the whole tree — every operation is a memory copy, so
 //! contention isn't worth the complexity of finer locking.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::SystemTime;
+
+use super::events::{Callback, EventMask, FsEvent, Hub, Op, Pending, Source, SubscriptionId};
 
 pub type Ino = u64;
 pub const ROOT: Ino = 1;
@@ -137,8 +139,9 @@ type Listener = Box<dyn Fn(&[Change]) + Send + Sync>;
 pub struct Options {
     /// Total bytes of file contents the filesystem may hold.
     pub capacity: u64,
-    /// Windows: names match regardless of case (and keep the case they were
-    /// created with), as every Windows program expects.
+    /// Names match regardless of case (and keep the case they were created
+    /// with). On by default on Windows and macOS, as their programs expect
+    /// (and as macFUSE is told, by fuser).
     pub case_insensitive: bool,
     /// Owner of the root and of files the app creates.
     pub uid: u32,
@@ -147,7 +150,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { capacity: 1 << 30, case_insensitive: cfg!(windows), uid: 0, gid: 0 }
+        Options { capacity: 1 << 30, case_insensitive: cfg!(any(windows, target_os = "macos")), uid: 0, gid: 0 }
     }
 }
 
@@ -166,12 +169,20 @@ struct Node {
     children: BTreeMap<String, Child>,
     /// Directories only: the containing directory (the root's is itself).
     parent: Ino,
+    /// Where the node is linked: (directory, name), one per hard link. Kept
+    /// so a node's path is found by walking up, not by searching the tree.
+    links: Vec<(Ino, String)>,
+    /// The last link, once all are gone: events about a deleted file that's
+    /// still open name the path it had.
+    last_link: Option<(Ino, String)>,
     perm: u16,
     uid: u32,
     gid: u32,
     nlink: u32,
     /// Open handles; an unlinked file lives until this is zero.
     open: u32,
+    /// Written since the last `Closed` event.
+    dirty: bool,
     attributes: u32,
     xattrs: BTreeMap<String, Vec<u8>>,
     atime: SystemTime,
@@ -188,11 +199,14 @@ impl Node {
             data: Vec::new(),
             children: BTreeMap::new(),
             parent: ROOT,
+            links: Vec::new(),
+            last_link: None,
             perm: perm & 0o7777,
             uid,
             gid,
             nlink: if kind == Kind::Dir { 2 } else { 1 },
             open: 0,
+            dirty: false,
             attributes: 0,
             xattrs: BTreeMap::new(),
             atime: now,
@@ -227,7 +241,7 @@ impl Node {
 }
 
 struct Tree {
-    nodes: BTreeMap<Ino, Node>,
+    nodes: HashMap<Ino, Node>,
     next_ino: Ino,
     /// Bytes of file contents held, counted against `Options::capacity`.
     used: u64,
@@ -259,6 +273,14 @@ impl Tree {
         }
     }
 
+    fn same_name(&self, a: &str, b: &str) -> bool {
+        if self.opts.case_insensitive {
+            a.to_lowercase() == b.to_lowercase()
+        } else {
+            a == b
+        }
+    }
+
     fn child(&self, parent: Ino, name: &str) -> VfsResult<Ino> {
         if name == "." {
             return self.dir(parent).map(|_| parent);
@@ -267,6 +289,43 @@ impl Tree {
             return self.dir(parent).map(|d| d.parent);
         }
         self.dir(parent)?.children.get(&self.key(name)).map(|c| c.ino).ok_or(VfsError::NotFound)
+    }
+
+    /// A node's path, walking up its first link: O(depth). `strict`: only
+    /// for a node that's still linked; otherwise its last known path.
+    fn path_in(&self, ino: Ino, strict: bool) -> Option<String> {
+        let mut parts: Vec<&str> = Vec::new();
+        let mut cur = ino;
+        while cur != ROOT {
+            let node = self.nodes.get(&cur)?;
+            let (parent, name) = match (node.links.first(), &node.last_link) {
+                (Some(link), _) => link,
+                (None, Some(link)) if !strict => link,
+                _ => return None,
+            };
+            parts.push(name);
+            cur = *parent;
+            if parts.len() > 4096 {
+                return None;
+            }
+        }
+        parts.reverse();
+        Some(parts.join("/"))
+    }
+
+    /// Path for an event: best effort, never fails.
+    fn event_path(&self, ino: Ino) -> String {
+        self.path_in(ino, false).unwrap_or_default()
+    }
+
+    /// Path of `name` in directory `dir`, for an event.
+    fn join(&self, dir: Ino, name: &str) -> String {
+        let base = self.event_path(dir);
+        if base.is_empty() {
+            name.to_string()
+        } else {
+            format!("{base}/{name}")
+        }
     }
 
     fn alloc(&mut self, node: Node) -> Ino {
@@ -311,8 +370,11 @@ impl Tree {
             dir.nlink += 1;
         }
         dir.touch_modified();
+        let node = self.node_mut(ino)?;
+        node.links.push((parent, name.to_string()));
+        node.last_link = None;
         if is_dir {
-            self.node_mut(ino)?.parent = parent;
+            node.parent = parent;
         }
         Ok(())
     }
@@ -323,7 +385,18 @@ impl Tree {
         let dir = self.node_mut(parent)?;
         let child = dir.children.remove(&key).ok_or(VfsError::NotFound)?;
         dir.touch_modified();
-        if self.node(child.ino)?.kind == Kind::Dir {
+        let case_insensitive = self.opts.case_insensitive;
+        let node = self.node_mut(child.ino)?;
+        let at = node.links.iter().position(|(p, n)| {
+            *p == parent && if case_insensitive { n.to_lowercase() == key } else { *n == key }
+        });
+        if let Some(at) = at {
+            let link = node.links.swap_remove(at);
+            if node.links.is_empty() {
+                node.last_link = Some(link);
+            }
+        }
+        if node.kind == Kind::Dir {
             self.node_mut(parent)?.nlink -= 1;
         }
         Ok(child.ino)
@@ -359,6 +432,7 @@ impl Tree {
 pub struct VirtualFs {
     tree: RwLock<Tree>,
     listener: RwLock<Option<Listener>>,
+    hub: Hub,
 }
 
 fn check_name(name: &str) -> VfsResult<()> {
@@ -384,11 +458,12 @@ impl VirtualFs {
     pub fn new(opts: Options) -> Arc<Self> {
         let mut root = Node::new(Kind::Dir, 0o755, opts.uid, opts.gid);
         root.parent = ROOT;
-        let mut nodes = BTreeMap::new();
+        let mut nodes = HashMap::new();
         nodes.insert(ROOT, root);
         Arc::new(VirtualFs {
             tree: RwLock::new(Tree { nodes, next_ino: ROOT + 1, used: 0, opts }),
             listener: RwLock::new(None),
+            hub: Hub::default(),
         })
     }
 
@@ -415,6 +490,36 @@ impl VirtualFs {
         }
     }
 
+    // --- Events -------------------------------------------------------------
+
+    /// Calls `callback` for every event whose kind is in `mask` (see
+    /// `events.rs` for what to keep out of a callback).
+    pub fn subscribe(&self, mask: EventMask, callback: impl Fn(&FsEvent) + Send + Sync + 'static) -> SubscriptionId {
+        self.hub.subscribe(mask, Arc::new(callback))
+    }
+
+    /// Same, with a shared callback (e.g. from [`super::events::batched`]).
+    pub fn subscribe_shared(&self, mask: EventMask, callback: Callback) -> SubscriptionId {
+        self.hub.subscribe(mask, callback)
+    }
+
+    pub fn unsubscribe(&self, id: SubscriptionId) -> bool {
+        self.hub.unsubscribe(id)
+    }
+
+    fn events(&self, source: Source) -> Pending<'_> {
+        Pending::new(&self.hub, source)
+    }
+
+    /// Runs `op` collecting events as `source`, and delivers them after
+    /// `op` (and the lock it took) is done.
+    fn with_events<T>(&self, source: Source, op: impl FnOnce(&mut Pending<'_>) -> T) -> T {
+        let mut events = self.events(source);
+        let result = op(&mut events);
+        events.send();
+        result
+    }
+
     // --- Inode operations (what the drivers call) -------------------------
 
     pub fn getattr(&self, ino: Ino) -> VfsResult<Attr> {
@@ -435,6 +540,21 @@ impl VirtualFs {
 
     /// Creates a file, directory or symlink (`target` for symlinks).
     pub fn create(&self, parent: Ino, name: &str, kind: Kind, perm: u16, uid: u32, gid: u32, target: Option<&str>) -> VfsResult<Attr> {
+        self.with_events(Source::Process, |ev| self.create_in(ev, parent, name, kind, perm, uid, gid, target))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_in(
+        &self,
+        ev: &mut Pending<'_>,
+        parent: Ino,
+        name: &str,
+        kind: Kind,
+        perm: u16,
+        uid: u32,
+        gid: u32,
+        target: Option<&str>,
+    ) -> VfsResult<Attr> {
         check_name(name)?;
         let mut tree = self.tree_mut();
         tree.dir(parent)?;
@@ -456,19 +576,24 @@ impl VirtualFs {
         }
         let ino = tree.alloc(node);
         tree.insert_child(parent, name, ino)?;
+        ev.add(ino, Op::Created { kind }, || tree.join(parent, name));
         Ok(tree.node(ino)?.attr(ino))
     }
 
     /// Removes a non-directory entry.
     pub fn unlink(&self, parent: Ino, name: &str) -> VfsResult<()> {
-        let mut tree = self.tree_mut();
-        let ino = tree.child(parent, name)?;
-        if tree.node(ino)?.kind == Kind::Dir {
-            return Err(VfsError::IsDir);
-        }
-        tree.detach(parent, name)?;
-        tree.unlink_node(ino);
-        Ok(())
+        self.with_events(Source::Process, |ev| {
+            let mut tree = self.tree_mut();
+            let ino = tree.child(parent, name)?;
+            let kind = tree.node(ino)?.kind;
+            if kind == Kind::Dir {
+                return Err(VfsError::IsDir);
+            }
+            ev.add(ino, Op::Removed { kind }, || tree.join(parent, name));
+            tree.detach(parent, name)?;
+            tree.unlink_node(ino);
+            Ok(())
+        })
     }
 
     /// Removes an empty directory.
@@ -479,21 +604,36 @@ impl VirtualFs {
         if name == ".." {
             return Err(VfsError::NotEmpty);
         }
-        let mut tree = self.tree_mut();
-        let ino = tree.child(parent, name)?;
-        let node = tree.node(ino)?;
-        if node.kind != Kind::Dir {
-            return Err(VfsError::NotDir);
-        }
-        if !node.children.is_empty() {
-            return Err(VfsError::NotEmpty);
-        }
-        tree.detach(parent, name)?;
-        tree.unlink_node(ino);
-        Ok(())
+        self.with_events(Source::Process, |ev| {
+            let mut tree = self.tree_mut();
+            let ino = tree.child(parent, name)?;
+            let node = tree.node(ino)?;
+            if node.kind != Kind::Dir {
+                return Err(VfsError::NotDir);
+            }
+            if !node.children.is_empty() {
+                return Err(VfsError::NotEmpty);
+            }
+            ev.add(ino, Op::Removed { kind: Kind::Dir }, || tree.join(parent, name));
+            tree.detach(parent, name)?;
+            tree.unlink_node(ino);
+            Ok(())
+        })
     }
 
     pub fn rename(&self, parent: Ino, name: &str, new_parent: Ino, new_name: &str, mode: RenameMode) -> VfsResult<()> {
+        self.with_events(Source::Process, |ev| self.rename_in(ev, parent, name, new_parent, new_name, mode))
+    }
+
+    fn rename_in(
+        &self,
+        ev: &mut Pending<'_>,
+        parent: Ino,
+        name: &str,
+        new_parent: Ino,
+        new_name: &str,
+        mode: RenameMode,
+    ) -> VfsResult<()> {
         check_name(new_name)?;
         if name == "." || name == ".." {
             return Err(VfsError::Invalid);
@@ -508,12 +648,16 @@ impl VirtualFs {
             // Into itself or its own subdirectory.
             return Err(VfsError::Invalid);
         }
+        // Paths before the move, only if someone will be told.
+        let wants = ev.wants(EventMask::RENAMED);
+        let from = wants.then(|| tree.join(parent, name));
 
         if mode == RenameMode::Exchange {
             let dst = dst.ok_or(VfsError::NotFound)?;
             if tree.node(dst)?.kind == Kind::Dir && tree.is_within(parent, dst) {
                 return Err(VfsError::Invalid);
             }
+            let to = wants.then(|| tree.join(new_parent, new_name));
             let dst_name = tree.node(new_parent)?.children[&tree.key(new_name)].name.clone();
             let src_name = tree.node(parent)?.children[&tree.key(name)].name.clone();
             tree.detach(parent, &src_name)?;
@@ -523,6 +667,10 @@ impl VirtualFs {
             let now = SystemTime::now();
             tree.node_mut(src)?.ctime = now;
             tree.node_mut(dst)?.ctime = now;
+            if let (Some(from), Some(to)) = (from, to) {
+                ev.add(src, Op::Renamed { from: from.clone() }, || to.clone());
+                ev.add(dst, Op::Renamed { from: to }, || from);
+            }
             return Ok(());
         }
 
@@ -530,10 +678,20 @@ impl VirtualFs {
             if dst == src {
                 // Same file (a hard link, or a case-only rename on a
                 // case-insensitive volume): only the spelling may change.
-                if parent == new_parent && tree.key(name) == tree.key(new_name) {
+                if parent == new_parent && tree.same_name(name, new_name) && name != new_name {
                     let key = tree.key(new_name);
                     if let Some(child) = tree.node_mut(new_parent)?.children.get_mut(&key) {
                         child.name = new_name.to_string();
+                    }
+                    let case_insensitive = tree.opts.case_insensitive;
+                    for link in tree.node_mut(src)?.links.iter_mut() {
+                        let same = if case_insensitive { link.1.to_lowercase() == key } else { link.1 == key };
+                        if link.0 == parent && same {
+                            link.1 = new_name.to_string();
+                        }
+                    }
+                    if let Some(from) = from {
+                        ev.add(src, Op::Renamed { from }, || tree.join(new_parent, new_name));
                     }
                 }
                 return Ok(());
@@ -555,29 +713,36 @@ impl VirtualFs {
         tree.detach(parent, name)?;
         tree.insert_child(new_parent, new_name, src)?;
         tree.node_mut(src)?.ctime = SystemTime::now();
+        if let Some(from) = from {
+            ev.add(src, Op::Renamed { from }, || tree.join(new_parent, new_name));
+        }
         Ok(())
     }
 
     /// Adds a hard link to a file.
     pub fn link(&self, ino: Ino, new_parent: Ino, new_name: &str) -> VfsResult<Attr> {
         check_name(new_name)?;
-        let mut tree = self.tree_mut();
-        let node = tree.node(ino)?;
-        if node.kind == Kind::Dir {
-            return Err(VfsError::NotPermitted);
-        }
-        if node.nlink == 0 {
-            return Err(VfsError::NotFound);
-        }
-        tree.dir(new_parent)?;
-        if tree.child(new_parent, new_name).is_ok() {
-            return Err(VfsError::Exists);
-        }
-        tree.insert_child(new_parent, new_name, ino)?;
-        let node = tree.node_mut(ino)?;
-        node.nlink += 1;
-        node.ctime = SystemTime::now();
-        Ok(node.attr(ino))
+        self.with_events(Source::Process, |ev| {
+            let mut tree = self.tree_mut();
+            let node = tree.node(ino)?;
+            let kind = node.kind;
+            if kind == Kind::Dir {
+                return Err(VfsError::NotPermitted);
+            }
+            if node.nlink == 0 {
+                return Err(VfsError::NotFound);
+            }
+            tree.dir(new_parent)?;
+            if tree.child(new_parent, new_name).is_ok() {
+                return Err(VfsError::Exists);
+            }
+            tree.insert_child(new_parent, new_name, ino)?;
+            ev.add(ino, Op::Created { kind }, || tree.join(new_parent, new_name));
+            let node = tree.node_mut(ino)?;
+            node.nlink += 1;
+            node.ctime = SystemTime::now();
+            Ok(node.attr(ino))
+        })
     }
 
     pub fn readlink(&self, ino: Ino) -> VfsResult<String> {
@@ -590,6 +755,10 @@ impl VirtualFs {
     }
 
     pub fn read(&self, ino: Ino, offset: u64, size: usize) -> VfsResult<Vec<u8>> {
+        self.with_events(Source::Process, |ev| self.read_in(ev, ino, offset, size))
+    }
+
+    fn read_in(&self, ev: &mut Pending<'_>, ino: Ino, offset: u64, size: usize) -> VfsResult<Vec<u8>> {
         let tree = self.tree();
         let node = tree.node(ino)?;
         match node.kind {
@@ -598,37 +767,48 @@ impl VirtualFs {
             Kind::File => {}
         }
         let len = node.data.len() as u64;
-        if offset >= len {
-            return Ok(Vec::new());
-        }
-        let end = len.min(offset.saturating_add(size as u64));
-        Ok(node.data[offset as usize..end as usize].to_vec())
+        let data = if offset >= len {
+            Vec::new()
+        } else {
+            let end = len.min(offset.saturating_add(size as u64));
+            node.data[offset as usize..end as usize].to_vec()
+        };
+        ev.add(ino, Op::Read { offset, len: data.len() as u64 }, || tree.event_path(ino));
+        Ok(data)
     }
 
     /// Writes at `offset`, filling any gap with zeros. Returns the bytes written.
     pub fn write(&self, ino: Ino, offset: u64, data: &[u8]) -> VfsResult<usize> {
-        let mut tree = self.tree_mut();
-        let node = tree.node(ino)?;
-        match node.kind {
-            Kind::Dir => return Err(VfsError::IsDir),
-            Kind::Symlink => return Err(VfsError::Invalid),
-            Kind::File => {}
-        }
-        let old_len = node.data.len();
-        let end = usize::try_from(offset).ok().and_then(|o| o.checked_add(data.len())).ok_or(VfsError::NoSpace)?;
-        let new_len = old_len.max(end);
-        tree.reserve(old_len, new_len)?;
-        let node = tree.node_mut(ino)?;
-        if new_len > old_len {
-            node.data.resize(new_len, 0);
-        }
-        node.data[offset as usize..end].copy_from_slice(data);
-        node.touch_modified();
-        node.attributes |= 0x20;
-        Ok(data.len())
+        self.with_events(Source::Process, |ev| {
+            let mut tree = self.tree_mut();
+            let node = tree.node(ino)?;
+            match node.kind {
+                Kind::Dir => return Err(VfsError::IsDir),
+                Kind::Symlink => return Err(VfsError::Invalid),
+                Kind::File => {}
+            }
+            let old_len = node.data.len();
+            let end = usize::try_from(offset).ok().and_then(|o| o.checked_add(data.len())).ok_or(VfsError::NoSpace)?;
+            let new_len = old_len.max(end);
+            tree.reserve(old_len, new_len)?;
+            let node = tree.node_mut(ino)?;
+            if new_len > old_len {
+                node.data.resize(new_len, 0);
+            }
+            node.data[offset as usize..end].copy_from_slice(data);
+            node.touch_modified();
+            node.attributes |= 0x20;
+            node.dirty = true;
+            ev.add(ino, Op::Written { offset, len: data.len() as u64 }, || tree.event_path(ino));
+            Ok(data.len())
+        })
     }
 
     pub fn setattr(&self, ino: Ino, set: &SetAttr) -> VfsResult<Attr> {
+        self.with_events(Source::Process, |ev| self.setattr_in(ev, ino, set))
+    }
+
+    fn setattr_in(&self, ev: &mut Pending<'_>, ino: Ino, set: &SetAttr) -> VfsResult<Attr> {
         let mut tree = self.tree_mut();
         let node = tree.node(ino)?;
         if let Some(size) = set.size {
@@ -647,6 +827,8 @@ impl VirtualFs {
                 node.data.shrink_to_fit();
             }
             node.touch_modified();
+            node.dirty = true;
+            ev.add(ino, Op::Truncated { size }, || tree.event_path(ino));
         }
         let node = tree.node_mut(ino)?;
         let now = SystemTime::now();
@@ -680,31 +862,53 @@ impl VirtualFs {
         Ok(node.attr(ino))
     }
 
-    /// A directory's entries, without `.` and `..`.
-    pub fn readdir(&self, ino: Ino) -> VfsResult<Vec<DirEntry>> {
+    /// Whether a directory has no entries (without listing them).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn dir_is_empty(&self, ino: Ino) -> VfsResult<bool> {
+        Ok(self.tree().dir(ino)?.children.is_empty())
+    }
+
+    /// A directory's entries (without `.` and `..`) with their attributes,
+    /// under one lock instead of a `getattr` per entry.
+    pub fn readdir_plus(&self, ino: Ino) -> VfsResult<Vec<(DirEntry, Attr)>> {
         let tree = self.tree();
         let dir = tree.dir(ino)?;
         Ok(dir
             .children
             .values()
-            .filter_map(|c| Some(DirEntry { name: c.name.clone(), ino: c.ino, kind: tree.nodes.get(&c.ino)?.kind }))
+            .filter_map(|c| {
+                let node = tree.nodes.get(&c.ino)?;
+                Some((DirEntry { name: c.name.clone(), ino: c.ino, kind: node.kind }, node.attr(c.ino)))
+            })
             .collect())
     }
 
     /// Notes an open handle, so the node outlives an unlink until `release`.
-    pub fn open(&self, ino: Ino) -> VfsResult<Attr> {
-        let mut tree = self.tree_mut();
-        let node = tree.node_mut(ino)?;
-        node.open += 1;
-        Ok(node.attr(ino))
+    /// `write`: opened for writing (reported in the `Opened` event).
+    pub fn open(&self, ino: Ino, write: bool) -> VfsResult<Attr> {
+        self.with_events(Source::Process, |ev| {
+            let mut tree = self.tree_mut();
+            let node = tree.node_mut(ino)?;
+            node.open += 1;
+            let attr = node.attr(ino);
+            if attr.kind == Kind::File {
+                ev.add(ino, Op::Opened { write }, || tree.event_path(ino));
+            }
+            Ok(attr)
+        })
     }
 
     pub fn release(&self, ino: Ino) {
-        let mut tree = self.tree_mut();
-        if let Some(node) = tree.nodes.get_mut(&ino) {
+        self.with_events(Source::Process, |ev| {
+            let mut tree = self.tree_mut();
+            let Some(node) = tree.nodes.get_mut(&ino) else { return };
             node.open = node.open.saturating_sub(1);
-        }
-        tree.collect(ino);
+            if node.kind == Kind::File {
+                let modified = std::mem::take(&mut node.dirty);
+                ev.add(ino, Op::Closed { modified }, || tree.event_path(ino));
+            }
+            tree.collect(ino);
+        })
     }
 
     pub fn getxattr(&self, ino: Ino, name: &str) -> VfsResult<Vec<u8>> {
@@ -772,23 +976,11 @@ impl VirtualFs {
                 if target.starts_with('/') {
                     return Err(VfsError::NotFound);
                 }
-                let base = Self::path_of_dir(tree, parent)?;
+                let base = tree.path_in(parent, true).ok_or(VfsError::NotFound)?;
                 ino = Self::resolve_in(tree, &format!("{base}/{target}"), true, hops)?;
             }
         }
         Ok(ino)
-    }
-
-    fn path_of_dir(tree: &Tree, mut dir: Ino) -> VfsResult<String> {
-        let mut parts = Vec::new();
-        while dir != ROOT {
-            let parent = tree.dir(dir)?.parent;
-            let name = tree.dir(parent)?.children.values().find(|c| c.ino == dir).ok_or(VfsError::NotFound)?.name.clone();
-            parts.push(name);
-            dir = parent;
-        }
-        parts.reverse();
-        Ok(parts.join("/"))
     }
 
     /// The node at `path` (relative to the volume root), following symlinks.
@@ -813,31 +1005,18 @@ impl VirtualFs {
     }
 
     /// The path of a node relative to the root, using `/` (the first link,
-    /// for a file with several). Unlinked nodes have none.
+    /// for a file with several). Unlinked nodes have none. O(depth).
     pub fn path_of(&self, ino: Ino) -> VfsResult<String> {
-        let tree = self.tree();
-        if tree.node(ino)?.kind == Kind::Dir {
-            return Self::path_of_dir(&tree, ino);
-        }
-        // Not kept per node: hard links make it a set. Files are found from
-        // their directory, which is rare enough to search for.
-        let mut stack = vec![ROOT];
-        while let Some(dir) = stack.pop() {
-            for child in tree.dir(dir)?.children.values() {
-                if child.ino == ino {
-                    let base = Self::path_of_dir(&tree, dir)?;
-                    return Ok(if base.is_empty() { child.name.clone() } else { format!("{base}/{}", child.name) });
-                }
-                if tree.nodes.get(&child.ino).is_some_and(|n| n.kind == Kind::Dir) {
-                    stack.push(child.ino);
-                }
-            }
-        }
-        Err(VfsError::NotFound)
+        self.tree().path_in(ino, true).ok_or(VfsError::NotFound)
     }
 
     /// Creates a directory and any missing parents.
+    #[allow(dead_code)] // app-side API, not used by the app yet
     pub fn create_dir_all(&self, path: &str) -> VfsResult<Ino> {
+        self.with_events(Source::App, |ev| self.create_dir_all_in(ev, path))
+    }
+
+    fn create_dir_all_in(&self, ev: &mut Pending<'_>, path: &str) -> VfsResult<Ino> {
         let mut changes = Vec::new();
         let result = (|| {
             let (uid, gid) = {
@@ -851,7 +1030,7 @@ impl VirtualFs {
                     Ok(attr) if attr.kind == Kind::Symlink => ino = self.resolve(&format!("{}/{part}", self.path_of(ino)?))?,
                     Ok(_) => return Err(VfsError::NotDir),
                     Err(VfsError::NotFound) => {
-                        let attr = self.create(ino, part, Kind::Dir, 0o755, uid, gid, None)?;
+                        let attr = self.create_in(ev, ino, part, Kind::Dir, 0o755, uid, gid, None)?;
                         changes.push(Change::Entry { parent: ino, name: part.to_string() });
                         ino = attr.ino;
                     }
@@ -867,7 +1046,15 @@ impl VirtualFs {
     /// Creates or replaces the file at `path` with `data`, creating parent
     /// directories. An existing file keeps its inode (open handles see the new
     /// contents), its owner and permissions unless `perm` is given.
+    ///
+    /// Reported as `Created` (if new), `Written` (the whole contents) and
+    /// `Closed { modified: true }`, so "a file was finished" looks the same
+    /// whether a program or the app wrote it.
     pub fn write_file(&self, path: &str, data: &[u8], perm: Option<u16>) -> VfsResult<Attr> {
+        self.with_events(Source::App, |ev| self.write_file_in(ev, path, data, perm))
+    }
+
+    fn write_file_in(&self, ev: &mut Pending<'_>, path: &str, data: &[u8], perm: Option<u16>) -> VfsResult<Attr> {
         let (dir_path, name) = {
             let trimmed = path.trim_end_matches(['/', '\\']);
             match trimmed.rfind(['/', '\\']) {
@@ -876,7 +1063,7 @@ impl VirtualFs {
             }
         };
         check_name(name)?;
-        let parent = self.create_dir_all(dir_path)?;
+        let parent = self.create_dir_all_in(ev, dir_path)?;
         let mut changes = Vec::new();
         let result = (|| {
             let mut tree = self.tree_mut();
@@ -910,9 +1097,11 @@ impl VirtualFs {
                     return Err(e);
                 }
                 // Don't leave a new, empty file behind.
-                drop(tree);
-                let _ = self.unlink(parent, name);
+                let _ = tree.detach(parent, name).map(|ino| tree.unlink_node(ino));
                 return Err(e);
+            }
+            if !changes.is_empty() {
+                ev.add(ino, Op::Created { kind: Kind::File }, || tree.join(parent, name));
             }
             let node = tree.node_mut(ino)?;
             node.data = data.to_vec();
@@ -920,8 +1109,14 @@ impl VirtualFs {
             if let Some(perm) = perm {
                 node.perm = perm & 0o7777;
             }
+            let attr = node.attr(ino);
+            if ev.wants(EventMask::WRITTEN | EventMask::CLOSED) {
+                let path = tree.event_path(ino);
+                ev.add(ino, Op::Written { offset: 0, len: data.len() as u64 }, || path.clone());
+                ev.add(ino, Op::Closed { modified: true }, || path);
+            }
             changes.push(Change::Data(ino));
-            Ok(node.attr(ino))
+            Ok(attr)
         })();
         self.notify(&changes);
         result
@@ -929,7 +1124,7 @@ impl VirtualFs {
 
     pub fn read_file(&self, path: &str) -> VfsResult<Vec<u8>> {
         let ino = self.resolve(path)?;
-        self.read(ino, 0, usize::MAX)
+        self.with_events(Source::App, |ev| self.read_in(ev, ino, 0, usize::MAX))
     }
 
     #[allow(dead_code)] // app-side API, not used by the app yet
@@ -937,18 +1132,21 @@ impl VirtualFs {
         self.getattr(self.resolve_nofollow(path)?)
     }
 
-    pub fn list(&self, path: &str) -> VfsResult<Vec<DirEntry>> {
-        self.readdir(self.resolve(path)?)
+    pub fn list(&self, path: &str) -> VfsResult<Vec<(DirEntry, Attr)>> {
+        self.readdir_plus(self.resolve(path)?)
     }
 
-    /// Removes a file, symlink or a whole directory tree.
+    /// Removes a file, symlink or a whole directory tree (reported as one
+    /// `Removed` for `path`).
     pub fn remove(&self, path: &str) -> VfsResult<()> {
         let (parent, name) = self.resolve_parent(path)?;
         let name = name.to_string();
         let ino = self.lookup(parent, &name)?.ino;
-        let result = (|| {
+        let result = self.with_events(Source::App, |ev| {
             let mut tree = self.tree_mut();
-            if tree.node(ino)?.kind == Kind::Dir {
+            let kind = tree.node(ino)?.kind;
+            ev.add(ino, Op::Removed { kind }, || tree.join(parent, &name));
+            if kind == Kind::Dir {
                 // Unlink everything inside, depth first.
                 let mut stack = vec![ino];
                 let mut order = Vec::new();
@@ -971,7 +1169,7 @@ impl VirtualFs {
             tree.detach(parent, &name)?;
             tree.unlink_node(ino);
             Ok(())
-        })();
+        });
         if result.is_ok() {
             self.notify(&[Change::Entry { parent, name }]);
         }
@@ -984,7 +1182,7 @@ impl VirtualFs {
     pub fn rename_path(&self, from: &str, to: &str) -> VfsResult<()> {
         let (parent, name) = self.resolve_parent(from)?;
         let (new_parent, new_name) = self.resolve_parent(to)?;
-        self.rename(parent, name, new_parent, new_name, RenameMode::Replace)?;
+        self.with_events(Source::App, |ev| self.rename_in(ev, parent, name, new_parent, new_name, RenameMode::Replace))?;
         self.notify(&[
             Change::Entry { parent, name: name.to_string() },
             Change::Entry { parent: new_parent, name: new_name.to_string() },
@@ -1000,7 +1198,8 @@ impl VirtualFs {
             let tree = self.tree();
             (tree.opts.uid, tree.opts.gid)
         };
-        let attr = self.create(parent, name, Kind::Symlink, 0o777, uid, gid, Some(target))?;
+        let attr =
+            self.with_events(Source::App, |ev| self.create_in(ev, parent, name, Kind::Symlink, 0o777, uid, gid, Some(target)))?;
         self.notify(&[Change::Entry { parent, name: name.to_string() }]);
         Ok(attr)
     }
@@ -1008,7 +1207,7 @@ impl VirtualFs {
     #[allow(dead_code)] // app-side API, not used by the app yet
     pub fn set_permissions(&self, path: &str, perm: u16) -> VfsResult<Attr> {
         let ino = self.resolve(path)?;
-        self.setattr(ino, &SetAttr { perm: Some(perm), ..Default::default() })
+        self.with_events(Source::App, |ev| self.setattr_in(ev, ino, &SetAttr { perm: Some(perm), ..Default::default() }))
     }
 }
 
@@ -1127,7 +1326,7 @@ mod tests {
         let fs = fs();
         let f = file(&fs, ROOT, "tmp");
         fs.write(f.ino, 0, b"data").unwrap();
-        fs.open(f.ino).unwrap();
+        fs.open(f.ino, false).unwrap();
         fs.unlink(ROOT, "tmp").unwrap();
         assert_eq!(fs.read(f.ino, 0, 10).unwrap(), b"data");
         assert_eq!(fs.getattr(f.ino).unwrap().nlink, 0);
@@ -1172,7 +1371,7 @@ mod tests {
         assert_eq!(first.ino, second.ino);
         assert_eq!(second.perm, 0o755);
         assert_eq!(fs.read_file("a\\b\\c.txt").unwrap(), b"two!");
-        let names: Vec<String> = fs.list("a").unwrap().into_iter().map(|e| e.name).collect();
+        let names: Vec<String> = fs.list("a").unwrap().into_iter().map(|(e, _)| e.name).collect();
         assert_eq!(names, ["b"]);
         assert_eq!(fs.path_of(second.ino).unwrap(), "a/b/c.txt");
         assert_eq!(fs.write_file("a/b", b"x", None), Err(VfsError::IsDir));
@@ -1225,7 +1424,7 @@ mod tests {
         assert_eq!(fs.lookup(ROOT, "README.MD").unwrap().ino, f.ino);
         assert_eq!(fs.create(ROOT, "readme.md", Kind::File, 0o644, 0, 0, None), Err(VfsError::Exists));
         fs.rename(ROOT, "readme.md", ROOT, "README.md", RenameMode::Replace).unwrap();
-        assert_eq!(fs.readdir(ROOT).unwrap()[0].name, "README.md");
+        assert_eq!(fs.readdir_plus(ROOT).unwrap()[0].0.name, "README.md");
         assert_eq!(fs.getattr(f.ino).unwrap().nlink, 1);
     }
 
@@ -1240,5 +1439,157 @@ mod tests {
         assert_eq!(fs.listxattr(f.ino).unwrap(), ["user.k"]);
         fs.removexattr(f.ino, "user.k").unwrap();
         assert_eq!(fs.getxattr(f.ino, "user.k"), Err(VfsError::NoAttr));
+    }
+
+    use crate::vfs::events::{EventMask, FsEvent, Op, Source};
+    use std::sync::Mutex;
+
+    fn record(fs: &VirtualFs, mask: EventMask) -> Arc<Mutex<Vec<FsEvent>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        fs.subscribe(mask, move |e| sink.lock().unwrap().push(e.clone()));
+        seen
+    }
+
+    fn ops(seen: &Mutex<Vec<FsEvent>>) -> Vec<(String, Op)> {
+        seen.lock().unwrap().drain(..).map(|e| (e.path, e.op)).collect()
+    }
+
+    #[test]
+    fn reports_a_programs_file_lifecycle() {
+        let fs = fs();
+        let seen = record(&fs, EventMask::ALL);
+        let d = dir(&fs, ROOT, "d");
+        let f = file(&fs, d.ino, "a.txt");
+        fs.open(f.ino, true).unwrap();
+        fs.write(f.ino, 0, b"hi").unwrap();
+        fs.read(f.ino, 0, 10).unwrap();
+        fs.setattr(f.ino, &SetAttr { size: Some(1), ..Default::default() }).unwrap();
+        fs.release(f.ino);
+        fs.open(f.ino, false).unwrap();
+        fs.release(f.ino);
+        fs.rename(d.ino, "a.txt", ROOT, "b.txt", RenameMode::Replace).unwrap();
+        fs.unlink(ROOT, "b.txt").unwrap();
+        assert_eq!(
+            ops(&seen),
+            [
+                ("d".into(), Op::Created { kind: Kind::Dir }),
+                ("d/a.txt".into(), Op::Created { kind: Kind::File }),
+                ("d/a.txt".into(), Op::Opened { write: true }),
+                ("d/a.txt".into(), Op::Written { offset: 0, len: 2 }),
+                ("d/a.txt".into(), Op::Read { offset: 0, len: 2 }),
+                ("d/a.txt".into(), Op::Truncated { size: 1 }),
+                ("d/a.txt".into(), Op::Closed { modified: true }),
+                ("d/a.txt".into(), Op::Opened { write: false }),
+                ("d/a.txt".into(), Op::Closed { modified: false }),
+                ("b.txt".into(), Op::Renamed { from: "d/a.txt".into() }),
+                ("b.txt".into(), Op::Removed { kind: Kind::File }),
+            ]
+        );
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn masks_limit_what_is_built() {
+        let fs = fs();
+        let seen = record(&fs, EventMask::CLOSED);
+        let f = file(&fs, ROOT, "a");
+        fs.open(f.ino, true).unwrap();
+        fs.write(f.ino, 0, b"x").unwrap();
+        fs.release(f.ino);
+        assert_eq!(ops(&seen), [("a".into(), Op::Closed { modified: true })]);
+    }
+
+    #[test]
+    fn app_writes_are_reported_as_the_app() {
+        let fs = fs();
+        let seen = record(&fs, EventMask::ALL);
+        fs.write_file("x/y.txt", b"abc", None).unwrap();
+        fs.write_file("x/y.txt", b"abcd", None).unwrap();
+        fs.remove("x").unwrap();
+        let events = seen.lock().unwrap().clone();
+        assert!(events.iter().all(|e| e.source == Source::App));
+        let got: Vec<(String, Op)> = events.into_iter().map(|e| (e.path, e.op)).collect();
+        assert_eq!(
+            got,
+            [
+                ("x".into(), Op::Created { kind: Kind::Dir }),
+                ("x/y.txt".into(), Op::Created { kind: Kind::File }),
+                ("x/y.txt".into(), Op::Written { offset: 0, len: 3 }),
+                ("x/y.txt".into(), Op::Closed { modified: true }),
+                ("x/y.txt".into(), Op::Written { offset: 0, len: 4 }),
+                ("x/y.txt".into(), Op::Closed { modified: true }),
+                ("x".into(), Op::Removed { kind: Kind::Dir }),
+            ]
+        );
+    }
+
+    #[test]
+    fn deleted_open_files_keep_their_last_path() {
+        let fs = fs();
+        let f = file(&fs, ROOT, "tmp");
+        fs.link(f.ino, ROOT, "other").unwrap();
+        fs.open(f.ino, false).unwrap();
+        let seen = record(&fs, EventMask::REMOVED | EventMask::CLOSED);
+        fs.unlink(ROOT, "tmp").unwrap();
+        assert_eq!(fs.path_of(f.ino).unwrap(), "other", "the remaining link");
+        fs.unlink(ROOT, "other").unwrap();
+        assert_eq!(fs.path_of(f.ino), Err(VfsError::NotFound));
+        fs.release(f.ino);
+        assert_eq!(
+            ops(&seen),
+            [
+                ("tmp".into(), Op::Removed { kind: Kind::File }),
+                ("other".into(), Op::Removed { kind: Kind::File }),
+                ("other".into(), Op::Closed { modified: false }),
+            ]
+        );
+    }
+
+    #[test]
+    fn paths_follow_renamed_directories() {
+        let fs = fs();
+        let f = fs.write_file("a/b/c/f.txt", b"", None).unwrap();
+        fs.rename_path("a/b", "z").unwrap();
+        assert_eq!(fs.path_of(f.ino).unwrap(), "z/c/f.txt");
+        let ci = VirtualFs::new(Options { capacity: 1024, case_insensitive: true, uid: 0, gid: 0 });
+        let g = ci.write_file("Dir/file.TXT", b"", None).unwrap();
+        ci.rename_path("dir/FILE.txt", "dir/File.txt").unwrap();
+        assert_eq!(ci.path_of(g.ino).unwrap(), "Dir/File.txt");
+    }
+
+    /// Lookups and paths cost the same with many files: nothing scans the
+    /// tree. Generous bounds, so it only fails on a real regression.
+    #[test]
+    fn scales_to_many_files() {
+        let fs = VirtualFs::new(Options { capacity: 1 << 30, case_insensitive: false, uid: 0, gid: 0 });
+        let n = 100_000;
+        for i in 0..n {
+            fs.write_file(&format!("d{}/f{i}.txt", i % 100), b"x", None).unwrap();
+        }
+        let deep = fs.write_file("a/b/c/d/e/f/g/h/deep.txt", b"y", None).unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..10_000 {
+            assert_eq!(fs.path_of(deep.ino).unwrap().len(), 24);
+            fs.open(deep.ino, false).unwrap();
+            fs.read(deep.ino, 0, 1).unwrap();
+            fs.release(deep.ino);
+        }
+        let quiet = started.elapsed();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = seen.clone();
+        fs.subscribe(EventMask::ALL, move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        for _ in 0..10_000 {
+            fs.open(deep.ino, false).unwrap();
+            fs.read(deep.ino, 0, 1).unwrap();
+            fs.release(deep.ino);
+        }
+        let observed = started.elapsed();
+        assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 30_000);
+        assert!(quiet < std::time::Duration::from_secs(2), "{quiet:?}");
+        assert!(observed < std::time::Duration::from_secs(2), "{observed:?}");
     }
 }

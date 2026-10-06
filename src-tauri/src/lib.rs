@@ -145,6 +145,8 @@ pub fn run() {
             vfs::vfs_read_file,
             vfs::vfs_list,
             vfs::vfs_remove,
+            vfs::vfs_subscribe,
+            vfs::vfs_unsubscribe,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -44,6 +44,8 @@ const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
 const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
 const FILE_DIRECTORY_FILE: u32 = 0x1;
+/// FILE_WRITE_DATA | FILE_APPEND_DATA | GENERIC_WRITE | GENERIC_ALL
+const WRITE_ACCESS: u32 = 0x2 | 0x4 | 0x4000_0000 | 0x1000_0000;
 const CLEANUP_DELETE: u32 = 0x01;
 const CLEANUP_SET_ARCHIVE_BIT: u32 = 0x10;
 const CLEANUP_SET_LAST_ACCESS_TIME: u32 = 0x20;
@@ -179,8 +181,8 @@ impl WinFs {
         })
     }
 
-    fn open_context(&self, ino: u64, file_info: &mut OpenFileInfo) -> winfsp::Result<WinFile> {
-        let attr = self.vfs.open(ino).map_err(nt)?;
+    fn open_context(&self, ino: u64, write: bool, file_info: &mut OpenFileInfo) -> winfsp::Result<WinFile> {
+        let attr = self.vfs.open(ino, write).map_err(nt)?;
         fill(&attr, file_info.as_mut());
         // On a case-insensitive volume, report the name as stored.
         if let Ok(stored) = self.vfs.path_of(ino) {
@@ -212,11 +214,11 @@ impl FileSystemContext for WinFs {
         &self,
         file_name: &U16CStr,
         _create_options: u32,
-        _granted_access: FILE_ACCESS_RIGHTS,
+        granted_access: FILE_ACCESS_RIGHTS,
         file_info: &mut OpenFileInfo,
     ) -> winfsp::Result<Self::FileContext> {
         let ino = self.resolve(file_name)?;
-        self.open_context(ino, file_info)
+        self.open_context(ino, granted_access & WRITE_ACCESS != 0, file_info)
     }
 
     fn close(&self, context: Self::FileContext) {
@@ -248,7 +250,7 @@ impl FileSystemContext for WinFs {
             extra |= FILE_ATTRIBUTE_ARCHIVE;
         }
         let _ = self.vfs.setattr(attr.ino, &SetAttr { attributes: Some(extra), ..Default::default() });
-        self.open_context(attr.ino, file_info)
+        self.open_context(attr.ino, true, file_info)
     }
 
     fn cleanup(&self, context: &Self::FileContext, file_name: Option<&U16CStr>, flags: u32) {
@@ -344,10 +346,8 @@ impl FileSystemContext for WinFs {
                 let parent = self.vfs.parent_of(context.ino).map_err(nt)?;
                 add("..", &self.vfs.getattr(parent).map_err(nt)?)?;
             }
-            for entry in self.vfs.readdir(context.ino).map_err(nt)? {
-                if let Ok(attr) = self.vfs.getattr(entry.ino) {
-                    add(&entry.name, &attr)?;
-                }
+            for (entry, attr) in self.vfs.readdir_plus(context.ino).map_err(nt)? {
+                add(&entry.name, &attr)?;
             }
         }
         Ok(context.dir_buffer.read(marker, buffer))
@@ -406,7 +406,7 @@ impl FileSystemContext for WinFs {
     }
 
     fn set_delete(&self, context: &Self::FileContext, _file_name: &U16CStr, delete_file: bool) -> winfsp::Result<()> {
-        if delete_file && context.is_dir && !self.vfs.readdir(context.ino).map_err(nt)?.is_empty() {
+        if delete_file && context.is_dir && !self.vfs.dir_is_empty(context.ino).map_err(nt)? {
             return Err(status(STATUS_DIRECTORY_NOT_EMPTY));
         }
         context.delete_pending.store(delete_file, Ordering::Relaxed);

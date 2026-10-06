@@ -19,7 +19,8 @@ use std::time::{Duration, SystemTime};
 
 use fuser::{
     AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags, Generation, INodeNo,
-    LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
+    InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
+    ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty,
     ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, SessionACL, TimeOrNow, WriteFlags,
 };
 
@@ -85,6 +86,15 @@ fn time(t: TimeOrNow) -> SystemTime {
     }
 }
 
+/// Open files keep the kernel's page cache between opens: what programs
+/// write goes through it, and what the app writes invalidates it (see
+/// `FuseMount::watch`). Linux only — older macFUSE versions don't support
+/// invalidation.
+#[cfg(target_os = "linux")]
+const OPEN_FLAGS: FopenFlags = FopenFlags::FOPEN_KEEP_CACHE;
+#[cfg(not(target_os = "linux"))]
+const OPEN_FLAGS: FopenFlags = FopenFlags::empty();
+
 /// `renameat2` flags; macOS's `renamex_np` spells them differently.
 #[cfg(target_os = "linux")]
 const RENAME_NOREPLACE: u32 = 1;
@@ -95,7 +105,7 @@ const RENAME_NOREPLACE: u32 = 0x4; // RENAME_EXCL
 #[cfg(target_os = "macos")]
 const RENAME_EXCHANGE: u32 = 0x2; // RENAME_SWAP
 
-type DirSnapshot = Vec<(u64, FileType, String)>;
+type DirSnapshot = Vec<(String, Attr)>;
 
 pub struct FuseFs {
     vfs: Arc<VirtualFs>,
@@ -130,6 +140,23 @@ impl FuseFs {
 }
 
 impl fuser::Filesystem for FuseFs {
+    fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
+        // Each is asked for separately: an old kernel lacking one still
+        // gets the others.
+        for flag in [
+            // Listings come with attributes: `ls -l`, `find`, `git status`
+            // don't need a lookup per entry.
+            InitFlags::FUSE_DO_READDIRPLUS,
+            InitFlags::FUSE_READDIRPLUS_AUTO,
+            // Lookups in one directory may run in parallel.
+            InitFlags::FUSE_PARALLEL_DIROPS,
+            InitFlags::FUSE_CACHE_SYMLINKS,
+        ] {
+            let _ = config.add_capabilities(flag);
+        }
+        Ok(())
+    }
+
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         match name.to_str() {
             Some(name) => self.entry(reply, self.vfs.lookup(parent.0, name)),
@@ -262,7 +289,8 @@ impl fuser::Filesystem for FuseFs {
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-        let attr = match self.vfs.open(ino.0) {
+        let writable = flags.0 & libc::O_ACCMODE != libc::O_RDONLY;
+        let attr = match self.vfs.open(ino.0, writable) {
             Ok(attr) => attr,
             Err(e) => return reply.error(errno(e)),
         };
@@ -271,15 +299,13 @@ impl fuser::Filesystem for FuseFs {
             return reply.error(Errno::EISDIR);
         }
         // With atomic O_TRUNC the kernel leaves truncating to us.
-        let writable = flags.0 & libc::O_ACCMODE != libc::O_RDONLY;
         if writable && flags.0 & libc::O_TRUNC != 0 && attr.size > 0 {
             if let Err(e) = self.vfs.setattr(ino.0, &SetAttr { size: Some(0), ..Default::default() }) {
                 self.vfs.release(ino.0);
                 return reply.error(errno(e));
             }
         }
-        // No FOPEN_KEEP_CACHE: each open starts from fresh contents.
-        reply.opened(self.fh(), FopenFlags::empty());
+        reply.opened(self.fh(), OPEN_FLAGS);
     }
 
     fn read(
@@ -318,7 +344,9 @@ impl fuser::Filesystem for FuseFs {
     }
 
     fn flush(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
-        reply.ok();
+        // Nothing to flush in memory. ENOSYS makes the kernel stop sending
+        // flushes (one round trip less per close); close() still succeeds.
+        reply.error(Errno::ENOSYS);
     }
 
     fn release(
@@ -336,19 +364,23 @@ impl fuser::Filesystem for FuseFs {
     }
 
     fn fsync(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
-        reply.ok();
+        // As for flush: the kernel then answers fsync() itself, with success.
+        reply.error(Errno::ENOSYS);
     }
 
     fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
-        let entries = match self.vfs.readdir(ino.0) {
+        let entries = match self.vfs.readdir_plus(ino.0) {
             Ok(entries) => entries,
             Err(e) => return reply.error(errno(e)),
         };
         let parent = self.vfs.parent_of(ino.0).unwrap_or(ino.0);
+        let (Ok(this), Ok(up)) = (self.vfs.getattr(ino.0), self.vfs.getattr(parent)) else {
+            return reply.error(Errno::ENOENT);
+        };
         let mut listing: DirSnapshot = Vec::with_capacity(entries.len() + 2);
-        listing.push((ino.0, FileType::Directory, ".".into()));
-        listing.push((parent, FileType::Directory, "..".into()));
-        listing.extend(entries.into_iter().map(|e| (e.ino, kind(e.kind), e.name)));
+        listing.push((".".into(), this));
+        listing.push(("..".into(), up));
+        listing.extend(entries.into_iter().map(|(e, attr)| (e.name, attr)));
         let fh = self.fh();
         self.dirs.lock().unwrap_or_else(|e| e.into_inner()).insert(fh.0, listing);
         reply.opened(fh, FopenFlags::empty());
@@ -359,9 +391,22 @@ impl fuser::Filesystem for FuseFs {
         let Some(listing) = dirs.get(&fh.0) else {
             return reply.error(Errno::EBADF);
         };
-        for (i, (ino, kind, name)) in listing.iter().enumerate().skip(offset as usize) {
+        for (i, (name, attr)) in listing.iter().enumerate().skip(offset as usize) {
             // The offset handed back is where the next call continues.
-            if reply.add(INodeNo(*ino), i as u64 + 1, *kind, name) {
+            if reply.add(INodeNo(attr.ino), i as u64 + 1, kind(attr.kind), name) {
+                break;
+            }
+        }
+        reply.ok();
+    }
+
+    fn readdirplus(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
+        let dirs = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(listing) = dirs.get(&fh.0) else {
+            return reply.error(Errno::EBADF);
+        };
+        for (i, (name, attr)) in listing.iter().enumerate().skip(offset as usize) {
+            if reply.add(INodeNo(attr.ino), i as u64 + 1, name, &TTL, &file_attr(attr), Generation(0)) {
                 break;
             }
         }
@@ -374,7 +419,7 @@ impl fuser::Filesystem for FuseFs {
     }
 
     fn fsyncdir(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
-        reply.ok();
+        reply.error(Errno::ENOSYS);
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
@@ -446,10 +491,10 @@ impl fuser::Filesystem for FuseFs {
             Ok(attr) => attr,
             Err(e) => return reply.error(errno(e)),
         };
-        if let Err(e) = self.vfs.open(attr.ino) {
+        if let Err(e) = self.vfs.open(attr.ino, true) {
             return reply.error(errno(e));
         }
-        reply.created(&TTL, &file_attr(&attr), Generation(0), self.fh(), FopenFlags::empty());
+        reply.created(&TTL, &file_attr(&attr), Generation(0), self.fh(), OPEN_FLAGS);
     }
 
     fn fallocate(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, length: u64, mode: i32, reply: ReplyEmpty) {
@@ -486,6 +531,14 @@ fn mount_options() -> Config {
         MountOption::CUSTOM("noappledouble".into()),
     ]);
     config.acl = SessionACL::Owner;
+    // Linux: several threads, each with its own /dev/fuse descriptor, so
+    // requests from different programs are served in parallel (the store's
+    // read lock lets reads overlap). fuser supports this only on Linux.
+    #[cfg(target_os = "linux")]
+    {
+        config.n_threads = Some(std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 4));
+        config.clone_fd = true;
+    }
     config
 }
 

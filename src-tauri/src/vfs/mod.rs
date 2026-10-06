@@ -16,9 +16,18 @@
 //! ```ignore
 //! let vfs = app.state::<VfsState>();
 //! let path = vfs.create_file("plans/step-1.md", b"...", false)?; // a real path
+//!
+//! // Callbacks for what programs (and the app) do to the files:
+//! let id = vfs.subscribe(EventMask::CLOSED, |e| {
+//!     if let Op::Closed { modified: true } = e.op { /* e.path was written */ }
+//! });
+//! vfs.unsubscribe(id);
 //! ```
+//!
+//! See `events.rs` for the event kinds and what a callback may do.
 
 pub mod driver;
+pub mod events;
 pub mod store;
 
 #[cfg(unix)]
@@ -33,12 +42,21 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use base64::Engine;
 use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::State;
+
+#[allow(unused_imports)] // re-exported for app code
+pub use events::{EventBatch, EventMask, FsEvent, Op, Source, SubscriptionId};
 
 use store::{Kind, Options, VfsError, VirtualFs};
 
 /// Total bytes the virtual files may hold.
 const CAPACITY: u64 = 2 << 30;
+/// Batched subscriptions: events waiting at most, per batch, and how long a
+/// batch collects.
+const EVENT_QUEUE: usize = 16 * 1024;
+const EVENT_BATCH: usize = 1024;
+const EVENT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 type Mount = fuse::FuseMount;
@@ -202,6 +220,26 @@ impl VfsState {
         self.fs.read_file(&rel).map_err(|e| err(&rel, e))
     }
 
+    /// Calls `callback` for every event whose kind is in `mask`. It runs on
+    /// the thread serving the file operation: keep it quick, or use
+    /// [`events::batched`] / [`VfsState::subscribe_batched`].
+    #[allow(dead_code)] // for app code
+    pub fn subscribe(&self, mask: EventMask, callback: impl Fn(&FsEvent) + Send + Sync + 'static) -> SubscriptionId {
+        self.fs.subscribe(mask, callback)
+    }
+
+    /// Like `subscribe`, but `sink` gets batches on a background thread, so
+    /// file operations never wait for it. Events beyond the queue's room are
+    /// dropped and counted in the next batch.
+    pub fn subscribe_batched(&self, mask: EventMask, sink: impl FnMut(EventBatch) + Send + 'static) -> SubscriptionId {
+        let callback = events::batched(EVENT_QUEUE, EVENT_BATCH, EVENT_INTERVAL, sink);
+        self.fs.subscribe_shared(mask, callback)
+    }
+
+    pub fn unsubscribe(&self, id: SubscriptionId) -> bool {
+        self.fs.unsubscribe(id)
+    }
+
     pub fn remove(&self, path: &str) -> Result<(), String> {
         let rel = clean(path)?;
         if rel.is_empty() {
@@ -299,10 +337,41 @@ pub async fn vfs_read_file(state: State<'_, VfsState>, path: String) -> Result<S
 pub async fn vfs_list(state: State<'_, VfsState>, path: Option<String>) -> Result<Vec<VfsEntry>, String> {
     let rel = clean(path.as_deref().unwrap_or(""))?;
     let entries = state.fs.list(&rel).map_err(|e| err(&rel, e))?;
-    Ok(entries
-        .into_iter()
-        .map(|e| VfsEntry { size: state.fs.getattr(e.ino).map(|a| a.size).unwrap_or(0), name: e.name, kind: e.kind })
-        .collect())
+    Ok(entries.into_iter().map(|(e, attr)| VfsEntry { size: attr.size, name: e.name, kind: e.kind }).collect())
+}
+
+/// Streams events to the frontend in batches until `vfs_unsubscribe`.
+/// `kinds`: "created", "opened", "read", "written", "truncated", "closed",
+/// "removed", "renamed", "changes" (the default: everything but the
+/// per-request reads/writes and opens) or "all".
+#[tauri::command]
+pub async fn vfs_subscribe(
+    state: State<'_, VfsState>,
+    kinds: Option<Vec<String>>,
+    on_events: Channel<EventBatch>,
+) -> Result<u64, String> {
+    let mask = match kinds {
+        Some(kinds) if !kinds.is_empty() => EventMask::from_names(&kinds)?,
+        _ => EventMask::CHANGES,
+    };
+    // Unsubscribes itself once the channel is gone (the page reloaded).
+    let fs = Arc::downgrade(&state.fs);
+    let me = Arc::new(std::sync::OnceLock::<SubscriptionId>::new());
+    let me_in_sink = me.clone();
+    let id = state.subscribe_batched(mask, move |batch| {
+        if on_events.send(batch).is_err() {
+            if let (Some(fs), Some(id)) = (fs.upgrade(), me_in_sink.get()) {
+                fs.unsubscribe(*id);
+            }
+        }
+    });
+    let _ = me.set(id);
+    Ok(id.0)
+}
+
+#[tauri::command]
+pub async fn vfs_unsubscribe(state: State<'_, VfsState>, id: u64) -> Result<bool, String> {
+    Ok(state.unsubscribe(SubscriptionId(id)))
 }
 
 #[tauri::command]
@@ -381,6 +450,32 @@ mod mount_tests {
         state.remove("notes").unwrap();
         let (ok, _) = sh(&at, "test ! -e notes");
         assert!(ok);
+
+        // Callbacks see what commands do, with the paths they used.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let id = state.subscribe(EventMask::CHANGES | EventMask::OPENED, move |e| {
+            sink.lock().unwrap().push((e.source, e.path.clone(), e.op.clone()));
+        });
+        let (ok, out) = sh(&at, "echo hi > ev.txt && cat ev.txt >/dev/null && mv ev.txt ev2.txt && rm ev2.txt");
+        assert!(ok, "{out}");
+        state.unsubscribe(id);
+        let seen = seen.lock().unwrap().clone();
+        let has = |path: &str, op: &Op| seen.iter().any(|(s, p, o)| *s == Source::Process && p == path && o == op);
+        assert!(has("ev.txt", &Op::Created { kind: Kind::File }), "{seen:?}");
+        assert!(has("ev.txt", &Op::Closed { modified: true }), "{seen:?}");
+        assert!(has("ev.txt", &Op::Opened { write: false }), "{seen:?}");
+        assert!(has("ev2.txt", &Op::Renamed { from: "ev.txt".into() }), "{seen:?}");
+        assert!(has("ev2.txt", &Op::Removed { kind: Kind::File }), "{seen:?}");
+
+        // Many files, read in parallel by several processes.
+        for i in 0..2000 {
+            state.create_file(&format!("many/{}/f{i}.txt", i % 20), format!("{i}\n").as_bytes(), false).unwrap();
+        }
+        let (ok, out) = sh(&at, "for d in many/*; do (cat $d/* | wc -l > $d.count) & done; wait; awk '{s+=$1} END {print s}' many/*.count");
+        assert!(ok, "{out}");
+        assert_eq!(out.trim(), "2000");
+        state.remove("many").unwrap();
 
         // git, which exercises locking, renames and many small files.
         if Command::new("git").arg("--version").output().is_ok() {

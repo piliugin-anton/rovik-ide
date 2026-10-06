@@ -101,9 +101,26 @@ let path = vfs.create_file("plans/step-1.md", b"...", false)?; // a real path
 From the frontend, `src/lib/virtualFiles.ts` wraps the same calls
 (`writeVirtualFile` returns the `realPath` to hand to a command).
 
+Callbacks report what programs (and the app) do to the files — created,
+opened, read, written, truncated, closed (with whether it was modified),
+removed, renamed — with the path used:
+
+```rust
+let id = vfs.subscribe(EventMask::CLOSED, |e| {
+    if let Op::Closed { modified: true } = e.op { /* a program finished writing e.path */ }
+});
+```
+
+`subscribe_batched` (and `subscribeVirtualFiles` in the frontend) deliver
+batches on a background thread instead. Without subscribers the file
+operations pay one atomic check; paths are found by walking up from the
+file, so the cost doesn't grow with the number of files. See
+`src-tauri/src/vfs/events.rs` for what a callback may do.
+
 - `store.rs` — the in-memory filesystem (POSIX semantics: hard links,
   symlinks, xattrs, atomic rename, unlinked-but-open files), all unit tested.
 - `fuse.rs` / `macfuse.rs` — Linux and macOS driver; `winfsp_fs.rs` — Windows.
+- `events.rs` — callbacks for what happens to the files.
 - `driver.rs` — detecting and installing the driver.
 
 `cargo test vfs -- --ignored` mounts a real volume on Linux and runs shell
