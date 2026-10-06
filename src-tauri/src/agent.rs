@@ -163,6 +163,10 @@ pub fn apply_reasoning(body: &mut serde_json::Value, effort: ReasoningEffort, fo
 /// gets one retry without any of them, which counts as a rejection only if
 /// that retry works. Nothing has been shown when this happens.
 ///
+/// A streamed request also asks for the token counts at the end
+/// (`stream_options.include_usage`, see `stream_usage`), dropped the same way
+/// if the provider rejects it.
+///
 /// Also returns what was learned, when reasoning fields were sent at all.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_with_reasoning(
@@ -180,10 +184,16 @@ pub async fn run_with_reasoning(
     let requested = !formats.is_empty();
     let mut rejected: Vec<String> = Vec::new();
     let mut stripped_blindly: Vec<String> = Vec::new();
+    let mut ask_usage = streaming && stream_usage::wanted(url);
+    // Dropped after a 400 naming nothing: only blamed if that then works.
+    let mut usage_stripped_blindly = false;
     let result = loop {
         let mut attempt_body = body.clone();
         if let Some(effort) = effort {
             apply_reasoning(&mut attempt_body, effort, &formats);
+        }
+        if ask_usage {
+            attempt_body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
         let spec = crate::chat_request::RequestSpec {
             client,
@@ -195,16 +205,28 @@ pub async fn run_with_reasoning(
         };
         let result = crate::chat_request::run(&spec, cancel, emit).await;
         match &result {
-            Err(e) if e.kind == crate::chat_request::ErrorKind::BadRequest && !e.partial && !formats.is_empty() => {
+            Err(e) if e.kind == crate::chat_request::ErrorKind::BadRequest && !e.partial => {
                 let text = format!("{} {}", e.message, e.details.as_deref().unwrap_or(""));
+                if ask_usage && (mentions_field(&text, "stream_options") || mentions_field(&text, "include_usage")) {
+                    ask_usage = false;
+                    stream_usage::rejected(url);
+                    continue;
+                }
                 let named: Vec<String> = formats.iter().filter(|f| mentions_field(&text, f)).cloned().collect();
                 if !named.is_empty() {
                     formats.retain(|f| !named.contains(f));
                     rejected.extend(named);
                     continue;
                 }
-                if stripped_blindly.is_empty() {
+                // A 400 naming nothing: the reasoning fields go first (they
+                // are the likelier cause), then the usage request.
+                if !formats.is_empty() && stripped_blindly.is_empty() {
                     stripped_blindly = std::mem::take(&mut formats);
+                    continue;
+                }
+                if ask_usage {
+                    ask_usage = false;
+                    usage_stripped_blindly = true;
                     continue;
                 }
                 break result;
@@ -212,6 +234,9 @@ pub async fn run_with_reasoning(
             _ => break result,
         }
     };
+    if usage_stripped_blindly && result.is_ok() {
+        stream_usage::rejected(url);
+    }
     if !requested {
         return (result, None);
     }
@@ -224,6 +249,29 @@ pub async fn run_with_reasoning(
     let learned = (!support.accepted.is_empty() || !support.rejected.is_empty() || !support.unresolved.is_empty())
         .then_some(support);
     (result, learned)
+}
+
+/// Token counts for streamed replies. OpenAI and many compatible servers
+/// send `usage` at the end of a stream only when asked
+/// (`stream_options: { "include_usage": true }`); without it, nothing is
+/// learned from streamed replies (`calibration`, `reply_reserve`). A few
+/// servers reject the field: remembered per endpoint, so they aren't sent it
+/// again until the app restarts.
+pub mod stream_usage {
+    use std::collections::HashSet;
+    use std::sync::{LazyLock, Mutex};
+
+    static REJECTED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+    pub fn wanted(url: &str) -> bool {
+        REJECTED.lock().map_or(true, |r| !r.contains(url))
+    }
+
+    pub fn rejected(url: &str) {
+        if let Ok(mut r) = REJECTED.lock() {
+            r.insert(url.to_string());
+        }
+    }
 }
 
 /// What a request showed about the provider's reasoning fields.
@@ -1249,6 +1297,39 @@ mod reasoning_tests {
         assert!(ok);
         assert_eq!(learned.unwrap().accepted.len(), 3);
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn streams_ask_for_usage_and_drop_it_when_rejected() {
+        // Accepted: sent once, with the reasoning fields.
+        let (url, seen) = strict_provider(&[], true).await;
+        let (ok, _) = send(&url, &["reasoning_effort"]).await;
+        assert!(ok);
+        assert_eq!(seen.lock().unwrap()[0]["stream_options"]["include_usage"], true);
+
+        // Refused by name: dropped, reasoning kept, not sent again.
+        let (url, seen) = strict_provider(&["stream_options"], true).await;
+        let (ok, learned) = send(&url, &["reasoning_effort"]).await;
+        assert!(ok);
+        assert_eq!(learned.unwrap().accepted, ["reasoning_effort"]);
+        let (ok, _) = send(&url, &["reasoning_effort"]).await;
+        assert!(ok);
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 3, "one refusal, then never sent again");
+        assert!(bodies[1].get("stream_options").is_none() && bodies[2].get("stream_options").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_bare_400_tries_reasoning_first_then_usage() {
+        let (url, seen) = strict_provider(&["stream_options"], false).await;
+        let (ok, learned) = send(&url, &["reasoning_effort"]).await;
+        assert!(ok);
+        // Reasoning was stripped first and didn't help, then usage; the
+        // reasoning field still gets the blame as unresolved (it was the
+        // first try), which the next request's probe sorts out.
+        assert_eq!(learned.unwrap().unresolved, ["reasoning_effort"]);
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        assert!(!stream_usage::wanted(&url));
     }
 
     #[tokio::test]

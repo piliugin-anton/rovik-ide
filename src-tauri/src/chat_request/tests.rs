@@ -56,6 +56,26 @@ fn tool_call_arguments_are_assembled_by_index() {
 }
 
 #[test]
+fn usage_in_a_final_chunk_without_choices_is_kept() {
+    // With stream_options.include_usage, OpenAI ends with `choices: []`.
+    let mut parser = ReplyParser::default();
+    let mut events = Vec::new();
+    let mut emit = |e| events.push(e);
+    for chunk in [
+        json!({"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":null}),
+        json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}),
+    ] {
+        parser.feed(&chunk, &mut emit).unwrap();
+    }
+    parser.finish(&mut emit).unwrap();
+    let usage = events.iter().find_map(|e| match e {
+        ChatStreamEvent::Finished { usage, .. } => usage.clone(),
+        _ => None,
+    });
+    assert_eq!(usage.unwrap()["completion_tokens"], 2);
+}
+
+#[test]
 fn missing_tool_call_ids_get_generated() {
     let mut parser = ReplyParser::default();
     let mut events = Vec::new();
