@@ -194,6 +194,32 @@ impl<R: Runtime> Run<R> {
             String::new()
         };
         let current_user_content = request.current_user_content.or_else(|| last_user_wire_content(&recent));
+        // The repository map: the declarations most relevant to the request,
+        // fixed for the run like the rest of the project section.
+        let project_context = match &root {
+            Some(r) => {
+                let (r, request_text) = (r.clone(), current_user_content.clone().unwrap_or_default());
+                let touched = touched_paths(&recent);
+                let options = crate::repo_map::Options {
+                    max_chars: repo_map_chars(request.profile.context_tokens),
+                    ..Default::default()
+                };
+                let map = tauri::async_runtime::spawn_blocking(move || {
+                    let root = std::path::Path::new(&r);
+                    let focus = crate::repo_map::focus_from(root, &request_text, &touched);
+                    crate::repo_map::repo_map(root, &focus, &options)
+                })
+                .await
+                .ok()
+                .flatten();
+                match map {
+                    Some(map) if project_context.is_empty() => map,
+                    Some(map) => format!("{project_context}\n\n{map}"),
+                    None => project_context,
+                }
+            }
+            None => project_context,
+        };
 
         let run = Run {
             app: app.clone(),
@@ -1285,6 +1311,33 @@ pub(super) fn chat_plan_file(messages: &[MessageRow]) -> Option<String> {
         .find_map(|m| m.meta.as_ref()?.get("planFile")?.as_str().map(str::to_string))
 }
 
+/// The repository map's size: about 2% of the model's context window,
+/// within 1,500 and 6,000 characters.
+fn repo_map_chars(context_tokens: Option<usize>) -> usize {
+    const CHARS_PER_TOKEN: usize = 4;
+    let window = context_tokens.filter(|t| *t > 0).unwrap_or(32_000);
+    (window * CHARS_PER_TOKEN / 50).clamp(1_500, 6_000)
+}
+
+/// Files the chat read or changed, latest last.
+fn touched_paths(messages: &[MessageRow]) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for call in messages.iter().filter_map(|m| m.tool_calls.as_ref()).flatten() {
+        if !matches!(call.name.as_str(), "read_file" | "edit_file" | "write_file") {
+            continue;
+        }
+        if let Some(path) = super::permissions::str_arg(&call.arguments, "path") {
+            paths.retain(|p| p != &path);
+            paths.push(path);
+        }
+    }
+    let keep = paths.len().saturating_sub(MAX_TOUCHED_PATHS);
+    paths.split_off(keep)
+}
+
+/// Files of the chat's history the map starts from, at most.
+const MAX_TOUCHED_PATHS: usize = 20;
+
 /// The latest delivered user message as it was sent to the model (with its
 /// editor context and file references).
 fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
@@ -1380,5 +1433,65 @@ mod tests {
         assert_eq!(run_mode_for(&messages).as_deref(), Some("plan"));
         assert_eq!(last_user_wire_content(&messages).as_deref(), Some("wire"));
         assert_eq!(chat_plan_file(&messages).as_deref(), Some("/p/a.md"));
+    }
+}
+
+#[cfg(test)]
+mod repo_map_tests {
+    use super::*;
+    use crate::chat_db::store::ToolCall;
+
+    #[test]
+    fn the_map_is_about_two_percent_of_the_window() {
+        assert_eq!(repo_map_chars(Some(100_000)), 6_000, "at most");
+        assert_eq!(repo_map_chars(Some(50_000)), 4_000);
+        assert_eq!(repo_map_chars(Some(8_000)), 1_500, "at least");
+        assert_eq!(repo_map_chars(None), 2_560, "an unknown window counts as 32k");
+        assert_eq!(repo_map_chars(Some(0)), 2_560);
+    }
+
+    fn with_calls(calls: &[(&str, &str)]) -> MessageRow {
+        MessageRow {
+            id: String::new(),
+            dialog_id: String::new(),
+            seq: 0,
+            role: "assistant".into(),
+            content: String::new(),
+            body_external: false,
+            body_bytes: 0,
+            tool_calls: Some(
+                calls
+                    .iter()
+                    .map(|(name, args)| ToolCall { id: String::new(), name: name.to_string(), arguments: args.to_string(), extra_content: None })
+                    .collect(),
+            ),
+            tool_call_id: None,
+            meta: None,
+            error: None,
+            failed: false,
+            finalized: true,
+            attachments: Vec::new(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn touched_paths_are_reads_and_writes_latest_last_each_once() {
+        let messages = vec![
+            with_calls(&[("read_file", r#"{"path":"a.rs"}"#), ("search_code", r#"{"query":"x"}"#)]),
+            with_calls(&[("edit_file", r#"{"path":"b.rs","old_text":"x","new_text":"y"}"#), ("run_command", r#"{"command":"ls"}"#)]),
+            with_calls(&[("read_file", r#"{"path":"a.rs"}"#), ("write_file", "not json"), ("list_dir", r#"{"path":"src"}"#)]),
+        ];
+        assert_eq!(touched_paths(&messages), ["b.rs", "a.rs"]);
+    }
+
+    #[test]
+    fn only_the_latest_touched_paths_are_kept() {
+        let calls: Vec<String> = (0..30).map(|i| format!(r#"{{"path":"f{i}.rs"}}"#)).collect();
+        let pairs: Vec<(&str, &str)> = calls.iter().map(|c| ("read_file", c.as_str())).collect();
+        let paths = touched_paths(&[with_calls(&pairs)]);
+        assert_eq!(paths.len(), MAX_TOUCHED_PATHS);
+        assert_eq!(paths.first().unwrap(), "f10.rs");
+        assert_eq!(paths.last().unwrap(), "f29.rs");
     }
 }

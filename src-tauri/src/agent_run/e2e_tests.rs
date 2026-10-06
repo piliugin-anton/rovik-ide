@@ -1719,3 +1719,41 @@ async fn a_single_read_runs_as_before() {
     assert!(parallel::batches_of(&h.dialog_id).is_empty());
     assert_eq!(result_of(&h.messages().await, "c1").content, "x");
 }
+
+/*
+ * The repository map
+ */
+
+fn system_prompt(request: &Value) -> String {
+    request["messages"][0]["content"].as_str().unwrap_or_default().to_string()
+}
+
+#[tokio::test]
+async fn the_system_prompt_carries_a_map_centred_on_the_request() {
+    let h = harness(&[
+        ("src/billing.rs", "pub fn compute_invoice_total() -> u32 { 0 }\n"),
+        ("src/report.rs", "pub fn build_report() { compute_invoice_total(); }\n"),
+        ("src/unrelated.rs", "pub fn something_else_entirely() {}\n"),
+        ("notes.txt", "not code"),
+    ])
+    .await;
+    let (url, seen) = model(vec![Reply::Text("Ok."), Reply::Text("Ok again.")]).await;
+    h.start(h.request(&url, Harness::send("Why is src/report.rs slow?"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let prompt = system_prompt(&seen.lock().unwrap()[0]);
+    let map = &prompt[prompt.find("## Repository map").expect("a map in the system prompt")..];
+    let report = map.find("src/report.rs:").expect("the file the request names");
+    let billing = map.find("src/billing.rs:").expect("what it uses");
+    assert!(report < billing, "{map}");
+    assert!(map.contains("pub fn compute_invoice_total() -> u32"), "{map}");
+    assert!(!map.contains("notes.txt"));
+}
+
+#[tokio::test]
+async fn a_project_without_code_has_no_map() {
+    let h = harness(&[("a.txt", "hello"), ("data.json", "{\"a\": 1}")]).await;
+    let (url, seen) = model(vec![Reply::Text("Ok.")]).await;
+    h.start(h.request(&url, Harness::send("Hi"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(!system_prompt(&seen.lock().unwrap()[0]).contains("## Repository map"));
+}

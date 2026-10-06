@@ -62,6 +62,35 @@ pub struct Symbol {
 /// in a language with a grammar, is too large, or can't be parsed in time.
 /// An empty list: parsed, and no declarations.
 pub fn outline(path: &str, content: &str) -> Option<Vec<Symbol>> {
+    analyze(path, content, false).map(|a| a.symbols)
+}
+
+/// A file's declarations, and the names it uses with how often.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Tags {
+    pub symbols: Vec<Symbol>,
+    /// Every identifier in the file (its own declarations' names too).
+    pub identifiers: HashMap<String, u32>,
+}
+
+/// The outline and the identifiers, from one parse (for the repo map).
+pub fn tags(path: &str, content: &str) -> Option<Tags> {
+    analyze(path, content, true)
+}
+
+/// Leaf node kinds that are names, beyond `…identifier`.
+const NAME_KINDS: &[&str] = &[
+    "constant", "word", "name", "sym_lit", "symbol", "atom", "variable", "simple_identifier", "type_name",
+    "variable_name", "field_name", "property_name", "method_name", "function_name", "package_name",
+];
+/// Longer names are noise (generated, minified).
+const MAX_IDENTIFIER_CHARS: usize = 80;
+
+fn is_name_kind(kind: &str) -> bool {
+    kind.ends_with("identifier") || NAME_KINDS.contains(&kind)
+}
+
+fn analyze(path: &str, content: &str, with_identifiers: bool) -> Option<Tags> {
     let lang = language_for(path, content)?;
     if content.len() > MAX_BYTES {
         return None;
@@ -88,14 +117,19 @@ pub fn outline(path: &str, content: &str) -> Option<Vec<Symbol>> {
     let mut seen: HashSet<usize> = HashSet::new();
     // Names a query pattern captured as `@name`, by declaration node.
     let mut names: HashMap<usize, Node> = HashMap::new();
+    let mut identifiers: HashMap<String, u32> = HashMap::new();
     let mut cursor = root.walk();
     let mut steps = 0usize;
     'walk: loop {
         let node = cursor.node();
-        if kinds.contains(&node.kind_id()) && seen.insert(node.id()) {
+        if kinds.contains(&node.kind_id()) && seen.insert(node.id()) && items.len() < MAX_SYMBOLS {
             items.push(node);
-            if items.len() >= MAX_SYMBOLS {
-                break;
+        }
+        if with_identifiers && node.child_count() == 0 && node.is_named() && is_name_kind(node.kind()) {
+            if let Ok(text) = node.utf8_text(bytes) {
+                if (2..=MAX_IDENTIFIER_CHARS).contains(&text.len()) {
+                    *identifiers.entry(text.to_string()).or_default() += 1;
+                }
             }
         }
         steps += 1;
@@ -155,7 +189,7 @@ pub fn outline(path: &str, content: &str) -> Option<Vec<Symbol>> {
         }
     }
 
-    Some(symbols(content, items, &names))
+    Some(Tags { symbols: symbols(content, items, &names), identifiers })
 }
 
 /// Ranges, signatures and nesting for the declarations found.
