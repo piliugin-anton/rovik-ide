@@ -178,6 +178,10 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   the budget, or leaves it with no messages, is rejected and the agent is
   told why; one that shrinks it is always taken. Stored messages are never
   changed. Restoring an older revision keeps everything stored after it.
+  The agent has these tools on `@context/…` in Plan mode and without a
+  project too (offered for the context folder only), `list_dir @context`
+  for its folder, and `restore_context` to restore a revision or go back to
+  the stored chat itself, as the context row does.
 
   Every state of the file is a revision (the volume's file history), also
   saved in the chat database so it survives a restart. The agent reads them

@@ -577,7 +577,7 @@ async fn revisions_listing(db: &DbState, dialog_id: &str) -> Result<String, Stri
         let what = match r.kind.as_str() {
             "context" => "the context as sent",
             "edit" => "edited (by you)",
-            "restore" => "restored by the user",
+            "restore" => "an earlier revision restored",
             other => other,
         };
         out.push(format!(
@@ -909,9 +909,32 @@ pub async fn clm_set_mode(
 
 /// Drops the agent's context; the chat is sent as stored again.
 #[tauri::command]
-pub async fn clm_reset(db: State<'_, DbState>, dialog_id: String) -> Result<(), String> {
-    db.write(move |conn| store::clear_projection(conn, &dialog_id))
-        .await
+pub async fn clm_reset(
+    db: State<'_, DbState>,
+    vfs: State<'_, VfsState>,
+    dialog_id: String,
+) -> Result<(), String> {
+    reset(&db, &vfs, &dialog_id).await
+}
+
+/// Drops the agent's context, and an edit to the file not sent yet (it
+/// would be taken as the context again): from the next request the chat
+/// is sent as stored. The dropped version stays in the revisions.
+pub async fn reset(db: &DbState, vfs: &VfsState, dialog_id: &str) -> Result<(), String> {
+    let d = dialog_id.to_string();
+    let rendered = db
+        .write(move |conn| {
+            store::clear_projection(conn, &d)?;
+            Ok(store::load_state(conn, &d)?.rendered)
+        })
+        .await?;
+    let path = context_file(dialog_id);
+    if let Some(rendered) = rendered {
+        if read_text(vfs, &path).is_some_and(|t| without_meta(&t) != without_meta(&rendered)) {
+            vfs.write_unmounted(&path, rendered.as_bytes())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -942,7 +965,9 @@ pub async fn clm_restore_revision(
     dialog_id: String,
     number: u64,
 ) -> Result<(), String> {
-    restore_revision(&db, &vfs, &dialog_id, number).await
+    restore_revision(&db, &vfs, &dialog_id, number)
+        .await
+        .map(|_| ())
 }
 
 /// An older revision to put back, followed by the blocks of the current
@@ -976,12 +1001,13 @@ fn restored_text(old: &str, current: &[CtxMsg], stored: &[String]) -> String {
     format!("{}\n{blocks}", old.trim_end())
 }
 
+/// Returns the revision the restored file is.
 pub async fn restore_revision(
     db: &DbState,
     vfs: &VfsState,
     dialog_id: &str,
     number: u64,
-) -> Result<(), String> {
+) -> Result<Option<u64>, String> {
     let old = revision_text(db, vfs, dialog_id, number).await?;
     let d = dialog_id.to_string();
     let (rendered, stored) = db
@@ -998,8 +1024,9 @@ pub async fn restore_revision(
     let path = context_file(dialog_id);
     vfs.write_unmounted(&path, text.as_bytes())?;
     let Some(latest) = vfs.revisions(&path).ok().and_then(|r| r.last().cloned()) else {
-        return Ok(());
+        return Ok(None);
     };
+    let restored = latest.number;
     let row = store::NewRevision {
         number: latest.number,
         kind: "restore".into(),
@@ -1013,7 +1040,101 @@ pub async fn restore_revision(
     };
     let d = dialog_id.to_string();
     db.write(move |conn| store::insert_revisions(conn, &d, &[row]))
-        .await
+        .await?;
+    Ok(Some(restored))
+}
+
+/// The agent's restore_context: a revision, or "stored" (the chat as stored).
+pub async fn tool_restore(
+    db: &DbState,
+    vfs: &VfsState,
+    dialog_id: &str,
+    revision: Option<&serde_json::Value>,
+) -> Result<String, String> {
+    use serde_json::Value;
+    let number = match revision {
+        Some(Value::Number(n)) => n.as_u64(),
+        Some(Value::String(s)) if s.trim().eq_ignore_ascii_case("stored") => {
+            let d = dialog_id.to_string();
+            let current = db
+                .read(move |conn| Ok(store::load_state(conn, &d)?.rendered_revision))
+                .await?;
+            reset(db, vfs, dialog_id).await?;
+            let kept = current
+                .map(|r| format!(" Your context as it was is revision {r} ({}/{r}.md).", prompt::REVISIONS_PATH))
+                .unwrap_or_default();
+            return Ok(format!(
+                "Your edits are dropped: from your next request your context is the chat as stored (trimmed \
+                 to the budget if it doesn't fit), and the context file is rewritten from it.{kept}"
+            ));
+        }
+        Some(Value::String(s)) => s.trim().trim_start_matches('r').trim_end_matches(".md").parse().ok(),
+        _ => None,
+    };
+    let Some(number) = number else {
+        return Err(format!(
+            "\"revision\" must be a revision number (see read_file {}) or \"stored\".",
+            prompt::REVISIONS_PATH
+        ));
+    };
+    let restored = restore_revision(db, vfs, dialog_id, number).await?;
+    let as_revision = restored
+        .map(|r| format!(" as revision {r}"))
+        .unwrap_or_default();
+    Ok(format!(
+        "Revision {number} is your context file again{as_revision}, followed by the messages that came after \
+         it. {APPLIES} Like an edit, it isn't taken if it would grow your context past the budget."
+    ))
+}
+
+/// list_dir on `@context/…`: the folder (the context file, revisions, the
+/// agent's own files), or the revisions.
+pub async fn tool_list(db: &DbState, vfs: &VfsState, dialog_id: &str, path: &str) -> Result<String, String> {
+    let (dir, shown) = match target(vfs, dialog_id, path)? {
+        Target::Revisions => return revisions_listing(db, dialog_id).await,
+        Target::Revision(..) => return Err(format!("{path} is a revision, not a folder; read it with read_file")),
+        Target::Live => (context_dir(dialog_id), "@context".to_string()),
+        Target::Other(rel) => (
+            format!("{}/{rel}", context_dir(dialog_id)),
+            format!("@context/{rel}"),
+        ),
+    };
+    let entries = vfs.list(&dir).map_err(|_| format!("{path}: not found"))?;
+    let mut out = Vec::new();
+    if shown == "@context" {
+        let d = dialog_id.to_string();
+        let (state, count) = db
+            .read(move |conn| Ok((store::load_state(conn, &d)?, store::revisions(conn, &d)?.len())))
+            .await?;
+        let revision = state
+            .rendered_revision
+            .map(|r| format!(", revision {r}"))
+            .unwrap_or_default();
+        out.push(format!(
+            "{} (your context: ~{}/{} tokens{revision})",
+            prompt::CONTEXT_PATH,
+            state.tokens,
+            state.budget
+        ));
+        out.push(format!(
+            "{}/ ({count} revisions; read_file {} lists them)",
+            prompt::REVISIONS_PATH,
+            prompt::REVISIONS_PATH
+        ));
+    }
+    for (name, is_dir, size) in entries {
+        if shown == "@context" && name == "LIVE_CONTEXT.md" {
+            continue;
+        }
+        out.push(match is_dir {
+            true => format!("{shown}/{name}/"),
+            false => format!("{shown}/{name} ({size} bytes)"),
+        });
+    }
+    if out.is_empty() {
+        out.push(format!("{shown} is empty."));
+    }
+    Ok(out.join("\n"))
 }
 
 #[cfg(test)]

@@ -301,6 +301,17 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       return { title, meta: !failed && meta?.pageTitle ? meta.pageTitle.slice(0, 40) : undefined };
     }
 
+    case 'restore_context': {
+      const revision = str(args.revision) ?? num(args.revision)?.toString();
+      const what =
+        revision?.trim().toLowerCase() === 'stored'
+          ? 'the stored chat'
+          : revision
+            ? `revision ${revision}`
+            : 'an earlier context';
+      return { title: `${active ? 'Restoring' : 'Restored'} its context to ${what}` };
+    }
+
     case 'browser_screenshot': {
       const url = shortUrl(str(args.url));
       return {

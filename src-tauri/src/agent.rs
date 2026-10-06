@@ -1190,6 +1190,8 @@ pub async fn chat_context_estimate(
         no_tools.unwrap_or(false),
         &permissions,
         mode.as_deref() == Some("plan"),
+        // The estimate is shown for Trimming only.
+        false,
     );
     let tool_chars = if tools.is_empty() { 0 } else { serde_json::to_string(&tools).map_or(0, |j| j.chars().count()) };
     let project_chars = match root {

@@ -776,6 +776,113 @@ fn restoring_a_revision_that_is_not_kept_fails_cleanly() {
 }
 
 #[test]
+fn the_agent_restores_a_revision_or_the_stored_chat() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(
+            [
+                vec![message("u1", "user", "task")],
+                tool_pair(1, "read_file", r#"{"path":"a"}"#, "full content"),
+            ]
+            .concat(),
+        )
+        .await;
+        chat.prepare(ROOMY).await;
+        chat.write(&with_block(&chat.file(), 3, "[a: summarized]"));
+        chat.add(vec![message("u2", "user", "next")]).await;
+        chat.prepare(ROOMY).await;
+        assert!(chat.state().await.projection.is_some());
+
+        let arg = |v: &str| serde_json::Value::String(v.into());
+        let said = tool_restore(&chat.db, &chat.vfs, "chat", Some(&arg("1")))
+            .await
+            .unwrap();
+        assert!(said.starts_with("Revision 1 is your context file again as revision"), "{said}");
+        let p = chat.prepare(ROOMY).await;
+        assert_eq!(ids(&p), ["u1", "a1", "t1", "u2"]);
+        assert_eq!(p.messages[2].text, "full content");
+        assert!(p.messages[1].tool_calls.is_some());
+
+        // Summarized again, then "stored": the chat as stored, the edit's
+        // version kept as a revision.
+        chat.write(&with_block(&chat.file(), 3, "[a: summarized again]"));
+        chat.prepare(ROOMY).await;
+        assert!(chat.state().await.projection.is_some());
+        let said = tool_restore(&chat.db, &chat.vfs, "chat", Some(&arg("stored")))
+            .await
+            .unwrap();
+        assert!(said.contains("as stored") && said.contains("revision"), "{said}");
+        assert!(chat.state().await.projection.is_none());
+        let p = chat.prepare(ROOMY).await;
+        assert!(!notes(&p).contains("edit applied"), "{}", notes(&p));
+        assert_eq!(p.messages[2].text, "full content");
+
+        // Garbage is refused with what to pass.
+        for bad in [Some(arg("latest")), Some(serde_json::json!(true)), None] {
+            let err = tool_restore(&chat.db, &chat.vfs, "chat", bad.as_ref())
+                .await
+                .unwrap_err();
+            assert!(err.contains("\"stored\""), "{err}");
+        }
+        let err = tool_restore(&chat.db, &chat.vfs, "chat", Some(&serde_json::json!(99)))
+            .await
+            .unwrap_err();
+        assert!(err.contains("isn't kept"), "{err}");
+    });
+}
+
+#[test]
+fn reset_drops_an_edit_not_sent_yet() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(
+            [
+                vec![message("u1", "user", "task")],
+                tool_pair(1, "read_file", r#"{"path":"a"}"#, "full content"),
+            ]
+            .concat(),
+        )
+        .await;
+        chat.prepare(ROOMY).await;
+        chat.write(&with_block(&chat.file(), 3, "[a: summarized]"));
+        reset(&chat.db, &chat.vfs, "chat").await.unwrap();
+        let p = chat.prepare(ROOMY).await;
+        assert!(!notes(&p).contains("edit applied"), "{}", notes(&p));
+        assert_eq!(p.messages[2].text, "full content");
+        assert!(chat.state().await.projection.is_none());
+    });
+}
+
+#[test]
+fn listing_the_context_folder() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(vec![message("u1", "user", "task")]).await;
+        chat.prepare(ROOMY).await;
+        tool_write(&chat.vfs, "chat", "@context/notes.md", "plan").unwrap();
+        tool_write(&chat.vfs, "chat", "@context/data/big.txt", "x").unwrap();
+
+        let list = tool_list(&chat.db, &chat.vfs, "chat", "@context").await.unwrap();
+        let lines: Vec<&str> = list.lines().collect();
+        assert!(lines[0].starts_with("@context/LIVE_CONTEXT.md (your context: ~"), "{list}");
+        assert!(lines[0].contains("revision 1"), "{list}");
+        assert!(lines[1].starts_with("@context/revisions/ (1 revisions"), "{list}");
+        assert!(list.contains("@context/data/\n") || list.ends_with("@context/data/"), "{list}");
+        assert!(list.contains("@context/notes.md (4 bytes)"), "{list}");
+        assert_eq!(list.matches("LIVE_CONTEXT.md").count(), 1, "{list}");
+
+        let sub = tool_list(&chat.db, &chat.vfs, "chat", "@context/data").await.unwrap();
+        assert_eq!(sub, "@context/data/big.txt (1 bytes)");
+        let revisions = tool_list(&chat.db, &chat.vfs, "chat", "@context/revisions").await.unwrap();
+        assert!(revisions.starts_with("Revisions of your context file"), "{revisions}");
+        let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/revisions/1.md").await.unwrap_err();
+        assert!(err.contains("read_file"), "{err}");
+        let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/missing").await.unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+    });
+}
+
+#[test]
 fn after_a_restart_numbering_continues_and_old_revisions_read_from_the_database() {
     run(async {
         let mut chat = Chat::new().await;

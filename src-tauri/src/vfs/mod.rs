@@ -309,6 +309,20 @@ impl VfsState {
         self.fs.write_file(&rel, data, None).map(|_| ()).map_err(|e| err(&rel, e))
     }
 
+    /// A folder's entries: (name, is a folder, size in bytes), by name.
+    pub fn list(&self, path: &str) -> Result<Vec<(String, bool, u64)>, String> {
+        let rel = clean(path)?;
+        let mut entries: Vec<(String, bool, u64)> = self
+            .fs
+            .list(&rel)
+            .map_err(|e| err(&rel, e))?
+            .into_iter()
+            .map(|(entry, attr)| (entry.name, entry.kind == Kind::Dir, attr.size))
+            .collect();
+        entries.sort();
+        Ok(entries)
+    }
+
     pub fn remove(&self, path: &str) -> Result<(), String> {
         let rel = clean(path)?;
         if rel.is_empty() {

@@ -49,8 +49,9 @@ Nothing is ever lost: every state of the file is a revision. `{REVISIONS_PATH}` 
 - After you remove something, the revision before your edit still holds it.
 - **If you notice that something you need is no longer in your context** (a file's content, an output, a decision), ask yourself whether you need a particular revision: check `{REVISIONS_PATH}` and read only the block you need, instead of redoing the work. Re-run a tool only when the result may have changed since.
 - When the app sees you repeat a call whose earlier result you removed, it tells you which revision and block still hold it.
+- To put a whole earlier state back, don't copy it through your context: `restore_context` with a revision number makes that revision your file again (with the messages since appended), and `restore_context` with "stored" drops your edits so the chat is sent as stored. Use it when an edit removed too much; it applies to your next request.
 
-Other files in `{real_dir}` are yours too (scratch notes, offloaded data)."#
+Other files in `{real_dir}` are yours too (scratch notes, offloaded data): `@context/<name>` with the file tools; `list_dir @context` lists the folder."#
     )
 }
 
