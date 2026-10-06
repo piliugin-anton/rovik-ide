@@ -50,6 +50,7 @@ import { GitPanel } from './components/GitPanel';
 import { confirmDialog, ConfirmDialogHost, type ConfirmOptions } from './components/ConfirmDialog';
 import NotificationHost from './components/NotificationHost';
 import ProjectSwitcher from './components/ProjectSwitcher';
+import NewProjectDialog from './components/NewProjectDialog';
 import ProjectList from './components/ProjectList';
 import { currentProject, projectList, refreshProjects, resolveProject } from './lib/projects';
 import { chatApi, type ProjectSummary } from './lib/chatApi';
@@ -211,6 +212,8 @@ export default function App() {
       lastProject.terminalCollapsed,
     ];
   }
+
+  const [newProjectOpen, setNewProjectOpen] = createSignal(false);
 
   async function handlePickFolder() {
     const folder = await pickProjectFolder();
@@ -1206,6 +1209,7 @@ export default function App() {
       <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
         <ProjectSwitcher
           onOpenFolder={() => void handlePickFolder()}
+          onNewProject={() => setNewProjectOpen(true)}
           onOpen={(p) => openProjectAt(p.path)}
           onRelink={(p) => void relinkProject(p)}
           onDelete={(p) => void deleteProject(p)}
@@ -1242,6 +1246,13 @@ export default function App() {
                   onClick={() => void handlePickFolder()}
                 >
                   Open project…
+                </button>
+                <button
+                  type="button"
+                  class="files-empty-new"
+                  onClick={() => setNewProjectOpen(true)}
+                >
+                  New project…
                 </button>
                 <Show when={projectList().length > 0}>
                   <div class="files-empty-heading">Recent projects</div>
@@ -1378,6 +1389,16 @@ export default function App() {
         />
       </Show>
       <ConfirmDialogHost />
+      <Show when={newProjectOpen()}>
+        <NewProjectDialog
+          currentPath={rootPath()}
+          onCreated={(path) => {
+            setNewProjectOpen(false);
+            openProjectAt(path);
+          }}
+          onCancel={() => setNewProjectOpen(false)}
+        />
+      </Show>
       <NotificationHost />
     </div>
   );
