@@ -172,6 +172,14 @@ fn names(path: &str, content: &str) -> Vec<String> {
 }
 
 #[test]
+fn markdown_text_before_the_first_heading_isnt_a_section() {
+    assert_eq!(outline("a.md", "Just text.\n\nMore text.\n"), Some(vec![]));
+    let o = outline("a.md", "Intro text.\n\n# Title\n\nBody.\n").unwrap();
+    assert_eq!(o.len(), 1);
+    assert_eq!((o[0].name.as_str(), o[0].start_line), ("# Title", 3));
+}
+
+#[test]
 fn empty_and_declaration_free_files_have_empty_outlines() {
     assert_eq!(outline("a.rs", ""), Some(vec![]));
     assert_eq!(outline("a.rs", "\n\n   \n"), Some(vec![]));

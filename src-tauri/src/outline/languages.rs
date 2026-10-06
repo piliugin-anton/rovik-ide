@@ -358,8 +358,10 @@ static LANGUAGES: [Lang; 72] = [
         kinds: ["table", "table_array_element"],
         query: "(document (pair) @item)", tags: None),
     lang!("Markdown", tree_sitter_md::LANGUAGE, ext: ["md", "markdown", "mdx", "mkd", "mdown"], files: [],
-        kinds: ["section"],
-        query: "", tags: None),
+        kinds: [],
+        // A section is a declaration when a heading starts it (text before
+        // the first heading is a section too, without one).
+        query: "(section . [(atx_heading) (setext_heading)]) @item", tags: None),
     lang!("Protocol Buffers", tree_sitter_proto::LANGUAGE, ext: ["proto"], files: [],
         kinds: ["message", "enum", "service", "rpc", "extend", "oneof"],
         query: "", tags: None),

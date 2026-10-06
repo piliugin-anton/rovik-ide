@@ -22,6 +22,7 @@ mod languages;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::ops::ControlFlow;
 use std::time::{Duration, Instant};
 use tree_sitter::{Node, ParseOptions, Parser, QueryCursor, QueryCursorOptions, StreamingIterator};
@@ -63,6 +64,35 @@ pub struct Symbol {
 /// An empty list: parsed, and no declarations.
 pub fn outline(path: &str, content: &str) -> Option<Vec<Symbol>> {
     analyze(path, content, false).map(|a| a.symbols)
+}
+
+/// Outlines of files on disk, by absolute path: modified time and size,
+/// and the outline then. Cleared whole when it grows past CACHED_FILES.
+type FileCache = HashMap<std::path::PathBuf, (std::time::SystemTime, u64, Arc<Vec<Symbol>>)>;
+static FILE_CACHE: LazyLock<Mutex<FileCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+const CACHED_FILES: usize = 5_000;
+
+/// The outline of the file at `abs` (named `rel` in the project), from the
+/// cache while the file is unchanged. None as for `outline`, or when the
+/// file can't be read.
+pub fn outline_of_file(abs: &std::path::Path, rel: &str) -> Option<Arc<Vec<Symbol>>> {
+    let meta = std::fs::metadata(abs).ok()?;
+    let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let size = meta.len();
+    if let Some((m, s, symbols)) = FILE_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(abs) {
+        if *m == modified && *s == size {
+            return Some(symbols.clone());
+        }
+    }
+    language_for(rel, "")?; // cheap: no grammar, no read
+    let content = std::fs::read_to_string(abs).ok()?;
+    let symbols = Arc::new(outline(rel, &content)?);
+    let mut cache = FILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= CACHED_FILES {
+        cache.clear();
+    }
+    cache.insert(abs.to_path_buf(), (modified, size, symbols.clone()));
+    Some(symbols)
 }
 
 /// A file's declarations, and the names it uses with how often.

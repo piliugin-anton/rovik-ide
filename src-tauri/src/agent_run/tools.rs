@@ -10,7 +10,12 @@ use crate::code_search::SearchResult;
 use crate::command_tool::CommandOutput;
 use regex::Regex;
 use serde_json::{json, Map, Value};
-use std::sync::LazyLock;
+use crate::outline::Symbol;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
+
+/// Time for finding the declarations a search's lines are in.
+const SEARCH_OUTLINE_TIME: std::time::Duration = std::time::Duration::from_millis(1_500);
 use tauri::{AppHandle, Manager, Runtime};
 
 fn file_tool_schemas() -> Vec<Value> {
@@ -83,7 +88,7 @@ fn file_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "search_code",
-                "description": "Fast project-wide search (ripgrep engine), skipping ignored and binary files. Literal text by default, or a regular expression with regex: true. Case-insensitive unless case_sensitive is true. Returns matching lines as path:line: text. Use it to find where something is defined or used before reading whole files.",
+                "description": "Fast project-wide search (ripgrep engine), skipping ignored and binary files. Literal text by default, or a regular expression with regex: true. Case-insensitive unless case_sensitive is true. Use it to find where something is defined or used before reading whole files.\n\nResults are grouped by file, and within a file by the declaration (function, method, class…) each line is in:\n  src/app.rs (2 matches)\n    Parser > parse [120-160]:\n      131: let tree = build(input);\n      --\n      150: build(rest)\n    (outside any declaration):\n      3: use crate::build;\nThe group's name works as read_file's symbol (read_file path=src/app.rs symbol=\"Parser > parse\"), so you can read the whole function a match is in without guessing lines; [120-160] are its lines. `N: text` is a match, `N- text` a context line, `--` a gap. A match marked (declaration) is the declaration itself, the rest are uses. Files without an outline list their lines directly.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -528,7 +533,7 @@ async fn run<R: Runtime>(app: &AppHandle<R>, root: Option<&str>, name: &str, arg
                 return Ok(ToolResult::text("Error: \"query\" is required."));
             };
             let result = crate::agent_tools::tool_search_code(
-                root_owned,
+                root_owned.clone(),
                 query.into(),
                 text(args, "path_glob").map(str::to_string),
                 uint(args, "max_results"),
@@ -537,7 +542,16 @@ async fn run<R: Runtime>(app: &AppHandle<R>, root: Option<&str>, name: &str, arg
                 uint(args, "context_lines"),
             )
             .await?;
-            format_search_result(&result)
+            // The declaration each line is in: the files' outlines, briefly.
+            let root = root_owned;
+            let outlines = tauri::async_runtime::spawn_blocking(move || {
+                let deadline = std::time::Instant::now() + SEARCH_OUTLINE_TIME;
+                let outlines = search_outlines(&root, &result, deadline);
+                (result, outlines)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            format_search_result(&outlines.0, &outlines.1)
         }
         _ => format!("Error: unknown tool \"{name}\"."),
     };
@@ -593,7 +607,7 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
 /// ripgrep-style text: "path:line: text" for matches, "path-line- text" for
 /// context, "--" between separate groups. The first line is a summary the
 /// tool block header reads its count from.
-pub fn format_search_result(result: &SearchResult) -> String {
+pub fn format_search_result(result: &SearchResult, outlines: &HashMap<String, Arc<Vec<Symbol>>>) -> String {
     if result.match_count == 0 {
         return "No matches.".into();
     }
@@ -620,23 +634,68 @@ pub fn format_search_result(result: &SearchResult) -> String {
         )
     };
     let mut out = vec![header];
-    let mut prev: Option<(&str, u64)> = None;
-    for l in &result.lines {
-        if let Some((path, line)) = prev {
-            if path != l.path || l.line > line + 1 {
-                out.push("--".into());
+
+    // By file, then by the declaration each line is in.
+    let mut start = 0;
+    while start < result.lines.len() {
+        let path = &result.lines[start].path;
+        let end = start + result.lines[start..].iter().take_while(|l| &l.path == path).count();
+        let file_lines = &result.lines[start..end];
+        let count = file_lines.iter().filter(|l| l.is_match).count();
+        out.push(format!("{path} ({count} {})", matches(count)));
+        let symbols = outlines.get(path).filter(|s| !s.is_empty());
+        let mut group: Option<Option<usize>> = None; // the current declaration, once one is open
+        let mut prev_line: Option<u64> = None;
+        for l in file_lines {
+            if let Some(symbols) = symbols {
+                let here = crate::read_symbol::enclosing(symbols, l.line as usize);
+                if group != Some(here) {
+                    out.push(match here {
+                        Some(i) => {
+                            let (a, b) = (symbols[i].start_line, symbols[i].end_line);
+                            let lines = if b > a { format!("{a}-{b}") } else { a.to_string() };
+                            format!("  {} [{lines}]:", crate::read_symbol::qualified(symbols, i))
+                        }
+                        None => "  (outside any declaration):".to_string(),
+                    });
+                    group = Some(here);
+                    prev_line = None;
+                }
             }
+            let indent = if symbols.is_some() { "    " } else { "  " };
+            if prev_line.is_some_and(|p| l.line > p + 1) {
+                out.push(format!("{indent}--"));
+            }
+            // A match on its declaration's first line is the declaration itself.
+            let declares = symbols.zip(group.flatten()).is_some_and(|(s, i)| s[i].start_line == l.line as usize);
+            out.push(if l.is_match {
+                format!("{indent}{}: {}{}", l.line, l.text, if declares { "   (declaration)" } else { "" })
+            } else {
+                format!("{indent}{}- {}", l.line, l.text)
+            });
+            prev_line = Some(l.line);
         }
-        out.push(if l.is_match {
-            format!("{}:{}: {}", l.path, l.line, l.text)
-        } else {
-            format!("{}-{}- {}", l.path, l.line, l.text)
-        });
-        prev = Some((&l.path, l.line));
+        start = end;
     }
     out.join("\n")
 }
 
+/// The outlines of the files in a search result, by its paths, for the
+/// declarations its lines are in: as many as `deadline` allows (from the
+/// cache when unchanged).
+pub fn search_outlines(root: &str, result: &SearchResult, deadline: std::time::Instant) -> HashMap<String, Arc<Vec<Symbol>>> {
+    let mut outlines = HashMap::new();
+    for line in &result.lines {
+        if outlines.contains_key(&line.path) || std::time::Instant::now() > deadline {
+            continue;
+        }
+        let abs = std::path::Path::new(root).join(&line.path);
+        if let Some(symbols) = crate::outline::outline_of_file(&abs, &line.path) {
+            outlines.insert(line.path.clone(), symbols);
+        }
+    }
+    outlines
+}
 /*
  * ---------------------------------------------------------------------------
  * Paths and result metadata
@@ -773,13 +832,13 @@ mod tests {
             total_files: 2,
             totals_complete: true,
         };
-        let text = format_search_result(&result);
-        assert_eq!(text, "3 matches in 2 files\na.rs:1: x\na.rs-2- x\n--\na.rs:9: x\n--\nb.rs:3: x");
+        let text = format_search_result(&result, &HashMap::new());
+        assert_eq!(text, "3 matches in 2 files\na.rs (2 matches)\n  1: x\n  2- x\n  --\n  9: x\nb.rs (1 match)\n  3: x");
         assert_eq!(result_meta("search_code", &text).unwrap()["count"], json!(3));
 
         // Over the limit: the totals, and which ones are shown.
         let result = SearchResult { truncated: true, total_matches: 2345, total_files: 87, ..result };
-        let text = format_search_result(&result);
+        let text = format_search_result(&result, &HashMap::new());
         assert_eq!(
             text.lines().next().unwrap(),
             "2345 matches in 87 files. Shown: the first 3 by path, in 2 files. Narrow the query or path_glob to see the rest."
@@ -788,11 +847,191 @@ mod tests {
 
         // Counting stopped: the totals are lower bounds.
         let result = SearchResult { totals_complete: false, total_matches: 200_000, total_files: 1, lines, ..result };
-        let text = format_search_result(&result);
+        let text = format_search_result(&result, &HashMap::new());
         assert!(
             text.starts_with("200000 matches or more in 1 file; counting stopped there. Shown: the first 3 by path, in 2 files."),
             "{text}"
         );
+    }
+
+    /// A search result over `files` (path, content) for lines matching
+    /// `needle`, with `context` lines around, and the files' outlines.
+    fn search_in(files: &[(&str, &str)], needle: &str, context: u64) -> (SearchResult, HashMap<String, Arc<Vec<Symbol>>>) {
+        let mut lines = Vec::new();
+        let mut outlines = HashMap::new();
+        let (mut match_count, mut file_count) = (0, 0);
+        for (path, content) in files {
+            let all: Vec<&str> = content.lines().collect();
+            let hits: Vec<u64> = (1..=all.len() as u64).filter(|&n| all[n as usize - 1].contains(needle)).collect();
+            if hits.is_empty() {
+                continue;
+            }
+            file_count += 1;
+            match_count += hits.len();
+            for n in 1..=all.len() as u64 {
+                let near = hits.iter().any(|&h| n + context >= h && n <= h + context);
+                if near {
+                    lines.push(SearchLine {
+                        path: path.to_string(),
+                        line: n,
+                        text: all[n as usize - 1].trim().to_string(),
+                        is_match: hits.contains(&n),
+                        ranges: vec![],
+                        column: None,
+                    });
+                }
+            }
+            if let Some(symbols) = crate::outline::outline(path, content) {
+                outlines.insert(path.to_string(), Arc::new(symbols));
+            }
+        }
+        let result = SearchResult {
+            lines,
+            match_count,
+            file_count,
+            truncated: false,
+            total_matches: match_count,
+            total_files: file_count,
+            totals_complete: true,
+        };
+        (result, outlines)
+    }
+
+    const PARSER_RS: &str = "use crate::build;
+
+pub struct Parser;
+
+impl Parser {
+    pub fn parse(&self, input: &str) {
+        let tree = build(input);
+        let x = 1;
+        let y = 2;
+        build(input);
+    }
+
+    pub fn build_all(&self) {}
+}
+
+fn helper() {
+    build(\"x\");
+}
+";
+
+    #[test]
+    fn search_lines_are_grouped_by_the_declaration_they_are_in() {
+        let (result, outlines) = search_in(&[("src/parser.rs", PARSER_RS), ("notes.txt", "build it\n")], "build", 0);
+        let text = format_search_result(&result, &outlines);
+        assert_eq!(
+            text,
+            "6 matches in 2 files
+src/parser.rs (5 matches)
+  (outside any declaration):
+    1: use crate::build;
+  Parser > parse [6-11]:
+    7: let tree = build(input);
+    --
+    10: build(input);
+  Parser > build_all [13]:
+    13: pub fn build_all(&self) {}   (declaration)
+  helper [16-18]:
+    17: build(\"x\");
+notes.txt (1 match)
+  1: build it"
+        );
+        assert_eq!(result_meta("search_code", &text).unwrap()["count"], json!(6), "the UI's count still reads");
+    }
+
+    #[test]
+    fn context_lines_stay_in_their_declaration_and_groups_can_come_back() {
+        let src = "fn outer() {\n    hit();\n    fn inner() {\n        hit();\n    }\n    hit();\n}\n";
+        let (result, outlines) = search_in(&[("a.rs", src)], "hit", 1);
+        let text = format_search_result(&result, &outlines);
+        assert_eq!(
+            text,
+            "3 matches in 1 file
+a.rs (3 matches)
+  outer [1-7]:
+    1- fn outer() {
+    2: hit();
+  outer > inner [3-5]:
+    3- fn inner() {
+    4: hit();
+    5- }
+  outer [1-7]:
+    6: hit();
+    7- }"
+        );
+    }
+
+    #[test]
+    fn a_group_name_reads_back_as_a_symbol() {
+        let (result, outlines) = search_in(&[("src/parser.rs", PARSER_RS)], "let tree", 0);
+        let text = format_search_result(&result, &outlines);
+        let group = text.lines().find(|l| l.ends_with("]:")).unwrap().trim();
+        let name = group.split(" [").next().unwrap();
+        assert_eq!(name, "Parser > parse");
+        let read = crate::read_symbol::read("src/parser.rs", PARSER_RS, name).unwrap();
+        assert!(read.starts_with("[Symbol read: Parser > parse, lines 6-11 of src/parser.rs]"), "{read}");
+    }
+
+    #[test]
+    fn files_without_declarations_or_outlines_list_their_lines() {
+        let (result, mut outlines) = search_in(&[("a.py", "print('x')\nprint('x')\n"), ("b.md", "x\n")], "x", 0);
+        assert!(outlines.get("a.py").is_some_and(|o| o.is_empty()), "parsed, no declarations");
+        let text = format_search_result(&result, &outlines);
+        assert_eq!(text, "3 matches in 2 files\na.py (2 matches)\n  1: print('x')\n  2: print('x')\nb.md (1 match)\n  1: x");
+        // An outline that didn't come in time: the same.
+        outlines.clear();
+        assert_eq!(format_search_result(&result, &outlines), text);
+    }
+
+    #[test]
+    fn a_line_past_every_declaration_is_outside() {
+        let (mut result, outlines) = search_in(&[("a.rs", "fn f() {}\n")], "fn", 0);
+        result.lines[0].line = 99; // the file changed since it was searched
+        let text = format_search_result(&result, &outlines);
+        assert!(text.contains("  (outside any declaration):\n    99: fn f() {}"), "{text}");
+    }
+
+    #[test]
+    fn outlines_for_a_search_come_from_the_files_within_the_time_given() {
+        let dir = std::env::temp_dir().join(format!("search-outlines-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "fn first() {}\n").unwrap();
+        let line = |path: &str| SearchLine { path: path.into(), line: 1, text: "x".into(), is_match: true, ranges: vec![], column: None };
+        let result = SearchResult {
+            lines: vec![line("src/a.rs"), line("src/missing.rs"), line("notes.txt")],
+            match_count: 3,
+            file_count: 3,
+            truncated: false,
+            total_matches: 3,
+            total_files: 3,
+            totals_complete: true,
+        };
+        let root = dir.to_string_lossy().to_string();
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let outlines = search_outlines(&root, &result, later);
+        assert_eq!(outlines.keys().collect::<Vec<_>>(), ["src/a.rs"], "missing and grammar-less files have none");
+        assert_eq!(outlines["src/a.rs"][0].name, "first");
+        // Out of time: none, and the result is listed plainly.
+        assert!(search_outlines(&root, &result, std::time::Instant::now() - std::time::Duration::from_secs(1)).is_empty());
+        // An edited file is outlined again.
+        std::fs::write(dir.join("src/a.rs"), "fn renamed_one() {}\n").unwrap();
+        assert_eq!(search_outlines(&root, &result, later)["src/a.rs"][0].name, "renamed_one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_agent_is_told_how_search_results_read() {
+        let schemas = file_tool_schemas();
+        let search = schemas.iter().find(|t| t["function"]["name"] == "search_code").unwrap();
+        let description = search["function"]["description"].as_str().unwrap();
+        assert!(description.contains("grouped by file, and within a file by the declaration"));
+        assert!(description.contains("works as read_file's symbol"));
+        assert!(description.contains("(declaration)"));
+        let read = schemas.iter().find(|t| t["function"]["name"] == "read_file").unwrap();
+        assert!(read["function"]["parameters"]["properties"]["symbol"]["description"].as_str().unwrap().contains("Parser::parse"));
     }
 
     #[test]
@@ -828,7 +1067,7 @@ mod tests {
                 total_matches: 0,
                 total_files: 0,
                 totals_complete: true,
-            }), "No matches.");
+            }, &HashMap::new()), "No matches.");
         assert_eq!(result_meta("web_search", "1. A\n   u\n\n2. B\n   v").unwrap()["count"], json!(2));
         assert_eq!(result_meta("list_dir", "(empty, or everything under this path is ignored)").unwrap()["count"], json!(0));
         assert!(result_meta("todo", "x").is_none());
@@ -842,5 +1081,29 @@ mod tests {
         assert!(matches!(edit_args(json!({ "path": "", "old_text": "", "new_text": "" }).as_object().unwrap()), Err(e) if e.contains("path")));
         assert_eq!(to_absolute_path("C:\\abs\\x", "/p"), "C:\\abs\\x");
         assert_eq!(to_absolute_path("a/", "/p"), "/p/a");
+    }
+
+    /// Prints what search_code returns for a query: SEARCH_ROOT=dir SEARCH_QUERY=… cargo test show_search -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn show_search() {
+        let root = std::env::var("SEARCH_ROOT").unwrap();
+        let opts = crate::code_search::SearchOptions {
+            query: std::env::var("SEARCH_QUERY").unwrap(),
+            regex: false,
+            case_sensitive: false,
+            whole_word: false,
+            globs: vec![],
+            max_results: 100,
+            context_lines: 0,
+        };
+        let result = crate::code_search::search(std::path::Path::new(&root), &opts, crate::agent_tools::is_denylisted_name).unwrap();
+        let start = std::time::Instant::now();
+        let outlines = search_outlines(&root, &result, start + SEARCH_OUTLINE_TIME);
+        let cold = start.elapsed();
+        let start = std::time::Instant::now();
+        let _ = search_outlines(&root, &result, start + SEARCH_OUTLINE_TIME);
+        println!("{}", format_search_result(&result, &outlines));
+        eprintln!("outlines: cold {cold:?}, cached {:?}", start.elapsed());
     }
 }

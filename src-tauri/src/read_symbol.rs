@@ -3,8 +3,9 @@
 //! attributes just above it.
 //!
 //! - `parse` finds a declaration of that name; `Parser::parse`,
-//!   `ChatStore.append` or `outer/inner` names it inside another (any of
-//!   `::`, `.`, `/`, `#` separates). Names are compared without generic
+//!   `ChatStore.append`, `outer/inner` or `Parser > parse` (as search_code
+//!   and this module's headers write it) names it inside another (any of
+//!   `::`, `.`, `/`, `#`, ` > ` separates). Names are compared without generic
 //!   arguments, quotes and Markdown's `#`s: `Point` finds `impl<T> Point<T>`.
 //! - Several matches: the model gets them, with lines, to pick one.
 //! - No match: names that come close, and the file's top-level
@@ -80,7 +81,7 @@ fn normalize(name: &str) -> String {
 fn find(symbols: &[Symbol], query: &str) -> Vec<usize> {
     // The whole query as one name: a plain name, or one with separators in
     // it as written (`M.add`), never cut short (`Point<T>::new`).
-    let has_separator = query.contains("::") || query.contains(['.', '/', '#']);
+    let has_separator = query.contains("::") || query.contains(" > ") || query.contains(['.', '/', '#']);
     let whole: Vec<usize> = (0..symbols.len())
         .filter(|&i| {
             let name = &symbols[i].name;
@@ -91,7 +92,8 @@ fn find(symbols: &[Symbol], query: &str) -> Vec<usize> {
         return whole;
     }
     let parts: Vec<String> = query
-        .split("::")
+        .split(" > ")
+        .flat_map(|p| p.split("::"))
         .flat_map(|p| p.split(['.', '/', '#']))
         .map(normalize)
         .filter(|p| !p.is_empty())
@@ -130,8 +132,16 @@ fn ancestors(symbols: &[Symbol], i: usize) -> Vec<usize> {
     out
 }
 
-/// `Parser > parse`: a symbol and what it's in.
-fn qualified(symbols: &[Symbol], i: usize) -> String {
+/// The innermost declaration line `line` is in, if any.
+pub fn enclosing(symbols: &[Symbol], line: usize) -> Option<usize> {
+    // Parents come before their children: the last one containing it is
+    // the innermost.
+    (0..symbols.len()).filter(|&i| symbols[i].start_line <= line && line <= symbols[i].end_line).max_by_key(|&i| symbols[i].depth)
+}
+
+/// `Parser > parse`: a symbol and what it's in (read_file takes it as a
+/// symbol).
+pub fn qualified(symbols: &[Symbol], i: usize) -> String {
     let mut names: Vec<String> = ancestors(symbols, i).iter().rev().map(|&a| normalize(&symbols[a].name)).collect();
     names.push(normalize(&symbols[i].name));
     names.join(" > ")
@@ -334,7 +344,7 @@ impl Circle {
         assert!(err.contains("- Point > new (lines 11-13): pub fn new(x: T) -> Self"), "{err}");
         assert!(err.contains("- Circle > new (lines 30-32): pub fn new() -> Self"), "{err}");
 
-        for query in ["Point::new", "Point.new", "Point/new", "  Point :: new  ", "Point<T>::new"] {
+        for query in ["Point::new", "Point.new", "Point/new", "  Point :: new  ", "Point<T>::new", "Point > new"] {
             let out = read("src/point.rs", RUST, query).unwrap_or_else(|e| panic!("{query}: {e}"));
             assert!(out.starts_with("[Symbol read: Point > new, lines 11-13 of src/point.rs]"), "{query}: {out}");
         }
