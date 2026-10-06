@@ -1,6 +1,6 @@
 import { invoke, Channel } from '@tauri-apps/api/core';
 import type { ChatMessage, ChatStreamEvent, ModelProfile, OpenAIChatOptions } from '../types';
-import { historyBudget } from './contextBudget';
+import { knownContextTokens } from './contextBudget';
 
 interface CommonArgs {
   profile: ModelProfile;
@@ -54,7 +54,7 @@ export async function sendChatMessage(args: SendChatMessageArgs): Promise<void> 
     projectContext: args.projectContext,
     messages: args.messages?.map((m) => ({ role: m.role, content: m.content ?? '' })),
     dialogId: args.dialogId,
-    tokenBudget: historyBudget(profile.contextTokens),
+    contextTokens: knownContextTokens(profile.contextTokens),
     vision: profile.vision,
     currentUserContent: args.currentUserContent,
     continueReply: args.continueReply,
@@ -114,6 +114,8 @@ export interface ContextEstimate {
   promptTokens: number;
   historyTokens: number;
   fullHistoryTokens: number;
+  /** Kept free for the reply, its reasoning included. */
+  replyReserveTokens: number;
   compacted: number;
   droppedTurns: number;
 }
@@ -121,18 +123,20 @@ export interface ContextEstimate {
 /**
  * How many tokens the chat's next request would use (agent.rs): its history
  * as it would be sent, the system prompt, and `extraChars` more (tool
- * schemas, project context).
+ * schemas, project context). The effort decides the room kept for the reply.
  */
 export function estimateContext(args: {
   profile: ModelProfile;
   dialogId: string;
   extraChars: number;
+  reasoningEffort?: OpenAIChatOptions['reasoning_effort'];
 }): Promise<ContextEstimate> {
   return invoke<ContextEstimate>('chat_context_estimate', {
     dialogId: args.dialogId,
     baseUrl: args.profile.baseUrl,
     model: args.profile.model,
-    tokenBudget: historyBudget(args.profile.contextTokens),
+    contextTokens: knownContextTokens(args.profile.contextTokens),
+    reasoningEffort: args.reasoningEffort ?? undefined,
     vision: args.profile.vision,
     extraChars: args.extraChars,
   });
