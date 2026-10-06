@@ -186,7 +186,8 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   compacted away. When it repeats a call whose earlier result it removed,
   the result names the revision and block that still hold it. The context
   row shows the revision and size, lists revisions (view, restore) and can
-  reset to the stored chat. Requests carry a size readout and reminders at
+  reset to the stored chat; a run updates it as each request goes out, not
+  only when it ends. Requests carry a size readout and reminders at
   25/50/75% of the budget, then every request from 90%. Past the budget,
   older tool outputs are withheld; if it's still over, that request is trimmed
   like Trimming.

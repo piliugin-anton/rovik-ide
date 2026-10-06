@@ -8,6 +8,7 @@ import {
   clmStatus,
   contextModeFor,
   listContextRevisions,
+  liveClmStatus,
   noteContextMode,
   readContextRevision,
   resetContext,
@@ -105,6 +106,26 @@ export default function ContextControls(props: {
       }
     )
   );
+
+  // Each request a run prepares: the context as it went out, edits taken in.
+  createEffect(
+    on(
+      () => liveClmStatus(props.dialogId),
+      (live) => {
+        if (!live) return;
+        setStatus(live);
+        if (revisionsOpen()) void reloadRevisions();
+      },
+      { defer: true }
+    )
+  );
+
+  async function reloadRevisions() {
+    const id = props.dialogId;
+    if (!id) return;
+    const list = await listContextRevisions(id).catch(() => null);
+    if (list && props.dialogId === id) setRevisions(list.slice().reverse());
+  }
 
   async function choose(next: ContextMode) {
     setMenuOpen(false);

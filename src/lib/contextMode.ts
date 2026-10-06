@@ -94,6 +94,19 @@ export function clmStatus(dialogId: string): Promise<ClmStatus> {
   return invoke<ClmStatus>('clm_status', { dialogId });
 }
 
+/** CLM state a run sent after preparing a request, by chat (lib/agentRuns.ts). */
+const [liveStatus, setLiveStatus] = createSignal<Record<string, ClmStatus>>({});
+
+/** The latest CLM state a run sent for the chat this session, if any. */
+export function liveClmStatus(dialogId: string | null | undefined): ClmStatus | null {
+  return (dialogId && liveStatus()[dialogId]) || null;
+}
+
+/** A run prepared a request in CLM mode: its context went out like this. */
+export function noteClmStatus(dialogId: string, status: ClmStatus) {
+  setLiveStatus((s) => ({ ...s, [dialogId]: status }));
+}
+
 export function listContextRevisions(dialogId: string): Promise<ContextRevision[]> {
   return invoke<ContextRevision[]>('clm_list_revisions', { dialogId });
 }

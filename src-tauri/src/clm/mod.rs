@@ -834,7 +834,7 @@ pub fn recall_hint(
  * ---------------------------------------------------------------------------
  */
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ClmStatus {
     /// The chat's mode; None until one is chosen for it.
@@ -861,8 +861,14 @@ pub async fn clm_status(
     vfs: State<'_, VfsState>,
     dialog_id: String,
 ) -> Result<ClmStatus, String> {
-    let available = availability(&vfs);
-    let real = real_paths(&vfs, &dialog_id).map(|(f, _)| f);
+    status(&db, &vfs, dialog_id).await
+}
+
+/// The chat's CLM state as it is now (also sent by a run after each request
+/// is prepared, so the UI follows it turn by turn).
+pub async fn status(db: &DbState, vfs: &VfsState, dialog_id: String) -> Result<ClmStatus, String> {
+    let available = availability(vfs);
+    let real = real_paths(vfs, &dialog_id).map(|(f, _)| f);
     let d = dialog_id.clone();
     let (mode, state, revisions) = db
         .read(move |conn| {

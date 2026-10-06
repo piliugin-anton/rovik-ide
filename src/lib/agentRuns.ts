@@ -11,7 +11,8 @@
 //     lib/questions.ts, where the chat and the editor answer them;
 //   - files it writes refresh open tabs, and unreviewed edits are marked;
 //   - what a reply showed about the model's reasoning goes to the panel,
-//     which keeps it in the settings (queued until the panel is there).
+//     which keeps it in the settings (queued until the panel is there);
+//   - the CLM state each request went out with goes to lib/contextMode.ts.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { createStore, produce } from 'solid-js/store';
@@ -28,6 +29,7 @@ import { clearQuestions, registerQuestions, type PendingQuestions } from './ques
 import { recordAgentEdit } from './agentChanges';
 import { clearPendingDraft } from './pendingDraft';
 import { dismiss, notify } from './notifications';
+import { noteClmStatus, type ClmStatus } from './contextMode';
 
 /** Settings runs follow (agent_run::AgentConfig). */
 export interface AgentConfig {
@@ -91,6 +93,7 @@ type AgentEvent =
     }
   | ({ type: 'reasoningLearned' } & ReasoningLearned)
   | { type: 'userMessageSettled'; dialogId: string; messageId: string; ok: boolean }
+  | { type: 'contextUpdated'; dialogId: string; status: ClmStatus }
   | {
       type: 'notice';
       kind: 'info' | 'success' | 'warning' | 'error';
@@ -273,6 +276,9 @@ function handle(event: AgentEvent) {
       if (event.ok) clearPendingDraft(event.dialogId, event.messageId);
       // Unanswered: the draft stays stored until it's put back in the composer.
       else unansweredHandler?.(event.dialogId, event.messageId);
+      break;
+    case 'contextUpdated':
+      noteClmStatus(event.dialogId, event.status);
       break;
     case 'notice':
       notify({ kind: event.kind, title: event.title, message: event.message, timeout: 12_000 });

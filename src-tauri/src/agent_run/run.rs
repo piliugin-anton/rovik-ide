@@ -1084,6 +1084,9 @@ impl<R: Runtime> Stream<R> {
             }
             ChatStreamEvent::Error { error } => self.failure = Some(error),
             ChatStreamEvent::ContextNotes { notes } => self.notes = notes,
+            ChatStreamEvent::ContextUpdated { status } => {
+                emit(&self.app, AgentEvent::ContextUpdated { dialog_id: self.dialog_id.clone(), status });
+            }
             ChatStreamEvent::ToolCallStart { id, name } => {
                 self.mark_output();
                 let call = ToolCall { id: id.clone(), name, arguments: String::new(), extra_content: None };

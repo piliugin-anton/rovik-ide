@@ -57,6 +57,11 @@ pub enum ChatStreamEvent {
     ContextNotes {
         notes: Vec<String>,
     },
+    /// The chat's CLM state once this request's context was prepared: the
+    /// agent's edits taken in, the revision and size it goes out with.
+    ContextUpdated {
+        status: crate::clm::ClmStatus,
+    },
     ToolCallComplete {
         id: String,
         name: String,
@@ -582,6 +587,10 @@ pub async fn run_chat(
                     clm_used = true;
                     if !notes.is_empty() {
                         on_event(ChatStreamEvent::ContextNotes { notes });
+                    }
+                    match crate::clm::status(db, vfs, dialog_id.clone()).await {
+                        Ok(status) => on_event(ChatStreamEvent::ContextUpdated { status }),
+                        Err(e) => eprintln!("context: CLM status unavailable ({e})"),
                     }
                     Some((wire, info))
                 }
