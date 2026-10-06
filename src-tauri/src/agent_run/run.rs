@@ -11,12 +11,13 @@
 use super::events::{emit, AgentEvent, OutMessage, Patch, Status};
 use super::guard::Guard;
 use super::project::{self, ProjectCheck};
-use super::{failure, log, plan, repetition, tools, AgentState, ModelProfile, StartKind, StartRequest, StopSignal};
-use crate::agent::{ChatParams, ChatStreamEvent, OpenAIChatOptions, REASONING_FIELDS};
+use super::{failure, log, plan, repetition, tools, AgentState, Controls, ModelProfile, StartKind, StartRequest, StopSignal};
+use crate::agent::{ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS};
 use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage, ToolCall};
 use crate::chat_db::DbState;
 use crate::chat_request::{ChatError, ErrorKind};
 use serde_json::{json, Value};
+use std::ops::Not;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime};
@@ -77,6 +78,8 @@ pub struct Run<R: Runtime> {
     pub(super) repetition_stops: u32,
     pub(super) started_at: Instant,
     pub(super) stop: Arc<StopSignal>,
+    /// The reasoning effort the user picks while the run goes on.
+    effort: watch::Receiver<Option<OpenAIChatOptions>>,
     /// The sent message waiting for its first answer.
     pub(super) settle_message: Option<String>,
     continue_reply: bool,
@@ -111,7 +114,7 @@ impl<R: Runtime> Run<R> {
         state: &AgentState,
         db: &DbState,
         request: StartRequest,
-        stop: Arc<StopSignal>,
+        controls: Controls,
     ) -> Result<Option<(Run<R>, Entry)>, String> {
         let dialog_id = request.dialog_id.clone();
         let recent = recent_messages(db, &dialog_id).await?;
@@ -209,7 +212,8 @@ impl<R: Runtime> Run<R> {
             plan_nudged: false,
             repetition_stops: 0,
             started_at: Instant::now(),
-            stop,
+            stop: controls.stop,
+            effort: controls.effort,
             settle_message,
             continue_reply,
         };
@@ -387,13 +391,15 @@ impl<R: Runtime> Run<R> {
     /// stored. Failed attempts are retried in chat_request.rs, which reports
     /// each retry, then succeeds or fails for good.
     async fn model_turn(&mut self) -> Result<TurnOutput, String> {
-        let started = Instant::now();
+        let mut started = Instant::now();
         let mut pending = new_message("assistant", "");
         pending.finalized = false;
         let message_id = pending.id.clone();
         // Unfinished placeholders are skipped when the history is built.
         self.append_pending(pending).await?;
 
+        // An effort picked since the last request applies from this one.
+        self.take_effort();
         let config = self.state.config();
         let tools = tools::tools_for(
             self.root.is_some(),
@@ -412,101 +418,187 @@ impl<R: Runtime> Run<R> {
         } else {
             self.project_context.clone()
         };
-        let params = ChatParams {
-            base_url: self.profile.base_url.clone(),
-            api_key: self.profile.api_key.clone(),
-            model: self.profile.model.clone(),
-            messages: None,
-            dialog_id: Some(self.dialog_id.clone()),
-            context_tokens: self.profile.context_tokens.filter(|t| *t > 0),
-            vision: Some(self.profile.vision),
-            current_user_content: self.current_user_content.clone(),
-            streaming: self.profile.stream,
-            first_byte_timeout_ms: self.profile.first_byte_timeout_ms,
-            continue_reply: Some(std::mem::take(&mut self.continue_reply)),
-            assistant_message_id: Some(message_id.clone()),
-            tools: Some(tools),
-            system_prompt: None,
-            project_context: Some(project_context),
-            options: self.options.clone(),
-            context_mode: Some(self.context_mode.clone()),
-        };
+        let continue_reply = std::mem::take(&mut self.continue_reply);
+        // Shown when the request starts (asking again with another effort).
+        let mut opening_status: Option<Status> = None;
 
-        let (cancel_tx, mut cancel_rx) = watch::channel(false);
-        let cancel_tx = Arc::new(cancel_tx);
-        let stream = Arc::new(Mutex::new(Stream::new(self, &message_id, cancel_tx.clone())));
-        let sink = stream.clone();
-        let mut on_event = move |event: ChatStreamEvent| lock(&sink).on_event(event);
+        loop {
+            let params = ChatParams {
+                base_url: self.profile.base_url.clone(),
+                api_key: self.profile.api_key.clone(),
+                model: self.profile.model.clone(),
+                messages: None,
+                dialog_id: Some(self.dialog_id.clone()),
+                context_tokens: self.profile.context_tokens.filter(|t| *t > 0),
+                vision: Some(self.profile.vision),
+                current_user_content: self.current_user_content.clone(),
+                streaming: self.profile.stream,
+                first_byte_timeout_ms: self.profile.first_byte_timeout_ms,
+                continue_reply: Some(continue_reply),
+                assistant_message_id: Some(message_id.clone()),
+                tools: Some(tools.clone()),
+                system_prompt: None,
+                project_context: Some(project_context.clone()),
+                options: self.options.clone(),
+                context_mode: Some(self.context_mode.clone()),
+            };
 
-        let vfs = self.app.state::<crate::vfs::VfsState>();
-        let result = {
-            let request = crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event);
-            tokio::pin!(request);
-            let mut stop_rx = self.stop.subscribe();
-            let mut ticker = tokio::time::interval(Duration::from_millis(100));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut stop_deadline: Option<Instant> = None;
-            loop {
-                tokio::select! {
-                    r = &mut request => break Some(r),
-                    _ = ticker.tick() => {
-                        lock(&stream).tick(started, stop_deadline.is_some());
-                        // The request didn't end after Stop: stop waiting for it
-                        // (dropping it ends the connection).
-                        if stop_deadline.is_some_and(|at| Instant::now() >= at) {
-                            break None;
+            let (cancel_tx, mut cancel_rx) = watch::channel(false);
+            let cancel_tx = Arc::new(cancel_tx);
+            let stream = Arc::new(Mutex::new(Stream::new(self, &message_id, cancel_tx.clone())));
+            if let Some(status) = opening_status.take() {
+                lock(&stream).set_status(Some(status));
+            }
+            let sink = stream.clone();
+            let mut on_event = move |event: ChatStreamEvent| lock(&sink).on_event(event);
+
+            let mut effort_rx = self.effort.clone();
+            // The user picked another effort before the model showed anything.
+            let mut ask_again = false;
+            let vfs = self.app.state::<crate::vfs::VfsState>();
+            let result = {
+                let request = crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event);
+                tokio::pin!(request);
+                let mut stop_rx = self.stop.subscribe();
+                let mut ticker = tokio::time::interval(Duration::from_millis(100));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut stop_deadline: Option<Instant> = None;
+                // Asking again: the cancelled request gets as long to end as on Stop.
+                let mut again_deadline: Option<Instant> = None;
+                let mut effort_open = true;
+                loop {
+                    tokio::select! {
+                        r = &mut request => break Some(r),
+                        _ = ticker.tick() => {
+                            lock(&stream).tick(started, stop_deadline.is_some());
+                            // The request didn't end after Stop: stop waiting for it
+                            // (dropping it ends the connection).
+                            if [stop_deadline, again_deadline].iter().flatten().any(|at| Instant::now() >= *at) {
+                                break None;
+                            }
+                        }
+                        _ = crate::chat_request::cancelled(&mut stop_rx), if stop_deadline.is_none() => {
+                            let _ = cancel_tx.send(true);
+                            stop_deadline = Some(Instant::now() + STOP_GRACE);
+                            lock(&stream).set_status(Some(Status::text("Stopping…")));
+                        }
+                        // Waiting, stalled or retrying, with nothing of the reply
+                        // shown: no need to wait it out, ask again with the new
+                        // effort. Once the reply is coming, it applies to the next
+                        // request (what has arrived isn't thrown away).
+                        changed = effort_rx.changed(), if effort_open && !ask_again && stop_deadline.is_none() => {
+                            match changed {
+                                Err(_) => effort_open = false,
+                                Ok(()) => {
+                                    // The same effort picked again changes nothing.
+                                    let other = same_options(&effort_rx.borrow_and_update(), &self.options).not();
+                                    if other && !lock(&stream).reply_started() {
+                                        ask_again = true;
+                                        again_deadline = Some(Instant::now() + STOP_GRACE);
+                                        let _ = cancel_tx.send(true);
+                                    }
+                                }
+                            }
                         }
                     }
-                    _ = crate::chat_request::cancelled(&mut stop_rx), if stop_deadline.is_none() => {
-                        let _ = cancel_tx.send(true);
-                        stop_deadline = Some(Instant::now() + STOP_GRACE);
-                        lock(&stream).set_status(Some(Status::text("Stopping…")));
-                    }
                 }
+            };
+
+            let mut s = lock(&stream);
+            let failure = match result {
+                None => Some(failure::stopped()),
+                // Only problems before the request (e.g. building the history) land here.
+                Some(Err(e)) => Some(failure::before_request(e)),
+                Some(Ok(())) => s.failure.take(),
+            };
+            let learned = s.learned.take();
+
+            // Cancelled to ask again (not Stop, and it didn't finish first).
+            let asked_again = ask_again
+                && !self.stop.is_set()
+                && failure.as_ref().is_some_and(|e| e.kind == ErrorKind::Cancelled);
+            if asked_again {
+                let shown = s.shown_anything();
+                drop(s);
+                if let Some((_, rejected, unresolved)) = learned {
+                    self.drop_reasoning_formats(&rejected, &unresolved);
+                }
+                self.take_effort();
+                log::write(
+                    &self.app,
+                    json!({
+                        "event": "reply",
+                        "dialogId": self.dialog_id,
+                        "model": self.profile.model,
+                        "error": "asked-again",
+                        "ms": started.elapsed().as_millis() as u64,
+                    }),
+                );
+                // Whatever the dropped attempt showed (its reasoning) goes.
+                if shown {
+                    self.patch_ui(
+                        &message_id,
+                        Patch {
+                            content: Some(String::new()),
+                            tool_calls: Some(Vec::new()),
+                            meta: Some(json!({})),
+                            ..Default::default()
+                        },
+                    );
+                    let id = message_id.clone();
+                    let patch = MessagePatch {
+                        content: Some(String::new()),
+                        tool_calls: Some(Vec::new()),
+                        ..Default::default()
+                    };
+                    self.db.write_detached(move |c| store::update_message(c, &id, &patch));
+                }
+                opening_status = Some(Status::text(format!("Asking again with {}…", effort_label(&self.options))));
+                started = Instant::now();
+                continue;
             }
-        };
 
-        let mut s = lock(&stream);
-        s.set_status(None);
-        let failure = match result {
-            None => Some(failure::stopped()),
-            // Only problems before the request (e.g. building the history) land here.
-            Some(Err(e)) => Some(failure::before_request(e)),
-            Some(Ok(())) => s.failure.take(),
-        };
-        let reasoning = s.reasoning_meta(true);
-        let output = TurnOutput {
-            message_id,
-            text: std::mem::take(&mut s.text),
-            tool_calls: std::mem::take(&mut s.tool_calls),
-            repetition_cut: s.repetition_cut,
-            reasoning,
-            failure,
-        };
-        let learned = s.learned.take();
-        let (finish_reason, usage) = (s.finish_reason.take(), s.usage.take());
-        drop(s);
+            s.set_status(None);
+            let reasoning = s.reasoning_meta(true);
+            let output = TurnOutput {
+                message_id,
+                text: std::mem::take(&mut s.text),
+                tool_calls: std::mem::take(&mut s.tool_calls),
+                repetition_cut: s.repetition_cut,
+                reasoning,
+                failure,
+            };
+            let (finish_reason, usage) = (s.finish_reason.take(), s.usage.take());
+            drop(s);
 
-        // Reasoning forms the provider refused aren't sent again in this run.
-        if let Some((_, rejected, unresolved)) = learned {
-            self.drop_reasoning_formats(&rejected, &unresolved);
+            // Reasoning forms the provider refused aren't sent again in this run.
+            if let Some((_, rejected, unresolved)) = learned {
+                self.drop_reasoning_formats(&rejected, &unresolved);
+            }
+
+            let mut entry = json!({
+                "event": "reply",
+                "dialogId": self.dialog_id,
+                "model": self.profile.model,
+                "finishReason": finish_reason,
+                "toolCalls": if output.failure.is_some() { 0 } else { output.tool_calls.len() },
+                "textChars": output.text.chars().count(),
+                "usage": usage,
+                "ms": started.elapsed().as_millis() as u64,
+            });
+            if let Some(error) = &output.failure {
+                entry["error"] = json!(error.kind);
+            }
+            log::write(&self.app, entry);
+            return Ok(output);
         }
+    }
 
-        let mut entry = json!({
-            "event": "reply",
-            "dialogId": self.dialog_id,
-            "model": self.profile.model,
-            "finishReason": finish_reason,
-            "toolCalls": if output.failure.is_some() { 0 } else { output.tool_calls.len() },
-            "textChars": output.text.chars().count(),
-            "usage": usage,
-            "ms": started.elapsed().as_millis() as u64,
-        });
-        if let Some(error) = &output.failure {
-            entry["error"] = json!(error.kind);
+    /// Takes the effort the user picked since it was last looked at, if any.
+    fn take_effort(&mut self) {
+        if self.effort.has_changed().unwrap_or(false) {
+            self.options = self.effort.borrow_and_update().clone();
         }
-        log::write(&self.app, entry);
-        Ok(output)
     }
 
     fn drop_reasoning_formats(&mut self, rejected: &[String], unresolved: &[String]) {
@@ -978,6 +1070,17 @@ impl<R: Runtime> Stream<R> {
         }
     }
 
+    /// Part of the reply itself has arrived (text or a tool call), not just
+    /// its reasoning.
+    fn reply_started(&self) -> bool {
+        !self.text.is_empty() || !self.tool_calls.is_empty()
+    }
+
+    /// Anything of this reply was shown, its reasoning included.
+    fn shown_anything(&self) -> bool {
+        self.reply_started() || !self.reasoning.is_empty()
+    }
+
     /// The reasoning so far, as stored with the reply.
     fn reasoning_meta(&self, with_time: bool) -> Option<Value> {
         if self.reasoning.is_empty() {
@@ -1053,6 +1156,21 @@ impl<R: Runtime> Stream<R> {
  * Reading the chat
  * ---------------------------------------------------------------------------
  */
+
+fn same_options(a: &Option<OpenAIChatOptions>, b: &Option<OpenAIChatOptions>) -> bool {
+    serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
+}
+
+/// "low effort", as the chat's effort selector words it.
+fn effort_label(options: &Option<OpenAIChatOptions>) -> &'static str {
+    match options.as_ref().and_then(|o| o.reasoning_effort) {
+        None => "the default effort",
+        Some(ReasoningEffort::None) => "no thinking",
+        Some(ReasoningEffort::Low) => "low effort",
+        Some(ReasoningEffort::Medium) => "medium effort",
+        Some(ReasoningEffort::High) => "high effort",
+    }
+}
 
 pub(super) fn new_message(role: &str, content: &str) -> NewMessage {
     NewMessage {

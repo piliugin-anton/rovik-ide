@@ -20,6 +20,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 enum Reply {
     Text(&'static str),
     Call { id: &'static str, name: &'static str, args: Value },
+    /// Some text (or nothing), then silence: the model stopped answering.
+    Hang(Option<&'static str>),
 }
 
 impl Reply {
@@ -40,7 +42,14 @@ impl Reply {
                     + &chunk(json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }))
                     + "data: [DONE]\n\n"
             }
+            Reply::Hang(text) => text
+                .map(|t| chunk(json!({ "choices": [{ "delta": { "content": t }, "finish_reason": null }] })))
+                .unwrap_or_default(),
         }
+    }
+
+    fn hangs(&self) -> bool {
+        matches!(self, Reply::Hang(_))
     }
 }
 
@@ -52,16 +61,24 @@ async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    let bodies: Vec<String> = replies.iter().map(Reply::sse).collect();
+    let bodies: Vec<(String, bool)> = replies.iter().map(|r| (r.sse(), r.hangs())).collect();
     tokio::spawn(async move {
         let mut n = 0;
         while let Ok((mut socket, _)) = listener.accept().await {
             let body = read_request(&mut socket).await;
             log.lock().unwrap().push(body);
-            let reply = &bodies[n.min(bodies.len() - 1)];
+            let (reply, hangs) = bodies[n.min(bodies.len() - 1)].clone();
             n += 1;
             let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
             let _ = socket.write_all(format!("{head}{reply}").as_bytes()).await;
+            if hangs {
+                // Keeps the connection open, saying nothing more.
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(120)).await;
+                    drop(socket);
+                });
+                continue;
+            }
             let _ = socket.shutdown().await;
         }
     });
@@ -585,4 +602,105 @@ async fn a_reply_repeating_itself_is_cut_and_the_model_told() {
     assert!(messages[2].content.contains("started repeating"));
     assert_eq!(messages[3].content, "Sorry, here it is.");
     assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+fn effort(level: &str) -> Option<crate::agent::OpenAIChatOptions> {
+    serde_json::from_value(json!({ "reasoning_effort": level, "reasoning_formats": ["reasoning_effort"] })).unwrap()
+}
+
+/// Waits until the model has been asked `n` times.
+async fn requests_seen(seen: &Arc<Mutex<Vec<Value>>>, n: usize) {
+    for _ in 0..400 {
+        if seen.lock().unwrap().len() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the model was asked {} times, not {n}", seen.lock().unwrap().len());
+}
+
+#[tokio::test]
+async fn a_stuck_request_is_asked_again_with_a_new_effort() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Hang(None), Reply::Text("Hello.")]).await;
+    let mut request = h.request(&url, Harness::send("Hi"), quiet_permissions());
+    request.options = effort("high");
+    h.start(request).await;
+    requests_seen(&seen, 1).await;
+
+    let app = h.app.handle().clone();
+    // Another model's effort changes nothing here, nor does the same effort again.
+    assert_eq!(agent_set_effort(app.state(), "other::model".into(), effort("low")), 0);
+    agent_set_effort(app.state(), "p::m".into(), effort("high"));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(agent_set_effort(app.state(), "p::m".into(), effort("low")), 1);
+    assert_eq!(h.run_end().await, "done");
+
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["reasoning_effort"], "high");
+    assert_eq!(requests[1]["reasoning_effort"], "low");
+    // One reply, in the same message: the dropped attempt left nothing behind.
+    let messages = h.messages().await;
+    assert_eq!(roles(&messages), ["user", "assistant"]);
+    assert_eq!(messages[1].content, "Hello.");
+    assert!(messages[1].error.is_none() && !messages[0].failed);
+    let statuses: Vec<Value> = h
+        .events_of("messagePatched")
+        .into_iter()
+        .filter_map(|e| e["patch"].get("status").cloned())
+        .collect();
+    assert!(statuses.iter().any(|s| s["text"] == "Asking again with low effort…"), "{statuses:?}");
+    assert_eq!(h.events_of("userMessageSettled")[0]["ok"], true);
+}
+
+#[tokio::test]
+async fn an_effort_picked_mid_run_applies_to_the_next_request() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Call { id: "r1", name: "run_command", args: json!({ "command": "ls" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(
+        &url,
+        Harness::send("List"),
+        Permissions {
+            command_approval: permissions::ApprovalRule { required: true, by: permissions::Approver::User },
+            ..quiet_permissions()
+        },
+    );
+    request.options = effort("high");
+    h.start(request).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
+    let app = h.app.handle().clone();
+    agent_set_effort(app.state(), "p::m".into(), effort("low"));
+    agent_resolve_approval(app.clone(), app.state(), "r1".into(), ApprovalDecision::Allow);
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["reasoning_effort"], "high");
+    assert_eq!(requests[1]["reasoning_effort"], "low");
+}
+
+#[tokio::test]
+async fn a_reply_under_way_is_not_thrown_away_for_a_new_effort() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Hang(Some("Part of the answer"))]).await;
+    let mut request = h.request(&url, Harness::send("Hi"), quiet_permissions());
+    request.options = effort("high");
+    h.start(request).await;
+    h.wait_for("streamed text", |e| e["type"] == "messagePatched" && e["patch"]["content"] == "Part of the answer").await;
+
+    let app = h.app.handle().clone();
+    agent_set_effort(app.state(), "p::m".into(), effort("low"));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(seen.lock().unwrap().len(), 1, "not asked again: the reply was coming");
+
+    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    assert_eq!(h.run_end().await, "stopped");
+    let messages = h.messages().await;
+    assert_eq!(messages[1].content, "Part of the answer");
+    assert_eq!(messages[1].meta.as_ref().unwrap()["interrupted"]["kind"], "cancelled");
 }

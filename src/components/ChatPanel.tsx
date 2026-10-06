@@ -72,6 +72,7 @@ import {
   onMessageUnanswered,
   onReasoningLearned,
   onShowChat,
+  setRunEffort,
   startRun,
   stopRun,
   toolNotes,
@@ -200,11 +201,13 @@ export default function ChatPanel(props: ChatProps) {
   const effortFor = (profileId: string | undefined): Effort =>
     (profileId && efforts()[profileId]) || 'default';
   function setEffort(effort: Effort) {
-    const id = activeProfile()?.id;
-    if (!id) return;
-    const next = { ...efforts(), [id]: effort };
+    const profile = activeProfile();
+    if (!profile) return;
+    const next = { ...efforts(), [profile.id]: effort };
     setEfforts(next);
     saveEfforts(next);
+    // Runs with this model follow it, a stuck request right away.
+    setRunEffort(profile.id, reasoningOptions(profile));
   }
   /** The effort selector shows unless the model is known not to take one. */
   const showEffort = createMemo(() => {

@@ -126,6 +126,7 @@ pub fn run() {
             agent_run::agent_configure,
             agent_run::agent_start,
             agent_run::agent_stop,
+            agent_run::agent_set_effort,
             agent_run::agent_resolve_approval,
             agent_run::agent_answer_questions,
             agent_run::agent_status,

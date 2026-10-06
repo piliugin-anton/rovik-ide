@@ -129,6 +129,17 @@ export function stopRun(dialogId: string): Promise<boolean> {
   return invoke<boolean>('agent_stop', { dialogId });
 }
 
+/**
+ * A reasoning effort picked for a model: runs using it take it for their
+ * next request, or ask again with it at once when the model hasn't shown
+ * anything of its reply yet (waiting, stalled, retrying).
+ */
+export function setRunEffort(profileId: string, options: OpenAIChatOptions | undefined): void {
+  void invoke('agent_set_effort', { profileId, options: options ?? null }).catch((err) =>
+    console.error('Effort not sent to the agent:', err)
+  );
+}
+
 export function configureAgent(config: AgentConfig): void {
   void invoke('agent_configure', { config }).catch((err) =>
     console.error('Agent settings not sent:', err)

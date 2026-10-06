@@ -35,6 +35,7 @@ mod run;
 pub mod tools;
 mod verify;
 
+use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewMessage};
 use crate::chat_db::DbState;
 use events::{emit, AgentEvent, ApprovalRequest, OutMessage, QuestionsRequest};
@@ -116,7 +117,18 @@ impl StopSignal {
 
 struct RunControl {
     run_id: String,
+    /// The run's model (`ModelProfile::id`): an effort chosen for it applies.
+    profile_id: String,
     stop: Arc<StopSignal>,
+    /// The reasoning effort picked while the run goes on (see `set_effort`).
+    effort: watch::Sender<Option<OpenAIChatOptions>>,
+}
+
+/// What a run is handed when it's registered.
+pub(super) struct Controls {
+    pub run_id: String,
+    pub stop: Arc<StopSignal>,
+    pub effort: watch::Receiver<Option<OpenAIChatOptions>>,
 }
 
 struct Waiting<T, R> {
@@ -150,15 +162,32 @@ impl AgentState {
     }
 
     /// Registers a run for the chat; None when one is already going there.
-    fn register(&self, dialog_id: &str) -> Option<(String, Arc<StopSignal>)> {
+    fn register(&self, dialog_id: &str, profile_id: &str, options: Option<OpenAIChatOptions>) -> Option<Controls> {
         let mut inner = self.lock();
         if inner.runs.contains_key(dialog_id) {
             return None;
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         let stop = Arc::new(StopSignal::new());
-        inner.runs.insert(dialog_id.to_string(), RunControl { run_id: run_id.clone(), stop: stop.clone() });
-        Some((run_id, stop))
+        let (effort_tx, effort_rx) = watch::channel(options);
+        inner.runs.insert(
+            dialog_id.to_string(),
+            RunControl { run_id: run_id.clone(), profile_id: profile_id.to_string(), stop: stop.clone(), effort: effort_tx },
+        );
+        Some(Controls { run_id, stop, effort: effort_rx })
+    }
+
+    /// A reasoning effort chosen for a model: the runs using it take it for
+    /// their next request, or at once if the model hasn't shown anything of
+    /// its current reply (run.rs). Returns how many runs it reached.
+    pub fn set_effort(&self, profile_id: &str, options: Option<OpenAIChatOptions>) -> usize {
+        let inner = self.lock();
+        let mut reached = 0;
+        for run in inner.runs.values().filter(|r| r.profile_id == profile_id) {
+            run.effort.send_replace(options.clone());
+            reached += 1;
+        }
+        reached
     }
 
     fn unregister(&self, dialog_id: &str, run_id: &str) {
@@ -283,7 +312,7 @@ pub struct StartRequest {
     pub start: StartKind,
     pub profile: ModelProfile,
     /// The reasoning effort, in the forms the provider takes (src/lib/reasoning.ts).
-    pub options: Option<crate::agent::OpenAIChatOptions>,
+    pub options: Option<OpenAIChatOptions>,
     /// The mode selected in the chat, for a run whose message didn't record one.
     #[serde(default)]
     pub mode: Option<String>,
@@ -317,9 +346,10 @@ pub async fn agent_start<R: Runtime>(
         state.set_config(config);
     }
     let dialog_id = request.dialog_id.clone();
-    let Some((run_id, stop)) = state.register(&dialog_id) else {
+    let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone()) else {
         return Err("The agent is already working in this chat.".into());
     };
+    let run_id = controls.run_id.clone();
     let state = state.inner().clone();
     let db = db.inner().clone();
 
@@ -360,7 +390,7 @@ pub async fn agent_start<R: Runtime>(
         StartKind::Send { message } => Some(message.id.clone()),
         _ => None,
     };
-    let prepared = match run::Run::prepare(&app, &state, &db, request, stop).await {
+    let prepared = match run::Run::prepare(&app, &state, &db, request, controls).await {
         Ok(Some(prepared)) => prepared,
         Ok(None) => {
             state.unregister(&dialog_id, &run_id);
@@ -397,6 +427,17 @@ pub async fn agent_start<R: Runtime>(
         emit(&app, AgentEvent::RunEnded { dialog_id, run_id: id, outcome });
     });
     Ok(Some(run_id))
+}
+
+/// A reasoning effort the user picked for a model (src/lib/reasoning.ts):
+/// runs using that model follow it. Returns how many runs it reached.
+#[tauri::command]
+pub fn agent_set_effort(
+    state: State<'_, AgentState>,
+    profile_id: String,
+    options: Option<OpenAIChatOptions>,
+) -> usize {
+    state.set_effort(&profile_id, options)
 }
 
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;
