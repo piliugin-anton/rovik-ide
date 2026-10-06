@@ -12,6 +12,8 @@ interface CommonArgs {
   requestId?: string;
   /** The open project's profile (lib/projectProfile.ts), added to the system prompt. */
   projectContext?: string;
+  /** How the chat's context is managed (lib/contextMode.ts); trimming by default. */
+  contextMode?: 'trimming' | 'clm';
 }
 
 /**
@@ -64,6 +66,7 @@ export async function sendChatMessage(args: SendChatMessageArgs): Promise<void> 
     firstByteTimeoutMs: profile.firstByteTimeoutMs,
     tools,
     options,
+    contextMode: args.contextMode,
     onEvent: channel,
   });
 }
@@ -116,7 +119,8 @@ export interface ContextEstimate {
   fullHistoryTokens: number;
   /** Kept free for the reply, its reasoning included. */
   replyReserveTokens: number;
-  compacted: number;
+  /** Out-of-date messages replaced with a note. */
+  outdated: number;
   droppedTurns: number;
 }
 

@@ -4961,6 +4961,159 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 11px;
 }
 
+/* Context management, under the model and effort (ContextControls.tsx) */
+
+.context-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.context-mode-menu {
+  right: auto;
+  left: 0;
+}
+
+.context-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.context-revisions {
+  position: relative;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.context-revisions-button {
+  font-size: 11px;
+}
+
+.context-revisions-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: min(360px, 80vw);
+  max-height: 60vh;
+  padding: 6px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px var(--shadow);
+}
+
+.context-revisions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.context-revisions-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+  max-height: 22vh;
+}
+
+.context-revision {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.context-revision:hover {
+  background: var(--hover);
+}
+
+.context-revision-number {
+  min-width: 2.5em;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.context-revision.edit .context-revision-kind {
+  color: var(--warning);
+}
+
+.context-revision-meta {
+  flex: 1;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.context-revision .link-button {
+  font-size: 11px;
+}
+
+.context-revision .link-button:disabled {
+  color: var(--fg-dim);
+  cursor: default;
+  text-decoration: none;
+}
+
+.context-revision-text {
+  overflow: auto;
+  min-height: 80px;
+  max-height: 30vh;
+  margin: 0;
+  padding: 6px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.context-unavailable {
+  padding: 6px 8px;
+  background: var(--background-secondary);
+  border: 1px solid var(--border-color);
+  border-left: 2px solid var(--warning);
+  border-radius: 4px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.context-unavailable p {
+  margin: 0 0 4px;
+}
+
+.context-unavailable strong {
+  color: var(--fg);
+}
+
+.context-unavailable-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.context-error {
+  overflow: hidden;
+  color: var(--error);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* The model's thinking above its reply (MessageList.tsx) */
 
 .chat-thinking {

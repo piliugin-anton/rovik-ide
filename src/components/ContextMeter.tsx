@@ -2,8 +2,8 @@
 //
 // "Context used: N%" above the chat input, with a ring showing the same.
 // N is how much of the model's context window the chat's next request
-// would take: the history as it would be sent (after compaction and
-// trimming), the system prompt, tool schemas and project context. It's an
+// would take: the history as it would be sent (after trimming), the
+// system prompt, tool schemas and project context. It's an
 // estimate from the backend (agent.rs, chat_context_estimate), calibrated
 // per model from the token counts providers report. A lighter arc after it
 // is the room kept for the reply, its reasoning included (agent.rs,
@@ -22,7 +22,7 @@ export interface ContextUsage {
   historyTokens: number;
   /** Kept free for the reply, its reasoning included. */
   replyReserveTokens: number;
-  /** Messages compacted or turns dropped to fit. */
+  /** Out-of-date messages replaced or turns dropped to fit. */
   shortened: boolean;
 }
 

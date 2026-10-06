@@ -325,6 +325,16 @@ const CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are a coding agent operating ins
 - All file paths are relative to the project root and confined to it — you cannot and should not attempt to access anything outside the opened project folder.
 - Don't create or modify config/dependency files unless the task calls for it."#;
 
+/// The system prompt a request is sent with: the one with the CLM section
+/// only when CLM built its history. A request that fell back to trimming
+/// mustn't tell the model its context is a file it manages.
+fn request_system_prompt(plain: String, clm: Option<String>, clm_used: bool) -> String {
+    match (clm_used, clm) {
+        (true, Some(prompt)) => prompt,
+        _ => plain,
+    }
+}
+
 #[tauri::command]
 pub async fn send_chat_message(
     db: tauri::State<'_, crate::chat_db::DbState>,
@@ -359,6 +369,10 @@ pub async fn send_chat_message(
     // appended to the default system prompt.
     project_context: Option<String>,
     options: Option<OpenAIChatOptions>,
+    // How the chat's context is managed: "trimming" (default) or "clm"
+    // (Context Language Models: the agent edits its context as a file, src/clm).
+    context_mode: Option<String>,
+    vfs: tauri::State<'_, crate::vfs::VfsState>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
     // Registered first, so a Stop pressed while the history is still being
@@ -392,14 +406,37 @@ pub async fn send_chat_message(
     let reply_key = reply_reserve::key(&calibration_key, reasoning_effort);
     let window = context_tokens.filter(|t| *t > 0).unwrap_or(DEFAULT_CONTEXT_TOKENS);
     let max_tokens = options.as_ref().and_then(|o| o.max_tokens);
-    let fixed_chars = system_prompt.chars().count()
-        + tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
-    let budget = history_budget(
-        window,
-        fixed_chars,
-        chars_per_token,
-        reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens),
-    );
+    let reserve = reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens);
+    let tool_chars = tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
+    let budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
+
+    // Context Language Models need the virtual volume (the agent's shell
+    // edits the file there); without it the chat falls back to trimming.
+    let clm = match (context_mode.as_deref(), dialog_id.as_deref()) {
+        (Some(crate::clm::MODE_CLM), Some(_)) if !has_tools => false,
+        (Some(crate::clm::MODE_CLM), Some(_)) => match crate::clm::availability(&vfs) {
+            Ok(_) => true,
+            Err(why) => {
+                eprintln!("context: CLM mode unavailable ({why}); using trimming for this request");
+                false
+            }
+        },
+        _ => false,
+    };
+    // The CLM system prompt and the budget that leaves. Used only once the
+    // CLM history is built: a request that falls back to trimming is sent
+    // as a plain trimming request, without instructions that don't hold.
+    let clm_prompt = match clm {
+        true => crate::clm::system_section(&db, &vfs, dialog_id.as_deref().unwrap_or(""), budget)
+            .await
+            .map(|section| format!("{system_prompt}\n\n{section}")),
+        false => None,
+    };
+    let clm_budget = clm_prompt
+        .as_ref()
+        .map(|p| history_budget(window, p.chars().count() + tool_chars, chars_per_token, reserve));
+    // Set when the history below was built by CLM.
+    let mut clm_used = false;
 
     let mut messages: Vec<WireChatMessage> = match (messages, dialog_id) {
         (Some(explicit), _) => explicit,
@@ -408,6 +445,43 @@ pub async fn send_chat_message(
             // Gemini 3 needs a thought signature on tool calls it didn't sign.
             let gemini = is_gemini_target(&base_url, &model);
             let vision = vision.unwrap_or(false);
+            let cost = crate::chat_db::history::Cost { vision, chars_per_token };
+            let build = async {
+                let Some(clm_budget) = clm_budget else {
+                    return Err(String::new());
+                };
+                let prepared =
+                    crate::clm::prepare(&db, &vfs, dialog_id.clone(), clm_budget, cost, current_user_content.clone())
+                        .await?;
+                let mut messages = prepared.messages;
+                // Notes for the model ride on the request's last message (not stored).
+                if let (Some(last), false) = (messages.last_mut(), prepared.notes.is_empty()) {
+                    last.text = format!("{}\n\n{}", last.text.trim_end(), prepared.notes.join("\n"));
+                    last.full_chars = last.text.chars().count();
+                }
+                Ok((crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini), prepared.info))
+            };
+            let clm_built = tokio::select! {
+                _ = crate::chat_request::cancelled(&mut registration.cancel) => {
+                    let _ = on_event.send(ChatStreamEvent::Error {
+                        error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                    });
+                    return Ok(());
+                }
+                built = build => built,
+            };
+            let clm_built = match clm_built {
+                Ok(built) => {
+                    clm_used = true;
+                    Some(built)
+                }
+                Err(e) if e.is_empty() => None,
+                Err(e) => {
+                    eprintln!("context: CLM failed ({e}); using trimming for this request");
+                    None
+                }
+            };
+            let data_dir = db.data_dir().to_path_buf();
             let build = db.read(move |conn| {
                 crate::chat_db::history::build_wire(
                     conn,
@@ -420,19 +494,26 @@ pub async fn send_chat_message(
                     chars_per_token,
                 )
             });
-            let (wire, info) = tokio::select! {
-                _ = crate::chat_request::cancelled(&mut registration.cancel) => {
-                    let _ = on_event.send(ChatStreamEvent::Error {
-                        error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
-                    });
-                    return Ok(());
-                }
-                built = build => built?,
+            let (wire, info) = match clm_built {
+                Some(built) => built,
+                None => tokio::select! {
+                    _ = crate::chat_request::cancelled(&mut registration.cancel) => {
+                        let _ = on_event.send(ChatStreamEvent::Error {
+                            error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                        });
+                        return Ok(());
+                    }
+                    built = build => built?,
+                },
             };
-            if info.trimmed || info.compacted > 0 {
+            if info.trimmed || info.outdated > 0 {
                 eprintln!(
-                    "context budget: ~{}/{} tokens (history ~{}), {} compacted, {} oldest turn(s) omitted",
-                    info.estimated_tokens, budget, info.full_tokens, info.compacted, info.dropped_turns
+                    "context budget: ~{}/{} tokens (history ~{}), {} outdated replaced, {} oldest turn(s) omitted",
+                    info.estimated_tokens,
+                    clm_budget.filter(|_| clm_used).unwrap_or(budget),
+                    info.full_tokens,
+                    info.outdated,
+                    info.dropped_turns
                 );
             }
             wire.into_iter()
@@ -461,7 +542,7 @@ pub async fn send_chat_message(
         0,
         WireChatMessage {
             role: "system".to_string(),
-            content: serde_json::Value::String(system_prompt),
+            content: serde_json::Value::String(request_system_prompt(system_prompt, clm_prompt, clm_used)),
             tool_calls: None,
             tool_call_id: None,
             other: Default::default(),
@@ -943,7 +1024,7 @@ pub mod reply_reserve {
 }
 
 /// How much of the model's context the chat's next request would use: the
-/// history as it would be sent (after compaction and trimming), plus the
+/// history as it would be sent (after trimming), plus the
 /// system prompt and `extra_chars` (tool schemas and project context, which
 /// the frontend knows). Estimated, with the model's learned ratio.
 #[derive(Serialize)]
@@ -953,11 +1034,12 @@ pub struct ContextEstimate {
     prompt_tokens: usize,
     /// The history alone, as sent.
     history_tokens: usize,
-    /// The history before anything was compacted or trimmed.
+    /// The history before anything was replaced or trimmed.
     full_history_tokens: usize,
     /// Kept free for the reply, its reasoning included (`reply_reserve`).
     reply_reserve_tokens: usize,
-    compacted: usize,
+    /// Out-of-date messages replaced with a note.
+    outdated: usize,
     dropped_turns: usize,
 }
 
@@ -1005,7 +1087,7 @@ pub async fn chat_context_estimate(
         history_tokens: info.estimated_tokens,
         full_history_tokens: info.full_tokens,
         reply_reserve_tokens: reply,
-        compacted: info.compacted,
+        outdated: info.outdated,
         dropped_turns: info.dropped_turns,
     })
 }
@@ -1353,5 +1435,19 @@ mod reasoning_tests {
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning"]).await;
         assert!(ok);
         assert_eq!(learned.unwrap().unresolved, ["reasoning_effort", "reasoning"]);
+    }
+}
+
+#[cfg(test)]
+mod context_mode_tests {
+    use super::request_system_prompt;
+
+    #[test]
+    fn the_clm_prompt_only_goes_with_a_clm_history() {
+        let clm = || Some("plain\n\n## Your context is a file".to_string());
+        assert_eq!(request_system_prompt("plain".into(), clm(), true), "plain\n\n## Your context is a file");
+        // CLM failed partway: the request is a plain trimming request.
+        assert_eq!(request_system_prompt("plain".into(), clm(), false), "plain");
+        assert_eq!(request_system_prompt("plain".into(), None, false), "plain");
     }
 }

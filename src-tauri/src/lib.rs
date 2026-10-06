@@ -18,6 +18,7 @@ mod filesystem;
 mod terminal;
 mod typings;
 mod vfs;
+mod clm;
 mod git;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -152,6 +153,16 @@ pub fn run() {
             vfs::vfs_set_history_limits,
             vfs::vfs_subscribe,
             vfs::vfs_unsubscribe,
+            clm::clm_status,
+            clm::clm_set_mode,
+            clm::clm_reset,
+            clm::clm_list_revisions,
+            clm::clm_read_revision,
+            clm::clm_restore_revision,
+            clm::clm_tool_read,
+            clm::clm_tool_edit,
+            clm::clm_tool_write,
+            clm::clm_recall_hint,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

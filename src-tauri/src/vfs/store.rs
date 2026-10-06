@@ -1283,6 +1283,15 @@ impl VirtualFs {
         Ok(attr)
     }
 
+    /// Replaces the history of the file at `path` with saved revisions
+    /// (see `Histories::import`).
+    pub fn import_history(&self, path: &str, revisions: Vec<(u64, Vec<u8>, u64, Source)>) -> VfsResult<()> {
+        let ino = self.resolve(path)?;
+        let normalized = components(path).collect::<Vec<_>>().join("/");
+        self.tree_mut().history.import(ino, &normalized, revisions);
+        Ok(())
+    }
+
     pub fn history_limits(&self) -> HistoryLimits {
         self.tree().history.limits()
     }

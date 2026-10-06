@@ -135,6 +135,39 @@ ALTER TABLE projects ADD COLUMN git_subpath TEXT;
 INSERT INTO project_paths (project_id, path, last_opened_at) SELECT id, path, last_opened_at FROM projects;
 "#;
 
+/// Context management per chat (src/clm): the mode (NULL until chosen:
+/// "trimming" or "clm"), and for Context Language Models the model's
+/// accepted context (`projection`, covering stored messages up to
+/// `anchor_id`), what was last written to its context file, and the file's
+/// revisions, which outlive the in-memory virtual volume.
+const SCHEMA_V5: &str = r#"
+ALTER TABLE dialogs ADD COLUMN context_mode TEXT;
+
+CREATE TABLE clm_state (
+  dialog_id          TEXT PRIMARY KEY REFERENCES dialogs (id) ON DELETE CASCADE,
+  anchor_id          TEXT,
+  rendered_anchor_id TEXT,
+  rendered_revision  INTEGER,
+  tokens             INTEGER NOT NULL DEFAULT 0,
+  budget             INTEGER NOT NULL DEFAULT 0,
+  nudged             TEXT,
+  updated_at         INTEGER NOT NULL,
+  projection         TEXT,
+  rendered_messages  TEXT,
+  rendered           TEXT
+) STRICT;
+
+CREATE TABLE clm_revisions (
+  dialog_id  TEXT NOT NULL REFERENCES dialogs (id) ON DELETE CASCADE,
+  number     INTEGER NOT NULL,
+  kind       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  tokens     INTEGER NOT NULL,
+  content    TEXT NOT NULL,
+  PRIMARY KEY (dialog_id, number)
+) STRICT;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -174,6 +207,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", 4)?;
         tx.commit()?;
     }
+    if version < 5 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V5)?;
+        tx.pragma_update(None, "user_version", 5)?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -199,7 +238,7 @@ mod tests {
         migrate(&mut conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         let project: Option<String> =
             conn.query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| r.get(0)).unwrap();
         assert_eq!(project, None);
