@@ -19,7 +19,7 @@ fn file_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a text file from the open project, optionally a specific 1-indexed inclusive line range. Full-file reads are truncated past ~20,000 characters — request a line range for large files.",
+                "description": "Read a text file from the open project, optionally a specific 1-indexed inclusive line range. A file over ~20,000 characters isn't returned whole: you get its first lines and a map of its declarations with their line numbers, then read the part you need by line range. A range over ~20,000 characters stops early and says where to continue.",
                 "parameters": {
                     "type": "object",
                     "properties": {

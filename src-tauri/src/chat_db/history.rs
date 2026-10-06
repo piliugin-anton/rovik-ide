@@ -165,6 +165,8 @@ struct Event {
     range: Option<(u64, u64)>,
     command: Option<String>,
     ok: bool,
+    /// A read that showed only part of what it asked for (read_file.rs).
+    partial: bool,
 }
 
 fn norm_path(p: &str) -> String {
@@ -236,6 +238,7 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
                 },
                 command: args.get("command").and_then(|c| c.as_str()).map(|c| c.trim().to_string()),
                 ok: !m.text.starts_with("Error:"),
+                partial: m.text.starts_with(crate::read_file::PARTIAL_PREFIX),
             })
         })
         .collect();
@@ -250,10 +253,12 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
         let new_text = match e.name.as_str() {
             // A read is out of date once the file was read again (covering
             // it) or changed. Not before: it's what the model knows of it.
+            // A partial read (a large file's map, a range cut short) covers
+            // nothing: it doesn't hold what it asked for.
             "read_file" if e.ok => {
                 let path = e.path.as_deref().unwrap_or_default();
                 let reread = later.iter().any(|l| {
-                    l.ok && l.name == "read_file" && l.path.as_deref() == Some(path) && covers(l.range, e.range)
+                    l.ok && !l.partial && l.name == "read_file" && l.path.as_deref() == Some(path) && covers(l.range, e.range)
                 });
                 let edited = later.iter().any(|l| {
                     l.ok && (l.name == "edit_file" || l.name == "write_file") && l.path.as_deref() == Some(path)
@@ -968,6 +973,23 @@ mod tests {
         }
         let (out, _) = fit_with(history, 20_000, generous(false));
         assert_eq!(out[2].text.len(), 3_000, "still the model's only copy of that file");
+    }
+
+    #[test]
+    fn a_partial_read_doesnt_replace_what_it_didnt_show() {
+        let mut history = vec![msg("user", "q")];
+        history.push(call_with("ra", "read_file", json!({ "path": "src/big.ts", "start_line": 900, "end_line": 960 })));
+        history.push(result("ra", &"a".repeat(3_000)));
+        let overview = format!("{}src/big.ts has 4000 lines…]\n{}", crate::read_file::PARTIAL_PREFIX, "m".repeat(3_000));
+        history.push(call_with("rb", "read_file", json!({ "path": "src/big.ts" })));
+        history.push(result("rb", &overview));
+        for i in 0..16 {
+            let id = format!("o{i}");
+            history.push(call_with(&id, "read_file", json!({ "path": format!("src/f{i}.ts") })));
+            history.push(result(&id, &"y".repeat(3_000)));
+        }
+        let (out, _) = fit_with(history, 20_000, generous(false));
+        assert_eq!(out[2].text.len(), 3_000, "lines 900-960 are still the model's only copy");
     }
 
     #[test]
