@@ -170,6 +170,8 @@ export interface ToolApproval {
 export interface ToolMeta {
   /** Tool results: counts for the block header. */
   count?: number;
+  /** read_file by symbol: the lines of the declaration it found. */
+  range?: [number, number];
   pageTitle?: string;
   /** The request failed before anything was shown. */
   failure?: StoredFailure;

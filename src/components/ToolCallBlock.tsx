@@ -155,8 +155,13 @@ interface Summary {
 export function toolResultMeta(name: string, result: string): ToolMeta | undefined {
   if (isErrorResult(result)) return undefined;
   switch (name) {
-    case 'read_file':
-      return { count: countLines(result) };
+    case 'read_file': {
+      // By symbol: the header names the lines it found (read_symbol.rs).
+      const found = result.match(/^\[Symbol read: .*?, lines (\d+)-(\d+) of /);
+      return found
+        ? { count: countLines(result), range: [Number(found[1]), Number(found[2])] }
+        : { count: countLines(result) };
+    }
     case 'list_dir':
       return { count: result.startsWith('(empty') ? 0 : countLines(result) };
     case 'search_code': {
@@ -191,11 +196,17 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
     case 'read_file': {
       const start = num(args.start_line);
       const end = num(args.end_line);
+      const symbol = str(args.symbol)?.trim();
+      const found = meta?.range;
       const range =
         start !== undefined || end !== undefined
           ? `lines ${start ?? 1}–${end ?? 'end'}`
-          : undefined;
-      const title = `${active ? 'Reading' : 'Read'} ${path ?? 'file'}`;
+          : found
+            ? `lines ${found[0]}–${found[1]}`
+            : undefined;
+      const title = symbol
+        ? `${active ? 'Reading' : 'Read'} ${symbol} in ${path ?? 'file'}`
+        : `${active ? 'Reading' : 'Read'} ${path ?? 'file'}`;
       if (count === undefined) return { title, meta: range };
       const lines = plural(count, 'line');
       return { title, meta: range ? `${range}, ${lines}` : lines };
@@ -477,7 +488,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   /** Where to open the file: a known line, else code to find in it. */
   const openTarget = (): { line?: number; snippet?: string } => {
     const a = args();
-    const start = lineArg(a.start_line);
+    const start = lineArg(a.start_line) ?? resultMeta()?.range?.[0];
     if (start !== undefined) return { line: start };
     if (props.toolCall.name === 'edit_file') {
       const landed = editLandedLine();

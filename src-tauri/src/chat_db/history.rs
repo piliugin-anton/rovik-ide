@@ -228,11 +228,16 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
             let (name, args) = calls.get(m.tool_call_id.as_ref()?)?;
             let start = line_arg(args, "start_line");
             let end = line_arg(args, "end_line");
+            // A read by symbol holds the lines its result names: not the
+            // whole file. (One that names none, an error or a partial
+            // read, covers nothing below.)
+            let by_symbol = args.get("symbol").and_then(|s| s.as_str()).is_some_and(|s| !s.trim().is_empty());
             Some(Event {
                 at,
                 name: name.clone(),
                 path: args.get("path").and_then(|p| p.as_str()).map(norm_path),
                 range: match (start, end) {
+                    _ if by_symbol => Some(crate::read_symbol::covered_lines(&m.text).unwrap_or((0, 0))),
                     (None, None) => None,
                     (s, e) => Some((s.unwrap_or(1), e.unwrap_or(u64::MAX))),
                 },
@@ -990,6 +995,44 @@ mod tests {
         }
         let (out, _) = fit_with(history, 20_000, generous(false));
         assert_eq!(out[2].text.len(), 3_000, "lines 900-960 are still the model's only copy");
+    }
+
+    #[test]
+    fn a_symbol_read_covers_only_its_lines() {
+        // Lines 1-50 read, then one function (lines 120-160) by symbol: the
+        // first read isn't replaced, the symbol read didn't cover it.
+        let mut history = vec![msg("user", "q")];
+        history.push(call_with("ra", "read_file", json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 })));
+        history.push(result("ra", &"a".repeat(3_000)));
+        history.push(call_with("rs", "read_file", json!({ "path": "src/a.rs", "symbol": "Parser::parse" })));
+        history.push(result("rs", &format!("[Symbol read: Parser > parse, lines 120-160 of src/a.rs]\n{}", "s".repeat(3_000))));
+        history.extend(reads(16, "src/other.rs", 3_000));
+        let (out, _) = fit_with(history, 20_000, generous(false));
+        assert_eq!(out[2].text.len(), 3_000, "lines 1-50 are still the model's only copy");
+    }
+
+    #[test]
+    fn a_later_read_covering_a_symbol_read_replaces_it() {
+        let mut history = vec![msg("user", "q")];
+        history.push(call_with("rs", "read_file", json!({ "path": "src/a.rs", "symbol": "parse" })));
+        history.push(result("rs", &format!("[Symbol read: parse, lines 120-160 of src/a.rs]\n{}", "s".repeat(3_000))));
+        history.push(call_with("rr", "read_file", json!({ "path": "src/a.rs", "start_line": 100, "end_line": 200 })));
+        history.push(result("rr", &"r".repeat(3_000)));
+        history.extend(reads(16, "src/other.rs", 3_000));
+        let (out, _) = fit_with(history, 20_000, generous(false));
+        assert!(out[2].text.starts_with("[Read src/a.rs lines 120-160 here"), "{}", out[2].text);
+    }
+
+    #[test]
+    fn a_symbol_read_that_found_nothing_covers_nothing() {
+        let mut history = vec![msg("user", "q")];
+        history.push(call_with("ra", "read_file", json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 })));
+        history.push(result("ra", &"a".repeat(3_000)));
+        history.push(call_with("rs", "read_file", json!({ "path": "src/a.rs", "symbol": "nope" })));
+        history.push(result("rs", "No declaration \"nope\" in src/a.rs."));
+        history.extend(reads(16, "src/other.rs", 3_000));
+        let (out, _) = fit_with(history, 20_000, generous(false));
+        assert_eq!(out[2].text.len(), 3_000);
     }
 
     #[test]

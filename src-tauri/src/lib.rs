@@ -7,6 +7,7 @@ mod agent_run;
 mod atomic_file;
 mod edit_file;
 mod read_file;
+mod read_symbol;
 mod outline;
 mod repo_map;
 mod lsp;
