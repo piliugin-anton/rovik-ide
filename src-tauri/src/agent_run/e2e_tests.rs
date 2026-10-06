@@ -1438,3 +1438,49 @@ async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skippe
     assert_eq!(record["checks"][0]["status"], "skipped");
     assert_eq!(record["checks"][0]["reason"], "not in your allowed commands");
 }
+
+#[tokio::test]
+async fn a_model_switched_after_a_reply_answers_the_next_message() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("From A."), Reply::Text("From B.")]).await;
+    let with_model = |request: &mut StartRequest, model: &str| {
+        request.profile.id = format!("p::{model}");
+        request.profile.label = format!("Test/{model}");
+        request.profile.model = model.into();
+    };
+
+    let mut first = h.request(&url, Harness::send("Hi"), quiet_permissions());
+    with_model(&mut first, "a");
+    first.options = effort("high");
+    h.start(first).await;
+    assert_eq!(h.run_end().await, "done");
+
+    // The chat's model is switched once A has answered; each model has its own effort.
+    let mut second = h.request(&url, Harness::send("Again"), quiet_permissions());
+    with_model(&mut second, "b");
+    second.options = effort("low");
+    let run = h.start(second).await.expect("the chat isn't still busy with A's run");
+    let ended = h.wait_for("B's run ends", |e| e["type"] == "runEnded" && e["runId"] == run.as_str()).await;
+    assert_eq!(ended["outcome"], "done");
+
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["model"], "a");
+    assert_eq!(requests[0]["reasoning_effort"], "high");
+    assert_eq!(requests[1]["model"], "b");
+    assert_eq!(requests[1]["reasoning_effort"], "low");
+    // B is sent the whole chat, A's reply included.
+    let history: Vec<&str> = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] != "system")
+        .filter_map(|m| m["content"].as_str())
+        .collect();
+    assert!(history.iter().any(|c| c.contains("From A.")), "{history:?}");
+    assert!(history.last().unwrap().contains("Again"), "{history:?}");
+
+    let messages = h.messages().await;
+    assert_eq!(roles(&messages), ["user", "assistant", "user", "assistant"]);
+    assert_eq!(messages[3].content, "From B.");
+}
