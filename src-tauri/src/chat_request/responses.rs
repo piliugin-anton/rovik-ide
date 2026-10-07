@@ -14,7 +14,7 @@
 use super::{classify_body_error, ChatError, ErrorKind, ReplyParser};
 use crate::agent::ChatStreamEvent;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -61,6 +61,24 @@ static ROUTES: LazyLock<Mutex<HashMap<String, Api>>> = LazyLock::new(Default::de
 
 fn key(chat_url: &str, model: &str) -> String {
     format!("{chat_url}|{model}")
+}
+
+/// Models seen labelling their messages with a `phase`, by Responses URL
+/// and model: their earlier replies are sent back labelled too.
+static PHASES: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+pub fn phase_key(responses_url: &str, model: &str) -> String {
+    key(responses_url, model)
+}
+
+pub fn note_phases(phase_key: &str) {
+    if let Ok(mut phases) = PHASES.lock() {
+        phases.insert(phase_key.to_string());
+    }
+}
+
+pub fn uses_phases(phase_key: &str) -> bool {
+    PHASES.lock().is_ok_and(|p| p.contains(phase_key))
 }
 
 /// The route this model was found to work on since the app started.
@@ -202,7 +220,13 @@ fn is_empty(content: &Value) -> bool {
 /// A chat completions request body as a Responses API one. Nothing is
 /// stored with the provider (`store: false`): the whole history is sent
 /// each time, as with chat completions.
-pub fn request_body(chat: &Value) -> Value {
+///
+/// `phases`: the model labels its messages (GPT-5.3 Codex and later), and
+/// expects its earlier ones back labelled: text sent with tool calls is
+/// `commentary`, any other reply its `final_answer`. Its commentary itself
+/// isn't stored as part of the reply (it's shown with the reasoning), so
+/// it isn't sent back, like the reasoning.
+pub fn request_body(chat: &Value, phases: bool) -> Value {
     let mut instructions: Vec<String> = Vec::new();
     let mut input: Vec<Value> = Vec::new();
     for message in chat.get("messages").and_then(|m| m.as_array()).into_iter().flatten() {
@@ -224,10 +248,16 @@ pub fn request_body(chat: &Value) -> Value {
             }
             _ => {
                 let assistant = role == "assistant";
+                let calls = message.get("tool_calls").and_then(|c| c.as_array());
                 if !is_empty(content) {
-                    input.push(json!({ "role": role, "content": content_of(content, assistant) }));
+                    let mut item = json!({ "role": role, "content": content_of(content, assistant) });
+                    if assistant && phases {
+                        let with_calls = calls.is_some_and(|c| !c.is_empty());
+                        item["phase"] = json!(if with_calls { "commentary" } else { "final_answer" });
+                    }
+                    input.push(item);
                 }
-                for call in message.get("tool_calls").and_then(|c| c.as_array()).into_iter().flatten() {
+                for call in calls.into_iter().flatten() {
                     input.push(json!({
                         "type": "function_call",
                         "call_id": call.get("id").cloned().unwrap_or(json!("")),
@@ -309,9 +339,20 @@ impl ReplyParser {
         value: &Value,
         emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
     ) -> Result<bool, ChatError> {
-        match str_at(value, "type") {
+        let kind = str_at(value, "type");
+        match kind {
+            // Commentary (`phase: "commentary"`: "Checking how the modes
+            // differ.", written between tool calls) isn't the reply: it's
+            // shown with the reasoning.
             "response.output_text.delta" | "response.refusal.delta" => {
-                self.feed(&delta(json!({ "content": str_at(value, "delta") })), emit)?;
+                let index = value.get("output_index").and_then(|i| i.as_u64());
+                let text = str_at(value, "delta");
+                if index.is_some_and(|i| self.commentary.contains(&i)) {
+                    self.commentary_text.push_str(text);
+                    self.feed(&delta(json!({ "reasoning_content": text })), emit)?;
+                } else {
+                    self.feed(&delta(json!({ "content": text })), emit)?;
+                }
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                 self.feed(&delta(json!({ "reasoning_content": str_at(value, "delta") })), emit)?;
@@ -324,6 +365,21 @@ impl ReplyParser {
             }
             "response.output_item.added" | "response.output_item.done" => {
                 let item = value.get("item").unwrap_or(&Value::Null);
+                if kind == "response.output_item.added" && str_at(item, "type") == "message" {
+                    if let Some(phase) = item.get("phase").and_then(|p| p.as_str()) {
+                        if let Some(key) = &self.phase_key {
+                            note_phases(key);
+                        }
+                        let index = value.get("output_index").and_then(|i| i.as_u64()).unwrap_or(0);
+                        if phase == "commentary" && !self.commentary.contains(&index) {
+                            self.commentary.push(index);
+                            // Apart from the reasoning before it.
+                            if self.reasoning_len > 0 {
+                                self.feed(&delta(json!({ "reasoning_content": "\n\n" })), emit)?;
+                            }
+                        }
+                    }
+                }
                 if str_at(item, "type") == "function_call" {
                     let index = value.get("output_index").and_then(|i| i.as_u64()).unwrap_or(0);
                     // `call_id` is what the result is sent back with.
@@ -371,6 +427,11 @@ impl ReplyParser {
                 } else {
                     "stop".to_string()
                 });
+                // Nothing but commentary: that's the reply, then.
+                if !self.visible() && !self.commentary_text.is_empty() {
+                    let text = std::mem::take(&mut self.commentary_text);
+                    self.feed(&delta(json!({ "content": text })), emit)?;
+                }
                 return Ok(true);
             }
             "response.failed" => {
@@ -410,10 +471,17 @@ impl ReplyParser {
         for (index, item) in body.get("output").and_then(|o| o.as_array()).into_iter().flatten().enumerate() {
             match str_at(item, "type") {
                 "message" => {
+                    self.feed_responses(
+                        &json!({ "type": "response.output_item.added", "output_index": index, "item": item }),
+                        emit,
+                    )?;
                     for part in item.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
                         let text = part.get("text").or_else(|| part.get("refusal")).and_then(|t| t.as_str());
                         if let Some(text) = text {
-                            self.feed_responses(&json!({ "type": "response.output_text.delta", "delta": text }), emit)?;
+                            self.feed_responses(
+                                &json!({ "type": "response.output_text.delta", "output_index": index, "delta": text }),
+                                emit,
+                            )?;
                         }
                     }
                 }
@@ -478,7 +546,7 @@ mod tests {
                 { "role": "assistant", "content": "Done." }
             ]
         });
-        let body = request_body(&chat);
+        let body = request_body(&chat, false);
         assert_eq!(body["instructions"], "Be useful.");
         assert_eq!(body["max_output_tokens"], 1000);
         assert_eq!(body["reasoning"], json!({ "effort": "high" }));
@@ -505,7 +573,7 @@ mod tests {
 
     #[test]
     fn reasoning_off_is_effort_none() {
-        let body = request_body(&json!({ "model": "m", "messages": [], "reasoning": { "enabled": false } }));
+        let body = request_body(&json!({ "model": "m", "messages": [], "reasoning": { "enabled": false } }), false);
         assert_eq!(body["reasoning"], json!({ "effort": "none" }));
     }
 
@@ -547,6 +615,93 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, ChatStreamEvent::Reasoning { content } if content == "Thinking")));
         assert!(events.iter().any(|e| matches!(e,
             ChatStreamEvent::Finished { finish_reason: Some(r), usage: Some(_) } if r == "tool_calls")));
+    }
+
+    fn text_of_events(events: &[ChatStreamEvent]) -> (String, String) {
+        let mut reply = String::new();
+        let mut reasoning = String::new();
+        for e in events {
+            match e {
+                ChatStreamEvent::Delta { content } => reply.push_str(content),
+                ChatStreamEvent::Reasoning { content } => reasoning.push_str(content),
+                _ => {}
+            }
+        }
+        (reply, reasoning)
+    }
+
+    #[test]
+    fn commentary_goes_with_the_reasoning_not_the_reply() {
+        let key = phase_key("https://phases.test/v1/responses", "gpt-5.5");
+        let mut parser = ReplyParser { phase_key: Some(key.clone()), ..Default::default() };
+        let mut events = Vec::new();
+        for event in [
+            json!({ "type": "response.reasoning_summary_text.delta", "output_index": 0, "delta": "Plan" }),
+            json!({ "type": "response.output_item.added", "output_index": 1,
+                    "item": { "type": "message", "role": "assistant", "phase": "commentary", "content": [] } }),
+            json!({ "type": "response.output_text.delta", "output_index": 1, "delta": "Checking how modes differ." }),
+            json!({ "type": "response.output_item.added", "output_index": 2,
+                    "item": { "type": "function_call", "call_id": "c", "name": "search_code", "arguments": "{}" } }),
+            json!({ "type": "response.completed", "response": {} }),
+        ] {
+            parser.feed_responses(&event, &mut |e| events.push(e)).unwrap();
+        }
+        parser.finish(&mut |e| events.push(e)).unwrap();
+        let (reply, reasoning) = text_of_events(&events);
+        assert_eq!(reply, "");
+        assert_eq!(reasoning, "Plan\n\nChecking how modes differ.");
+        assert!(uses_phases(&key));
+
+        // The final answer is the reply.
+        let (_, events, _) = feed_all(&[
+            json!({ "type": "response.output_item.added", "output_index": 0,
+                    "item": { "type": "message", "role": "assistant", "phase": "final_answer", "content": [] } }),
+            json!({ "type": "response.output_text.delta", "output_index": 0, "delta": "No: Trimming doesn't use TASK.md." }),
+        ]);
+        assert_eq!(text_of_events(&events).0, "No: Trimming doesn't use TASK.md.");
+    }
+
+    #[test]
+    fn a_reply_of_only_commentary_is_kept_as_the_reply() {
+        let (ended, mut events, mut parser) = feed_all(&[
+            json!({ "type": "response.output_item.added", "output_index": 0,
+                    "item": { "type": "message", "phase": "commentary", "content": [] } }),
+            json!({ "type": "response.output_text.delta", "output_index": 0, "delta": "Done." }),
+            json!({ "type": "response.completed", "response": {} }),
+        ]);
+        assert!(ended.unwrap());
+        parser.finish(&mut |e| events.push(e)).unwrap();
+        assert_eq!(text_of_events(&events).0, "Done.");
+    }
+
+    #[test]
+    fn complete_responses_split_commentary_too() {
+        let body = json!({ "status": "completed", "output": [
+            { "type": "message", "phase": "commentary", "content": [{ "type": "output_text", "text": "Looking." }] },
+            { "type": "message", "phase": "final_answer", "content": [{ "type": "output_text", "text": "Answer." }] }
+        ] });
+        let mut parser = ReplyParser::default();
+        let mut events = Vec::new();
+        parser.feed_complete_responses(&body, &mut |e| events.push(e)).unwrap();
+        assert_eq!(text_of_events(&events), ("Answer.".to_string(), "Looking.".to_string()));
+    }
+
+    #[test]
+    fn earlier_replies_are_sent_back_with_their_phase() {
+        let chat = json!({ "model": "m", "messages": [
+            { "role": "user", "content": "Q" },
+            { "role": "assistant", "content": "Let me look.", "tool_calls": [
+                { "id": "c", "type": "function", "function": { "name": "f", "arguments": "{}" } }
+            ] },
+            { "role": "tool", "tool_call_id": "c", "content": "r" },
+            { "role": "assistant", "content": "A." }
+        ] });
+        let input = request_body(&chat, true)["input"].as_array().unwrap().clone();
+        assert_eq!(input[1]["phase"], "commentary");
+        assert_eq!(input[4]["phase"], "final_answer");
+        assert!(input[0].get("phase").is_none(), "never on user messages");
+        let plain = request_body(&chat, false)["input"].as_array().unwrap().clone();
+        assert!(plain.iter().all(|i| i.get("phase").is_none()));
     }
 
     #[test]
