@@ -171,7 +171,7 @@ interface GitDirNode {
 }
 
 type GitTreeRow =
-  | { kind: 'dir'; depth: number; node: GitDirNode }
+  | { kind: 'dir'; depth: number; name: string; node: GitDirNode }
   | { kind: 'file'; depth: number; name: string; file: GitFile };
 
 const asDirRow = (r: GitTreeRow) => (r.kind === 'dir' ? r : undefined);
@@ -209,8 +209,16 @@ function buildGitTree(files: GitFile[]): GitDirNode {
 function flattenGitTree(root: GitDirNode, collapsed: Set<string>): GitTreeRow[] {
   const rows: GitTreeRow[] = [];
   const walk = (node: GitDirNode, depth: number) => {
-    for (const dir of [...node.dirs.values()].sort((a, b) => byName(a.name, b.name))) {
-      rows.push({ kind: 'dir', depth, node: dir });
+    for (const top of [...node.dirs.values()].sort((a, b) => byName(a.name, b.name))) {
+      // A chain of folders that each hold only one subfolder (and no files)
+      // shows as one row, `src/lib/lsp`, standing for its deepest folder.
+      let dir = top;
+      let name = top.name;
+      while (dir.files.length === 0 && dir.dirs.size === 1) {
+        dir = dir.dirs.values().next().value!;
+        name += `/${dir.name}`;
+      }
+      rows.push({ kind: 'dir', depth, name, node: dir });
       if (!collapsed.has(dir.path)) walk(dir, depth + 1);
     }
     const files = node.files.map((file) => ({ file, name: file.path.split('/').pop()! }));
@@ -600,7 +608,7 @@ export function GitPanel(props: GitPanelProps) {
                                   <span class="tree-row-icon">
                                     <FolderIcon open={open()} />
                                   </span>
-                                  <span class="tree-row-name">{dir().name}</span>
+                                  <span class="tree-row-name">{dirRow().name}</span>
                                   <span
                                     class="git-dir-count"
                                     title={`${dir().count} changed file${dir().count === 1 ? '' : 's'}`}
