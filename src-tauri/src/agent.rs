@@ -1,3 +1,4 @@
+use crate::chat_request::{responses, Api};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
@@ -192,6 +193,12 @@ pub fn apply_reasoning(body: &mut serde_json::Value, effort: ReasoningEffort, fo
 /// (`stream_options.include_usage`, see `stream_usage`), dropped the same way
 /// if the provider rejects it.
 ///
+/// The API route is found here too. `url` is the chat completions URL, where
+/// every model starts; a refusal that points at OpenAI's Responses API
+/// (`responses::points_to_responses`: "only supported in v1/responses", or
+/// no chat completions route at all) sends the request to `/responses`,
+/// translated, and a model that works there is remembered on it.
+///
 /// Also returns what was learned, when reasoning fields were sent at all.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_with_reasoning(
@@ -212,32 +219,61 @@ pub async fn run_with_reasoning(
     let mut ask_usage = streaming && stream_usage::wanted(url);
     // Dropped after a 400 naming nothing: only blamed if that then works.
     let mut usage_stripped_blindly = false;
+    let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("");
+    let responses_url = responses::responses_url(url);
+    let mut api = match responses_url {
+        Some(_) => responses::remembered(url, model),
+        None => Api::ChatCompletions,
+    };
+    // The chat completions refusal that moved the request to `/responses`:
+    // reported instead if there is no `/responses` either.
+    let mut moved_from: Option<crate::chat_request::ChatError> = None;
     let result = loop {
         let mut attempt_body = body.clone();
         if let Some(effort) = effort {
             apply_reasoning(&mut attempt_body, effort, &formats);
         }
-        if ask_usage {
+        // The Responses API always reports usage.
+        let sends_usage = ask_usage && api == Api::ChatCompletions;
+        if sends_usage {
             attempt_body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
+        let (target, attempt_body) = match (api, responses_url.as_deref()) {
+            (Api::Responses, Some(responses_url)) => (responses_url, responses::request_body(&attempt_body)),
+            _ => (url, attempt_body),
+        };
         let spec = crate::chat_request::RequestSpec {
             client,
-            url,
+            url: target,
             api_key,
             body: &attempt_body,
             streaming,
             limits,
+            api,
         };
         let result = crate::chat_request::run(&spec, cancel, emit).await;
         match &result {
+            Err(e) if api == Api::ChatCompletions && responses_url.is_some() && responses::points_to_responses(e) => {
+                api = Api::Responses;
+                moved_from = Some(e.clone());
+                continue;
+            }
+            Err(e) if e.kind == crate::chat_request::ErrorKind::NotFound && !e.partial && moved_from.is_some() => {
+                break Err(moved_from.take().expect("checked above"));
+            }
             Err(e) if e.kind == crate::chat_request::ErrorKind::BadRequest && !e.partial => {
                 let text = format!("{} {}", e.message, e.details.as_deref().unwrap_or(""));
-                if ask_usage && (mentions_field(&text, "stream_options") || mentions_field(&text, "include_usage")) {
+                if sends_usage && (mentions_field(&text, "stream_options") || mentions_field(&text, "include_usage")) {
                     ask_usage = false;
                     stream_usage::rejected(url);
                     continue;
                 }
-                let named: Vec<String> = formats.iter().filter(|f| mentions_field(&text, f)).cloned().collect();
+                // On `/responses`, both effort forms are `reasoning.effort`.
+                let names = |f: &String| {
+                    mentions_field(&text, f)
+                        || (api == Api::Responses && f != "chat_template_kwargs" && mentions_field(&text, "reasoning"))
+                };
+                let named: Vec<String> = formats.iter().filter(|f| names(f)).cloned().collect();
                 if !named.is_empty() {
                     formats.retain(|f| !named.contains(f));
                     rejected.extend(named);
@@ -249,7 +285,7 @@ pub async fn run_with_reasoning(
                     stripped_blindly = std::mem::take(&mut formats);
                     continue;
                 }
-                if ask_usage {
+                if sends_usage {
                     ask_usage = false;
                     usage_stripped_blindly = true;
                     continue;
@@ -259,6 +295,10 @@ pub async fn run_with_reasoning(
             _ => break result,
         }
     };
+    if result.is_ok() && moved_from.is_some() {
+        eprintln!("chat: {model} is served on the Responses API ({url} refused it); using /responses for it");
+        responses::remember(url, model, Api::Responses);
+    }
     if usage_stripped_blindly && result.is_ok() {
         stream_usage::rejected(url);
     }
@@ -1633,6 +1673,81 @@ mod reasoning_tests {
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning"]).await;
         assert!(ok);
         assert_eq!(learned.unwrap().unresolved, ["reasoning_effort", "reasoning"]);
+    }
+
+    /// Like OpenAI for a Responses-only model: `/chat/completions` refuses
+    /// it, `/responses` streams the reply (or is missing, when `responses`
+    /// is false). Returns the chat completions URL and every path asked for.
+    async fn responses_only_provider(responses: bool) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 65536];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = raw.split_whitespace().nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(path.clone());
+                let reply = if path.ends_with("/responses") && responses {
+                    let events = [
+                        r#"{"type":"response.created","response":{"status":"in_progress"}}"#,
+                        r#"{"type":"response.output_text.delta","delta":"Hi"}"#,
+                        r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}"#,
+                    ];
+                    let sse: String = events.iter().map(|e| format!("event: x\ndata: {e}\n\n")).collect();
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}")
+                } else {
+                    let msg = if path.ends_with("/responses") {
+                        "404 page not found".to_string()
+                    } else {
+                        r#"{"error":{"message":"This model is only supported in v1/responses and not in v1/chat/completions.","type":"invalid_request_error"}}"#.to_string()
+                    };
+                    format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}", msg.len())
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn a_responses_only_model_moves_to_responses_and_stays() {
+        let (url, seen) = responses_only_provider(true).await;
+        let (ok, learned) = send(&url, &["reasoning_effort"]).await;
+        assert!(ok);
+        assert_eq!(learned.unwrap().accepted, ["reasoning_effort"]);
+        let (ok, _) = send(&url, &[]).await;
+        assert!(ok);
+        assert_eq!(*seen.lock().unwrap(), ["/v1/chat/completions", "/v1/responses", "/v1/responses"]);
+    }
+
+    #[tokio::test]
+    async fn without_responses_the_chat_refusal_is_reported() {
+        let (url, seen) = responses_only_provider(false).await;
+        let client = Client::new();
+        let body = serde_json::json!({ "model": "m", "messages": [] });
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        std::mem::forget(tx);
+        let (result, _) = run_with_reasoning(
+            &client,
+            &url,
+            "k",
+            &body,
+            true,
+            crate::chat_request::Limits::default(),
+            None,
+            Vec::new(),
+            &mut rx,
+            &mut |_| {},
+        )
+        .await;
+        assert!(result.unwrap_err().message.contains("only supported in v1/responses"));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert_eq!(responses::remembered(&url, "m"), Api::ChatCompletions);
     }
 }
 

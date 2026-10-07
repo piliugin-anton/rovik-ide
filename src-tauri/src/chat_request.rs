@@ -1,6 +1,7 @@
 //! Sending one chat completion request: timeouts, retries, cancellation and
 //! typed errors. `agent::send_chat_message` builds the request body; this
-//! module runs it.
+//! module runs it, on `/chat/completions` or, for models that need it,
+//! OpenAI's Responses API (`responses`).
 //!
 //! - Every failure becomes a `ChatError` with a kind, so the UI can explain
 //!   it and offer the right action.
@@ -589,6 +590,8 @@ pub struct RequestSpec<'a> {
     pub body: &'a serde_json::Value,
     pub streaming: bool,
     pub limits: Limits,
+    /// Which API `url` and `body` are for: how the reply is read.
+    pub api: Api,
 }
 
 /// Why an attempt ended unsuccessfully, and whether anything was shown.
@@ -659,7 +662,11 @@ async fn attempt(
         let body: serde_json::Value = serde_json::from_str(&text).map_err(|_| {
             fail(ChatError::new(ErrorKind::Provider, "The provider sent a response that isn't JSON.").with_details(&text), false)
         })?;
-        let mut e = parser.feed_complete(&body, emit).and_then(|_| parser.finish(emit));
+        let fed = match spec.api {
+            Api::ChatCompletions => parser.feed_complete(&body, emit),
+            Api::Responses => parser.feed_complete_responses(&body, emit),
+        };
+        let mut e = fed.and_then(|_| parser.finish(emit));
         if let Err(err) = &mut e {
             if err.kind == ErrorKind::RateLimited && err.retry_after_ms.is_none() {
                 *err = err.clone().with_retry_after(retry_after(&headers, Some(&body)));
@@ -722,11 +729,20 @@ async fn attempt(
                     return parser.finish(emit).map_err(|e| fail(e, parser.visible()));
                 }
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else { continue };
-                if let Err(mut error) = parser.feed(&value, emit) {
-                    if error.kind == ErrorKind::RateLimited && error.retry_after_ms.is_none() {
-                        error = error.with_retry_after(retry_after(&headers, Some(&value)));
+                let fed = match spec.api {
+                    Api::ChatCompletions => parser.feed(&value, emit).map(|_| false),
+                    // Ends with an event, not [DONE].
+                    Api::Responses => parser.feed_responses(&value, emit),
+                };
+                match fed {
+                    Ok(false) => {}
+                    Ok(true) => return parser.finish(emit).map_err(|e| fail(e, parser.visible())),
+                    Err(mut error) => {
+                        if error.kind == ErrorKind::RateLimited && error.retry_after_ms.is_none() {
+                            error = error.with_retry_after(retry_after(&headers, Some(&value)));
+                        }
+                        return Err(fail(error, parser.visible()));
                     }
-                    return Err(fail(error, parser.visible()));
                 }
             }
         }
@@ -808,6 +824,9 @@ pub fn human_duration(d: Duration) -> String {
         }
     }
 }
+
+pub mod responses;
+pub use responses::Api;
 
 #[cfg(test)]
 mod tests;

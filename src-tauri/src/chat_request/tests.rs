@@ -217,7 +217,7 @@ fn fast_limits() -> Limits {
 async fn run_against(url: &str, limits: Limits, cancel_after: Option<u64>) -> (Result<(), ChatError>, Vec<ChatStreamEvent>) {
     let client = Client::new();
     let body = json!({"model":"m","messages":[]});
-    let spec = RequestSpec { client: &client, url, api_key: "k", body: &body, streaming: true, limits };
+    let spec = RequestSpec { client: &client, url, api_key: "k", body: &body, streaming: true, limits, api: Api::ChatCompletions };
     let (tx, mut rx) = watch::channel(false);
     if let Some(ms) = cancel_after {
         tokio::spawn(async move {
@@ -347,7 +347,7 @@ async fn cancel_through_the_registry_stops_a_waiting_request() {
         let client = Client::new();
         let body = json!({"model":"m","messages":[]});
         let limits = Limits { first_byte: Duration::from_secs(20), ..fast_limits() };
-        let spec = RequestSpec { client: &client, url: &url2, api_key: "k", body: &body, streaming: true, limits };
+        let spec = RequestSpec { client: &client, url: &url2, api_key: "k", body: &body, streaming: true, limits, api: Api::ChatCompletions };
         let mut registration = r2.register(Some("req-1".into()));
         let mut events = Vec::new();
         run(&spec, &mut registration.cancel, &mut |e| events.push(e)).await
