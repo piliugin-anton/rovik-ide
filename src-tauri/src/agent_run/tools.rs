@@ -81,7 +81,7 @@ fn file_tool_schemas() -> Vec<Value> {
                         "query": { "type": "string", "description": "Text to search for, or a Rust-syntax regular expression when regex is true." },
                         "regex": { "type": "boolean", "description": "Treat query as a regular expression, e.g. \"fn\\\\s+handle_\\\\w+\". Default false." },
                         "case_sensitive": { "type": "boolean", "description": "Match case exactly. Default false." },
-                        "path_glob": { "type": "string", "description": "Optional ripgrep-style globs, comma-separated. \"*.ts\" matches at any depth, \"src/**/*.rs\" is relative to the project root, a leading \"!\" excludes (e.g. \"*.ts, !*.test.ts\")." },
+                        "path_glob": { "type": "string", "description": "Optional ripgrep-style globs, comma-separated. \"*.ts\" matches at any depth, \"src/**/*.rs\" is relative to the project root, a leading \"!\" excludes (e.g. \"*.ts, !*.test.ts\"), braces list alternatives (\"src/**/*.{ts,tsx}\")." },
                         "context_lines": { "type": "integer", "description": "Lines of context before and after each match (0-5, default 0)." },
                         "max_results": { "type": "integer", "description": "Maximum number of matches to return (default 100, max 500)." }
                     },

@@ -195,6 +195,27 @@ impl Sink for Collector<'_> {
     }
 }
 
+/// A comma-separated glob list ("*.ts, !*.test.ts"). Commas inside braces
+/// belong to the glob: "src/**/*.{ts,tsx}" is one glob, not two halves.
+pub fn split_globs(list: &str) -> Vec<String> {
+    let mut globs = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in list.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                globs.push(&list[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    globs.push(&list[start..]);
+    globs.into_iter().map(str::trim).filter(|g| !g.is_empty()).map(str::to_string).collect()
+}
+
 pub fn search(root: &Path, opts: &SearchOptions, skip_name: fn(&str) -> bool) -> Result<SearchResult, String> {
     search_counting_to(root, opts, skip_name, COUNT_LIMIT)
 }
@@ -365,14 +386,7 @@ pub async fn search_in_files(
     max_results: Option<usize>,
 ) -> Result<SearchResult, String> {
     let root = std::fs::canonicalize(&root).map_err(|e| format!("{root}: {e}"))?;
-    let split = |list: Option<String>| -> Vec<String> {
-        list.unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|g| !g.is_empty())
-            .map(str::to_string)
-            .collect()
-    };
+    let split = |list: Option<String>| split_globs(&list.unwrap_or_default());
     let mut globs = split(include);
     globs.extend(split(exclude).into_iter().map(|g| format!("!{}", g.trim_start_matches('!'))));
     let opts = SearchOptions {
@@ -485,6 +499,18 @@ mod tests {
         assert_eq!(with(&["*.ts"]), ["src/app.ts", "src/deep/util.test.ts", "src/deep/util.ts"], "any depth");
         assert_eq!(with(&["src/deep/**"]), ["src/deep/util.test.ts", "src/deep/util.ts"], "relative to root");
         assert_eq!(with(&["*.ts", "!*.test.ts"]), ["src/app.ts", "src/deep/util.ts"], "exclusion");
+        assert_eq!(with(&["src/**/*.{ts,rs}", "!*.test.ts"]), ["src/app.ts", "src/deep/util.ts"], "braces");
+    }
+
+    #[test]
+    fn glob_lists_split_outside_braces_only() {
+        assert_eq!(split_globs("*.ts, !*.test.ts"), ["*.ts", "!*.test.ts"]);
+        assert_eq!(split_globs("src/**/*.{ts,tsx}"), ["src/**/*.{ts,tsx}"]);
+        assert_eq!(split_globs("{src,lib}/**/*.{ts,tsx},!*.d.ts"), ["{src,lib}/**/*.{ts,tsx}", "!*.d.ts"]);
+        assert_eq!(split_globs(" , *.rs ,"), ["*.rs"]);
+        assert!(split_globs("").is_empty());
+        // Unbalanced: kept whole, so the error names the glob as written.
+        assert_eq!(split_globs("*.{ts,tsx"), ["*.{ts,tsx"]);
     }
 
     #[test]
