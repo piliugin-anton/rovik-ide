@@ -121,7 +121,7 @@ impl ChatError {
             partial: false,
         }
     }
-    fn with_details(mut self, details: impl AsRef<str>) -> Self {
+    pub fn with_details(mut self, details: impl AsRef<str>) -> Self {
         let d: String = details.as_ref().chars().take(DETAILS_MAX_CHARS).collect();
         if !d.trim().is_empty() {
             self.details = Some(d);
@@ -358,7 +358,7 @@ pub fn classify_status(status: u16, headers: &HeaderMap, body: &str) -> ChatErro
 }
 
 /// An `{"error": …}` object inside a 200 response or a stream chunk.
-fn classify_body_error(value: &serde_json::Value) -> Option<ChatError> {
+pub fn classify_body_error(value: &serde_json::Value) -> Option<ChatError> {
     let error = value.get("error")?;
     if error.is_null() {
         return None;
@@ -734,7 +734,7 @@ async fn attempt(
     parser.finish(emit).map_err(|e| fail(e, parser.visible()))
 }
 
-fn backoff(attempt_number: u32) -> Duration {
+pub fn backoff(attempt_number: u32) -> Duration {
     let base = BACKOFF_MS[(attempt_number as usize).saturating_sub(1).min(BACKOFF_MS.len() - 1)];
     // ±20% jitter so many clients don't retry in lockstep.
     let nanos = now_epoch().subsec_nanos() as u64;
