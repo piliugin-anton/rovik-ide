@@ -117,6 +117,8 @@ export interface ContextEstimate {
   /** Out-of-date messages replaced with a note. */
   outdated: number;
   droppedTurns: number;
+  /** The CLM budget for the next request (CLM chats only). */
+  clmBudget: number | null;
 }
 
 /**

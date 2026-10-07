@@ -185,6 +185,12 @@ export default function ChatPanel(props: ChatProps) {
    */
 
   const [contextUsage, setContextUsage] = createSignal<ContextUsage | null>(null);
+  // The CLM budget the active chat's next request would get, from the
+  // model's context length as it is now (the context row shows it).
+  const [clmBudget, setClmBudget] = createSignal<{
+    dialogId: string;
+    budget: number | null;
+  } | null>(null);
 
   let isMounted = true;
   let inputTextareaRef: HTMLTextAreaElement | undefined;
@@ -297,6 +303,7 @@ export default function ChatPanel(props: ChatProps) {
           efforts(),
           chatMode(),
           permissions(),
+          contextModeFor(store.state.activeId),
         ] as const;
       },
       ([dialogId, profile]) => {
@@ -317,6 +324,7 @@ export default function ChatPanel(props: ChatProps) {
               reasoningEffort: reasoningOptions(profile)?.reasoning_effort,
             });
             if (request !== contextRequest) return;
+            setClmBudget({ dialogId, budget: estimate.clmBudget });
             const known = !!profile.contextTokens && profile.contextTokens > 0;
             setContextUsage({
               promptTokens: estimate.promptTokens,
@@ -2353,6 +2361,7 @@ export default function ChatPanel(props: ChatProps) {
         </div>
         <ContextControls
           dialogId={activeDialogId()}
+          budget={clmBudget()?.dialogId === activeDialogId() ? clmBudget()!.budget : null}
           sending={sending()}
           onOpenVirtualFiles={() => setSettingsPage('vfs')}
         />

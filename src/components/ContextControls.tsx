@@ -53,6 +53,11 @@ function closeOnOutside(root: () => HTMLElement | undefined, close: () => void) 
 
 export default function ContextControls(props: {
   dialogId: string | null;
+  /**
+   * The budget the next request would get, from the model's context length
+   * as it is now; the status only has the last request's.
+   */
+  budget: number | null;
   /** A run is going: status is refreshed when it ends. */
   sending: boolean;
   onOpenVirtualFiles: () => void;
@@ -79,6 +84,7 @@ export default function ContextControls(props: {
   );
 
   const mode = (): ContextMode => contextModeFor(props.dialogId);
+  const budget = () => props.budget ?? status()?.budget ?? 0;
   const current = () => CONTEXT_MODES.find((m) => m.id === mode()) ?? CONTEXT_MODES[0];
 
   async function refresh() {
@@ -270,7 +276,7 @@ export default function ContextControls(props: {
             title={
               status()!.revision
                 ? `The agent's context file (${status()!.path}) is at revision ${status()!.revision}, ` +
-                  `about ${status()!.tokens} of ${status()!.budget} tokens. ` +
+                  `about ${status()!.tokens} of ${budget()} tokens. ` +
                   (status()!.projected
                     ? `The agent has edited it ${status()!.edits} time(s).`
                     : 'The agent has not edited it yet.') +
@@ -280,8 +286,8 @@ export default function ContextControls(props: {
           >
             <Show when={status()!.revision} fallback="No context file yet">
               rev {status()!.revision}
-              <Show when={status()!.budget > 0}>
-                {' · '}~{short(status()!.tokens)}/{short(status()!.budget)}
+              <Show when={budget() > 0}>
+                {' · '}~{short(status()!.tokens)}/{short(budget())}
               </Show>
             </Show>
           </span>
