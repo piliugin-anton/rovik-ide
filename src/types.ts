@@ -164,6 +164,14 @@ export interface ToolApproval {
   /** "By AI": the model that decided. */
   model?: string;
   reason?: string;
+  /** Typed-input reviewer (Jev): each check and its probability, 0..1. */
+  checks?: ReviewCheck[];
+}
+
+/** One check a typed-input reviewer scored. */
+export interface ReviewCheck {
+  label: string;
+  score: number;
 }
 
 /** Small per-message metadata, stored with the message. */
