@@ -317,11 +317,17 @@ impl<R: Runtime> Run<R> {
 
             results[i].status = "running";
             self.update_meta(record_id, progress(&results)).await?;
-            let outcome =
-                crate::command_tool::tool_run_command(root.into(), results[i].command.clone(), Some(CHECK_TIMEOUT_MS))
-                    .await;
+            let stop = self.stop.clone();
+            let outcome = crate::command_tool::run_command(
+                root.into(),
+                results[i].command.clone(),
+                Some(CHECK_TIMEOUT_MS),
+                move || stop.is_set(),
+            )
+            .await;
             let r = &mut results[i];
             match outcome {
+                Ok(out) if out.stopped => r.skip("stopped"),
                 Ok(out) => {
                     r.duration_ms = Some(out.duration_ms);
                     r.exit_code = Some(out.exit_code);
