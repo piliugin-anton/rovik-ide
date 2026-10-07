@@ -199,6 +199,12 @@ pub enum AgentEvent {
         unresolved: Vec<String>,
         reasons: bool,
     },
+    /// The API route a model was found to work on, to be saved with the
+    /// model in the settings (`ChatStreamEvent::ApiRoute`).
+    ApiRouteLearned {
+        profile_id: String,
+        route: String,
+    },
     /// The first reply to a sent message settled: answered (`ok`), or not,
     /// in which case the message is marked failed and its draft comes back.
     UserMessageSettled {

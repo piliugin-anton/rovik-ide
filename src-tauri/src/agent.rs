@@ -1,3 +1,4 @@
+use crate::chat_request::{responses, Api};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
@@ -61,6 +62,12 @@ pub enum ChatStreamEvent {
     /// agent's edits taken in, the revision and size it goes out with.
     ContextUpdated {
         status: crate::clm::ClmStatus,
+    },
+    /// The API route the model was found to work on ("chat_completions" or
+    /// "responses", see `chat_request::responses`), when it isn't the one
+    /// the request was given as saved: the frontend saves it with the model.
+    ApiRoute {
+        route: String,
     },
     ToolCallComplete {
         id: String,
@@ -192,6 +199,15 @@ pub fn apply_reasoning(body: &mut serde_json::Value, effort: ReasoningEffort, fo
 /// (`stream_options.include_usage`, see `stream_usage`), dropped the same way
 /// if the provider rejects it.
 ///
+/// The API route is found here too. `url` is the chat completions URL; a
+/// model starts on the route it was last found to work on (this run of the
+/// app first, then `saved_route` from its settings), else there. A refusal
+/// that suggests the other route (`responses::wrong_route`: "only supported
+/// in v1/responses", "Invalid URL (POST /v1/responses)", no such route at
+/// all) sends the request there once, translated. When that works, the
+/// model is remembered on it, and an `ApiRoute` event tells the frontend to
+/// save it if it differs from `saved_route`.
+///
 /// Also returns what was learned, when reasoning fields were sent at all.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_with_reasoning(
@@ -203,6 +219,7 @@ pub async fn run_with_reasoning(
     limits: crate::chat_request::Limits,
     effort: Option<ReasoningEffort>,
     mut formats: Vec<String>,
+    saved_route: Option<Api>,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> (Result<(), crate::chat_request::ChatError>, Option<ReasoningSupport>) {
@@ -212,32 +229,65 @@ pub async fn run_with_reasoning(
     let mut ask_usage = streaming && stream_usage::wanted(url);
     // Dropped after a 400 naming nothing: only blamed if that then works.
     let mut usage_stripped_blindly = false;
+    let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("");
+    let responses_url = responses::responses_url(url);
+    // Without a known `/responses` URL, chat completions is all there is.
+    let mut api = match responses_url {
+        Some(_) => responses::remembered(url, model).or(saved_route).unwrap_or_default(),
+        None => Api::ChatCompletions,
+    };
+    // The refusal that moved the request to the other route: reported
+    // instead if that route doesn't exist either. Moved at most once.
+    let mut moved_from: Option<crate::chat_request::ChatError> = None;
+    let mut moved = false;
     let result = loop {
         let mut attempt_body = body.clone();
         if let Some(effort) = effort {
             apply_reasoning(&mut attempt_body, effort, &formats);
         }
-        if ask_usage {
+        // The Responses API always reports usage.
+        let sends_usage = ask_usage && api == Api::ChatCompletions;
+        if sends_usage {
             attempt_body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
+        let (target, attempt_body) = match (api, responses_url.as_deref()) {
+            (Api::Responses, Some(responses_url)) => (responses_url, responses::request_body(&attempt_body)),
+            _ => (url, attempt_body),
+        };
         let spec = crate::chat_request::RequestSpec {
             client,
-            url,
+            url: target,
             api_key,
             body: &attempt_body,
             streaming,
             limits,
+            api,
         };
         let result = crate::chat_request::run(&spec, cancel, emit).await;
         match &result {
+            Err(e) if !moved && responses_url.is_some() && responses::wrong_route(e, api) => {
+                eprintln!("chat: {model} refused on {}; trying {}", api.as_str(), api.other().as_str());
+                api = api.other();
+                moved = true;
+                moved_from = Some(e.clone());
+                continue;
+            }
+            Err(e) if e.kind == crate::chat_request::ErrorKind::NotFound && !e.partial && moved_from.is_some() => {
+                break Err(moved_from.take().expect("checked above"));
+            }
             Err(e) if e.kind == crate::chat_request::ErrorKind::BadRequest && !e.partial => {
                 let text = format!("{} {}", e.message, e.details.as_deref().unwrap_or(""));
-                if ask_usage && (mentions_field(&text, "stream_options") || mentions_field(&text, "include_usage")) {
+                if sends_usage && (mentions_field(&text, "stream_options") || mentions_field(&text, "include_usage")) {
                     ask_usage = false;
                     stream_usage::rejected(url);
                     continue;
                 }
-                let named: Vec<String> = formats.iter().filter(|f| mentions_field(&text, f)).cloned().collect();
+                // On `/responses`, both effort forms are `reasoning.effort`.
+                let names = |f: &String| {
+                    mentions_field(&text, f)
+                        || (api == Api::Responses && f != "chat_template_kwargs" && mentions_field(&text, "reasoning"))
+                };
+                let named: Vec<String> = formats.iter().filter(|f| names(f)).cloned().collect();
                 if !named.is_empty() {
                     formats.retain(|f| !named.contains(f));
                     rejected.extend(named);
@@ -249,7 +299,7 @@ pub async fn run_with_reasoning(
                     stripped_blindly = std::mem::take(&mut formats);
                     continue;
                 }
-                if ask_usage {
+                if sends_usage {
                     ask_usage = false;
                     usage_stripped_blindly = true;
                     continue;
@@ -259,6 +309,15 @@ pub async fn run_with_reasoning(
             _ => break result,
         }
     };
+    if result.is_ok() && responses_url.is_some() {
+        if moved {
+            eprintln!("chat: {model} works on {}; using it from now on", api.as_str());
+            responses::remember(url, model, api);
+        }
+        if api != saved_route.unwrap_or_default() {
+            emit(ChatStreamEvent::ApiRoute { route: api.as_str().to_string() });
+        }
+    }
     if usage_stripped_blindly && result.is_ok() {
         stream_usage::rejected(url);
     }
@@ -400,6 +459,9 @@ pub struct ChatParams {
     // Context notes an earlier attempt at this turn was sent with (see
     // ChatStreamEvent::ContextNotes), carried into this one.
     pub carried_notes: Vec<String>,
+    // The API route saved with the model ("chat_completions" or
+    // "responses"), when it was found before (ChatStreamEvent::ApiRoute).
+    pub api_route: Option<String>,
 }
 
 #[tauri::command]
@@ -426,6 +488,7 @@ pub async fn send_chat_message(
     project_context: Option<String>,
     options: Option<OpenAIChatOptions>,
     context_mode: Option<String>,
+    api_route: Option<String>,
     vfs: tauri::State<'_, crate::vfs::VfsState>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
@@ -451,6 +514,7 @@ pub async fn send_chat_message(
         options,
         context_mode,
         carried_notes: Vec::new(),
+        api_route,
     };
     let mut emit = |event: ChatStreamEvent| {
         let _ = on_event.send(event);
@@ -488,6 +552,7 @@ pub async fn run_chat(
         options,
         context_mode,
         carried_notes,
+        api_route,
     } = params;
 
     let client = Client::new();
@@ -773,6 +838,7 @@ pub async fn run_chat(
         limits,
         reasoning_effort,
         reasoning_formats,
+        api_route.as_deref().and_then(Api::parse),
         cancel,
         &mut emit,
     )
@@ -1522,6 +1588,7 @@ mod reasoning_tests {
             limits,
             Some(ReasoningEffort::High),
             formats.iter().map(|s| s.to_string()).collect(),
+            None,
             &mut rx,
             &mut |e| events.push(e),
         )
@@ -1633,6 +1700,126 @@ mod reasoning_tests {
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning"]).await;
         assert!(ok);
         assert_eq!(learned.unwrap().unresolved, ["reasoning_effort", "reasoning"]);
+    }
+
+    /// A provider that serves the given routes. Like OpenAI, an unserved
+    /// `/chat/completions` says the model is "only supported in
+    /// v1/responses", an unserved `/responses` is an "Invalid URL".
+    /// Returns the chat completions URL and every path asked for.
+    async fn routed_provider(chat: bool, responses: bool) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 65536];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = raw.split_whitespace().nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(path.clone());
+                let on_responses = path.ends_with("/responses");
+                let sse = |events: &[&str]| {
+                    let sse: String = events.iter().map(|e| format!("data: {e}\n\n")).collect();
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}")
+                };
+                let reply = if on_responses && responses {
+                    sse(&[
+                        r#"{"type":"response.created","response":{"status":"in_progress"}}"#,
+                        r#"{"type":"response.output_text.delta","delta":"Hi"}"#,
+                        r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}"#,
+                    ])
+                } else if !on_responses && chat {
+                    sse(&[r#"{"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}"#, "[DONE]"])
+                } else {
+                    let msg = if on_responses {
+                        r#"{"error":{"message":"Invalid URL (POST /v1/responses)","type":"invalid_request_error"}}"#
+                    } else {
+                        r#"{"error":{"message":"This model is only supported in v1/responses and not in v1/chat/completions.","type":"invalid_request_error"}}"#
+                    };
+                    format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}", msg.len())
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (url, seen)
+    }
+
+    /// A request with the route saved for the model: its result and the
+    /// routes reported to be saved.
+    async fn send_routed(url: &str, saved: Option<Api>) -> (Result<(), crate::chat_request::ChatError>, Vec<String>) {
+        let client = Client::new();
+        let body = serde_json::json!({ "model": "m", "messages": [] });
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        std::mem::forget(tx);
+        let mut routes = Vec::new();
+        let (result, _) = run_with_reasoning(
+            &client,
+            url,
+            "k",
+            &body,
+            true,
+            crate::chat_request::Limits::default(),
+            None,
+            Vec::new(),
+            saved,
+            &mut rx,
+            &mut |e| {
+                if let ChatStreamEvent::ApiRoute { route } = e {
+                    routes.push(route);
+                }
+            },
+        )
+        .await;
+        (result, routes)
+    }
+
+    #[tokio::test]
+    async fn a_responses_only_model_moves_to_responses_and_stays() {
+        let (url, seen) = routed_provider(false, true).await;
+        let (ok, learned) = send(&url, &["reasoning_effort"]).await;
+        assert!(ok);
+        assert_eq!(learned.unwrap().accepted, ["reasoning_effort"]);
+        let (ok, _) = send(&url, &[]).await;
+        assert!(ok);
+        assert_eq!(*seen.lock().unwrap(), ["/v1/chat/completions", "/v1/responses", "/v1/responses"]);
+    }
+
+    #[tokio::test]
+    async fn the_learned_route_is_reported_until_saved() {
+        let (url, _) = routed_provider(false, true).await;
+        let (result, routes) = send_routed(&url, None).await;
+        assert!(result.is_ok());
+        assert_eq!(routes, ["responses"]);
+        // Saved: nothing more to report.
+        let (_, routes) = send_routed(&url, Some(Api::Responses)).await;
+        assert!(routes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_saved_route_that_stopped_working_is_detected_again() {
+        // Saved as Responses, but the provider only has chat completions.
+        let (url, seen) = routed_provider(true, false).await;
+        let (result, routes) = send_routed(&url, Some(Api::Responses)).await;
+        assert!(result.is_ok());
+        assert_eq!(routes, ["chat_completions"]);
+        assert_eq!(*seen.lock().unwrap(), ["/v1/responses", "/v1/chat/completions"]);
+        // Remembered: the stale saved route isn't tried again.
+        let (result, _) = send_routed(&url, Some(Api::Responses)).await;
+        assert!(result.is_ok());
+        assert_eq!(seen.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn without_either_route_the_first_refusal_is_reported() {
+        let (url, seen) = routed_provider(false, false).await;
+        let (result, routes) = send_routed(&url, None).await;
+        assert!(result.unwrap_err().message.contains("only supported in v1/responses"));
+        assert!(routes.is_empty());
+        assert_eq!(seen.lock().unwrap().len(), 2, "each route tried once");
+        assert_eq!(responses::remembered(&url, "m"), None);
     }
 }
 

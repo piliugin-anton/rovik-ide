@@ -50,7 +50,16 @@ export interface ModelProfile {
   firstByteTimeoutMs?: number;
   /** Reasoning effort support (lib/reasoning.ts). */
   reasoning: import('./lib/reasoning').ReasoningSetting;
+  /** The API route the model was found to work on, once known. */
+  apiRoute?: ApiRoute;
 }
+
+/**
+ * Which OpenAI API a model is served on: `/chat/completions`, or
+ * `/responses` for models only offered there. Detected by the backend
+ * (src-tauri/src/chat_request/responses.rs) and saved with the model.
+ */
+export type ApiRoute = 'chat_completions' | 'responses';
 
 export interface ProviderModel {
   id: string; // exactly as the API expects it, e.g. "anthropic/claude-sonnet-4.5"
@@ -63,6 +72,8 @@ export interface ProviderModel {
   firstTokenTimeoutSec?: number; // override of the 60 s first-token timeout
   /** How a reasoning effort is sent, and what's been learned (lib/reasoning.ts). */
   reasoning?: import('./lib/reasoning').ReasoningSetting;
+  /** The API route found to work (detected, not set by the user). */
+  apiRoute?: ApiRoute;
 }
 
 /** One OpenAI-compatible endpoint + credentials, with the models it serves. */
@@ -296,6 +307,8 @@ export type ChatStreamEvent =
   | { type: 'Reasoning'; content: string }
   /** Which reasoning forms the provider accepted or rejected (lib/reasoning.ts). */
   | { type: 'ReasoningSupport'; accepted: string[]; rejected: string[]; unresolved: string[] }
+  /** The API route the model was found to work on, to save with it. */
+  | { type: 'ApiRoute'; route: ApiRoute }
   | { type: 'Done' }
   /** How the reply ended (diagnostics), just before Done. */
   | { type: 'Finished'; finish_reason: string | null; usage: Record<string, unknown> | null }

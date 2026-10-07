@@ -155,6 +155,7 @@ export function resolveProfile(
     noTools: !!model.noTools,
     firstByteTimeoutMs: model.firstTokenTimeoutSec ? model.firstTokenTimeoutSec * 1000 : undefined,
     reasoning: settingOf(model),
+    apiRoute: model.apiRoute,
   };
 }
 

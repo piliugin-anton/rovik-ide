@@ -16,7 +16,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { createStore, produce } from 'solid-js/store';
-import type { ChatMessage, ModelProfile, OpenAIChatOptions } from '../types';
+import type { ApiRoute, ChatMessage, ModelProfile, OpenAIChatOptions } from '../types';
 import type { AgentPermissions } from './permissions';
 import { chatStore, type MessageRow } from './chatStore';
 import {
@@ -92,6 +92,7 @@ type AgentEvent =
       reviewed: boolean;
     }
   | ({ type: 'reasoningLearned' } & ReasoningLearned)
+  | { type: 'apiRouteLearned'; profileId: string; route: ApiRoute }
   | { type: 'userMessageSettled'; dialogId: string; messageId: string; ok: boolean }
   | { type: 'contextUpdated'; dialogId: string; status: ClmStatus }
   | {
@@ -179,6 +180,26 @@ export function onReasoningLearned(handler: (learned: ReasoningLearned) => void)
   return () => {
     if (reasoningHandler === handler) reasoningHandler = null;
   };
+}
+
+let routeHandler: ((profileId: string, route: ApiRoute) => void) | null = null;
+const routeQueue: { profileId: string; route: ApiRoute }[] = [];
+
+/** The panel saves the API route found for a model; queued until it's there. */
+export function onApiRouteLearned(
+  handler: (profileId: string, route: ApiRoute) => void
+): () => void {
+  routeHandler = handler;
+  for (const { profileId, route } of routeQueue.splice(0)) handler(profileId, route);
+  return () => {
+    if (routeHandler === handler) routeHandler = null;
+  };
+}
+
+/** A request found the API route a model works on (agent runs and one-off requests). */
+export function noteApiRoute(profileId: string, route: ApiRoute) {
+  if (routeHandler) routeHandler(profileId, route);
+  else routeQueue.push({ profileId, route });
 }
 
 let unansweredHandler: ((dialogId: string, messageId: string) => void) | null = null;
@@ -272,6 +293,9 @@ function handle(event: AgentEvent) {
       else reasoningQueue.push(learned);
       break;
     }
+    case 'apiRouteLearned':
+      noteApiRoute(event.profileId, event.route);
+      break;
     case 'userMessageSettled':
       if (event.ok) clearPendingDraft(event.dialogId, event.messageId);
       // Unanswered: the draft stays stored until it's put back in the composer.

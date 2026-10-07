@@ -187,6 +187,7 @@ pub async fn complete_once<R: Runtime>(
         streaming: profile.stream,
         first_byte_timeout_ms: profile.first_byte_timeout_ms,
         options,
+        api_route: profile.api_route.clone(),
         ..Default::default()
     };
     let mut text = String::new();

@@ -13,6 +13,7 @@ import {
   createRoot,
 } from 'solid-js';
 import type {
+  ApiRoute,
   ChatMessage,
   ChatToolCall,
   DialogSummary,
@@ -71,6 +72,7 @@ import {
   localDate,
   onMessageUnanswered,
   onReasoningLearned,
+  onApiRouteLearned,
   onShowChat,
   setRunEffort,
   startRun,
@@ -267,6 +269,28 @@ export default function ChatPanel(props: ChatProps) {
           if (learned === setting.learned) return m;
           changed = true;
           return { ...m, reasoning: { ...setting, learned } };
+        }),
+      };
+    });
+    if (!changed) return;
+    setProviders(next);
+    persistAiSettings(next, selection());
+  }
+
+  /** Saves the API route a request found the model to work on. */
+  function learnApiRoute(profileId: string, route: ApiRoute) {
+    const split = profileId.indexOf('::');
+    const providerId = profileId.slice(0, split);
+    const modelId = profileId.slice(split + 2);
+    let changed = false;
+    const next = providers().map((p) => {
+      if (p.id !== providerId) return p;
+      return {
+        ...p,
+        models: p.models.map((m) => {
+          if (m.id !== modelId || m.apiRoute === route) return m;
+          changed = true;
+          return { ...m, apiRoute: route };
         }),
       };
     });
@@ -1692,6 +1716,7 @@ export default function ChatPanel(props: ChatProps) {
 
   // What replies show about the model's reasoning is kept with it.
   onCleanup(onReasoningLearned((learned) => learnReasoning(learned.profileId, learned)));
+  onCleanup(onApiRouteLearned(learnApiRoute));
   // A question's notification: "Show".
   onCleanup(onShowChat(() => listController?.followLatest()));
 

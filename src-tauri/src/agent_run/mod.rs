@@ -69,6 +69,10 @@ pub struct ModelProfile {
     #[serde(default)]
     pub no_tools: bool,
     pub first_byte_timeout_ms: Option<u64>,
+    /// The API route saved with the model ("chat_completions" or
+    /// "responses"), once found (`chat_request::responses`).
+    #[serde(default)]
+    pub api_route: Option<String>,
 }
 
 /// The settings runs follow, sent by the frontend at startup and whenever

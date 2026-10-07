@@ -67,6 +67,7 @@ export async function sendChatMessage(args: SendChatMessageArgs): Promise<void> 
     tools,
     options,
     contextMode: args.contextMode,
+    apiRoute: profile.apiRoute,
     onEvent: channel,
   });
 }
