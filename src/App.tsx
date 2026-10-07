@@ -65,6 +65,9 @@ import { diffLines, splitLines } from './lib/lineDiff';
 import { isProjectSource, updateProjectSource } from './lib/intellisense';
 import { clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
+import { contextRealPath, isContextPath } from './lib/contextMode';
+import { chatStore } from './lib/chatStore';
+import { notify } from './lib/notifications';
 import { startVirtualFiles, vfsSettingsRequested } from './lib/virtualFilesStartup';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
 
@@ -387,9 +390,20 @@ export default function App() {
   // given code is found. Without either, the file just opens.
   const stopOpenRequests = onOpenFileRequest(({ path, line, snippet }) => {
     const root = rootPath();
-    if (!root) return;
-    const abs = toAbsolutePath(path, root);
+    if (!root && !isContextPath(path)) return;
     void (async () => {
+      const abs = await resolveOpenPath(path, root);
+      if (!abs) {
+        notify({
+          kind: 'warning',
+          title: `Can't open ${path}`,
+          message: path.includes('revisions')
+            ? 'Context revisions are not files; open them from the context panel.'
+            : "The agent's context folder is on the virtual volume, which isn't mounted.",
+          timeout: 8_000,
+        });
+        return;
+      }
       let target = line;
       if (target === undefined && snippet) {
         // An open tab's text, unsaved edits included; else the file on disk.
@@ -402,12 +416,23 @@ export default function App() {
       else await openPathAtLine(abs, target);
     })();
   });
-  // Which paths mentioned in the chat are files in this project.
+  /**
+   * The file a path from the chat names: relative to the project, absolute,
+   * or in the active chat's context folder (`@context/…`, on the virtual
+   * volume). Null when it can't be one.
+   */
+  async function resolveOpenPath(path: string, root: string | null): Promise<string | null> {
+    if (isContextPath(path)) {
+      const dialogId = chatStore.state.activeId;
+      return dialogId ? contextRealPath(dialogId, path) : null;
+    }
+    return root ? toAbsolutePath(path, root) : null;
+  }
+  // Which paths mentioned in the chat are files in this project (or the
+  // agent's context folder).
   setProjectFileResolver(async (path) => {
-    const root = rootPath();
-    if (!root) return null;
-    const abs = toAbsolutePath(path, root);
-    if (!(await pathExists(abs))) return null;
+    const abs = await resolveOpenPath(path, rootPath());
+    if (!abs || !(await pathExists(abs))) return null;
     return (await dirEntryCount(abs, 1)) === null ? abs : null; // a file, not a folder
   });
   onCleanup(() => setProjectFileResolver(null));
