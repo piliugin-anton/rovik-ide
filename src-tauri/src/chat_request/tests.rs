@@ -46,7 +46,7 @@ fn tool_call_arguments_are_assembled_by_index() {
     let mut emit = |e| events.push(e);
     // The id appears only in the first chunk, as in the OpenAI format.
     for chunk in [
-        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":""}}]}}]}),
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":""}}]}}]}),
         json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}),
         json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"a.ts\"}"}}]}}]}),
         json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
@@ -55,7 +55,7 @@ fn tool_call_arguments_are_assembled_by_index() {
     }
     parser.finish(&mut emit).unwrap();
     let last = names(&events).pop().unwrap();
-    assert_eq!(last, r#"tool_done:read_file:{"path":"a.ts"}"#);
+    assert_eq!(last, r#"tool_done:read:{"path":"a.ts"}"#);
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn gemini_signatures_survive_and_unindexed_parallel_calls_stay_separate() {
     // Gemini: no `index`, each call complete in its own chunk, signature on the first.
     for chunk in [
         json!({"choices":[{"delta":{"role":"assistant","tool_calls":[{"extra_content":{"google":{"thought_signature":"SIG-A"}},"id":"function-call-1","type":"function","function":{"name":"list_dir","arguments":"{}"}}]}}]}),
-        json!({"choices":[{"delta":{"tool_calls":[{"id":"function-call-2","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a\"}"}}]}}]}),
+        json!({"choices":[{"delta":{"tool_calls":[{"id":"function-call-2","type":"function","function":{"name":"read","arguments":"{\"path\":\"a\"}"}}]}}]}),
         json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
     ] {
         parser.feed(&chunk, &mut emit).unwrap();

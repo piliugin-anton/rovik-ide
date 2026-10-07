@@ -6,7 +6,7 @@
 // editor (Editor + editorReview) show it, and the answer goes back to the
 // run. Module-level, like ConfirmDialog, so no props need threading through.
 //
-// A file edit (write_file) is reviewed as hunks: each can be accepted or
+// A file edit (write) is reviewed as hunks: each can be accepted or
 // rejected on its own. Once none is left pending, the approval resolves:
 // everything accepted → allow, everything rejected → deny, otherwise
 // a partial result with the merged content.
@@ -40,11 +40,11 @@ export interface PendingApproval {
   toolName: string;
   /** One line, e.g. "Run `npm test`". */
   summary: string;
-  /** run_command: the full command line. */
+  /** bash: the full command line. */
   command?: string;
   /** Why this is asked manually, e.g. the AI reviewer couldn't decide. */
   note?: string;
-  /** write_file on an existing file: the reviewable diff. */
+  /** write on an existing file: the reviewable diff. */
   edit?: EditReview;
 }
 
@@ -78,7 +78,7 @@ const writtenListeners = new Set<(absPath: string, content: string) => void>();
  * ---------------------------------------------------------------------------
  */
 
-/** Builds the review of a write_file call; null when there's nothing to diff. */
+/** Builds the review of a write call; null when there's nothing to diff. */
 export function buildEditReview(
   absPath: string,
   relPath: string,

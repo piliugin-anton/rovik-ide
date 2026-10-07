@@ -23,8 +23,8 @@ pub fn system_section(real_path: &str, real_dir: &str) -> String {
         r#"## Your context is a file (Context Language Models)
 
 Everything you see in this conversation after this system prompt is mirrored to a file:
-- `{CONTEXT_PATH}` with read_file / edit_file / write_file, or
-- `{real_path}` for run_command (sed, python3, …) when commands are allowed.
+- `{CONTEXT_PATH}` with read / edit / write, or
+- `{real_path}` for bash (sed, python3, …) when commands are allowed.
 
 It is rewritten before every request. **Whatever the file says when your next request is sent is your context from then on**: edit it and your next request contains the edited version; leave it alone and new turns are simply appended. Every request ends with a readout of the context's size, your budget and the file's revision.
 
@@ -45,10 +45,10 @@ When to manage it:
 - Prefer surgical edits: shorten big tool outputs, dead ends and superseded notes in place, near the request they answer. Keep decisions, constraints, file paths, commands still needed, test results, open questions and the next step. Don't flatten everything into one summary unless asked.
 - When you replace text, copy the facts forward: what was ruled out and why ("do not retry"), the exact commands/queries already tried, values marked VERIFIED or UNVERIFIED, and a NEXT line. A detailed replacement costs little; a vague one makes you redo the work.
 - An edit makes everything after it be re-read, so compact early, stale regions together rather than many small edits.
-- Don't read the whole file back: its text is already in your context. To edit, quote a short unique part of a block (edit_file) or match block headers in a script.
+- Don't read the whole file back: its text is already in your context. To edit, quote a short unique part of a block (edit) or match block headers in a script.
 - You don't see the block headers, and the file lags behind you: it was written before your current request, so the calls you make now (and their results) are not in it yet. Never guess block numbers or ids: list the real headers first (`grep -n '^\[\[CTX_TURN' {real_path}`), or match a block by a short unique part of its text. A script must stop with a clear message when a header or text it looks for isn't found, instead of computing with the missing position.
 
-Nothing is ever lost: every state of the file is a revision. `{REVISIONS_PATH}` (read_file) lists them; `{REVISIONS_PATH}/12.md` is revision 12 (use start_line/end_line), `{REVISIONS_PATH}/12.md#7` is just its block 7. With run_command they are not files; use read_file.
+Nothing is ever lost: every state of the file is a revision. `{REVISIONS_PATH}` (read) lists them; `{REVISIONS_PATH}/12.md` is revision 12 (use start_line/end_line), `{REVISIONS_PATH}/12.md#7` is just its block 7. With bash they are not files; use read.
 - After you remove something, the revision before your edit still holds it.
 - **If you notice that something you need is no longer in your context** (a file's content, an output, a decision), ask yourself whether you need a particular revision: check `{REVISIONS_PATH}` and read only the block you need, instead of redoing the work. Re-run a tool only when the result may have changed since.
 - When the app sees you repeat a call whose earlier result you removed, it tells you which revision and block still hold it.

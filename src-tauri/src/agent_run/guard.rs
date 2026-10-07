@@ -242,7 +242,7 @@ fn sorted(value: &serde_json::Value) -> String {
     }
 }
 
-/// "read_file (src/App.tsx)", "run_command (npm test)": for the notes.
+/// "read (src/App.tsx)", "bash (npm test)": for the notes.
 fn describe_call(call: &FinishedCall) -> String {
     let args = super::permissions::parse_args(call.args_json);
     let detail = ["path", "command", "query", "url"]
@@ -282,15 +282,15 @@ mod tests {
     #[test]
     fn identical_calls_nudge_then_stop() {
         let mut g = Guard::new(None, 0);
-        assert_eq!(g.record(call("read_file", r#"{"path":"a","x":1}"#, "same")), GuardVerdict::Ok);
-        assert_eq!(g.record(call("read_file", r#"{"x":1,"path":"a"}"#, "same")), GuardVerdict::Ok);
-        let v = g.record(call("read_file", r#"{"path":"a","x":1}"#, "same"));
-        assert!(matches!(&v, GuardVerdict::Nudge(n) if n.contains("read_file (a) was called 3 times")), "{v:?}");
+        assert_eq!(g.record(call("read", r#"{"path":"a","x":1}"#, "same")), GuardVerdict::Ok);
+        assert_eq!(g.record(call("read", r#"{"x":1,"path":"a"}"#, "same")), GuardVerdict::Ok);
+        let v = g.record(call("read", r#"{"path":"a","x":1}"#, "same"));
+        assert!(matches!(&v, GuardVerdict::Nudge(n) if n.contains("read (a) was called 3 times")), "{v:?}");
         assert!(g.pause().is_none());
         // Evidence was reset: two more are fine, the third stops.
-        g.record(call("read_file", r#"{"path":"a"}"#, "same"));
-        g.record(call("read_file", r#"{"path":"a"}"#, "same"));
-        assert!(matches!(g.record(call("read_file", r#"{"path":"a"}"#, "same")), GuardVerdict::Stop(_)));
+        g.record(call("read", r#"{"path":"a"}"#, "same"));
+        g.record(call("read", r#"{"path":"a"}"#, "same"));
+        assert!(matches!(g.record(call("read", r#"{"path":"a"}"#, "same")), GuardVerdict::Stop(_)));
         assert_eq!(g.pause().unwrap().kind, "loop");
     }
 
@@ -308,9 +308,9 @@ mod tests {
     fn reverting_a_file_is_noticed() {
         let mut g = Guard::new(None, 0);
         let w = |before, after| Some(Write { path: "a.ts", before, after });
-        let r = g.record(FinishedCall { name: "edit_file", args_json: "{}", result: "ok", write: w(Some("v1"), "v2") });
+        let r = g.record(FinishedCall { name: "edit", args_json: "{}", result: "ok", write: w(Some("v1"), "v2") });
         assert_eq!(r, GuardVerdict::Ok);
-        let r = g.record(FinishedCall { name: "edit_file", args_json: "{}", result: "ok", write: w(Some("v2"), "v1") });
+        let r = g.record(FinishedCall { name: "edit", args_json: "{}", result: "ok", write: w(Some("v2"), "v1") });
         assert!(matches!(r, GuardVerdict::Nudge(n) if n.contains("put a.ts back")));
     }
 
@@ -318,10 +318,10 @@ mod tests {
     fn checkpoints_count_from_where_a_run_paused() {
         let mut g = Guard::new(Some(25), 25);
         for _ in 0..24 {
-            g.record(call("read_file", &format!("{}", g.tool_calls), "r"));
+            g.record(call("read", &format!("{}", g.tool_calls), "r"));
         }
         assert!(g.pause().is_none());
-        g.record(call("read_file", "last", "r"));
+        g.record(call("read", "last", "r"));
         assert_eq!(g.pause(), Some(PauseInfo { kind: "checkpoint", tool_calls: 50, reason: None }));
     }
 
@@ -352,13 +352,13 @@ mod tests {
     #[test]
     fn writes_reset_repeated_reads_and_no_checkpoint_means_none() {
         let mut g = Guard::new(None, 0);
-        g.record(call("read_file", "{}", "same"));
-        g.record(call("read_file", "{}", "same"));
-        let w = FinishedCall { name: "write_file", args_json: "{}", result: "ok", write: Some(Write { path: "a", before: None, after: "1" }) };
+        g.record(call("read", "{}", "same"));
+        g.record(call("read", "{}", "same"));
+        let w = FinishedCall { name: "write", args_json: "{}", result: "ok", write: Some(Write { path: "a", before: None, after: "1" }) };
         g.record(w);
         // Reading again after a write is expected.
-        assert_eq!(g.record(call("read_file", "{}", "same")), GuardVerdict::Ok);
-        assert_eq!(g.record(call("read_file", "{}", "same")), GuardVerdict::Ok);
+        assert_eq!(g.record(call("read", "{}", "same")), GuardVerdict::Ok);
+        assert_eq!(g.record(call("read", "{}", "same")), GuardVerdict::Ok);
         for _ in 0..500 {
             g.record(call("x", &g.tool_calls.to_string(), "r"));
         }

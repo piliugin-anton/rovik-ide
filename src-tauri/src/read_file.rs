@@ -1,4 +1,4 @@
-//! What the agent's `read_file` tool returns for a file's text.
+//! What the agent's `read` tool returns for a file's text.
 //!
 //! A small file comes back whole. A large one used to be cut off after its
 //! first 20,000 characters, so the model never learned what came after.
@@ -59,7 +59,7 @@ const MODIFIERS: &[&str] = &[
     "sealed", "unsafe", "extern", "declare", "override", "readonly", "open", "inline", "virtual",
 ];
 
-/// The text `read_file` returns for `content`, the file at `path`: all of
+/// The text `read` returns for `content`, the file at `path`: all of
 /// it, or lines `start_line..=end_line` (1-based) when either is given.
 pub fn read(path: &str, content: &str, start_line: Option<usize>, end_line: Option<usize>) -> Result<String, String> {
     let lines: Vec<&str> = content.lines().collect();

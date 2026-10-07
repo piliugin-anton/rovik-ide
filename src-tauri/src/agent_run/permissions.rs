@@ -1,6 +1,6 @@
 //! What the agent may do, and what needs approval first. Two layers:
 //!
-//!   1. Permission: may this run at all? Only `run_command` is restricted,
+//!   1. Permission: may this run at all? Only `bash` is restricted,
 //!      by the allowed-commands list (or "any command"). A refused call
 //!      never reaches approval.
 //!   2. Approval: commands, file edits and the other tool calls each have
@@ -43,9 +43,9 @@ pub struct Permissions {
     pub allow_any_command: bool,
     /// Command prefixes, e.g. "git status" permits "git status -s".
     pub allowed_commands: Vec<String>,
-    /// run_command.
+    /// bash.
     pub command_approval: ApprovalRule,
-    /// write_file and edit_file.
+    /// write and edit.
     pub edit_approval: ApprovalRule,
     /// Every other tool: reading and searching files, web access.
     pub tool_approval: ApprovalRule,
@@ -460,7 +460,7 @@ pub fn check_command(command: &str, permissions: &Permissions) -> Verdict {
 
 /// Tools that always change files; everything else (reads, web) doesn't.
 pub fn modifies_files(tool: &str) -> bool {
-    tool == "write_file" || tool == "edit_file"
+    tool == "write" || tool == "edit"
 }
 
 #[derive(Debug, PartialEq)]
@@ -488,7 +488,7 @@ pub fn str_arg(args_json: &str, key: &str) -> Option<String> {
 
 /// Permission first, then who (if anyone) has to approve.
 pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -> ToolVerdict {
-    if name == "run_command" {
+    if name == "bash" {
         let command = str_arg(args_json, "command").unwrap_or_default();
         if command.trim().is_empty() {
             // The executor reports the missing argument.
@@ -499,7 +499,7 @@ pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -
         }
     }
 
-    let rule = if name == "run_command" {
+    let rule = if name == "bash" {
         permissions.command_approval
     } else if modifies_files(name) {
         permissions.edit_approval
@@ -509,7 +509,7 @@ pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -
     ToolVerdict::Permitted { approval: rule.required.then_some(rule.by) }
 }
 
-/// Whether the model should be offered run_command at all.
+/// Whether the model should be offered bash at all.
 pub fn commands_available(p: &Permissions) -> bool {
     p.allow_any_command || p.allowed_commands.iter().any(|c| !c.trim().is_empty())
 }
@@ -521,8 +521,8 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
     let raw = |k: &str| args.get(k).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
 
     match name {
-        "run_command" => format!("Run `{}`", s("command").unwrap_or_else(|| "…".into())),
-        "read_file" => {
+        "bash" => format!("Run `{}`", s("command").unwrap_or_else(|| "…".into())),
+        "read" => {
             let path = s("path").unwrap_or_else(|| "a file".into());
             match s("symbol").filter(|x| !x.trim().is_empty()) {
                 Some(symbol) => format!("Read {} in {path}", symbol.trim()),
@@ -531,11 +531,11 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
         }
         "list_dir" => format!("List {}", s("path").filter(|p| !p.is_empty()).unwrap_or_else(|| "the project root".into())),
         "search_code" => format!("Search the project for “{}”", s("query").unwrap_or_else(|| "…".into())),
-        "write_file" => {
+        "write" => {
             let size = s("content").map(|c| format!(" ({} lines)", c.split('\n').count())).unwrap_or_default();
             format!("Write {}{size}", s("path").unwrap_or_else(|| "a file".into()))
         }
-        "edit_file" => {
+        "edit" => {
             let range = match raw("start_line") {
                 Some(start) => format!(" (only lines {start}-{})", raw("end_line").unwrap_or_else(|| start.clone())),
                 None => String::new(),
@@ -576,7 +576,7 @@ static RISKY_COMMANDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"^(curl|wget)\b.*\s(-d|--data\S*|-F|--form|-T|--upload-file|-X\s*(POST|PUT|PATCH|DELETE))\b",
         r"^(chmod|chown)\s+-\S*R",
         r"(?i)\.env\b|\.ssh\b|\.aws\b|\.npmrc\b|\.netrc\b|id_rsa|credentials",
-        // Windows: run_command goes through cmd.exe there (command_tool.rs),
+        // Windows: bash goes through cmd.exe there (command_tool.rs),
         // where these are the same shapes. Program names may carry .exe.
         r"(?i)^(cmd|powershell|pwsh|wsl|cscript|wscript|mshta|rundll32|regsvr32|start|call|invoke-expression|iex|start-process)\b",
         r"(?i)^(runas|gsudo)\b",
@@ -659,9 +659,9 @@ mod tests {
 
     #[test]
     fn a_symbol_read_is_described_with_its_symbol() {
-        assert_eq!(describe_tool_call("read_file", r#"{"path":"src/a.rs"}"#), "Read src/a.rs");
-        assert_eq!(describe_tool_call("read_file", r#"{"path":"src/a.rs","symbol":" Parser::parse "}"#), "Read Parser::parse in src/a.rs");
-        assert_eq!(describe_tool_call("read_file", r#"{"path":"src/a.rs","symbol":"  "}"#), "Read src/a.rs");
+        assert_eq!(describe_tool_call("read", r#"{"path":"src/a.rs"}"#), "Read src/a.rs");
+        assert_eq!(describe_tool_call("read", r#"{"path":"src/a.rs","symbol":" Parser::parse "}"#), "Read Parser::parse in src/a.rs");
+        assert_eq!(describe_tool_call("read", r#"{"path":"src/a.rs","symbol":"  "}"#), "Read src/a.rs");
     }
 
     #[test]
@@ -712,11 +712,11 @@ mod tests {
             ..Permissions::default()
         };
         assert_eq!(
-            check_tool_call("edit_file", "{}", &p),
+            check_tool_call("edit", "{}", &p),
             ToolVerdict::Permitted { approval: Some(Approver::Ai) }
         );
-        assert_eq!(check_tool_call("read_file", "{}", &p), ToolVerdict::Permitted { approval: None });
-        assert!(matches!(check_tool_call("run_command", r#"{"command":"rm x"}"#, &p), ToolVerdict::Refused(_)));
+        assert_eq!(check_tool_call("read", "{}", &p), ToolVerdict::Permitted { approval: None });
+        assert!(matches!(check_tool_call("bash", r#"{"command":"rm x"}"#, &p), ToolVerdict::Refused(_)));
     }
 
     #[test]
@@ -737,10 +737,10 @@ mod tests {
 
     #[test]
     fn describes_calls() {
-        assert_eq!(describe_tool_call("run_command", r#"{"command":"npm test"}"#), "Run `npm test`");
-        assert_eq!(describe_tool_call("edit_file", r#"{"path":"a.ts","start_line":3}"#), "Edit a.ts (only lines 3-3)");
+        assert_eq!(describe_tool_call("bash", r#"{"command":"npm test"}"#), "Run `npm test`");
+        assert_eq!(describe_tool_call("edit", r#"{"path":"a.ts","start_line":3}"#), "Edit a.ts (only lines 3-3)");
         assert_eq!(describe_tool_call("list_dir", "{}"), "List the project root");
-        assert_eq!(describe_tool_call("write_file", r#"{"path":"a","content":"x\ny"}"#), "Write a (2 lines)");
+        assert_eq!(describe_tool_call("write", r#"{"path":"a","content":"x\ny"}"#), "Write a (2 lines)");
     }
 
     #[test]
@@ -775,9 +775,9 @@ mod tests {
         let none = Permissions { allowed_commands: vec![], ..Permissions::default() };
         assert!(matches!(check_command("ls", &none), Verdict::Refused(r) if r.ends_with("Allowed: (none).")));
         assert!(!commands_available(&Permissions { allowed_commands: vec![" ".into()], ..Permissions::default() }));
-        // run_command with no command: left to the tool to report.
-        assert_eq!(check_tool_call("run_command", "{}", &none), ToolVerdict::Permitted { approval: None });
-        assert_eq!(check_tool_call("run_command", "not json", &none), ToolVerdict::Permitted { approval: None });
+        // bash with no command: left to the tool to report.
+        assert_eq!(check_tool_call("bash", "{}", &none), ToolVerdict::Permitted { approval: None });
+        assert_eq!(check_tool_call("bash", "not json", &none), ToolVerdict::Permitted { approval: None });
     }
 
     #[test]

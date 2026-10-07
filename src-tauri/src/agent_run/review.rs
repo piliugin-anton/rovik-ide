@@ -466,7 +466,7 @@ mod tests {
             group: Group::Commands,
             user_request: "  ".into(),
             project: "/p".into(),
-            tool_name: "run_command".into(),
+            tool_name: "bash".into(),
             summary: "".into(),
             args_json: r#"{"command":"ls"}"#.into(),
             edit_diff: None,

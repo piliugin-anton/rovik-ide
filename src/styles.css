@@ -3740,7 +3740,7 @@ body {
   color: var(--fg-muted);
 }
 
-/* edit_file's change as a diff (components/EditDiffBlock.tsx) */
+/* edit's change as a diff (components/EditDiffBlock.tsx) */
 
 .edit-diff-counts {
   display: inline-flex;

@@ -122,7 +122,7 @@ pub struct ApprovalRequest {
     pub tool_name: String,
     /// One line, e.g. "Run `npm test`".
     pub summary: String,
-    /// run_command: the full command line.
+    /// bash: the full command line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     /// Why this is asked manually, e.g. the AI reviewer couldn't decide.

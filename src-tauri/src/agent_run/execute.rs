@@ -30,7 +30,7 @@ struct Authorized {
     approval: Option<Value>,
     /// Partially accepted edit: the arguments to run instead.
     args_override: Option<String>,
-    /// Run as this tool instead (a partly accepted edit_file is written whole).
+    /// Run as this tool instead (a partly accepted edit is written whole).
     tool_override: Option<String>,
     /// Added to the tool result for the model.
     result_note: Option<String>,
@@ -239,7 +239,7 @@ impl<R: Runtime> Run<R> {
         // project change. It applies to the next request.
         if clm
             && (tc.name == "restore_context"
-                || matches!(tc.name.as_str(), "read_file" | "edit_file" | "write_file" | "list_dir")
+                || matches!(tc.name.as_str(), "read" | "edit" | "write" | "list_dir")
                     && is_context_path(path_arg, context_dir))
         {
             let mut content = self.context_tool(&tc.name, &args).await;
@@ -343,7 +343,7 @@ impl<R: Runtime> Run<R> {
 
         let failed = tools::is_error(&result.content);
         let after = result.written.as_ref().map(|(_, c)| c.clone()).or_else(|| {
-            (tool_name == "write_file").then(|| permissions::str_arg(&args_json, "content")).flatten()
+            (tool_name == "write").then(|| permissions::str_arg(&args_json, "content")).flatten()
         });
 
         let verdict = self.guard.record(FinishedCall {
@@ -394,7 +394,7 @@ impl<R: Runtime> Run<R> {
         self.add_tool_result(&tc.id, "Error: stopped by the user before this ran.".into(), None, Vec::new()).await
     }
 
-    /// read_file / edit_file / write_file / list_dir on the agent's context
+    /// read / edit / write / list_dir on the agent's context
     /// folder, and restore_context.
     async fn context_tool(&self, name: &str, args: &Map<String, Value>) -> String {
         let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("");
@@ -402,11 +402,11 @@ impl<R: Runtime> Run<R> {
         let db = self.db.clone();
         let vfs = self.app.state::<crate::vfs::VfsState>();
         let result = match name {
-            "read_file" => {
+            "read" => {
                 crate::clm::tool_read(&db, &vfs, &self.dialog_id, path, line(args.get("start_line")), line(args.get("end_line")))
                     .await
             }
-            "edit_file" => match (text("old_text"), text("new_text")) {
+            "edit" => match (text("old_text"), text("new_text")) {
                 (None, _) => return "Error: \"old_text\" is required.".into(),
                 (_, None) => return "Error: \"new_text\" is required.".into(),
                 (Some(old), Some(new)) => crate::clm::tool_edit(
@@ -419,7 +419,7 @@ impl<R: Runtime> Run<R> {
                     line(args.get("end_line")),
                 ),
             },
-            "write_file" => match text("content") {
+            "write" => match text("content") {
                 None => return "Error: \"content\" is required.".into(),
                 Some(content) => crate::clm::tool_write(&vfs, &self.dialog_id, path, content),
             },
@@ -456,7 +456,7 @@ impl<R: Runtime> Run<R> {
         };
 
         let summary = permissions::describe_tool_call(&tc.name, &tc.arguments);
-        let command = (tc.name == "run_command").then(|| permissions::str_arg(&tc.arguments, "command")).flatten();
+        let command = (tc.name == "bash").then(|| permissions::str_arg(&tc.arguments, "command")).flatten();
         // Edits are diffed once: the AI reviewer reads the diff, the user
         // reviews it in the editor.
         let is_file_edit = permissions::modifies_files(&tc.name);
@@ -465,7 +465,7 @@ impl<R: Runtime> Run<R> {
         let (proposal, hunks) = match prepared {
             // Writing the same content changes nothing: no need to ask.
             Some(Prepared::Unchanged) => return Authorized::default(),
-            // An edit_file that can't apply (text not found, outside its lines):
+            // An edit that can't apply (text not found, outside its lines):
             // the model gets the reason; there's nothing for anyone to approve.
             Some(Prepared::Invalid(error)) => return refused(error),
             Some(Prepared::Diff { proposal, hunks }) => (Some(proposal), hunks),
@@ -494,7 +494,7 @@ impl<R: Runtime> Run<R> {
             } else {
                 self.tool_note(&tc.id, Some(format!("Reviewing with {}…", models[0].label)));
                 let input = ReviewInput {
-                    group: if tc.name == "run_command" {
+                    group: if tc.name == "bash" {
                         Group::Commands
                     } else if is_file_edit {
                         Group::Edits
@@ -588,8 +588,8 @@ impl<R: Runtime> Run<R> {
             ApprovalDecision::Partial { content, total, rejected } => {
                 let mut args = permissions::parse_args(&tc.arguments);
                 let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string();
-                // edit_file's partial result is a whole new file: written as one.
-                let args_override = if tc.name == "edit_file" {
+                // edit's partial result is a whole new file: written as one.
+                let args_override = if tc.name == "edit" {
                     json!({ "path": path, "content": content }).to_string()
                 } else {
                     args.insert("content".into(), json!(content));
@@ -605,7 +605,7 @@ impl<R: Runtime> Run<R> {
                         &[],
                     )),
                     args_override: Some(args_override),
-                    tool_override: (tc.name == "edit_file").then(|| "write_file".to_string()),
+                    tool_override: (tc.name == "edit").then(|| "write".to_string()),
                     result_note: Some(describe_rejected_hunks(
                         rel_path.as_deref().unwrap_or("the file"),
                         &rejected,
@@ -616,14 +616,14 @@ impl<R: Runtime> Run<R> {
         }
     }
 
-    /// The diff of a write_file or edit_file call against the file on disk.
+    /// The diff of a write or edit call against the file on disk.
     /// A new file has nothing to compare against: it's approved as a whole.
-    /// edit_file's result is computed (not written) first.
+    /// edit's result is computed (not written) first.
     fn prepare_edit_review(&self, tool_name: &str, args_json: &str) -> Option<Prepared> {
         let root = self.root.as_deref()?;
         let args = permissions::parse_args(args_json);
         let path = args.get("path").and_then(|p| p.as_str())?.to_string();
-        let proposed = if tool_name == "edit_file" {
+        let proposed = if tool_name == "edit" {
             let edit = match tools::edit_args(&args) {
                 Ok(edit) => edit,
                 Err(e) => return Some(Prepared::Invalid(e)),

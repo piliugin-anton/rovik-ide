@@ -19,7 +19,7 @@ use tauri::Runtime;
 
 /// Fix-and-recheck rounds before the gate gives up and reports.
 pub const MAX_VERIFY_ROUNDS: u32 = 3;
-/// Per check. Test suites can be slow; this is the run_command maximum.
+/// Per check. Test suites can be slow; this is the bash maximum.
 const CHECK_TIMEOUT_MS: u64 = 600_000;
 const FAILURE_OUTPUT_CHARS: usize = 8_000;
 

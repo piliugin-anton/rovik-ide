@@ -455,7 +455,7 @@ mod tests {
             "reasoning_effort": "high",
             "chat_template_kwargs": { "enable_thinking": true },
             "tool_choice": "auto",
-            "tools": [{ "type": "function", "function": { "name": "read_file", "description": "d", "parameters": { "type": "object" } } }],
+            "tools": [{ "type": "function", "function": { "name": "read", "description": "d", "parameters": { "type": "object" } } }],
             "messages": [
                 { "role": "system", "content": "Be useful." },
                 { "role": "user", "content": [
@@ -463,7 +463,7 @@ mod tests {
                     { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA" } }
                 ] },
                 { "role": "assistant", "content": "", "tool_calls": [
-                    { "id": "call_1", "type": "function", "function": { "name": "read_file", "arguments": "{\"path\":\"a\"}" } }
+                    { "id": "call_1", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"a\"}" } }
                 ] },
                 { "role": "tool", "tool_call_id": "call_1", "content": "file text" },
                 { "role": "assistant", "content": "Done." }
@@ -479,7 +479,7 @@ mod tests {
         }
         assert_eq!(
             body["tools"][0],
-            json!({ "type": "function", "name": "read_file", "description": "d", "parameters": { "type": "object" } })
+            json!({ "type": "function", "name": "read", "description": "d", "parameters": { "type": "object" } })
         );
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 4, "{input:?}");
@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(input[0]["content"][1]["image_url"], "data:image/png;base64,AA");
         assert_eq!(
             input[1],
-            json!({ "type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":\"a\"}" })
+            json!({ "type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{\"path\":\"a\"}" })
         );
         assert_eq!(input[2], json!({ "type": "function_call_output", "call_id": "call_1", "output": "file text" }));
         assert_eq!(input[3], json!({ "role": "assistant", "content": "Done." }));
@@ -520,11 +520,11 @@ mod tests {
             json!({ "type": "response.reasoning_summary_text.delta", "delta": "Thinking" }),
             json!({ "type": "response.output_text.delta", "output_index": 1, "delta": "Reading it." }),
             json!({ "type": "response.output_item.added", "output_index": 2,
-                    "item": { "type": "function_call", "id": "fc_1", "call_id": "call_9", "name": "read_file", "arguments": "" } }),
+                    "item": { "type": "function_call", "id": "fc_1", "call_id": "call_9", "name": "read", "arguments": "" } }),
             json!({ "type": "response.function_call_arguments.delta", "output_index": 2, "delta": "{\"path\":" }),
             json!({ "type": "response.function_call_arguments.delta", "output_index": 2, "delta": "\"a\"}" }),
             json!({ "type": "response.output_item.done", "output_index": 2,
-                    "item": { "type": "function_call", "id": "fc_1", "call_id": "call_9", "name": "read_file", "arguments": "{\"path\":\"a\"}" } }),
+                    "item": { "type": "function_call", "id": "fc_1", "call_id": "call_9", "name": "read", "arguments": "{\"path\":\"a\"}" } }),
             json!({ "type": "response.completed", "response": { "status": "completed", "usage": { "input_tokens": 10, "output_tokens": 5 } } }),
         ]);
         assert!(ended.unwrap());
@@ -533,7 +533,7 @@ mod tests {
             ChatStreamEvent::ToolCallComplete { id, name, arguments, .. } => Some((id.clone(), name.clone(), arguments.clone())),
             _ => None,
         });
-        assert_eq!(complete, Some(("call_9".into(), "read_file".into(), "{\"path\":\"a\"}".into())));
+        assert_eq!(complete, Some(("call_9".into(), "read".into(), "{\"path\":\"a\"}".into())));
         assert!(events.iter().any(|e| matches!(e, ChatStreamEvent::Delta { content } if content == "Reading it.")));
         assert!(events.iter().any(|e| matches!(e, ChatStreamEvent::Reasoning { content } if content == "Thinking")));
         assert!(events.iter().any(|e| matches!(e,

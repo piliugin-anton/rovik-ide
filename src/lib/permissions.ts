@@ -2,7 +2,7 @@
 //
 // What the agent may do, and what needs approval first. Two layers:
 //
-//   1. Permission: may this run at all? Only `run_command` is restricted,
+//   1. Permission: may this run at all? Only `bash` is restricted,
 //      by the allowed-commands list (or "any command"). A refused call
 //      never reaches approval.
 //   2. Approval: commands, file edits and the other tool calls each have
@@ -34,9 +34,9 @@ export interface AgentPermissions {
   allowAnyCommand: boolean;
   /** Command prefixes, e.g. "git status" permits "git status -s". */
   allowedCommands: string[];
-  /** run_command. */
+  /** bash. */
   commandApproval: ApprovalRule;
-  /** write_file and edit_file. */
+  /** write and edit. */
   editApproval: ApprovalRule;
   /** Every other tool: reading and searching files, web access. */
   toolApproval: ApprovalRule;
@@ -546,20 +546,20 @@ export function describeToolCall(name: string, argsJson: string): string {
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : undefined);
 
   switch (name) {
-    case 'run_command':
+    case 'bash':
       return `Run \`${str('command') ?? '…'}\``;
-    case 'read_file':
+    case 'read':
       return `Read ${str('path') ?? 'a file'}`;
     case 'list_dir':
       return `List ${str('path') || 'the project root'}`;
     case 'search_code':
       return `Search the project for “${str('query') ?? '…'}”`;
-    case 'write_file': {
+    case 'write': {
       const content = str('content');
       const size = content !== undefined ? ` (${content.split('\n').length} lines)` : '';
       return `Write ${str('path') ?? 'a file'}${size}`;
     }
-    case 'edit_file': {
+    case 'edit': {
       const start = args.start_line;
       const end = args.end_line ?? start;
       const range = start !== undefined ? ` (only lines ${start}-${end})` : '';

@@ -119,7 +119,7 @@ function BlockRow(props: { change: BlockChange; open: boolean }) {
 
 export default function ContextEditView(props: {
   edit: ContextEdit;
-  /** edit_file's arguments, for the raw diff. Absent for write_file. */
+  /** edit's arguments, for the raw diff. Absent for write. */
   oldText?: string;
   newText: string;
 }) {

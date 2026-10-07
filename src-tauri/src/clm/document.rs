@@ -10,7 +10,7 @@
 //!
 //! [[CTX_TURN 2 role=assistant id=91ab…]]
 //! Let me look at the test first.
-//! → read_file {"path":"src/parser.rs"}
+//! → read {"path":"src/parser.rs"}
 //!
 //! [[CTX_TURN 3 role=tool id=c2d4…]]
 //! …
@@ -701,7 +701,7 @@ mod tests {
     fn sample() -> Vec<CtxMsg> {
         vec![
             msg("u1", "user", "Fix the test"),
-            with_call("a1", "Reading it.", vec![call("c1", "read_file")]),
+            with_call("a1", "Reading it.", vec![call("c1", "read")]),
             result("t1", "c1", "fn main() {}\n// lots of code"),
             msg("a2", "assistant", "Found it."),
         ]
@@ -722,7 +722,7 @@ mod tests {
         );
         assert!(doc.starts_with("[[LIVE_CONTEXT revision=3 turns=4]]"));
         assert!(doc.contains(
-            "[[CTX_TURN 2 role=assistant id=a1]]\nReading it.\n→ read_file {\"path\":\"a.rs\"}"
+            "[[CTX_TURN 2 role=assistant id=a1]]\nReading it.\n→ read {\"path\":\"a.rs\"}"
         ));
     }
 
@@ -738,7 +738,7 @@ mod tests {
         assert_eq!(s.flattened, 1);
         assert_eq!(back[1].role, "assistant");
         assert!(back[1].tool_calls.is_none());
-        assert!(back[1].text.contains("→ read_file"));
+        assert!(back[1].text.contains("→ read"));
         assert_eq!(back[2].role, "user");
         assert_eq!(back[2].label.as_deref(), Some("tool"));
         assert!(back[2].text.contains("[read a.rs: main is empty]"));
@@ -938,7 +938,7 @@ mod tests {
                 "a1",
                 "",
                 vec![
-                    call("c1", "read_file"),
+                    call("c1", "read"),
                     call_args("c2", "list_dir", r#"{"path":"src"}"#),
                 ],
             ),
@@ -965,10 +965,10 @@ mod tests {
         assert!(back
             .iter()
             .all(|m| m.tool_calls.is_none() && m.role != "tool"));
-        assert!(back[1].text.contains("→ read_file") && back[1].text.contains("→ list_dir"));
+        assert!(back[1].text.contains("→ read") && back[1].text.contains("→ list_dir"));
         assert_eq!(back[2].label.as_deref(), Some("tool"));
         assert!(
-            back[2].text.starts_with("[result of read_file]"),
+            back[2].text.starts_with("[result of read]"),
             "{}",
             back[2].text
         );
@@ -991,7 +991,7 @@ mod tests {
             .last()
             .unwrap()
             .text
-            .starts_with("[result of read_file]"));
+            .starts_with("[result of read]"));
     }
 
     #[test]
@@ -1000,7 +1000,7 @@ mod tests {
         let (back, _) = parse_back(&remove_block(&render(&m, 1), 2), &m, &[]);
         assert_eq!(back.len(), 3);
         assert_eq!(back[1].role, "user");
-        assert!(back[1].text.starts_with("[result of read_file]"));
+        assert!(back[1].text.starts_with("[result of read]"));
         assert!(back[1].tool_call_id.is_none());
     }
 
@@ -1068,7 +1068,7 @@ mod tests {
     fn line_endings_and_trailing_spaces_are_not_edits() {
         let m = vec![
             msg("u1", "user", "x"),
-            with_call("a1", "Reading.", vec![call("c1", "read_file")]),
+            with_call("a1", "Reading.", vec![call("c1", "read")]),
             result("t1", "c1", "line with spaces   \nnext\t"),
             msg("a2", "assistant", "long reply"),
         ];
@@ -1213,7 +1213,7 @@ mod tests {
                 "",
                 vec![call_args(
                     "c1",
-                    "write_file",
+                    "write",
                     "{\"path\":\"a\",\n\"content\":\"l1\\nl2\"}",
                 )],
             ),
@@ -1231,7 +1231,7 @@ mod tests {
     fn assistant_text_after_a_call_group_is_not_merged_into_it() {
         let m = vec![
             msg("u1", "user", "x"),
-            with_call("a1", "", vec![call("c1", "read_file")]),
+            with_call("a1", "", vec![call("c1", "read")]),
             result("t1", "c1", "r"),
             msg("a2", "assistant", "one"),
             msg("a3", "assistant", "two"),

@@ -67,7 +67,7 @@ export function findEnclosingSymbol(
   return null;
 }
 
-/** Positions and names only — never file content. The model can call read_file for that. */
+/** Positions and names only — never file content. The model can call read for that. */
 export function buildContextHeader(ctx: ActiveFileContext | null): string | null {
   if (!ctx) return null;
   const parts = [
@@ -79,5 +79,5 @@ export function buildContextHeader(ctx: ActiveFileContext | null): string | null
   // around in the editor says nothing about what the message is about, and
   // models took it as an instruction to edit there. To point at code, the
   // user mentions it: "@" offers the selection as "file.ts:12-14".
-  return `[Active editor context — ${parts.join('; ')}. Call read_file if you need the actual code.]`;
+  return `[Active editor context — ${parts.join('; ')}. Call read if you need the actual code.]`;
 }

@@ -34,7 +34,7 @@ use super::store::{Ino, Kind};
 pub enum Source {
     /// A program using the mounted volume.
     Process,
-    /// The app, through the path API (`write_file`, `remove`…).
+    /// The app, through the path API (`write`, `remove`…).
     App,
 }
 

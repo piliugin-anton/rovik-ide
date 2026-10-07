@@ -1,6 +1,6 @@
 // src-tauri/src/command_tool.rs
 //
-// `run_command` for the AI agent: runs one shell command in the project
+// `bash` for the AI agent: runs one shell command in the project
 // root and returns its exit code and (capped) output.
 //
 // Whether a command may run at all, and whether it needs approval first, is

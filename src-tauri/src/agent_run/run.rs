@@ -1330,7 +1330,7 @@ fn repo_map_chars(context_tokens: Option<usize>) -> usize {
 fn touched_paths(messages: &[MessageRow]) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
     for call in messages.iter().filter_map(|m| m.tool_calls.as_ref()).flatten() {
-        if !matches!(call.name.as_str(), "read_file" | "edit_file" | "write_file") {
+        if !matches!(call.name.as_str(), "read" | "edit" | "write") {
             continue;
         }
         if let Some(path) = super::permissions::str_arg(&call.arguments, "path") {
@@ -1395,7 +1395,7 @@ mod tests {
     }
 
     fn call(id: &str) -> ToolCall {
-        ToolCall { id: id.into(), name: "read_file".into(), arguments: "{}".into(), extra_content: None }
+        ToolCall { id: id.into(), name: "read".into(), arguments: "{}".into(), extra_content: None }
     }
 
     #[test]
@@ -1485,9 +1485,9 @@ mod repo_map_tests {
     #[test]
     fn touched_paths_are_reads_and_writes_latest_last_each_once() {
         let messages = vec![
-            with_calls(&[("read_file", r#"{"path":"a.rs"}"#), ("search_code", r#"{"query":"x"}"#)]),
-            with_calls(&[("edit_file", r#"{"path":"b.rs","old_text":"x","new_text":"y"}"#), ("run_command", r#"{"command":"ls"}"#)]),
-            with_calls(&[("read_file", r#"{"path":"a.rs"}"#), ("write_file", "not json"), ("list_dir", r#"{"path":"src"}"#)]),
+            with_calls(&[("read", r#"{"path":"a.rs"}"#), ("search_code", r#"{"query":"x"}"#)]),
+            with_calls(&[("edit", r#"{"path":"b.rs","old_text":"x","new_text":"y"}"#), ("bash", r#"{"command":"ls"}"#)]),
+            with_calls(&[("read", r#"{"path":"a.rs"}"#), ("write", "not json"), ("list_dir", r#"{"path":"src"}"#)]),
         ];
         assert_eq!(touched_paths(&messages), ["b.rs", "a.rs"]);
     }
@@ -1495,7 +1495,7 @@ mod repo_map_tests {
     #[test]
     fn only_the_latest_touched_paths_are_kept() {
         let calls: Vec<String> = (0..30).map(|i| format!(r#"{{"path":"f{i}.rs"}}"#)).collect();
-        let pairs: Vec<(&str, &str)> = calls.iter().map(|c| ("read_file", c.as_str())).collect();
+        let pairs: Vec<(&str, &str)> = calls.iter().map(|c| ("read", c.as_str())).collect();
         let paths = touched_paths(&[with_calls(&pairs)]);
         assert_eq!(paths.len(), MAX_TOUCHED_PATHS);
         assert_eq!(paths.first().unwrap(), "f10.rs");

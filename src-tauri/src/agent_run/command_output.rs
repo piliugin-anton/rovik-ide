@@ -1,5 +1,5 @@
 //! Shapes command output for the model: what it needs to act on, in as few
-//! tokens as possible. Used for run_command results and for the
+//! tokens as possible. Used for bash results and for the
 //! verification gate's failure reports.
 //!
 //!   - `cap_output`: long output keeps its start and end (errors and

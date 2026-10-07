@@ -94,7 +94,7 @@ Details: https://v2.tauri.app/start/prerequisites/.
 
 ### Platform behavior
 
-- The AI agent's `run_command` runs through `$SHELL -c` on macOS/Linux and
+- The AI agent's `bash` runs through `$SHELL -c` on macOS/Linux and
   `cmd.exe` on Windows; the terminal panel starts your login shell (or
   `%COMSPEC%`). Started from Finder, the Dock or a desktop entry, the app
   takes `PATH` from your login shell at startup, so commands and language
@@ -198,7 +198,7 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   (`src-tauri/src/clm/`). Before every request the context is written to
   `context/<chat>/LIVE_CONTEXT.md` on the virtual volume, one
   `[[CTX_TURN n role=… id=…]]` block per message. The agent edits it with its
-  ordinary tools — `read_file` / `edit_file` / `write_file` on
+  ordinary tools — `read` / `edit` / `write` on
   `@context/LIVE_CONTEXT.md`, or shell tools on its real path — and whatever
   the file says when the next request goes out is its context from then on.
   Edits are read back tolerantly (`clm/document.rs`): untouched blocks stay

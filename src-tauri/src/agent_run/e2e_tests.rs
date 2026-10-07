@@ -285,7 +285,7 @@ fn roles(messages: &[MessageRow]) -> Vec<&str> {
 async fn a_run_calls_tools_until_the_model_is_done() {
     let h = harness(&[("a.txt", "one\n")]).await;
     let (url, seen) = model(vec![
-        Reply::Call { id: "c1", name: "write_file", args: json!({ "path": "hello.txt", "content": "hi\n" }) },
+        Reply::Call { id: "c1", name: "write", args: json!({ "path": "hello.txt", "content": "hi\n" }) },
         Reply::Text("Wrote hello.txt."),
     ])
     .await;
@@ -296,7 +296,7 @@ async fn a_run_calls_tools_until_the_model_is_done() {
     assert_eq!(h.file("hello.txt").as_deref(), Some("hi\n"));
     let messages = h.messages().await;
     assert_eq!(roles(&messages), ["user", "assistant", "tool", "assistant"]);
-    assert_eq!(messages[1].tool_calls.as_ref().unwrap()[0].name, "write_file");
+    assert_eq!(messages[1].tool_calls.as_ref().unwrap()[0].name, "write");
     assert!(messages.iter().all(|m| m.finalized), "every message is finished");
     assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
     assert_eq!(messages[2].content, "wrote 3 bytes to hello.txt");
@@ -309,7 +309,7 @@ async fn a_run_calls_tools_until_the_model_is_done() {
     assert_eq!(sent[0]["role"], "system");
     assert!(sent.iter().any(|m| m["role"] == "tool" && m["tool_call_id"] == "c1"));
     let tools: Vec<&str> = requests[0]["tools"].as_array().unwrap().iter().filter_map(|t| t["function"]["name"].as_str()).collect();
-    assert!(tools.contains(&"write_file") && tools.contains(&"todo"));
+    assert!(tools.contains(&"write") && tools.contains(&"todo"));
 
     // The UI heard about it.
     assert!(h.events_of("messagesAdded").len() >= 4);
@@ -325,7 +325,7 @@ async fn a_run_calls_tools_until_the_model_is_done() {
 async fn a_denied_edit_is_reported_to_the_model() {
     let h = harness(&[("a.txt", "one\ntwo\n")]).await;
     let (url, _) = model(vec![
-        Reply::Call { id: "e1", name: "edit_file", args: json!({ "path": "a.txt", "old_text": "two", "new_text": "TWO" }) },
+        Reply::Call { id: "e1", name: "edit", args: json!({ "path": "a.txt", "old_text": "two", "new_text": "TWO" }) },
         Reply::Text("Okay, leaving it."),
     ])
     .await;
@@ -361,7 +361,7 @@ async fn a_partly_accepted_edit_writes_only_those_changes() {
     let (url, _) = model(vec![
         Reply::Call {
             id: "w1",
-            name: "write_file",
+            name: "write",
             args: json!({ "path": "a.txt", "content": "ONE\ntwo\nTHREE\n" }),
         },
         Reply::Text("Done."),
@@ -393,7 +393,7 @@ async fn a_partly_accepted_edit_writes_only_those_changes() {
 #[tokio::test]
 async fn stop_ends_a_run_waiting_for_approval() {
     let h = harness(&[]).await;
-    let (url, seen) = model(vec![Reply::Call { id: "r1", name: "run_command", args: json!({ "command": "ls" }) }]).await;
+    let (url, seen) = model(vec![Reply::Call { id: "r1", name: "bash", args: json!({ "command": "ls" }) }]).await;
     let permissions = Permissions {
         command_approval: permissions::ApprovalRule { required: true, by: permissions::Approver::User },
         ..quiet_permissions()
@@ -419,7 +419,7 @@ async fn stop_ends_a_run_waiting_for_approval() {
 async fn a_paused_run_continues_where_it_stopped() {
     let h = harness(&[("a.txt", "x")]).await;
     let (url, _) = model(vec![
-        Reply::Call { id: "r1", name: "read_file", args: json!({ "path": "a.txt" }) },
+        Reply::Call { id: "r1", name: "read", args: json!({ "path": "a.txt" }) },
         Reply::Call { id: "r2", name: "list_dir", args: json!({}) },
         Reply::Text("All read."),
     ])
@@ -453,9 +453,9 @@ async fn failing_checks_go_back_to_the_model_until_they_pass() {
         return;
     }
     let (url, seen) = model(vec![
-        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "ok.txt", "content": "still no" }) },
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "ok.txt", "content": "still no" }) },
         Reply::Text("Done."),
-        Reply::Call { id: "w2", name: "write_file", args: json!({ "path": "ok.txt", "content": "ok" }) },
+        Reply::Call { id: "w2", name: "write", args: json!({ "path": "ok.txt", "content": "ok" }) },
         Reply::Text("Fixed."),
     ])
     .await;
@@ -575,8 +575,8 @@ async fn a_failed_first_reply_marks_the_message_failed() {
 async fn the_ai_reviewer_decides_and_risky_commands_still_ask() {
     let h = harness(&[]).await;
     let (url, _) = model(vec![
-        Reply::Call { id: "r1", name: "run_command", args: json!({ "command": "echo hi" }) },
-        Reply::Call { id: "r2", name: "run_command", args: json!({ "command": "git push" }) },
+        Reply::Call { id: "r1", name: "bash", args: json!({ "command": "echo hi" }) },
+        Reply::Call { id: "r2", name: "bash", args: json!({ "command": "git push" }) },
         Reply::Text("Done."),
     ])
     .await;
@@ -728,7 +728,7 @@ async fn an_effort_picked_early_waits_until_the_request_is_stuck() {
 async fn an_effort_picked_mid_run_applies_to_the_next_request() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![
-        Reply::Call { id: "r1", name: "run_command", args: json!({ "command": "ls" }) },
+        Reply::Call { id: "r1", name: "bash", args: json!({ "command": "ls" }) },
         Reply::Text("Done."),
     ])
     .await;
@@ -813,9 +813,9 @@ fn ask_approval(group: &str) -> Permissions {
 async fn every_call_of_a_turn_gets_a_result_when_stopped_midway() {
     let h = harness(&[("a.txt", "x")]).await;
     let (url, seen) = model(vec![Reply::Calls(vec![
-        ("c1", "read_file", json!({ "path": "a.txt" })),
+        ("c1", "read", json!({ "path": "a.txt" })),
         ("c2", "list_dir", json!({})),
-        ("c3", "read_file", json!({ "path": "a.txt", "start_line": 1 })),
+        ("c3", "read", json!({ "path": "a.txt", "start_line": 1 })),
     ])])
     .await;
     h.start(h.request(&url, Harness::send("Look"), ask_approval("tools"))).await;
@@ -846,11 +846,11 @@ async fn refused_and_broken_calls_are_reported_without_running() {
     let h = harness(&[]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("c1", "run_command", json!({ "command": "rm -rf /" })),
+            ("c1", "bash", json!({ "command": "rm -rf /" })),
             ("c2", "no_such_tool", json!({})),
-            ("c3", "write_file", json!({ "path": "../outside.txt", "content": "x" })),
-            ("c4", "read_file", json!({})),
-            ("c5", "run_command", json!({ "command": "echo $(whoami)" })),
+            ("c3", "write", json!({ "path": "../outside.txt", "content": "x" })),
+            ("c4", "read", json!({})),
+            ("c5", "bash", json!({ "command": "echo $(whoami)" })),
         ]),
         Reply::Text("Understood."),
     ])
@@ -887,7 +887,7 @@ async fn arguments_that_arent_json_are_an_error_for_the_model() {
 async fn without_a_project_only_web_tools_are_offered() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![
-        Reply::Call { id: "c1", name: "read_file", args: json!({ "path": "a.txt" }) },
+        Reply::Call { id: "c1", name: "read", args: json!({ "path": "a.txt" }) },
         Reply::Text("No project."),
     ])
     .await;
@@ -903,7 +903,7 @@ async fn without_a_project_only_web_tools_are_offered() {
         .collect();
     assert_eq!(tools, ["web_search", "browse_url"]);
     let messages = h.messages().await;
-    assert_eq!(result_of(&messages, "c1").content, "Error: \"read_file\" needs an open project folder.");
+    assert_eq!(result_of(&messages, "c1").content, "Error: \"read\" needs an open project folder.");
     // No project: no verification either.
     assert!(messages.iter().all(|m| m.meta.as_ref().is_none_or(|x| x.get("verification").is_none())));
 }
@@ -932,8 +932,8 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
     };
     let (url, seen) = model(vec![
         Reply::Calls(vec![
-            ("w1", "write_file", json!({ "path": "a.txt", "content": "changed" })),
-            ("r1", "run_command", json!({ "command": "ls" })),
+            ("w1", "write", json!({ "path": "a.txt", "content": "changed" })),
+            ("r1", "bash", json!({ "command": "ls" })),
         ]),
         ask("q1"),
         ask("q2"),
@@ -956,13 +956,13 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
 
     assert_eq!(h.file("a.txt").as_deref(), Some("keep"));
     let messages = h.messages().await;
-    assert!(result_of(&messages, "w1").content.starts_with("Error: write_file isn't available in Plan mode"));
-    assert!(result_of(&messages, "r1").content.starts_with("Error: run_command isn't available in Plan mode"));
+    assert!(result_of(&messages, "w1").content.starts_with("Error: write isn't available in Plan mode"));
+    assert!(result_of(&messages, "r1").content.starts_with("Error: bash isn't available in Plan mode"));
     assert!(result_of(&messages, "q4").content.starts_with("You've already asked 3 times"));
     assert_eq!(h.events_of("questionsAsked").len(), 3, "the fourth isn't shown");
     // Plan mode offers no tool that changes anything.
     let tools = seen.lock().unwrap()[0]["tools"].to_string();
-    assert!(!tools.contains("\"write_file\"") && tools.contains("\"submit_plan\""));
+    assert!(!tools.contains("\"write\"") && tools.contains("\"submit_plan\""));
     assert!(seen.lock().unwrap()[0]["messages"][0]["content"].as_str().unwrap().contains("## Plan mode"));
 }
 
@@ -1076,7 +1076,7 @@ async fn unfinished_checklist_steps_are_pointed_out_once() {
 #[tokio::test]
 async fn a_loop_is_noted_then_paused() {
     let h = harness(&[("a.txt", "same")]).await;
-    let read = |id: &'static str| Reply::Call { id, name: "read_file", args: json!({ "path": "a.txt" }) };
+    let read = |id: &'static str| Reply::Call { id, name: "read", args: json!({ "path": "a.txt" }) };
     let (url, _) = model(vec![read("r1"), read("r2"), read("r3"), read("r4"), read("r5"), read("r6"), Reply::Text("x")])
         .await;
     h.start(h.request(&url, Harness::send("Read"), quiet_permissions())).await;
@@ -1087,7 +1087,7 @@ async fn a_loop_is_noted_then_paused() {
     let paused = messages.last().unwrap().meta.as_ref().unwrap()["paused"].clone();
     assert_eq!(paused["kind"], "loop");
     assert_eq!(paused["toolCalls"], 6);
-    assert!(paused["reason"].as_str().unwrap().contains("read_file (a.txt)"));
+    assert!(paused["reason"].as_str().unwrap().contains("read (a.txt)"));
 }
 
 #[tokio::test]
@@ -1095,9 +1095,9 @@ async fn edits_that_change_nothing_or_cant_apply_skip_approval() {
     let h = harness(&[("a.txt", "one\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("w1", "write_file", json!({ "path": "a.txt", "content": "one\n" })),
-            ("e1", "edit_file", json!({ "path": "a.txt", "old_text": "missing", "new_text": "x" })),
-            ("e2", "edit_file", json!({ "path": "nope.txt", "old_text": "a", "new_text": "b" })),
+            ("w1", "write", json!({ "path": "a.txt", "content": "one\n" })),
+            ("e1", "edit", json!({ "path": "a.txt", "old_text": "missing", "new_text": "x" })),
+            ("e2", "edit", json!({ "path": "nope.txt", "old_text": "a", "new_text": "b" })),
         ]),
         Reply::Text("Ok."),
     ])
@@ -1116,7 +1116,7 @@ async fn edits_that_change_nothing_or_cant_apply_skip_approval() {
 async fn a_new_file_is_approved_whole_and_an_allowed_edit_is_recorded_as_reviewed() {
     let h = harness(&[]).await;
     let (url, _) = model(vec![
-        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "dir/new.txt", "content": "hello" }) },
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "dir/new.txt", "content": "hello" }) },
         Reply::Text("Created."),
     ])
     .await;
@@ -1141,9 +1141,9 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
     let h = harness(&[("a.txt", "x\n"), (".env", "SECRET=1\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("e1", "edit_file", json!({ "path": "a.txt", "old_text": "x", "new_text": "y" })),
-            ("e2", "edit_file", json!({ "path": ".env", "old_text": "1", "new_text": "2" })),
-            ("e3", "write_file", json!({ "path": "b.txt", "content": "b" })),
+            ("e1", "edit", json!({ "path": "a.txt", "old_text": "x", "new_text": "y" })),
+            ("e2", "edit", json!({ "path": ".env", "old_text": "1", "new_text": "2" })),
+            ("e3", "write", json!({ "path": "b.txt", "content": "b" })),
         ]),
         Reply::Text("Ok."),
     ])
@@ -1359,7 +1359,7 @@ async fn checks_wait_for_approval_then_run_when_started() {
         return;
     }
     let (url, _) = model(vec![
-        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "x.txt", "content": "x" }) },
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "x.txt", "content": "x" }) },
         Reply::Text("Done."),
     ])
     .await;
@@ -1391,7 +1391,7 @@ async fn checks_that_keep_failing_give_up_and_a_model_that_stops_fixing_is_unres
     if std::process::Command::new("npm").arg("--version").output().is_err() {
         return;
     }
-    let write = |id: &'static str| Reply::Call { id, name: "write_file", args: json!({ "path": "x.txt", "content": id }) };
+    let write = |id: &'static str| Reply::Call { id, name: "write", args: json!({ "path": "x.txt", "content": id }) };
     let (url, _) = model(vec![write("w1"), Reply::Text("Done."), write("w2"), Reply::Text("Done."), write("w3"), Reply::Text("Done.")])
         .await;
     h.start(h.request(&url, Harness::send("Fix"), Permissions::default())).await;
@@ -1414,7 +1414,7 @@ async fn checks_that_keep_failing_give_up_and_a_model_that_stops_fixing_is_unres
 async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skipped() {
     let h = harness(&[]).await;
     let (url, _) = model(vec![
-        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "x.txt", "content": "x" }) },
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "x.txt", "content": "x" }) },
         Reply::Text("Done."),
     ])
     .await;
@@ -1427,7 +1427,7 @@ async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skippe
     // A check the allowed commands don't cover isn't run.
     let h = harness(&[("package.json", r#"{ "name": "t", "scripts": { "lint": "node -e 1" } }"#)]).await;
     let (url, _) = model(vec![
-        Reply::Call { id: "w1", name: "write_file", args: json!({ "path": "x.txt", "content": "x" }) },
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "x.txt", "content": "x" }) },
         Reply::Text("Done."),
     ])
     .await;
@@ -1461,10 +1461,10 @@ async fn reads_in_one_turn_run_together_and_are_recorded_in_order() {
     let h = harness(&[("a.txt", "alpha\n"), ("b.txt", "beta needle\n"), ("sub/c.txt", "gamma\n")]).await;
     let (url, seen) = model(vec![
         Reply::Calls(vec![
-            ("c1", "read_file", json!({ "path": "a.txt" })),
+            ("c1", "read", json!({ "path": "a.txt" })),
             ("c2", "search_code", json!({ "query": "needle" })),
             ("c3", "list_dir", json!({ "path": "sub" })),
-            ("c4", "read_file", json!({ "path": "b.txt" })),
+            ("c4", "read", json!({ "path": "b.txt" })),
         ]),
         Reply::Text("Done."),
     ])
@@ -1494,10 +1494,10 @@ async fn a_write_splits_the_reads_around_it_and_later_reads_see_it() {
     let h = harness(&[("a.txt", "old\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("r1", "read_file", json!({ "path": "a.txt" })),
+            ("r1", "read", json!({ "path": "a.txt" })),
             ("r2", "list_dir", json!({})),
-            ("w1", "write_file", json!({ "path": "a.txt", "content": "new\n" })),
-            ("r3", "read_file", json!({ "path": "a.txt" })),
+            ("w1", "write", json!({ "path": "a.txt", "content": "new\n" })),
+            ("r3", "read", json!({ "path": "a.txt" })),
             ("r4", "search_code", json!({ "query": "new" })),
         ]),
         Reply::Text("Done."),
@@ -1520,8 +1520,8 @@ async fn reads_that_need_approval_are_asked_one_at_a_time() {
     let h = harness(&[("a.txt", "x")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("c1", "read_file", json!({ "path": "a.txt" })),
-            ("c2", "read_file", json!({ "path": "a.txt", "start_line": 1 })),
+            ("c1", "read", json!({ "path": "a.txt" })),
+            ("c2", "read", json!({ "path": "a.txt", "start_line": 1 })),
             ("c3", "list_dir", json!({})),
         ]),
         Reply::Text("Done."),
@@ -1548,13 +1548,13 @@ async fn a_call_that_isnt_a_local_read_ends_a_batch() {
     let h = harness(&[("a.txt", "x\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("c1", "read_file", json!({ "path": "a.txt" })),
-            ("c2", "read_file", json!({ "path": "../outside.txt" })),
-            ("c3", "read_file", json!({ "path": "a.txt" })),
+            ("c1", "read", json!({ "path": "a.txt" })),
+            ("c2", "read", json!({ "path": "../outside.txt" })),
+            ("c3", "read", json!({ "path": "a.txt" })),
             ("c4", "list_dir", json!({})),
             ("c5", "todo", json!({ "items": [{ "title": "one", "status": "pending" }] })),
             ("c6", "list_dir", json!({})),
-            ("c7", "read_file", json!({ "path": "a.txt", "start_line": 1 })),
+            ("c7", "read", json!({ "path": "a.txt", "start_line": 1 })),
         ]),
         Reply::Text("Done."),
     ])
@@ -1577,11 +1577,11 @@ async fn a_refused_command_between_reads_splits_them() {
     let h = harness(&[("a.txt", "x")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("r1", "read_file", json!({ "path": "a.txt" })),
+            ("r1", "read", json!({ "path": "a.txt" })),
             ("r2", "list_dir", json!({})),
-            ("x1", "run_command", json!({ "command": "rm -rf /" })),
-            ("r3", "read_file", json!({ "path": "a.txt" })),
-            ("r4", "read_file", json!({ "path": "a.txt", "start_line": 1 })),
+            ("x1", "bash", json!({ "command": "rm -rf /" })),
+            ("r3", "read", json!({ "path": "a.txt" })),
+            ("r4", "read", json!({ "path": "a.txt", "start_line": 1 })),
         ]),
         Reply::Text("Done."),
     ])
@@ -1600,11 +1600,11 @@ async fn bad_calls_in_a_batch_get_their_errors_and_the_rest_runs() {
     let h = harness(&[("a.txt", "fine\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("c1", "read_file", json!({})),
-            ("c2", "read_file", json!({ "path": "missing.txt" })),
+            ("c1", "read", json!({})),
+            ("c2", "read", json!({ "path": "missing.txt" })),
             ("c3", "search_code", json!({ "query": "(unclosed", "regex": true })),
-            ("c4", "read_file", json!({ "path": "a.txt", "start_line": 5, "end_line": 1 })),
-            ("c5", "read_file", json!({ "path": "a.txt" })),
+            ("c4", "read", json!({ "path": "a.txt", "start_line": 5, "end_line": 1 })),
+            ("c5", "read", json!({ "path": "a.txt" })),
         ]),
         Reply::Text("Done."),
     ])
@@ -1629,7 +1629,7 @@ async fn more_reads_than_run_at_once_all_come_back_in_order() {
     let calls: Vec<(&'static str, &'static str, Value)> = ids_owned
         .iter()
         .zip(&paths)
-        .map(|(id, path)| (&*Box::leak(id.clone().into_boxed_str()), "read_file", json!({ "path": path })))
+        .map(|(id, path)| (&*Box::leak(id.clone().into_boxed_str()), "read", json!({ "path": path })))
         .collect();
     let (url, _) = model(vec![Reply::Calls(calls), Reply::Text("Done.")]).await;
     h.start(h.request(&url, Harness::send("Read all"), quiet_permissions())).await;
@@ -1649,9 +1649,9 @@ async fn the_guard_sees_a_batchs_calls_in_order() {
     let h = harness(&[("a.txt", "same\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("c1", "read_file", json!({ "path": "a.txt" })),
-            ("c2", "read_file", json!({ "path": "a.txt" })),
-            ("c3", "read_file", json!({ "path": "a.txt" })),
+            ("c1", "read", json!({ "path": "a.txt" })),
+            ("c2", "read", json!({ "path": "a.txt" })),
+            ("c3", "read", json!({ "path": "a.txt" })),
         ]),
         Reply::Text("Done."),
     ])
@@ -1670,8 +1670,8 @@ async fn the_guard_sees_a_batchs_calls_in_order() {
 async fn stop_before_a_batch_records_every_call_as_stopped() {
     let h = harness(&[("a.txt", "one\n")]).await;
     let (url, _) = model(vec![Reply::Calls(vec![
-        ("e1", "edit_file", json!({ "path": "a.txt", "old_text": "one", "new_text": "ONE" })),
-        ("r1", "read_file", json!({ "path": "a.txt" })),
+        ("e1", "edit", json!({ "path": "a.txt", "old_text": "one", "new_text": "ONE" })),
+        ("r1", "read", json!({ "path": "a.txt" })),
         ("r2", "list_dir", json!({})),
     ])])
     .await;
@@ -1693,8 +1693,8 @@ async fn reads_after_an_approved_edit_run_together_and_see_the_edit() {
     let h = harness(&[("a.txt", "one\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("e1", "edit_file", json!({ "path": "a.txt", "old_text": "one", "new_text": "ONE" })),
-            ("r1", "read_file", json!({ "path": "a.txt" })),
+            ("e1", "edit", json!({ "path": "a.txt", "old_text": "one", "new_text": "ONE" })),
+            ("r1", "read", json!({ "path": "a.txt" })),
             ("r2", "search_code", json!({ "query": "ONE", "case_sensitive": true })),
         ]),
         Reply::Text("Done."),
@@ -1714,7 +1714,7 @@ async fn reads_after_an_approved_edit_run_together_and_see_the_edit() {
 #[tokio::test]
 async fn a_single_read_runs_as_before() {
     let h = harness(&[("a.txt", "x")]).await;
-    let (url, _) = model(vec![Reply::Call { id: "c1", name: "read_file", args: json!({ "path": "a.txt" }) }, Reply::Text("Done.")]).await;
+    let (url, _) = model(vec![Reply::Call { id: "c1", name: "read", args: json!({ "path": "a.txt" }) }, Reply::Text("Done.")]).await;
     h.start(h.request(&url, Harness::send("Look"), quiet_permissions())).await;
     assert_eq!(h.run_end().await, "done");
     assert!(parallel::batches_of(&h.dialog_id).is_empty());
@@ -1769,9 +1769,9 @@ async fn the_model_reads_one_declaration_by_symbol() {
     let h = harness(&[("src/parser.rs", src)]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("s1", "read_file", json!({ "path": "src/parser.rs", "symbol": "Parser::parse" })),
-            ("s2", "read_file", json!({ "path": "src/parser.rs", "symbol": "missing_fn" })),
-            ("s3", "read_file", json!({ "path": "src/parser.rs", "symbol": "parse", "start_line": 1 })),
+            ("s1", "read", json!({ "path": "src/parser.rs", "symbol": "Parser::parse" })),
+            ("s2", "read", json!({ "path": "src/parser.rs", "symbol": "missing_fn" })),
+            ("s3", "read", json!({ "path": "src/parser.rs", "symbol": "parse", "start_line": 1 })),
         ]),
         Reply::Text("Done."),
     ])
@@ -1820,8 +1820,8 @@ src/parser.rs (2 matches)
     // What the model was told about it, in the first request.
     let request = seen.lock().unwrap()[0].clone();
     let search = request["tools"].as_array().unwrap().iter().find(|t| t["function"]["name"] == "search_code").unwrap();
-    assert!(search["function"]["description"].as_str().unwrap().contains("works as read_file's symbol"));
+    assert!(search["function"]["description"].as_str().unwrap().contains("works as read's symbol"));
     let prompt = request["messages"][0]["content"].as_str().unwrap();
     assert!(prompt.contains("results are grouped by the declaration each match is in"), "{prompt}");
-    assert!(prompt.contains("call read_file with the group's name as `symbol`"));
+    assert!(prompt.contains("call read with the group's name as `symbol`"));
 }
