@@ -1573,7 +1573,12 @@ fn the_task_card_lives_outside_the_context_file() {
         chat.vfs = VfsState::default();
         chat.add(vec![message("u2", "user", "more")]).await;
         let p = chat.prepare(ROOMY).await;
-        assert!(!notes(&p).contains("task card"), "{}", notes(&p));
+        assert!(!notes(&p).contains("was deleted"), "{}", notes(&p));
+        assert!(
+            notes(&p).contains("your task card") && notes(&p).contains("NEXT: tests"),
+            "shown with every request's notes: {}",
+            notes(&p)
+        );
         let card = String::from_utf8(chat.vfs.read_file(&task_file("chat")).unwrap()).unwrap();
         assert_eq!(card, "Goal: fix parser\nNEXT: tests");
 
@@ -1581,12 +1586,35 @@ fn the_task_card_lives_outside_the_context_file() {
         chat.vfs.remove(&task_file("chat")).unwrap();
         let p = chat.prepare(ROOMY).await;
         assert!(
-            notes(&p).contains("task card") && notes(&p).contains("Goal: fix parser"),
+            notes(&p).contains("was deleted") && notes(&p).contains("Goal: fix parser"),
             "{}",
             notes(&p)
         );
         assert_eq!(chat.state().await.task, None);
         let p = chat.prepare(ROOMY).await;
         assert!(!notes(&p).contains("task card"), "said once: {}", notes(&p));
+    });
+}
+
+#[test]
+fn the_system_section_is_the_same_on_every_request() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(vec![message("u1", "user", "task")]).await;
+        let section = |c: &Chat| prompt::system_section("/v/LIVE_CONTEXT.md", &c.id);
+        let first = section(&chat);
+        chat.prepare(ROOMY).await;
+        tool_write(&chat.vfs, "chat", "@context/TASK.md", "Goal").unwrap();
+        chat.add(vec![message("a1", "assistant", &"x".repeat(900))])
+            .await;
+        let p = chat.prepare(5_000).await;
+        // Size, budget, revision and the card change; the prompt doesn't.
+        assert!(
+            notes(&p).contains("/5000 tokens") && notes(&p).contains("revision 2"),
+            "{}",
+            notes(&p)
+        );
+        assert!(notes(&p).contains("Goal"), "{}", notes(&p));
+        assert_eq!(section(&chat), first);
     });
 }

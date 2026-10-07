@@ -23,7 +23,7 @@
 //!
 //! What must outlive every compaction (goal, scope, decisions, NEXT) the
 //! agent keeps in its task card, `TASK.md` next to the context file: shown
-//! in the system prompt, never part of the file it edits.
+//! with the notes, never part of the file it edits.
 //!
 //! The agent edits the file with its ordinary tools (read_file, edit_file,
 //! write_file through `@context/…`, or run_command through its real path):
@@ -69,7 +69,7 @@ fn card_text(text: &str) -> String {
 }
 
 /// The agent's task card: outside the context file, so no edit to that
-/// file can drop it; shown in the system prompt of every request.
+/// file can drop it; shown with the notes of every request.
 pub fn task_file(dialog_id: &str) -> String {
     format!("{}/{}", context_dir(dialog_id), prompt::TASK_FILE)
 }
@@ -468,6 +468,9 @@ pub async fn prepare(
         .collect();
 
     // 5. Notes for the model.
+    if let Some(card) = &state.task {
+        notes.push(prompt::card_note(&card_text(card)));
+    }
     notes.push(prompt::readout(tokens, budget, rendered_revision));
     if let Some(nudge) = prompt::nudge(tokens, budget, &mut state.nudged) {
         notes.push(nudge);
@@ -519,30 +522,10 @@ pub async fn prepare(
 }
 
 /// The system prompt section for a chat in CLM mode.
-pub async fn system_section(
-    db: &DbState,
-    vfs: &VfsState,
-    dialog_id: &str,
-    budget: usize,
-) -> Option<String> {
+/// The same for every request of the chat, so the prompt stays cacheable.
+pub fn system_section(vfs: &VfsState, dialog_id: &str) -> Option<String> {
     let (real_file, real_dir) = real_paths(vfs, dialog_id)?;
-    let d = dialog_id.to_string();
-    let state = db
-        .read(move |conn| store::load_state(conn, &d))
-        .await
-        .ok()?;
-    // The card as the agent left it; after a restart, as last saved.
-    let card = read_text(vfs, &task_file(dialog_id))
-        .or(state.task)
-        .filter(|t| !t.trim().is_empty())
-        .map(|t| card_text(&t));
-    Some(prompt::system_section(
-        &real_file,
-        &real_dir,
-        budget,
-        state.rendered_revision,
-        card.as_deref(),
-    ))
+    Some(prompt::system_section(&real_file, &real_dir))
 }
 
 /*

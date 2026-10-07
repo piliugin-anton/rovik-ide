@@ -215,10 +215,14 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   removed, it comes back as its start with a pointer to the full text). The
   agent's own durable notes go in a task card, `@context/TASK.md`: goal,
   scope and constraints, decisions, what's done, NEXT. It is a separate file
-  shown in the system prompt on every request, so no edit to the context
-  file touches it; it is saved in the chat database to survive a restart,
-  and if the agent deletes it, its last text comes back in the next
-  request's notes.
+  shown with every request's notes, so no edit to the context file touches
+  it; it is saved in the chat database to survive a restart, and if the
+  agent deletes it, its last text comes back in the next request's notes.
+
+  The CLM system prompt section is the same on every request of a chat (it
+  names only the chat's paths), so providers can cache the prompt: what
+  changes — size, budget, revision, the task card — rides on the notes at
+  the end of each request.
   The agent has these tools on `@context/…` in Plan mode and without a
   project too (offered for the context folder only), `list_dir @context`
   for its folder, and `restore_context` to restore a revision or go back to

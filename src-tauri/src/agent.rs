@@ -538,8 +538,7 @@ pub async fn run_chat(
     // CLM history is built: a request that falls back to trimming is sent
     // as a plain trimming request, without instructions that don't hold.
     let clm_prompt = match clm {
-        true => crate::clm::system_section(db, vfs, dialog_id.as_deref().unwrap_or(""), budget)
-            .await
+        true => crate::clm::system_section(vfs, dialog_id.as_deref().unwrap_or(""))
             .map(|section| format!("{system_prompt}\n\n{section}")),
         false => None,
     };
@@ -1242,15 +1241,11 @@ pub async fn chat_context_estimate(
     let prompt_chars = CODING_AGENT_SYSTEM_PROMPT.chars().count() + extra_chars;
     let fixed_chars = prompt_chars + tool_chars;
     let token_budget = history_budget(window, fixed_chars, chars_per_token, reply);
-    // As chat_request works it out: the budget its CLM section names, then
-    // what is left with that section in the prompt.
+    // As chat_request works it out: what is left with the CLM section in the prompt.
     let clm_budget = match clm_tools {
-        Some(clm_tool_chars) => {
-            let named = history_budget(window, prompt_chars + clm_tool_chars, chars_per_token, reply);
-            crate::clm::system_section(&db, &vfs, &dialog_id, named).await.map(|section| {
-                history_budget(window, prompt_chars + 2 + section.chars().count() + clm_tool_chars, chars_per_token, reply)
-            })
-        }
+        Some(clm_tool_chars) => crate::clm::system_section(&vfs, &dialog_id).map(|section| {
+            history_budget(window, prompt_chars + 2 + section.chars().count() + clm_tool_chars, chars_per_token, reply)
+        }),
         None => None,
     };
     let (_, info) = db
