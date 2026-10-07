@@ -46,6 +46,7 @@ When to manage it:
 - When you replace text, copy the facts forward: what was ruled out and why ("do not retry"), the exact commands/queries already tried, values marked VERIFIED or UNVERIFIED, and a NEXT line. A detailed replacement costs little; a vague one makes you redo the work.
 - An edit makes everything after it be re-read, so compact early, stale regions together rather than many small edits.
 - Don't read the whole file back: its text is already in your context. To edit, quote a short unique part of a block (edit_file) or match block headers in a script.
+- You don't see the block headers, and the file lags behind you: it was written before your current request, so the calls you make now (and their results) are not in it yet. Never guess block numbers or ids: list the real headers first (`grep -n '^\[\[CTX_TURN' {real_path}`), or match a block by a short unique part of its text. A script must stop with a clear message when a header or text it looks for isn't found, instead of computing with the missing position.
 
 Nothing is ever lost: every state of the file is a revision. `{REVISIONS_PATH}` (read_file) lists them; `{REVISIONS_PATH}/12.md` is revision 12 (use start_line/end_line), `{REVISIONS_PATH}/12.md#7` is just its block 7. With run_command they are not files; use read_file.
 - After you remove something, the revision before your edit still holds it.

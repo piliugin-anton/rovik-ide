@@ -1,10 +1,22 @@
 // GitPanel.tsx
-import { createSignal, createMemo, onMount, onCleanup, For, Show, createEffect } from 'solid-js';
+import {
+  createSignal,
+  createMemo,
+  onMount,
+  onCleanup,
+  For,
+  Show,
+  Switch,
+  Match,
+  createEffect,
+  type JSX,
+} from 'solid-js';
 import { listen } from '@tauri-apps/api/event';
 import { createVirtualizer, Virtualizer } from '@tanstack/solid-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { GitFileStatusCode, GitPanelPhase, GitStatus } from '../types';
 import { confirmDialog } from './ConfirmDialog';
+import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
 const GIT_ROW_HEIGHT = 22;
 
@@ -143,6 +155,82 @@ function statusMeta(status: GitFileStatusCode): {
 }
 
 // ---------------------------------------------------------------------------
+// Changed files -> folder tree
+// ---------------------------------------------------------------------------
+
+type GitFile = GitStatus['files'][number];
+
+interface GitDirNode {
+  name: string;
+  /** Relative to `workdir`, `/`-separated; '' for the root. */
+  path: string;
+  dirs: Map<string, GitDirNode>;
+  files: GitFile[];
+  /** Changed files anywhere below this folder. */
+  count: number;
+}
+
+type GitTreeRow =
+  | { kind: 'dir'; depth: number; name: string; node: GitDirNode }
+  | { kind: 'file'; depth: number; name: string; file: GitFile };
+
+const asDirRow = (r: GitTreeRow) => (r.kind === 'dir' ? r : undefined);
+const asFileRow = (r: GitTreeRow) => (r.kind === 'file' ? r : undefined);
+
+const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
+
+function buildGitTree(files: GitFile[]): GitDirNode {
+  const root: GitDirNode = { name: '', path: '', dirs: new Map(), files: [], count: 0 };
+  for (const file of files) {
+    const parts = file.path.split('/').filter(Boolean);
+    let node = root;
+    node.count++;
+    for (const part of parts.slice(0, -1)) {
+      let next = node.dirs.get(part);
+      if (!next) {
+        next = {
+          name: part,
+          path: node.path ? `${node.path}/${part}` : part,
+          dirs: new Map(),
+          files: [],
+          count: 0,
+        };
+        node.dirs.set(part, next);
+      }
+      next.count++;
+      node = next;
+    }
+    node.files.push(file);
+  }
+  return root;
+}
+
+/** The visible rows: folders first, then files, each sorted by name. */
+function flattenGitTree(root: GitDirNode, collapsed: Set<string>): GitTreeRow[] {
+  const rows: GitTreeRow[] = [];
+  const walk = (node: GitDirNode, depth: number) => {
+    for (const top of [...node.dirs.values()].sort((a, b) => byName(a.name, b.name))) {
+      // A chain of folders that each hold only one subfolder (and no files)
+      // shows as one row, `src/lib/lsp`, standing for its deepest folder.
+      let dir = top;
+      let name = top.name;
+      while (dir.files.length === 0 && dir.dirs.size === 1) {
+        dir = dir.dirs.values().next().value!;
+        name += `/${dir.name}`;
+      }
+      rows.push({ kind: 'dir', depth, name, node: dir });
+      if (!collapsed.has(dir.path)) walk(dir, depth + 1);
+    }
+    const files = node.files.map((file) => ({ file, name: file.path.split('/').pop()! }));
+    for (const { file, name } of files.sort((a, b) => byName(a.name, b.name))) {
+      rows.push({ kind: 'file', depth, name, file });
+    }
+  };
+  walk(root, 0);
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -165,6 +253,18 @@ export function GitPanel(props: GitPanelProps) {
   const [branchesLoading, setBranchesLoading] = createSignal(false);
 
   const filesCount = createMemo(() => status()?.files.length ?? 0);
+
+  // Folders start expanded; only the ones the user closed are remembered,
+  // so a folder that appears with a new change shows its files.
+  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
+  const gitTree = createMemo(() => buildGitTree(status()?.files ?? []));
+  const treeRows = createMemo(() => flattenGitTree(gitTree(), collapsed()));
+  const toggleDir = (path: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(path)) next.add(path);
+      return next;
+    });
 
   // Runs `fn`, tracking a shared busy flag and surfacing any thrown error.
   // Every git operation below goes through this so loading/disabled state
@@ -337,7 +437,7 @@ export function GitPanel(props: GitPanelProps) {
       return;
     }
 
-    const count = filesCount();
+    const count = treeRows().length;
     const v = createVirtualizer({
       count,
       getScrollElement: () => scrollEl,
@@ -467,83 +567,137 @@ export function GitPanel(props: GitPanelProps) {
               }}
             >
               <For each={gitFilesVirtualizer()?.getVirtualItems() ?? []}>
-                {(item) => (
+                {(item) => {
+                  const rowStyle = (depth: number): JSX.CSSProperties => ({
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: `${GIT_ROW_HEIGHT}px`,
+                    transform: `translateY(${item.start}px)`,
+                    'padding-left': `${8 + depth * 14}px`,
+                    'user-select': 'none',
+                    '-webkit-user-select': 'none',
+                  });
+
                   // The rows outlive a status refresh by a tick: when the list
                   // shrinks (a revert, a commit) the virtualizer is recreated
                   // only after the rows have re-read status, so an index can
                   // briefly point past the end. Render nothing for it then.
-                  <Show when={status()?.files[item.index]}>
-                    {(file) => {
-                      const meta = () => statusMeta(file().status);
+                  const row = () => treeRows()[item.index];
 
-                      return (
-                        <div
-                          data-index={item.index}
-                          class="tree-row git-file-row"
-                          classList={{ clickable: file().status !== 'D' }}
-                          title={
-                            file().status === 'D'
-                              ? `${file().path} (deleted)`
-                              : `${file().path}: click to open with its changes marked`
-                          }
-                          onClick={() => {
-                            // A deleted file has nothing to open; revert brings it back.
-                            if (file().status !== 'D')
-                              props.onOpenFile?.(absPathOf(file().path), file().path);
-                          }}
-                          style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            width: '100%',
-                            height: `${GIT_ROW_HEIGHT}px`,
-                            transform: `translateY(${item.start}px)`,
-                            'padding-left': '8px', // match your git-files .tree-row padding
-                            'user-select': 'none',
-                            '-webkit-user-select': 'none',
-                          }}
-                        >
-                          <span class={`tree-row-badge ${meta().className}`} title={meta().title}>
-                            {meta().label}
-                          </span>
-                          <span class="tree-row-name">{file().path}</span>
-                          <Show when={file().status !== 'U' && file().status !== 'R'}>
-                            <button
-                              type="button"
-                              class="git-revert-button"
-                              title={
-                                file().status === '?' || file().status === 'A'
-                                  ? 'Remove this new file (to the trash)'
-                                  : 'Revert to the last committed version'
-                              }
-                              aria-label={`Revert ${file().path}`}
-                              disabled={busy()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void revertFile(file());
-                              }}
-                            >
-                              <svg
-                                width="13"
-                                height="13"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="1.5"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                aria-hidden="true"
-                              >
-                                <path d="M3.5 6.5h6.25a3.25 3.25 0 0 1 0 6.5H6" />
-                                <path d="M6 3.5 3 6.5l3 3" />
-                              </svg>
-                            </button>
-                          </Show>
-                        </div>
-                      );
-                    }}
-                  </Show>
-                )}
+                  return (
+                    <Show when={row()}>
+                      {(r) => (
+                        <Switch>
+                          <Match when={asDirRow(r())}>
+                            {(dirRow) => {
+                              const dir = () => dirRow().node;
+                              const open = () => !collapsed().has(dir().path);
+                              return (
+                                <div
+                                  data-index={item.index}
+                                  class="tree-row dir git-dir-row clickable"
+                                  title={dir().path}
+                                  onClick={() => toggleDir(dir().path)}
+                                  style={rowStyle(dirRow().depth)}
+                                >
+                                  <span class="tree-row-chevron">
+                                    <ChevronIcon open={open()} />
+                                  </span>
+                                  <span class="tree-row-icon">
+                                    <FolderIcon open={open()} />
+                                  </span>
+                                  <span class="tree-row-name">{dirRow().name}</span>
+                                  <span
+                                    class="git-dir-count"
+                                    title={`${dir().count} changed file${dir().count === 1 ? '' : 's'}`}
+                                  >
+                                    {dir().count}
+                                  </span>
+                                </div>
+                              );
+                            }}
+                          </Match>
+                          <Match when={asFileRow(r())}>
+                            {(fileRow) => {
+                              const file = () => fileRow().file;
+                              const meta = () => statusMeta(file().status);
+
+                              return (
+                                <div
+                                  data-index={item.index}
+                                  class="tree-row git-file-row"
+                                  classList={{ clickable: file().status !== 'D' }}
+                                  title={
+                                    file().status === 'D'
+                                      ? `${file().path} (deleted)`
+                                      : `${file().path}: click to open with its changes marked`
+                                  }
+                                  onClick={() => {
+                                    // A deleted file has nothing to open; revert brings it back.
+                                    if (file().status !== 'D')
+                                      props.onOpenFile?.(absPathOf(file().path), file().path);
+                                  }}
+                                  style={rowStyle(fileRow().depth)}
+                                >
+                                  <span class="tree-row-chevron" />
+                                  <span class="tree-row-icon">
+                                    <FileIcon />
+                                  </span>
+                                  <span
+                                    class={`tree-row-name ${meta().className}`}
+                                    classList={{ 'git-file-deleted': file().status === 'D' }}
+                                  >
+                                    {fileRow().name}
+                                  </span>
+                                  <Show when={file().status !== 'U' && file().status !== 'R'}>
+                                    <button
+                                      type="button"
+                                      class="git-revert-button"
+                                      title={
+                                        file().status === '?' || file().status === 'A'
+                                          ? 'Remove this new file (to the trash)'
+                                          : 'Revert to the last committed version'
+                                      }
+                                      aria-label={`Revert ${file().path}`}
+                                      disabled={busy()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void revertFile(file());
+                                      }}
+                                    >
+                                      <svg
+                                        width="13"
+                                        height="13"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="1.5"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true"
+                                      >
+                                        <path d="M3.5 6.5h6.25a3.25 3.25 0 0 1 0 6.5H6" />
+                                        <path d="M6 3.5 3 6.5l3 3" />
+                                      </svg>
+                                    </button>
+                                  </Show>
+                                  <span
+                                    class={`tree-row-badge git-file-badge ${meta().className}`}
+                                    title={meta().title}
+                                  >
+                                    {meta().label}
+                                  </span>
+                                </div>
+                              );
+                            }}
+                          </Match>
+                        </Switch>
+                      )}
+                    </Show>
+                  );
+                }}
               </For>
             </div>
           </div>
