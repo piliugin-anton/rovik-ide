@@ -4922,6 +4922,43 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   opacity: 0.4;
 }
 
+/* Git tab as a folder tree: names take the free space, the status letter
+   and the folder's change count sit at the right edge. */
+
+.git-files .tree-row {
+  gap: 6px;
+}
+
+.git-files .tree-row-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.git-dir-row.clickable {
+  cursor: pointer;
+}
+
+.git-file-badge {
+  margin-right: 4px;
+}
+
+.git-file-deleted {
+  text-decoration: line-through;
+}
+
+.git-dir-count {
+  flex-shrink: 0;
+  min-width: 16px;
+  margin-right: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--hover-strong);
+  color: var(--fg-dim);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+
 /* The agent's checklist above the input (TodoPanel.tsx), the same docked
    card as the question panel. */
 
