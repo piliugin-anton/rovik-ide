@@ -508,6 +508,7 @@ impl<R: Runtime> Run<R> {
                     edit_diff: (!hunks.is_empty()).then(|| diff::compact_diff(&hunks)),
                     edit_path,
                     is_new_file,
+                    chat_id: Some(self.dialog_id.clone()),
                 };
                 // The reviewer model follows the setting; a Jev fallback can
                 // only be asked with typed input.

@@ -19,6 +19,7 @@ mod browser_tools;
 mod agent_tools;
 mod command_tool;
 mod system_one;
+mod opencode;
 mod filesystem;
 mod terminal;
 mod typings;

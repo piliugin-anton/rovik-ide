@@ -22,7 +22,8 @@ const ATTEMPTS = LEAN_THEN_PLAIN(64);
  */
 export async function generateChatTitle(
   profile: ModelProfile,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  chatId?: string
 ): Promise<string | null> {
   const transcript = messages
     .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content.trim())
@@ -52,6 +53,7 @@ export async function generateChatTitle(
       systemPrompt: SYSTEM_PROMPT,
       messages: request,
       options,
+      chatId,
     });
     if (!result.ok) {
       console.warn('Chat title request failed:', result.error);

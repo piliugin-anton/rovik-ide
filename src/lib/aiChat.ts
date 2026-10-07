@@ -14,6 +14,11 @@ interface CommonArgs {
   projectContext?: string;
   /** How the chat's context is managed (lib/contextMode.ts); trimming by default. */
   contextMode?: 'trimming' | 'clm';
+  /**
+   * The chat a one-off request is for (e.g. its title). Provider sessions
+   * follow the chat (opencode.ai); defaults to `dialogId`.
+   */
+  chatId?: string;
 }
 
 /**
@@ -67,6 +72,7 @@ export async function sendChatMessage(args: SendChatMessageArgs): Promise<void> 
     tools,
     options,
     contextMode: args.contextMode,
+    chatId: args.chatId,
     apiRoute: profile.apiRoute,
     onEvent: channel,
   });

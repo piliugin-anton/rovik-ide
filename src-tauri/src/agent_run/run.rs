@@ -484,6 +484,7 @@ impl<R: Runtime> Run<R> {
                 context_mode: Some(self.context_mode.clone()),
                 carried_notes: carried_notes.clone(),
                 api_route: self.profile.api_route.clone(),
+                chat_id: None,
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);

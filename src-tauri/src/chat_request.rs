@@ -592,6 +592,8 @@ pub struct RequestSpec<'a> {
     pub limits: Limits,
     /// Which API `url` and `body` are for: how the reply is read.
     pub api: Api,
+    /// The chat this request is for: its session on opencode.ai (`opencode`).
+    pub chat_id: Option<&'a str>,
 }
 
 /// Why an attempt ended unsuccessfully, and whether anything was shown.
@@ -618,7 +620,13 @@ async fn attempt(
     // Waiting for response headers. Non-streaming replies only arrive when
     // complete, so only the overall deadline applies to them.
     let header_deadline = if spec.streaming { (started + spec.limits.first_byte).min(deadline) } else { deadline };
-    let request = spec.client.post(spec.url).bearer_auth(spec.api_key).json(spec.body).send();
+    let request = spec
+        .client
+        .post(spec.url)
+        .bearer_auth(spec.api_key)
+        .headers(crate::opencode::headers(spec.url, spec.chat_id))
+        .json(spec.body)
+        .send();
     let response = tokio::select! {
         _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
         r = tokio::time::timeout_at(header_deadline.into(), request) => match r {

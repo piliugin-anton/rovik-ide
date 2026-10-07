@@ -22,6 +22,8 @@ pub async fn request(
     model: &str,
     body: serde_json::Value,
     timeout_ms: Option<u64>,
+    // The chat it is for: its session on opencode.ai (`opencode`).
+    chat_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let model = model.to_string();
     let trimmed = base_url.trim().trim_end_matches('/');
@@ -72,7 +74,7 @@ pub async fn request(
     // MAX_RETRY_WAIT isn't retried.
     let mut attempt_number = 1;
     loop {
-        let error = match send_once(&client, &parsed, api_key, &body).await {
+        let error = match send_once(&client, &parsed, api_key, &body, chat_id).await {
             Ok(value) => return Ok(value),
             Err(e) => e,
         };
@@ -93,8 +95,9 @@ async fn send_once(
     url: &reqwest::Url,
     api_key: &str,
     body: &serde_json::Value,
+    chat_id: Option<&str>,
 ) -> Result<serde_json::Value, ChatError> {
-    let mut req = client.post(url.clone()).json(body);
+    let mut req = client.post(url.clone()).headers(crate::opencode::headers(url.as_str(), chat_id)).json(body);
     let key = api_key.trim();
     if !key.is_empty() {
         req = req.bearer_auth(key);
@@ -167,7 +170,7 @@ mod tests {
     const OK: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\r\nConnection: close\r\n\r\n{\"answers\":{\"safe\":{\"noul\":0.97}}}";
 
     async fn send(url: &str) -> Result<serde_json::Value, String> {
-        request(url, "", "typesafe/jev-1", serde_json::json!({ "state": {}, "questions": {} }), Some(2_000)).await
+        request(url, "", "typesafe/jev-1", serde_json::json!({ "state": {}, "questions": {} }), Some(2_000), None).await
     }
 
     #[tokio::test]
