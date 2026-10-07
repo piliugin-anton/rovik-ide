@@ -3961,6 +3961,12 @@ body {
   color: var(--diff-added-strong);
 }
 
+.ctx-edit-kept {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
 .ctx-edit-role {
   flex: 0 0 auto;
   padding: 0 5px;

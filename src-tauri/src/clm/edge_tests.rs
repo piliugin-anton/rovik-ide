@@ -337,7 +337,7 @@ fn chat_ids_cannot_escape_the_context_folder() {
  */
 
 #[test]
-fn wiping_the_file_with_nothing_after_it_is_rejected() {
+fn wiping_the_file_keeps_the_task() {
     run(async {
         let chat = Chat::new().await;
         chat.add(vec![
@@ -349,13 +349,12 @@ fn wiping_the_file_with_nothing_after_it_is_rejected() {
         chat.write("");
         let p = chat.prepare(ROOMY).await;
         assert!(
-            notes(&p).contains("REJECTED") && notes(&p).contains("no messages"),
+            notes(&p).contains("edit applied") && notes(&p).contains("protected"),
             "{}",
             notes(&p)
         );
-        assert_eq!(ids(&p), ["u1", "a1"]);
-        assert!(chat.file().contains("the task"), "the file is put back");
-        assert_eq!(chat.state().await.projection, None);
+        assert_eq!(ids(&p), ["u1"]);
+        assert!(chat.file().contains("the task"), "the task is put back");
     });
 }
 
@@ -373,7 +372,7 @@ fn wiping_the_file_keeps_what_came_after() {
         chat.add(vec![message("u2", "user", "new task")]).await;
         let p = chat.prepare(ROOMY).await;
         assert!(notes(&p).contains("edit applied"), "{}", notes(&p));
-        assert_eq!(ids(&p), ["u2"]);
+        assert_eq!(ids(&p), ["u1", "u2"], "the user's messages are kept");
     });
 }
 
@@ -394,12 +393,12 @@ fn a_plain_text_rewrite_becomes_a_notes_block() {
         chat.add(vec![message("a9", "assistant", "Compacted.")])
             .await;
         let p = chat.prepare(ROOMY).await;
-        assert_eq!(p.messages[0].role, "user");
+        assert_eq!(p.messages[0].text, "task", "the task leads");
         assert_eq!(
-            p.messages[0].text,
+            p.messages[1].text,
             "[notes]\nGoal: fix parser.\nNEXT: run tests"
         );
-        assert_eq!(ids(&p)[1], "a9");
+        assert_eq!(ids(&p)[2], "a9");
         assert!(chat.file().contains("role=notes"));
     });
 }
@@ -687,7 +686,7 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
             "same tier, no reminder: {}",
             notes(&p)
         );
-        chat.add(vec![message("u2", "user", &"w".repeat(900))])
+        chat.add(tool_pair(2, "read_file", "{}", &"w".repeat(900)))
             .await; // ~60%
         let p = chat.prepare(1_000).await;
         assert!(
@@ -697,8 +696,8 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
         );
         assert_eq!(chat.state().await.nudged, [25, 50]);
         // An accepted edit re-arms them.
-        chat.write(&with_block(&chat.file(), 3, "short"));
-        chat.add(vec![message("a2", "assistant", "done")]).await;
+        chat.write(&with_block(&chat.file(), 4, "short"));
+        chat.add(vec![message("a3", "assistant", "done")]).await;
         chat.prepare(1_000).await;
         let state = chat.state().await;
         assert!(state.nudged.len() <= 1, "re-armed: {:?}", state.nudged);
@@ -1146,7 +1145,9 @@ fn editing_and_writing_the_context_folder() {
         assert!(out.contains(APPLIES));
         chat.add(vec![message("u3", "user", "go")]).await;
         let p = chat.prepare(ROOMY).await;
-        assert_eq!(p.messages[0].text, "[notes]\nJust the plan.");
+        assert_eq!(p.messages[0].text, "same", "the user's messages are kept");
+        assert!(p.messages.iter().any(|m| m.text == "[notes]\nJust the plan."));
+        assert!(!p.messages.iter().any(|m| m.role == "assistant"));
     });
 }
 
@@ -1499,5 +1500,121 @@ fn a_later_edit_does_not_report_old_flattened_calls_again() {
             .messages
             .iter()
             .all(|m| m.tool_calls.is_none() && m.role != "tool"));
+    });
+}
+
+/*
+ * Keeping the task: the user's messages and the task card
+ */
+
+#[test]
+fn the_users_messages_survive_any_edit() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(
+            [
+                vec![message(
+                    "u1",
+                    "user",
+                    "Fix the parser; don't touch the lexer",
+                )],
+                tool_pair(1, "read_file", r#"{"path":"a"}"#, &"code ".repeat(300)),
+                vec![
+                    message("a2", "assistant", "Found it."),
+                    message("u2", "user", "Keep the public API"),
+                    message("a3", "assistant", "OK."),
+                ],
+            ]
+            .concat(),
+        )
+        .await;
+        chat.prepare(ROOMY).await;
+        // The agent compacts everything into one note.
+        chat.write("Bug in parse_expr. NEXT: write the test.");
+        let p = chat.prepare(ROOMY).await;
+        assert!(
+            notes(&p).contains("edit applied") && notes(&p).contains("protected"),
+            "{}",
+            notes(&p)
+        );
+        assert_eq!(ids(&p)[..2], ["u1", "u2"]);
+        assert_eq!(p.messages[0].text, "Fix the parser; don't touch the lexer");
+        assert!(p.messages[2].text.contains("Bug in parse_expr"));
+        assert!(!p.messages.iter().any(|m| m.text.contains("code code")));
+        // And the file shows them back, so the next edit starts from them.
+        assert!(chat.file().contains("don't touch the lexer"));
+        assert!(chat.file().contains("Keep the public API"));
+    });
+}
+
+#[test]
+fn the_task_card_lives_outside_the_context_file() {
+    run(async {
+        let mut chat = Chat::new().await;
+        chat.add(vec![message("u1", "user", "task")]).await;
+        chat.prepare(ROOMY).await;
+        tool_write(
+            &chat.vfs,
+            "chat",
+            "@context/TASK.md",
+            "Goal: fix parser\nNEXT: tests",
+        )
+        .unwrap();
+        // Wiping the context file doesn't touch it.
+        chat.write("");
+        chat.add(vec![message("a1", "assistant", "x")]).await;
+        chat.prepare(ROOMY).await;
+        assert_eq!(
+            chat.state().await.task.as_deref(),
+            Some("Goal: fix parser\nNEXT: tests")
+        );
+
+        // It survives a restart.
+        chat.vfs = VfsState::default();
+        chat.add(vec![message("u2", "user", "more")]).await;
+        let p = chat.prepare(ROOMY).await;
+        assert!(!notes(&p).contains("was deleted"), "{}", notes(&p));
+        assert!(
+            notes(&p).contains("your task card") && notes(&p).contains("NEXT: tests"),
+            "shown with every request's notes: {}",
+            notes(&p)
+        );
+        let card = String::from_utf8(chat.vfs.read_file(&task_file("chat")).unwrap()).unwrap();
+        assert_eq!(card, "Goal: fix parser\nNEXT: tests");
+
+        // Deleting it is pointed out, with its last text.
+        chat.vfs.remove(&task_file("chat")).unwrap();
+        let p = chat.prepare(ROOMY).await;
+        assert!(
+            notes(&p).contains("was deleted") && notes(&p).contains("Goal: fix parser"),
+            "{}",
+            notes(&p)
+        );
+        assert_eq!(chat.state().await.task, None);
+        let p = chat.prepare(ROOMY).await;
+        assert!(!notes(&p).contains("task card"), "said once: {}", notes(&p));
+    });
+}
+
+#[test]
+fn the_system_section_is_the_same_on_every_request() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(vec![message("u1", "user", "task")]).await;
+        let section = |c: &Chat| prompt::system_section("/v/LIVE_CONTEXT.md", &c.id);
+        let first = section(&chat);
+        chat.prepare(ROOMY).await;
+        tool_write(&chat.vfs, "chat", "@context/TASK.md", "Goal").unwrap();
+        chat.add(vec![message("a1", "assistant", &"x".repeat(900))])
+            .await;
+        let p = chat.prepare(5_000).await;
+        // Size, budget, revision and the card change; the prompt doesn't.
+        assert!(
+            notes(&p).contains("/5000 tokens") && notes(&p).contains("revision 2"),
+            "{}",
+            notes(&p)
+        );
+        assert!(notes(&p).contains("Goal"), "{}", notes(&p));
+        assert_eq!(section(&chat), first);
     });
 }

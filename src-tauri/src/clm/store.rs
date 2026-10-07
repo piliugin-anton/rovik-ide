@@ -27,6 +27,8 @@ pub struct State {
     pub budget: usize,
     /// Budget reminders already given (percent tiers).
     pub nudged: Vec<u32>,
+    /// The agent's task card as last seen on the volume.
+    pub task: Option<String>,
 }
 
 fn json<T: serde::de::DeserializeOwned>(text: Option<String>) -> Option<T> {
@@ -56,7 +58,7 @@ pub fn set_context_mode(conn: &Connection, dialog_id: &str, mode: &str) -> DbRes
 pub fn load_state(conn: &Connection, dialog_id: &str) -> DbResult<State> {
     conn.query_row(
         "SELECT projection, anchor_id, rendered, rendered_messages, rendered_anchor_id, rendered_revision,
-                tokens, budget, nudged
+                tokens, budget, nudged, task
          FROM clm_state WHERE dialog_id = ?1",
         params![dialog_id],
         |r| {
@@ -70,6 +72,7 @@ pub fn load_state(conn: &Connection, dialog_id: &str) -> DbResult<State> {
                 tokens: r.get::<_, i64>(6)? as usize,
                 budget: r.get::<_, i64>(7)? as usize,
                 nudged: json(r.get(8)?).unwrap_or_default(),
+                task: r.get(9)?,
             })
         },
     )
@@ -82,13 +85,13 @@ pub fn save_state(conn: &Connection, dialog_id: &str, s: &State) -> DbResult<()>
     let to_json = |v: &Option<Vec<CtxMsg>>| v.as_ref().and_then(|v| serde_json::to_string(v).ok());
     conn.execute(
         "INSERT INTO clm_state (dialog_id, anchor_id, rendered_anchor_id, rendered_revision, tokens, budget,
-                                nudged, updated_at, projection, rendered_messages, rendered)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                nudged, updated_at, projection, rendered_messages, rendered, task)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT (dialog_id) DO UPDATE SET
            anchor_id = excluded.anchor_id, rendered_anchor_id = excluded.rendered_anchor_id,
            rendered_revision = excluded.rendered_revision, tokens = excluded.tokens, budget = excluded.budget,
            nudged = excluded.nudged, updated_at = excluded.updated_at, projection = excluded.projection,
-           rendered_messages = excluded.rendered_messages, rendered = excluded.rendered",
+           rendered_messages = excluded.rendered_messages, rendered = excluded.rendered, task = excluded.task",
         params![
             dialog_id,
             s.anchor_id,
@@ -101,6 +104,7 @@ pub fn save_state(conn: &Connection, dialog_id: &str, s: &State) -> DbResult<()>
             to_json(&s.projection),
             to_json(&s.rendered_messages),
             s.rendered,
+            s.task,
         ],
     )
     .map_err(err)?;

@@ -10,24 +10,23 @@
 /// The path the agent's file tools use for its context file.
 pub const CONTEXT_PATH: &str = "@context/LIVE_CONTEXT.md";
 pub const REVISIONS_PATH: &str = "@context/revisions";
+/// The agent's task card, in its context folder.
+pub const TASK_FILE: &str = "TASK.md";
+pub const TASK_PATH: &str = "@context/TASK.md";
 
-pub fn system_section(
-    real_path: &str,
-    real_dir: &str,
-    budget: usize,
-    revision: Option<u64>,
-) -> String {
-    let revision = revision
-        .map(|r| format!(" (now revision {r})"))
-        .unwrap_or_default();
+/// The system prompt section. It is the same on every request of a chat
+/// (only the chat's paths are in it), so providers can cache the prompt:
+/// what changes (size, budget, revision, the task card) goes in the notes
+/// at the end of each request instead.
+pub fn system_section(real_path: &str, real_dir: &str) -> String {
     format!(
         r#"## Your context is a file (Context Language Models)
 
-Everything you see in this conversation after this system prompt is mirrored to a file{revision}:
+Everything you see in this conversation after this system prompt is mirrored to a file:
 - `{CONTEXT_PATH}` with read_file / edit_file / write_file, or
 - `{real_path}` for run_command (sed, python3, …) when commands are allowed.
 
-It is rewritten before every request. **Whatever the file says when your next request is sent is your context from then on**: edit it and your next request contains the edited version; leave it alone and new turns are simply appended. Your context budget is about {budget} tokens; every request reports the current size.
+It is rewritten before every request. **Whatever the file says when your next request is sent is your context from then on**: edit it and your next request contains the edited version; leave it alone and new turns are simply appended. Every request ends with a readout of the context's size, your budget and the file's revision.
 
 Format: one block per message, in order:
 ```
@@ -37,6 +36,9 @@ Format: one block per message, in order:
 - Keep the header line of every block you keep. Edit, shorten, merge, reorder or delete blocks freely. Remove a block by deleting it, header included.
 - Add your own blocks with any role and a new id, e.g. `[[CTX_TURN 0 role=notes id=new-plan]]`: a plan, a tracker, a ledger of what's done and ruled out.
 - A rewritten block is kept as plain text (a rewritten tool result loses its tool-call structure; that's fine).
+- **The user's messages (`role=user`) are protected**: the task, its scope and every instruction since. Removing or rewriting one has no effect; the app puts it back as it was (a very long one, such as a pasted log, you may shorten). Compact your own work around them.
+
+Your task card, `{TASK_PATH}`, is a separate file shown at the end of every request; editing your context file never touches it. When the work is more than a quick answer, write one before you start editing your context. Keep in it what must survive every compaction: the goal, the scope and constraints (what not to touch), decisions taken, what's done, and NEXT. Edit it with the file tools when any of that changes; keep it short (a few hundred words).
 
 When to manage it:
 - Don't edit for every turn. When the context grows (reminders say so), finish the unit of work in flight, then do ONE batched revision.
@@ -53,6 +55,22 @@ Nothing is ever lost: every state of the file is a revision. `{REVISIONS_PATH}` 
 - To put a whole earlier state back, don't copy it through your context: `restore_context` with a revision number makes that revision your file again (with the messages since appended), and `restore_context` with "stored" drops your edits so the chat is sent as stored. Use it when an edit removed too much; it applies to your next request.
 
 Other files in `{real_dir}` are yours too (scratch notes, offloaded data): `@context/<name>` with the file tools; `list_dir @context` lists the folder."#
+    )
+}
+
+/// The task card, shown with the notes of every request.
+pub fn card_note(card: &str) -> String {
+    format!(
+        "[your task card, {TASK_PATH}: kept outside your context file, so no context edit drops it. \
+         Update it when the goal, scope or plan changes.]\n{card}\n[end of task card]"
+    )
+}
+
+/// The task card was deleted or emptied: its last text, so it isn't lost.
+pub fn card_gone(last: &str) -> String {
+    format!(
+        "[context: your task card {TASK_PATH} was deleted or emptied. If the task isn't finished, write it again \
+         (only delete it when the task is done). Its last text was:\n{last}]"
     )
 }
 
@@ -171,18 +189,12 @@ mod tests {
 
     #[test]
     fn the_system_section_names_both_paths_and_the_revisions() {
-        let text = system_section(
-            "/mnt/v/context/c/LIVE_CONTEXT.md",
-            "/mnt/v/context/c",
-            32_000,
-            Some(7),
-        );
+        let text = system_section("/mnt/v/context/c/LIVE_CONTEXT.md", "/mnt/v/context/c");
         assert!(text.contains("@context/LIVE_CONTEXT.md"));
         assert!(text.contains("`/mnt/v/context/c/LIVE_CONTEXT.md`"));
-        assert!(text.contains("now revision 7"));
-        assert!(text.contains(r"grep -n '^\[\[CTX_TURN' /mnt/v/context/c/LIVE_CONTEXT.md"));
-        assert!(text.contains("32000 tokens"));
         assert!(text.contains("@context/revisions/12.md#7"));
-        assert!(!system_section("/f", "/d", 1, None).contains("now revision"));
+        assert!(text.contains("@context/TASK.md"));
+        assert!(text.contains("protected"));
+        assert!(card_note("Goal: fix the parser").contains("Goal: fix the parser"));
     }
 }

@@ -168,6 +168,12 @@ CREATE TABLE clm_revisions (
 ) STRICT;
 "#;
 
+/// The agent's task card in CLM mode (`@context/TASK.md`), which outlives
+/// the in-memory virtual volume like the context file's revisions do.
+const SCHEMA_V6: &str = r#"
+ALTER TABLE clm_state ADD COLUMN task TEXT;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -213,6 +219,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", 5)?;
         tx.commit()?;
     }
+    if version < 6 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V6)?;
+        tx.pragma_update(None, "user_version", 6)?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -238,7 +250,7 @@ mod tests {
         migrate(&mut conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         let project: Option<String> =
             conn.query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| r.get(0)).unwrap();
         assert_eq!(project, None);

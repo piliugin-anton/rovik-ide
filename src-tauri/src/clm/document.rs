@@ -31,6 +31,7 @@
 //!
 //! Pure string work, unit tested below.
 
+use super::prompt::REVISIONS_PATH;
 use crate::chat_db::history::Msg;
 use crate::chat_db::store::ToolCall;
 use serde::{Deserialize, Serialize};
@@ -307,15 +308,37 @@ impl EditSummary {
     }
 }
 
-/// Reads an edited document back against the messages it was rendered
-/// from. `known` are other messages a block may name (the chat's stored
-/// messages: an older revision put back keeps them as they were). Always
-/// returns a legal history (possibly empty).
+/// `parse_back_keeping` without protected messages.
+#[cfg(test)]
 pub fn parse_back(
     text: &str,
     originals: &[CtxMsg],
     known: &[CtxMsg],
 ) -> (Vec<CtxMsg>, EditSummary) {
+    let (out, summary, _) = parse_back_keeping(text, originals, known, None);
+    (out, summary)
+}
+
+/// The user's messages an edit can't drop (see `protect`).
+pub struct Keep<'a> {
+    /// A protected message's length as stored, by id; `None` for any other.
+    pub stored_chars: &'a dyn Fn(&str) -> Option<usize>,
+    pub max_chars: usize,
+    /// The revision before the edit.
+    pub backup: Option<u64>,
+}
+
+/// Reads an edited document back against the messages it was rendered
+/// from. `known` are other messages a block may name (the chat's stored
+/// messages: an older revision put back keeps them as they were). What
+/// `keep` protects is put back before the history is made legal. Always
+/// returns a legal history (possibly empty).
+pub fn parse_back_keeping(
+    text: &str,
+    originals: &[CtxMsg],
+    known: &[CtxMsg],
+    keep: Option<&Keep>,
+) -> (Vec<CtxMsg>, EditSummary, Protected) {
     let stored: HashMap<&str, &CtxMsg> = known.iter().map(|m| (m.id.as_str(), m)).collect();
     let mut by_id = stored.clone();
     by_id.extend(originals.iter().map(|m| (m.id.as_str(), m)));
@@ -383,6 +406,10 @@ pub fn parse_back(
         }
     }
     summary.removed = originals.iter().filter(|m| !used.contains(&m.id)).count();
+    let (out, protected) = match keep {
+        Some(k) => protect(out, originals, k.stored_chars, k.max_chars, k.backup),
+        None => (out, Protected::default()),
+    };
     let (out, _) = repair_with(out, call_names(by_id.values().copied()));
     // Calls the agent saw as calls that are text now.
     let still_calls: HashSet<&str> = out
@@ -395,7 +422,7 @@ pub fn parse_back(
         .filter(|m| !still_calls.contains(m.id.as_str()))
         .map(|m| m.tool_calls.as_ref().map_or(0, Vec::len))
         .sum();
-    (out, summary)
+    (out, summary, protected)
 }
 
 /// A rewritten message's id: no longer the stored message's, so looking up
@@ -410,6 +437,88 @@ pub fn edited_id(id: &str) -> String {
 
 /// Marks a rewritten message's id (see `edited_id`).
 pub const EDITED: &str = "~e";
+
+/// What `protect` put back, by block number in the rendered document.
+#[derive(Debug, Default, PartialEq)]
+pub struct Protected {
+    /// Removed or rewritten, put back as they were.
+    pub restored: Vec<usize>,
+    /// Removed and too long to put back whole: put back shortened.
+    pub shortened: Vec<usize>,
+}
+
+/// Puts back the protected messages of `rendered` (the user's own: the
+/// task, its scope, every instruction since) that an edit removed or
+/// rewrote, each where it was: the agent compacts its own work, never what
+/// it was asked to do (pi-clm protects the user's turns the same way).
+///
+/// `stored_chars` gives a protected message's length as stored, `None` for
+/// any other. One longer than `max_chars` (a pasted log, say) may be
+/// rewritten shorter; removed, it comes back as its start, with where the
+/// rest is (`backup`: the revision before the edit).
+fn protect(
+    mut candidate: Vec<CtxMsg>,
+    rendered: &[CtxMsg],
+    stored_chars: &dyn Fn(&str) -> Option<usize>,
+    max_chars: usize,
+    backup: Option<u64>,
+) -> (Vec<CtxMsg>, Protected) {
+    let base = |id: &str| id.strip_suffix(EDITED).unwrap_or(id).to_string();
+    let rendered_at: HashMap<String, usize> = rendered
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (base(&m.id), i))
+        .collect();
+    let mut done = Protected::default();
+    for (r, orig) in rendered.iter().enumerate() {
+        let Some(chars) = stored_chars(&base(&orig.id)) else {
+            continue;
+        };
+        let block = r + 1;
+        let rewritten = edited_id(&orig.id);
+        if let Some(at) = candidate
+            .iter()
+            .position(|m| m.id == orig.id || m.id == rewritten)
+        {
+            let unchanged = candidate[at].id == orig.id && candidate[at].text == orig.text;
+            if !unchanged && chars <= max_chars {
+                candidate[at] = orig.clone();
+                done.restored.push(block);
+            }
+            continue;
+        }
+        // Removed: back right after the last kept block that came before
+        // it (first if none did: the task leads, the agent's notes follow).
+        let at = candidate
+            .iter()
+            .rposition(|m| rendered_at.get(&base(&m.id)).is_some_and(|p| *p < r))
+            .map_or(0, |i| i + 1);
+        // A message already shortened (by the agent or here) comes back as is.
+        let back = if !orig.id.ends_with(EDITED) && orig.text.chars().count() > max_chars {
+            let head: String = orig.text.chars().take(max_chars).collect();
+            let rest = backup
+                .map(|b| format!(" The whole message is {REVISIONS_PATH}/{b}.md#{block}."))
+                .unwrap_or_default();
+            done.shortened.push(block);
+            CtxMsg {
+                id: rewritten,
+                text: format!(
+                    "{}\n[… shortened: the user's messages can't be removed, only shortened.{rest}]",
+                    head.trim_end()
+                ),
+                tool_calls: None,
+                tool_call_id: None,
+                attachments: Vec::new(),
+                ..orig.clone()
+            }
+        } else {
+            done.restored.push(block);
+            orig.clone()
+        };
+        candidate.insert(at, back);
+    }
+    (candidate, done)
+}
 
 /// A block the model wrote or rewrote, as plain text in a sendable role.
 fn lowered(id: String, role: &str, text: String) -> CtxMsg {
@@ -634,6 +743,97 @@ mod tests {
         assert_eq!(back[2].label.as_deref(), Some("tool"));
         assert!(back[2].text.contains("[read a.rs: main is empty]"));
         assert!(back.iter().all(|m| m.role != "tool"));
+    }
+
+    /// Reads `doc` back keeping the user's messages of `stored`.
+    fn keeping(
+        doc: &str,
+        rendered: &[CtxMsg],
+        stored: &[CtxMsg],
+        max_chars: usize,
+        backup: Option<u64>,
+    ) -> (Vec<CtxMsg>, Protected) {
+        let chars = |id: &str| {
+            stored
+                .iter()
+                .find(|m| m.id == id && m.role == "user")
+                .map(|m| m.text.chars().count())
+        };
+        let keep = Keep {
+            stored_chars: &chars,
+            max_chars,
+            backup,
+        };
+        let (back, _, p) = parse_back_keeping(doc, rendered, stored, Some(&keep));
+        (back, p)
+    }
+
+    fn ids(m: &[CtxMsg]) -> Vec<&str> {
+        m.iter().map(|m| m.id.as_str()).collect()
+    }
+
+    #[test]
+    fn the_users_messages_come_back_where_they_were() {
+        let m = vec![
+            msg("u1", "user", "Fix the parser; don't touch the lexer"),
+            msg("a1", "assistant", "Looking."),
+            msg("u2", "user", "Also keep the public API"),
+            msg("a2", "assistant", "Done with step one."),
+        ];
+        // Everything replaced by a note: the task leads, the note follows.
+        let (back, p) = keeping("Goal: parser. NEXT: tests", &m, &m, 1000, Some(4));
+        assert_eq!(ids(&back), ["u1", "u2", "new-1-1"]);
+        assert_eq!(p.restored, [1, 3]);
+        assert_eq!(back[0], m[0]);
+
+        // One rewritten, one removed, the agent's work compacted around them.
+        let doc = render(&m, 1)
+            .replace("Fix the parser; don't touch the lexer", "fix parser")
+            .replace(
+                "[[CTX_TURN 3 role=user id=u2]]\nAlso keep the public API\n",
+                "",
+            )
+            .replace("Looking.", "Looked: bug in parse_expr.");
+        let (back, p) = keeping(&doc, &m, &m, 1000, Some(4));
+        assert_eq!(ids(&back), ["u1", "a1~e", "u2", "a2"]);
+        assert_eq!(back[0].text, "Fix the parser; don't touch the lexer");
+        assert_eq!(p.restored, [1, 3]);
+
+        // Untouched: nothing to do.
+        let (back, p) = keeping(&render(&m, 1), &m, &m, 1000, None);
+        assert_eq!(back, m);
+        assert_eq!(p, Protected::default());
+    }
+
+    #[test]
+    fn a_very_long_user_message_may_be_shortened_not_removed() {
+        let log = "error line\n".repeat(100);
+        let m = vec![
+            msg("u1", "user", &format!("Why does this fail?\n{log}")),
+            msg("a1", "assistant", "A missing import."),
+        ];
+        // Rewritten shorter: kept as the agent wrote it.
+        let doc = render(&m, 1).replace(log.trim_end(), "[log: import error]");
+        let (back, p) = keeping(&doc, &m, &m, 200, Some(2));
+        assert_eq!(p, Protected::default());
+        assert_eq!(back[0].id, "u1~e");
+        assert!(back[0].text.contains("[log: import error]"));
+
+        // Removed: its start comes back, with where the rest is.
+        let only_a1 = "[[CTX_TURN 2 role=assistant id=a1]]\nA missing import.";
+        let (back, p) = keeping(only_a1, &m, &m, 200, Some(2));
+        assert_eq!(p.shortened, [1]);
+        assert_eq!(ids(&back), ["u1~e", "a1"]);
+        assert_eq!(back[0].role, "user");
+        assert!(back[0].text.starts_with("Why does this fail?"));
+        assert!(back[0].text.contains("@context/revisions/2.md#1"));
+        assert!(back[0].text.chars().count() < 400);
+
+        // A shortened message is protected in turn: it can't be removed either.
+        let rendered = back.clone();
+        let (again, p) = keeping(only_a1, &rendered, &m, 200, Some(3));
+        assert_eq!(p.restored, [1]);
+        assert_eq!(again[0], rendered[0]);
     }
 
     #[test]
