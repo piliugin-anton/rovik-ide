@@ -6,7 +6,7 @@
 //! then renamed over the target. The rename is atomic on the same filesystem,
 //! so readers only ever see the complete old file or the complete new one.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
@@ -54,7 +54,7 @@ fn unique_suffix() -> u64 {
 /// flushed. Windows has no equivalent and doesn't need one for this.
 fn sync_dir(dir: &Path) {
     #[cfg(unix)]
-    if let Ok(d) = File::open(dir) {
+    if let Ok(d) = fs::File::open(dir) {
         let _ = d.sync_all();
     }
     #[cfg(not(unix))]

@@ -241,6 +241,26 @@ pub fn lsp_stop(state: State<'_, LspState>, id: String) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn finds_npm_cmd_shims_on_path() {
+        let dir = std::env::temp_dir().join(format!("find-program-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("some-language-server.cmd"), "@echo off\r\n").unwrap();
+        let path = std::env::join_paths([&dir]).unwrap();
+        assert_eq!(find_program("some-language-server", &path), dir.join("some-language-server.cmd"));
+        assert_eq!(find_program("not-there", &path), std::path::PathBuf::from("not-there"));
+        assert_eq!(find_program("node.exe", &path), std::path::PathBuf::from("node.exe"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn leaves_names_alone_elsewhere_or_with_an_extension() {
+        let path = std::ffi::OsString::new();
+        assert_eq!(find_program("rust-analyzer", &path), std::path::PathBuf::from("rust-analyzer"));
+        assert_eq!(find_program("/usr/bin/x", &path), std::path::PathBuf::from("/usr/bin/x"));
+    }
+
     #[test]
     fn frames_round_trip() {
         let a = r#"{"jsonrpc":"2.0","id":1,"result":"ж"}"#;

@@ -219,7 +219,12 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
         files,
         workdir: repo
             .workdir()
-            .map(|w| w.to_string_lossy().trim_end_matches(['/', '\\']).to_string())
+            // libgit2 writes `C:/p/` on Windows; the app names files `C:\p\…`.
+            .map(|w| {
+                let w = w.to_string_lossy();
+                let w = if cfg!(windows) { w.replace('/', "\\") } else { w.into_owned() };
+                w.trim_end_matches(['/', '\\']).to_string()
+            })
             .unwrap_or_default(),
     })
 }
@@ -693,7 +698,7 @@ mod revert_tests {
         let (dir, _repo) = repo_with_commit();
         fs::write(dir.join("b.txt"), "changed\n").unwrap();
         let st = git_status_blocking(path(&dir.join("src"))).unwrap();
-        assert_eq!(st.workdir, path(&dir).trim_end_matches('/'));
+        assert_eq!(st.workdir, path(&dir).trim_end_matches(['/', '\\']));
         let b = st.files.iter().find(|f| f.path == "b.txt").unwrap();
         assert!(b.unstaged && !b.staged);
     }

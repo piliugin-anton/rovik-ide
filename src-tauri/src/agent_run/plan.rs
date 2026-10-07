@@ -111,8 +111,13 @@ fn file_stem(request: &str, date: &str) -> String {
     format!("{date}-{}", if slug.is_empty() { "plan" } else { &slug })
 }
 
+/// `root` and `rel` (written with `/`) as one path in the OS's own form: the
+/// file tree and editor tabs name files that way, so `C:\p/.rovik/plans`
+/// would open as a second tab of the same file on Windows.
 fn join(root: &str, rel: &str) -> String {
-    format!("{}/{rel}", root.trim_end_matches(['/', '\\']))
+    let mut path = std::path::PathBuf::from(root);
+    path.extend(rel.split('/'));
+    path.to_string_lossy().into_owned()
 }
 
 /// Saves a plan and returns its path. `existing`: the chat's earlier plan

@@ -250,6 +250,44 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn captures_output_and_exit_code_in_cmd() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), "echo hi& echo oops 1>&2& exit /b 3", Duration::from_secs(20)).unwrap();
+        assert_eq!(out.exit_code, Some(3));
+        assert_eq!(out.stdout.trim(), "hi");
+        assert_eq!(out.stderr.trim(), "oops");
+        assert!(!out.timed_out);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quotes_reach_cmd_intact() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), r#"echo "a b" "c""#, Duration::from_secs(20)).unwrap();
+        assert_eq!(out.stdout.trim(), r#""a b" "c""#);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_output_keeps_its_start_and_end_in_cmd() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (0,1,19999) do @echo line %i", Duration::from_secs(120)).unwrap();
+        assert!(out.truncated);
+        assert!(out.stdout.starts_with("line 0\r\n"));
+        assert!(out.stdout.trim_end().ends_with("line 19999"));
+        assert!(out.stdout.contains("bytes of output omitted"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn times_out_in_cmd() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (1,1,2000000000) do @rem", Duration::from_millis(500)).unwrap();
+        assert!(out.timed_out);
+    }
+
     #[test]
     fn short_output_is_kept_whole() {
         let mut kept = HeadTail::new();

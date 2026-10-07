@@ -204,8 +204,10 @@ export function GitPanel(props: GitPanelProps) {
   /** A row's file on disk. */
   const absPathOf = (file: string) => {
     const root = status()?.workdir || props.projectPath;
+    // Git names files with `/`; on Windows the tree and tabs use `\`, and a
+    // mixed path would open a second tab of the same file.
     const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
-    return `${root}${sep}${file}`;
+    return `${root.replace(/[\\/]+$/, '')}${sep}${file.replace(/[\\/]/g, sep)}`;
   };
 
   /**

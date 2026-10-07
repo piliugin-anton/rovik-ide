@@ -189,7 +189,7 @@ const CPP_QUERY: &str = r#"
 ]) @item
 "#;
 
-static LANGUAGES: [Lang; 72] = [
+static LANGUAGES: [Lang; 71] = [
     lang!("Rust", tree_sitter_rust::LANGUAGE, ext: ["rs"], files: [],
         kinds: ["function_item", "function_signature_item", "impl_item", "trait_item", "struct_item", "enum_item",
             "union_item", "mod_item", "type_item", "const_item", "static_item", "macro_definition", "foreign_mod_item"],
@@ -486,9 +486,6 @@ static LANGUAGES: [Lang; 72] = [
     lang!("Nickel", tree_sitter_nickel::LANGUAGE, ext: ["ncl"], files: [],
         kinds: ["let_binding", "field_def"],
         query: "(let_binding pat: (_) @name) @item (field_def path: (_) @name) @item", tags: None),
-    lang!("Agda", tree_sitter_agda::LANGUAGE, ext: ["agda"], files: [],
-        kinds: ["module", "data", "record", "function", "postulate", "signature"],
-        query: "", tags: None),
     lang!("XML", tree_sitter_xml::LANGUAGE_XML, ext: ["xml", "xsd", "xsl", "xslt", "svg", "plist", "csproj", "fsproj", "vbproj", "props", "targets", "resx", "xaml", "wsdl", "pom", "rss", "atom"], files: [],
         kinds: ["element"],
         query: "", tags: None),

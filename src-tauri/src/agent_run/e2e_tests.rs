@@ -510,7 +510,7 @@ async fn plan_mode_asks_and_saves_the_plan() {
     assert!(agent_answer_questions(app.clone(), app.state(), "q1".into(), outcome));
     assert_eq!(h.run_end().await, "done");
 
-    let saved = h.project.join(".rovik/plans/2026-10-06-add-users.md");
+    let saved = h.project.join(".rovik").join("plans").join("2026-10-06-add-users.md");
     assert_eq!(std::fs::read_to_string(&saved).unwrap(), format!("{plan}\n"));
     let messages = h.messages().await;
     let answer = messages.iter().find(|m| m.tool_call_id.as_deref() == Some("q1")).unwrap();
@@ -574,7 +574,7 @@ async fn a_failed_first_reply_marks_the_message_failed() {
 async fn the_ai_reviewer_decides_and_risky_commands_still_ask() {
     let h = harness(&[]).await;
     let (url, _) = model(vec![
-        Reply::Call { id: "r1", name: "run_command", args: json!({ "command": "ls" }) },
+        Reply::Call { id: "r1", name: "run_command", args: json!({ "command": "echo hi" }) },
         Reply::Call { id: "r2", name: "run_command", args: json!({ "command": "git push" }) },
         Reply::Text("Done."),
     ])
@@ -605,7 +605,7 @@ async fn the_ai_reviewer_decides_and_risky_commands_still_ask() {
 
     let messages = h.messages().await;
     let first = messages.iter().find(|m| m.tool_call_id.as_deref() == Some("r1")).unwrap();
-    assert!(first.content.starts_with("$ ls\nexit code 0"), "{}", first.content);
+    assert!(first.content.starts_with("$ echo hi\nexit code 0"), "{}", first.content);
     assert_eq!(
         first.meta.as_ref().unwrap()["approval"],
         json!({ "by": "ai", "approved": true, "model": "Reviewer", "reason": "Harmless." })
@@ -613,7 +613,7 @@ async fn the_ai_reviewer_decides_and_risky_commands_still_ask() {
     // The reviewer saw the request and the command.
     let review = reviewed.lock().unwrap()[0].clone();
     let prompt = review["messages"][1]["content"].as_str().unwrap();
-    assert!(prompt.contains("User's request:\nList, then push") && prompt.contains("Action: Run `ls`"), "{prompt}");
+    assert!(prompt.contains("User's request:\nList, then push") && prompt.contains("Action: Run `echo hi`"), "{prompt}");
     assert_eq!(review["max_tokens"], 300);
     // Its review was shown while it ran.
     let notes = h.events_of("toolNote");

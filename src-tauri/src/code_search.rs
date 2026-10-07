@@ -261,6 +261,8 @@ fn search_counting_to(
                 }
                 let path = entry.path();
                 let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().into_owned();
+                // `/` on every platform, like the other tools' paths.
+                let rel = if cfg!(windows) { rel.replace('\\', "/") } else { rel };
                 let mut sink = Collector {
                     matcher: &matcher,
                     path: rel.clone(),
