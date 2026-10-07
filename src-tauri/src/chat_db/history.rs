@@ -22,6 +22,10 @@
 //! IDE adds in the user role (check failures, `harness` in their meta) are
 //! part of the run, not new requests: the user's request is never dropped.
 //! Only the copy sent to the model is trimmed; stored messages are untouched.
+//!
+//! Once a run is long, the request ends with a focus note (`focus_note`):
+//! the user's request and the agent's checklist, restated at the end where
+//! the model attends to them most.
 
 use super::attachments;
 use super::store::{char_prefix, get_message_body, get_messages, tool_call_extras, DbResult, ToolCall};
@@ -357,6 +361,66 @@ pub fn starts_request(m: &Msg) -> bool {
     m.role == "user" && !m.harness
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Focus note: the task restated at the end of a long run
+ * ---------------------------------------------------------------------------
+ */
+
+/// Tool results in the current request before its task is restated: by
+/// then the request and the checklist sit in the middle of the context,
+/// where models attend to them least.
+const FOCUS_AFTER_TOOL_RESULTS: usize = 6;
+/// How much of the user's request the note repeats.
+const FOCUS_REQUEST_CHARS: usize = 600;
+
+/// The current request and its checklist, restated for the end of the
+/// request (the CLM task card does this in CLM mode). None while the run
+/// is short, or when the history doesn't end inside a run.
+pub fn focus_note(messages: &[Msg]) -> Option<String> {
+    let start = messages.iter().rposition(starts_request)?;
+    let run = &messages[start + 1..];
+    if !matches!(messages.last()?.role.as_str(), "tool" | "user") {
+        return None;
+    }
+    if run.iter().filter(|m| m.role == "tool").count() < FOCUS_AFTER_TOOL_RESULTS {
+        return None;
+    }
+    let text = messages[start].text.trim();
+    let request = char_prefix(text, FOCUS_REQUEST_CHARS);
+    let more = if request.len() < text.len() || messages[start].needs_body { " …" } else { "" };
+    let mut note = format!(
+        "[Automatic note by the IDE, not written by the user: the task you are working on, restated so it stays in view.]\n\
+         The user's request: {request}{more}"
+    );
+    let checklist = run
+        .iter()
+        .rev()
+        .flat_map(|m| m.tool_calls.iter().flatten().rev())
+        .filter(|c| c.name == "todo")
+        .find_map(|c| match serde_json::from_str::<Value>(&c.arguments) {
+            Ok(Value::Object(args)) => Some(crate::agent_run::plan::parse_todo(&args)).filter(|i| !i.is_empty()),
+            _ => None,
+        });
+    if let Some(items) = checklist {
+        let done = items.iter().filter(|i| crate::agent_run::plan::is_settled(i)).count();
+        note.push_str(&format!("\nYour checklist ({done} of {} done):", items.len()));
+        for item in &items {
+            note.push_str(&format!("\n- [{}] {}", item.status, item.title));
+        }
+    }
+    note.push_str("\n[end of note]");
+    Some(note)
+}
+
+/// Puts the note on the request's last message (not stored).
+pub fn add_focus_note(messages: &mut [Msg], note: &str) {
+    if let Some(last) = messages.last_mut() {
+        last.text = format!("{}\n\n{note}", last.text.trim_end());
+        last.full_chars = last.text.chars().count();
+    }
+}
+
 /// The budget rules with the default token estimate (tests).
 #[cfg(test)]
 pub fn fit(messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, FitInfo) {
@@ -462,8 +526,16 @@ pub fn build_wire(
 ) -> DbResult<(Vec<Value>, FitInfo)> {
     let messages = load_messages(conn, dialog_id, current_user_content)?;
     let cost = Cost { vision, chars_per_token };
-    let (mut fitted, info) = fit_with(messages, token_budget, cost);
+    // The note is made before fitting (which never drops the current
+    // request or its calls) and its room kept out of the budget.
+    let focus = focus_note(&messages);
+    let note_tokens = focus.as_ref().map_or(0, |n| cost.tokens(n.chars().count() + 2));
+    let (mut fitted, mut info) = fit_with(messages, token_budget.saturating_sub(note_tokens), cost);
     load_bodies(conn, &mut fitted)?;
+    if let Some(note) = focus {
+        add_focus_note(&mut fitted, &note);
+        info.estimated_tokens += note_tokens;
+    }
     Ok((to_wire(&fitted, data_dir, vision, gemini), info))
 }
 
@@ -790,6 +862,61 @@ mod tests {
         assert_eq!(ids, ["u:", "a:", "t:c1", "t:c2", "u:", "a:", "t:c3"]);
         assert!(pairing_ok(&out));
         assert_eq!(out[3].text, UNANSWERED_NOTE);
+    }
+
+    fn todo(items: &str) -> Msg {
+        let mut m = msg("assistant", "");
+        m.tool_calls = Some(vec![ToolCall { id: "todo-1".into(), name: "todo".into(), arguments: items.into(), extra_content: None }]);
+        m
+    }
+    fn long_run(request: &str) -> Vec<Msg> {
+        let mut history = vec![msg("user", "an earlier request"), msg("assistant", "done"), msg("user", request)];
+        for i in 0..FOCUS_AFTER_TOOL_RESULTS {
+            let id = format!("c{i}");
+            history.push(call(&[&id]));
+            history.push(tool(&id, 10));
+        }
+        history
+    }
+
+    #[test]
+    fn focus_note_restates_a_long_run() {
+        let mut short = long_run("fix the parser");
+        short.truncate(short.len() - 2);
+        assert_eq!(focus_note(&short), None);
+
+        let mut history = long_run("fix the parser");
+        history.insert(3, todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"in_progress"},"test"]}"#));
+        let note = focus_note(&history).unwrap();
+        assert!(note.contains("The user's request: fix the parser\n"), "{note}");
+        assert!(note.contains("Your checklist (1 of 3 done):\n- [done] read\n- [in_progress] fix\n- [pending] test"), "{note}");
+        assert!(!note.contains("earlier request"));
+
+        // The latest checklist wins; one from an earlier request doesn't count.
+        history.push(todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"done"}]}"#));
+        history.push(tool("todo-1", 10));
+        assert!(focus_note(&history).unwrap().contains("(2 of 2 done)"));
+        let mut earlier = long_run("next");
+        earlier.insert(1, todo(r#"{"items":["old step"]}"#));
+        assert!(!focus_note(&earlier).unwrap().contains("checklist"));
+    }
+
+    #[test]
+    fn focus_note_edge_cases() {
+        // A history ending in the agent's reply isn't inside a run.
+        let mut history = long_run("q");
+        history.push(msg("assistant", "finished"));
+        assert_eq!(focus_note(&history), None);
+        assert_eq!(focus_note(&[]), None);
+        // A long request is cut.
+        let note = focus_note(&long_run(&"é".repeat(FOCUS_REQUEST_CHARS + 5))).unwrap();
+        assert!(note.contains(&format!("{} …", "é".repeat(FOCUS_REQUEST_CHARS))));
+        // The note rides on the last message.
+        let mut history = long_run("q");
+        add_focus_note(&mut history, "NOTE");
+        let last = history.last().unwrap();
+        assert!(last.text.ends_with("\n\nNOTE"));
+        assert_eq!(last.full_chars, last.text.chars().count());
     }
 
     #[test]
