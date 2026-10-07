@@ -4,7 +4,7 @@
 // sentence ("Read src/App.tsx", "Searched for "foo" · 12 matches"); expanding
 // it shows the call arguments and the result together.
 import { createMemo, createResource, createSignal, For, Show } from 'solid-js';
-import type { ChatMessage, ChatToolCall, ToolMeta } from '../types';
+import type { ChatMessage, ChatToolCall, ReviewCheck, ToolApproval, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
 import EditDiffBlock from './EditDiffBlock';
 import QuestionCard from './QuestionCard';
@@ -14,7 +14,7 @@ import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
 import { diffRows, snippetLines } from '../lib/lineDiff';
 import { describeToolCall } from '../lib/permissions';
-import { parseReviewChecks, REJECT_AT } from '../lib/aiApproval';
+import { APPROVE_AT, REJECT_AT, reviewChecks } from '../lib/aiApproval';
 import { requestOpenFile } from '../lib/editorBridge';
 import {
   allow,
@@ -357,6 +357,78 @@ function ChevronIcon() {
  * edits are reviewed change by change in the editor; this offers the
  * shortcuts.
  */
+/** One check's score as a bar, with the reject and approve thresholds marked. */
+function CheckRow(props: { check: ReviewCheck }) {
+  const percent = () => Math.round(props.check.score * 100);
+  const level = () =>
+    props.check.score >= APPROVE_AT ? 'pass' : props.check.score <= REJECT_AT ? 'fail' : 'unsure';
+  return (
+    <li class={level()}>
+      <span class="tool-call-approval-check">{props.check.label}</span>
+      <span class="tool-call-approval-bar" aria-hidden="true">
+        <span class="tool-call-approval-fill" style={{ width: `${percent()}%` }} />
+        <span class="tool-call-approval-tick" style={{ left: `${REJECT_AT * 100}%` }} />
+        <span class="tool-call-approval-tick" style={{ left: `${APPROVE_AT * 100}%` }} />
+      </span>
+      <span class="tool-call-approval-score">{percent()}%</span>
+    </li>
+  );
+}
+
+/**
+ * Who decided and why. A typed reviewer's scores show as bars, folded
+ * into one line when every check passed; a text reviewer's reason shows
+ * as written.
+ */
+function ApprovalDetails(props: { approval: ToolApproval }) {
+  const checks = () => (props.approval.by === 'ai' ? reviewChecks(props.approval) : undefined);
+  const allPassed = () => checks()?.every((c) => c.score >= APPROVE_AT) ?? false;
+  const [open, setOpen] = createSignal(false);
+  const shown = () => open() || !allPassed();
+  return (
+    <div class="tool-call-approval" classList={{ rejected: !props.approval.approved }}>
+      <div class="tool-call-approval-verdict">
+        <span class="tool-call-approval-mark" aria-hidden="true">
+          {props.approval.approved ? '✓' : '✕'}
+        </span>
+        {props.approval.approved ? 'Approved' : 'Rejected'}
+        {props.approval.by === 'ai' ? ' by AI reviewer' : ' by you'}
+        <Show when={allPassed()}>
+          <button
+            class="tool-call-approval-toggle"
+            aria-expanded={open()}
+            onClick={() => setOpen(!open())}
+          >
+            {checks()!.length === 1 ? '1 check passed' : `${checks()!.length} checks passed`}
+            <span aria-hidden="true">{open() ? ' ▾' : ' ▸'}</span>
+          </button>
+        </Show>
+      </div>
+      <Show when={props.approval.by === 'ai' && props.approval.model}>
+        <div class="tool-call-approval-model" title={props.approval.model}>
+          {props.approval.model}
+        </div>
+      </Show>
+      <Show
+        when={checks()}
+        fallback={
+          <Show when={props.approval.reason}>
+            <div class="tool-call-approval-reason">{props.approval.reason}</div>
+          </Show>
+        }
+      >
+        {(list) => (
+          <Show when={shown()}>
+            <ul class="tool-call-approval-checks">
+              <For each={list()}>{(c) => <CheckRow check={c} />}</For>
+            </ul>
+          </Show>
+        )}
+      </Show>
+    </div>
+  );
+}
+
 function ApprovalBar(props: { request: PendingApproval }) {
   const id = () => props.request.toolCallId;
   const counts = () => (props.request.edit ? hunkCounts(props.request.edit) : null);
@@ -633,41 +705,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
             {(a) => (
               <section class="tool-call-section">
                 <div class="tool-call-label">Approval</div>
-                <div class="tool-call-approval" classList={{ rejected: !a().approved }}>
-                  <div class="tool-call-approval-verdict">
-                    <span class="tool-call-approval-mark" aria-hidden="true">
-                      {a().approved ? '✓' : '✕'}
-                    </span>
-                    {a().approved ? 'Approved' : 'Rejected'}
-                    {a().by === 'ai' ? ' by AI reviewer' : ' by you'}
-                  </div>
-                  <Show when={a().by === 'ai' && a().model}>
-                    <div class="tool-call-approval-model" title={a().model}>
-                      {a().model}
-                    </div>
-                  </Show>
-                  <Show when={a().reason}>
-                    {(reason) => (
-                      <Show
-                        when={parseReviewChecks(reason())}
-                        fallback={<div class="tool-call-approval-reason">{reason()}</div>}
-                      >
-                        {(checks) => (
-                          <ul class="tool-call-approval-checks">
-                            <For each={checks()}>
-                              {(c) => (
-                                <li classList={{ failed: c.percent <= REJECT_AT * 100 }}>
-                                  <span class="tool-call-approval-check">{c.label}</span>
-                                  <span class="tool-call-approval-score">{c.percent}%</span>
-                                </li>
-                              )}
-                            </For>
-                          </ul>
-                        )}
-                      </Show>
-                    )}
-                  </Show>
-                </div>
+                <ApprovalDetails approval={a()} />
               </section>
             )}
           </Show>

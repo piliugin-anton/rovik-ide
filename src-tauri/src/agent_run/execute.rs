@@ -63,8 +63,17 @@ enum Prepared {
     Invalid(String),
 }
 
-fn approval_json(by: Approver, approved: bool, model: Option<String>, reason: Option<String>) -> Value {
+fn approval_json(
+    by: Approver,
+    approved: bool,
+    model: Option<String>,
+    reason: Option<String>,
+    checks: &[review::Check],
+) -> Value {
     let mut v = json!({ "by": by, "approved": approved });
+    if !checks.is_empty() {
+        v["checks"] = json!(checks);
+    }
     if let Some(m) = model {
         v["model"] = json!(m);
     }
@@ -515,8 +524,9 @@ impl<R: Runtime> Run<R> {
                 self.tool_note(&tc.id, None);
 
                 match review {
-                    ReviewResult::Decided { approved, reason, model } => {
-                        let approval = approval_json(Approver::Ai, approved, Some(model.clone()), Some(reason.clone()));
+                    ReviewResult::Decided { approved, reason, model, checks } => {
+                        let approval =
+                            approval_json(Approver::Ai, approved, Some(model.clone()), Some(reason.clone()), &checks);
                         return if approved {
                             Authorized { approval: Some(approval), ..Default::default() }
                         } else {
@@ -559,7 +569,7 @@ impl<R: Runtime> Run<R> {
 
         match decision {
             ApprovalDecision::Allow => {
-                Authorized { approval: Some(approval_json(Approver::User, true, None, None)), ..Default::default() }
+                Authorized { approval: Some(approval_json(Approver::User, true, None, None, &[])), ..Default::default() }
             }
             ApprovalDecision::Deny => Authorized {
                 refusal: Some(match &rel_path {
@@ -571,7 +581,7 @@ impl<R: Runtime> Run<R> {
                         tc.name
                     ),
                 }),
-                approval: Some(approval_json(Approver::User, false, None, None)),
+                approval: Some(approval_json(Approver::User, false, None, None, &[])),
                 ..Default::default()
             },
             // Some changes accepted: write the original with only those applied.
@@ -592,6 +602,7 @@ impl<R: Runtime> Run<R> {
                         true,
                         None,
                         Some(format!("Accepted {} of {total} changes.", total.saturating_sub(rejected.len()))),
+                        &[],
                     )),
                     args_override: Some(args_override),
                     tool_override: (tc.name == "edit_file").then(|| "write_file".to_string()),

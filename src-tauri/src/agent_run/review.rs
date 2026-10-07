@@ -47,9 +47,17 @@ pub struct ReviewInput {
     pub is_new_file: bool,
 }
 
+/// One typed check and the probability Jev gave it.
+#[derive(Debug, PartialEq, Clone, serde::Serialize)]
+pub struct Check {
+    pub label: String,
+    pub score: f64,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ReviewResult {
-    Decided { approved: bool, reason: String, model: String },
+    /// `checks`: typed input's scores (empty for a text reviewer).
+    Decided { approved: bool, reason: String, model: String, checks: Vec<Check> },
     /// The reviewer answered but wasn't sure either way: ask the user.
     Unsure { reason: String },
     Failed { errors: Vec<String> },
@@ -207,7 +215,7 @@ async fn review_with_text<R: Runtime>(
             Err(e) => errors.push(format!("{}: {e}", profile.label)),
             Ok(text) => match parse_decision(&text) {
                 Some((approved, reason)) => {
-                    return Some(ReviewResult::Decided { approved, reason, model: profile.label.clone() })
+                    return Some(ReviewResult::Decided { approved, reason, model: profile.label.clone(), checks: Vec::new() })
                 }
                 None => errors.push(format!("{}: unclear reply", profile.label)),
             },
@@ -339,13 +347,16 @@ fn decide(label: &str, scores: &[(&Noul, f64)]) -> ReviewResult {
     let shown = |list: &[&(&Noul, f64)]| {
         list.iter().map(|(q, p)| format!("{} {}%", q.label, (p * 100.0).round())).collect::<Vec<_>>().join(", ")
     };
+    let checks = || scores.iter().map(|(q, p)| Check { label: q.label.into(), score: *p }).collect();
     let failed: Vec<&(&Noul, f64)> = scores.iter().filter(|(_, p)| *p <= REJECT_AT).collect();
     if !failed.is_empty() {
-        return ReviewResult::Decided { approved: false, reason: format!("Failed: {}.", shown(&failed)), model: label.into() };
+        let reason = format!("Failed: {}.", shown(&failed));
+        return ReviewResult::Decided { approved: false, reason, model: label.into(), checks: checks() };
     }
     let all: Vec<&(&Noul, f64)> = scores.iter().collect();
     if scores.iter().all(|(_, p)| *p >= APPROVE_AT) {
-        return ReviewResult::Decided { approved: true, reason: format!("Checks passed: {}.", shown(&all)), model: label.into() };
+        let reason = format!("Checks passed: {}.", shown(&all));
+        return ReviewResult::Decided { approved: true, reason, model: label.into(), checks: checks() };
     }
     ReviewResult::Unsure { reason: format!("{label} wasn’t sure ({}).", shown(&all)) }
 }
@@ -434,7 +445,16 @@ mod tests {
         let scores = [(&qs[0], 0.95), (&qs[1], 0.05), (&qs[2], 0.5)];
         assert_eq!(
             decide("Jev", &scores),
-            ReviewResult::Decided { approved: false, reason: "Failed: stays in scope 5%.".into(), model: "Jev".into() }
+            ReviewResult::Decided {
+                approved: false,
+                reason: "Failed: stays in scope 5%.".into(),
+                model: "Jev".into(),
+                checks: vec![
+                    Check { label: qs[0].label.into(), score: 0.95 },
+                    Check { label: qs[1].label.into(), score: 0.05 },
+                    Check { label: qs[2].label.into(), score: 0.5 },
+                ],
+            }
         );
         assert!(matches!(decide("Jev", &[(&qs[0], 0.5)]), ReviewResult::Unsure { .. }));
     }
