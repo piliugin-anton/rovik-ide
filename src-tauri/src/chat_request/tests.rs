@@ -21,6 +21,7 @@ fn names(events: &[ChatStreamEvent]) -> Vec<String> {
             ChatStreamEvent::Delta { content } => format!("delta:{content}"),
             ChatStreamEvent::Reasoning { content } => format!("reasoning:{content}"),
             ChatStreamEvent::ReasoningSupport { .. } => "reasoning_support".into(),
+            ChatStreamEvent::ApiRoute { route } => format!("api_route:{route}"),
             ChatStreamEvent::Done => "done".into(),
             ChatStreamEvent::Finished { .. } => "finished".into(),
             ChatStreamEvent::Error { .. } => "error".into(),

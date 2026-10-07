@@ -219,6 +219,7 @@ impl Harness {
                 context_tokens: Some(100_000),
                 no_tools: false,
                 first_byte_timeout_ms: None,
+                api_route: None,
             },
             options: None,
             mode: Some("agent".into()),

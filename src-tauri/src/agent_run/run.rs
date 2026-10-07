@@ -483,6 +483,7 @@ impl<R: Runtime> Run<R> {
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
                 carried_notes: carried_notes.clone(),
+                api_route: self.profile.api_route.clone(),
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -1095,6 +1096,9 @@ impl<R: Runtime> Stream<R> {
             ChatStreamEvent::Finished { finish_reason, usage } => {
                 self.finish_reason = finish_reason;
                 self.usage = usage;
+            }
+            ChatStreamEvent::ApiRoute { route } => {
+                emit(&self.app, AgentEvent::ApiRouteLearned { profile_id: self.profile_id.clone(), route });
             }
             ChatStreamEvent::Done => {}
             ChatStreamEvent::Retrying { attempt, max_attempts, delay_ms, reason } => {

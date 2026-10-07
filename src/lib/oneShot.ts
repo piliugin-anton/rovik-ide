@@ -11,6 +11,7 @@ import type {
   OpenAIChatOptions,
 } from '../types';
 import { sendChatMessage, streamEndSignal, untilStreamEnd } from './aiChat';
+import { noteApiRoute } from './agentRuns';
 
 export type OneShotResult = { ok: true; text: string } | { ok: false; error: string };
 
@@ -36,6 +37,9 @@ export async function completeOnce(args: {
         break;
       case 'Done':
         stream.end();
+        break;
+      case 'ApiRoute':
+        noteApiRoute(args.profile.id, event.route);
         break;
       default:
         // No tools are offered, so tool-call events are ignored.

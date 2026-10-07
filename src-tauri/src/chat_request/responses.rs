@@ -4,10 +4,12 @@
 //! translates the body on the way out and the replies on the way in, so the
 //! rest of the app never sees which route a model is on.
 //!
-//! Which route: every model starts on `/chat/completions`. A refusal that
-//! points at the Responses API (`points_to_responses`) sends the same request
-//! to `/responses` instead (`agent::run_with_reasoning`); when that works,
-//! the model is remembered on it, until the app restarts.
+//! Which route: a model starts on the route it was last found to work on
+//! (remembered here, and saved with the model in the settings), else on
+//! `/chat/completions`. A refusal that suggests the other route
+//! (`wrong_route`) sends the same request there once
+//! (`agent::run_with_reasoning`); when that works, the model is remembered
+//! on it and the frontend is told, so it's saved (`ChatStreamEvent::ApiRoute`).
 
 use super::{classify_body_error, ChatError, ErrorKind, ReplyParser};
 use crate::agent::ChatStreamEvent;
@@ -22,27 +24,48 @@ pub enum Api {
     Responses,
 }
 
+impl Api {
+    /// As saved with the model: "chat_completions" or "responses".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Api::ChatCompletions => "chat_completions",
+            Api::Responses => "responses",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Api> {
+        match text {
+            "chat_completions" => Some(Api::ChatCompletions),
+            "responses" => Some(Api::Responses),
+            _ => None,
+        }
+    }
+
+    pub fn other(self) -> Api {
+        match self {
+            Api::ChatCompletions => Api::Responses,
+            Api::Responses => Api::ChatCompletions,
+        }
+    }
+}
+
 /*
  * ---------------------------------------------------------------------------
  * Which route a model is on
  * ---------------------------------------------------------------------------
  */
 
-/// Models found to need `/responses`, by chat completions URL and model.
+/// The route each model was last found to work on, by chat completions URL
+/// and model.
 static ROUTES: LazyLock<Mutex<HashMap<String, Api>>> = LazyLock::new(Default::default);
 
 fn key(chat_url: &str, model: &str) -> String {
     format!("{chat_url}|{model}")
 }
 
-/// The route to start with: chat completions unless this model was found
-/// to need the Responses API.
-pub fn remembered(chat_url: &str, model: &str) -> Api {
-    ROUTES
-        .lock()
-        .ok()
-        .and_then(|r| r.get(&key(chat_url, model)).copied())
-        .unwrap_or_default()
+/// The route this model was found to work on since the app started.
+pub fn remembered(chat_url: &str, model: &str) -> Option<Api> {
+    ROUTES.lock().ok().and_then(|r| r.get(&key(chat_url, model)).copied())
 }
 
 pub fn remember(chat_url: &str, model: &str, api: Api) {
@@ -57,32 +80,57 @@ pub fn responses_url(chat_url: &str) -> Option<String> {
     chat_url.strip_suffix("/chat/completions").map(|base| format!("{base}/responses"))
 }
 
-/// Whether a refused chat completions request means the model needs the
-/// Responses API:
-/// - OpenAI: "This model is only supported in v1/responses and not in
-///   v1/chat/completions.", "This is not a chat model…";
-/// - Azure: "The chatCompletion operation does not work with the specified
-///   model…";
-/// - a 404 or 405 that isn't a provider's JSON error: the server has no
-///   chat completions route at all.
-pub fn points_to_responses(error: &ChatError) -> bool {
+/// Whether a request refused on `sent_to` may have gone to the wrong route,
+/// so the other one is worth a try:
+/// - the provider says so. On `/chat/completions`, OpenAI: "This model is
+///   only supported in v1/responses and not in v1/chat/completions.", "This
+///   is not a chat model…"; Azure: "The chatCompletion operation does not
+///   work with the specified model…". On `/responses`: "only supported in
+///   v1/chat/completions", "the Responses API is not supported", and so on;
+/// - OpenAI's "Invalid URL (POST /v1/…)": the server has no such route;
+/// - a 404 or 405 that isn't a provider's JSON error: the same, from a
+///   server that answers unknown paths with a bare page.
+///
+/// A missing model, a rejected field, an auth failure: not the route.
+pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
     if error.partial || !matches!(error.kind, ErrorKind::BadRequest | ErrorKind::NotFound) {
         return false;
     }
     let text = format!("{} {}", error.message, error.details.as_deref().unwrap_or("")).to_lowercase();
-    let named = [
-        "v1/responses",
-        "/responses endpoint",
-        "responses api",
-        "responses endpoint",
-        "not a chat model",
-        "chatcompletion operation",
-        "not supported in the v1/chat/completions",
-        "not supported in v1/chat/completions",
-        "not in v1/chat/completions",
-    ]
-    .iter()
-    .any(|needle| text.contains(needle));
+    let (needles, path): (&[&str], &str) = match sent_to {
+        Api::ChatCompletions => (
+            &[
+                "v1/responses",
+                "/responses endpoint",
+                "responses api",
+                "responses endpoint",
+                "not a chat model",
+                "chatcompletion operation",
+                "not supported in the v1/chat/completions",
+                "not supported in v1/chat/completions",
+                "not in v1/chat/completions",
+            ],
+            "/chat/completions",
+        ),
+        Api::Responses => (
+            &[
+                "v1/chat/completions",
+                "chat completions api",
+                "chat completions endpoint",
+                "use chat/completions",
+                "responses api is not",
+                "responses is not supported",
+                "responses are not supported",
+                "does not support the responses",
+                "not supported in the v1/responses",
+                "not supported in v1/responses",
+                "not in v1/responses",
+            ],
+            "/responses",
+        ),
+    };
+    let named = needles.iter().any(|needle| text.contains(needle));
+    let invalid_url = text.contains("invalid url") && text.contains(path);
     let no_route = matches!(error.status, Some(404 | 405))
         && error
             .details
@@ -90,7 +138,7 @@ pub fn points_to_responses(error: &ChatError) -> bool {
             .and_then(|d| serde_json::from_str::<Value>(d).ok())
             .and_then(|v| super::error_message_from(&v))
             .is_none();
-    named || no_route
+    named || invalid_url || no_route
 }
 
 /*
@@ -535,22 +583,29 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_refusals_that_point_to_responses() {
+    fn recognizes_refusals_that_point_to_the_other_route() {
         let headers = reqwest::header::HeaderMap::new();
         let classify = |status, body: &str| super::super::classify_status(status, &headers, body);
+        let chat = Api::ChatCompletions;
         let openai = r#"{"error":{"message":"This model is only supported in v1/responses and not in v1/chat/completions.","type":"invalid_request_error"}}"#;
-        assert!(points_to_responses(&classify(404, openai)));
-        assert!(points_to_responses(&classify(400, openai)));
+        assert!(wrong_route(&classify(404, openai), chat));
+        assert!(wrong_route(&classify(400, openai), chat));
         let azure = r#"{"error":{"code":"OperationNotSupported","message":"The chatCompletion operation does not work with the specified model, codex-mini."}}"#;
-        assert!(points_to_responses(&classify(400, azure)));
-        // A server with no chat completions route.
-        assert!(points_to_responses(&classify(404, "404 page not found")));
-        assert!(points_to_responses(&classify(405, "")));
+        assert!(wrong_route(&classify(400, azure), chat));
+        // A server with no such route.
+        assert!(wrong_route(&classify(404, "404 page not found"), chat));
+        assert!(wrong_route(&classify(405, ""), Api::Responses));
+        let invalid = r#"{"error":{"message":"Invalid URL (POST /v1/responses)","type":"invalid_request_error"}}"#;
+        assert!(wrong_route(&classify(404, invalid), Api::Responses));
+        let back = r#"{"error":{"message":"This model is only supported in v1/chat/completions."}}"#;
+        assert!(wrong_route(&classify(400, back), Api::Responses));
         // A missing model, a bad field, an auth failure: not the route.
         let missing = r#"{"error":{"message":"The model `nope` does not exist or you do not have access to it."}}"#;
-        assert!(!points_to_responses(&classify(404, missing)));
-        assert!(!points_to_responses(&classify(400, r#"{"error":{"message":"Unrecognized request argument supplied: reasoning"}}"#)));
-        assert!(!points_to_responses(&classify(401, openai)));
+        assert!(!wrong_route(&classify(404, missing), chat));
+        assert!(!wrong_route(&classify(404, missing), Api::Responses));
+        let field = r#"{"error":{"message":"Unrecognized request argument supplied: reasoning"}}"#;
+        assert!(!wrong_route(&classify(400, field), chat));
+        assert!(!wrong_route(&classify(401, openai), chat));
     }
 
     #[test]
@@ -558,9 +613,10 @@ mod tests {
         assert_eq!(responses_url("https://api.openai.com/v1/chat/completions").as_deref(), Some("https://api.openai.com/v1/responses"));
         assert_eq!(responses_url("https://example.test/custom"), None);
         let url = "https://memory.test/v1/chat/completions";
-        assert_eq!(remembered(url, "m"), Api::ChatCompletions);
+        assert_eq!(remembered(url, "m"), None);
         remember(url, "m", Api::Responses);
-        assert_eq!(remembered(url, "m"), Api::Responses);
-        assert_eq!(remembered(url, "other"), Api::ChatCompletions);
+        assert_eq!(remembered(url, "m"), Some(Api::Responses));
+        assert_eq!(remembered(url, "other"), None);
+        assert_eq!(Api::parse(Api::Responses.as_str()), Some(Api::Responses));
     }
 }
