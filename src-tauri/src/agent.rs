@@ -1161,6 +1161,10 @@ pub struct ContextEstimate {
     /// Out-of-date messages replaced with a note.
     outdated: usize,
     dropped_turns: usize,
+    /// The chat's CLM budget for its next request, from the model's context
+    /// length as it is now; None when the chat isn't in CLM mode or CLM
+    /// can't run.
+    clm_budget: Option<usize>,
 }
 
 #[tauri::command]
@@ -1168,6 +1172,7 @@ pub struct ContextEstimate {
 pub async fn chat_context_estimate(
     app: tauri::AppHandle,
     db: tauri::State<'_, crate::chat_db::DbState>,
+    vfs: tauri::State<'_, crate::vfs::VfsState>,
     agents: tauri::State<'_, crate::agent_run::AgentState>,
     dialog_id: String,
     base_url: String,
@@ -1194,6 +1199,23 @@ pub async fn chat_context_estimate(
         false,
     );
     let tool_chars = if tools.is_empty() { 0 } else { serde_json::to_string(&tools).map_or(0, |j| j.chars().count()) };
+    // CLM requests offer its tools too (chat_request decides the same way).
+    let d = dialog_id.clone();
+    let clm_mode = db.read(move |conn| crate::clm::store::context_mode(conn, &d)).await?;
+    let clm_tools = (clm_mode.as_deref() == Some(crate::clm::MODE_CLM)
+        && !tools.is_empty()
+        && crate::clm::availability(&vfs).is_ok())
+    .then(|| {
+        let tools = crate::agent_run::tools::tools_for(
+            root.is_some(),
+            vision,
+            no_tools.unwrap_or(false),
+            &permissions,
+            mode.as_deref() == Some("plan"),
+            true,
+        );
+        serde_json::to_string(&tools).map_or(0, |j| j.chars().count())
+    });
     let project_chars = match root {
         Some(root) => {
             let verify = permissions.verify_changes;
@@ -1205,7 +1227,7 @@ pub async fn chat_context_estimate(
         }
         None => 0,
     };
-    let extra_chars = extra_chars.unwrap_or(0) + tool_chars + project_chars;
+    let extra_chars = extra_chars.unwrap_or(0) + project_chars;
     let data_dir = db.data_dir().to_path_buf();
     let gemini = is_gemini_target(&base_url, &model);
     let calibration_key = calibration::key(&base_url, &model);
@@ -1217,8 +1239,20 @@ pub async fn chat_context_estimate(
         window,
         None,
     );
-    let fixed_chars = CODING_AGENT_SYSTEM_PROMPT.chars().count() + extra_chars;
+    let prompt_chars = CODING_AGENT_SYSTEM_PROMPT.chars().count() + extra_chars;
+    let fixed_chars = prompt_chars + tool_chars;
     let token_budget = history_budget(window, fixed_chars, chars_per_token, reply);
+    // As chat_request works it out: the budget its CLM section names, then
+    // what is left with that section in the prompt.
+    let clm_budget = match clm_tools {
+        Some(clm_tool_chars) => {
+            let named = history_budget(window, prompt_chars + clm_tool_chars, chars_per_token, reply);
+            crate::clm::system_section(&db, &vfs, &dialog_id, named).await.map(|section| {
+                history_budget(window, prompt_chars + 2 + section.chars().count() + clm_tool_chars, chars_per_token, reply)
+            })
+        }
+        None => None,
+    };
     let (_, info) = db
         .read(move |conn| {
             crate::chat_db::history::build_wire(
@@ -1241,6 +1275,7 @@ pub async fn chat_context_estimate(
         reply_reserve_tokens: reply,
         outdated: info.outdated,
         dropped_turns: info.dropped_turns,
+        clm_budget,
     })
 }
 
