@@ -320,6 +320,17 @@ fn looks_like_context_overflow(text: &str) -> bool {
         .any(|needle| t.contains(needle))
 }
 
+/// The provider doesn't serve this model on the API the request used
+/// (`{"type":"error","error":{"type":"ModelProtocolUnsupported","message":
+/// "Model does not support this protocol."}}`): not worth retrying as is,
+/// but the other route may work (`responses::wrong_route`).
+pub fn looks_like_unsupported_protocol(text: &str) -> bool {
+    let t = text.to_lowercase();
+    ["modelprotocolunsupported", "protocol_unsupported", "not support this protocol", "protocol is not supported", "unsupported protocol"]
+        .iter()
+        .any(|needle| t.contains(needle))
+}
+
 fn error_message_from(body: &serde_json::Value) -> Option<String> {
     body.pointer("/error/message")
         .or_else(|| body.get("message"))
@@ -334,6 +345,7 @@ pub fn classify_status(status: u16, headers: &HeaderMap, body: &str) -> ChatErro
     let shown = provider_message.clone().unwrap_or_else(|| format!("HTTP {status}"));
 
     let kind = match status {
+        _ if looks_like_unsupported_protocol(body) => ErrorKind::BadRequest,
         429 => ErrorKind::RateLimited,
         401 | 403 => ErrorKind::Auth,
         404 => ErrorKind::NotFound,
@@ -369,6 +381,13 @@ pub fn classify_body_error(value: &serde_json::Value) -> Option<ChatError> {
         .and_then(|c| c.as_u64().or_else(|| c.as_str().and_then(|s| s.parse().ok())))
         .map(|c| c as u16);
     let message = error_message_from(value).unwrap_or_else(|| error.to_string());
+    // In a 200 response or a stream: the request, not the provider, is at fault.
+    if looks_like_unsupported_protocol(&value.to_string()) {
+        return Some(
+            ChatError::new(ErrorKind::BadRequest, format!("The request was rejected: {message}"))
+                .with_details(value.to_string()),
+        );
+    }
     let mut e = match code {
         Some(c) => classify_status(c, &HeaderMap::new(), &value.to_string()),
         None => ChatError::new(ErrorKind::Provider, format!("The provider reported an error: {message}"))

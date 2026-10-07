@@ -89,7 +89,10 @@ pub fn responses_url(chat_url: &str) -> Option<String> {
 ///   v1/chat/completions", "the Responses API is not supported", and so on;
 /// - OpenAI's "Invalid URL (POST /v1/…)": the server has no such route;
 /// - a 404 or 405 that isn't a provider's JSON error: the same, from a
-///   server that answers unknown paths with a bare page.
+///   server that answers unknown paths with a bare page;
+/// - "ModelProtocolUnsupported" / "Model does not support this protocol.",
+///   which doesn't say which API the model wants: the other one, either way
+///   (`super::looks_like_unsupported_protocol`).
 ///
 /// A missing model, a rejected field, an auth failure: not the route.
 pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
@@ -138,7 +141,8 @@ pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
             .and_then(|d| serde_json::from_str::<Value>(d).ok())
             .and_then(|v| super::error_message_from(&v))
             .is_none();
-    named || invalid_url || no_route
+    let protocol = super::looks_like_unsupported_protocol(&text);
+    named || invalid_url || no_route || protocol
 }
 
 /*
@@ -376,6 +380,11 @@ impl ReplyParser {
                         .with_details(value.to_string())
                 }));
             }
+            // `{"type":"error","error":{…}}`, or the fields at the top level.
+            "error" if value.get("error").is_some_and(|e| e.is_object()) => {
+                return Err(classify_body_error(value)
+                    .unwrap_or_else(|| ChatError::new(ErrorKind::Provider, "The provider reported an error.")));
+            }
             "error" => {
                 let error = json!({ "error": {
                     "message": value.get("message").cloned().unwrap_or(Value::Null),
@@ -558,6 +567,11 @@ mod tests {
         assert_eq!(ended.unwrap_err().kind, ErrorKind::Provider);
         let (ended, _, _) = feed_all(&[json!({ "type": "error", "code": "rate_limit_exceeded", "message": "slow down" })]);
         assert!(ended.unwrap_err().message.contains("slow down"));
+        let (ended, _, _) = feed_all(&[json!({ "type": "error",
+            "error": { "type": "ModelProtocolUnsupported", "message": "Model does not support this protocol." } })]);
+        let error = ended.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::BadRequest);
+        assert!(error.message.contains("Model does not support this protocol."));
         let (ended, _, mut parser) = feed_all(&[json!({ "type": "response.incomplete",
             "response": { "status": "incomplete", "incomplete_details": { "reason": "max_output_tokens" } } })]);
         assert!(ended.unwrap());
@@ -603,6 +617,16 @@ mod tests {
         let missing = r#"{"error":{"message":"The model `nope` does not exist or you do not have access to it."}}"#;
         assert!(!wrong_route(&classify(404, missing), chat));
         assert!(!wrong_route(&classify(404, missing), Api::Responses));
+        // Says nothing about which API: the other one, from either side.
+        let protocol = r#"{"type":"error","error":{"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}}"#;
+        assert!(wrong_route(&classify(400, protocol), chat));
+        assert!(wrong_route(&classify(400, protocol), Api::Responses));
+        assert!(wrong_route(&classify(500, protocol), chat), "not a server error to retry");
+        let in_body = classify_body_error(&serde_json::from_str(protocol).unwrap()).unwrap();
+        assert_eq!(in_body.kind, ErrorKind::BadRequest);
+        assert!(!in_body.retryable);
+        assert!(in_body.message.contains("Model does not support this protocol."));
+        assert!(wrong_route(&in_body, Api::Responses));
         let field = r#"{"error":{"message":"Unrecognized request argument supplied: reasoning"}}"#;
         assert!(!wrong_route(&classify(400, field), chat));
         assert!(!wrong_route(&classify(401, openai), chat));
