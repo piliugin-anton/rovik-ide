@@ -23,6 +23,13 @@ pub fn strip_ansi(text: &str) -> String {
     ANSI.replace_all(text, "").into_owned()
 }
 
+/// Plain text with "\n" line ends: no color codes, and the "\r" of CRLF and
+/// of progress bars that redraw in place made line breaks, so a progress
+/// run isn't one huge line.
+pub fn clean_output(text: &str) -> String {
+    strip_ansi(text).replace("\r\n", "\n").replace('\r', "\n")
+}
+
 fn chars(s: &str) -> usize {
     s.chars().count()
 }
@@ -53,6 +60,13 @@ pub fn cap_output(text: &str, head_lines: usize, tail_lines: usize, max_chars: u
         kept.push(line);
         size += chars(line) + 1;
     }
+    if kept.is_empty() {
+        // The last line alone is over the limit (minified code, a JSON
+        // blob): keep its end rather than nothing.
+        let last = lines[lines.len() - 1];
+        let end: String = last.chars().skip(chars(last).saturating_sub(max_chars)).collect();
+        return format!("[… output shortened to the last {} characters of its last line …]\n{end}", chars(&end));
+    }
     kept.reverse();
     format!("[… output shortened to its last {} lines …]\n{}", kept.len(), kept.join("\n"))
 }
@@ -81,7 +95,7 @@ const CONTEXT_BEFORE: usize = 2;
 /// summary. Short output is returned whole. Output with no recognizable
 /// error lines falls back to its start and end (`cap_output`).
 pub fn focus_failures(text: &str, max_chars: usize) -> String {
-    let clean = strip_ansi(text).replace("\r\n", "\n").replace('\r', "\n");
+    let clean = clean_output(text);
     let clean = clean.trim_end();
     let lines: Vec<&str> = clean.split('\n').collect();
     if lines.len() <= 80 && chars(clean) <= max_chars {
@@ -254,9 +268,17 @@ mod tests {
     #[test]
     fn output_edge_cases() {
         assert_eq!(cap_output("", 2, 2, 100), "");
-        // One huge line over the limit: nothing fits whole, so nothing of it is kept.
-        let long = "x".repeat(10_000);
-        assert!(cap_output(&long, 2, 2, 100).starts_with("[… output shortened to its last 0 lines …]"));
+        // One huge line over the limit: its end is kept, never nothing.
+        let long = format!("{}end", "x".repeat(10_000));
+        let out = cap_output(&long, 2, 2, 100);
+        assert!(out.starts_with("[… output shortened to the last 100 characters of its last line …]\n"), "{out}");
+        assert!(out.ends_with("xxend") && out.chars().count() < 200, "{out}");
+        // Short lines before a huge last line: still its end.
+        assert!(cap_output(&format!("a\nb\n{long}"), 2, 2, 100).ends_with("xxend"));
+        // Multi-byte characters are cut whole.
+        assert!(cap_output(&"é".repeat(500), 2, 2, 100).ends_with(&"é".repeat(100)));
+        // Progress bars that redraw with "\r" become lines.
+        assert_eq!(clean_output("10%\r50%\r100%\r\ndone"), "10%\n50%\n100%\ndone");
         // Short failing output is kept whole, CRLF normalized, colors gone.
         assert_eq!(focus_failures("\x1b[31merror\x1b[0m: x\r\nnext\r\n", 8_000), "error: x\nnext");
         // Long output with no error words: start and end.
