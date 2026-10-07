@@ -216,13 +216,7 @@ pub async fn tool_search_code(
     }
     let root_canon = canonicalize_or_err(Path::new(&root))?;
     // Several globs may be given, comma-separated: "*.ts, !*.test.ts".
-    let globs = path_glob
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|g| !g.is_empty())
-        .map(str::to_string)
-        .collect();
+    let globs = crate::code_search::split_globs(&path_glob.unwrap_or_default());
     let opts = crate::code_search::SearchOptions {
         query,
         regex: regex.unwrap_or(false),
