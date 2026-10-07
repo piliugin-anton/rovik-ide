@@ -93,7 +93,6 @@ body {
   user-select: none;
 }
 
-.sidebar .chat-messages,
 .sidebar .modal-body,
 .sidebar .chat-history-error,
 .sidebar .git-inline-error,
@@ -348,6 +347,32 @@ body {
   min-height: 0;
 }
 
+.tree-root-drop {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px dashed var(--fg-dim);
+  font-size: 12px;
+}
+.tree-row.drop-destination, .tree-root-drop.drop-destination {
+  background: var(--row-active);
+  outline: 1px solid var(--fg-dim);
+  outline-offset: -1px;
+}
+.tree-drag-ghost {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  padding: 5px 9px;
+  border-radius: 4px;
+  background: var(--row-active);
+  color: var(--fg);
+  box-shadow: 0 2px 8px #0008;
+  font-size: 12px;
+}
+
 .tree-row {
   display: flex;
   align-items: center;
@@ -458,6 +483,10 @@ body {
   font-size: 13px;
   padding: 0 1px;
   outline: none;
+  /* The row sets user-select: none inline; the input opts back in so the
+     rename/create text can always be selected. */
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .tree-row.editing:hover {
@@ -3363,6 +3392,15 @@ body {
 .resizable-handle:hover,
 .resizable-handle.resizing {
   background: var(--accent-hover);
+}
+
+/* While the sidebar width is dragged, no text anywhere may select —
+   the pointer is a resize, not a selection gesture. */
+body.is-resizing,
+body.is-resizing * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  cursor: col-resize !important;
 }
 
 /* git-panel.css

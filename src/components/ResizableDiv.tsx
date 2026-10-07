@@ -8,6 +8,32 @@ interface ResizableProps {
   maxWidth?: number;
 }
 
+// The left panel is chrome: tabs, pickers, rows, toolbars, chat messages.
+// Text selection stays working only where it is needed for editing or
+// copying: inputs (including the file-tree rename/create input), the
+// composer, settings and error text. Mirrors the `.sidebar` user-select
+// opt-ins in styles.css — keep the two in sync.
+const SELECTABLE =
+  "input, textarea, [contenteditable]:not([contenteditable='false']), " +
+  '.modal-body, .chat-history-error, ' +
+  '.git-inline-error, .git-panel-error';
+
+function isSelectable(target: EventTarget | null): boolean {
+  // Some WebViews report a text node as the event target.
+  const el =
+    target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  if (el?.closest(SELECTABLE)) return true;
+  // ... and some report document/window for a selection that lives inside
+  // an input (e.g. the file-tree rename/create input). Only then fall back
+  // to the focused element, so an editing input is never blocked while
+  // chrome around it stays unselectable.
+  if (el === null) {
+    const active = document.activeElement;
+    return active instanceof Element && !!active.closest(SELECTABLE);
+  }
+  return false;
+}
+
 export default function Resizable(props: ResizableProps) {
   const min = () => props.minWidth ?? 100;
   const max = () => props.maxWidth ?? 800;
@@ -15,8 +41,43 @@ export default function Resizable(props: ResizableProps) {
   const [width, setWidth] = createSignal(props.initialWidth ?? 300);
   const [isResizing, setIsResizing] = createSignal(false);
 
+  let rootEl: HTMLDivElement | undefined;
+
+  // CSS `user-select: none` alone doesn't stop every drag-select (a drag
+  // that starts in selectable text can run on into chrome, WebViews differ).
+  // Cancelling `selectstart`/`dragstart` outside the opt-ins is the proven
+  // fix — the same pattern FileTree already uses per-row via preventDefault
+  // on mousedown.
+  const onSelectStart = (e: Event) => {
+    if (!isSelectable(e.target)) e.preventDefault();
+  };
+  const onDragStart = (e: Event) => {
+    if (!isSelectable(e.target)) e.preventDefault();
+  };
+
+  function attachGuards(el: HTMLDivElement | undefined) {
+    if (rootEl && rootEl !== el) {
+      rootEl.removeEventListener('selectstart', onSelectStart);
+      rootEl.removeEventListener('dragstart', onDragStart);
+    }
+    rootEl = el;
+    // `selectstart` doesn't bubble through Solid's delegated onSelectStart
+    // in every WebView, so listen directly.
+    rootEl?.addEventListener('selectstart', onSelectStart);
+    rootEl?.addEventListener('dragstart', onDragStart);
+  }
+
+  onCleanup(() => {
+    rootEl?.removeEventListener('selectstart', onSelectStart);
+    rootEl?.removeEventListener('dragstart', onDragStart);
+  });
+
   const startResize = (e: MouseEvent) => {
     e.preventDefault();
+    // A resize drag must never leave a text selection behind: drop any
+    // existing one and suppress selection globally until mouseup.
+    window.getSelection()?.removeAllRanges();
+    document.body.classList.add('is-resizing');
     setIsResizing(true);
     window.addEventListener('mousemove', handleResize);
     window.addEventListener('mouseup', stopResize);
@@ -30,14 +91,18 @@ export default function Resizable(props: ResizableProps) {
 
   const stopResize = () => {
     setIsResizing(false);
+    document.body.classList.remove('is-resizing');
     window.removeEventListener('mousemove', handleResize);
     window.removeEventListener('mouseup', stopResize);
   };
 
-  onCleanup(() => stopResize());
+  onCleanup(() => {
+    document.body.classList.remove('is-resizing');
+    stopResize();
+  });
 
   return (
-    <div class="resizable-root">
+    <div class="resizable-root" ref={attachGuards}>
       <div class={`${props.class ?? ''} resizable-inner`} style={{ width: `${width()}px` }}>
         {props.children}
       </div>
