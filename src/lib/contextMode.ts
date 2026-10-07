@@ -94,6 +94,31 @@ export function clmStatus(dialogId: string): Promise<ClmStatus> {
   return invoke<ClmStatus>('clm_status', { dialogId });
 }
 
+/** A path in the agent's context folder (`@context/TASK.md`), not the project. */
+export function isContextPath(path: string): boolean {
+  return /^@context(?:[\\/]|$)/.test(path.trim());
+}
+
+/**
+ * The file an `@context/…` path of the chat names, on the virtual volume,
+ * for programs (the editor) to open. Null without the volume, and for
+ * revisions: they are read through the agent's tools, not files.
+ */
+export async function contextRealPath(dialogId: string, path: string): Promise<string | null> {
+  const rel = path
+    .trim()
+    .replace(/^@context/, '')
+    .replace(/^[\\/]+/, '');
+  const parts = rel.split(/[\\/]/).filter(Boolean);
+  if (parts[0] === 'revisions' || parts.includes('..')) return null;
+  const live = (await clmStatus(dialogId).catch(() => null))?.realPath;
+  if (!live) return null;
+  if (parts.length === 0) return live;
+  const sep = live.includes('\\') && !live.includes('/') ? '\\' : '/';
+  const dir = live.slice(0, Math.max(live.lastIndexOf('/'), live.lastIndexOf('\\')));
+  return [dir, ...parts].join(sep);
+}
+
 /** CLM state a run sent after preparing a request, by chat (lib/agentRuns.ts). */
 const [liveStatus, setLiveStatus] = createSignal<Record<string, ClmStatus>>({});
 
