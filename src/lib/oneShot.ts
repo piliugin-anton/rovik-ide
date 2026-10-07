@@ -20,6 +20,8 @@ export async function completeOnce(args: {
   systemPrompt: string;
   messages: ChatMessage[];
   options?: OpenAIChatOptions;
+  /** The chat this request is for, if any. */
+  chatId?: string;
 }): Promise<OneShotResult> {
   const channel = new Channel<ChatStreamEvent>();
   let text = '';
@@ -54,6 +56,7 @@ export async function completeOnce(args: {
       messages: args.messages,
       options: args.options,
       systemPrompt: args.systemPrompt,
+      chatId: args.chatId,
     });
     // The last deltas can arrive after the command returns.
     await untilStreamEnd(stream.ended);

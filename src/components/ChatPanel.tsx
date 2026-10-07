@@ -1684,7 +1684,7 @@ export default function ChatPanel(props: ChatProps) {
 
     if (!chatMessages.some((m) => m.role === 'user')) return;
 
-    const title = await generateChatTitle(profile, chatMessages);
+    const title = await generateChatTitle(profile, chatMessages, dialogId);
     if (!title || !isMounted) return;
 
     // The user may have renamed it meanwhile; only replace the placeholder.

@@ -220,6 +220,7 @@ pub async fn run_with_reasoning(
     effort: Option<ReasoningEffort>,
     mut formats: Vec<String>,
     saved_route: Option<Api>,
+    chat_id: Option<&str>,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> (Result<(), crate::chat_request::ChatError>, Option<ReasoningSupport>) {
@@ -262,6 +263,7 @@ pub async fn run_with_reasoning(
             streaming,
             limits,
             api,
+            chat_id,
         };
         let result = crate::chat_request::run(&spec, cancel, emit).await;
         match &result {
@@ -462,6 +464,10 @@ pub struct ChatParams {
     // The API route saved with the model ("chat_completions" or
     // "responses"), when it was found before (ChatStreamEvent::ApiRoute).
     pub api_route: Option<String>,
+    // The chat a one-off request (`messages`) is for, such as its title or
+    // an approval review; a stored chat is `dialog_id` itself. Sessions on
+    // opencode.ai follow it (`opencode`).
+    pub chat_id: Option<String>,
 }
 
 #[tauri::command]
@@ -489,6 +495,7 @@ pub async fn send_chat_message(
     options: Option<OpenAIChatOptions>,
     context_mode: Option<String>,
     api_route: Option<String>,
+    chat_id: Option<String>,
     vfs: tauri::State<'_, crate::vfs::VfsState>,
     on_event: Channel<ChatStreamEvent>,
 ) -> Result<(), String> {
@@ -515,6 +522,7 @@ pub async fn send_chat_message(
         context_mode,
         carried_notes: Vec::new(),
         api_route,
+        chat_id,
     };
     let mut emit = |event: ChatStreamEvent| {
         let _ = on_event.send(event);
@@ -553,7 +561,9 @@ pub async fn run_chat(
         context_mode,
         carried_notes,
         api_route,
+        chat_id,
     } = params;
+    let chat_id = chat_id.or_else(|| dialog_id.clone());
 
     let client = Client::new();
 
@@ -839,6 +849,7 @@ pub async fn run_chat(
         reasoning_effort,
         reasoning_formats,
         api_route.as_deref().and_then(Api::parse),
+        chat_id.as_deref(),
         cancel,
         &mut emit,
     )
@@ -1396,7 +1407,7 @@ pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Ve
         .build()
         .map_err(|e| e.to_string())?;
 
-    let mut req = client.get(&url);
+    let mut req = client.get(&url).headers(crate::opencode::headers(&url, None));
     if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         req = req.bearer_auth(key);
     }
@@ -1589,6 +1600,7 @@ mod reasoning_tests {
             Some(ReasoningEffort::High),
             formats.iter().map(|s| s.to_string()).collect(),
             None,
+            None,
             &mut rx,
             &mut |e| events.push(e),
         )
@@ -1765,6 +1777,7 @@ mod reasoning_tests {
             None,
             Vec::new(),
             saved,
+            None,
             &mut rx,
             &mut |e| {
                 if let ChatStreamEvent::ApiRoute { route } = e {

@@ -45,6 +45,8 @@ pub struct ReviewInput {
     /// File edits: the path as the agent gave it.
     pub edit_path: Option<String>,
     pub is_new_file: bool,
+    /// The chat the run is in: provider sessions follow it.
+    pub chat_id: Option<String>,
 }
 
 /// One typed check and the probability Jev gave it.
@@ -177,6 +179,7 @@ pub async fn complete_once<R: Runtime>(
     system_prompt: &str,
     user: String,
     options: Option<OpenAIChatOptions>,
+    chat_id: Option<String>,
 ) -> Result<String, String> {
     let params = ChatParams {
         base_url: profile.base_url.clone(),
@@ -188,6 +191,7 @@ pub async fn complete_once<R: Runtime>(
         first_byte_timeout_ms: profile.first_byte_timeout_ms,
         options,
         api_route: profile.api_route.clone(),
+        chat_id,
         ..Default::default()
     };
     let mut text = String::new();
@@ -212,7 +216,7 @@ async fn review_with_text<R: Runtime>(
     app: &AppHandle<R>, profile: &ModelProfile, input: &ReviewInput, errors: &mut Vec<String>) -> Option<ReviewResult> {
     let prompt = build_prompt(input);
     for options in lean_then_plain(300) {
-        match complete_once(app, profile, SYSTEM_PROMPT, prompt.clone(), options).await {
+        match complete_once(app, profile, SYSTEM_PROMPT, prompt.clone(), options, input.chat_id.clone()).await {
             Err(e) => errors.push(format!("{}: {e}", profile.label)),
             Ok(text) => match parse_decision(&text) {
                 Some((approved, reason)) => {
@@ -373,7 +377,14 @@ async fn review_with_typed(profile: &ModelProfile, input: &ReviewInput, errors: 
     let body = json!({ "state": state, "questions": body_questions });
 
     let response =
-        match crate::system_one::request(&profile.base_url, &profile.api_key, &profile.model, body, Some(15_000)).await {
+        match crate::system_one::request(
+            &profile.base_url,
+            &profile.api_key,
+            &profile.model,
+            body,
+            Some(15_000),
+            input.chat_id.as_deref(),
+        ).await {
             Ok(r) => r,
             Err(e) => {
                 errors.push(format!("{}: {e}", profile.label));
@@ -472,6 +483,7 @@ mod tests {
             edit_diff: None,
             edit_path: None,
             is_new_file: false,
+            chat_id: None,
         };
         let state = typed_state(&input);
         assert_eq!(Value::Object(state.clone()), json!({ "project": "/p", "commands": ["ls"] }));
