@@ -389,10 +389,12 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     let text = messages[start].text.trim();
     let request = char_prefix(text, FOCUS_REQUEST_CHARS);
     let more = if request.len() < text.len() || messages[start].needs_body { " …" } else { "" };
-    let mut note = format!(
-        "[Automatic note by the IDE, not written by the user: the task you are working on, restated so it stays in view.]\n\
-         The user's request: {request}{more}"
-    );
+    let mut note =
+        "[Automatic note by the IDE, not written by the user: the task you are working on, restated so it stays in view.]"
+            .to_string();
+    if !request.is_empty() {
+        note.push_str(&format!("\nThe user's request: {request}{more}"));
+    }
     let checklist = run
         .iter()
         .rev()
@@ -524,11 +526,13 @@ pub fn build_wire(
     gemini: bool,
     chars_per_token: f64,
 ) -> DbResult<(Vec<Value>, FitInfo)> {
-    let messages = load_messages(conn, dialog_id, current_user_content)?;
+    let mut messages = load_messages(conn, dialog_id, None)?;
     let cost = Cost { vision, chars_per_token };
     // The note is made before fitting (which never drops the current
-    // request or its calls) and its room kept out of the budget.
+    // request or its calls) and its room kept out of the budget. It quotes
+    // the request as typed: the copy sent starts with the editor context.
     let focus = focus_note(&messages);
+    use_sent_content(&mut messages, current_user_content);
     let note_tokens = focus.as_ref().map_or(0, |n| cost.tokens(n.chars().count() + 2));
     let (mut fitted, mut info) = fit_with(messages, token_budget.saturating_sub(note_tokens), cost);
     load_bodies(conn, &mut fitted)?;
@@ -620,9 +624,13 @@ pub fn load_messages(conn: &Connection, dialog_id: &str, current_user_content: O
     // waited for approval). Providers reject such a history, and a model
     // that sees no result may assume the call ran, so say it didn't.
     let mut messages = answer_unanswered_calls(messages);
+    use_sent_content(&mut messages, current_user_content);
+    Ok(messages)
+}
 
-    // The current request's user message is sent with the editor context
-    // the frontend added; it isn't stored that way.
+/// The current request's user message is sent with the editor context
+/// the frontend added; it isn't stored that way.
+pub fn use_sent_content(messages: &mut [Msg], current_user_content: Option<&str>) {
     if let (Some(content), Some(last_user)) = (
         current_user_content,
         messages.iter_mut().rev().find(|m| starts_request(m)),
@@ -632,7 +640,6 @@ pub fn load_messages(conn: &Connection, dialog_id: &str, current_user_content: O
         last_user.full_chars = content.chars().count();
         last_user.needs_body = false;
     }
-    Ok(messages)
 }
 
 const UNANSWERED_NOTE: &str =
@@ -908,6 +915,8 @@ mod tests {
         history.push(msg("assistant", "finished"));
         assert_eq!(focus_note(&history), None);
         assert_eq!(focus_note(&[]), None);
+        // A request of only file references has no typed text to repeat.
+        assert!(!focus_note(&long_run("")).unwrap().contains("request:"));
         // A long request is cut.
         let note = focus_note(&long_run(&"é".repeat(FOCUS_REQUEST_CHARS + 5))).unwrap();
         assert!(note.contains(&format!("{} …", "é".repeat(FOCUS_REQUEST_CHARS))));
