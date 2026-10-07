@@ -376,24 +376,18 @@ const FOCUS_REQUEST_CHARS: usize = 600;
 
 /// The current request and its checklist, restated for the end of the
 /// request (the CLM task card does this in CLM mode). None while the run
-/// is short, or when the history doesn't end inside a run.
+/// is short, after anything but a tool result (the IDE's own checks speak
+/// for themselves), and once every checklist step is settled: a request
+/// restated while the agent wraps up reads as being asked again, and it
+/// starts over.
 pub fn focus_note(messages: &[Msg]) -> Option<String> {
     let start = messages.iter().rposition(starts_request)?;
     let run = &messages[start + 1..];
-    if !matches!(messages.last()?.role.as_str(), "tool" | "user") {
+    if messages.last()?.role != "tool" {
         return None;
     }
     if run.iter().filter(|m| m.role == "tool").count() < FOCUS_AFTER_TOOL_RESULTS {
         return None;
-    }
-    let text = messages[start].text.trim();
-    let request = char_prefix(text, FOCUS_REQUEST_CHARS);
-    let more = if request.len() < text.len() || messages[start].needs_body { " …" } else { "" };
-    let mut note =
-        "[Automatic note by the IDE, not written by the user: the task you are working on, restated so it stays in view.]"
-            .to_string();
-    if !request.is_empty() {
-        note.push_str(&format!("\nThe user's request: {request}{more}"));
     }
     let checklist = run
         .iter()
@@ -404,6 +398,22 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
             Ok(Value::Object(args)) => Some(crate::agent_run::plan::parse_todo(&args)).filter(|i| !i.is_empty()),
             _ => None,
         });
+    if checklist.as_ref().is_some_and(|items| items.iter().all(crate::agent_run::plan::is_settled)) {
+        return None;
+    }
+    let text = messages[start].text.trim();
+    let request = char_prefix(text, FOCUS_REQUEST_CHARS);
+    let more = if request.len() < text.len() || messages[start].needs_body { " …" } else { "" };
+    let mut note = "[Reminder from the IDE, not a new request: the request this run is for, quoted so it stays in view. \
+                    Continue from where you are: don't start over or redo finished work, and when the request is done, \
+                    stop and reply to the user.]"
+        .to_string();
+    if !request.is_empty() {
+        note.push_str("\nThe request (quoted):");
+        for line in format!("{request}{more}").lines() {
+            note.push_str(&format!("\n> {line}"));
+        }
+    }
     if let Some(items) = checklist {
         let done = items.iter().filter(|i| crate::agent_run::plan::is_settled(i)).count();
         note.push_str(&format!("\nYour checklist ({done} of {} done):", items.len()));
@@ -411,7 +421,7 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
             note.push_str(&format!("\n- [{}] {}", item.status, item.title));
         }
     }
-    note.push_str("\n[end of note]");
+    note.push_str("\n[end of reminder]");
     Some(note)
 }
 
@@ -895,14 +905,20 @@ mod tests {
         let mut history = long_run("fix the parser");
         history.insert(3, todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"in_progress"},"test"]}"#));
         let note = focus_note(&history).unwrap();
-        assert!(note.contains("The user's request: fix the parser\n"), "{note}");
+        assert!(note.contains("not a new request"), "{note}");
+        assert!(note.contains("The request (quoted):\n> fix the parser\n"), "{note}");
         assert!(note.contains("Your checklist (1 of 3 done):\n- [done] read\n- [in_progress] fix\n- [pending] test"), "{note}");
         assert!(!note.contains("earlier request"));
 
-        // The latest checklist wins; one from an earlier request doesn't count.
-        history.push(todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"done"}]}"#));
+        // The latest checklist wins; once every step is settled the agent
+        // is wrapping up, and no note pushes it back into the task.
+        history.push(todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"in_progress"}]}"#));
         history.push(tool("todo-1", 10));
-        assert!(focus_note(&history).unwrap().contains("(2 of 2 done)"));
+        assert!(focus_note(&history).unwrap().contains("(1 of 2 done)"));
+        history.push(todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"skipped"}]}"#));
+        history.push(tool("todo-1", 10));
+        assert_eq!(focus_note(&history), None);
+        // One from an earlier request doesn't count.
         let mut earlier = long_run("next");
         earlier.insert(1, todo(r#"{"items":["old step"]}"#));
         assert!(!focus_note(&earlier).unwrap().contains("checklist"));
@@ -916,10 +932,18 @@ mod tests {
         assert_eq!(focus_note(&history), None);
         assert_eq!(focus_note(&[]), None);
         // A request of only file references has no typed text to repeat.
-        assert!(!focus_note(&long_run("")).unwrap().contains("request:"));
+        assert!(!focus_note(&long_run("")).unwrap().contains("(quoted)"));
+        // After the IDE's own check (a user-role harness message): no note.
+        let mut checked = long_run("q");
+        let mut check = msg("user", "tests failed");
+        check.harness = true;
+        checked.push(check);
+        assert_eq!(focus_note(&checked), None);
+        // Every line of a multi-line request is quoted.
+        assert!(focus_note(&long_run("a\nb")).unwrap().contains("> a\n> b"));
         // A long request is cut.
         let note = focus_note(&long_run(&"é".repeat(FOCUS_REQUEST_CHARS + 5))).unwrap();
-        assert!(note.contains(&format!("{} …", "é".repeat(FOCUS_REQUEST_CHARS))));
+        assert!(note.contains(&format!("> {} …", "é".repeat(FOCUS_REQUEST_CHARS))));
         // The note rides on the last message.
         let mut history = long_run("q");
         add_focus_note(&mut history, "NOTE");
