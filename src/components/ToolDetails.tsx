@@ -14,7 +14,7 @@ export interface ToolDetailsProps {
 
 export default function ToolDetails(props: ToolDetailsProps) {
   const [expanded, setExpanded] = createSignal(false);
-  const isFileRead = createMemo(() => props.toolCall?.name === 'read_file');
+  const isFileRead = createMemo(() => props.toolCall?.name === 'read');
 
   const formattedContent = () => {
     if (props.variant === 'call' && props.toolCall) {

@@ -1,4 +1,4 @@
-//! The text replacement behind the agent's `edit_file` tool.
+//! The text replacement behind the agent's `edit` tool.
 //!
 //! The model quotes the exact text it wants to change (`old_text`) and gives
 //! the replacement (`new_text`). The quote has to match exactly once, so an
@@ -38,7 +38,7 @@ fn line_starts(content: &str) -> Vec<usize> {
     starts
 }
 
-/// The lines of a range, numbered like read_file's line ranges, for errors.
+/// The lines of a range, numbered like read's line ranges, for errors.
 fn numbered(content: &str, start: usize, end: usize) -> String {
     const MAX: usize = 40;
     let lines: Vec<&str> = content.lines().collect();
@@ -140,7 +140,7 @@ pub fn apply_edit(
                     )
                 }
                 None => "old_text was not found in the file. Copy it exactly, indentation and \
-                         whitespace included; read_file the lines again if the file may have changed."
+                         whitespace included; read the lines again if the file may have changed."
                     .into(),
             })
         }

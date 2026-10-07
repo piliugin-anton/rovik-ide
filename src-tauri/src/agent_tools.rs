@@ -296,7 +296,7 @@ pub fn tool_edit_file(
     let target = resolve_within_root(&root, &path)?;
     if !target.is_file() {
         return Err(format!(
-            "{path}: no such file. edit_file changes existing files; use write_file to create one."
+            "{path}: no such file. edit changes existing files; use write to create one."
         ));
     }
     if looks_binary(&target)? {
@@ -307,7 +307,7 @@ pub fn tool_edit_file(
         crate::edit_file::apply_edit(&current, &old_text, &new_text, start_line, end_line)
             .map_err(|e| format!("{path}: {e}"))?;
     if !dry_run.unwrap_or(false) {
-        // Plain write, like write_file: keeps the inode (the editor's file id).
+        // Plain write, like write: keeps the inode (the editor's file id).
         fs::write(&target, &content).map_err(|e| format!("{path}: {e}"))?;
     }
     Ok(EditOutcome {

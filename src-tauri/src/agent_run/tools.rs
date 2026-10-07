@@ -24,7 +24,7 @@ fn file_tool_schemas() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": "read_file",
+                "name": "read",
                 "description": "Read a text file from the open project: all of it, a 1-indexed inclusive line range, or one declaration by name (symbol). A file over ~20,000 characters isn't returned whole: you get its first lines and a map of its declarations with their line numbers, then read the part you need by line range or symbol. A range over ~20,000 characters stops early and says where to continue.",
                 "parameters": {
                     "type": "object",
@@ -41,33 +41,18 @@ fn file_tool_schemas() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": "write_file",
-                "description": "Write content to a file in the project, creating it (and any missing parent directories) if it does not exist, or overwriting it entirely if it does. For changes to an existing file use edit_file instead; use write_file only for new files or rewriting most of a file.",
+                "name": "write",
+                "description": "Write to a file in the project. Two ways:\n- Without old_text: content becomes the whole file, creating it (and any missing parent directories) or overwriting it entirely. Use this only for new files or rewriting most of a file.\n- With old_text: change part of an existing file, replacing one exact piece of text (old_text) with content. old_text must match the file exactly once, whitespace and indentation included — read the lines first and copy them; add surrounding lines to make it unique. Make one call per separate change. When the user referenced lines of the file (e.g. \"App.tsx:12-14\"), pass them as start_line and end_line: old_text must then lie within those lines, and nothing outside them changes. To delete, use an empty content. To insert, quote a neighboring line in old_text and repeat it in content together with the new lines.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "File path relative to the project root." },
-                        "content": { "type": "string", "description": "The complete new content of the file." }
+                        "old_text": { "type": "string", "description": "The exact current text to replace. Must occur exactly once (within the line range, if given). Omit to write the whole file." },
+                        "content": { "type": "string", "description": "Without old_text: the complete new content of the file. With old_text: the text that replaces it." },
+                        "start_line": { "type": "integer", "description": "With old_text: first line (1-indexed) old_text may be in. Use the referenced range when there is one." },
+                        "end_line": { "type": "integer", "description": "With old_text: last line (1-indexed, inclusive) old_text may be in." }
                     },
                     "required": ["path", "content"]
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "edit_file",
-                "description": "Change part of an existing file: replace one exact piece of text (old_text) with new_text. old_text must match the file exactly once, whitespace and indentation included — read the lines first and copy them; add surrounding lines to make it unique. Make one call per separate change. When the user referenced lines of the file (e.g. \"App.tsx:12-14\"), pass them as start_line and end_line: old_text must then lie within those lines, and nothing outside them changes. To delete, use an empty new_text. To insert, quote a neighboring line in old_text and repeat it in new_text together with the new lines.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "File path relative to the project root." },
-                        "old_text": { "type": "string", "description": "The exact current text to replace. Must occur exactly once (within the line range, if given)." },
-                        "new_text": { "type": "string", "description": "The replacement text." },
-                        "start_line": { "type": "integer", "description": "First line (1-indexed) old_text may be in. Use the referenced range when there is one." },
-                        "end_line": { "type": "integer", "description": "Last line (1-indexed, inclusive) old_text may be in." }
-                    },
-                    "required": ["path", "old_text", "new_text"]
                 }
             }
         }),
@@ -89,7 +74,7 @@ fn file_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "search_code",
-                "description": "Fast project-wide search (ripgrep engine), skipping ignored and binary files. Literal text by default, or a regular expression with regex: true. Case-insensitive unless case_sensitive is true. Use it to find where something is defined or used before reading whole files.\n\nResults are grouped by file, and within a file by the declaration (function, method, class…) each line is in:\n  src/app.rs (2 matches)\n    Parser > parse [120-160]:\n      131: let tree = build(input);\n      --\n      150: build(rest)\n    (outside any declaration):\n      3: use crate::build;\nThe group's name works as read_file's symbol (read_file path=src/app.rs symbol=\"Parser > parse\"), so you can read the whole function a match is in without guessing lines; [120-160] are its lines. `N: text` is a match, `N- text` a context line, `--` a gap. A match marked (declaration) is the declaration itself, the rest are uses. Files without an outline list their lines directly.",
+                "description": "Fast project-wide search (ripgrep engine), skipping ignored and binary files. Literal text by default, or a regular expression with regex: true. Case-insensitive unless case_sensitive is true. Use it to find where something is defined or used before reading whole files.\n\nResults are grouped by file, and within a file by the declaration (function, method, class…) each line is in:\n  src/app.rs (2 matches)\n    Parser > parse [120-160]:\n      131: let tree = build(input);\n      --\n      150: build(rest)\n    (outside any declaration):\n      3: use crate::build;\nThe group's name works as read's symbol (read path=src/app.rs symbol=\"Parser > parse\"), so you can read the whole function a match is in without guessing lines; [120-160] are its lines. `N: text` is a match, `N- text` a context line, `--` a gap. A match marked (declaration) is the declaration itself, the rest are uses. Files without an outline list their lines directly.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -172,12 +157,12 @@ fn run_command_schema(permissions: &Permissions) -> Value {
     json!({
         "type": "function",
         "function": {
-            "name": "run_command",
+            "name": "bash",
             "description": format!(
                 "Run a shell command in the project root and get its exit code and output (stdout/stderr). Long output is shortened \
                  to its start and end; for a failing command, to its error lines and final summary. \
                  Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. \
-                 Prefer read_file/search_code/edit_file/write_file for reading and editing files.{allowed}"
+                 Prefer read/search_code/write for reading and editing files.{allowed}"
             ),
             "parameters": {
                 "type": "object",
@@ -291,7 +276,7 @@ fn restore_context_schema() -> Value {
                 "properties": {
                     "revision": {
                         "type": "string",
-                        "description": "A revision number from read_file @context/revisions, e.g. \"12\", or \"stored\"."
+                        "description": "A revision number from read @context/revisions, e.g. \"12\", or \"stored\"."
                     }
                 },
                 "required": ["revision"]
@@ -378,7 +363,7 @@ pub fn tools_for(
 pub struct ToolResult {
     pub content: String,
     pub attachments: Vec<String>,
-    /// edit_file: the path (as given) and the file's new content.
+    /// Partial write: the path (as given) and the file's new content.
     pub written: Option<(String, String)>,
 }
 
@@ -414,7 +399,13 @@ fn line_arg(v: Option<&Value>) -> Option<usize> {
     (n.is_finite() && n >= 0.0).then(|| n.floor() as usize)
 }
 
-/// edit_file's arguments as the model sent them; the error to report when unusable.
+/// Whether a call is a partial write: write with old_text (replace one
+/// exact piece of text) rather than the whole file.
+pub fn is_partial_write(name: &str, args: &Map<String, Value>) -> bool {
+    name == "write" && args.get("old_text").is_some_and(|v| !v.is_null())
+}
+
+/// A partial write's arguments as the model sent them; the error to report when unusable.
 pub struct EditArgs {
     pub path: String,
     pub old_text: String,
@@ -426,7 +417,7 @@ pub struct EditArgs {
 pub fn edit_args(args: &Map<String, Value>) -> Result<EditArgs, String> {
     let path = text(args, "path").filter(|p| !p.is_empty()).ok_or("Error: \"path\" is required.")?;
     let old_text = text(args, "old_text").ok_or("Error: \"old_text\" is required.")?;
-    let new_text = text(args, "new_text").ok_or("Error: \"new_text\" is required.")?;
+    let new_text = text(args, "content").ok_or("Error: \"content\" is required.")?;
     Ok(EditArgs {
         path: path.into(),
         old_text: old_text.into(),
@@ -436,7 +427,7 @@ pub fn edit_args(args: &Map<String, Value>) -> Result<EditArgs, String> {
     })
 }
 
-/// Computes (or, unless `dry_run`, makes) an edit_file change.
+/// Computes (or, unless `dry_run`, makes) a partial write.
 pub fn apply_edit(root: &str, edit: &EditArgs, dry_run: bool) -> Result<crate::agent_tools::EditOutcome, String> {
     crate::agent_tools::tool_edit_file(
         root.into(),
@@ -541,7 +532,7 @@ async fn run<R: Runtime>(
     };
     let root_owned = root.to_string();
     let content = match name {
-        "edit_file" => {
+        "write" if is_partial_write(name, args) => {
             let edit = match edit_args(args) {
                 Ok(edit) => edit,
                 Err(e) => return Ok(ToolResult::text(e)),
@@ -549,7 +540,7 @@ async fn run<R: Runtime>(
             let outcome = apply_edit(root, &edit, false)?;
             return Ok(ToolResult { content: outcome.summary, attachments: Vec::new(), written: Some((edit.path, outcome.content)) });
         }
-        "read_file" => {
+        "read" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"path\" is required."));
             };
@@ -561,7 +552,7 @@ async fn run<R: Runtime>(
                 text(args, "symbol").map(|s| s.trim().to_string()),
             )?
         }
-        "write_file" => {
+        "write" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"path\" is required."));
             };
@@ -570,7 +561,7 @@ async fn run<R: Runtime>(
             };
             crate::agent_tools::tool_write_file(root_owned, path.into(), content.into())?
         }
-        "run_command" => {
+        "bash" => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {
                 return Ok(ToolResult::text("Error: \"command\" is required."));
             };
@@ -666,7 +657,7 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
             if failed {
                 "(long output: shown are its error lines and its end; rerun narrower, e.g. one test, for the rest)"
             } else {
-                "(long output: shown are its start and end; use a narrower command or read_file for the rest)"
+                "(long output: shown are its start and end; use a narrower command or read for the rest)"
             }
             .into(),
         );
@@ -812,7 +803,7 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
         Some(m)
     };
     match name {
-        "read_file" => {
+        "read" => {
             let mut meta = Map::new();
             meta.insert("count".into(), json!(count_lines(result)));
             // A symbol read: the lines it found, for the header and the editor.
@@ -831,7 +822,7 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
             one("count", json!(count.unwrap_or(count_lines(result) as u64)))
         }
         "web_search" => one("count", json!(result.split('\n').filter(|l| NUMBERED_HIT.is_match(l)).count())),
-        "run_command" => {
+        "bash" => {
             let line = result.split('\n').nth(1).unwrap_or("");
             let code = EXIT_CODE.captures(line).and_then(|c| c[1].parse::<i64>().ok());
             one("exitCode", json!(code))
@@ -857,7 +848,7 @@ mod tests {
         let p = Permissions::default();
         let names = |tools: Vec<Value>| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
         let agent = names(tools_for(true, false, false, &p, false, false));
-        assert!(agent.contains(&"run_command".to_string()) && agent.last().unwrap() == "todo");
+        assert!(agent.contains(&"bash".to_string()) && agent.last().unwrap() == "todo");
         let plan = names(tools_for(true, true, false, &p, true, false));
         assert!(!plan.iter().any(|n| PLAN_BLOCKED_TOOLS.contains(&n.as_str())));
         assert!(plan.contains(&"browser_screenshot".to_string()) && plan.ends_with(&["ask_user".into(), "submit_plan".into()]));
@@ -865,7 +856,7 @@ mod tests {
         assert!(tools_for(true, true, true, &p, false, false).is_empty());
         assert!(tools_for(true, true, true, &p, false, true).is_empty());
         let none = Permissions { allowed_commands: vec![], ..Permissions::default() };
-        assert!(!names(tools_for(true, false, false, &none, false, false)).contains(&"run_command".to_string()));
+        assert!(!names(tools_for(true, false, false, &none, false, false)).contains(&"bash".to_string()));
     }
 
     #[test]
@@ -875,21 +866,21 @@ mod tests {
         let count = |tools: &[Value], name: &str| names(tools).iter().filter(|n| *n == name).count();
         // Agent mode with a project: the project's file tools, once, and restore_context.
         let agent = tools_for(true, false, false, &p, false, true);
-        for name in ["read_file", "edit_file", "write_file", "list_dir", "restore_context"] {
+        for name in ["read", "write", "list_dir", "restore_context"] {
             assert_eq!(count(&agent, name), 1, "{name}");
         }
         let description = |tools: &[Value], name: &str| {
             tools.iter().find(|t| tool_name(t) == name).unwrap()["function"]["description"].as_str().unwrap().to_string()
         };
-        assert!(!description(&agent, "edit_file").contains("context folder"));
+        assert!(!description(&agent, "write").contains("context folder"));
         // Plan mode: edits are offered for the context folder only.
         let plan = tools_for(true, false, false, &p, true, true);
-        assert!(description(&plan, "edit_file").starts_with("Only for your context folder"));
-        assert!(!description(&plan, "read_file").contains("context folder"));
+        assert!(description(&plan, "write").starts_with("Only for your context folder"));
+        assert!(!description(&plan, "read").contains("context folder"));
         assert!(names(&plan).contains(&"restore_context".to_string()));
         // No project: all file tools, for the context folder only.
         let none = tools_for(false, false, false, &p, false, true);
-        for name in ["read_file", "edit_file", "write_file", "list_dir"] {
+        for name in ["read", "write", "list_dir"] {
             assert!(description(&none, name).starts_with("Only for your context folder"), "{name}");
         }
         assert!(!names(&none).contains(&"todo".to_string()));
@@ -908,7 +899,7 @@ mod tests {
         };
         let text = format_command_output("cargo test", &out);
         assert_eq!(text, "$ cargo test\nexit code 1, 1.2 s\n--- stderr ---\nerror: boom");
-        assert_eq!(result_meta("run_command", &text).unwrap()["exitCode"], json!(1));
+        assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], json!(1));
     }
 
     #[test]
@@ -1127,9 +1118,9 @@ a.rs (3 matches)
         let search = schemas.iter().find(|t| t["function"]["name"] == "search_code").unwrap();
         let description = search["function"]["description"].as_str().unwrap();
         assert!(description.contains("grouped by file, and within a file by the declaration"));
-        assert!(description.contains("works as read_file's symbol"));
+        assert!(description.contains("works as read's symbol"));
         assert!(description.contains("(declaration)"));
-        let read = schemas.iter().find(|t| t["function"]["name"] == "read_file").unwrap();
+        let read = schemas.iter().find(|t| t["function"]["name"] == "read").unwrap();
         assert!(read["function"]["parameters"]["properties"]["symbol"]["description"].as_str().unwrap().contains("Parser::parse"));
     }
 
@@ -1138,12 +1129,12 @@ a.rs (3 matches)
         assert_eq!(to_absolute_path("./src//a.ts", "/p/"), "/p/src/a.ts");
         assert_eq!(to_absolute_path("/abs/x", "/p"), "/abs/x");
         assert_eq!(to_absolute_path("src/a.ts", "C:\\p"), "C:\\p\\src\\a.ts");
-        assert_eq!(result_meta("read_file", "a\nb").unwrap()["count"], json!(2));
-        assert!(result_meta("read_file", "a\nb").unwrap().get("range").is_none());
-        let symbol = result_meta("read_file", "[Symbol read: f, lines 7-9 of a.rs]\nfn f() {\n}").unwrap();
+        assert_eq!(result_meta("read", "a\nb").unwrap()["count"], json!(2));
+        assert!(result_meta("read", "a\nb").unwrap().get("range").is_none());
+        let symbol = result_meta("read", "[Symbol read: f, lines 7-9 of a.rs]\nfn f() {\n}").unwrap();
         assert_eq!(symbol["range"], json!([7, 9]));
         assert_eq!(symbol["count"], json!(3));
-        assert!(result_meta("read_file", "Error: nope").is_none());
+        assert!(result_meta("read", "Error: nope").is_none());
         assert_eq!(result_meta("browse_url", "# (untitled)\nURL: x").unwrap().len(), 0);
         assert!(edit_args(&Map::new()).is_err());
     }
@@ -1154,10 +1145,10 @@ a.rs (3 matches)
         let out = CommandOutput { exit_code: None, stdout: " ".into(), stderr: String::new(), timed_out: true, stopped: false, truncated: false, duration_ms: 120_000 };
         let text = format_command_output("sleep 999", &out);
         assert_eq!(text, "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)");
-        assert_eq!(result_meta("run_command", &text).unwrap()["exitCode"], Value::Null);
+        assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], Value::Null);
         // Truncated by the runner: said so.
         let out = CommandOutput { exit_code: Some(0), stdout: "x".into(), stderr: String::new(), timed_out: false, stopped: false, truncated: true, duration_ms: 1 };
-        assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read_file for the rest)"));
+        assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
         assert_eq!(format_search_result(&SearchResult {
                 lines: vec![],
                 match_count: 0,
@@ -1171,13 +1162,13 @@ a.rs (3 matches)
         assert_eq!(result_meta("list_dir", "(empty, or everything under this path is ignored)").unwrap()["count"], json!(0));
         assert!(result_meta("todo", "x").is_none());
         // Line numbers as strings, floats, negatives.
-        let args = json!({ "path": "a", "old_text": "x", "new_text": "y", "start_line": "12", "end_line": 14.7 });
+        let args = json!({ "path": "a", "old_text": "x", "content": "y", "start_line": "12", "end_line": 14.7 });
         let edit = edit_args(args.as_object().unwrap()).ok().unwrap();
         assert_eq!((edit.start_line, edit.end_line), (Some(12), Some(14)));
-        let args = json!({ "path": "a", "old_text": "x", "new_text": "y", "start_line": -3, "end_line": "abc" });
+        let args = json!({ "path": "a", "old_text": "x", "content": "y", "start_line": -3, "end_line": "abc" });
         let edit = edit_args(args.as_object().unwrap()).ok().unwrap();
         assert_eq!((edit.start_line, edit.end_line), (None, None));
-        assert!(matches!(edit_args(json!({ "path": "", "old_text": "", "new_text": "" }).as_object().unwrap()), Err(e) if e.contains("path")));
+        assert!(matches!(edit_args(json!({ "path": "", "old_text": "", "content": "" }).as_object().unwrap()), Err(e) if e.contains("path")));
         assert_eq!(to_absolute_path("C:\\abs\\x", "/p"), "C:\\abs\\x");
         assert_eq!(to_absolute_path("a/", "/p"), "/p/a");
     }

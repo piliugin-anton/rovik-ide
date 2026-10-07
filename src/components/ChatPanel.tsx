@@ -1994,8 +1994,8 @@ export default function ChatPanel(props: ChatProps) {
           'Treat these as explicit file references from the user. Use the available file tools to inspect them when relevant.',
           ...(hasLines
             ? [
-                'A reference with lines means the user is talking about exactly those lines. Read them with read_file using that start_line and end_line.',
-                'To change them, use edit_file with that same start_line and end_line, quoting the current text as old_text: the edit then cannot change anything outside those lines. Do not rewrite the file with write_file.',
+                'A reference with lines means the user is talking about exactly those lines. Read them with read using that start_line and end_line.',
+                'To change them, use write with that same start_line and end_line, quoting the current text as old_text and its replacement as content: the edit then cannot change anything outside those lines. Do not rewrite the whole file.',
               ]
             : []),
         ].join('\n')

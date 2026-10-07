@@ -25,8 +25,8 @@
 //! agent keeps in its task card, `TASK.md` next to the context file: shown
 //! with the notes, never part of the file it edits.
 //!
-//! The agent edits the file with its ordinary tools (read_file, edit_file,
-//! write_file through `@context/…`, or run_command through its real path):
+//! The agent edits the file with its ordinary tools (read and
+//! write through `@context/…`, or bash through its real path):
 //! the paper's "context as a file", no dedicated context tools. When it
 //! repeats a call whose earlier result it removed, `clm_recall_hint` points
 //! it at the revision that still holds it.
@@ -667,7 +667,7 @@ async fn revisions_listing(db: &DbState, dialog_id: &str) -> Result<String, Stri
         ));
     }
     out.push(format!(
-        "Read one with read_file {}/<number>.md (start_line/end_line), or {}/<number>.md#<block> for one block.",
+        "Read one with read {}/<number>.md (start_line/end_line), or {}/<number>.md#<block> for one block.",
         prompt::REVISIONS_PATH,
         prompt::REVISIONS_PATH
     ));
@@ -686,7 +686,7 @@ pub async fn clm_tool_read(
     tool_read(&db, &vfs, &dialog_id, &path, start_line, end_line).await
 }
 
-/// read_file on `@context/…`.
+/// read on `@context/…`.
 pub async fn tool_read(
     db: &DbState,
     vfs: &VfsState,
@@ -754,7 +754,7 @@ fn writable(vfs: &VfsState, dialog_id: &str, path: &str) -> Result<String, Strin
     }
 }
 
-/// edit_file on `@context/…`.
+/// edit on `@context/…`.
 pub fn tool_edit(
     vfs: &VfsState,
     dialog_id: &str,
@@ -787,7 +787,7 @@ pub async fn clm_tool_write(
     tool_write(&vfs, &dialog_id, &path, &content)
 }
 
-/// write_file on `@context/…`.
+/// write on `@context/…`.
 pub fn tool_write(
     vfs: &VfsState,
     dialog_id: &str,
@@ -814,9 +814,9 @@ fn same_call(name: &str, a: &str, b: &str) -> bool {
     }
     match name {
         // Another range of the same file, or the same folder deeper.
-        "read_file" | "list_dir" => a.get("path").is_some() && a.get("path") == b.get("path"),
+        "read" | "list_dir" => a.get("path").is_some() && a.get("path") == b.get("path"),
         "search_code" => a.get("query").is_some() && a.get("query") == b.get("query"),
-        "run_command" => a.get("command").is_some() && a.get("command") == b.get("command"),
+        "bash" => a.get("command").is_some() && a.get("command") == b.get("command"),
         _ => false,
     }
 }
@@ -901,7 +901,7 @@ pub fn recall_hint(
     let block = format!("#{turn}");
     Ok(Some(format!(
         "\n\n[context: you ran this before, and that earlier result is no longer in your context (you removed \
-         or rewrote it). Do you need the earlier result? Revision {number} still holds it: read_file {}/{number}.md{block}. \
+         or rewrote it). Do you need the earlier result? Revision {number} still holds it: read {}/{number}.md{block}. \
          If things may have changed since, rely on the fresh result above.]",
         prompt::REVISIONS_PATH
     )))
@@ -1152,7 +1152,7 @@ pub async fn tool_restore(
     };
     let Some(number) = number else {
         return Err(format!(
-            "\"revision\" must be a revision number (see read_file {}) or \"stored\".",
+            "\"revision\" must be a revision number (see read {}) or \"stored\".",
             prompt::REVISIONS_PATH
         ));
     };
@@ -1171,7 +1171,7 @@ pub async fn tool_restore(
 pub async fn tool_list(db: &DbState, vfs: &VfsState, dialog_id: &str, path: &str) -> Result<String, String> {
     let (dir, shown) = match target(vfs, dialog_id, path)? {
         Target::Revisions => return revisions_listing(db, dialog_id).await,
-        Target::Revision(..) => return Err(format!("{path} is a revision, not a folder; read it with read_file")),
+        Target::Revision(..) => return Err(format!("{path} is a revision, not a folder; read it with read")),
         Target::Live => (context_dir(dialog_id), "@context".to_string()),
         Target::Other(rel) => (
             format!("{}/{rel}", context_dir(dialog_id)),
@@ -1196,7 +1196,7 @@ pub async fn tool_list(db: &DbState, vfs: &VfsState, dialog_id: &str, path: &str
             state.budget
         ));
         out.push(format!(
-            "{}/ ({count} revisions; read_file {} lists them)",
+            "{}/ ({count} revisions; read {} lists them)",
             prompt::REVISIONS_PATH,
             prompt::REVISIONS_PATH
         ));

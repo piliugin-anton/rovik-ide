@@ -13,7 +13,7 @@
 //! content that later events made out of date is replaced with a short
 //! note (`replace_outdated`): a
 //! file read since re-read or edited, a command run again, an earlier
-//! round of check failures, old write_file contents. Most of it can be
+//! round of check failures, old write contents. Most of it can be
 //! fetched again, so this costs the model little. It works in batches of
 //! tool results, so the start of the history stays the same between steps
 //! and providers' prompt caches keep working.
@@ -153,7 +153,7 @@ const KEEP_RECENT_RESULTS: usize = 8;
 const OUTDATED_BATCH: usize = 8;
 /// Listings and page text keep this much when replaced.
 const LISTING_KEEP_CHARS: usize = 600;
-/// write_file / edit_file arguments longer than this are shortened.
+/// write / edit arguments longer than this are shortened.
 const ARGS_KEEP_CHARS: usize = 300;
 
 /// What one finished tool call did, for the supersession rules.
@@ -260,13 +260,13 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
             // it) or changed. Not before: it's what the model knows of it.
             // A partial read (a large file's map, a range cut short) covers
             // nothing: it doesn't hold what it asked for.
-            "read_file" if e.ok => {
+            "read" if e.ok => {
                 let path = e.path.as_deref().unwrap_or_default();
                 let reread = later.iter().any(|l| {
-                    l.ok && !l.partial && l.name == "read_file" && l.path.as_deref() == Some(path) && covers(l.range, e.range)
+                    l.ok && !l.partial && l.name == "read" && l.path.as_deref() == Some(path) && covers(l.range, e.range)
                 });
                 let edited = later.iter().any(|l| {
-                    l.ok && (l.name == "edit_file" || l.name == "write_file") && l.path.as_deref() == Some(path)
+                    l.ok && l.name == "write" && l.path.as_deref() == Some(path)
                 });
                 let lines = e.range.map_or(String::new(), |(s, t)| {
                     if t == u64::MAX { format!(" from line {s}") } else { format!(" lines {s}-{t}") }
@@ -279,11 +279,11 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
                 })
             }
             // The same command ran again later: this run's output is history.
-            "run_command" => {
+            "bash" => {
                 let cmd = e.command.as_deref().unwrap_or_default();
                 later
                     .iter()
-                    .any(|l| l.name == "run_command" && l.command.as_deref() == Some(cmd))
+                    .any(|l| l.name == "bash" && l.command.as_deref() == Some(cmd))
                     .then(|| {
                         let head: Vec<&str> = messages[e.at].text.lines().take(2).collect();
                         format!("{}\n[Output left out of this history: the same command ran again later.]", head.join("\n"))
@@ -307,7 +307,7 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
         }
     }
 
-    // Old write_file / edit_file calls: the content they wrote is on disk
+    // Old write calls: the content they wrote is on disk
     // (and its result says what changed), so the arguments needn't repeat it.
     for m in messages[..horizon].iter_mut() {
         let mut touched = false;
@@ -317,10 +317,9 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
                 _ => continue,
             };
             let shortened = match c.name.as_str() {
-                "write_file" => shorten_arg(&mut args, "content", "written"),
-                "edit_file" => {
+                "write" => {
                     let old = shorten_arg(&mut args, "old_text", "replaced");
-                    let new = shorten_arg(&mut args, "new_text", "written");
+                    let new = shorten_arg(&mut args, "content", "written");
                     old || new
                 }
                 _ => false,
@@ -750,7 +749,7 @@ mod tests {
     }
     fn call(ids: &[&str]) -> Msg {
         let mut m = msg("assistant", "");
-        m.tool_calls = Some(ids.iter().map(|id| ToolCall { id: id.to_string(), name: "read_file".into(), arguments: "{}".into(), extra_content: None }).collect());
+        m.tool_calls = Some(ids.iter().map(|id| ToolCall { id: id.to_string(), name: "read".into(), arguments: "{}".into(), extra_content: None }).collect());
         m
     }
     fn tool(id: &str, size: usize) -> Msg {
@@ -916,7 +915,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let with_args = |args: &str| {
             let mut m = msg("assistant", "");
-            m.tool_calls = Some(vec![ToolCall { id: "c".into(), name: "edit_file".into(), arguments: args.into(), extra_content: None }]);
+            m.tool_calls = Some(vec![ToolCall { id: "c".into(), name: "write".into(), arguments: args.into(), extra_content: None }]);
             m
         };
         let sent = |args: &str| {
@@ -924,7 +923,7 @@ mod tests {
             w[1]["tool_calls"][0]["function"]["arguments"].as_str().unwrap().to_string()
         };
 
-        let valid = r#"{"path":"a.rs","old_text":"x","new_text":"y"}"#;
+        let valid = r#"{"path":"a.rs","old_text":"x","content":"y"}"#;
         assert_eq!(sent(valid), valid, "valid arguments are sent unchanged");
         assert_eq!(sent(""), "{}");
         assert_eq!(sent("  "), "{}");
@@ -988,7 +987,7 @@ mod tests {
         (0..n)
             .flat_map(|i| {
                 let id = format!("r{i}");
-                vec![call_with(&id, "read_file", json!({ "path": path })), result(&id, &"x".repeat(size))]
+                vec![call_with(&id, "read", json!({ "path": path })), result(&id, &"x".repeat(size))]
             })
             .collect()
     }
@@ -1026,7 +1025,7 @@ mod tests {
         history.extend(reads(1, "src/only.ts", 3_000));
         for i in 0..16 {
             let id = format!("o{i}");
-            history.push(call_with(&id, "read_file", json!({ "path": format!("src/f{i}.ts") })));
+            history.push(call_with(&id, "read", json!({ "path": format!("src/f{i}.ts") })));
             history.push(result(&id, &"y".repeat(3_000)));
         }
         let (out, _) = fit_with(history, 20_000, generous(false));
@@ -1036,14 +1035,14 @@ mod tests {
     #[test]
     fn a_partial_read_doesnt_replace_what_it_didnt_show() {
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("ra", "read_file", json!({ "path": "src/big.ts", "start_line": 900, "end_line": 960 })));
+        history.push(call_with("ra", "read", json!({ "path": "src/big.ts", "start_line": 900, "end_line": 960 })));
         history.push(result("ra", &"a".repeat(3_000)));
         let overview = format!("{}src/big.ts has 4000 lines…]\n{}", crate::read_file::PARTIAL_PREFIX, "m".repeat(3_000));
-        history.push(call_with("rb", "read_file", json!({ "path": "src/big.ts" })));
+        history.push(call_with("rb", "read", json!({ "path": "src/big.ts" })));
         history.push(result("rb", &overview));
         for i in 0..16 {
             let id = format!("o{i}");
-            history.push(call_with(&id, "read_file", json!({ "path": format!("src/f{i}.ts") })));
+            history.push(call_with(&id, "read", json!({ "path": format!("src/f{i}.ts") })));
             history.push(result(&id, &"y".repeat(3_000)));
         }
         let (out, _) = fit_with(history, 20_000, generous(false));
@@ -1055,9 +1054,9 @@ mod tests {
         // Lines 1-50 read, then one function (lines 120-160) by symbol: the
         // first read isn't replaced, the symbol read didn't cover it.
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("ra", "read_file", json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 })));
+        history.push(call_with("ra", "read", json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 })));
         history.push(result("ra", &"a".repeat(3_000)));
-        history.push(call_with("rs", "read_file", json!({ "path": "src/a.rs", "symbol": "Parser::parse" })));
+        history.push(call_with("rs", "read", json!({ "path": "src/a.rs", "symbol": "Parser::parse" })));
         history.push(result("rs", &format!("[Symbol read: Parser > parse, lines 120-160 of src/a.rs]\n{}", "s".repeat(3_000))));
         history.extend(reads(16, "src/other.rs", 3_000));
         let (out, _) = fit_with(history, 20_000, generous(false));
@@ -1067,9 +1066,9 @@ mod tests {
     #[test]
     fn a_later_read_covering_a_symbol_read_replaces_it() {
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("rs", "read_file", json!({ "path": "src/a.rs", "symbol": "parse" })));
+        history.push(call_with("rs", "read", json!({ "path": "src/a.rs", "symbol": "parse" })));
         history.push(result("rs", &format!("[Symbol read: parse, lines 120-160 of src/a.rs]\n{}", "s".repeat(3_000))));
-        history.push(call_with("rr", "read_file", json!({ "path": "src/a.rs", "start_line": 100, "end_line": 200 })));
+        history.push(call_with("rr", "read", json!({ "path": "src/a.rs", "start_line": 100, "end_line": 200 })));
         history.push(result("rr", &"r".repeat(3_000)));
         history.extend(reads(16, "src/other.rs", 3_000));
         let (out, _) = fit_with(history, 20_000, generous(false));
@@ -1079,9 +1078,9 @@ mod tests {
     #[test]
     fn a_symbol_read_that_found_nothing_covers_nothing() {
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("ra", "read_file", json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 })));
+        history.push(call_with("ra", "read", json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 })));
         history.push(result("ra", &"a".repeat(3_000)));
-        history.push(call_with("rs", "read_file", json!({ "path": "src/a.rs", "symbol": "nope" })));
+        history.push(call_with("rs", "read", json!({ "path": "src/a.rs", "symbol": "nope" })));
         history.push(result("rs", "No declaration \"nope\" in src/a.rs."));
         history.extend(reads(16, "src/other.rs", 3_000));
         let (out, _) = fit_with(history, 20_000, generous(false));
@@ -1091,11 +1090,11 @@ mod tests {
     #[test]
     fn edits_supersede_reads_and_old_write_arguments_shrink() {
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("w0", "write_file", json!({ "path": "src/new.ts", "content": "line\n".repeat(400) })));
+        history.push(call_with("w0", "write", json!({ "path": "src/new.ts", "content": "line\n".repeat(400) })));
         history.push(result("w0", "wrote 2000 bytes to src/new.ts"));
-        history.push(call_with("ra", "read_file", json!({ "path": "src/a.ts", "start_line": 1, "end_line": 50 })));
+        history.push(call_with("ra", "read", json!({ "path": "src/a.ts", "start_line": 1, "end_line": 50 })));
         history.push(result("ra", &"a".repeat(3_000)));
-        history.push(call_with("e0", "edit_file", json!({ "path": "src/a.ts", "old_text": "o".repeat(500), "new_text": "n" })));
+        history.push(call_with("e0", "write", json!({ "path": "src/a.ts", "old_text": "o".repeat(500), "content": "n" })));
         history.push(result("e0", "Edited src/a.ts: replaced line 3"));
         history.extend(reads(14, "src/other.ts", 2_000));
         let (out, _) = fit_with(history, 12_000, generous(false));
@@ -1105,7 +1104,7 @@ mod tests {
         assert_eq!(write_args["content"], "[400 lines written; left out of this history]");
         assert!(out[4].text.contains("Read src/a.ts lines 1-50 here") && out[4].text.contains("changed later"));
         let edit_args: Value = serde_json::from_str(&out[5].tool_calls.as_ref().unwrap()[0].arguments).unwrap();
-        assert_eq!(edit_args["new_text"], "n", "short arguments are kept");
+        assert_eq!(edit_args["content"], "n", "short arguments are kept");
         assert!(edit_args["old_text"].as_str().unwrap().contains("left out"));
     }
 
@@ -1113,10 +1112,10 @@ mod tests {
     fn a_rerun_command_and_earlier_check_rounds_shrink() {
         let mut history = vec![msg("user", "q")];
         let out_text = format!("$ npm test\nexit code 1, 3.0 s\n{}", "fail\n".repeat(800));
-        history.push(call_with("c0", "run_command", json!({ "command": "npm test" })));
+        history.push(call_with("c0", "bash", json!({ "command": "npm test" })));
         history.push(result("c0", &out_text));
         history.push(harness(&format!("[Automatic check by the IDE, not written by the user]\nround 1\n{}", "e".repeat(3_000))));
-        history.push(call_with("c1", "run_command", json!({ "command": "npm test" })));
+        history.push(call_with("c1", "bash", json!({ "command": "npm test" })));
         history.push(result("c1", &out_text));
         history.push(harness("[Automatic check by the IDE, not written by the user]\nround 2"));
         history.extend(reads(14, "src/x.ts", 1_500));

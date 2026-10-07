@@ -64,7 +64,7 @@ fn edits_become_the_context_and_survive_a_restart() {
             vec![
                 message("u1", "user", "Fix the test"),
                 NewMessage {
-                    tool_calls: Some(vec![call("c1", "read_file", r#"{"path":"a.rs"}"#)]),
+                    tool_calls: Some(vec![call("c1", "read", r#"{"path":"a.rs"}"#)]),
                     ..message("a1", "assistant", "Reading it.")
                 },
                 NewMessage {
@@ -96,7 +96,7 @@ fn edits_become_the_context_and_survive_a_restart() {
                 NewMessage {
                     tool_calls: Some(vec![call(
                         "c2",
-                        "edit_file",
+                        "write",
                         r#"{"path":"@context/LIVE_CONTEXT.md"}"#,
                     )]),
                     ..message("a2", "assistant", "Compacting.")
@@ -148,17 +148,17 @@ fn edits_become_the_context_and_survive_a_restart() {
         // Re-reading the result it removed points at the revision holding it.
         let args = r#"{"path":"a.rs"}"#;
         let hint = db
-            .read(move |conn| recall_hint(conn, "chat", "c9", "read_file", args))
+            .read(move |conn| recall_hint(conn, "chat", "c9", "read", args))
             .await
             .unwrap()
             .unwrap();
         // The newest revision still holding the original result: the snapshot before the edit.
         assert!(
-            hint.contains("Revision 1 still holds it: read_file @context/revisions/1.md#3"),
+            hint.contains("Revision 1 still holds it: read @context/revisions/1.md#3"),
             "{hint}"
         );
         let none = db
-            .read(|conn| recall_hint(conn, "chat", "c9", "read_file", r#"{"path":"b.rs"}"#))
+            .read(|conn| recall_hint(conn, "chat", "c9", "read", r#"{"path":"b.rs"}"#))
             .await
             .unwrap();
         assert_eq!(none, None, "a call never made before");
@@ -224,17 +224,17 @@ fn agent_paths() {
 #[test]
 fn repeated_calls() {
     assert!(same_call(
-        "read_file",
+        "read",
         r#"{"path":"a"}"#,
         r#"{"path":"a","start_line":3}"#
     ));
     assert!(!same_call(
-        "read_file",
+        "read",
         r#"{"path":"a"}"#,
         r#"{"path":"b"}"#
     ));
     assert!(same_call(
-        "run_command",
+        "bash",
         r#"{"command":"ls"}"#,
         r#"{"command":"ls","timeout_seconds":5}"#
     ));

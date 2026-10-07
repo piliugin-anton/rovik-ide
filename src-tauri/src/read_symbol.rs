@@ -1,4 +1,4 @@
-//! `read_file` by symbol: one declaration (a function, a class, a method, a
+//! `read` by symbol: one declaration (a function, a class, a method, a
 //! section…) found by name in the file's outline, with the comments and
 //! attributes just above it.
 //!
@@ -139,7 +139,7 @@ pub fn enclosing(symbols: &[Symbol], line: usize) -> Option<usize> {
     (0..symbols.len()).filter(|&i| symbols[i].start_line <= line && line <= symbols[i].end_line).max_by_key(|&i| symbols[i].depth)
 }
 
-/// `Parser > parse`: a symbol and what it's in (read_file takes it as a
+/// `Parser > parse`: a symbol and what it's in (read takes it as a
 /// symbol).
 pub fn qualified(symbols: &[Symbol], i: usize) -> String {
     let mut names: Vec<String> = ancestors(symbols, i).iter().rev().map(|&a| normalize(&symbols[a].name)).collect();

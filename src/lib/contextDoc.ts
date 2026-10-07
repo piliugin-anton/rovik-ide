@@ -22,7 +22,7 @@ export function isLiveContextPath(path: string | undefined): boolean {
   if (!path) return false;
   const p = path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
   if (p === '@context' || p === '@context/LIVE_CONTEXT.md') return true;
-  // The real path on the volume (run_command's view), used with file tools too.
+  // The real path on the volume (bash's view), used with file tools too.
   return /(^|\/)context\/[^/]+\/LIVE_CONTEXT\.md$/.test(p);
 }
 
@@ -53,7 +53,7 @@ export function parseHeader(line: string): Omit<ContextBlock, 'body'> | null {
 
 /**
  * Text split at block headers. `lead` is what comes before the first header:
- * in a quoted part of the file (edit_file's old_text), the end of a block
+ * in a quoted part of the file (a partial write's old_text), the end of a block
  * whose header wasn't quoted.
  */
 export function splitBlocks(text: string): { lead: string; blocks: ContextBlock[] } {
@@ -114,7 +114,7 @@ const sameText = (a: string, b: string) =>
     .trim();
 
 /**
- * What an edit_file call on the context file changes: its quoted text and
+ * What a partial write (with old_text) on the context file changes: its quoted text and
  * the replacement, matched block by block by id (the way the app reads the
  * edited file back). Text before the first header in either is part of a
  * block the quote starts inside.
@@ -173,7 +173,7 @@ export function contextEdit(oldText: string, newText: string): ContextEdit {
   };
 }
 
-/** A write_file of the whole context file: every block it writes. */
+/** A write of the whole context file: every block it writes. */
 export function contextWrite(content: string): ContextEdit {
   const { lead, blocks } = splitBlocks(content);
   const changes: BlockChange[] = blocks.map((blk) => ({

@@ -189,14 +189,14 @@ export interface ReviewCheck {
 export interface ToolMeta {
   /** Tool results: counts for the block header. */
   count?: number;
-  /** read_file by symbol: the lines of the declaration it found. */
+  /** read by symbol: the lines of the declaration it found. */
   range?: [number, number];
   pageTitle?: string;
   /** The request failed before anything was shown. */
   failure?: StoredFailure;
   /** Part of the reply arrived, then the request failed. */
   interrupted?: StoredFailure;
-  /** run_command results: the exit code (null when killed or signalled). */
+  /** bash results: the exit code (null when killed or signalled). */
   exitCode?: number | null;
   /** Tool results that went through approval: who decided, and why. */
   approval?: ToolApproval;

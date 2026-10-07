@@ -282,7 +282,7 @@ fn failed_and_errored_messages_are_never_sent() {
 fn a_call_left_without_a_result_is_answered() {
     run(async {
         let chat = Chat::new().await;
-        let mut pair = tool_pair(1, "run_command", r#"{"command":"ls"}"#, "");
+        let mut pair = tool_pair(1, "bash", r#"{"command":"ls"}"#, "");
         pair.pop();
         chat.add([vec![message("u1", "user", "q")], pair].concat())
             .await;
@@ -383,7 +383,7 @@ fn a_plain_text_rewrite_becomes_a_notes_block() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, "big"),
+                tool_pair(1, "read", r#"{"path":"a"}"#, "big"),
             ]
             .concat(),
         )
@@ -501,7 +501,7 @@ fn an_edit_through_the_agents_edit_tool_is_picked_up() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, &"x".repeat(900)),
+                tool_pair(1, "read", r#"{"path":"a"}"#, &"x".repeat(900)),
             ]
             .concat(),
         )
@@ -520,7 +520,7 @@ fn an_edit_through_the_agents_edit_tool_is_picked_up() {
         assert!(out.contains(APPLIES), "{out}");
         chat.add(tool_pair(
             2,
-            "edit_file",
+            "write",
             r#"{"path":"@context/LIVE_CONTEXT.md"}"#,
             &out,
         ))
@@ -582,9 +582,9 @@ fn over_budget_the_oldest_new_outputs_are_withheld_and_the_latest_kept() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, &big),
-                tool_pair(2, "read_file", r#"{"path":"b"}"#, &big),
-                tool_pair(3, "read_file", r#"{"path":"c"}"#, &big),
+                tool_pair(1, "read", r#"{"path":"a"}"#, &big),
+                tool_pair(2, "read", r#"{"path":"b"}"#, &big),
+                tool_pair(3, "read", r#"{"path":"c"}"#, &big),
             ]
             .concat(),
         )
@@ -615,7 +615,7 @@ fn outputs_the_agent_kept_are_not_withheld_and_trimming_is_the_last_resort() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, &big),
+                tool_pair(1, "read", r#"{"path":"a"}"#, &big),
             ]
             .concat(),
         )
@@ -623,7 +623,7 @@ fn outputs_the_agent_kept_are_not_withheld_and_trimming_is_the_last_resort() {
         chat.prepare(ROOMY).await;
         // The agent shortens the task line and keeps the big output.
         chat.write(&with_block(&chat.file(), 1, "t"));
-        chat.add(tool_pair(2, "read_file", r#"{"path":"b"}"#, &big))
+        chat.add(tool_pair(2, "read", r#"{"path":"b"}"#, &big))
             .await;
         let p = chat.prepare(1_200).await;
         assert!(notes(&p).contains("edit applied"), "{}", notes(&p));
@@ -686,7 +686,7 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
             "same tier, no reminder: {}",
             notes(&p)
         );
-        chat.add(tool_pair(2, "read_file", "{}", &"w".repeat(900)))
+        chat.add(tool_pair(2, "read", "{}", &"w".repeat(900)))
             .await; // ~60%
         let p = chat.prepare(1_000).await;
         assert!(
@@ -728,7 +728,7 @@ fn restoring_an_older_revision_brings_tool_calls_back() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, "full content"),
+                tool_pair(1, "read", r#"{"path":"a"}"#, "full content"),
             ]
             .concat(),
         )
@@ -781,7 +781,7 @@ fn the_agent_restores_a_revision_or_the_stored_chat() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, "full content"),
+                tool_pair(1, "read", r#"{"path":"a"}"#, "full content"),
             ]
             .concat(),
         )
@@ -837,7 +837,7 @@ fn reset_drops_an_edit_not_sent_yet() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, "full content"),
+                tool_pair(1, "read", r#"{"path":"a"}"#, "full content"),
             ]
             .concat(),
         )
@@ -875,7 +875,7 @@ fn listing_the_context_folder() {
         let revisions = tool_list(&chat.db, &chat.vfs, "chat", "@context/revisions").await.unwrap();
         assert!(revisions.starts_with("Revisions of your context file"), "{revisions}");
         let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/revisions/1.md").await.unwrap_err();
-        assert!(err.contains("read_file"), "{err}");
+        assert!(err.contains("read"), "{err}");
         let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/missing").await.unwrap_err();
         assert!(err.contains("not found"), "{err}");
     });
@@ -1194,14 +1194,14 @@ fn recall_hints_only_when_the_result_is_gone() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "run_command", args, "test result: 2 failed"),
+                tool_pair(1, "bash", args, "test result: 2 failed"),
             ]
             .concat(),
         )
         .await;
         chat.prepare(ROOMY).await;
         assert_eq!(
-            chat.hint("c9", "run_command", args).await,
+            chat.hint("c9", "bash", args).await,
             None,
             "no edits yet"
         );
@@ -1211,7 +1211,7 @@ fn recall_hints_only_when_the_result_is_gone() {
         chat.add(vec![message("a5", "assistant", "next")]).await;
         chat.prepare(ROOMY).await;
         assert_eq!(
-            chat.hint("c9", "run_command", args).await,
+            chat.hint("c9", "bash", args).await,
             None,
             "still visible"
         );
@@ -1223,7 +1223,7 @@ fn recall_hints_only_when_the_result_is_gone() {
         let hint = chat
             .hint(
                 "c9",
-                "run_command",
+                "bash",
                 r#"{"command":"cargo test","timeout_seconds":60}"#,
             )
             .await
@@ -1231,12 +1231,12 @@ fn recall_hints_only_when_the_result_is_gone() {
         assert!(hint.contains("still holds it"), "{hint}");
         assert!(hint.contains("#3"), "points at the block: {hint}");
         assert_eq!(
-            chat.hint("c9", "run_command", r#"{"command":"cargo build"}"#)
+            chat.hint("c9", "bash", r#"{"command":"cargo build"}"#)
                 .await,
             None
         );
         assert_eq!(
-            chat.hint("c1", "run_command", args).await,
+            chat.hint("c1", "bash", args).await,
             None,
             "a call isn't a repeat of itself"
         );
@@ -1411,7 +1411,7 @@ fn state_round_trips() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, "out"),
+                tool_pair(1, "read", r#"{"path":"a"}"#, "out"),
             ]
             .concat(),
         )
@@ -1476,7 +1476,7 @@ fn a_later_edit_does_not_report_old_flattened_calls_again() {
         chat.add(
             [
                 vec![message("u1", "user", "task")],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, "content"),
+                tool_pair(1, "read", r#"{"path":"a"}"#, "content"),
             ]
             .concat(),
         )
@@ -1518,7 +1518,7 @@ fn the_users_messages_survive_any_edit() {
                     "user",
                     "Fix the parser; don't touch the lexer",
                 )],
-                tool_pair(1, "read_file", r#"{"path":"a"}"#, &"code ".repeat(300)),
+                tool_pair(1, "read", r#"{"path":"a"}"#, &"code ".repeat(300)),
                 vec![
                     message("a2", "assistant", "Found it."),
                     message("u2", "user", "Keep the public API"),

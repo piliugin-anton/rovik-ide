@@ -2,7 +2,7 @@
 //
 // Messages between the editor and the chat, without prop chains through
 // App > ChatPanel > MessageList > ToolCallBlock:
-//   chat -> editor: open a file at a line (read_file's "Open in editor");
+//   chat -> editor: open a file at a line (read's "Open in editor");
 //   editor -> chat: reference the selected lines ("Add to chat").
 
 import type { FileSuggestion } from '../types';

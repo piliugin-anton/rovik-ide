@@ -78,7 +78,7 @@ pub fn project_context(profile: &ProjectProfile, checks: &[ProjectCheck], verify
         let mut list = vec![if verify_on {
             "Checks: when you finish and have changed files, the IDE runs these itself and sends you any failures to fix:"
         } else {
-            "Checks you can run with run_command after changing code:"
+            "Checks you can run with bash after changing code:"
         }
         .to_string()];
         list.extend(enabled.iter().map(|c| format!("- {}: `{}`", check_label(&c.kind), c.command)));

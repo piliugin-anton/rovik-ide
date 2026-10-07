@@ -20,7 +20,7 @@ use std::sync::LazyLock;
 pub const PLANS_DIR: &str = ".rovik/plans";
 
 /// Tools Plan mode doesn't offer (or allow, if a model calls them anyway).
-pub const PLAN_BLOCKED_TOOLS: &[&str] = &["write_file", "edit_file", "run_command"];
+pub const PLAN_BLOCKED_TOOLS: &[&str] = &["write", "bash"];
 
 /// Questions one run may ask; past that, the agent decides.
 pub const MAX_QUESTIONS_PER_RUN: u32 = 3;
