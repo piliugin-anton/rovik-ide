@@ -21,13 +21,18 @@ pub async fn open_url(url: String) -> Result<(), String> {
     }
     let mut cmd = opener(&url);
     crate::process::no_window(&mut cmd);
-    // Spawn without waiting: xdg-open may stay around until the browser exits.
-    cmd.stdin(Stdio::null())
+    let mut child = cmd
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("couldn't open the browser: {e}"))
+        .map_err(|e| format!("couldn't open the browser: {e}"))?;
+    // Reaped off this thread: xdg-open may stay around until the browser
+    // exits, and an unwaited child stays a zombie on Unix.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
