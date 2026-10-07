@@ -1705,8 +1705,14 @@ mod reasoning_tests {
     /// A provider that serves the given routes. Like OpenAI, an unserved
     /// `/chat/completions` says the model is "only supported in
     /// v1/responses", an unserved `/responses` is an "Invalid URL".
+    /// With `in_stream`, an unserved `/chat/completions` answers 200 and
+    /// sends that error as its only event instead.
     /// Returns the chat completions URL and every path asked for.
-    async fn routed_provider(chat: bool, responses: bool) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    async fn routed_provider(
+        chat: bool,
+        responses: bool,
+        in_stream: Option<&'static str>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
@@ -1732,6 +1738,8 @@ mod reasoning_tests {
                     ])
                 } else if !on_responses && chat {
                     sse(&[r#"{"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}"#, "[DONE]"])
+                } else if let (false, Some(error)) = (on_responses, in_stream) {
+                    sse(&[error])
                 } else {
                     let msg = if on_responses {
                         r#"{"error":{"message":"Invalid URL (POST /v1/responses)","type":"invalid_request_error"}}"#
@@ -1778,7 +1786,7 @@ mod reasoning_tests {
 
     #[tokio::test]
     async fn a_responses_only_model_moves_to_responses_and_stays() {
-        let (url, seen) = routed_provider(false, true).await;
+        let (url, seen) = routed_provider(false, true, None).await;
         let (ok, learned) = send(&url, &["reasoning_effort"]).await;
         assert!(ok);
         assert_eq!(learned.unwrap().accepted, ["reasoning_effort"]);
@@ -1789,7 +1797,7 @@ mod reasoning_tests {
 
     #[tokio::test]
     async fn the_learned_route_is_reported_until_saved() {
-        let (url, _) = routed_provider(false, true).await;
+        let (url, _) = routed_provider(false, true, None).await;
         let (result, routes) = send_routed(&url, None).await;
         assert!(result.is_ok());
         assert_eq!(routes, ["responses"]);
@@ -1801,7 +1809,7 @@ mod reasoning_tests {
     #[tokio::test]
     async fn a_saved_route_that_stopped_working_is_detected_again() {
         // Saved as Responses, but the provider only has chat completions.
-        let (url, seen) = routed_provider(true, false).await;
+        let (url, seen) = routed_provider(true, false, None).await;
         let (result, routes) = send_routed(&url, Some(Api::Responses)).await;
         assert!(result.is_ok());
         assert_eq!(routes, ["chat_completions"]);
@@ -1813,8 +1821,18 @@ mod reasoning_tests {
     }
 
     #[tokio::test]
+    async fn a_protocol_error_in_the_stream_moves_without_retrying() {
+        let error = r#"{"type":"error","error":{"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}}"#;
+        let (url, seen) = routed_provider(false, true, Some(error)).await;
+        let (result, routes) = send_routed(&url, None).await;
+        assert!(result.is_ok());
+        assert_eq!(routes, ["responses"]);
+        assert_eq!(*seen.lock().unwrap(), ["/v1/chat/completions", "/v1/responses"]);
+    }
+
+    #[tokio::test]
     async fn without_either_route_the_first_refusal_is_reported() {
-        let (url, seen) = routed_provider(false, false).await;
+        let (url, seen) = routed_provider(false, false, None).await;
         let (result, routes) = send_routed(&url, None).await;
         assert!(result.unwrap_err().message.contains("only supported in v1/responses"));
         assert!(routes.is_empty());
