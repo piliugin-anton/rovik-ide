@@ -3,7 +3,7 @@
 //! back. Paths are relative to the project root: the model never sees or
 //! sets the absolute root; it's filled in here from the run.
 
-use super::command_output::{cap_output, focus_failures, strip_ansi};
+use super::command_output::{cap_output, clean_output, focus_failures};
 use super::permissions::{commands_available, Permissions};
 use super::plan::{MAX_TODO_ITEMS, PLAN_BLOCKED_TOOLS};
 use crate::code_search::SearchResult;
@@ -627,7 +627,7 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
     let mut shortened = out.truncated;
     // A failing run: its errors and summary. Otherwise its start and end.
     let mut shape = |text: &str| {
-        let clean = strip_ansi(text).trim_end().to_string();
+        let clean = clean_output(text).trim_end().to_string();
         let shaped = if failed { focus_failures(&clean, 12_000) } else { cap_output(&clean, 200, 200, 24_000) };
         if shaped != clean {
             shortened = true;
