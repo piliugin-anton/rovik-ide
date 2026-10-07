@@ -7,6 +7,7 @@ import { createMemo, createResource, createSignal, For, Show } from 'solid-js';
 import type { ChatMessage, ChatToolCall, ReviewCheck, ToolApproval, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
 import EditDiffBlock from './EditDiffBlock';
+import ContextEditView from './ContextEditView';
 import QuestionCard from './QuestionCard';
 import { StatusIcon } from './TodoPanel';
 import { parseTodo, progressLabel } from '../lib/todo';
@@ -14,6 +15,14 @@ import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
 import { diffRows, snippetLines } from '../lib/lineDiff';
 import { describeToolCall } from '../lib/permissions';
+import {
+  contextEdit,
+  contextWrite,
+  describeChanges,
+  formatTokens,
+  isLiveContextPath,
+  type ContextEdit,
+} from '../lib/contextDoc';
 import { APPROVE_AT, REJECT_AT, reviewChecks } from '../lib/aiApproval';
 import { requestOpenFile } from '../lib/editorBridge';
 import {
@@ -187,11 +196,52 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
   }
 }
 
+/** edit_file and write_file on the agent's context file (CLM mode), block by block. */
+function contextChange(name: string, args: Args): ContextEdit | undefined {
+  if (!isLiveContextPath(str(args.path))) return undefined;
+  if (name === 'edit_file') {
+    const oldText = str(args.old_text);
+    const newText = str(args.new_text);
+    return oldText !== undefined && newText !== undefined
+      ? contextEdit(oldText, newText)
+      : undefined;
+  }
+  if (name === 'write_file') {
+    const content = str(args.content);
+    return content !== undefined ? contextWrite(content) : undefined;
+  }
+  return undefined;
+}
+
+function describeContextChange(name: string, args: Args, status: Status): Summary {
+  const active = status === 'running';
+  const title =
+    name === 'write_file'
+      ? `${active ? 'Rewriting' : 'Rewrote'} its context`
+      : `${active ? 'Editing' : 'Edited'} its context`;
+  const change = active ? undefined : contextChange(name, args);
+  if (!change) return { title };
+  const delta = change.tokensAfter - change.tokensBefore;
+  const size =
+    name === 'write_file'
+      ? formatTokens(change.tokensAfter)
+      : delta < 0
+        ? `${formatTokens(delta)} freed`
+        : delta > 0
+          ? `${formatTokens(delta)} added`
+          : undefined;
+  return { title, meta: [describeChanges(change.changes), size].filter(Boolean).join(' · ') };
+}
+
 function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Summary {
   const active = status === 'running';
   const failed = status === 'error';
   const path = str(args.path);
   const count = failed ? undefined : meta?.count;
+
+  if ((name === 'edit_file' || name === 'write_file') && isLiveContextPath(path)) {
+    return describeContextChange(name, args, status);
+  }
 
   switch (name) {
     case 'read_file': {
@@ -556,6 +606,11 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const isWrite = () => props.toolCall.name === 'write_file';
   const isEdit = () => props.toolCall.name === 'edit_file';
   const isRead = () => props.toolCall.name === 'read_file';
+  /** The change, when this edits or rewrites the agent's context file. */
+  const contextChangeOf = createMemo(() =>
+    status() === 'running' ? undefined : contextChange(props.toolCall.name, args())
+  );
+  const isContextFile = () => (isWrite() || isEdit()) && isLiveContextPath(str(args().path));
   /*
    * "Open in editor" on any code a file tool shows (read, write, edit) opens
    * that file in the editor, never an inline editor in the message. The line
@@ -594,15 +649,17 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const callText = () =>
     prettyArgs(
       props.toolCall.arguments,
-      isWrite()
-        ? ['content']
-        : isEdit()
-          ? ['old_text', 'new_text']
-          : props.toolCall.name === 'todo'
-            ? ['items']
-            : props.toolCall.name === 'submit_plan'
-              ? ['plan']
-              : []
+      isContextFile()
+        ? ['path', 'content', 'old_text', 'new_text']
+        : isWrite()
+          ? ['content']
+          : isEdit()
+            ? ['old_text', 'new_text']
+            : props.toolCall.name === 'todo'
+              ? ['items']
+              : props.toolCall.name === 'submit_plan'
+                ? ['plan']
+                : []
     );
   const hasCallText = () => {
     const t = callText().trim();
@@ -653,11 +710,25 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
       <Show when={expanded()}>
         <div class="tool-call-body">
           <section class="tool-call-section">
-            <div class="tool-call-label">Call</div>
+            <Show when={!isContextFile() || hasCallText()}>
+              <div class="tool-call-label">Call</div>
+            </Show>
             <Show when={hasCallText()}>
               <pre class="tool-call-pre">{callText()}</pre>
             </Show>
-            <Show when={isWrite() && str(args().content) !== undefined}>
+            <Show when={isContextFile()}>
+              <div class="tool-call-label">Change</div>
+              <Show when={contextChangeOf()} fallback={<div class="tool-call-pending">…</div>}>
+                {(change) => (
+                  <ContextEditView
+                    edit={change()}
+                    oldText={isEdit() ? str(args().old_text) : undefined}
+                    newText={str(isEdit() ? args().new_text : args().content) ?? ''}
+                  />
+                )}
+              </Show>
+            </Show>
+            <Show when={!isContextFile() && isWrite() && str(args().content) !== undefined}>
               <StaticCodeBlock
                 code={str(args().content)!}
                 language={language()}
@@ -684,7 +755,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                 </For>
               </ol>
             </Show>
-            <Show when={isEdit() && str(args().old_text) !== undefined}>
+            <Show when={!isContextFile() && isEdit() && str(args().old_text) !== undefined}>
               <div class="tool-call-label">Change</div>
               <Show
                 when={str(args().new_text) !== undefined}

@@ -3827,6 +3827,221 @@ body {
   font-style: italic;
 }
 
+/* An edit to the agent's context file in CLM mode (components/ContextEditView.tsx) */
+
+.ctx-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 10px 8px;
+}
+
+.ctx-edit-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-muted);
+}
+
+.ctx-edit-summary-detail,
+.ctx-edit-summary-note {
+  color: var(--fg-dim);
+}
+
+.ctx-edit-summary-note::before {
+  content: '· ';
+}
+
+.ctx-edit-raw-toggle {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ctx-edit-raw-toggle:hover {
+  background: var(--hover-strong);
+  color: var(--fg);
+}
+
+.ctx-edit-tokens {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--fg-dim);
+}
+
+.ctx-edit-tokens.freed {
+  color: var(--diff-added-strong);
+}
+
+.ctx-edit-tokens.grew {
+  color: var(--warning);
+}
+
+.ctx-edit-blocks {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ctx-edit-block + .ctx-edit-block {
+  border-top: 1px solid var(--border-color);
+}
+
+/* The block's kind as a colored edge. */
+.ctx-edit-block {
+  border-left: 3px solid var(--fg-dim);
+}
+
+.ctx-edit-block.removed {
+  border-left-color: var(--diff-deleted-strong);
+}
+
+.ctx-edit-block.added,
+.ctx-edit-block.written {
+  border-left-color: var(--diff-added-strong);
+}
+
+.ctx-edit-block.edited,
+.ctx-edit-block.partial {
+  border-left-color: var(--accent);
+}
+
+.ctx-edit-block-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ctx-edit-block-header:hover:not(:disabled) {
+  background: var(--hover-strong);
+}
+
+.ctx-edit-block-header:disabled {
+  cursor: default;
+}
+
+.ctx-edit-block-header:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.ctx-edit-kind {
+  flex: 0 0 auto;
+  min-width: 8ch;
+  color: var(--fg-muted);
+}
+
+.ctx-edit-block.removed .ctx-edit-kind {
+  color: var(--diff-deleted-strong);
+}
+
+.ctx-edit-block.added .ctx-edit-kind,
+.ctx-edit-block.written .ctx-edit-kind {
+  color: var(--diff-added-strong);
+}
+
+.ctx-edit-role {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--background-secondary);
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.ctx-edit-role.role-user {
+  color: var(--info);
+}
+
+.ctx-edit-role.role-assistant {
+  color: var(--success);
+}
+
+.ctx-edit-role.role-notes {
+  color: var(--warning);
+}
+
+.ctx-edit-turn,
+.ctx-edit-id,
+.ctx-edit-where {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+}
+
+.ctx-edit-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.ctx-edit-gist {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+
+.ctx-edit-block.removed .ctx-edit-gist {
+  text-decoration: line-through;
+  color: var(--fg-dim);
+}
+
+.ctx-edit-block-body {
+  border-top: 1px solid var(--border-color);
+}
+
+.ctx-edit-block-body .static-code {
+  border: 0;
+  border-radius: 0;
+}
+
+.ctx-edit-text {
+  max-height: 320px;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ctx-edit-block.removed .ctx-edit-text {
+  background: var(--diff-deleted-bg);
+}
+
+.ctx-edit-block.added .ctx-edit-text {
+  background: var(--diff-added-bg);
+}
+
+.ctx-edit-unchanged {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
 /* The verification gate's record in the chat (VerificationRecord.tsx) */
 
 .chat-verify {
