@@ -35,8 +35,13 @@ pub struct CommandOutput {
 
 #[cfg(windows)]
 fn shell_command(command: &str) -> Command {
-    let mut cmd = Command::new("cmd");
-    cmd.args(["/C", command]);
+    use std::os::windows::process::CommandExt;
+    let shell = std::env::var("COMSPEC").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "cmd.exe".to_string());
+    let mut cmd = Command::new(shell);
+    // Passed as is: `arg` would escape its quotes as `\"`, which cmd doesn't
+    // understand, so `git commit -m "msg"` arrived mangled. With /S, cmd
+    // strips exactly the outer pair of quotes and runs the rest verbatim.
+    cmd.raw_arg("/S /C").raw_arg(format!("\"{command}\""));
     cmd
 }
 
@@ -131,7 +136,8 @@ fn run_blocking(root: &str, command: &str, timeout: Duration) -> Result<CommandO
     }
 
     let started = Instant::now();
-    let mut child = shell_command(command)
+    let mut cmd = shell_command(command);
+    let mut child = crate::process::no_window(&mut cmd)
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

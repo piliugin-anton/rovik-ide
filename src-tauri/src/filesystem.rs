@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
-#[cfg(windows)]
-use std::os::windows::fs::MetadataExt as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::{
@@ -29,10 +27,23 @@ fn file_identity(path: &Path) -> Option<String> {
     }
     #[cfg(windows)]
     {
-        let meta = fs::metadata(path).ok()?;
-        let index = meta.file_index()?;
-        let volume = meta.volume_serial_number().unwrap_or(0);
-        return Some(format!("w:{}:{}", volume, index));
+        // std's `MetadataExt::file_index` is still unstable, so ask Windows
+        // directly. Backup semantics lets the handle be a directory's.
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+        };
+        let file = fs::OpenOptions::new()
+            .access_mode(0) // metadata only: works on files others hold open
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+            .open(path)
+            .ok()?;
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }.ok()?;
+        let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        return Some(format!("w:{}:{}", info.dwVolumeSerialNumber, index));
     }
     #[cfg(not(any(unix, windows)))]
     {

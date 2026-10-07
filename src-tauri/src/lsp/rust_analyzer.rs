@@ -64,7 +64,7 @@ fn managed_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// `<binary> --version`, if it runs. rustup's proxy for a component that
 /// isn't installed exists on PATH but fails here, which is what we want.
 fn version_of(path: &Path) -> Option<String> {
-    let mut child = Command::new(path)
+    let mut child = crate::process::no_window(&mut Command::new(path))
         .arg("--version")
         .env("PATH", tool_path())
         .stdout(std::process::Stdio::piped())
@@ -337,7 +337,7 @@ pub struct RustSrcStatus {
 pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let run = |cmd: &str, args: &[&str]| {
-            Command::new(cmd).args(args).current_dir(&root).env("PATH", tool_path()).output().ok().filter(|o| o.status.success())
+            crate::process::no_window(&mut Command::new(cmd)).args(args).current_dir(&root).env("PATH", tool_path()).output().ok().filter(|o| o.status.success())
         };
         let installed = run("rustc", &["--print", "sysroot"])
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -353,7 +353,7 @@ pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
 #[tauri::command]
 pub async fn ra_install_rust_src(root: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = Command::new("rustup")
+        let out = crate::process::no_window(&mut Command::new("rustup"))
             .args(["component", "add", "rust-src"])
             .current_dir(&root)
             .env("PATH", tool_path())

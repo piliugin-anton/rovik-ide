@@ -72,6 +72,30 @@ pub fn tool_path() -> std::ffi::OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
+/// The program to start for `command`. On Windows, a bare name is looked up
+/// on `path` with each of PATHEXT's extensions: `Command` only tries `.exe`,
+/// and servers installed by npm (typescript-language-server, …) are `.cmd`
+/// scripts. Everything else is returned as given.
+pub fn find_program(command: &str, path: &std::ffi::OsStr) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let given = std::path::Path::new(command);
+        if given.extension().is_none() && given.components().count() == 1 {
+            let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+            for dir in std::env::split_paths(path) {
+                for ext in exts.split(';').filter(|e| !e.is_empty()) {
+                    let candidate = dir.join(format!("{command}{}", ext.to_ascii_lowercase()));
+                    if candidate.is_file() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+    }
+    let _ = path;
+    std::path::PathBuf::from(command)
+}
+
 /// Reads one framed message: headers up to a blank line, then the body.
 /// None at end of stream.
 fn read_message(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
@@ -119,10 +143,12 @@ pub fn lsp_start(
     cwd: String,
     on_event: Channel<LspEvent>,
 ) -> Result<String, String> {
-    let mut child = Command::new(&command)
+    let path = tool_path();
+    let mut cmd = Command::new(find_program(&command, &path));
+    let mut child = crate::process::no_window(&mut cmd)
         .args(&args)
         .current_dir(&cwd)
-        .env("PATH", tool_path())
+        .env("PATH", &path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

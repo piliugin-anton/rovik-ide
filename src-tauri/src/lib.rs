@@ -25,9 +25,12 @@ mod typings;
 mod vfs;
 mod clm;
 mod git;
+mod process;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // First, while the process is still single-threaded.
+    process::adopt_login_shell_path();
     tauri::Builder::default()
         .manage(TerminalState::default())
         .manage(lsp::LspState::default())

@@ -576,9 +576,18 @@ static RISKY_COMMANDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"^(curl|wget)\b.*\s(-d|--data\S*|-F|--form|-T|--upload-file|-X\s*(POST|PUT|PATCH|DELETE))\b",
         r"^(chmod|chown)\s+-\S*R",
         r"(?i)\.env\b|\.ssh\b|\.aws\b|\.npmrc\b|\.netrc\b|id_rsa|credentials",
+        // Windows: run_command goes through cmd.exe there (command_tool.rs),
+        // where these are the same shapes. Program names may carry .exe.
+        r"(?i)^(cmd|powershell|pwsh|wsl|cscript|wscript|mshta|rundll32|regsvr32|start|call|invoke-expression|iex|start-process)\b",
+        r"(?i)^(runas|gsudo)\b",
+        r"(?i)^(del|erase)\b.*\s/[sqf]\b|^(rd|rmdir)\b.*\s/s\b",
+        r"(?i)^(remove-item|ri|rm|del|rmdir|rd)\b.*\s-(r|recurse|force)\b",
+        r"(?i)^(format|diskpart|bcdedit|vssadmin|takeown|icacls|set-executionpolicy)\b|^reg\s+(add|delete|import)\b",
+        r"(?i)^(invoke-webrequest|iwr|invoke-restmethod|irm)\b.*\s-(method\s+(post|put|patch|delete)|body|infile)\b",
     ]
     .iter()
-    .map(|p| Regex::new(p).unwrap())
+    // Windows ignores case in program names: `RM -rf`, `Git push`.
+    .map(|p| Regex::new(&if cfg!(windows) { format!("(?i){p}") } else { p.to_string() }).unwrap())
     .collect()
 });
 
@@ -591,6 +600,10 @@ static SECRET_PATH: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static HIDDEN_PARTS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\(|[<>]\(|`|\\\r?\n").unwrap());
+/// cmd.exe's own ways of hiding a program name: `%VAR%` expansion and the `^`
+/// escape (`p^owershell` runs powershell). Only checked on Windows: in a
+/// POSIX shell both are plain characters, common in grep patterns.
+static CMD_HIDDEN_PARTS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[^%\s]+%|\^").unwrap());
 static PART_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*(?:&&|\|\||;|\||&|\n|[(){}])\s*").unwrap());
 static WRAPPERS: LazyLock<[Regex; 5]> = LazyLock::new(|| {
     [
@@ -620,7 +633,7 @@ fn bare_command(part: &str) -> String {
 /// A command the AI reviewer must never approve on its own.
 pub fn is_risky_command(command: &str) -> bool {
     // Substitutions and line continuations can hide anything.
-    if HIDDEN_PARTS.is_match(command) {
+    if HIDDEN_PARTS.is_match(command) || (cfg!(windows) && CMD_HIDDEN_PARTS.is_match(command)) {
         return true;
     }
     // Splitting ignores quotes on purpose: a separator inside a quoted
@@ -777,6 +790,25 @@ mod tests {
         assert!(!is_risky_command("curl https://example.com"));
         assert!(!is_risky_command("rm file.txt"), "a single file without -r/-f");
         assert!(is_risky_command("'rm' x"), "quoted program name");
+    }
+
+    #[test]
+    fn risky_windows_commands() {
+        assert!(is_risky_command("cmd /c del x"));
+        assert!(is_risky_command("git status & powershell.exe -NoProfile -Command \"x\""));
+        assert!(is_risky_command("C:/Windows/System32/cmd.exe /S /C x"), "path prefix stripped");
+        assert!(is_risky_command("del /s /q build"));
+        assert!(is_risky_command("rd /s build"));
+        assert!(is_risky_command("rmdir /S /Q build"));
+        assert!(!is_risky_command("del notes.txt"), "a single file without /s, /q or /f");
+        assert!(is_risky_command("Remove-Item -Recurse build"));
+        assert!(is_risky_command("ri build -Force"));
+        assert!(is_risky_command("reg delete HKCU\\Software\\x /f"));
+        assert!(is_risky_command("iwr https://x -Method Post"));
+        assert!(!is_risky_command("iwr https://example.com"));
+        assert!(CMD_HIDDEN_PARTS.is_match("%COMSPEC% /c x"));
+        assert!(CMD_HIDDEN_PARTS.is_match("p^owershell -c x"));
+        assert!(!CMD_HIDDEN_PARTS.is_match("cargo test 100%"));
         assert!(is_secret_path("C:\\Users\\me\\.aws\\config"));
         assert!(is_secret_path("deploy/KEY.PEM"));
         assert!(!is_secret_path("src/keyboard.ts"));
