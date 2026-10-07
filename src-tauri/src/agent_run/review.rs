@@ -358,7 +358,7 @@ async fn review_with_typed(profile: &ModelProfile, input: &ReviewInput, errors: 
         .iter()
         .map(|q| (q.key.to_string(), json!({ "type": "noul", "instructions": q.instructions })))
         .collect();
-    let body = json!({ "input": { "state": state, "questions": body_questions } });
+    let body = json!({ "state": state, "questions": body_questions });
 
     let response =
         match crate::system_one::request(&profile.base_url, &profile.api_key, &profile.model, body, Some(15_000)).await {

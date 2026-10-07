@@ -3,7 +3,8 @@
 // One System One request to the reviewer model's provider: `POST
 // {base_url}/systemone`, the same way chat requests go to
 // `{base_url}/chat/completions`. The body is a `state` plus named typed
-// `questions`, answered with probabilities.
+// `questions` at the top level (wrapped in `input` for Cloudflare's `/run`),
+// answered with probabilities.
 // Used by the AI reviewer when "Use typed input" is on (agent_run/review.rs).
 
 use reqwest::Client;
@@ -15,12 +16,13 @@ pub async fn request(
     base_url: &str,
     api_key: &str,
     model: &str,
-    mut body: serde_json::Value,
+    body: serde_json::Value,
     timeout_ms: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let model = model.to_string();
     let trimmed = base_url.trim().trim_end_matches('/');
-    let is_cloudflare_needs_url_rewrite = trimmed.contains("api.cloudflare.com") && !trimmed.ends_with("/run");
+    let is_cloudflare = trimmed.contains("api.cloudflare.com");
+    let is_cloudflare_needs_url_rewrite = is_cloudflare && !trimmed.ends_with("/run");
     // For Cloudflare, keep only up to "...ai/" and drop anything after it
     let url = if is_cloudflare_needs_url_rewrite {
         // Ensure we keep the trailing slash after "ai"
@@ -37,27 +39,24 @@ pub async fn request(
         }
     };
     let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL {url}: {e}"))?;
-    println!("{url}");
-    
     let local = matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1") | Some("::1"));
     if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local) {
         return Err(format!("Refusing to send the review over {}: use https", parsed.scheme()));
     }
 
-    // Inject `model` into the body
-    if let serde_json::Value::Object(ref mut map) = body {
-        map.insert("model".to_string(), serde_json::Value::String(model));
+    // `/systemone` takes `state` and `questions` at the top level next to
+    // `model`. Cloudflare's `/run` takes `model` plus the payload under `input`.
+    let body = if is_cloudflare {
+        serde_json::json!({ "model": model, "input": body })
     } else {
-        // If body is not an object, wrap it
-        let mut new_body = serde_json::Map::new();
-        new_body.insert("model".to_string(), serde_json::Value::String(model));
-        if let serde_json::Value::Object(old) = body {
-            for (k, v) in old {
-                new_body.insert(k, v);
+        match body {
+            serde_json::Value::Object(mut map) => {
+                map.insert("model".to_string(), serde_json::Value::String(model));
+                serde_json::Value::Object(map)
             }
+            _ => return Err("System One request body must be a JSON object".to_string()),
         }
-        body = serde_json::Value::Object(new_body);
-    }
+    };
 
     let client = Client::builder()
         .timeout(Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1_000, 60_000)))
