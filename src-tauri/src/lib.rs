@@ -27,6 +27,7 @@ mod vfs;
 mod clm;
 mod git;
 mod process;
+mod open_url;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -178,6 +179,7 @@ pub fn run() {
             clm::clm_tool_edit,
             clm::clm_tool_write,
             clm::clm_recall_hint,
+            open_url::open_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
