@@ -191,9 +191,9 @@ impl<R: Runtime> Run<R> {
             .iter()
             .map(|tc| {
                 let (app, root) = (self.app.clone(), self.root.clone());
-                let (name, args) = (tc.name.clone(), tc.arguments.clone());
+                let (name, args, stop) = (tc.name.clone(), tc.arguments.clone(), self.stop.clone());
                 async move {
-                    parallel::spawned(async move { tools::execute(&app, root.as_deref(), &name, &args).await })
+                    parallel::spawned(async move { tools::execute(&app, root.as_deref(), &name, &args, &stop).await })
                         .await
                         .unwrap_or_else(|e| tools::ToolResult { content: format!("Error: {e}"), ..Default::default() })
                 }
@@ -300,7 +300,7 @@ impl<R: Runtime> Run<R> {
 
         let result = match &auth.refusal {
             Some(refusal) => tools::ToolResult { content: refusal.clone(), ..Default::default() },
-            None => tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json).await,
+            None => tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json, &self.stop).await,
         };
         let write = match (writes, write_path) {
             (true, Some(path)) => Some(WriteTarget { path, abs_path: abs_write_path, before }),

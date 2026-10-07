@@ -164,6 +164,8 @@ export interface CommandOutput {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** Killed by the agent's Stop button. */
+  stopped: boolean;
   truncated: boolean;
   durationMs: number;
 }

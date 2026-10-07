@@ -6,6 +6,7 @@
 use super::command_output::{cap_output, clean_output, focus_failures};
 use super::permissions::{commands_available, Permissions};
 use super::plan::{MAX_TODO_ITEMS, PLAN_BLOCKED_TOOLS};
+use super::StopSignal;
 use crate::code_search::SearchResult;
 use crate::command_tool::CommandOutput;
 use regex::Regex;
@@ -450,7 +451,14 @@ pub fn apply_edit(root: &str, edit: &EditArgs, dry_run: bool) -> Result<crate::a
 
 /// Runs one tool call. Never fails: problems come back as an "Error: ..."
 /// result the model can read and act on.
-pub async fn execute<R: Runtime>(app: &AppHandle<R>, root: Option<&str>, name: &str, args_json: &str) -> ToolResult {
+/// Stop kills a command that is running.
+pub async fn execute<R: Runtime>(
+    app: &AppHandle<R>,
+    root: Option<&str>,
+    name: &str,
+    args_json: &str,
+    stop: &Arc<StopSignal>,
+) -> ToolResult {
     let args = if args_json.trim().is_empty() {
         Map::new()
     } else {
@@ -460,13 +468,19 @@ pub async fn execute<R: Runtime>(app: &AppHandle<R>, root: Option<&str>, name: &
             Err(_) => return ToolResult::text(format!("Error: could not parse arguments as JSON: {args_json}")),
         }
     };
-    match run(app, root, name, &args).await {
+    match run(app, root, name, &args, stop).await {
         Ok(result) => result,
         Err(e) => ToolResult::text(format!("Error: {e}")),
     }
 }
 
-async fn run<R: Runtime>(app: &AppHandle<R>, root: Option<&str>, name: &str, args: &Map<String, Value>) -> Result<ToolResult, String> {
+async fn run<R: Runtime>(
+    app: &AppHandle<R>,
+    root: Option<&str>,
+    name: &str,
+    args: &Map<String, Value>,
+    stop: &Arc<StopSignal>,
+) -> Result<ToolResult, String> {
     match name {
         "web_search" => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
@@ -561,7 +575,8 @@ async fn run<R: Runtime>(app: &AppHandle<R>, root: Option<&str>, name: &str, arg
                 return Ok(ToolResult::text("Error: \"command\" is required."));
             };
             let timeout = num(args, "timeout_seconds").filter(|s| *s > 0.0).map(|s| (s * 1000.0) as u64);
-            let out = crate::command_tool::tool_run_command(root_owned, command.into(), timeout).await?;
+            let stop = stop.clone();
+            let out = crate::command_tool::run_command(root_owned, command.into(), timeout, move || stop.is_set()).await?;
             format_command_output(command, &out)
         }
         "list_dir" => {
@@ -613,7 +628,9 @@ async fn run<R: Runtime>(app: &AppHandle<R>, root: Option<&str>, name: &str, arg
 
 /// The text the model sees for a finished command.
 pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
-    let status = if out.timed_out {
+    let status = if out.stopped {
+        "stopped by the user (killed)".to_string()
+    } else if out.timed_out {
         "timed out (killed)".to_string()
     } else {
         match out.exit_code {
@@ -623,7 +640,7 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
     };
     // The first two lines are read back by the chat's tool block (exit code).
     let mut parts = vec![format!("$ {command}"), format!("{status}, {:.1} s", out.duration_ms as f64 / 1000.0)];
-    let failed = out.timed_out || out.exit_code != Some(0);
+    let failed = out.timed_out || out.stopped || out.exit_code != Some(0);
     let mut shortened = out.truncated;
     // A failing run: its errors and summary. Otherwise its start and end.
     let mut shape = |text: &str| {
@@ -885,6 +902,7 @@ mod tests {
             stdout: String::new(),
             stderr: "error: boom\n".into(),
             timed_out: false,
+            stopped: false,
             truncated: false,
             duration_ms: 1234,
         };
@@ -1133,12 +1151,12 @@ a.rs (3 matches)
     #[test]
     fn tool_text_edge_cases() {
         // A command killed by a timeout, with no output.
-        let out = CommandOutput { exit_code: None, stdout: " ".into(), stderr: String::new(), timed_out: true, truncated: false, duration_ms: 120_000 };
+        let out = CommandOutput { exit_code: None, stdout: " ".into(), stderr: String::new(), timed_out: true, stopped: false, truncated: false, duration_ms: 120_000 };
         let text = format_command_output("sleep 999", &out);
         assert_eq!(text, "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)");
         assert_eq!(result_meta("run_command", &text).unwrap()["exitCode"], Value::Null);
         // Truncated by the runner: said so.
-        let out = CommandOutput { exit_code: Some(0), stdout: "x".into(), stderr: String::new(), timed_out: false, truncated: true, duration_ms: 1 };
+        let out = CommandOutput { exit_code: Some(0), stdout: "x".into(), stderr: String::new(), timed_out: false, stopped: false, truncated: true, duration_ms: 1 };
         assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read_file for the rest)"));
         assert_eq!(format_search_result(&SearchResult {
                 lines: vec![],
