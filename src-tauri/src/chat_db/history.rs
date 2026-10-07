@@ -627,6 +627,27 @@ fn with_placeholder_signature(extra: Option<Value>) -> Value {
     extra
 }
 
+/// A call's arguments as sent back: providers reject the whole request when
+/// any earlier call's arguments aren't a JSON object, and a model can emit
+/// broken JSON (a reply cut off mid-call, an unescaped character). Valid
+/// arguments go back unchanged; broken ones as an object holding the text,
+/// so the model can still see what it sent next to the error it got.
+fn wire_arguments(arguments: &str) -> String {
+    if arguments.trim().is_empty() {
+        return "{}".into();
+    }
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(Value::Object(_)) => arguments.to_string(),
+        _ => {
+            let mut raw: String = arguments.chars().take(ARGS_KEEP_CHARS).collect();
+            if raw.len() < arguments.len() {
+                raw.push('…');
+            }
+            json!({ "invalid_arguments": raw }).to_string()
+        }
+    }
+}
+
 /// Chat Completions only allows text in role:"tool" messages, so images go
 /// in a user message after the whole run of tool results (all results for
 /// one assistant turn must directly follow it).
@@ -680,7 +701,7 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
                 .iter()
                 .enumerate()
                 .map(|(i, c)| {
-                    let mut call = json!({ "id": c.id, "type": "function", "function": { "name": c.name, "arguments": c.arguments } });
+                    let mut call = json!({ "id": c.id, "type": "function", "function": { "name": c.name, "arguments": wire_arguments(&c.arguments) } });
                     let mut extra = c.extra_content.clone();
                     // Gemini requires a signature on the first call of every
                     // step (parallel siblings carry none). Without a real one,
@@ -888,6 +909,38 @@ mod tests {
         assert_eq!(sig(&other, 1, 0), Some(json!("SIG-A")));
         assert_eq!(sig(&other, 9, 0), None);
         assert!(other[9]["tool_calls"][0].get("extra_content").is_none());
+    }
+
+    #[test]
+    fn broken_call_arguments_go_out_as_a_json_object() {
+        let dir = std::env::temp_dir();
+        let with_args = |args: &str| {
+            let mut m = msg("assistant", "");
+            m.tool_calls = Some(vec![ToolCall { id: "c".into(), name: "edit_file".into(), arguments: args.into(), extra_content: None }]);
+            m
+        };
+        let sent = |args: &str| {
+            let w = to_wire(&[msg("user", "q"), with_args(args), result("c", "Error: x")], &dir, false, false);
+            w[1]["tool_calls"][0]["function"]["arguments"].as_str().unwrap().to_string()
+        };
+
+        let valid = r#"{"path":"a.rs","old_text":"x","new_text":"y"}"#;
+        assert_eq!(sent(valid), valid, "valid arguments are sent unchanged");
+        assert_eq!(sent(""), "{}");
+        assert_eq!(sent("  "), "{}");
+
+        let cut_off = r#"{"old_text":"fn main() {"#;
+        let back: Value = serde_json::from_str(&sent(cut_off)).expect("valid JSON");
+        assert_eq!(back["invalid_arguments"], cut_off, "the model still sees what it sent");
+
+        let array: Value = serde_json::from_str(&sent("[1,2]")).unwrap();
+        assert!(array.is_object(), "not an object: wrapped too");
+
+        let long = format!("{{\"old_text\":\"{}", "é".repeat(ARGS_KEEP_CHARS * 2));
+        let back: Value = serde_json::from_str(&sent(&long)).unwrap();
+        let kept = back["invalid_arguments"].as_str().unwrap();
+        assert_eq!(kept.chars().count(), ARGS_KEEP_CHARS + 1, "capped, with an ellipsis");
+        assert!(kept.ends_with('…'));
     }
 
     // ---- requests, the IDE's messages, outdated content ----
