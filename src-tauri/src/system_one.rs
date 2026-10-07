@@ -30,7 +30,11 @@ pub async fn request(
             .map(|s| format!("{s}/run"))
             .unwrap_or_else(|| trimmed.to_string())
     } else {
-        trimmed.to_string()
+        if !trimmed.ends_with("/systemone") {
+            format!("{}/systemone", trimmed).to_string()
+        } else {
+            trimmed.to_string()
+        }
     };
     let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL {url}: {e}"))?;
     println!("{url}");
