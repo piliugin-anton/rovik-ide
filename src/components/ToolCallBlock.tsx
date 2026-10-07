@@ -14,6 +14,7 @@ import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
 import { diffRows, snippetLines } from '../lib/lineDiff';
 import { describeToolCall } from '../lib/permissions';
+import { parseReviewChecks, REJECT_AT } from '../lib/aiApproval';
 import { requestOpenFile } from '../lib/editorBridge';
 import {
   allow,
@@ -633,9 +634,39 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
               <section class="tool-call-section">
                 <div class="tool-call-label">Approval</div>
                 <div class="tool-call-approval" classList={{ rejected: !a().approved }}>
-                  {a().approved ? 'Approved' : 'Rejected'}
-                  {a().by === 'ai' ? ` by ${a().model ?? 'AI'}` : ' by you'}
-                  {a().reason ? `: ${a().reason}` : ''}
+                  <div class="tool-call-approval-verdict">
+                    <span class="tool-call-approval-mark" aria-hidden="true">
+                      {a().approved ? '✓' : '✕'}
+                    </span>
+                    {a().approved ? 'Approved' : 'Rejected'}
+                    {a().by === 'ai' ? ' by AI reviewer' : ' by you'}
+                  </div>
+                  <Show when={a().by === 'ai' && a().model}>
+                    <div class="tool-call-approval-model" title={a().model}>
+                      {a().model}
+                    </div>
+                  </Show>
+                  <Show when={a().reason}>
+                    {(reason) => (
+                      <Show
+                        when={parseReviewChecks(reason())}
+                        fallback={<div class="tool-call-approval-reason">{reason()}</div>}
+                      >
+                        {(checks) => (
+                          <ul class="tool-call-approval-checks">
+                            <For each={checks()}>
+                              {(c) => (
+                                <li classList={{ failed: c.percent <= REJECT_AT * 100 }}>
+                                  <span class="tool-call-approval-check">{c.label}</span>
+                                  <span class="tool-call-approval-score">{c.percent}%</span>
+                                </li>
+                              )}
+                            </For>
+                          </ul>
+                        )}
+                      </Show>
+                    )}
+                  </Show>
                 </div>
               </section>
             )}

@@ -1630,11 +1630,74 @@ body {
 
 /* Approval decision on a tool call (components/ToolCallBlock.tsx) */
 .tool-call-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 10px 8px;
   font-size: 12px;
   color: var(--fg-dim);
 }
 
-.tool-call-approval.rejected {
+.tool-call-approval-verdict {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.tool-call-approval-mark {
+  color: var(--success);
+}
+
+.tool-call-approval.rejected .tool-call-approval-verdict,
+.tool-call-approval.rejected .tool-call-approval-mark {
+  color: var(--error);
+}
+
+.tool-call-approval-model {
+  padding-left: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.tool-call-approval-reason {
+  padding-left: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.tool-call-approval-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0 0 0 18px;
+  list-style: none;
+}
+
+.tool-call-approval-checks li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.tool-call-approval-check {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-call-approval-score {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.tool-call-approval-checks li.failed,
+.tool-call-approval-checks li.failed .tool-call-approval-score {
   color: var(--error);
 }
 

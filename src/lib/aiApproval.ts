@@ -13,3 +13,26 @@ export function isJevModel(modelId: string): boolean {
   // Jev Router is a chat model that routes to other models.
   return /(^|[/~:-])jev([-_.]|$)/i.test(modelId) && !/jev-router/i.test(modelId);
 }
+
+/** One check score in a Jev reviewer's reason ("fits the task 91%"). */
+export interface ReviewCheck {
+  label: string;
+  percent: number;
+}
+
+/**
+ * The scores in a typed reviewer's reason (review.rs: decide), e.g.
+ * "Checks passed: fits the task 91%, no secrets or exfiltration 96%.".
+ * Free-form reasons from a text reviewer give undefined.
+ */
+export function parseReviewChecks(reason: string): ReviewCheck[] | undefined {
+  const m = /^(?:Checks passed|Failed): (.+)\.$/.exec(reason.trim());
+  if (!m) return undefined;
+  const checks: ReviewCheck[] = [];
+  for (const part of m[1].split(', ')) {
+    const c = /^(.+) (\d{1,3})%$/.exec(part);
+    if (!c) return undefined;
+    checks.push({ label: c[1], percent: Number(c[2]) });
+  }
+  return checks;
+}
