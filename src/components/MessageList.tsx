@@ -44,10 +44,12 @@ const USER_INPUT_WINDOW_MS = 300;
  */
 const FOLLOW_INTENT_MS = 1200;
 /**
- * Heading down, this close to the bottom counts as arriving there: the last
- * messages can still be settling at their real height (rendered as they come
- * into view), which moves the bottom while a smooth scroll is on its way to
- * where it was.
+ * Heading for the end (End key), this close to the bottom counts as arriving
+ * there: the last messages can still be settling at their real height
+ * (rendered as they come into view), which moves the bottom while a smooth
+ * scroll is on its way to where it was. Any other scrolling has to reach the
+ * bottom itself (BOTTOM_TOLERANCE_PX): stopping a little short of it is the
+ * user's choice, and snapping the rest of the way there fought them.
  */
 const FOLLOW_TOLERANCE_PX = 150;
 const AROUND = 25;
@@ -212,6 +214,8 @@ export default function MessageList(props: {
   };
   /** Which way the user last asked to scroll (wheel, keys); null: can't tell. */
   let userDirection: 'up' | 'down' | null = null;
+  /** The user's last scroll input asked for the very end (End key). */
+  let userHeadingToEnd = false;
   /*
    * The list keeping the reader's place (messages above changing height,
    * batches inserted above) by moving the content by `delta`.
@@ -290,6 +294,7 @@ export default function MessageList(props: {
   function handleKeyInput(e: KeyboardEvent) {
     markUserInput();
     markScrollActivity();
+    userHeadingToEnd = e.key === 'End';
     if (['ArrowDown', 'PageDown', 'End', ' '].includes(e.key)) userDirection = 'down';
     else if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) userDirection = 'up';
   }
@@ -318,8 +323,9 @@ export default function MessageList(props: {
     const movedUp = top < lastScrollTop - 1;
     lastScrollTop = top;
     const distance = el.scrollHeight - top - el.clientHeight;
+    const tolerance = userHeadingToEnd ? FOLLOW_TOLERANCE_PX : BOTTOM_TOLERANCE_PX;
     if (!atNewest()) setStick(false);
-    else if (distance <= FOLLOW_TOLERANCE_PX && !movedUp && userHeadingDown()) {
+    else if (distance <= tolerance && !movedUp && userHeadingDown()) {
       if (!stick()) {
         setStick(true);
         // Close the gap the settling messages left.
@@ -333,6 +339,7 @@ export default function MessageList(props: {
     markUserInput();
     // Starts an animated scroll whose first scroll event comes a frame later.
     markScrollActivity();
+    userHeadingToEnd = false;
     if (e.deltaY !== 0) userDirection = e.deltaY > 0 ? 'down' : 'up';
     // Upward intent ends following at once, even if a scroll-to-bottom is
     // queued for this frame (it checks stick() before scrolling).
@@ -344,6 +351,7 @@ export default function MessageList(props: {
     // Only the container itself: a press on its scrollbar, not on content.
     if (e.target !== scrollRef) return;
     draggingScrollbar = true;
+    userHeadingToEnd = false;
     const stop = () => {
       draggingScrollbar = false;
       markUserInput();
