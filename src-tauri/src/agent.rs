@@ -251,7 +251,10 @@ pub async fn run_with_reasoning(
             attempt_body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
         let (target, attempt_body) = match (api, responses_url.as_deref()) {
-            (Api::Responses, Some(responses_url)) => (responses_url, responses::request_body(&attempt_body)),
+            (Api::Responses, Some(responses_url)) => {
+                let phases = responses::uses_phases(&responses::phase_key(responses_url, model));
+                (responses_url, responses::request_body(&attempt_body, phases))
+            }
             _ => (url, attempt_body),
         };
         let spec = crate::chat_request::RequestSpec {

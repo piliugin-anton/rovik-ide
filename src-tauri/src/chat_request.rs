@@ -418,6 +418,15 @@ pub struct ReplyParser {
     finish_reason: Option<String>,
     /// Token counts, if the provider reported them (usually in the last chunk).
     usage: Option<serde_json::Value>,
+    /// Characters of reasoning shown so far.
+    reasoning_len: usize,
+    /// Responses API: the output items that are commentary (`responses`).
+    commentary: Vec<u64>,
+    /// Their text, in case the reply turns out to be nothing else.
+    commentary_text: String,
+    /// Responses API: where to note that this model labels its messages
+    /// with a phase (`responses::note_phases`).
+    phase_key: Option<String>,
 }
 
 #[derive(Default)]
@@ -466,6 +475,7 @@ impl ReplyParser {
                 .or_else(|| delta.get("reasoning"))
                 .and_then(|v| v.as_str());
             if let Some(reasoning) = reasoning.filter(|r| !r.is_empty()) {
+                self.reasoning_len += reasoning.len();
                 emit(ChatStreamEvent::Reasoning { content: reasoning.to_string() });
             }
             for (pos, tc) in delta.get("tool_calls").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
@@ -667,7 +677,12 @@ async fn attempt(
     }
     let headers = response.headers().clone();
 
-    let mut parser = ReplyParser::default();
+    let mut parser = ReplyParser {
+        phase_key: (spec.api == Api::Responses).then(|| {
+            responses::phase_key(spec.url, spec.body.get("model").and_then(|m| m.as_str()).unwrap_or(""))
+        }),
+        ..Default::default()
+    };
 
     if !spec.streaming {
         let text = tokio::select! {
