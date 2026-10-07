@@ -72,6 +72,30 @@ pub fn tool_path() -> std::ffi::OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
+/// The program to start for `command`. On Windows, a bare name is looked up
+/// on `path` with each of PATHEXT's extensions: `Command` only tries `.exe`,
+/// and servers installed by npm (typescript-language-server, …) are `.cmd`
+/// scripts. Everything else is returned as given.
+pub fn find_program(command: &str, path: &std::ffi::OsStr) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let given = std::path::Path::new(command);
+        if given.extension().is_none() && given.components().count() == 1 {
+            let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+            for dir in std::env::split_paths(path) {
+                for ext in exts.split(';').filter(|e| !e.is_empty()) {
+                    let candidate = dir.join(format!("{command}{}", ext.to_ascii_lowercase()));
+                    if candidate.is_file() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+    }
+    let _ = path;
+    std::path::PathBuf::from(command)
+}
+
 /// Reads one framed message: headers up to a blank line, then the body.
 /// None at end of stream.
 fn read_message(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
@@ -119,10 +143,12 @@ pub fn lsp_start(
     cwd: String,
     on_event: Channel<LspEvent>,
 ) -> Result<String, String> {
-    let mut child = Command::new(&command)
+    let path = tool_path();
+    let mut cmd = Command::new(find_program(&command, &path));
+    let mut child = crate::process::no_window(&mut cmd)
         .args(&args)
         .current_dir(&cwd)
-        .env("PATH", tool_path())
+        .env("PATH", &path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -214,6 +240,26 @@ pub fn lsp_stop(state: State<'_, LspState>, id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_npm_cmd_shims_on_path() {
+        let dir = std::env::temp_dir().join(format!("find-program-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("some-language-server.cmd"), "@echo off\r\n").unwrap();
+        let path = std::env::join_paths([&dir]).unwrap();
+        assert_eq!(find_program("some-language-server", &path), dir.join("some-language-server.cmd"));
+        assert_eq!(find_program("not-there", &path), std::path::PathBuf::from("not-there"));
+        assert_eq!(find_program("node.exe", &path), std::path::PathBuf::from("node.exe"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn leaves_names_alone_elsewhere_or_with_an_extension() {
+        let path = std::ffi::OsString::new();
+        assert_eq!(find_program("rust-analyzer", &path), std::path::PathBuf::from("rust-analyzer"));
+        assert_eq!(find_program("/usr/bin/x", &path), std::path::PathBuf::from("/usr/bin/x"));
+    }
 
     #[test]
     fn frames_round_trip() {

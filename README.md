@@ -54,7 +54,9 @@ src-tauri/
                      so they aren't gated by the permission system)
 ```
 
-## Running it (Linux)
+## Running it
+
+### Linux
 
 Three scripts, run from the project root:
 
@@ -69,7 +71,9 @@ installs Rust via `rustup` if your distro's `rustc` is too old or missing —
 Tauri needs a recent-ish toolchain and distro packages lag — and runs
 `npm install`. It's safe to re-run; already-satisfied steps are skipped.
 
-If you're on macOS/Windows instead, skip the scripts and just run:
+### macOS and Windows
+
+The scripts are Linux-only. Install the prerequisites once, then use npm:
 
 ```bash
 npm install
@@ -77,8 +81,33 @@ npm run tauri dev      # dev mode, hot reload
 npm run tauri build    # production bundle
 ```
 
-See https://v2.tauri.app/start/prerequisites/ for the non-Linux prerequisites
-(Xcode CLT on macOS, MSVC Build Tools on Windows).
+- **macOS:** the Xcode Command Line Tools (`xcode-select --install`), Rust
+  via [rustup](https://rustup.rs) and Node.js 18+. macFUSE isn't needed to
+  build; the app offers to install it when virtual files are first used.
+- **Windows:** Visual Studio Build Tools with "Desktop development with
+  C++", Rust via [rustup](https://rustup.rs) (the default `x86_64-pc-windows-msvc`
+  toolchain; the MinGW one isn't supported), Node.js 18+, and **LLVM**
+  (`winget install LLVM.LLVM`), whose `libclang` generates the WinFsp
+  bindings. WebView2 ships with Windows 10/11. WinFsp isn't needed to build.
+
+Details: https://v2.tauri.app/start/prerequisites/.
+
+### Platform behavior
+
+- The AI agent's `run_command` runs through `$SHELL -c` on macOS/Linux and
+  `cmd.exe` on Windows; the terminal panel starts your login shell (or
+  `%COMSPEC%`). Started from Finder, the Dock or a desktop entry, the app
+  takes `PATH` from your login shell at startup, so commands and language
+  servers find `npm`, `cargo`, Homebrew tools and the like
+  (`src-tauri/src/process.rs`).
+
+### Tests
+
+From `src-tauri/`:
+
+```bash
+cargo test --lib
+```
 
 ## Virtual files
 

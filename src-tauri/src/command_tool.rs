@@ -35,8 +35,13 @@ pub struct CommandOutput {
 
 #[cfg(windows)]
 fn shell_command(command: &str) -> Command {
-    let mut cmd = Command::new("cmd");
-    cmd.args(["/C", command]);
+    use std::os::windows::process::CommandExt;
+    let shell = std::env::var("COMSPEC").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "cmd.exe".to_string());
+    let mut cmd = Command::new(shell);
+    // Passed as is: `arg` would escape its quotes as `\"`, which cmd doesn't
+    // understand, so `git commit -m "msg"` arrived mangled. With /S, cmd
+    // strips exactly the outer pair of quotes and runs the rest verbatim.
+    cmd.raw_arg("/S /C").raw_arg(format!("\"{command}\""));
     cmd
 }
 
@@ -131,7 +136,8 @@ fn run_blocking(root: &str, command: &str, timeout: Duration) -> Result<CommandO
     }
 
     let started = Instant::now();
-    let mut child = shell_command(command)
+    let mut cmd = shell_command(command);
+    let mut child = crate::process::no_window(&mut cmd)
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -242,6 +248,44 @@ mod tests {
         for line in out.stdout.lines() {
             assert!(line.starts_with("line ") || line.starts_with("[…"), "{line}");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn captures_output_and_exit_code_in_cmd() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), "echo hi& echo oops 1>&2& exit /b 3", Duration::from_secs(20)).unwrap();
+        assert_eq!(out.exit_code, Some(3));
+        assert_eq!(out.stdout.trim(), "hi");
+        assert_eq!(out.stderr.trim(), "oops");
+        assert!(!out.timed_out);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn quotes_reach_cmd_intact() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), r#"echo "a b" "c""#, Duration::from_secs(20)).unwrap();
+        assert_eq!(out.stdout.trim(), r#""a b" "c""#);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_output_keeps_its_start_and_end_in_cmd() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (0,1,19999) do @echo line %i", Duration::from_secs(120)).unwrap();
+        assert!(out.truncated);
+        assert!(out.stdout.starts_with("line 0\r\n"));
+        assert!(out.stdout.trim_end().ends_with("line 19999"));
+        assert!(out.stdout.contains("bytes of output omitted"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn times_out_in_cmd() {
+        let dir = std::env::temp_dir();
+        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (1,1,2000000000) do @rem", Duration::from_millis(500)).unwrap();
+        assert!(out.timed_out);
     }
 
     #[test]

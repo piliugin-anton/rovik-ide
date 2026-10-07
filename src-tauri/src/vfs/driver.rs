@@ -386,7 +386,7 @@ pub fn load_winfsp() -> Result<(), String> {
 #[cfg(windows)]
 fn winfsp_version(dir: &Path) -> Option<String> {
     // Not stored anywhere simple; the installer's product name carries it.
-    let out = Command::new("reg")
+    let out = crate::process::no_window(&mut Command::new("reg"))
         .args(["query", r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", "/s", "/f", "WinFsp", "/d"])
         .output()
         .ok()?;

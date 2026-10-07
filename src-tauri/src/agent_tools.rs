@@ -51,6 +51,25 @@ fn canonicalize_or_err(p: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("{}: {e}", p.display()))
 }
 
+/// `path` with symlinks resolved as far as it exists: its deepest existing
+/// ancestor canonicalized, the rest (not created yet) appended. Comparing a
+/// canonical root with a raw new path refused paths inside the project:
+/// `\\?\C:\proj` vs `C:\proj\new.txt` on Windows, `/private/tmp/p` vs
+/// `/tmp/p/new.txt` on macOS. A dangling symlink counts as existing, so it
+/// fails here instead of letting a write follow it out of the project.
+fn canonicalize_existing(path: &Path) -> Result<PathBuf, String> {
+    let mut rest = Vec::new();
+    let mut existing = path;
+    while existing.symlink_metadata().is_err() {
+        let name = existing.file_name().ok_or_else(|| format!("{}: not a valid path", path.display()))?;
+        rest.push(name);
+        existing = existing.parent().ok_or_else(|| format!("{}: not a valid path", path.display()))?;
+    }
+    let mut out = canonicalize_or_err(existing)?;
+    out.extend(rest.iter().rev());
+    Ok(out)
+}
+
 /// Resolves `candidate` (as given by the model, relative to the project
 /// root unless absolute) and checks it stays inside `root`.
 ///
@@ -76,12 +95,7 @@ fn resolve_within_root(root: &str, candidate: &str) -> Result<PathBuf, String> {
         root_canon.join(candidate_path)
     };
 
-    let check = if joined.exists() {
-        canonicalize_or_err(&joined)?
-    } else {
-        joined.clone()
-    };
-
+    let check = canonicalize_existing(&joined)?;
     if !check.starts_with(&root_canon) {
         return Err(format!("path escapes project root: {candidate}"));
     }
@@ -314,4 +328,40 @@ pub fn tool_write_file(root: String, path: String, content: String) -> Result<St
     }
     fs::write(&target, &content).map_err(|e| format!("{path}: {e}"))?;
     Ok(format!("wrote {} bytes to {path}", content.len()))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A project reached through a symlink, like any project under /tmp on
+    /// macOS (/tmp → /private/tmp).
+    fn linked_project(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("agent-tools-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let real = base.join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        (base, link)
+    }
+
+    #[test]
+    fn new_files_given_by_absolute_path_stay_inside() {
+        let (base, root) = linked_project("abs");
+        let root_s = root.to_str().unwrap();
+        let new_file = root.join("src").join("new.rs");
+        assert_eq!(resolve_within_root(root_s, new_file.to_str().unwrap()).unwrap(), new_file);
+        assert!(resolve_within_root(root_s, "src/new.rs").is_ok());
+        assert!(resolve_within_root(root_s, base.join("elsewhere.rs").to_str().unwrap()).is_err());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_dangling_symlink_out_of_the_project_is_refused() {
+        let (base, root) = linked_project("dangling");
+        std::os::unix::fs::symlink(base.join("outside.txt"), root.join("escape.txt")).unwrap();
+        assert!(resolve_within_root(root.to_str().unwrap(), "escape.txt").is_err());
+        let _ = fs::remove_dir_all(&base);
+    }
 }

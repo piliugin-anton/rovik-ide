@@ -18,7 +18,10 @@ export default defineConfig({
   },
   // keep bundles lean; no need to split vendor chunks for an app this size
   build: {
-    target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
+    // WebView2 on Windows; WebKit on macOS/Linux. Not lower than safari15:
+    // esbuild can't lower the destructuring in Monaco's workers to safari13,
+    // which failed every macOS/Linux build. Safari 15 runs on macOS 10.15+.
+    target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari15',
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
