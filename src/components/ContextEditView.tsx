@@ -23,6 +23,13 @@ const KIND_LABEL: Record<BlockChange['kind'], string> = {
   written: 'Written',
 };
 
+/**
+ * The user's messages are protected (src-tauri/src/clm/document.rs): the app
+ * puts a removed or rewritten one back. Past this size (the app's limit,
+ * roughly), a rewrite is kept and a removed one comes back shortened.
+ */
+const PROTECTED_MAX_TOKENS = 2000;
+
 /** First non-empty line, shortened: a removed or collapsed block's gist. */
 function preview(text: string): string {
   const line = text.split('\n').find((l) => l.trim()) ?? '';
@@ -55,6 +62,12 @@ function BlockRow(props: { change: BlockChange; open: boolean }) {
   };
   const gist = () => preview(c().kind === 'removed' ? c().before : c().after || c().before);
   const hasBody = () => (c().before || c().after) !== '';
+  const putBack = () => {
+    if (role() !== 'user' || (c().kind !== 'removed' && c().kind !== 'edited')) return undefined;
+    const long = before() > PROTECTED_MAX_TOKENS;
+    if (c().kind === 'removed') return long ? 'put back shortened' : 'put back';
+    return long ? undefined : 'put back';
+  };
 
   return (
     <li class={`ctx-edit-block ${c().kind}`}>
@@ -76,6 +89,14 @@ function BlockRow(props: { change: BlockChange; open: boolean }) {
               {shortId()}
             </span>
           </Show>
+        </Show>
+        <Show when={putBack()}>
+          <span
+            class="ctx-edit-kept"
+            title="The user's messages are protected: the app puts them back when the next request is sent."
+          >
+            {putBack()}
+          </span>
         </Show>
         <span class="ctx-edit-gist">{gist()}</span>
         <TokenChange before={before()} after={after()} />

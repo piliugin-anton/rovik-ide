@@ -207,6 +207,18 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   the budget, or leaves it with no messages, is rejected and the agent is
   told why; one that shrinks it is always taken. Stored messages are never
   changed. Restoring an older revision keeps everything stored after it.
+
+  The task can't be edited away. The user's own messages (the task, its
+  scope, every instruction since) are protected: if an edit removes or
+  rewrites one, the app puts it back where it was and the receipt says so
+  (one over ~2k tokens, such as a pasted log, may be rewritten shorter;
+  removed, it comes back as its start with a pointer to the full text). The
+  agent's own durable notes go in a task card, `@context/TASK.md`: goal,
+  scope and constraints, decisions, what's done, NEXT. It is a separate file
+  shown in the system prompt on every request, so no edit to the context
+  file touches it; it is saved in the chat database to survive a restart,
+  and if the agent deletes it, its last text comes back in the next
+  request's notes.
   The agent has these tools on `@context/…` in Plan mode and without a
   project too (offered for the context folder only), `list_dir @context`
   for its folder, and `restore_context` to restore a revision or go back to

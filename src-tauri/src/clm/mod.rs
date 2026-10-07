@@ -8,7 +8,8 @@
 //!    `src/vfs`) is read back. If the agent changed it since it was written,
 //!    the edit is parsed (document.rs) and, if it fits the budget, becomes
 //!    the chat's context: the `projection`, covering stored messages up to
-//!    the one the file was written after. Rejected edits are reported.
+//!    the one the file was written after. Rejected edits are reported. The
+//!    user's own messages are protected: an edit can't drop or rewrite them.
 //! 2. The context sent is the projection plus every message stored since
 //!    (each once).
 //!    Stored messages are never changed: the projection is a view.
@@ -19,6 +20,10 @@
 //!    revisions are also saved in the database so they survive a restart.
 //! 5. Notes for the model go at the end of the request: the edit's receipt,
 //!    the size readout and budget reminders (prompt.rs).
+//!
+//! What must outlive every compaction (goal, scope, decisions, NEXT) the
+//! agent keeps in its task card, `TASK.md` next to the context file: shown
+//! in the system prompt, never part of the file it edits.
 //!
 //! The agent edits the file with its ordinary tools (read_file, edit_file,
 //! write_file through `@context/…`, or run_command through its real path):
@@ -44,6 +49,59 @@ pub const MODE_CLM: &str = "clm";
 const REFILL_REVISIONS: usize = 64;
 /// Tool outputs shorter than this aren't worth withholding.
 const WITHHOLD_MIN_CHARS: usize = 400;
+/// A user's message longer than this may be shortened by the agent; any
+/// other is put back as it was (document::protect).
+const PROTECTED_MAX_TOKENS: usize = 2_000;
+
+/// The task card is shown whole up to this many characters; past it, its start.
+const CARD_MAX_CHARS: usize = 6_000;
+
+/// The card as shown: whole, or its start and a mark.
+fn card_text(text: &str) -> String {
+    if text.chars().count() <= CARD_MAX_CHARS {
+        return text.trim_end().to_string();
+    }
+    let head: String = text.chars().take(CARD_MAX_CHARS).collect();
+    format!(
+        "{}\n[… cut: the card is over {CARD_MAX_CHARS} characters; keep it short]",
+        head.trim_end()
+    )
+}
+
+/// The agent's task card: outside the context file, so no edit to that
+/// file can drop it; shown in the system prompt of every request.
+pub fn task_file(dialog_id: &str) -> String {
+    format!("{}/{}", context_dir(dialog_id), prompt::TASK_FILE)
+}
+
+/// A message the user wrote: protected from the agent's edits.
+fn is_users(m: &CtxMsg) -> bool {
+    m.role == "user" && !m.harness && m.label.is_none() && m.tool_call_id.is_none()
+}
+
+/// The receipt's words for the user's messages an edit tried to drop.
+fn protected_note(p: &document::Protected) -> String {
+    let blocks = |b: &[usize]| {
+        b.iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out = String::new();
+    if !p.restored.is_empty() {
+        out.push_str(&format!(
+            " The user's messages are protected: block(s) {} you removed or rewrote were put back as they were.",
+            blocks(&p.restored)
+        ));
+    }
+    if !p.shortened.is_empty() {
+        out.push_str(&format!(
+            " The user's messages can't be removed: very long block(s) {} were put back shortened.",
+            blocks(&p.shortened)
+        ));
+    }
+    out
+}
 
 /// The chat's folder on the volume.
 pub fn context_dir(dialog_id: &str) -> String {
@@ -167,6 +225,25 @@ pub async fn prepare(
     let index_of = |id: &str| raw.iter().position(|m| m.id == id);
     let mut notes = Vec::new();
 
+    // The task card: the volume holds the agent's latest; after a restart,
+    // the database does.
+    let card_path = task_file(&dialog_id);
+    let card = match read_text(vfs, &card_path) {
+        Some(text) => Some(text),
+        None if on_volume.is_none() => {
+            if let Some(saved) = &state.task {
+                vfs.write_unmounted(&card_path, saved.as_bytes())?;
+            }
+            state.task.clone()
+        }
+        None => None,
+    }
+    .filter(|t| !t.trim().is_empty());
+    if let (Some(last), None) = (&state.task, &card) {
+        notes.push(prompt::card_gone(&card_text(last)));
+    }
+    state.task = card;
+
     // After a restart the volume is empty: put the file and its history back.
     let on_volume = match (on_volume, &state.rendered) {
         (Some(text), _) => Some(text),
@@ -213,7 +290,20 @@ pub async fn prepare(
                     state.anchor_id = None;
                 }
                 Some(at) => {
-                    let (candidate, summary) = document::parse_back(text, rendered_messages, &raw);
+                    let backup = state.rendered_revision;
+                    // The user's own messages (the task, its scope) are put back.
+                    let stored_chars = |id: &str| {
+                        raw.iter()
+                            .find(|m| m.id == id && is_users(m))
+                            .map(|m| m.text.chars().count())
+                    };
+                    let keep = document::Keep {
+                        stored_chars: &stored_chars,
+                        max_chars: (PROTECTED_MAX_TOKENS as f64 * cost.chars_per_token) as usize,
+                        backup,
+                    };
+                    let (candidate, summary, protected) =
+                        document::parse_back_keeping(text, rendered_messages, &raw, Some(&keep));
                     let whole = with_later(candidate.clone(), &raw[at + 1..]);
                     let before = ctx_tokens(rendered_messages, cost);
                     let after = ctx_tokens(&candidate, cost);
@@ -221,7 +311,6 @@ pub async fn prepare(
                         .revisions(&path)
                         .ok()
                         .and_then(|r| r.last().map(|r| r.number));
-                    let backup = state.rendered_revision;
                     let backup_note = backup
                         .map(|b| {
                             format!(
@@ -271,9 +360,10 @@ pub async fn prepare(
                             String::new()
                         };
                         notes.push(format!(
-                            "[context: edit applied as revision {}: ~{before} → ~{after} tokens; blocks: {}.{flattened}{grew}{still_over}{backup_note}]",
+                            "[context: edit applied as revision {}: ~{before} → ~{after} tokens; blocks: {}.{flattened}{}{grew}{still_over}{backup_note}]",
                             latest.map_or("?".into(), |n| n.to_string()),
-                            summary.describe()
+                            summary.describe(),
+                            protected_note(&protected),
                         ));
                         state.projection = Some(candidate);
                         state.anchor_id = state.rendered_anchor_id.clone();
@@ -441,11 +531,17 @@ pub async fn system_section(
         .read(move |conn| store::load_state(conn, &d))
         .await
         .ok()?;
+    // The card as the agent left it; after a restart, as last saved.
+    let card = read_text(vfs, &task_file(dialog_id))
+        .or(state.task)
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| card_text(&t));
     Some(prompt::system_section(
         &real_file,
         &real_dir,
         budget,
         state.rendered_revision,
+        card.as_deref(),
     ))
 }
 
