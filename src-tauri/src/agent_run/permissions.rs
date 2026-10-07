@@ -460,7 +460,7 @@ pub fn check_command(command: &str, permissions: &Permissions) -> Verdict {
 
 /// Tools that always change files; everything else (reads, web) doesn't.
 pub fn modifies_files(tool: &str) -> bool {
-    tool == "write" || tool == "edit"
+    tool == "write"
 }
 
 #[derive(Debug, PartialEq)]
@@ -531,16 +531,16 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
         }
         "list_dir" => format!("List {}", s("path").filter(|p| !p.is_empty()).unwrap_or_else(|| "the project root".into())),
         "search_code" => format!("Search the project for “{}”", s("query").unwrap_or_else(|| "…".into())),
-        "write" => {
-            let size = s("content").map(|c| format!(" ({} lines)", c.split('\n').count())).unwrap_or_default();
-            format!("Write {}{size}", s("path").unwrap_or_else(|| "a file".into()))
-        }
-        "edit" => {
+        "write" if args.get("old_text").is_some_and(|v| !v.is_null()) => {
             let range = match raw("start_line") {
                 Some(start) => format!(" (only lines {start}-{})", raw("end_line").unwrap_or_else(|| start.clone())),
                 None => String::new(),
             };
             format!("Edit {}{range}", s("path").unwrap_or_else(|| "a file".into()))
+        }
+        "write" => {
+            let size = s("content").map(|c| format!(" ({} lines)", c.split('\n').count())).unwrap_or_default();
+            format!("Write {}{size}", s("path").unwrap_or_else(|| "a file".into()))
         }
         "web_search" => format!("Search the web for “{}”", s("query").unwrap_or_else(|| "…".into())),
         "browse_url" => format!("Open {}", s("url").unwrap_or_else(|| "a web page".into())),
@@ -712,7 +712,7 @@ mod tests {
             ..Permissions::default()
         };
         assert_eq!(
-            check_tool_call("edit", "{}", &p),
+            check_tool_call("write", r#"{"old_text":"a"}"#, &p),
             ToolVerdict::Permitted { approval: Some(Approver::Ai) }
         );
         assert_eq!(check_tool_call("read", "{}", &p), ToolVerdict::Permitted { approval: None });
@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn describes_calls() {
         assert_eq!(describe_tool_call("bash", r#"{"command":"npm test"}"#), "Run `npm test`");
-        assert_eq!(describe_tool_call("edit", r#"{"path":"a.ts","start_line":3}"#), "Edit a.ts (only lines 3-3)");
+        assert_eq!(describe_tool_call("write", r#"{"path":"a.ts","old_text":"x","start_line":3}"#), "Edit a.ts (only lines 3-3)");
         assert_eq!(describe_tool_call("list_dir", "{}"), "List the project root");
         assert_eq!(describe_tool_call("write", r#"{"path":"a","content":"x\ny"}"#), "Write a (2 lines)");
     }

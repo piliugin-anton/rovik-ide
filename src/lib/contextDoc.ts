@@ -53,7 +53,7 @@ export function parseHeader(line: string): Omit<ContextBlock, 'body'> | null {
 
 /**
  * Text split at block headers. `lead` is what comes before the first header:
- * in a quoted part of the file (edit's old_text), the end of a block
+ * in a quoted part of the file (a partial write's old_text), the end of a block
  * whose header wasn't quoted.
  */
 export function splitBlocks(text: string): { lead: string; blocks: ContextBlock[] } {
@@ -114,7 +114,7 @@ const sameText = (a: string, b: string) =>
     .trim();
 
 /**
- * What an edit call on the context file changes: its quoted text and
+ * What a partial write (with old_text) on the context file changes: its quoted text and
  * the replacement, matched block by block by id (the way the app reads the
  * edited file back). Text before the first header in either is part of a
  * block the quote starts inside.

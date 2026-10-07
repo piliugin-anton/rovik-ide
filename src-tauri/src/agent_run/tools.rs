@@ -42,32 +42,17 @@ fn file_tool_schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "write",
-                "description": "Write content to a file in the project, creating it (and any missing parent directories) if it does not exist, or overwriting it entirely if it does. For changes to an existing file use edit instead; use write only for new files or rewriting most of a file.",
+                "description": "Write to a file in the project. Two ways:\n- Without old_text: content becomes the whole file, creating it (and any missing parent directories) or overwriting it entirely. Use this only for new files or rewriting most of a file.\n- With old_text: change part of an existing file, replacing one exact piece of text (old_text) with content. old_text must match the file exactly once, whitespace and indentation included — read the lines first and copy them; add surrounding lines to make it unique. Make one call per separate change. When the user referenced lines of the file (e.g. \"App.tsx:12-14\"), pass them as start_line and end_line: old_text must then lie within those lines, and nothing outside them changes. To delete, use an empty content. To insert, quote a neighboring line in old_text and repeat it in content together with the new lines.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "File path relative to the project root." },
-                        "content": { "type": "string", "description": "The complete new content of the file." }
+                        "old_text": { "type": "string", "description": "The exact current text to replace. Must occur exactly once (within the line range, if given). Omit to write the whole file." },
+                        "content": { "type": "string", "description": "Without old_text: the complete new content of the file. With old_text: the text that replaces it." },
+                        "start_line": { "type": "integer", "description": "With old_text: first line (1-indexed) old_text may be in. Use the referenced range when there is one." },
+                        "end_line": { "type": "integer", "description": "With old_text: last line (1-indexed, inclusive) old_text may be in." }
                     },
                     "required": ["path", "content"]
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": "edit",
-                "description": "Change part of an existing file: replace one exact piece of text (old_text) with new_text. old_text must match the file exactly once, whitespace and indentation included — read the lines first and copy them; add surrounding lines to make it unique. Make one call per separate change. When the user referenced lines of the file (e.g. \"App.tsx:12-14\"), pass them as start_line and end_line: old_text must then lie within those lines, and nothing outside them changes. To delete, use an empty new_text. To insert, quote a neighboring line in old_text and repeat it in new_text together with the new lines.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "File path relative to the project root." },
-                        "old_text": { "type": "string", "description": "The exact current text to replace. Must occur exactly once (within the line range, if given)." },
-                        "new_text": { "type": "string", "description": "The replacement text." },
-                        "start_line": { "type": "integer", "description": "First line (1-indexed) old_text may be in. Use the referenced range when there is one." },
-                        "end_line": { "type": "integer", "description": "Last line (1-indexed, inclusive) old_text may be in." }
-                    },
-                    "required": ["path", "old_text", "new_text"]
                 }
             }
         }),
@@ -177,7 +162,7 @@ fn run_command_schema(permissions: &Permissions) -> Value {
                 "Run a shell command in the project root and get its exit code and output (stdout/stderr). Long output is shortened \
                  to its start and end; for a failing command, to its error lines and final summary. \
                  Non-interactive: no stdin, pagers disabled. Use it for tests, builds, type checks, linters and git inspection. \
-                 Prefer read/search_code/edit/write for reading and editing files.{allowed}"
+                 Prefer read/search_code/write for reading and editing files.{allowed}"
             ),
             "parameters": {
                 "type": "object",
@@ -378,7 +363,7 @@ pub fn tools_for(
 pub struct ToolResult {
     pub content: String,
     pub attachments: Vec<String>,
-    /// edit: the path (as given) and the file's new content.
+    /// Partial write: the path (as given) and the file's new content.
     pub written: Option<(String, String)>,
 }
 
@@ -414,7 +399,13 @@ fn line_arg(v: Option<&Value>) -> Option<usize> {
     (n.is_finite() && n >= 0.0).then(|| n.floor() as usize)
 }
 
-/// edit's arguments as the model sent them; the error to report when unusable.
+/// Whether a call is a partial write: write with old_text (replace one
+/// exact piece of text) rather than the whole file.
+pub fn is_partial_write(name: &str, args: &Map<String, Value>) -> bool {
+    name == "write" && args.get("old_text").is_some_and(|v| !v.is_null())
+}
+
+/// A partial write's arguments as the model sent them; the error to report when unusable.
 pub struct EditArgs {
     pub path: String,
     pub old_text: String,
@@ -426,7 +417,7 @@ pub struct EditArgs {
 pub fn edit_args(args: &Map<String, Value>) -> Result<EditArgs, String> {
     let path = text(args, "path").filter(|p| !p.is_empty()).ok_or("Error: \"path\" is required.")?;
     let old_text = text(args, "old_text").ok_or("Error: \"old_text\" is required.")?;
-    let new_text = text(args, "new_text").ok_or("Error: \"new_text\" is required.")?;
+    let new_text = text(args, "content").ok_or("Error: \"content\" is required.")?;
     Ok(EditArgs {
         path: path.into(),
         old_text: old_text.into(),
@@ -436,7 +427,7 @@ pub fn edit_args(args: &Map<String, Value>) -> Result<EditArgs, String> {
     })
 }
 
-/// Computes (or, unless `dry_run`, makes) an edit change.
+/// Computes (or, unless `dry_run`, makes) a partial write.
 pub fn apply_edit(root: &str, edit: &EditArgs, dry_run: bool) -> Result<crate::agent_tools::EditOutcome, String> {
     crate::agent_tools::tool_edit_file(
         root.into(),
@@ -541,7 +532,7 @@ async fn run<R: Runtime>(
     };
     let root_owned = root.to_string();
     let content = match name {
-        "edit" => {
+        "write" if is_partial_write(name, args) => {
             let edit = match edit_args(args) {
                 Ok(edit) => edit,
                 Err(e) => return Ok(ToolResult::text(e)),
@@ -875,21 +866,21 @@ mod tests {
         let count = |tools: &[Value], name: &str| names(tools).iter().filter(|n| *n == name).count();
         // Agent mode with a project: the project's file tools, once, and restore_context.
         let agent = tools_for(true, false, false, &p, false, true);
-        for name in ["read", "edit", "write", "list_dir", "restore_context"] {
+        for name in ["read", "write", "list_dir", "restore_context"] {
             assert_eq!(count(&agent, name), 1, "{name}");
         }
         let description = |tools: &[Value], name: &str| {
             tools.iter().find(|t| tool_name(t) == name).unwrap()["function"]["description"].as_str().unwrap().to_string()
         };
-        assert!(!description(&agent, "edit").contains("context folder"));
+        assert!(!description(&agent, "write").contains("context folder"));
         // Plan mode: edits are offered for the context folder only.
         let plan = tools_for(true, false, false, &p, true, true);
-        assert!(description(&plan, "edit").starts_with("Only for your context folder"));
+        assert!(description(&plan, "write").starts_with("Only for your context folder"));
         assert!(!description(&plan, "read").contains("context folder"));
         assert!(names(&plan).contains(&"restore_context".to_string()));
         // No project: all file tools, for the context folder only.
         let none = tools_for(false, false, false, &p, false, true);
-        for name in ["read", "edit", "write", "list_dir"] {
+        for name in ["read", "write", "list_dir"] {
             assert!(description(&none, name).starts_with("Only for your context folder"), "{name}");
         }
         assert!(!names(&none).contains(&"todo".to_string()));
@@ -1171,13 +1162,13 @@ a.rs (3 matches)
         assert_eq!(result_meta("list_dir", "(empty, or everything under this path is ignored)").unwrap()["count"], json!(0));
         assert!(result_meta("todo", "x").is_none());
         // Line numbers as strings, floats, negatives.
-        let args = json!({ "path": "a", "old_text": "x", "new_text": "y", "start_line": "12", "end_line": 14.7 });
+        let args = json!({ "path": "a", "old_text": "x", "content": "y", "start_line": "12", "end_line": 14.7 });
         let edit = edit_args(args.as_object().unwrap()).ok().unwrap();
         assert_eq!((edit.start_line, edit.end_line), (Some(12), Some(14)));
-        let args = json!({ "path": "a", "old_text": "x", "new_text": "y", "start_line": -3, "end_line": "abc" });
+        let args = json!({ "path": "a", "old_text": "x", "content": "y", "start_line": -3, "end_line": "abc" });
         let edit = edit_args(args.as_object().unwrap()).ok().unwrap();
         assert_eq!((edit.start_line, edit.end_line), (None, None));
-        assert!(matches!(edit_args(json!({ "path": "", "old_text": "", "new_text": "" }).as_object().unwrap()), Err(e) if e.contains("path")));
+        assert!(matches!(edit_args(json!({ "path": "", "old_text": "", "content": "" }).as_object().unwrap()), Err(e) if e.contains("path")));
         assert_eq!(to_absolute_path("C:\\abs\\x", "/p"), "C:\\abs\\x");
         assert_eq!(to_absolute_path("a/", "/p"), "/p/a");
     }

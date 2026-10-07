@@ -308,9 +308,9 @@ mod tests {
     fn reverting_a_file_is_noticed() {
         let mut g = Guard::new(None, 0);
         let w = |before, after| Some(Write { path: "a.ts", before, after });
-        let r = g.record(FinishedCall { name: "edit", args_json: "{}", result: "ok", write: w(Some("v1"), "v2") });
+        let r = g.record(FinishedCall { name: "write", args_json: "{}", result: "ok", write: w(Some("v1"), "v2") });
         assert_eq!(r, GuardVerdict::Ok);
-        let r = g.record(FinishedCall { name: "edit", args_json: "{}", result: "ok", write: w(Some("v2"), "v1") });
+        let r = g.record(FinishedCall { name: "write", args_json: "{}", result: "ok", write: w(Some("v2"), "v1") });
         assert!(matches!(r, GuardVerdict::Nudge(n) if n.contains("put a.ts back")));
     }
 

@@ -198,7 +198,7 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   (`src-tauri/src/clm/`). Before every request the context is written to
   `context/<chat>/LIVE_CONTEXT.md` on the virtual volume, one
   `[[CTX_TURN n role=… id=…]]` block per message. The agent edits it with its
-  ordinary tools — `read` / `edit` / `write` on
+  ordinary tools — `read` / `write` on
   `@context/LIVE_CONTEXT.md`, or shell tools on its real path — and whatever
   the file says when the next request goes out is its context from then on.
   Edits are read back tolerantly (`clm/document.rs`): untouched blocks stay

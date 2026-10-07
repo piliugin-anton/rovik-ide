@@ -165,7 +165,7 @@ interface Summary {
 export function toolResultMeta(name: string, result: string): ToolMeta | undefined {
   if (isErrorResult(result)) return undefined;
   switch (name) {
-    case 'read_file': {
+    case 'read': {
       // By symbol: the header names the lines it found (read_symbol.rs).
       const found = result.match(/^\[Symbol read: .*?, lines (\d+)-(\d+) of /);
       return found
@@ -182,7 +182,7 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
     }
     case 'web_search':
       return { count: result.split('\n').filter((line) => /^\d+\. /.test(line)).length };
-    case 'run_command': {
+    case 'bash': {
       const line = result.split('\n')[1] ?? '';
       const code = line.match(/^exit code (-?\d+)/)?.[1];
       return { exitCode: code !== undefined ? Number(code) : null };
@@ -196,40 +196,39 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
   }
 }
 
-/** edit_file and write_file on the agent's context file (CLM mode), block by block. */
+/** A write that replaces one quoted piece of a file (old_text) rather than all of it. */
+function isPartialWrite(name: string, args: Args): boolean {
+  return name === 'write' && args.old_text !== undefined && args.old_text !== null;
+}
+
+/** write on the agent's context file (CLM mode), block by block. */
 function contextChange(name: string, args: Args): ContextEdit | undefined {
-  if (!isLiveContextPath(str(args.path))) return undefined;
-  if (name === 'edit_file') {
+  if (name !== 'write' || !isLiveContextPath(str(args.path))) return undefined;
+  const content = str(args.content);
+  if (content === undefined) return undefined;
+  if (isPartialWrite(name, args)) {
     const oldText = str(args.old_text);
-    const newText = str(args.new_text);
-    return oldText !== undefined && newText !== undefined
-      ? contextEdit(oldText, newText)
-      : undefined;
+    return oldText !== undefined ? contextEdit(oldText, content) : undefined;
   }
-  if (name === 'write_file') {
-    const content = str(args.content);
-    return content !== undefined ? contextWrite(content) : undefined;
-  }
-  return undefined;
+  return contextWrite(content);
 }
 
 function describeContextChange(name: string, args: Args, status: Status): Summary {
   const active = status === 'running';
-  const title =
-    name === 'write_file'
-      ? `${active ? 'Rewriting' : 'Rewrote'} its context`
-      : `${active ? 'Editing' : 'Edited'} its context`;
+  const whole = !isPartialWrite(name, args);
+  const title = whole
+    ? `${active ? 'Rewriting' : 'Rewrote'} its context`
+    : `${active ? 'Editing' : 'Edited'} its context`;
   const change = active ? undefined : contextChange(name, args);
   if (!change) return { title };
   const delta = change.tokensAfter - change.tokensBefore;
-  const size =
-    name === 'write_file'
-      ? formatTokens(change.tokensAfter)
-      : delta < 0
-        ? `${formatTokens(delta)} freed`
-        : delta > 0
-          ? `${formatTokens(delta)} added`
-          : undefined;
+  const size = whole
+    ? formatTokens(change.tokensAfter)
+    : delta < 0
+      ? `${formatTokens(delta)} freed`
+      : delta > 0
+        ? `${formatTokens(delta)} added`
+        : undefined;
   return { title, meta: [describeChanges(change.changes), size].filter(Boolean).join(' · ') };
 }
 
@@ -239,12 +238,12 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
   const path = str(args.path);
   const count = failed ? undefined : meta?.count;
 
-  if ((name === 'edit_file' || name === 'write_file') && isLiveContextPath(path)) {
+  if (name === 'write' && isLiveContextPath(path)) {
     return describeContextChange(name, args, status);
   }
 
   switch (name) {
-    case 'read_file': {
+    case 'read': {
       const start = num(args.start_line);
       const end = num(args.end_line);
       const symbol = str(args.symbol)?.trim();
@@ -283,13 +282,20 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       };
     }
 
-    case 'edit_file': {
+    case 'write': {
+      const content = str(args.content);
+      if (!isPartialWrite(name, args)) {
+        const title = `${active ? 'Writing' : 'Wrote'} ${path ?? 'file'}`;
+        if (content === undefined) return { title };
+        const lines = plural(countLines(content), 'line');
+        return { title, meta: active ? `${lines} so far` : lines };
+      }
       const title = `${active ? 'Editing' : 'Edited'} ${path ?? 'file'}`;
       const start = lineArg(args.start_line);
       const end = lineArg(args.end_line) ?? start;
       const range = start !== undefined ? `only lines ${start}–${end}` : undefined;
       const oldText = str(args.old_text);
-      const newText = str(args.new_text);
+      const newText = content;
       // The same line diff as the expanded view (EditDiffBlock), once the
       // arguments are complete: an edited line counts as one removed and one added.
       let counts: Summary['counts'];
@@ -303,15 +309,7 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       return { title, meta: range, counts };
     }
 
-    case 'write_file': {
-      const title = `${active ? 'Writing' : 'Wrote'} ${path ?? 'file'}`;
-      const content = str(args.content);
-      if (content === undefined) return { title };
-      const lines = plural(countLines(content), 'line');
-      return { title, meta: active ? `${lines} so far` : lines };
-    }
-
-    case 'run_command': {
+    case 'bash': {
       const command = str(args.command);
       const shown = command && command.length > 60 ? `${command.slice(0, 57)}…` : command;
       const title = `${active ? 'Running' : 'Ran'} ${shown ? `\`${shown}\`` : 'a command'}`;
@@ -601,11 +599,14 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
     return path ? extensionOf(path) : undefined;
   };
 
-  // write_file's `content` is shown as a highlighted code block instead of
-  // an escaped JSON string, so drop it from the argument dump.
-  const isWrite = () => props.toolCall.name === 'write_file';
-  const isEdit = () => props.toolCall.name === 'edit_file';
-  const isRead = () => props.toolCall.name === 'read_file';
+  // write's `content` is shown as a highlighted code block (or, with
+  // old_text, as a diff) instead of an escaped JSON string, so drop it from
+  // the argument dump.
+  /** write of a whole file. */
+  const isWrite = () => props.toolCall.name === 'write' && !isPartialWrite('write', args());
+  /** write with old_text: one quoted piece of the file replaced. */
+  const isEdit = () => isPartialWrite(props.toolCall.name, args());
+  const isRead = () => props.toolCall.name === 'read';
   /** The change, when this edits or rewrites the agent's context file. */
   const contextChangeOf = createMemo(() =>
     status() === 'running' ? undefined : contextChange(props.toolCall.name, args())
@@ -615,11 +616,11 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
    * "Open in editor" on any code a file tool shows (read, write, edit) opens
    * that file in the editor, never an inline editor in the message. The line
    * to center: the range the tool worked on, else where the edit landed
-   * (edit_file's result names it), else the top.
+   * (a partial write's result names it), else the top.
    */
-  /** edit_file: the file line where the edit landed, from its result. */
+  /** Partial write: the file line where the edit landed, from its result. */
   const editLandedLine = (): number | undefined => {
-    if (props.toolCall.name !== 'edit_file') return undefined;
+    if (!isEdit()) return undefined;
     const landed = Number(resultText()?.match(/(?:replaced|removed) lines? (\d+)/)?.[1]);
     return Number.isFinite(landed) && landed >= 1 ? landed : undefined;
   };
@@ -629,13 +630,13 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
     const a = args();
     const start = lineArg(a.start_line) ?? resultMeta()?.range?.[0];
     if (start !== undefined) return { line: start };
-    if (props.toolCall.name === 'edit_file') {
+    if (isEdit()) {
       const landed = editLandedLine();
       if (landed !== undefined) return { line: landed };
       // Not applied (yet): the text it replaces is still in the file.
       const oldText = str(a.old_text);
       const failedOrPending = !resultText() || resultText()!.startsWith('Error:');
-      const snippet = failedOrPending ? oldText : str(a.new_text) || oldText;
+      const snippet = failedOrPending ? oldText : str(a.content) || oldText;
       if (snippet) return { snippet };
     }
     return { line: 1 };
@@ -650,11 +651,11 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
     prettyArgs(
       props.toolCall.arguments,
       isContextFile()
-        ? ['path', 'content', 'old_text', 'new_text']
+        ? ['path', 'content', 'old_text']
         : isWrite()
           ? ['content']
           : isEdit()
-            ? ['old_text', 'new_text']
+            ? ['old_text', 'content']
             : props.toolCall.name === 'todo'
               ? ['items']
               : props.toolCall.name === 'submit_plan'
@@ -723,7 +724,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                   <ContextEditView
                     edit={change()}
                     oldText={isEdit() ? str(args().old_text) : undefined}
-                    newText={str(isEdit() ? args().new_text : args().content) ?? ''}
+                    newText={str(args().content) ?? ''}
                   />
                 )}
               </Show>
@@ -758,12 +759,12 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
             <Show when={!isContextFile() && isEdit() && str(args().old_text) !== undefined}>
               <div class="tool-call-label">Change</div>
               <Show
-                when={str(args().new_text) !== undefined}
+                when={str(args().content) !== undefined}
                 fallback={<div class="tool-call-pending">…</div>}
               >
                 <EditDiffBlock
                   oldText={str(args().old_text)!}
-                  newText={str(args().new_text)!}
+                  newText={str(args().content)!}
                   language={language()}
                   startLine={editLandedLine()}
                   onOpenInEditor={openInEditor}

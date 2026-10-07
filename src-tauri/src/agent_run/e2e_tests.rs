@@ -325,7 +325,7 @@ async fn a_run_calls_tools_until_the_model_is_done() {
 async fn a_denied_edit_is_reported_to_the_model() {
     let h = harness(&[("a.txt", "one\ntwo\n")]).await;
     let (url, _) = model(vec![
-        Reply::Call { id: "e1", name: "edit", args: json!({ "path": "a.txt", "old_text": "two", "new_text": "TWO" }) },
+        Reply::Call { id: "e1", name: "write", args: json!({ "path": "a.txt", "old_text": "two", "content": "TWO" }) },
         Reply::Text("Okay, leaving it."),
     ])
     .await;
@@ -1096,8 +1096,8 @@ async fn edits_that_change_nothing_or_cant_apply_skip_approval() {
     let (url, _) = model(vec![
         Reply::Calls(vec![
             ("w1", "write", json!({ "path": "a.txt", "content": "one\n" })),
-            ("e1", "edit", json!({ "path": "a.txt", "old_text": "missing", "new_text": "x" })),
-            ("e2", "edit", json!({ "path": "nope.txt", "old_text": "a", "new_text": "b" })),
+            ("e1", "write", json!({ "path": "a.txt", "old_text": "missing", "content": "x" })),
+            ("e2", "write", json!({ "path": "nope.txt", "old_text": "a", "content": "b" })),
         ]),
         Reply::Text("Ok."),
     ])
@@ -1141,8 +1141,8 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
     let h = harness(&[("a.txt", "x\n"), (".env", "SECRET=1\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("e1", "edit", json!({ "path": "a.txt", "old_text": "x", "new_text": "y" })),
-            ("e2", "edit", json!({ "path": ".env", "old_text": "1", "new_text": "2" })),
+            ("e1", "write", json!({ "path": "a.txt", "old_text": "x", "content": "y" })),
+            ("e2", "write", json!({ "path": ".env", "old_text": "1", "content": "2" })),
             ("e3", "write", json!({ "path": "b.txt", "content": "b" })),
         ]),
         Reply::Text("Ok."),
@@ -1670,7 +1670,7 @@ async fn the_guard_sees_a_batchs_calls_in_order() {
 async fn stop_before_a_batch_records_every_call_as_stopped() {
     let h = harness(&[("a.txt", "one\n")]).await;
     let (url, _) = model(vec![Reply::Calls(vec![
-        ("e1", "edit", json!({ "path": "a.txt", "old_text": "one", "new_text": "ONE" })),
+        ("e1", "write", json!({ "path": "a.txt", "old_text": "one", "content": "ONE" })),
         ("r1", "read", json!({ "path": "a.txt" })),
         ("r2", "list_dir", json!({})),
     ])])
@@ -1693,7 +1693,7 @@ async fn reads_after_an_approved_edit_run_together_and_see_the_edit() {
     let h = harness(&[("a.txt", "one\n")]).await;
     let (url, _) = model(vec![
         Reply::Calls(vec![
-            ("e1", "edit", json!({ "path": "a.txt", "old_text": "one", "new_text": "ONE" })),
+            ("e1", "write", json!({ "path": "a.txt", "old_text": "one", "content": "ONE" })),
             ("r1", "read", json!({ "path": "a.txt" })),
             ("r2", "search_code", json!({ "query": "ONE", "case_sensitive": true })),
         ]),

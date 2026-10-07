@@ -96,7 +96,7 @@ fn edits_become_the_context_and_survive_a_restart() {
                 NewMessage {
                     tool_calls: Some(vec![call(
                         "c2",
-                        "edit",
+                        "write",
                         r#"{"path":"@context/LIVE_CONTEXT.md"}"#,
                     )]),
                     ..message("a2", "assistant", "Compacting.")

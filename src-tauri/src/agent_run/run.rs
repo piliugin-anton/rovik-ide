@@ -1330,7 +1330,7 @@ fn repo_map_chars(context_tokens: Option<usize>) -> usize {
 fn touched_paths(messages: &[MessageRow]) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
     for call in messages.iter().filter_map(|m| m.tool_calls.as_ref()).flatten() {
-        if !matches!(call.name.as_str(), "read" | "edit" | "write") {
+        if !matches!(call.name.as_str(), "read" | "write") {
             continue;
         }
         if let Some(path) = super::permissions::str_arg(&call.arguments, "path") {
@@ -1486,7 +1486,7 @@ mod repo_map_tests {
     fn touched_paths_are_reads_and_writes_latest_last_each_once() {
         let messages = vec![
             with_calls(&[("read", r#"{"path":"a.rs"}"#), ("search_code", r#"{"query":"x"}"#)]),
-            with_calls(&[("edit", r#"{"path":"b.rs","old_text":"x","new_text":"y"}"#), ("bash", r#"{"command":"ls"}"#)]),
+            with_calls(&[("write", r#"{"path":"b.rs","old_text":"x","content":"y"}"#), ("bash", r#"{"command":"ls"}"#)]),
             with_calls(&[("read", r#"{"path":"a.rs"}"#), ("write", "not json"), ("list_dir", r#"{"path":"src"}"#)]),
         ];
         assert_eq!(touched_paths(&messages), ["b.rs", "a.rs"]);

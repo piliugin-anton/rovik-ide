@@ -36,7 +36,7 @@ export interface AgentPermissions {
   allowedCommands: string[];
   /** bash. */
   commandApproval: ApprovalRule;
-  /** write and edit. */
+  /** write. */
   editApproval: ApprovalRule;
   /** Every other tool: reading and searching files, web access. */
   toolApproval: ApprovalRule;
@@ -555,15 +555,15 @@ export function describeToolCall(name: string, argsJson: string): string {
     case 'search_code':
       return `Search the project for “${str('query') ?? '…'}”`;
     case 'write': {
+      if (args.old_text !== undefined && args.old_text !== null) {
+        const start = args.start_line;
+        const end = args.end_line ?? start;
+        const range = start !== undefined ? ` (only lines ${start}-${end})` : '';
+        return `Edit ${str('path') ?? 'a file'}${range}`;
+      }
       const content = str('content');
       const size = content !== undefined ? ` (${content.split('\n').length} lines)` : '';
       return `Write ${str('path') ?? 'a file'}${size}`;
-    }
-    case 'edit': {
-      const start = args.start_line;
-      const end = args.end_line ?? start;
-      const range = start !== undefined ? ` (only lines ${start}-${end})` : '';
-      return `Edit ${str('path') ?? 'a file'}${range}`;
     }
     case 'web_search':
       return `Search the web for “${str('query') ?? '…'}”`;

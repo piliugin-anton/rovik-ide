@@ -1,6 +1,6 @@
 // EditDiffBlock.tsx
 //
-// edit_file's change as a diff: the text it replaced and the replacement,
+// A partial write's change (write with old_text) as a diff: the text it replaced and the replacement,
 // line by line, removed lines red and added ones green, unchanged lines in
 // between as they are. Syntax-highlighted like the editor (colorize, no
 // editor instance). Line numbers once the result says where the edit landed.

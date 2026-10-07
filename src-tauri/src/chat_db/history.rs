@@ -266,7 +266,7 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
                     l.ok && !l.partial && l.name == "read" && l.path.as_deref() == Some(path) && covers(l.range, e.range)
                 });
                 let edited = later.iter().any(|l| {
-                    l.ok && (l.name == "edit" || l.name == "write") && l.path.as_deref() == Some(path)
+                    l.ok && l.name == "write" && l.path.as_deref() == Some(path)
                 });
                 let lines = e.range.map_or(String::new(), |(s, t)| {
                     if t == u64::MAX { format!(" from line {s}") } else { format!(" lines {s}-{t}") }
@@ -307,7 +307,7 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
         }
     }
 
-    // Old write / edit calls: the content they wrote is on disk
+    // Old write calls: the content they wrote is on disk
     // (and its result says what changed), so the arguments needn't repeat it.
     for m in messages[..horizon].iter_mut() {
         let mut touched = false;
@@ -317,10 +317,9 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
                 _ => continue,
             };
             let shortened = match c.name.as_str() {
-                "write" => shorten_arg(&mut args, "content", "written"),
-                "edit" => {
+                "write" => {
                     let old = shorten_arg(&mut args, "old_text", "replaced");
-                    let new = shorten_arg(&mut args, "new_text", "written");
+                    let new = shorten_arg(&mut args, "content", "written");
                     old || new
                 }
                 _ => false,
@@ -916,7 +915,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let with_args = |args: &str| {
             let mut m = msg("assistant", "");
-            m.tool_calls = Some(vec![ToolCall { id: "c".into(), name: "edit".into(), arguments: args.into(), extra_content: None }]);
+            m.tool_calls = Some(vec![ToolCall { id: "c".into(), name: "write".into(), arguments: args.into(), extra_content: None }]);
             m
         };
         let sent = |args: &str| {
@@ -924,7 +923,7 @@ mod tests {
             w[1]["tool_calls"][0]["function"]["arguments"].as_str().unwrap().to_string()
         };
 
-        let valid = r#"{"path":"a.rs","old_text":"x","new_text":"y"}"#;
+        let valid = r#"{"path":"a.rs","old_text":"x","content":"y"}"#;
         assert_eq!(sent(valid), valid, "valid arguments are sent unchanged");
         assert_eq!(sent(""), "{}");
         assert_eq!(sent("  "), "{}");
@@ -1095,7 +1094,7 @@ mod tests {
         history.push(result("w0", "wrote 2000 bytes to src/new.ts"));
         history.push(call_with("ra", "read", json!({ "path": "src/a.ts", "start_line": 1, "end_line": 50 })));
         history.push(result("ra", &"a".repeat(3_000)));
-        history.push(call_with("e0", "edit", json!({ "path": "src/a.ts", "old_text": "o".repeat(500), "new_text": "n" })));
+        history.push(call_with("e0", "write", json!({ "path": "src/a.ts", "old_text": "o".repeat(500), "content": "n" })));
         history.push(result("e0", "Edited src/a.ts: replaced line 3"));
         history.extend(reads(14, "src/other.ts", 2_000));
         let (out, _) = fit_with(history, 12_000, generous(false));
@@ -1105,7 +1104,7 @@ mod tests {
         assert_eq!(write_args["content"], "[400 lines written; left out of this history]");
         assert!(out[4].text.contains("Read src/a.ts lines 1-50 here") && out[4].text.contains("changed later"));
         let edit_args: Value = serde_json::from_str(&out[5].tool_calls.as_ref().unwrap()[0].arguments).unwrap();
-        assert_eq!(edit_args["new_text"], "n", "short arguments are kept");
+        assert_eq!(edit_args["content"], "n", "short arguments are kept");
         assert!(edit_args["old_text"].as_str().unwrap().contains("left out"));
     }
 

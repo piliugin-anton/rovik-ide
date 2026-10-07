@@ -520,7 +520,7 @@ fn an_edit_through_the_agents_edit_tool_is_picked_up() {
         assert!(out.contains(APPLIES), "{out}");
         chat.add(tool_pair(
             2,
-            "edit",
+            "write",
             r#"{"path":"@context/LIVE_CONTEXT.md"}"#,
             &out,
         ))

@@ -25,7 +25,7 @@
 //! agent keeps in its task card, `TASK.md` next to the context file: shown
 //! with the notes, never part of the file it edits.
 //!
-//! The agent edits the file with its ordinary tools (read, edit,
+//! The agent edits the file with its ordinary tools (read and
 //! write through `@context/…`, or bash through its real path):
 //! the paper's "context as a file", no dedicated context tools. When it
 //! repeats a call whose earlier result it removed, `clm_recall_hint` points
