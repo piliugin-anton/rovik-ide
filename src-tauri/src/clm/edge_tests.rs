@@ -678,14 +678,8 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
         chat.add(vec![message("u1", "user", &"w".repeat(900))])
             .await; // ~300 tokens
         let p = chat.prepare(1_000).await;
-        assert!(notes(&p).contains("No action needed"), "{}", notes(&p));
-        chat.add(vec![message("a1", "assistant", "ok")]).await;
-        let p = chat.prepare(1_000).await;
-        assert!(
-            !notes(&p).contains("CONTEXT BUDGET"),
-            "same tier, no reminder: {}",
-            notes(&p)
-        );
+        assert!(!notes(&p).contains("CONTEXT BUDGET"), "below 50%: {}", notes(&p));
+        assert!(notes(&p).contains("[context: ~"), "the readout stays: {}", notes(&p));
         chat.add(tool_pair(2, "read", "{}", &"w".repeat(900)))
             .await; // ~60%
         let p = chat.prepare(1_000).await;
@@ -694,7 +688,10 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
             "{}",
             notes(&p)
         );
-        assert_eq!(chat.state().await.nudged, [25, 50]);
+        assert_eq!(chat.state().await.nudged, [50]);
+        chat.add(vec![message("a2-reply", "assistant", "ok")]).await;
+        let p = chat.prepare(1_000).await;
+        assert!(!notes(&p).contains("CONTEXT BUDGET"), "same tier, no reminder: {}", notes(&p));
         // An accepted edit re-arms them.
         chat.write(&with_block(&chat.file(), 4, "short"));
         chat.add(vec![message("a3", "assistant", "done")]).await;

@@ -33,10 +33,17 @@ struct Authorized {
     args_override: Option<String>,
     /// Added to the tool result for the model.
     result_note: Option<String>,
+    /// The refusal is a "no" from the user, their AI reviewer or their
+    /// permission settings (not a call that couldn't apply).
+    rejected: bool,
 }
 
 fn refused(text: impl Into<String>) -> Authorized {
     Authorized { refusal: Some(text.into()), ..Default::default() }
+}
+
+fn rejected(text: impl Into<String>) -> Authorized {
+    Authorized { rejected: true, ..refused(text) }
 }
 
 /// How a call ran: as which tool, with which arguments (an approval may
@@ -242,14 +249,15 @@ impl<R: Runtime> Run<R> {
                     && is_context_path(path_arg, context_dir))
         {
             let mut content = self.context_tool(&tc.name, &args).await;
-            if let Some(note) = self.guard.record(FinishedCall {
+            let verdict = self.guard.record(FinishedCall {
                 name: &tc.name,
                 args_json: &tc.arguments,
                 result: &content,
                 write: None,
-            })
-            .note()
-            {
+                rejected: false,
+            });
+            self.log_guard(&tc.name, &verdict);
+            if let Some(note) = verdict.note() {
                 content.push_str(note);
             }
             let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
@@ -309,6 +317,30 @@ impl<R: Runtime> Run<R> {
         self.record(tc, auth, run, result, clm).await
     }
 
+    /// A loop check that fired, for tuning them: which pattern, on which
+    /// call, and whether the run was warned or paused.
+    fn log_guard(&self, tool: &str, verdict: &GuardVerdict) {
+        let kind = match verdict {
+            GuardVerdict::Ok => return,
+            GuardVerdict::Nudge(_) => "nudge",
+            GuardVerdict::Stop(_) => "stop",
+        };
+        let (pattern, reason) = self.guard.finding.clone().unwrap_or(("", String::new()));
+        log::write(
+            &self.app,
+            json!({
+                "event": "guard",
+                "dialogId": self.dialog_id,
+                "model": self.profile.model,
+                "verdict": kind,
+                "pattern": pattern,
+                "reason": reason,
+                "tool": tool,
+                "toolCalls": self.guard.tool_calls,
+            }),
+        );
+    }
+
     /// Everything after a call ran: notes for the model (an approval's,
     /// CLM's recall hint, the guard's), the files it changed, the editor,
     /// and its result stored.
@@ -355,7 +387,9 @@ impl<R: Runtime> Run<R> {
                 }
                 _ => None,
             },
+            rejected: auth.rejected,
         });
+        self.log_guard(&tc.name, &verdict);
         // The model reads the note with the result; a stop pauses the run
         // once this turn's calls are done.
         if !matches!(verdict, GuardVerdict::Ok) {
@@ -442,7 +476,7 @@ impl<R: Runtime> Run<R> {
         let p = &config.permissions;
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
-                return refused(format!("Error: blocked by the user's permission settings. {reason}"))
+                return rejected(format!("Error: blocked by the user's permission settings. {reason}"))
             }
             // An interrupted call is always confirmed by the user.
             ToolVerdict::Permitted { approval } => match resume_note {
@@ -535,6 +569,7 @@ impl<R: Runtime> Run<R> {
                                     "Error: rejected by the user's AI reviewer ({model}): {reason} Do not retry the same action; adjust the approach or ask the user."
                                 )),
                                 approval: Some(approval),
+                                rejected: true,
                                 ..Default::default()
                             }
                         };
@@ -582,6 +617,7 @@ impl<R: Runtime> Run<R> {
                     ),
                 }),
                 approval: Some(approval_json(Approver::User, false, None, None, &[])),
+                rejected: true,
                 ..Default::default()
             },
             // Some changes accepted: write the original with only those applied.
@@ -595,8 +631,10 @@ impl<R: Runtime> Run<R> {
                     args.insert("content".into(), json!(content));
                     Value::Object(args).to_string()
                 };
+                // Partly accepted: it runs, so it isn't a rejection.
                 Authorized {
                     refusal: None,
+                    rejected: false,
                     approval: Some(approval_json(
                         Approver::User,
                         true,
@@ -622,7 +660,8 @@ impl<R: Runtime> Run<R> {
         let root = self.root.as_deref()?;
         let args = permissions::parse_args(args_json);
         let path = args.get("path").and_then(|p| p.as_str())?.to_string();
-        let proposed = if tools::is_partial_write(tool_name, &args) {
+        let partial = tools::is_partial_write(tool_name, &args);
+        let proposed = if partial {
             let edit = match tools::edit_args(&args) {
                 Ok(edit) => edit,
                 Err(e) => return Some(Prepared::Invalid(e)),
@@ -636,6 +675,13 @@ impl<R: Runtime> Run<R> {
         };
         let abs_path = tools::to_absolute_path(&path, root);
         let Ok(current) = std::fs::read_to_string(&abs_path) else { return Some(Prepared::New) };
+        // Nothing to approve: the write itself refuses it. (An edit may
+        // remove everything: its old_text says what it replaces.)
+        if !partial {
+            if let Some(error) = crate::agent_tools::empty_overwrite_error(&path, &current, &proposed) {
+                return Some(Prepared::Invalid(format!("Error: {error}")));
+            }
+        }
         let hunks = diff::diff_lines(&diff::split_lines(&current), &diff::split_lines(&proposed));
         if hunks.is_empty() {
             return Some(Prepared::Unchanged);

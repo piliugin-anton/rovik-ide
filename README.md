@@ -237,7 +237,7 @@ the agent's context is managed (`src/lib/contextMode.ts`,
   row shows the revision and size, lists revisions (view, restore) and can
   reset to the stored chat; a run updates it as each request goes out, not
   only when it ends. Requests carry a size readout and reminders at
-  25/50/75% of the budget, then every request from 90%. Past the budget,
+  50/75% of the budget, then a short one every request from 90%. Past the budget,
   older tool outputs are withheld; if it's still over, that request is trimmed
   like Trimming.
 

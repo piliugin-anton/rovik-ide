@@ -491,6 +491,7 @@ pub async fn prepare(
         (
             msgs,
             FitInfo {
+                focus_note: false,
                 trimmed: withheld > 0,
                 dropped_turns: 0,
                 estimated_tokens: tokens,

@@ -139,6 +139,8 @@ pub struct FitInfo {
     pub full_tokens: usize,
     /// Messages replaced with a note because later ones made them out of date.
     pub outdated: usize,
+    /// The request ends with the focus note (`focus_note`).
+    pub focus_note: bool,
 }
 
 /*
@@ -373,6 +375,8 @@ pub fn starts_request(m: &Msg) -> bool {
 const FOCUS_AFTER_TOOL_RESULTS: usize = 6;
 /// How much of the user's request the note repeats.
 const FOCUS_REQUEST_CHARS: usize = 600;
+/// A loop warning this many tool results back or fewer is named again.
+const FOCUS_LOOP_WINDOW: usize = 5;
 
 /// The current request and its checklist, restated for the end of the
 /// request (the CLM task card does this in CLM mode). None while the run
@@ -421,6 +425,21 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
             note.push_str(&format!("\n- [{}] {}", item.status, item.title));
         }
     }
+    // A loop warning a few calls back (on the latest result, it's right there).
+    let warning = run
+        .iter()
+        .rev()
+        .filter(|m| m.role == "tool")
+        .take(FOCUS_LOOP_WINDOW + 1)
+        .enumerate()
+        .skip(1)
+        .find_map(|(back, m)| crate::agent_run::guard::loop_warning(&m.text).map(|w| (back, w)));
+    if let Some((back, reason)) = warning {
+        let ago = if back == 1 { "1 call".to_string() } else { format!("{back} calls") };
+        note.push_str(&format!(
+            "\nLoop warning {ago} ago: {reason}. Don't repeat it: change the approach, or stop and ask the user."
+        ));
+    }
     note.push_str("\n[end of reminder]");
     Some(note)
 }
@@ -453,6 +472,7 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
         }
     }
     let info = |trimmed: bool, dropped_turns: usize, estimated_tokens: usize| FitInfo {
+        focus_note: false,
         trimmed,
         dropped_turns,
         estimated_tokens,
@@ -538,6 +558,9 @@ pub fn build_wire(
 ) -> DbResult<(Vec<Value>, FitInfo)> {
     let mut messages = load_messages(conn, dialog_id, None)?;
     let cost = Cost { vision, chars_per_token };
+    // The guard's loop warnings end long results too: the latest ones whole.
+    let tail = messages.len().saturating_sub(2 * (FOCUS_LOOP_WINDOW + 1));
+    load_bodies(conn, &mut messages[tail..])?;
     // The note is made before fitting (which never drops the current
     // request or its calls) and its room kept out of the budget. It quotes
     // the request as typed: the copy sent starts with the editor context.
@@ -549,6 +572,7 @@ pub fn build_wire(
     if let Some(note) = focus {
         add_focus_note(&mut fitted, &note);
         info.estimated_tokens += note_tokens;
+        info.focus_note = true;
     }
     Ok((to_wire(&fitted, data_dir, vision, gemini), info))
 }
@@ -922,6 +946,38 @@ mod tests {
         let mut earlier = long_run("next");
         earlier.insert(1, todo(r#"{"items":["old step"]}"#));
         assert!(!focus_note(&earlier).unwrap().contains("checklist"));
+    }
+
+    #[test]
+    fn focus_note_names_a_recent_loop_warning() {
+        let warned = |id: &str| {
+            let mut m = tool(id, 10);
+            m.text.push_str("\n\n[Note from the IDE: read (a) was called 3 times. This looks like a loop. Step back.]");
+            m
+        };
+        // Two calls after the warning: named, with how long ago.
+        let mut history = long_run("q");
+        let at = history.len() - 5;
+        history[at] = warned("c3");
+        let note = focus_note(&history).unwrap();
+        assert!(
+            note.contains("Loop warning 2 calls ago: read (a) was called 3 times. Don't repeat it"),
+            "{note}"
+        );
+        // On the latest result: it's right there, not repeated.
+        let mut history = long_run("q");
+        let last = history.len() - 1;
+        history[last] = warned("c5");
+        assert!(!focus_note(&history).unwrap().contains("Loop warning"));
+        // Long ago: no longer named.
+        let mut history = long_run("q");
+        history[4] = warned("c0");
+        for i in 6..12 {
+            let id = format!("c{i}");
+            history.push(call(&[&id]));
+            history.push(tool(&id, 10));
+        }
+        assert!(!focus_note(&history).unwrap().contains("Loop warning"));
     }
 
     #[test]

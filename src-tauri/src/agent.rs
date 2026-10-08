@@ -52,6 +52,8 @@ pub enum ChatStreamEvent {
         id: String,
         arguments_delta: String,
     },
+    /// The request ends with the focus note (Trimming mode; chat_db::history).
+    FocusNote,
     /// One-time notes about the agent's own context (CLM mode) that went
     /// with this request. A request sent again for the same turn has to carry
     /// them (`ChatParams::carried_notes`): they aren't produced twice.
@@ -464,6 +466,9 @@ pub struct ChatParams {
     // Context notes an earlier attempt at this turn was sent with (see
     // ChatStreamEvent::ContextNotes), carried into this one.
     pub carried_notes: Vec<String>,
+    // The tools are sent (the history refers to them) but the model may not
+    // call any: `tool_choice: "none"`, for a reply in words only.
+    pub no_tool_calls: bool,
     // The API route saved with the model ("chat_completions" or
     // "responses"), when it was found before (ChatStreamEvent::ApiRoute).
     pub api_route: Option<String>,
@@ -524,6 +529,7 @@ pub async fn send_chat_message(
         options,
         context_mode,
         carried_notes: Vec::new(),
+        no_tool_calls: false,
         api_route,
         chat_id,
     };
@@ -563,6 +569,7 @@ pub async fn run_chat(
         options,
         context_mode,
         carried_notes,
+        no_tool_calls,
         api_route,
         chat_id,
     } = params;
@@ -596,6 +603,9 @@ pub async fn run_chat(
     let window = context_tokens.filter(|t| *t > 0).unwrap_or(DEFAULT_CONTEXT_TOKENS);
     let max_tokens = options.as_ref().and_then(|o| o.max_tokens);
     let reserve = reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens);
+    // opencode.ai requires some tools in every request; a request that had
+    // none (`has_tools` above) still may not call them (opencode.rs).
+    let (tools, no_tool_calls) = crate::opencode::with_required_tools(&base_url, tools, no_tool_calls);
     let tool_chars = tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
     let budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
 
@@ -703,6 +713,9 @@ pub async fn run_chat(
                     built = build => built?,
                 },
             };
+            if info.focus_note {
+                on_event(ChatStreamEvent::FocusNote);
+            }
             if info.trimmed || info.outdated > 0 {
                 eprintln!(
                     "context budget: ~{}/{} tokens (history ~{}), {} outdated replaced, {} oldest turn(s) omitted",
@@ -787,7 +800,7 @@ pub async fn run_chat(
     // tool use) — some OpenAI-compatible backends reject an empty tools array.
     if let Some(tools) = tools.filter(|t| !t.is_empty()) {
         body["tools"] = serde_json::json!(tools);
-        body["tool_choice"] = serde_json::json!("auto");
+        body["tool_choice"] = serde_json::json!(if no_tool_calls { "none" } else { "auto" });
     }
 
     let mut limits = crate::chat_request::Limits::default();
@@ -1277,7 +1290,12 @@ pub async fn chat_context_estimate(
         // The estimate is shown for Trimming only.
         false,
     );
-    let tool_chars = if tools.is_empty() { 0 } else { serde_json::to_string(&tools).map_or(0, |j| j.chars().count()) };
+    // As sent: with the tools opencode.ai requires (opencode.rs).
+    let sent_chars = |tools: Vec<serde_json::Value>| {
+        let (sent, _) = crate::opencode::with_required_tools(&base_url, Some(tools), false);
+        sent.filter(|t| !t.is_empty()).map_or(0, |t| serde_json::to_string(&t).map_or(0, |j| j.chars().count()))
+    };
+    let tool_chars = sent_chars(tools.clone());
     // CLM requests offer its tools too (chat_request decides the same way).
     let d = dialog_id.clone();
     let clm_mode = db.read(move |conn| crate::clm::store::context_mode(conn, &d)).await?;
@@ -1293,7 +1311,7 @@ pub async fn chat_context_estimate(
             mode.as_deref() == Some("plan"),
             true,
         );
-        serde_json::to_string(&tools).map_or(0, |j| j.chars().count())
+        sent_chars(tools)
     });
     let project_chars = match root {
         Some(root) => {
