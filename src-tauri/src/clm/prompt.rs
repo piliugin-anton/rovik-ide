@@ -91,8 +91,10 @@ pub fn percent(tokens: usize, budget: usize) -> u32 {
 }
 
 /// Reminder tiers (percent of the budget). Each fires once and re-arms when
-/// the context shrinks below it.
-pub const TIERS: [u32; 3] = [25, 50, 75];
+/// the context shrinks below it. Below the first, the size readout alone:
+/// a reminder that asks for nothing only adds words, and some models take
+/// talk of their budget as a reason to wrap up early.
+pub const TIERS: [u32; 2] = [50, 75];
 /// From here on, a reminder on every request.
 pub const URGENT: u32 = 90;
 
@@ -105,10 +107,11 @@ pub fn nudge(tokens: usize, budget: usize, fired: &mut Vec<u32>) -> Option<Strin
     let pct = percent(tokens, budget);
     fired.retain(|t| pct >= *t);
     if pct >= URGENT {
+        // Repeated on every request from here on: short. How to write the
+        // replacement notes is in the system prompt and the earlier tiers.
         return Some(format!(
-            "CONTEXT BUDGET (URGENT): ~{tokens}/{budget} tokens, {pct}% of your budget. Compact your context \
-             file THIS TURN, before anything else: shorten or delete stale outputs and finished work. Past the \
-             budget, the oldest tool outputs are withheld and then older history is cut. {NOTE_CONTRACT}"
+            "CONTEXT BUDGET (URGENT): ~{pct}% of your {budget}-token budget ({tokens} tokens). Compact your \
+             context file now, before anything else, copying facts forward; past the budget, older outputs are cut."
         ));
     }
     let tier = TIERS
@@ -123,10 +126,6 @@ pub fn nudge(tokens: usize, budget: usize, fired: &mut Vec<u32>) -> Option<Strin
         .collect();
     fired.extend(newly);
     Some(match tier {
-        25 => format!(
-            "CONTEXT BUDGET: ~{pct}% of your {budget}-token budget ({tokens} tokens). No action needed. \
-             Keep track of what you've already tried."
-        ),
         50 => format!(
             "CONTEXT BUDGET: ~{pct}% of your {budget}-token budget ({tokens} tokens). Finish the unit of work \
              in flight, then tidy your context file ONCE. {NOTE_CONTRACT}"
@@ -148,17 +147,23 @@ mod tests {
     fn tiers_fire_once_and_rearm() {
         let mut fired = Vec::new();
         assert!(nudge(10, 100, &mut fired).is_none());
-        assert!(nudge(30, 100, &mut fired).unwrap().contains("No action"));
-        assert!(nudge(35, 100, &mut fired).is_none());
-        // Jumping past two tiers gives only the higher one.
+        assert!(nudge(30, 100, &mut fired).is_none(), "the readout alone below 50%");
+        assert!(nudge(55, 100, &mut fired).unwrap().contains("tidy your context file ONCE"));
+        assert!(nudge(60, 100, &mut fired).is_none());
         assert!(nudge(80, 100, &mut fired)
             .unwrap()
             .contains("Compact settled"));
         assert!(nudge(60, 100, &mut fired).is_none());
-        assert_eq!(fired, vec![25, 50]);
+        assert_eq!(fired, vec![50]);
+        // Jumping past both tiers gives only the higher one.
+        let mut jumped = Vec::new();
+        assert!(nudge(80, 100, &mut jumped).unwrap().contains("Compact settled"));
+        assert_eq!(jumped, vec![50, 75]);
         assert!(nudge(20, 100, &mut fired).is_none());
         assert!(fired.is_empty(), "re-armed after shrinking");
-        assert!(nudge(95, 100, &mut fired).unwrap().contains("URGENT"));
+        let urgent = nudge(95, 100, &mut fired).unwrap();
+        assert!(urgent.starts_with("CONTEXT BUDGET (URGENT): ~95% of your 100-token budget (95 tokens)."), "{urgent}");
+        assert!(urgent.len() < 250, "repeated every request, so short: {urgent}");
         assert!(
             nudge(95, 100, &mut fired).unwrap().contains("URGENT"),
             "urgent repeats"
@@ -172,8 +177,9 @@ mod tests {
         assert_eq!(percent(2000, 1000), 200);
         let mut fired = Vec::new();
         assert!(nudge(5, 0, &mut fired).is_none(), "no budget, no reminder");
+        assert!(nudge(250, 1000, &mut fired).is_none(), "no 25% reminder");
         assert!(
-            nudge(250, 1000, &mut fired).unwrap().contains("No action"),
+            nudge(500, 1000, &mut fired).unwrap().contains("ONCE"),
             "exactly at a tier fires"
         );
         assert!(
