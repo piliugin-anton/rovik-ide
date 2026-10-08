@@ -978,6 +978,10 @@ struct Stream<R: Runtime> {
 
     text: String,
     reasoning: String,
+    /// The reasoning as it is sent back (`reasoning_details`; reasoning_echo.rs).
+    reasoning_details: Vec<Value>,
+    /// The model replying: reasoning is sent back to this model only.
+    model: String,
     reasoning_started: Option<Instant>,
     reasoning_ended: Option<Instant>,
     reasoning_seen: bool,
@@ -1030,6 +1034,8 @@ impl<R: Runtime> Stream<R> {
             stop: run.stop.clone(),
             text: String::new(),
             reasoning: String::new(),
+            reasoning_details: Vec::new(),
+            model: run.profile.model.clone(),
             reasoning_started: None,
             reasoning_ended: None,
             reasoning_seen: false,
@@ -1186,6 +1192,7 @@ impl<R: Runtime> Stream<R> {
             }
             ChatStreamEvent::Error { error } => self.failure = Some(error),
             ChatStreamEvent::FocusNote => self.focus_note = true,
+            ChatStreamEvent::ReasoningDetails { details } => self.reasoning_details = details,
             ChatStreamEvent::ContextNotes { notes } => {
                 // A budget reminder (CLM), up to its numbers, for the reply's log.
                 self.clm_reminder = notes
@@ -1252,11 +1259,19 @@ impl<R: Runtime> Stream<R> {
     }
 
     /// The reasoning so far, as stored with the reply.
+    /// `{ text, ms }` as shown, plus what is sent back to the same model
+    /// (`details`, `model`; chat_db::history::attach_reasoning).
     fn reasoning_meta(&self, with_time: bool) -> Option<Value> {
-        if self.reasoning.is_empty() {
+        if self.reasoning.is_empty() && self.reasoning_details.is_empty() {
             return None;
         }
-        let mut r = json!({ "text": self.reasoning });
+        let mut r = json!({ "model": self.model });
+        if !self.reasoning.is_empty() {
+            r["text"] = json!(self.reasoning);
+        }
+        if !self.reasoning_details.is_empty() {
+            r["details"] = json!(self.reasoning_details);
+        }
         if with_time {
             if let Some(start) = self.reasoning_started {
                 let end = self.reasoning_ended.unwrap_or_else(Instant::now);

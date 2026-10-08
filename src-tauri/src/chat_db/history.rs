@@ -63,6 +63,9 @@ pub struct Msg {
     pub attachments: Vec<String>,
     /// Written by the IDE in the user role (check failures), not by the user.
     pub harness: bool,
+    /// Reasoning sent back with an assistant message (`attach_reasoning`):
+    /// `{ details }` or `{ text }`.
+    pub reasoning: Option<Value>,
 }
 
 /// Characters per token when nothing better is known. Deliberately
@@ -86,6 +89,9 @@ impl Cost {
 
 fn estimate(m: &Msg, cost: Cost) -> usize {
     let mut tokens = MESSAGE_OVERHEAD + cost.tokens(m.full_chars);
+    if let Some(reasoning) = &m.reasoning {
+        tokens += cost.tokens(reasoning.to_string().chars().count());
+    }
     for call in m.tool_calls.iter().flatten() {
         tokens += cost.tokens(call.name.chars().count() + call.arguments.chars().count());
     }
@@ -546,10 +552,12 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
 }
 
 /// Loads, fits and converts a chat's history to Chat Completions messages.
+#[allow(clippy::too_many_arguments)]
 pub fn build_wire(
     conn: &Connection,
     data_dir: &Path,
     dialog_id: &str,
+    model: &str,
     token_budget: usize,
     vision: bool,
     current_user_content: Option<&str>,
@@ -557,6 +565,7 @@ pub fn build_wire(
     chars_per_token: f64,
 ) -> DbResult<(Vec<Value>, FitInfo)> {
     let mut messages = load_messages(conn, dialog_id, None)?;
+    attach_reasoning(conn, &mut messages, model)?;
     let cost = Cost { vision, chars_per_token };
     // The guard's loop warnings end long results too: the latest ones whole.
     let tail = messages.len().saturating_sub(2 * (FOCUS_LOOP_WINDOW + 1));
@@ -575,6 +584,46 @@ pub fn build_wire(
         info.focus_note = true;
     }
     Ok((to_wire(&fitted, data_dir, vision, gemini), info))
+}
+
+/// The reasoning assistant messages carry back to `model`
+/// (reasoning_echo.rs): those of the current request, so a model resumes
+/// its thinking after a tool call; and, for DeepSeek, which refuses the
+/// request otherwise, every earlier one with tool calls. Only reasoning
+/// that `model` itself wrote: signatures and encrypted reasoning are bound
+/// to it. The structured form when there is one, else the text.
+pub fn attach_reasoning(conn: &Connection, messages: &mut [Msg], model: &str) -> DbResult<()> {
+    if model.is_empty() {
+        return Ok(());
+    }
+    let current = messages.iter().rposition(starts_request).unwrap_or(0);
+    let deepseek = crate::reasoning_echo::is_deepseek(model);
+    let wanted: Vec<usize> = (0..messages.len())
+        .filter(|&i| {
+            let m = &messages[i];
+            m.role == "assistant"
+                && (i >= current || (deepseek && m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())))
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<&str> = wanted.iter().map(|&i| messages[i].id.as_str()).collect();
+    let stored = super::store::reasoning_of(conn, &ids)?;
+    for i in wanted {
+        let Some(r) = stored.get(&messages[i].id) else { continue };
+        if r.get("model").and_then(|m| m.as_str()) != Some(model) {
+            continue;
+        }
+        let details = r.get("details").filter(|d| d.as_array().is_some_and(|a| !a.is_empty()));
+        let text = r.get("text").filter(|t| t.as_str().is_some_and(|t| !t.is_empty()));
+        messages[i].reasoning = match (details, text) {
+            (Some(details), _) => Some(json!({ "details": details })),
+            (None, Some(text)) => Some(json!({ "text": text })),
+            _ => None,
+        };
+    }
+    Ok(())
 }
 
 /// Full texts of messages whose body is stored apart (long ones).
@@ -651,6 +700,7 @@ pub fn load_messages(conn: &Connection, dialog_id: &str, current_user_content: O
             tool_calls: m.tool_calls,
             tool_call_id: m.tool_call_id,
             attachments: m.attachments,
+            reasoning: None,
         })
         .collect();
 
@@ -697,6 +747,7 @@ pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
                 tool_call_id: Some(id),
                 attachments: Vec::new(),
                 harness: false,
+                reasoning: None,
             });
         }
     };
@@ -808,6 +859,11 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
         }
 
         let mut msg = json!({ "role": m.role, "content": content });
+        match m.reasoning.as_ref().map(|r| (r.get("details"), r.get("text"))) {
+            Some((Some(details), _)) => msg["reasoning_details"] = details.clone(),
+            Some((None, Some(text))) => msg["reasoning_content"] = text.clone(),
+            _ => {}
+        }
         if let Some(calls) = m.tool_calls.as_ref().filter(|c| !c.is_empty()) {
             msg["tool_calls"] = json!(calls
                 .iter()
@@ -858,6 +914,7 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             harness: false,
+            reasoning: None,
         }
     }
     fn call(ids: &[&str]) -> Msg {

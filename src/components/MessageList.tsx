@@ -761,11 +761,13 @@ export default function MessageList(props: {
                   verification record instead. */}
                 {/* The model's thinking, apart from the reply. */}
                 <Show when={m.role === 'assistant' && m.meta?.reasoning?.text}>
-                  <ThinkingBlock
-                    text={m.meta!.reasoning!.text}
-                    ms={m.meta?.reasoning?.ms}
-                    thinking={!!m.pending && isBlank(m.content) && !m.toolCalls?.length}
-                  />
+                  {(text) => (
+                    <ThinkingBlock
+                      text={text()}
+                      ms={m.meta?.reasoning?.ms}
+                      thinking={!!m.pending && isBlank(m.content) && !m.toolCalls?.length}
+                    />
+                  )}
                 </Show>
 
                 <Show when={!m.error && !isBlank(m.content) && !m.meta?.harness}>

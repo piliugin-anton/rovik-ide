@@ -26,6 +26,9 @@ enum Reply {
     Calls(Vec<(&'static str, &'static str, Value)>),
     /// An HTTP error with this body.
     Status(u16, &'static str),
+    /// Reasoning (`reasoning` text, and `reasoning_details` fragments, one
+    /// per chunk, as OpenRouter streams them), then the reply.
+    Thought(&'static str, Vec<Value>, Box<Reply>),
 }
 
 impl Reply {
@@ -65,6 +68,14 @@ impl Reply {
                     + "data: [DONE]\n\n"
             }
             Reply::Status(..) => String::new(),
+            Reply::Thought(text, fragments, then) => {
+                let mut out = chunk(json!({ "choices": [{ "delta": { "reasoning": text }, "finish_reason": null }] }));
+                for fragment in fragments {
+                    let delta = json!({ "reasoning_details": [fragment] });
+                    out += &chunk(json!({ "choices": [{ "delta": delta, "finish_reason": null }] }));
+                }
+                out + &then.sse()
+            }
         }
     }
 
@@ -1159,6 +1170,101 @@ async fn a_pattern_sent_as_literal_text_is_searched_as_a_regex() {
     assert!(none.content.starts_with("No matches."), "{}", none.content);
     assert!(none.content.contains("as a regular expression either"), "{}", none.content);
     assert_eq!(none.meta.as_ref().unwrap()["count"], 0);
+}
+
+/// The assistant messages of a request body that called tools.
+fn steps(request: &Value) -> Vec<Value> {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "assistant" && m.get("tool_calls").is_some())
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn reasoning_goes_back_with_the_steps_of_the_current_request() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    let signed = |t: Value| -> Value {
+        let mut f = json!({ "type": "reasoning.text", "format": "anthropic-claude-v1", "index": 0 });
+        f.as_object_mut().unwrap().extend(t.as_object().unwrap().clone());
+        f
+    };
+    let thought = Reply::Thought(
+        "Let me read it.",
+        vec![signed(json!({ "text": "Let me " })), signed(json!({ "text": "read it." })), signed(json!({ "signature": "sig" }))],
+        Box::new(Reply::Call { id: "r1", name: "read", args: json!({ "path": "a.txt" }) }),
+    );
+    let (url, seen) = model(vec![thought, Reply::Text("It says one."), Reply::Text("Still one.")]).await;
+    h.start(h.request(&url, Harness::send("Read a.txt"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+
+    let whole = json!([{ "type": "reasoning.text", "format": "anthropic-claude-v1", "index": 0, "text": "Let me read it.", "signature": "sig" }]);
+    // Stored once, whole, with the model that wrote it; shown as text.
+    let messages = h.messages().await;
+    let step = messages.iter().find(|m| m.tool_calls.is_some()).unwrap();
+    let stored = &step.meta.as_ref().unwrap()["reasoning"];
+    assert_eq!((stored["details"].clone(), stored["model"].clone(), stored["text"].clone()), (whole.clone(), json!("m"), json!("Let me read it.")));
+    // The next step of the same request carries it back, unchanged.
+    let after_tool = steps(&seen.lock().unwrap()[1]);
+    assert_eq!(after_tool[0]["reasoning_details"], whole);
+    assert!(after_tool[0].get("reasoning_content").is_none());
+
+    // A later request doesn't: the model's earlier turns are finished.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Again?"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let later = steps(&seen.lock().unwrap()[2]);
+    assert!(later[0].get("reasoning_details").is_none(), "{:?}", later[0]);
+}
+
+#[tokio::test]
+async fn deepseek_keeps_its_tool_steps_reasoning_and_other_models_get_none() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    let thought = Reply::Thought(
+        "Read it first.",
+        Vec::new(),
+        Box::new(Reply::Call { id: "r1", name: "read", args: json!({ "path": "a.txt" }) }),
+    );
+    let (url, seen) = model(vec![thought, Reply::Text("one"), Reply::Text("two"), Reply::Text("three")]).await;
+    let as_model = |name: &str, text: &str| {
+        let mut request = h.request(&url, Harness::send(text), quiet_permissions());
+        request.profile.model = name.into();
+        request
+    };
+    h.start(as_model("deepseek-v4", "Read a.txt")).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(steps(&seen.lock().unwrap()[1])[0]["reasoning_content"], "Read it first.");
+    // DeepSeek refuses later requests without it: it stays.
+    h.events.lock().unwrap().clear();
+    h.start(as_model("deepseek-v4", "And now?")).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(steps(&seen.lock().unwrap()[2])[0]["reasoning_content"], "Read it first.");
+    // Another model never gets reasoning DeepSeek wrote.
+    h.events.lock().unwrap().clear();
+    h.start(as_model("other-model", "And you?")).await;
+    assert_eq!(h.run_end().await, "done");
+    let other = steps(&seen.lock().unwrap()[3]);
+    assert!(other[0].get("reasoning_content").is_none() && other[0].get("reasoning_details").is_none());
+}
+
+#[tokio::test]
+async fn a_server_refusing_reasoning_sent_back_gets_none() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    let thought = Reply::Thought(
+        "Read it first.",
+        Vec::new(),
+        Box::new(Reply::Call { id: "r1", name: "read", args: json!({ "path": "a.txt" }) }),
+    );
+    let refusal = r#"{"error":{"message":"Extra inputs are not permitted: messages.1.reasoning_content","type":"invalid_request_error"}}"#;
+    let (url, seen) = model(vec![thought, Reply::Status(400, refusal), Reply::Text("one")]).await;
+    h.start(h.request(&url, Harness::send("Read a.txt"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(steps(&requests[1])[0]["reasoning_content"], "Read it first.");
+    assert!(steps(&requests[2])[0].get("reasoning_content").is_none(), "sent again without it");
 }
 
 #[tokio::test]

@@ -420,6 +420,8 @@ pub struct ReplyParser {
     usage: Option<serde_json::Value>,
     /// Characters of reasoning shown so far.
     reasoning_len: usize,
+    /// `reasoning_details` entries, merged from the stream (reasoning_echo.rs).
+    reasoning_details: Vec<serde_json::Value>,
     /// Responses API: the output items that are commentary (`responses`).
     commentary: Vec<u64>,
     /// Their text, in case the reply turns out to be nothing else.
@@ -477,6 +479,10 @@ impl ReplyParser {
             if let Some(reasoning) = reasoning.filter(|r| !r.is_empty()) {
                 self.reasoning_len += reasoning.len();
                 emit(ChatStreamEvent::Reasoning { content: reasoning.to_string() });
+            }
+            // The structured form, to send back (OpenRouter and gateways like it).
+            for fragment in delta.get("reasoning_details").and_then(|v| v.as_array()).into_iter().flatten() {
+                crate::reasoning_echo::merge(&mut self.reasoning_details, fragment);
             }
             for (pos, tc) in delta.get("tool_calls").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
                 let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -550,6 +556,9 @@ impl ReplyParser {
         if self.finish_reason.as_deref() == Some("error") {
             return Err(ChatError::new(ErrorKind::Provider, "The provider ended the reply with an error."));
         }
+        if !self.reasoning_details.is_empty() {
+            emit(ChatStreamEvent::ReasoningDetails { details: std::mem::take(&mut self.reasoning_details) });
+        }
         if !said_something {
             if self.finish_reason.as_deref() == Some("length") {
                 return Err(ChatError::new(ErrorKind::Length, "The model reached its output limit before writing anything."));
@@ -578,6 +587,10 @@ impl ReplyParser {
                     "content": message.and_then(|m| m.get("content")).cloned().unwrap_or(serde_json::Value::Null),
                     "reasoning_content": message
                         .and_then(|m| m.get("reasoning_content").or_else(|| m.get("reasoning")))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    "reasoning_details": message
+                        .and_then(|m| m.get("reasoning_details"))
                         .cloned()
                         .unwrap_or(serde_json::Value::Null),
                     "tool_calls": message

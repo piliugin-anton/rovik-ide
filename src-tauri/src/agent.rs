@@ -54,6 +54,11 @@ pub enum ChatStreamEvent {
     },
     /// The request ends with the focus note (Trimming mode; chat_db::history).
     FocusNote,
+    /// The reply's reasoning in the form it is sent back in
+    /// (`reasoning_details` entries, whole; reasoning_echo.rs), at its end.
+    ReasoningDetails {
+        details: Vec<serde_json::Value>,
+    },
     /// One-time notes about the agent's own context (CLM mode) that went
     /// with this request. A request sent again for the same turn has to carry
     /// them (`ChatParams::carried_notes`): they aren't produced twice.
@@ -230,6 +235,8 @@ pub async fn run_with_reasoning(
     let mut rejected: Vec<String> = Vec::new();
     let mut stripped_blindly: Vec<String> = Vec::new();
     let mut ask_usage = streaming && stream_usage::wanted(url);
+    // Reasoning sent back (reasoning_echo.rs), until the server refuses it.
+    let mut echo = crate::reasoning_echo::wanted(url);
     // Dropped after a 400 naming nothing: only blamed if that then works.
     let mut usage_stripped_blindly = false;
     let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("");
@@ -245,6 +252,9 @@ pub async fn run_with_reasoning(
     let mut moved = false;
     let result = loop {
         let mut attempt_body = body.clone();
+        if !echo {
+            crate::reasoning_echo::strip(&mut attempt_body);
+        }
         if let Some(effort) = effort {
             apply_reasoning(&mut attempt_body, effort, &formats);
         }
@@ -256,7 +266,7 @@ pub async fn run_with_reasoning(
         let (target, attempt_body) = match (api, responses_url.as_deref()) {
             (Api::Responses, Some(responses_url)) => {
                 let phases = responses::uses_phases(&responses::phase_key(responses_url, model));
-                (responses_url, responses::request_body(&attempt_body, phases))
+                (responses_url, responses::request_body(&attempt_body, phases, echo))
             }
             _ => (url, attempt_body),
         };
@@ -284,6 +294,16 @@ pub async fn run_with_reasoning(
             }
             Err(e) if e.kind == crate::chat_request::ErrorKind::BadRequest && !e.partial => {
                 let text = format!("{} {}", e.message, e.details.as_deref().unwrap_or(""));
+                // Reasoning sent back, or the request for it: not for this server.
+                let echo_named = echo_refused(&text);
+                let echoes = crate::reasoning_echo::sends_any(&attempt_body)
+                    || (api == Api::Responses && effort.is_some_and(|e| !matches!(e, ReasoningEffort::None)));
+                if echo && echoes && echo_named {
+                    eprintln!("chat: {url} refuses reasoning sent back; sending none from now on");
+                    echo = false;
+                    crate::reasoning_echo::rejected(url);
+                    continue;
+                }
                 if sends_usage && (mentions_field(&text, "stream_options") || mentions_field(&text, "include_usage")) {
                     ask_usage = false;
                     stream_usage::rejected(url);
@@ -371,6 +391,16 @@ pub struct ReasoningSupport {
     pub accepted: Vec<String>,
     pub rejected: Vec<String>,
     pub unresolved: Vec<String>,
+}
+
+/// Whether a 400's text refuses reasoning sent back (reasoning_echo.rs): it
+/// names the fields, the encrypted reasoning, or `include` as a parameter
+/// (quoted, as in "Unknown parameter: 'include'"; the plain word is too
+/// common in errors to count).
+fn echo_refused(text: &str) -> bool {
+    ["reasoning_details", "reasoning_content", "encrypted_content"].iter().any(|f| mentions_field(text, f))
+        || text.contains("'include'")
+        || text.contains("\"include\"")
 }
 
 /// Whether an error message names `field` as a whole word: "reasoning" must
@@ -651,7 +681,15 @@ pub async fn run_chat(
                 let prepared =
                     crate::clm::prepare(db, vfs, dialog_id.clone(), clm_budget, cost, current_user_content.clone())
                         .await?;
-                let mut messages = prepared.messages;
+                // The reasoning the model sent with this request's steps (reasoning_echo.rs).
+                let echo_model = model.clone();
+                let mut messages = db
+                    .read(move |conn| {
+                        let mut messages = prepared.messages;
+                        crate::chat_db::history::attach_reasoning(conn, &mut messages, &echo_model)?;
+                        Ok(messages)
+                    })
+                    .await?;
                 let fresh = prepared.notes;
                 let notes = with_carried_notes(&carried_notes, &fresh);
                 // Notes for the model ride on the request's last message (not stored).
@@ -689,11 +727,13 @@ pub async fn run_chat(
                 }
             };
             let data_dir = db.data_dir().to_path_buf();
+            let wire_model = model.clone();
             let build = db.read(move |conn| {
                 crate::chat_db::history::build_wire(
                     conn,
                     &data_dir,
                     &dialog_id,
+                    &wire_model,
                     budget,
                     vision,
                     current_user_content.as_deref(),
@@ -1352,6 +1392,7 @@ pub async fn chat_context_estimate(
                 conn,
                 &data_dir,
                 &dialog_id,
+                &model,
                 token_budget,
                 vision,
                 None,
@@ -1540,6 +1581,18 @@ mod reasoning_tests {
         assert_eq!(off["reasoning"]["enabled"], false);
         assert_eq!(off["chat_template_kwargs"]["enable_thinking"], false);
         assert!(off.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn refusals_of_reasoning_sent_back_are_recognised() {
+        assert!(echo_refused("Extra inputs are not permitted: messages[2].reasoning_details"));
+        assert!(echo_refused(r#"{"detail":[{"loc":["body","messages",1,"reasoning_content"]}]}"#));
+        assert!(echo_refused("Unknown parameter: 'include'."));
+        assert!(echo_refused(r#"{"loc":["body","include"],"msg":"Extra inputs are not permitted"}"#));
+        assert!(echo_refused("Encrypted content could not be verified (encrypted_content)."));
+        // Ordinary 400s that only use the words.
+        assert!(!echo_refused("messages must include at least one user message"));
+        assert!(!echo_refused("Unsupported parameter: 'reasoning_effort'"));
     }
 
     #[test]

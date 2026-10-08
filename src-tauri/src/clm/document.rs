@@ -96,6 +96,7 @@ impl CtxMsg {
             tool_call_id: self.tool_call_id.clone(),
             attachments: self.attachments.clone(),
             harness: self.harness,
+            reasoning: None,
         }
     }
 
