@@ -75,6 +75,8 @@ pub struct Run<R: Runtime> {
     pub(super) last_verify_failed: bool,
     /// Unfinished checklist steps were pointed out once.
     pub(super) checklist_nudged: bool,
+    /// The next request may not call tools (a summary before a pause).
+    pub(super) words_only: bool,
     /// Plan mode: the current plan, shown to the model so it revises it.
     pub(super) plan_context: String,
     /// A plan written in a reply instead of submitted was pointed out once.
@@ -242,6 +244,7 @@ impl<R: Runtime> Run<R> {
             verify_rounds,
             last_verify_failed: false,
             checklist_nudged: false,
+            words_only: false,
             plan_context,
             plan_nudged: false,
             repetition_stops: 0,
@@ -406,6 +409,11 @@ impl<R: Runtime> Run<R> {
             // Every tool call has its result, so the chat can wait here as
             // long as it likes: Continue picks up with the next request.
             if let Some(pause) = self.guard.pause() {
+                if let Some(reason) = pause.reason.as_deref() {
+                    if self.summarize_before_pause(reason).await? {
+                        return Ok("stopped".into());
+                    }
+                }
                 let mut paused = new_message("assistant", "");
                 // Empty, no tool calls: kept out of what the model is sent.
                 paused.meta = Some(json!({ "paused": pause }));
@@ -413,6 +421,45 @@ impl<R: Runtime> Run<R> {
                 return Ok(format!("paused-{}", pause.kind));
             }
         }
+    }
+
+    /// Before a loop pause: one reply without tools, in which the model
+    /// tells the user where it got to, so the pause doesn't leave them with
+    /// a bare reason. Best effort: a failed reply just isn't there. True
+    /// when the user stopped the run meanwhile.
+    async fn summarize_before_pause(&mut self, reason: &str) -> Result<bool, String> {
+        self.add_harness(
+            format!(
+                "{IDE_NOTE}The run is paused for the user, because {reason}. Don't call any tools. \
+                 In a few short bullets, tell the user: what you were trying to do, what you tried and what \
+                 happened, what is blocking you, and what would unblock it (a decision, information, or a \
+                 different approach)."
+            ),
+            "pauseSummary",
+        )
+        .await?;
+        self.words_only = true;
+        let turn = self.model_turn().await?;
+        let mut meta = turn.reasoning.map(|r| json!({ "reasoning": r })).unwrap_or_else(|| json!({}));
+        let Some(error) = turn.failure else {
+            // Calls the provider sent anyway aren't run: the run is pausing.
+            self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None).await?;
+            self.settle(true).await;
+            return Ok(self.stopped());
+        };
+        // As a failed turn in the run: what arrived is kept, else the error shows.
+        let stored = failure::stored(&error);
+        if !turn.text.trim().is_empty() {
+            meta["interrupted"] = stored;
+            self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None).await?;
+            self.settle(true).await;
+        } else {
+            let text = failure::describe(&error);
+            self.finalize(&turn.message_id, String::new(), Vec::new(), Some(json!({ "failure": stored })), Some(text))
+                .await?;
+            self.settle(false).await;
+        }
+        Ok(error.kind == ErrorKind::Cancelled || self.stopped())
     }
 
     /*
@@ -457,6 +504,7 @@ impl<R: Runtime> Run<R> {
             self.project_context.clone()
         };
         let continue_reply = std::mem::take(&mut self.continue_reply);
+        let no_tool_calls = std::mem::take(&mut self.words_only);
         // Shown when the request starts (asking again with another effort).
         let mut opening_status: Option<Status> = None;
         // One-time context notes (CLM) an attempt at this turn went out with:
@@ -483,6 +531,7 @@ impl<R: Runtime> Run<R> {
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
                 carried_notes: carried_notes.clone(),
+                no_tool_calls,
                 api_route: self.profile.api_route.clone(),
                 chat_id: None,
             };

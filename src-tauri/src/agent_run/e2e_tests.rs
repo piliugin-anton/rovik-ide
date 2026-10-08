@@ -1077,8 +1077,17 @@ async fn unfinished_checklist_steps_are_pointed_out_once() {
 async fn a_loop_is_noted_then_paused() {
     let h = harness(&[("a.txt", "same")]).await;
     let read = |id: &'static str| Reply::Call { id, name: "read", args: json!({ "path": "a.txt" }) };
-    let (url, _) = model(vec![read("r1"), read("r2"), read("r3"), read("r4"), read("r5"), read("r6"), Reply::Text("x")])
-        .await;
+    let summary = "- Tried to read a.txt; it says \"same\" every time.";
+    let (url, seen) = model(vec![
+        read("r1"),
+        read("r2"),
+        read("r3"),
+        read("r4"),
+        read("r5"),
+        read("r6"),
+        Reply::Text(summary),
+    ])
+    .await;
     h.start(h.request(&url, Harness::send("Read"), quiet_permissions())).await;
     assert_eq!(h.run_end().await, "paused-loop");
     let messages = h.messages().await;
@@ -1088,6 +1097,35 @@ async fn a_loop_is_noted_then_paused() {
     assert_eq!(paused["kind"], "loop");
     assert_eq!(paused["toolCalls"], 6);
     assert!(paused["reason"].as_str().unwrap().contains("read (a.txt)"));
+
+    // Before the pause: the model was asked, without tools, where it got to.
+    let notes = harness_notes(&messages);
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].content.contains("Don't call any tools"), "{}", notes[0].content);
+    let reply = &messages[messages.len() - 2];
+    assert_eq!((reply.role.as_str(), reply.content.as_str()), ("assistant", summary));
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 7);
+    assert_eq!(requests[5]["tool_choice"], "auto");
+    assert_eq!(requests[6]["tool_choice"], "none");
+    assert!(requests[6]["tools"].as_array().is_some_and(|t| !t.is_empty()), "the history refers to them");
+}
+
+#[tokio::test]
+async fn an_empty_overwrite_is_refused_without_asking() {
+    let h = harness(&[("a.txt", "keep\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "" }) },
+        Reply::Text("Ok."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Clear it"), ask_approval("edits"))).await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(h.events_of("approvalRequested").is_empty(), "nothing to approve");
+    let messages = h.messages().await;
+    let result = &result_of(&messages, "w1").content;
+    assert!(result.starts_with("Error: refusing to replace a.txt"), "{result}");
+    assert_eq!(h.file("a.txt").as_deref(), Some("keep\n"));
 }
 
 #[tokio::test]

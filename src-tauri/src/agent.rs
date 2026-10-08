@@ -466,6 +466,9 @@ pub struct ChatParams {
     // Context notes an earlier attempt at this turn was sent with (see
     // ChatStreamEvent::ContextNotes), carried into this one.
     pub carried_notes: Vec<String>,
+    // The tools are sent (the history refers to them) but the model may not
+    // call any: `tool_choice: "none"`, for a reply in words only.
+    pub no_tool_calls: bool,
     // The API route saved with the model ("chat_completions" or
     // "responses"), when it was found before (ChatStreamEvent::ApiRoute).
     pub api_route: Option<String>,
@@ -526,6 +529,7 @@ pub async fn send_chat_message(
         options,
         context_mode,
         carried_notes: Vec::new(),
+        no_tool_calls: false,
         api_route,
         chat_id,
     };
@@ -565,6 +569,7 @@ pub async fn run_chat(
         options,
         context_mode,
         carried_notes,
+        no_tool_calls,
         api_route,
         chat_id,
     } = params;
@@ -792,7 +797,7 @@ pub async fn run_chat(
     // tool use) — some OpenAI-compatible backends reject an empty tools array.
     if let Some(tools) = tools.filter(|t| !t.is_empty()) {
         body["tools"] = serde_json::json!(tools);
-        body["tool_choice"] = serde_json::json!("auto");
+        body["tool_choice"] = serde_json::json!(if no_tool_calls { "none" } else { "auto" });
     }
 
     let mut limits = crate::chat_request::Limits::default();
