@@ -53,8 +53,13 @@ export function implementationRequest(plan: string, file?: string): string {
     '</plan>',
     '',
     "First create your checklist with the todo tool from the plan's steps, then work through them in order, " +
-      'marking each in progress and done. Follow the plan and its decisions. If a step turns out wrong or ' +
-      'unnecessary, mark it skipped or changed with the reason instead of silently doing something else. ' +
-      'If you change files the plan doesn’t mention, say why in your final message.',
+      'marking each in progress and done. For each step, read the files it names before changing them, and make ' +
+      'the changes it describes to the functions, types and settings it names. Follow the plan and its decisions. ' +
+      'If a step turns out wrong or unnecessary (a file or function isn’t where the plan says, or the change ' +
+      'doesn’t fit the code), mark it skipped or changed with the reason instead of silently doing something else. ' +
+      'When the steps are done, run the checks in the plan’s Validation section that you can run (build, ' +
+      'typecheck, tests, lint), add or update the tests it asks for, and fix what fails. In your final message, ' +
+      'say which checks passed, which you couldn’t run and why, what is left to check by hand, and why you changed ' +
+      'any files the plan doesn’t mention.',
   ].join('\n');
 }

@@ -28,19 +28,25 @@ pub const MAX_QUESTIONS_PER_RUN: u32 = 3;
 /// Added to the system prompt in Plan mode.
 pub const PLAN_MODE_INSTRUCTIONS: &str = r###"## Plan mode
 
-The user chose Plan mode: plan the task, don't carry it out. You can read files, list folders, search the code and use the web; you can't change files or run commands.
+The user chose Plan mode: plan the task, don't carry it out. You can read files, list folders, search the code and use the web; you can't change files or run commands. The plan is a detailed, file-level spec the user reviews (and may edit) before it's built, so precision matters more than brevity: a precise, well-scoped plan builds cleanly.
 
-1. Investigate first: read the relevant code, find the existing patterns and conventions the change should follow.
+1. Investigate first: read the relevant code, find the files that will change, the functions and types involved, and the existing patterns and conventions the change should follow.
 2. Ask only what the code can't tell you and what really changes the design, the behavior or the scope (two existing approaches to choose between, an unclear requirement, a trade-off only the user can make). Use the ask_user tool, early, with all your questions in one call, as concrete options with a short reason. Don't ask about names, formatting or anything you can decide from the repository: decide it and say so in the plan. Never ask a question in plain text and stop; use ask_user.
 3. Save the plan with the submit_plan tool, as Markdown. It's saved as a file the user may edit before implementing it, so make it stand on its own:
    - a "# " title;
    - a one-paragraph summary of the approach;
-   - "## Steps": a numbered list, in order; each step a short title, then what changes and in which files (no code). Roughly 3 to 12 steps, each the size of something worth reviewing on its own;
+   - "## Steps": a numbered list, in order, one reviewable change per step. Each step has:
+     - a short title;
+     - the files it touches, as repo-relative paths in backticks (e.g. `src/db/users.rs`). Name only paths you have seen in the repository; mark files the step creates as "(new)";
+     - what to add, change or remove in them, by name: the functions, methods, types, components, fields or settings, and how they behave. A one-line signature (e.g. `fn load_users(db: &Db) -> Result<Vec<User>>`) or a config line is welcome; leave out function bodies and longer code;
+     - anything that calls or depends on the change and must be updated with it.
+     Use as many steps as the task needs (usually 3 to 12);
    - "## Decisions": what the user answered, and what you decided yourself (with why);
-   - how to verify the result (checks, tests, what to try by hand);
-   - risks or open points, if any.
+   - "## Validation": how to check the result: the commands to run (build, typecheck, tests, lint), the tests to add or update, and what to try by hand;
+   - "## Risks": risks or open points, if any.
+   submit_plan checks the plan and rejects one without a title, numbered steps that each name a file and what changes there, or a validation section; fix what it reports and submit again.
    The plan goes in submit_plan, not in your reply: after submitting, reply with a few sentences at most. Never write the plan out in a reply, and never write it more than once.
-4. If a plan already exists (it's shown below), the user's new message is about that plan. When they add context or ask for changes, revise the existing plan: keep what still holds, work the new information into the steps, decisions and risks it affects, and submit the complete revised plan. Don't replace the plan with a summary of what the user said. If they only ask a question, answer it without submitting.
+4. If a plan already exists (it's shown below), the user's new message is about that plan. When they add context or ask for changes, revise the existing plan: keep what still holds, work the new information into the steps, decisions, validation and risks it affects, and submit the complete revised plan. Don't replace the plan with a summary of what the user said. If they only ask a question, answer it without submitting.
 Keep it concrete enough that it can be implemented step by step without re-investigating. The user implements it by switching to Agent mode."###;
 
 /*
@@ -50,12 +56,81 @@ Keep it concrete enough that it can be implemented step by step without re-inves
  */
 
 static STEPS_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b.*$").unwrap());
+static VALIDATION_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^##\s+.*\b(verif\w*|validat\w*|test\w*|check\w*|acceptance)\b.*$").unwrap()
+});
 static NEXT_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^##\s").unwrap());
 static NUMBERED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d+[.)]\s+\S").unwrap());
 static TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#\s+\S").unwrap());
 static CODE_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```.*?```").unwrap());
+/// A path with a folder (`src/a.rs`, `src/components/`) or a file name
+/// with an extension (`Cargo.toml`, `.env`).
+static PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:^|[\s`'"(\[*])(\.?[\w@~-][\w.@~-]*(?:/[\w.@~\[\]-]+)+/?|\.?[\w-]*[A-Za-z_][\w-]*\.[A-Za-z][\w]{0,9})"#).unwrap()
+});
+/// File names without an extension that are still clearly files.
+static BARE_FILE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(Makefile|Dockerfile|Justfile|Procfile|Gemfile|Rakefile|Containerfile)\b").unwrap());
+/// Words that say what a step does to its files.
+static CHANGE_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(add\w*|chang\w*|creat\w*|remov\w*|delet\w*|renam\w*|mov\w*|updat\w*|replac\w*|extend\w*|edit\w*|modif\w*|introduc\w*|implement\w*|refactor\w*|split\w*|extract\w*|merg\w*|wire\w*|register\w*|expos\w*|export\w*|import\w*|call\w*|return\w*|handl\w*|pass\w*|store\w*|emit\w*|drop\w*|switch\w*|convert\w*|define\w*|declare\w*|new|fix\w*|adjust\w*|insert\w*|append\w*|keep\w*|use|uses|using|set|sets|write\w*|read\w*|check\w*|validat\w*|test\w*|migrat\w*|document\w*|configur\w*|enabl\w*|disabl\w*|wrap\w*|guard\w*|inline\w*|generat\w*|render\w*|show\w*|hide\w*|load\w*|sav\w*|pars\w*|map\w*|send\w*|fetch\w*|accept\w*|reject\w*|limit\w*|cach\w*)\b",
+    )
+    .unwrap()
+});
 
-/// What's wrong with a plan, if anything (empty: it's fine).
+/// The text of the `## ...` section that starts at `heading_end`.
+fn section_after(text: &str, heading_end: usize) -> &str {
+    let after = &text[heading_end..];
+    match NEXT_HEADING.find(after) {
+        Some(next) => &after[..next.start()],
+        None => after,
+    }
+}
+
+/// Whether a step names a file or folder of the repository.
+fn names_a_file(step: &str) -> bool {
+    if BARE_FILE.is_match(step) {
+        return true;
+    }
+    PATH.captures_iter(step).any(|c| {
+        let token = c[1].trim_end_matches('.');
+        if token.contains('/') {
+            // Not a URL, a fraction or "and/or".
+            return !token.contains("://")
+                && token.split('/').filter(|s| !s.is_empty()).count() >= 2
+                && token.chars().any(|ch| ch.is_ascii_alphabetic())
+                && !matches!(token.to_ascii_lowercase().as_str(), "and/or" | "either/or" | "i/o" | "n/a");
+        }
+        // "e.g", "i.e", "vs.x": abbreviations, not file names.
+        let (name, ext) = token.rsplit_once('.').unwrap_or((token, ""));
+        !(name.trim_start_matches('.').len() <= 2 && ext.len() <= 2) && token.len() >= 3
+    })
+}
+
+/// The numbered items of a steps section, each with its sub-lines.
+fn split_steps(section: &str) -> Vec<&str> {
+    let starts: Vec<usize> = NUMBERED.find_iter(section).map(|m| m.start()).collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, &start)| &section[start..starts.get(i + 1).copied().unwrap_or(section.len())])
+        .collect()
+}
+
+/// "2", "2 and 4", "2, 4 and 5".
+fn list_numbers(numbers: &[usize]) -> String {
+    let words: Vec<String> = numbers.iter().map(usize::to_string).collect();
+    match words.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => words.join(""),
+    }
+}
+
+/// What's wrong with a plan, if anything (empty: it's fine). Kept to the
+/// minimum a plan needs to be built from (a title, steps that each name a
+/// file and what changes there, a way to validate it), so a model doesn't
+/// invent detail just to get past the check.
 pub fn plan_problems(markdown: &str) -> Vec<String> {
     let text = markdown.trim();
     if text.is_empty() {
@@ -66,23 +141,66 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
     if !first.is_some_and(|l| TITLE.is_match(l)) {
         problems.push("Start with a \"# \" title line.".into());
     }
-    match STEPS_HEADING.find(text) {
+    let steps_heading = STEPS_HEADING.find(text);
+    match steps_heading {
         None => problems.push("Add a \"## Steps\" section with the steps as a numbered list.".into()),
-        Some(steps) => {
-            let after = &text[steps.end()..];
-            let section = match NEXT_HEADING.find(after) {
-                Some(next) => &after[..next.start()],
-                None => after,
-            };
-            if NUMBERED.find_iter(section).count() < 2 {
+        Some(heading) => {
+            // Code fences can hold numbered lines and paths that aren't steps.
+            let section = CODE_BLOCK.replace_all(section_after(text, heading.end()), "");
+            let steps = split_steps(&section);
+            if steps.len() < 2 {
                 problems.push("List the steps under \"## Steps\" as a numbered list (1., 2., ...).".into());
+            } else {
+                let no_file: Vec<usize> =
+                    (1..=steps.len()).filter(|&n| !names_a_file(steps[n - 1])).collect();
+                if !no_file.is_empty() {
+                    problems.push(format!(
+                        "Step{} {} name{} no file: give the repo-relative path of each file a step changes, in backticks \
+                         (e.g. `src/db/users.rs`), and mark files it creates as \"(new)\". Name only paths you've seen in the \
+                         repository.",
+                        if no_file.len() > 1 { "s" } else { "" },
+                        list_numbers(&no_file),
+                        if no_file.len() > 1 { "" } else { "s" },
+                    ));
+                }
+                let vague: Vec<usize> = (1..=steps.len())
+                    .filter(|&n| {
+                        let step = steps[n - 1];
+                        step.split_whitespace().count() < 6 || !CHANGE_WORD.is_match(step)
+                    })
+                    .collect();
+                if !vague.is_empty() {
+                    problems.push(format!(
+                        "Step{} {} {} too vague: say what to add, change or remove in the files, by name (the functions, \
+                         types, components or settings, and how they behave); a one-line signature is fine.",
+                        if vague.len() > 1 { "s" } else { "" },
+                        list_numbers(&vague),
+                        if vague.len() > 1 { "are" } else { "is" },
+                    ));
+                }
             }
         }
     }
-    // Code belongs in the implementation, not the plan.
+    let validation = VALIDATION_HEADING
+        .find_iter(text)
+        .find(|h| !steps_heading.is_some_and(|s| s.start() == h.start()))
+        .map(|h| section_after(text, h.end()).trim());
+    match validation {
+        Some(section) if !section.is_empty() => {}
+        _ => problems.push(
+            "Add a \"## Validation\" section: the commands to run (build, typecheck, tests, lint), the tests to add or \
+             update, and what to check by hand."
+                .into(),
+        ),
+    }
+    // Code belongs in the implementation, not the plan. Signatures and
+    // config lines (up to 3 lines) are welcome and don't count.
     let (mut code_lines, mut longest) = (0usize, 0usize);
     for block in CODE_BLOCK.find_iter(text) {
         let lines = block.as_str().split('\n').count().saturating_sub(2);
+        if lines <= 3 {
+            continue;
+        }
         code_lines += lines;
         longest = longest.max(lines);
     }
@@ -411,18 +529,60 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const GOOD_PLAN: &str = "# Add users\n\nSummary.\n\n## Steps\n\
+        1. Users table\n   - `migrations/002_users.sql` (new): create the `users` table with `id`, `email`.\n\
+        2. API\n   - `src/api/users.rs`: add `fn list_users(db: &Db) -> Vec<User>` and register it in `src/api/mod.rs`.\n\n\
+        ## Decisions\n- none\n\n## Validation\n- `cargo test`\n- open /users by hand";
+
     #[test]
     fn plan_checks() {
-        let good = "# Add users\n\nSummary.\n\n## Steps\n1. Table\n2. API\n\n## Decisions\n- none";
-        assert!(plan_problems(good).is_empty(), "{:?}", plan_problems(good));
+        assert!(plan_problems(GOOD_PLAN).is_empty(), "{:?}", plan_problems(GOOD_PLAN));
         let bad = "Some plan\n## Steps\n1. Only one";
         let problems = plan_problems(bad);
-        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert_eq!(problems.len(), 3, "title, steps, validation: {problems:?}");
         assert_eq!(plan_problems("  "), vec!["The plan is empty."]);
-        let code = format!("# T\n## Steps\n1. a\n2. b\n```\n{}```", "x\n".repeat(20));
+        let code = format!("{GOOD_PLAN}\n```\n{}```", "x\n".repeat(20));
+        assert_eq!(plan_problems(&code).len(), 1);
         assert!(plan_problems(&code)[0].starts_with("Leave the code out"));
+        // One-line signatures don't count as code.
+        let sigs = format!("{GOOD_PLAN}\n{}", "```rust\nfn a() -> u8;\n```\n".repeat(30));
+        assert!(plan_problems(&sigs).is_empty(), "{:?}", plan_problems(&sigs));
         assert!(looks_like_plan("## Steps\n1. do it"));
         assert!(!looks_like_plan("Done. 1. thing"));
+    }
+
+    #[test]
+    fn steps_need_files_and_changes() {
+        // Titles alone aren't a plan.
+        let terse = "# T\n## Steps\n1. Table\n2. API\n## Validation\n- run the tests";
+        let problems = plan_problems(terse);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("Steps 1 and 2 name no file"), "{problems:?}");
+        assert!(problems[1].starts_with("Steps 1 and 2 are too vague"), "{problems:?}");
+        // Only the step without a file is reported.
+        let one = "# T\n## Steps\n1. Add the `load` function to `src/a.rs` for reading users.\n\
+                   2. Update the docs so they explain the new loading, e.g. in the readme.\n## Testing\n- cargo test";
+        assert_eq!(plan_problems(one), vec![plan_problems(one)[0].clone()]);
+        assert!(plan_problems(one)[0].starts_with("Step 2 names no file"));
+        // Bare names, folders and new files count; URLs and "and/or" don't.
+        assert!(names_a_file("change the base image in Dockerfile"));
+        assert!(names_a_file("move it under src/components/"));
+        assert!(names_a_file("set the flag in Cargo.toml (new section)"));
+        assert!(names_a_file("**package.json**: add a script"));
+        assert!(!names_a_file("see https://example.com and/or ask, i.e. later"));
+        assert!(!names_a_file("bump to 1.2 and update the API."));
+    }
+
+    #[test]
+    fn plans_need_validation() {
+        let no_check = GOOD_PLAN.replace("## Validation", "## Notes");
+        let problems = plan_problems(&no_check);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].starts_with("Add a \"## Validation\""));
+        // An empty section doesn't count; other names do.
+        assert_eq!(plan_problems(&GOOD_PLAN.replace("- `cargo test`\n- open /users by hand", "")).len(), 1);
+        assert!(plan_problems(&GOOD_PLAN.replace("## Validation", "## How to verify")).is_empty());
+        assert!(plan_problems(&GOOD_PLAN.replace("## Validation", "## Testing and validation")).is_empty());
     }
 
     #[test]
@@ -468,14 +628,16 @@ mod tests {
     #[test]
     fn plan_and_question_edge_cases() {
         // A steps heading with more words, steps with ")".
-        assert!(plan_problems("# T\n## Implementation steps\n1) a\n2) b").is_empty());
+        let parens = GOOD_PLAN.replace("## Steps", "## Implementation steps").replace("1. ", "1) ").replace("2. ", "2) ");
+        assert!(plan_problems(&parens).is_empty(), "{:?}", plan_problems(&parens));
         // Steps belong under the steps heading, not a later section.
-        assert_eq!(plan_problems("# T\n## Steps\nnone\n## Other\n1. a\n2. b").len(), 1);
-        assert!(plan_problems(&format!("# T\n## Steps\n1. a\n2. b\n{}", "x".repeat(40_001)))
+        let misplaced = GOOD_PLAN.replace("## Steps\n", "## Steps\nnone\n## Other\n");
+        assert_eq!(plan_problems(&misplaced).len(), 1);
+        assert!(plan_problems(&format!("{GOOD_PLAN}\n{}", "x".repeat(40_001)))
             .iter()
             .any(|p| p.contains("over 40,000")));
         // Leading blank lines before the title are fine.
-        assert!(plan_problems("\n\n# T\n## Steps\n1. a\n2. b").is_empty());
+        assert!(plan_problems(&format!("\n\n{GOOD_PLAN}")).is_empty());
 
         // At most 3 questions, 6 options; junk skipped.
         let many = json!({ "questions": [

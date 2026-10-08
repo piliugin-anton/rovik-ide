@@ -253,11 +253,11 @@ fn submit_plan_schema() -> Value {
         "type": "function",
         "function": {
             "name": "submit_plan",
-            "description": "Save your plan. Pass the complete plan as Markdown: a \"# \" title, a short summary, \"## Steps\" as a numbered list (each step: what changes and in which files, no code), \"## Decisions\", how to verify, and risks. It is checked and saved to the project, where the user can edit and implement it. When the plan changes, call it again with the complete revised plan (not just the changes). Keep your chat reply short: the plan itself goes here, not in the reply.",
+            "description": "Save your plan. Pass the complete plan as Markdown: a \"# \" title, a short summary, \"## Steps\" as a numbered list (each step: the repo-relative paths of the files it touches in backticks, new ones marked \"(new)\", and what to add, change or remove there by name: functions, types, components, settings; one-line signatures are fine, function bodies are not), \"## Decisions\", \"## Validation\" (commands, tests to add or update, manual checks), and \"## Risks\". It is checked and saved to the project, where the user can edit and implement it. When the plan changes, call it again with the complete revised plan (not just the changes). Keep your chat reply short: the plan itself goes here, not in the reply.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "plan": { "type": "string", "description": "The complete plan in Markdown." }
+                    "plan": { "type": "string", "description": "The complete plan in Markdown. Rejected if it lacks a title, numbered steps that each name a file and what changes there, or a validation section." }
                 },
                 "required": ["plan"]
             }
