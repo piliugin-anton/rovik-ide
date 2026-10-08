@@ -33,10 +33,17 @@ struct Authorized {
     args_override: Option<String>,
     /// Added to the tool result for the model.
     result_note: Option<String>,
+    /// The refusal is a "no" from the user, their AI reviewer or their
+    /// permission settings (not a call that couldn't apply).
+    rejected: bool,
 }
 
 fn refused(text: impl Into<String>) -> Authorized {
     Authorized { refusal: Some(text.into()), ..Default::default() }
+}
+
+fn rejected(text: impl Into<String>) -> Authorized {
+    Authorized { rejected: true, ..refused(text) }
 }
 
 /// How a call ran: as which tool, with which arguments (an approval may
@@ -247,6 +254,7 @@ impl<R: Runtime> Run<R> {
                 args_json: &tc.arguments,
                 result: &content,
                 write: None,
+                rejected: false,
             });
             self.log_guard(&tc.name, &verdict);
             if let Some(note) = verdict.note() {
@@ -379,6 +387,7 @@ impl<R: Runtime> Run<R> {
                 }
                 _ => None,
             },
+            rejected: auth.rejected,
         });
         self.log_guard(&tc.name, &verdict);
         // The model reads the note with the result; a stop pauses the run
@@ -467,7 +476,7 @@ impl<R: Runtime> Run<R> {
         let p = &config.permissions;
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
-                return refused(format!("Error: blocked by the user's permission settings. {reason}"))
+                return rejected(format!("Error: blocked by the user's permission settings. {reason}"))
             }
             // An interrupted call is always confirmed by the user.
             ToolVerdict::Permitted { approval } => match resume_note {
@@ -560,6 +569,7 @@ impl<R: Runtime> Run<R> {
                                     "Error: rejected by the user's AI reviewer ({model}): {reason} Do not retry the same action; adjust the approach or ask the user."
                                 )),
                                 approval: Some(approval),
+                                rejected: true,
                                 ..Default::default()
                             }
                         };
@@ -607,6 +617,7 @@ impl<R: Runtime> Run<R> {
                     ),
                 }),
                 approval: Some(approval_json(Approver::User, false, None, None, &[])),
+                rejected: true,
                 ..Default::default()
             },
             // Some changes accepted: write the original with only those applied.
@@ -620,8 +631,10 @@ impl<R: Runtime> Run<R> {
                     args.insert("content".into(), json!(content));
                     Value::Object(args).to_string()
                 };
+                // Partly accepted: it runs, so it isn't a rejection.
                 Authorized {
                     refusal: None,
+                    rejected: false,
                     approval: Some(approval_json(
                         Approver::User,
                         true,

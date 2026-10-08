@@ -1112,6 +1112,26 @@ async fn a_loop_is_noted_then_paused() {
 }
 
 #[tokio::test]
+async fn a_blocked_command_tried_again_pauses_the_run() {
+    let h = harness(&[]).await;
+    let rm = |id: &'static str| Reply::Call { id, name: "bash", args: json!({ "command": "rm -rf build" }) };
+    let (url, _) = model(vec![rm("b1"), rm("b2"), Reply::Text("- I tried to delete build/ twice; it's not allowed.")]).await;
+    let permissions = Permissions {
+        allow_any_command: false,
+        allowed_commands: vec!["git".into()],
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Clean up"), permissions)).await;
+    assert_eq!(h.run_end().await, "paused-loop");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "b1").content.starts_with("Error: blocked by the user's permission settings"));
+    let second = &result_of(&messages, "b2").content;
+    assert!(second.contains("the run was paused here for the user"), "{second}");
+    let paused = messages.last().unwrap().meta.as_ref().unwrap()["paused"].clone();
+    assert!(paused["reason"].as_str().unwrap().contains("was made again after it was rejected"));
+}
+
+#[tokio::test]
 async fn an_empty_overwrite_is_refused_without_asking() {
     let h = harness(&[("a.txt", "keep\n")]).await;
     let (url, _) = model(vec![

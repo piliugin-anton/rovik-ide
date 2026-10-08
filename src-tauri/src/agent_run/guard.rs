@@ -6,19 +6,28 @@
 //!     pauses and the user decides whether it goes on. Pausing is not an
 //!     error: the chat shows Continue, and the run picks up where it was.
 //!   - Loop detection, independent of the count: the same call returning the
-//!     same thing again and again, a streak of failures, the same error over
-//!     and over, or an edit putting a file back the way it was. The first time
-//!     one fires the model gets a note in the tool result (models often recover
-//!     when told); the next time the run pauses with the reason.
+//!     same thing again and again, two calls taking turns with the same results
+//!     each time, a streak of failures, the same error over and over, or an
+//!     edit putting a file back the way it was. The first time a pattern fires
+//!     the model gets a note in the tool result (models often recover when
+//!     told); the same pattern again pauses the run with the reason. A call
+//!     the user (or their settings, or their AI reviewer) rejected, made again,
+//!     pauses it at once: the rejection already said not to retry.
+//!
+//! Every pattern needs identical results, never just similar calls: reading
+//! ten different files, or polling a job whose output changes, isn't a loop.
 //!
 //! Pure bookkeeping, no I/O: the run feeds it each finished tool call.
 
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 
 /// Same call, same arguments, same result: this many times is a loop.
 const IDENTICAL_LIMIT: usize = 3;
+/// Two calls taking turns (A B A B A B), each with the same result every
+/// time: this many rounds is a loop.
+const ALTERNATION_ROUNDS: usize = 3;
 /// ...within this many most recent calls.
 const IDENTICAL_WINDOW: usize = 30;
 /// Failed calls in a row.
@@ -37,6 +46,9 @@ pub struct FinishedCall<'a> {
     pub result: &'a str,
     /// A successful file write: the file before (None when it didn't exist) and after.
     pub write: Option<Write<'a>>,
+    /// Rejected by the user, their AI reviewer or their permission settings
+    /// (not run).
+    pub rejected: bool,
 }
 
 pub struct Write<'a> {
@@ -83,7 +95,13 @@ pub struct Guard {
     recent_errors: VecDeque<String>,
     error_streak: usize,
     file_states: HashMap<String, Vec<u64>>,
-    nudged: bool,
+    /// The latest calls as (call and result, description), for alternation.
+    /// Writes don't clear it: the results tell whether anything changed.
+    sequence: VecDeque<(u64, String)>,
+    /// Calls rejected in this run (name, arguments).
+    rejected: Vec<(String, String)>,
+    /// Patterns the model was already warned about in this run.
+    nudged: HashSet<&'static str>,
     stop_reason: Option<String>,
     /// The pattern behind the latest Nudge or Stop, and its reason (logs).
     pub finding: Option<(&'static str, String)>,
@@ -100,7 +118,9 @@ impl Guard {
             recent_errors: VecDeque::new(),
             error_streak: 0,
             file_states: HashMap::new(),
-            nudged: false,
+            sequence: VecDeque::new(),
+            rejected: Vec::new(),
+            nudged: HashSet::new(),
             stop_reason: None,
             finding: None,
         }
@@ -112,8 +132,8 @@ impl Guard {
         let Some((pattern, reason)) = self.detect(&call) else { return GuardVerdict::Ok };
         self.finding = Some((pattern, reason.clone()));
 
-        if !self.nudged {
-            self.nudged = true;
+        // A rejected call made again was already told not to retry: no warning.
+        if pattern != "rejectedAgain" && self.nudged.insert(pattern) {
             // Fresh evidence is needed for the next verdict, so a model that does
             // change course isn't paused by what it did before the note.
             self.reset_evidence();
@@ -141,10 +161,24 @@ impl Guard {
         }
     }
 
-    /// The pattern a call completes, by name ("revert", "identical",
-    /// "errorStreak", "sameError"), and the reason the model is told.
+    /// The pattern a call completes, by name ("rejectedAgain", "revert",
+    /// "identical", "alternating", "errorStreak", "sameError"), and the
+    /// reason the model is told.
     fn detect(&mut self, call: &FinishedCall) -> Option<(&'static str, String)> {
         let failed = call.result.starts_with("Error:");
+
+        if call.rejected {
+            let key = (call.name.to_string(), canonical_args(call.args_json));
+            if self.rejected.contains(&key) {
+                return Some((
+                    "rejectedAgain",
+                    format!("{} was made again after it was rejected", describe_call(call)),
+                ));
+            }
+            self.rejected.push(key);
+        }
+        // Every call goes into the sequence, whichever check fires first.
+        let alternation = self.record_in_sequence(call);
 
         // An edit that went through changes what reads and commands return:
         // repeating them afterwards is expected, not a loop.
@@ -172,13 +206,18 @@ impl Guard {
             ));
         }
 
-        // 2. Failures in a row.
+        // 2. Two calls taking turns, the same results each time.
+        if let Some(reason) = alternation {
+            return Some(("alternating", reason));
+        }
+
+        // 3. Failures in a row.
         self.error_streak = if failed { self.error_streak + 1 } else { 0 };
         if self.error_streak >= ERROR_STREAK_LIMIT {
             return Some(("errorStreak", format!("the last {} tool calls all failed", self.error_streak)));
         }
 
-        // 3. The same failure again, whatever the arguments.
+        // 4. The same failure again, whatever the arguments.
         let error = if failed { call.result.trim().to_string() } else { String::new() };
         self.recent_errors.push_back(error.clone());
         if self.recent_errors.len() > SAME_ERROR_WINDOW {
@@ -219,7 +258,30 @@ impl Guard {
         })
     }
 
+    /// Adds the call to the sequence; the reason when the latest calls are
+    /// two different ones taking turns, each returning what it did before.
+    fn record_in_sequence(&mut self, call: &FinishedCall) -> Option<String> {
+        let key = hash(&format!("{}\u{0}{}\u{0}{}", call.name, canonical_args(call.args_json), call.result));
+        self.sequence.push_back((key, describe_call(call)));
+        let span = 2 * ALTERNATION_ROUNDS;
+        if self.sequence.len() > span {
+            self.sequence.pop_front();
+        }
+        if self.sequence.len() < span {
+            return None;
+        }
+        let (a, b) = (&self.sequence[0], &self.sequence[1]);
+        let alternates = a.0 != b.0 && self.sequence.iter().enumerate().all(|(i, s)| s.0 == if i % 2 == 0 { a.0 } else { b.0 });
+        alternates.then(|| {
+            format!(
+                "{} and {} took turns {ALTERNATION_ROUNDS} times, each returning the same result every time",
+                a.1, b.1
+            )
+        })
+    }
+
     fn reset_evidence(&mut self) {
+        self.sequence.clear();
         self.recent_calls.clear();
         self.recent_errors.clear();
         self.error_streak = 0;
@@ -285,7 +347,7 @@ mod tests {
     use super::*;
 
     fn call<'a>(name: &'a str, args: &'a str, result: &'a str) -> FinishedCall<'a> {
-        FinishedCall { name, args_json: args, result, write: None }
+        FinishedCall { name, args_json: args, result, write: None, rejected: false }
     }
 
     #[test]
@@ -305,6 +367,96 @@ mod tests {
     }
 
     #[test]
+    fn two_calls_taking_turns_with_the_same_results() {
+        // The agent writes a file, a formatter puts it back: each write
+        // changes the file, so the identical check never sees the repeats.
+        let mut g = Guard::new(None, 0);
+        let write = |g: &mut Guard| {
+            let w = Some(Write { path: "a.ts", before: Some("formatted"), after: "mine" });
+            g.record(FinishedCall { name: "write", args_json: r#"{"path":"a.ts"}"#, result: "wrote 4 bytes", write: w, rejected: false })
+        };
+        let format = |g: &mut Guard| g.record(call("bash", r#"{"command":"npm run fmt"}"#, "exit 0"));
+        for _ in 0..2 {
+            assert_eq!(write(&mut g), GuardVerdict::Ok);
+            assert_eq!(format(&mut g), GuardVerdict::Ok);
+        }
+        assert_eq!(write(&mut g), GuardVerdict::Ok);
+        let v = format(&mut g);
+        assert!(
+            matches!(&v, GuardVerdict::Nudge(n) if n.contains("write (a.ts) and bash (npm run fmt) took turns 3 times")),
+            "{v:?}"
+        );
+        assert_eq!(g.finding.as_ref().map(|f| f.0), Some("alternating"));
+    }
+
+    #[test]
+    fn taking_turns_needs_the_same_results() {
+        let mut g = Guard::new(None, 0);
+        // Polling a job whose output changes.
+        for i in 0..10 {
+            let (status, log) = (format!("running {i}%"), format!("line {i}"));
+            assert_eq!(g.record(call("bash", r#"{"command":"status"}"#, &status)), GuardVerdict::Ok);
+            assert_eq!(g.record(call("bash", r#"{"command":"tail log"}"#, &log)), GuardVerdict::Ok);
+        }
+        // Reading different files.
+        let mut g = Guard::new(None, 0);
+        for i in 0..6 {
+            let args = format!(r#"{{"path":"f{i}"}}"#);
+            assert_eq!(g.record(call("read", &args, &format!("text {i}"))), GuardVerdict::Ok, "read {i}");
+        }
+        // A third call in between breaks the turn-taking.
+        let mut g = Guard::new(None, 0);
+        let calls = [("a", "x"), ("b", "y"), ("a", "x"), ("c", "z"), ("b", "y"), ("d", "w")];
+        for (name, result) in calls {
+            assert_eq!(g.record(call(name, "{}", result)), GuardVerdict::Ok);
+        }
+    }
+
+    #[test]
+    fn each_pattern_is_warned_about_once() {
+        let mut g = Guard::new(None, 0);
+        for _ in 0..3 {
+            g.record(call("read", r#"{"path":"a"}"#, "same"));
+        }
+        assert_eq!(g.finding.as_ref().map(|f| f.0), Some("identical"));
+        // Another pattern: its own warning, not a pause.
+        for i in 0..2 {
+            assert_eq!(g.record(call("x", &i.to_string(), "Error: boom.")), GuardVerdict::Ok);
+        }
+        assert!(matches!(g.record(call("x", "3", "Error: boom.")), GuardVerdict::Nudge(_)));
+        assert!(g.pause().is_none());
+        // The first pattern again: paused.
+        for _ in 0..2 {
+            assert_eq!(g.record(call("read", r#"{"path":"a"}"#, "same")), GuardVerdict::Ok);
+        }
+        assert!(matches!(g.record(call("read", r#"{"path":"a"}"#, "same")), GuardVerdict::Stop(_)));
+        assert!(g.pause().unwrap().reason.unwrap().contains("read (a)"));
+    }
+
+    #[test]
+    fn a_rejected_call_made_again_pauses_at_once() {
+        let mut g = Guard::new(None, 0);
+        let rejected = |args: &'static str| FinishedCall {
+            name: "bash",
+            args_json: args,
+            result: "Error: the user denied this \"bash\" call.",
+            write: None,
+            rejected: true,
+        };
+        assert_eq!(g.record(rejected(r#"{"command":"rm -rf build"}"#)), GuardVerdict::Ok);
+        // Another rejected call is the user steering, not a loop.
+        assert_eq!(g.record(rejected(r#"{"command":"git push"}"#)), GuardVerdict::Ok);
+        let v = g.record(rejected(r#"{ "command": "rm -rf build" }"#));
+        assert!(matches!(&v, GuardVerdict::Stop(n) if n.contains("bash (rm -rf build) was made again after it was rejected")), "{v:?}");
+        assert_eq!(g.finding.as_ref().map(|f| f.0), Some("rejectedAgain"));
+        assert_eq!(g.pause().unwrap().kind, "loop");
+        // The same call that merely failed twice is no rejection.
+        let mut g = Guard::new(None, 0);
+        g.record(call("bash", r#"{"command":"make"}"#, "Error: exit 2"));
+        assert_eq!(g.record(call("bash", r#"{"command":"make"}"#, "Error: exit 2")), GuardVerdict::Ok);
+    }
+
+    #[test]
     fn error_streaks_and_same_errors() {
         let mut g = Guard::new(None, 0);
         for i in 0..2 {
@@ -319,9 +471,9 @@ mod tests {
     fn reverting_a_file_is_noticed() {
         let mut g = Guard::new(None, 0);
         let w = |before, after| Some(Write { path: "a.ts", before, after });
-        let r = g.record(FinishedCall { name: "write", args_json: "{}", result: "ok", write: w(Some("v1"), "v2") });
+        let r = g.record(FinishedCall { name: "write", args_json: "{}", result: "ok", write: w(Some("v1"), "v2"), rejected: false });
         assert_eq!(r, GuardVerdict::Ok);
-        let r = g.record(FinishedCall { name: "write", args_json: "{}", result: "ok", write: w(Some("v2"), "v1") });
+        let r = g.record(FinishedCall { name: "write", args_json: "{}", result: "ok", write: w(Some("v2"), "v1"), rejected: false });
         assert!(matches!(r, GuardVerdict::Nudge(n) if n.contains("put a.ts back")));
     }
 
@@ -365,7 +517,7 @@ mod tests {
         let mut g = Guard::new(None, 0);
         g.record(call("read", "{}", "same"));
         g.record(call("read", "{}", "same"));
-        let w = FinishedCall { name: "write", args_json: "{}", result: "ok", write: Some(Write { path: "a", before: None, after: "1" }) };
+        let w = FinishedCall { name: "write", args_json: "{}", result: "ok", write: Some(Write { path: "a", before: None, after: "1" }), rejected: false };
         g.record(w);
         // Reading again after a write is expected.
         assert_eq!(g.record(call("read", "{}", "same")), GuardVerdict::Ok);
