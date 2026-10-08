@@ -407,19 +407,48 @@ export function GitPanel(props: GitPanelProps) {
    * Git's own activity (a commit, a checkout, also from a terminal) and
    * edits to the project's files: the watcher reports them once per burst
    * ("git-changed"), and the status is read again unless an operation of
-   * this panel is running anyway.
+   * this panel is running anyway. At most once per GIT_REFRESH_MIN_MS, the
+   * last one after the changes stop, and never two at once: dev servers
+   * rewriting files kept `git status` of a whole workspace running.
    */
+  const GIT_REFRESH_MIN_MS = 2_000;
   onMount(() => {
     let stop: (() => void) | undefined;
     let disposed = false;
-    void listen('git-changed', () => {
-      if (!busy() && phase() === 'ready') void refreshStatus();
-    }).then((unlisten) => {
+    let lastRefresh = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let running = false;
+    let again = false;
+    const requestRefresh = () => {
+      if (timer || disposed) return; // one is coming
+      const wait = Math.max(0, lastRefresh + GIT_REFRESH_MIN_MS - Date.now());
+      timer = setTimeout(async () => {
+        timer = undefined;
+        if (running) {
+          again = true;
+          return;
+        }
+        if (busy() || phase() !== 'ready') return;
+        running = true;
+        lastRefresh = Date.now();
+        try {
+          await refreshStatus();
+        } finally {
+          running = false;
+          if (again) {
+            again = false;
+            requestRefresh();
+          }
+        }
+      }, wait);
+    };
+    void listen('git-changed', requestRefresh).then((unlisten) => {
       if (disposed) unlisten();
       else stop = unlisten;
     });
     onCleanup(() => {
       disposed = true;
+      clearTimeout(timer);
       stop?.();
     });
   });

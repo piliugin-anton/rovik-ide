@@ -7,7 +7,9 @@
 //
 //   - the project's own JS/TS sources are loaded once per project
 //     (src-tauri/src/typings/sources.rs) and kept current from the file
-//     watcher (updateProjectSource);
+//     watcher (updateProjectSource), in batches: every change to the set
+//     resends all of it to the worker, so a dev server rewriting dozens of
+//     files froze the app when each was its own update;
 //   - compiler options follow the project's tsconfig/jsconfig (baseUrl,
 //     paths, jsx), and JavaScript is understood too (allowJs);
 //   - go-to-definition into another file opens it in a tab at that line
@@ -57,6 +59,12 @@ let loading: Promise<void> | null = null;
 export function ensureProjectIntelliSense(root: string | null): Promise<void> {
   if (!root) return Promise.resolve();
   if (root === loadedRoot && loading) return loading;
+  // Changes queued for the previous project don't apply to this one.
+  queued.clear();
+  firstQueuedAt = null;
+  clearTimeout(flushTimer);
+  clearTimeout(reloadTimer);
+  stale = false;
   loadedRoot = root;
   loading = load(root);
   return loading;
@@ -94,15 +102,81 @@ async function load(root: string) {
   }
 }
 
-/** A source file changed on disk (null: deleted); keeps Monaco's copy current. */
-export function updateProjectSource(path: string, content: string | null) {
+/*
+ * Changes from disk, applied together: once QUIET_MS pass without another
+ * (or MAX_WAIT_MS after the first, while they keep coming), in one update.
+ * A burst of more than BURST_LIMIT files (a build, a branch switch) isn't
+ * read file by file: the sources are loaded again once RELOAD_QUIET_MS pass
+ * without changes.
+ */
+const QUIET_MS = 500;
+const MAX_WAIT_MS = 3_000;
+const BURST_LIMIT = 20;
+const RELOAD_QUIET_MS = 5_000;
+
+/** Path → content (null: deleted; undefined: read it when applying). */
+const queued = new Map<string, string | null | undefined>();
+let firstQueuedAt: number | null = null;
+let flushTimer: ReturnType<typeof setTimeout> | undefined;
+/** A burst was skipped: changes wait for the reload. */
+let stale = false;
+let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * A source file changed on disk: `content` if known, null when deleted,
+ * undefined to read it. Applied with others (see above).
+ */
+export function updateProjectSource(path: string, content?: string | null) {
   const root = loadedRoot;
-  if (!root || !SOURCE_FILE.test(path) || !path.startsWith(root) || SKIPPED_DIR.test(path)) return;
-  // A deleted file stays known but empty: there's no "remove one" call,
-  // and an empty file defines nothing.
-  const uri = modelUriFor(path).toString();
-  ts.addExtraLib(content ?? '', uri);
-  js.addExtraLib(content ?? '', uri);
+  if (!root || !isProjectSource(path) || !path.startsWith(root)) return;
+  if (stale) {
+    scheduleReload();
+    return;
+  }
+  queued.set(path, content);
+  firstQueuedAt ??= Date.now();
+  clearTimeout(flushTimer);
+  const wait = Math.max(0, Math.min(QUIET_MS, firstQueuedAt + MAX_WAIT_MS - Date.now()));
+  flushTimer = setTimeout(() => void flush(), wait);
+}
+
+async function flush() {
+  const root = loadedRoot;
+  const changes = [...queued];
+  queued.clear();
+  firstQueuedAt = null;
+  if (!root || changes.length === 0) return;
+  if (changes.length > BURST_LIMIT) {
+    stale = true;
+    scheduleReload();
+    return;
+  }
+  const read = await Promise.all(
+    changes.map(async ([path, content]) => {
+      const text = content !== undefined ? content : await readFileContent(path).catch(() => null);
+      // A deleted file stays known but empty: an empty file defines nothing.
+      return [modelUriFor(path).toString(), text ?? ''] as const;
+    })
+  );
+  if (root !== loadedRoot || stale) return;
+  const libs = ts.getExtraLibs();
+  const changed = read.filter(([uri, text]) => (libs[uri]?.content ?? '') !== text);
+  if (changed.length === 0) return;
+  const next = new Map(Object.entries(libs).map(([uri, lib]) => [uri, lib.content]));
+  for (const [uri, text] of changed) next.set(uri, text);
+  const all = [...next].map(([filePath, content]) => ({ filePath, content }));
+  ts.setExtraLibs(all);
+  js.setExtraLibs(all);
+}
+
+/** Loads the project's sources again once changes stop. */
+function scheduleReload() {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(() => {
+    stale = false;
+    const root = loadedRoot;
+    if (root) loading = load(root);
+  }, RELOAD_QUIET_MS);
 }
 
 export function isProjectSource(path: string): boolean {
