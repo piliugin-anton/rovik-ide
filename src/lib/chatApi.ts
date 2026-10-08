@@ -147,6 +147,18 @@ export const chatApi = {
 
   messagesAnswered: (messageIds: string[]) =>
     invoke<string[]>('chat_messages_answered', { messageIds }),
+
+  /**
+   * Debounced save of the chat input's unsent input (one row per chat,
+   * `composer_drafts` table). `content` is the JSON-encoded `DraftSegment[]`
+   * (lib/composerDraft.ts); empty text deletes the row.
+   */
+  saveComposerDraft: (dialogId: string, content: string) =>
+    invoke<void>('chat_save_composer_draft', { dialogId, content }),
+
+  /** The chat's unsent input (JSON-encoded segments, null when none saved). */
+  getComposerDraft: (dialogId: string) =>
+    invoke<string | null>('chat_get_composer_draft', { dialogId }),
 };
 
 /**

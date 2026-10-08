@@ -714,3 +714,40 @@ pub fn tool_call_extras(conn: &Connection, message_ids: &[&str]) -> DbResult<Has
     }
     Ok(out)
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * Composer drafts (unsent chat input, one row per chat)
+ * ---------------------------------------------------------------------------
+ */
+
+/// Saves the chat input's unsent input (JSON-encoded `DraftSegment[]`,
+/// see lib/composerDraft.ts). Empty/blank text deletes the row so "no draft"
+/// and "empty draft" read the same. Missing chats are ignored (e.g. deleted
+/// while a debounced save was in flight).
+pub fn save_composer_draft(conn: &mut Connection, dialog_id: &str, content: &str) -> DbResult<()> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() || trimmed == "[]" {
+        conn.execute("DELETE FROM composer_drafts WHERE dialog_id = ?1", params![dialog_id])
+            .map_err(err)?;
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO composer_drafts (dialog_id, content, updated_at)
+         SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM dialogs WHERE id = ?1)",
+        params![dialog_id, content, now_ms()],
+    )
+    .map_err(err)?;
+    Ok(())
+}
+
+/// The chat's unsent input (JSON-encoded segments), if any.
+pub fn get_composer_draft(conn: &Connection, dialog_id: &str) -> DbResult<Option<String>> {
+    conn.query_row(
+        "SELECT content FROM composer_drafts WHERE dialog_id = ?1",
+        params![dialog_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(err)
+}

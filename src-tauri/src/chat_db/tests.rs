@@ -236,3 +236,38 @@ fn attachments_are_listed_in_order_and_collected_when_unreferenced() {
     assert_eq!(super::attachments::collect_garbage(&conn, &dir).unwrap(), 1, "freed by the delete");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn composer_drafts_round_trip_and_clean_up() {
+    let mut conn = db();
+    assert_eq!(get_composer_draft(&conn, "d").unwrap(), None);
+    dialog(&mut conn, "d", "Drafts", 0);
+
+    save_composer_draft(&mut conn, "d", "half-typed message").unwrap();
+    assert_eq!(get_composer_draft(&conn, "d").unwrap().as_deref(), Some("half-typed message"));
+
+    // Overwrites, one row per chat.
+    save_composer_draft(&mut conn, "d", "edited text").unwrap();
+    assert_eq!(get_composer_draft(&conn, "d").unwrap().as_deref(), Some("edited text"));
+    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM composer_drafts WHERE dialog_id = 'd'", [], |r| r.get(0)).unwrap();
+    assert_eq!(rows, 1);
+
+    // Blank text deletes the row.
+    save_composer_draft(&mut conn, "d", "   ").unwrap();
+    assert_eq!(get_composer_draft(&conn, "d").unwrap(), None);
+
+    // Segment JSON is opaque to the store and round-trips as-is; an empty
+    // segment list deletes the row like blank text does.
+    let segments = r#"[{"type":"text","text":"hello "},{"type":"file","file":{"id":"f","path":"src/f.ts","relativePath":"src/f.ts","name":"f.ts"}},{"type":"pasted","text":"long paste"}]"#;
+    save_composer_draft(&mut conn, "d", segments).unwrap();
+    assert_eq!(get_composer_draft(&conn, "d").unwrap().as_deref(), Some(segments));
+    save_composer_draft(&mut conn, "d", "[]").unwrap();
+    assert_eq!(get_composer_draft(&conn, "d").unwrap(), None);
+
+    // Missing chats are ignored, and drafts die with their chat.
+    save_composer_draft(&mut conn, "ghost", "boo").unwrap();
+    assert_eq!(get_composer_draft(&conn, "ghost").unwrap(), None);
+    save_composer_draft(&mut conn, "d", "back again").unwrap();
+    delete_dialog(&mut conn, "d").unwrap();
+    assert_eq!(get_composer_draft(&conn, "d").unwrap(), None);
+}

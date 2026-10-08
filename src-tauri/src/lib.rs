@@ -101,6 +101,8 @@ pub fn run() {
             chat_db::commands::chat_delete_dialog,
             chat_db::commands::chat_search,
             chat_db::commands::chat_messages_answered,
+            chat_db::commands::chat_save_composer_draft,
+            chat_db::commands::chat_get_composer_draft,
             filesystem::load_last_project,
             filesystem::save_last_project,
             filesystem::get_path_id,

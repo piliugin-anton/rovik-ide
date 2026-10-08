@@ -94,6 +94,13 @@ import {
   type DraftSegment,
   type PendingDraft,
 } from '../lib/pendingDraft';
+import {
+  cancelComposerDraft,
+  clearComposerDraft,
+  flushComposerDraft,
+  loadComposerDraft,
+  scheduleComposerDraft,
+} from '../lib/composerDraft';
 import { toRelativePath } from '../lib/fileTools';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
 import { readFileContent } from '../lib/commands';
@@ -319,6 +326,25 @@ export default function ChatPanel(props: ChatProps) {
     return id ? store.state.open[id] : undefined;
   };
   const messages = (): ChatMessage[] => activeChat()?.messages ?? [];
+
+  /*
+   * Unsent input follows the `input` signal, wherever the change came from
+   * (typing, chips, paste, undo): debounced into `composer_drafts` per chat
+   * as segments, so file/paste chips come back as chips. The DOM is read
+   * here (not the signal text, which flattens chips into labels).
+   * Programmatic clears for a dialog switch schedule an empty save for the
+   * old chat; selectRow/startNewChat cancel it after switching (see below).
+   */
+  createEffect(
+    on(
+      [input, activeDialogId],
+      ([_text, dialogId]) => {
+        if (!dialogId || loadingHistory() || !inputTextareaRef) return;
+        scheduleComposerDraft(dialogId, serializeComposer());
+      },
+      { defer: true }
+    )
+  );
 
   /*
    * Re-estimated whenever what the next request would send changes: another
@@ -578,6 +604,8 @@ export default function ChatPanel(props: ChatProps) {
       // Runs going on are known before drafts are judged unanswered.
       await initAgentRuns();
       await recoverDraftsAfterRestart();
+      const active = activeDialogId();
+      if (active) await restoreComposerDraft(active);
     } finally {
       if (isMounted) {
         setLoadingHistory(false);
@@ -607,8 +635,10 @@ export default function ChatPanel(props: ChatProps) {
 
   async function openNewestChat() {
     const first = store.state.list.items[0];
-    if (first) await store.openChat(first);
-    else createNewDialog();
+    if (first) {
+      await store.openChat(first);
+      await restoreComposerDraft(first.id);
+    } else createNewDialog();
   }
 
   // Another project (another folder, or a copy given its own history): its chats.
@@ -649,7 +679,26 @@ export default function ChatPanel(props: ChatProps) {
    */
 
   onCleanup(() => {
+    const dialogId = activeDialogId();
+    if (dialogId) void flushComposerDom(dialogId);
     isMounted = false;
+  });
+
+  /*
+   * App quit kills the webview without unmounting: the debounced save may
+   * still be pending and onCleanup may never run. Best-effort flush on
+   * hide/close so the last keystrokes (and chips) reach the database.
+   */
+  const flushOnHide = () => {
+    if (document.visibilityState !== 'hidden') return;
+    const dialogId = activeDialogId();
+    if (dialogId) void flushComposerDom(dialogId);
+  };
+  window.addEventListener('pagehide', flushOnHide);
+  document.addEventListener('visibilitychange', flushOnHide);
+  onCleanup(() => {
+    window.removeEventListener('pagehide', flushOnHide);
+    document.removeEventListener('visibilitychange', flushOnHide);
   });
 
   /*
@@ -700,8 +749,13 @@ export default function ChatPanel(props: ChatProps) {
       inputTextareaRef?.focus();
       return current;
     }
+    const prevId = current?.id;
+    if (prevId) void flushComposerDom(prevId);
     resetComposerState();
     const dialog = createNewDialog();
+    // The reset cleared `input` while the old chat was still active,
+    // scheduling an empty save for it; drop it, the flush kept it.
+    if (prevId && prevId !== dialog.id) cancelComposerDraft(prevId);
     inputTextareaRef?.focus();
     return dialog;
   }
@@ -716,6 +770,8 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   async function selectRow(row: ChatListRow) {
+    const prevId = activeDialogId();
+    if (prevId) await flushComposerDom(prevId);
     setHistoryOpen(false);
     resetComposerState();
     try {
@@ -730,6 +786,10 @@ export default function ChatPanel(props: ChatProps) {
       console.error('Failed to open chat:', err);
     }
     restoreDraftForDialog(row.dialog.id);
+    await restoreComposerDraft(row.dialog.id);
+    // resetComposerState above cleared `input` while the old chat was still
+    // active, scheduling an empty save for it; drop it, the flush kept it.
+    if (prevId && prevId !== row.dialog.id) cancelComposerDraft(prevId);
   }
 
   async function confirmAndDeleteDialog(dialog: DialogSummary) {
@@ -753,14 +813,17 @@ export default function ChatPanel(props: ChatProps) {
     const wasActive = activeDialogId() === id;
     if (store.isRunning(id)) await stopRun(id);
     takePendingDraft(id);
+    cancelComposerDraft(id);
     // A deleted chat leaves search results right away.
     setSearchRows((rows) => rows?.filter((r) => r.dialog.id !== id) ?? null);
     await store.deleteDialog(id);
 
     if (wasActive) {
       const next = store.state.list.items[0];
-      if (next) await store.openChat(next);
-      else createNewDialog();
+      if (next) {
+        await store.openChat(next);
+        await restoreComposerDraft(next.id);
+      } else createNewDialog();
     }
   }
 
@@ -806,6 +869,11 @@ export default function ChatPanel(props: ChatProps) {
     chip.contentEditable = 'false';
     chip.dataset.path = suggestion.path;
     chip.dataset.ref = referenceKey(suggestion);
+    // The chip carries its own FileSuggestion: serializeComposer reads it
+    // straight from the DOM instead of the referencedFiles() signal, so a
+    // save scheduled mid-restore (signal not yet updated, e.g. after an app
+    // restart) still stores the chip as a chip, not as its label text.
+    chip.dataset.file = JSON.stringify(suggestion);
     // The line range sits outside the name, which truncates: "VeryLongNa…:12-14".
     const lines = suggestion.lines
       ? `<span class="chat-file-reference-lines">:${lineRangeLabel(suggestion.lines)}</span>`
@@ -1100,8 +1168,40 @@ export default function ChatPanel(props: ChatProps) {
     const el = inputTextareaRef;
     if (!el) return;
     el.addEventListener('keydown', handleSuggestionKeys, true);
+    el.addEventListener('keydown', handleChipDeleteCapture, true);
     onCleanup(() => el.removeEventListener('keydown', handleSuggestionKeys, true));
+    onCleanup(() => el.removeEventListener('keydown', handleChipDeleteCapture, true));
   });
+
+  /*
+   * Backspace/Delete around a chip, in the capture phase.
+   *
+   * Chips are contenteditable="false" islands, and the webview's native
+   * deletion near them is destructive: measured in headless Chromium, with
+   * the caret after a chip plus only its trailing space at the end of a
+   * block, native Backspace implodes the whole block — content gone, caret
+   * to the start. The component's own onKeyDown goes through Solid's
+   * document-level delegation, which runs after the webview already
+   * performed that deletion — preventDefault there comes too late.
+   * Intercepting here (capture, on the input itself, like
+   * handleSuggestionKeys) runs before the native deletion, so
+   * planBackspaceDelete/planForwardDelete decide and applyComposerDelete
+   * removes by script instead. Cases native handles sanely (plain text,
+   * mid-line) stay native: the planners return null there.
+   */
+  function handleChipDeleteCapture(e: KeyboardEvent) {
+    if ((e.key !== 'Backspace' && e.key !== 'Delete') || e.ctrlKey || e.metaKey || e.altKey)
+      return;
+    const sel = window.getSelection();
+    if (!sel?.isCollapsed || !sel.anchorNode || !inputTextareaRef?.contains(sel.anchorNode))
+      return;
+    const plan = e.key === 'Backspace' ? planBackspaceDelete() : planForwardDelete();
+    if (plan) {
+      e.preventDefault();
+      e.stopPropagation();
+      applyComposerDelete(plan);
+    }
+  }
 
   /*
    * -----------------------------------------------------------------------
@@ -1190,7 +1290,23 @@ export default function ChatPanel(props: ChatProps) {
         continue;
       }
       const ref = knownReferences.get(old.dataset.ref ?? '');
-      if (ref) old.replaceWith(createFileChip(ref));
+      if (ref) {
+        old.replaceWith(createFileChip(ref));
+        continue;
+      }
+      // Map is per-mount (empty after a restart): fall back to the payload
+      // embedded in the chip itself so undo still keeps file chips as chips.
+      if (old.dataset.file) {
+        try {
+          const file = JSON.parse(old.dataset.file) as FileSuggestion;
+          if (file && typeof file.path === 'string') {
+            old.replaceWith(createFileChip(file));
+            continue;
+          }
+        } catch {
+          // Leave the markup as-is.
+        }
+      }
     }
     el.focus();
     const at = findTextOffset(el, snap.caret);
@@ -1254,6 +1370,22 @@ export default function ChatPanel(props: ChatProps) {
           return;
         }
         if (child.classList.contains('chat-file-reference')) {
+          // The chip's own payload first: it survives restarts and any
+          // signal staleness (e.g. a save scheduled mid-restore). The
+          // referencedFiles() lookup is only for chips built before the
+          // payload was embedded.
+          const embedded = child.dataset.file;
+          if (embedded) {
+            try {
+              const file = JSON.parse(embedded) as FileSuggestion;
+              if (file && typeof file.path === 'string') {
+                segments.push({ type: 'file', file });
+                return;
+              }
+            } catch {
+              // Fall through to the signal lookup.
+            }
+          }
           const key = child.dataset.ref ?? child.dataset.path ?? '';
           const file = referencedFiles().find((f) => referenceKey(f) === key);
           if (file) segments.push({ type: 'file', file });
@@ -1307,6 +1439,7 @@ export default function ChatPanel(props: ChatProps) {
     }
 
     setInput(readComposerText());
+    scheduleComposerDraftSave();
     recordComposerHistory(
       pastingText
         ? 'other'
@@ -1497,13 +1630,15 @@ export default function ChatPanel(props: ChatProps) {
 
     container.append(fragment);
 
-    setInput(readComposerText());
-    // The restored draft is where undo starts.
-    resetComposerHistory();
+    // Signal first: readComposerText()/serializeComposer run synchronously
+    // below, and any debounced save they schedule must see the files.
     setReferencedFiles((current) => [
       ...current,
       ...files.filter((f) => !current.some((c) => referenceKey(c) === referenceKey(f))),
     ]);
+    setInput(readComposerText());
+    // The restored draft is where undo starts.
+    resetComposerHistory();
 
     // Caret at the end, ready to edit and resend.
     container.focus();
@@ -1522,6 +1657,49 @@ export default function ChatPanel(props: ChatProps) {
 
     const draft = takePendingDraft(dialogId);
     if (draft) queueMicrotask(() => restoreDraftToComposer(draft));
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Composer drafts (unsent input, `composer_drafts` table)
+   * -----------------------------------------------------------------------
+   *
+   * The panel unmounts whenever the sidebar tab switches away from chat,
+   * so the contenteditable's DOM text would be lost. Typing schedules a
+   * debounced `chat_save_composer_draft` invoke per chat; the active chat's
+   * draft is loaded on mount / dialog switch / restart.
+   */
+
+  /** Loads the dialog's saved unsent input into the (empty) composer. */
+  async function restoreComposerDraft(dialogId: string) {
+    const segments = await loadComposerDraft(dialogId);
+    if (!segments || segments.length === 0 || !isMounted || activeDialogId() !== dialogId) return;
+    queueMicrotask(() => {
+      // Chips come back as chips: file references and pasted text are
+      // rebuilt by the same path as sent-but-unanswered drafts. Legacy
+      // plain-text rows arrive as a single text segment and take the same
+      // path (restoreDraftToComposer handles text-only drafts).
+      if (!inputTextareaRef || (inputTextareaRef.textContent ?? '').trim().length > 0) return;
+      restoreDraftToComposer({
+        dialogId,
+        messageId: '',
+        segments,
+        createdAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  /** Schedules a debounced save of what's currently in the composer. */
+  function scheduleComposerDraftSave() {
+    const dialogId = activeDialogId();
+    if (!dialogId || !inputTextareaRef) return;
+    scheduleComposerDraft(dialogId, serializeComposer());
+  }
+
+  /** Captures the live DOM into the pending draft, then writes it now. */
+  async function flushComposerDom(dialogId: string) {
+    if (inputTextareaRef) scheduleComposerDraft(dialogId, serializeComposer());
+    await flushComposerDraft(dialogId).catch(() => undefined);
   }
 
   function markMessageFailed(dialogId: string, messageId: string) {
@@ -2022,7 +2200,9 @@ export default function ChatPanel(props: ChatProps) {
     if (waiting) {
       const reply = readComposerText().trim();
       if (!reply) return;
+      const dialogId = activeDialogId();
       clearChatInput();
+      if (dialogId) clearComposerDraft(dialogId);
       answerQuestions(waiting.toolCallId, { reply });
       return;
     }
@@ -2079,6 +2259,7 @@ export default function ChatPanel(props: ChatProps) {
 
     // Clear right away; the draft brings it back if the request fails.
     clearChatInput();
+    clearComposerDraft(dialog.id);
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
     setFileQuery('');
@@ -2088,6 +2269,421 @@ export default function ChatPanel(props: ChatProps) {
       if (activeDialogId() === dialog.id) restoreDraftForDialog(dialog.id);
       else clearPendingDraft(dialog.id, message.id);
     }
+  }
+
+  /** Line wrappers the webview puts composer lines in (Enter splits them). */
+  function isComposerBlock(n: Node | null): boolean {
+    return (
+      n instanceof HTMLElement &&
+      /^(DIV|P|LI|BLOCKQUOTE|H[1-6]|SECTION)$/.test(n.tagName)
+    );
+  }
+
+  /** Visible composer content: a chip, non-blank text, or an element holding either. */
+  function isMeaningful(n: Node | null): boolean {
+    if (!n) return false;
+    if (n.nodeType === Node.TEXT_NODE) return /\S/.test(n.textContent ?? '');
+    if (n instanceof HTMLElement) {
+      if (n.classList.contains('chat-file-reference')) return true;
+      if (n.tagName === 'BR') return false;
+      return (
+        n.querySelector('.chat-file-reference') !== null ||
+        /\S/.test(n.textContent ?? '')
+      );
+    }
+    return false;
+  }
+
+  /** Only blank text from index to the end (no elements at all). */
+  function onlyBlankAfter(el: HTMLElement, from: number): boolean {
+    for (let i = from; i < el.childNodes.length; i++) {
+      const c = el.childNodes[i];
+      if (!(c.nodeType === Node.TEXT_NODE && /^\s*$/.test(c.textContent ?? '')))
+        return false;
+    }
+    return true;
+  }
+
+  /** Only blank text from the start to index (no elements at all). */
+  function onlyBlankBefore(el: HTMLElement, to: number): boolean {
+    for (let i = 0; i < Math.min(to, el.childNodes.length); i++) {
+      const c = el.childNodes[i];
+      if (!(c.nodeType === Node.TEXT_NODE && /^\s*$/.test(c.textContent ?? '')))
+        return false;
+    }
+    return true;
+  }
+
+  /** Meaningful content after (node, offset) up to the end of its line. */
+  function lineHasMeaningfulAfter(
+    node: Node,
+    offset: number,
+    container: HTMLElement
+  ): boolean {
+    let n: Node | null = node;
+    let o = offset;
+    for (;;) {
+      if (!n || !container.contains(n)) return false;
+      if (n.nodeType === Node.TEXT_NODE) {
+        if (/\S/.test((n.textContent ?? '').slice(o))) return true;
+        const up: Node | null = n.parentNode;
+        if (!up || !container.contains(up)) return false;
+        o = Array.prototype.indexOf.call(up.childNodes, n) + 1;
+        n = up;
+        continue;
+      }
+      const el = n as HTMLElement;
+      const len = el.childNodes.length;
+      for (let i = Math.min(o, len); i < len; i++) {
+        if (isMeaningful(el.childNodes[i])) return true;
+      }
+      if (el === container || isComposerBlock(el)) return false;
+      const up2: Node | null = el.parentNode;
+      if (!up2 || !container.contains(up2)) return false;
+      o = Array.prototype.indexOf.call(up2.childNodes, el) + 1;
+      n = up2;
+    }
+  }
+
+  /** Meaningful content before (node, offset) back to the start of its line. */
+  function lineHasMeaningfulBefore(
+    node: Node,
+    offset: number,
+    container: HTMLElement
+  ): boolean {
+    let n: Node | null = node;
+    let o = offset;
+    for (;;) {
+      if (!n || !container.contains(n)) return false;
+      if (n.nodeType === Node.TEXT_NODE) {
+        if (/\S/.test((n.textContent ?? '').slice(0, o))) return true;
+        const up: Node | null = n.parentNode;
+        if (!up || !container.contains(up)) return false;
+        o = Array.prototype.indexOf.call(up.childNodes, n);
+        n = up;
+        continue;
+      }
+      const el = n as HTMLElement;
+      for (let i = Math.min(o, el.childNodes.length) - 1; i >= 0; i--) {
+        if (isMeaningful(el.childNodes[i])) return true;
+      }
+      if (el === container || isComposerBlock(el)) return false;
+      const up: Node | null = el.parentNode;
+      if (!up || !container.contains(up)) return false;
+      o = Array.prototype.indexOf.call(up.childNodes, el);
+      n = up;
+    }
+  }
+
+  /** What Backspace/Delete next to a chip should remove by script. */
+  interface ComposerDeletePlan {
+    /** The chip to remove (null: whitespace only). */
+    chip: HTMLElement | null;
+    /** Blank text nodes between caret and chip, removed with it. */
+    spaces: Text[];
+    /** No chip: remove exactly one char here instead. */
+    trim?: { node: Text; index: number };
+  }
+
+  /** The chip containing this node, if any (caret inside chip markup). */
+  function enclosingChip(n: Node | null, container: HTMLElement): HTMLElement | null {
+    const el = n instanceof HTMLElement ? n : n?.parentElement ?? null;
+    const chip = el?.closest?.('.chat-file-reference') ?? null;
+    return chip && container.contains(chip) ? (chip as HTMLElement) : null;
+  }
+
+  /**
+   * Backspace with a collapsed caret: what to remove by script instead of
+   * letting the webview do it.
+   *
+   * Measured in headless Chromium (the app runs WebKitGTK, same family):
+   * with the caret after a chip plus only its trailing space at the end of
+   * a block, native Backspace implodes the whole block — content gone,
+   * caret to the start. Plain text and mid-line cases delete sanely, so
+   * those stay native.
+   */
+  function planBackspaceDelete(): ComposerDeletePlan | null {
+    const sel = window.getSelection();
+    const container = inputTextareaRef;
+    if (!sel?.isCollapsed || !container) return null;
+    const anchor = sel.anchorNode;
+    if (!anchor || !container.contains(anchor)) return null;
+
+    // Caret inside a chip's own markup: the whole chip goes.
+    const inner = enclosingChip(anchor, container);
+    if (inner) return { chip: inner, spaces: [] };
+
+    const startNode = anchor;
+    const startOffset = sel.anchorOffset;
+    let node: Node = anchor;
+    let offset = sel.anchorOffset;
+    const spaces: Text[] = [];
+    let runLength = 0;
+
+    for (;;) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent ?? '';
+        if (/^\s*$/.test(text.slice(0, offset))) {
+          if (offset > 0) {
+            spaces.push(node as Text);
+            runLength += offset;
+          }
+          const parent = node.parentNode;
+          if (!parent || !container.contains(parent)) return null;
+          offset = Array.prototype.indexOf.call(parent.childNodes, node);
+          node = parent;
+          continue;
+        }
+        return null; // A text char: native deletes it.
+      }
+
+      const el = node as HTMLElement;
+      const len = el.childNodes.length;
+      let i = Math.min(offset, len) - 1;
+      while (
+        i >= 0 &&
+        el.childNodes[i].nodeType === Node.TEXT_NODE &&
+        !el.childNodes[i].textContent
+      )
+        i--;
+      if (i < 0) {
+        // Start of this element. Leaving a block crosses a line break, so
+        // native merges lines instead of touching the chip.
+        if (el === container || isComposerBlock(el)) return null;
+        const parent = el.parentNode;
+        if (!parent || !container.contains(parent)) return null;
+        offset = Array.prototype.indexOf.call(parent.childNodes, el);
+        node = parent;
+        continue;
+      }
+
+      const child = el.childNodes[i];
+      if (child.nodeType === Node.TEXT_NODE) {
+        // Descend; the text branch above collects the whitespace.
+        node = child;
+        offset = (child.textContent ?? '').length;
+        continue;
+      }
+      if (child instanceof HTMLElement) {
+        if (child.classList.contains('chat-file-reference')) {
+          // Text after the caret on this line stays: native deletes just
+          // the space (measured sane); only at end of line remove by script.
+          if (lineHasMeaningfulAfter(startNode, startOffset, container)) return null;
+          if (runLength > 1) {
+            // More than the auto-inserted space: one press removes one space.
+            if (startNode.nodeType === Node.TEXT_NODE && startOffset > 0) {
+              return {
+                chip: null,
+                spaces: [],
+                trim: { node: startNode as Text, index: startOffset - 1 },
+              };
+            }
+            const first = spaces[0];
+            return {
+              chip: null,
+              spaces: [],
+              trim: { node: first, index: (first.textContent ?? '').length - 1 },
+            };
+          }
+          return { chip: child, spaces };
+        }
+        if (child.tagName === 'BR') return null;
+        if (isComposerBlock(child)) {
+          // A whole line before the caret: only dive into its end when
+          // nothing at all follows the caret (else native merges lines).
+          if (!onlyBlankAfter(el, i + 1)) return null;
+          node = child;
+          offset = child.childNodes.length;
+          continue;
+        }
+        // Inline wrapper: look inside its end.
+        node = child;
+        offset = child.childNodes.length;
+        continue;
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Delete with a collapsed caret: the mirror of planBackspaceDelete.
+   * Native forward deletion was measured sane wherever text is adjacent;
+   * by script only at the start of a line and into line wrappers.
+   */
+  function planForwardDelete(): ComposerDeletePlan | null {
+    const sel = window.getSelection();
+    const container = inputTextareaRef;
+    if (!sel?.isCollapsed || !container) return null;
+    const anchor = sel.anchorNode;
+    if (!anchor || !container.contains(anchor)) return null;
+
+    const inner = enclosingChip(anchor, container);
+    if (inner) return { chip: inner, spaces: [] };
+
+    const startNode = anchor;
+    const startOffset = sel.anchorOffset;
+    let node: Node = anchor;
+    let offset = sel.anchorOffset;
+    const spaces: Text[] = [];
+    let runLength = 0;
+
+    for (;;) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent ?? '';
+        if (/^\s*$/.test(text.slice(offset))) {
+          if (offset < text.length) {
+            spaces.push(node as Text);
+            runLength += text.length - offset;
+          }
+          const parent = node.parentNode;
+          if (!parent || !container.contains(parent)) return null;
+          offset = Array.prototype.indexOf.call(parent.childNodes, node) + 1;
+          node = parent;
+          continue;
+        }
+        return null; // A text char: native deletes it.
+      }
+
+      const el = node as HTMLElement;
+      const len = el.childNodes.length;
+      let i = Math.min(offset, len);
+      while (
+        i < len &&
+        el.childNodes[i].nodeType === Node.TEXT_NODE &&
+        !el.childNodes[i].textContent
+      )
+        i++;
+      if (i >= len) {
+        // End of this element. Leaving a block crosses a line break, so
+        // native joins lines instead of touching the chip.
+        if (el === container || isComposerBlock(el)) return null;
+        const parent = el.parentNode;
+        if (!parent || !container.contains(parent)) return null;
+        offset = Array.prototype.indexOf.call(parent.childNodes, el) + 1;
+        node = parent;
+        continue;
+      }
+
+      const child = el.childNodes[i];
+      if (child.nodeType === Node.TEXT_NODE) {
+        // Descend; the text branch above collects the whitespace.
+        node = child;
+        offset = 0;
+        continue;
+      }
+      if (child instanceof HTMLElement) {
+        if (child.classList.contains('chat-file-reference')) {
+          // Text before the caret on this line stays: native deletes just
+          // the space; only at start of line remove by script.
+          if (lineHasMeaningfulBefore(startNode, startOffset, container)) return null;
+          if (runLength > 1) {
+            if (
+              startNode.nodeType === Node.TEXT_NODE &&
+              startOffset < (startNode.textContent ?? '').length
+            ) {
+              return {
+                chip: null,
+                spaces: [],
+                trim: { node: startNode as Text, index: startOffset },
+              };
+            }
+            return { chip: null, spaces: [], trim: { node: spaces[0], index: 0 } };
+          }
+          return { chip: child, spaces };
+        }
+        if (child.tagName === 'BR') return null;
+        if (isComposerBlock(child)) {
+          // A whole line after the caret: only dive into its start when
+          // nothing at all precedes the caret (else native merges lines).
+          if (!onlyBlankBefore(el, i)) return null;
+          node = child;
+          offset = 0;
+          continue;
+        }
+        // Inline wrapper: look inside its start.
+        node = child;
+        offset = 0;
+        continue;
+      }
+      return null;
+    }
+  }
+
+  /** Removes what planBackspaceDelete/planForwardDelete found, by script. */
+  function applyComposerDelete(plan: ComposerDeletePlan) {
+    const container = inputTextareaRef;
+    if (!container) return;
+
+    const setCaret = (n: Node, o: number) => {
+      const s = window.getSelection();
+      if (!s) {
+        container.focus();
+        return;
+      }
+      const range = document.createRange();
+      try {
+        range.setStart(n, Math.min(o, (n as Text).length ?? (n as HTMLElement).childNodes.length));
+      } catch {
+        range.selectNodeContents(container);
+        range.collapse(false);
+      }
+      range.collapse(true);
+      s.removeAllRanges();
+      s.addRange(range);
+    };
+
+    if (plan.trim) {
+      const { node, index } = plan.trim;
+      if (!node.isConnected) return;
+      const text = node.textContent ?? '';
+      const next = text.slice(0, index) + text.slice(index + 1);
+      if (next.length === 0) {
+        const parent = node.parentNode ?? container;
+        const at = Array.prototype.indexOf.call(parent.childNodes, node);
+        node.remove();
+        setCaret(parent, at);
+      } else {
+        node.textContent = next;
+        setCaret(node, index);
+      }
+    } else if (plan.chip) {
+      const chip = plan.chip;
+      const parent = chip.parentNode ?? container;
+      const at = Array.prototype.indexOf.call(parent.childNodes, chip);
+      for (const s of plan.spaces) s.remove();
+      const refKey = chip.dataset.ref ?? chip.dataset.path ?? '';
+      const isPaste = chip.classList.contains('chat-pasted-chip');
+      chip.remove();
+      if (!isPaste && refKey) {
+        setReferencedFiles((current) => current.filter((file) => referenceKey(file) !== refKey));
+      }
+      // An emptied composer shows the placeholder again.
+      if (
+        !container.querySelector('.chat-file-reference') &&
+        !(container.textContent ?? '').trim()
+      ) {
+        container.innerHTML = '';
+        setCaret(container, 0);
+      } else if (parent.isConnected) {
+        setCaret(parent, Math.max(0, Math.min(at, parent.childNodes.length)));
+      } else {
+        container.focus();
+      }
+    } else {
+      return;
+    }
+
+    // No `input` event fires (the key was prevented), so sync manually.
+    setInput(readComposerText());
+    scheduleComposerDraftSave();
+    recordComposerHistory('other');
+    const raw = container.textContent ?? '';
+    const s = window.getSelection();
+    const caret =
+      s?.focusNode && container.contains(s.focusNode)
+        ? getTextOffset(container, s.focusNode, s.focusOffset)
+        : raw.length;
+    updateFileAutocomplete(raw, caret);
   }
 
   function handleKeyDown(e: KeyboardEvent) {

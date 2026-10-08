@@ -174,6 +174,19 @@ const SCHEMA_V6: &str = r#"
 ALTER TABLE clm_state ADD COLUMN task TEXT;
 "#;
 
+/// The chat input's unsent text, per chat (lib/composerDraft.ts). The panel
+/// saves it debounced while typing so switching sidebar tabs or restarting
+/// the app never loses what was typed. Deleted with the chat; empty text
+/// deletes the row (the store does that, not a CHECK, so "no draft" and
+/// "empty draft" read the same).
+const SCHEMA_V7: &str = r#"
+CREATE TABLE composer_drafts (
+  dialog_id  TEXT PRIMARY KEY REFERENCES dialogs (id) ON DELETE CASCADE,
+  content    TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -225,6 +238,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", 6)?;
         tx.commit()?;
     }
+    if version < 7 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V7)?;
+        tx.pragma_update(None, "user_version", 7)?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -250,7 +269,7 @@ mod tests {
         migrate(&mut conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         let project: Option<String> =
             conn.query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| r.get(0)).unwrap();
         assert_eq!(project, None);

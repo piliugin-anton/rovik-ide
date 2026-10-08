@@ -167,3 +167,22 @@ pub async fn chat_search(
 pub async fn chat_messages_answered(db: State<'_, DbState>, message_ids: Vec<String>) -> Result<Vec<String>, String> {
     db.read(move |c| store::messages_answered(c, &message_ids)).await
 }
+
+/// Debounced save of the chat input's unsent text (one row per chat).
+#[tauri::command]
+pub async fn chat_save_composer_draft(
+    db: State<'_, DbState>,
+    dialog_id: String,
+    content: String,
+) -> Result<(), String> {
+    db.write(move |c| store::save_composer_draft(c, &dialog_id, &content)).await
+}
+
+/// The chat's unsent input text, if any (restored on restart / tab switch).
+#[tauri::command]
+pub async fn chat_get_composer_draft(
+    db: State<'_, DbState>,
+    dialog_id: String,
+) -> Result<Option<String>, String> {
+    db.read(move |c| store::get_composer_draft(c, &dialog_id)).await
+}
