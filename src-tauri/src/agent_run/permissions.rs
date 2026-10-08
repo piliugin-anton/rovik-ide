@@ -544,26 +544,6 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
         }
         "web_search" => format!("Search the web for “{}”", s("query").unwrap_or_else(|| "…".into())),
         "browse_url" => format!("Open {}", s("url").unwrap_or_else(|| "a web page".into())),
-        "browser_automate" => {
-            let steps = args.get("steps").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-            let first = args
-                .get("steps")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .map(|s| {
-                    s.get("url")
-                        .or_else(|| s.get("selector"))
-                        .or_else(|| s.get("text"))
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|t| !t.is_empty())
-                        .map(|t| format!(" ({t})"))
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default();
-            let noun = if steps == 1 { "step" } else { "steps" };
-            format!("Automate the browser ({steps} {noun}{first})")
-        }
         "browser_screenshot" => format!("Take a screenshot of {}", s("url").unwrap_or_else(|| "a web page".into())),
         _ => format!("{name}({})", crate::chat_db::store::char_prefix(args_json, 200)),
     }

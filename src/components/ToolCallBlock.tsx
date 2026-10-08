@@ -191,15 +191,6 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
       const pageTitle = result.match(/^# (.+)$/m)?.[1];
       return pageTitle && pageTitle !== '(untitled)' ? { pageTitle } : {};
     }
-    case 'browser_automate': {
-      const pageTitle = result.match(/^# (.+)$/m)?.[1];
-      const captures = result.match(/^## Captured$/m)
-        ? result.split(/^## Captured$/m)[1]?.split('\n').filter((l) => l.startsWith('- ')).length
-        : 0;
-      const meta: ToolMeta = pageTitle && pageTitle !== '(untitled)' ? { pageTitle } : {};
-      if (captures) meta.count = captures;
-      return meta;
-    }
     default:
       return undefined;
   }
@@ -356,20 +347,6 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
     case 'browse_url': {
       const url = shortUrl(str(args.url));
       const title = `${active ? 'Opening' : 'Read'} ${url ?? 'page'}`;
-      return { title, meta: !failed && meta?.pageTitle ? meta.pageTitle.slice(0, 40) : undefined };
-    }
-
-    case 'browser_automate': {
-      const steps = Array.isArray(args.steps) ? args.steps : [];
-      const first = steps[0] as Record<string, unknown> | undefined;
-      const raw =
-        (typeof first?.url === 'string' && first.url) ||
-        (typeof first?.selector === 'string' && first.selector) ||
-        (typeof first?.text === 'string' && first.text) ||
-        undefined;
-      const where_ = shortUrl(typeof raw === 'string' && raw.includes('://') ? raw : undefined) ?? (typeof raw === 'string' ? raw.slice(0, 40) : undefined);
-      const noun = steps.length === 1 ? 'step' : 'steps';
-      const title = `${active ? 'Automating' : 'Automated'} the browser (${steps.length} ${noun}${where_ ? ` · ${where_}` : ''})`;
       return { title, meta: !failed && meta?.pageTitle ? meta.pageTitle.slice(0, 40) : undefined };
     }
 

@@ -16,7 +16,6 @@ mod chat_db;
 mod chat_request;
 mod code_search;
 mod browser_tools;
-mod eoka_automation;
 mod agent_tools;
 mod command_tool;
 mod system_one;
@@ -146,7 +145,6 @@ pub fn run() {
             agent::list_models,
             browser_tools::web_search,
             browser_tools::browse_url,
-            browser_tools::browser_automate,
             browser_tools::browser_screenshot,
             agent_tools::tool_list_dir,
             agent_tools::tool_search_code,

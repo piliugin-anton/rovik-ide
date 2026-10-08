@@ -912,7 +912,7 @@ async fn without_a_project_only_web_tools_are_offered() {
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(tools, ["web_search", "browse_url", "browser_automate"]);
+    assert_eq!(tools, ["web_search", "browse_url"]);
     let messages = h.messages().await;
     assert_eq!(result_of(&messages, "c1").content, "Error: \"read\" needs an open project folder.");
     // No project: no verification either.

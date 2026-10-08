@@ -405,32 +405,3 @@ export interface BrowserScreenshot {
   width: number;
   height: number;
 }
-
-export interface BrowserCapture {
-  label: string;
-  /** The captured JSON value (usually page text). */
-  value: unknown;
-}
-
-export interface AutomatedPage {
-  url: string;
-  title: string;
-  text: string;
-  truncated: boolean;
-  captures: BrowserCapture[];
-  challengeSeen: boolean;
-}
-
-export type BrowserAutomateStep =
-  | { action: 'goto'; url: string }
-  | { action: 'wait_for_network_idle'; quiet_ms?: number; timeout_ms?: number }
-  | { action: 'wait_for_any'; selectors: string[]; timeout_ms?: number }
-  | { action: 'wait'; ms?: number }
-  | { action: 'wait_for_text'; text: string; timeout_ms?: number }
-  | { action: 'click'; selector: string }
-  | { action: 'click_text'; text: string }
-  | { action: 'type'; selector: string; text: string }
-  | { action: 'fill'; selector: string; value: string }
-  | { action: 'press'; key: string }
-  | { action: 'capture_text'; label: string; selector?: string }
-  | { action: 'scroll'; selector: string; y?: number };
