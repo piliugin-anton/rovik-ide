@@ -139,6 +139,8 @@ pub struct FitInfo {
     pub full_tokens: usize,
     /// Messages replaced with a note because later ones made them out of date.
     pub outdated: usize,
+    /// The request ends with the focus note (`focus_note`).
+    pub focus_note: bool,
 }
 
 /*
@@ -453,6 +455,7 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
         }
     }
     let info = |trimmed: bool, dropped_turns: usize, estimated_tokens: usize| FitInfo {
+        focus_note: false,
         trimmed,
         dropped_turns,
         estimated_tokens,
@@ -549,6 +552,7 @@ pub fn build_wire(
     if let Some(note) = focus {
         add_focus_note(&mut fitted, &note);
         info.estimated_tokens += note_tokens;
+        info.focus_note = true;
     }
     Ok((to_wire(&fitted, data_dir, vision, gemini), info))
 }

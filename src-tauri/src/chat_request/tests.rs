@@ -26,6 +26,7 @@ fn names(events: &[ChatStreamEvent]) -> Vec<String> {
             ChatStreamEvent::Finished { .. } => "finished".into(),
             ChatStreamEvent::Error { .. } => "error".into(),
             ChatStreamEvent::Retrying { attempt, .. } => format!("retrying:{attempt}"),
+            ChatStreamEvent::FocusNote => "focus_note".into(),
             ChatStreamEvent::ContextNotes { .. } => "context_notes".into(),
             ChatStreamEvent::ContextUpdated { .. } => "context_updated".into(),
             ChatStreamEvent::ToolCallStart { name, .. } => format!("tool_start:{name}"),

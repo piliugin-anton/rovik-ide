@@ -242,14 +242,14 @@ impl<R: Runtime> Run<R> {
                     && is_context_path(path_arg, context_dir))
         {
             let mut content = self.context_tool(&tc.name, &args).await;
-            if let Some(note) = self.guard.record(FinishedCall {
+            let verdict = self.guard.record(FinishedCall {
                 name: &tc.name,
                 args_json: &tc.arguments,
                 result: &content,
                 write: None,
-            })
-            .note()
-            {
+            });
+            self.log_guard(&tc.name, &verdict);
+            if let Some(note) = verdict.note() {
                 content.push_str(note);
             }
             let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
@@ -309,6 +309,30 @@ impl<R: Runtime> Run<R> {
         self.record(tc, auth, run, result, clm).await
     }
 
+    /// A loop check that fired, for tuning them: which pattern, on which
+    /// call, and whether the run was warned or paused.
+    fn log_guard(&self, tool: &str, verdict: &GuardVerdict) {
+        let kind = match verdict {
+            GuardVerdict::Ok => return,
+            GuardVerdict::Nudge(_) => "nudge",
+            GuardVerdict::Stop(_) => "stop",
+        };
+        let (pattern, reason) = self.guard.finding.clone().unwrap_or(("", String::new()));
+        log::write(
+            &self.app,
+            json!({
+                "event": "guard",
+                "dialogId": self.dialog_id,
+                "model": self.profile.model,
+                "verdict": kind,
+                "pattern": pattern,
+                "reason": reason,
+                "tool": tool,
+                "toolCalls": self.guard.tool_calls,
+            }),
+        );
+    }
+
     /// Everything after a call ran: notes for the model (an approval's,
     /// CLM's recall hint, the guard's), the files it changed, the editor,
     /// and its result stored.
@@ -356,6 +380,7 @@ impl<R: Runtime> Run<R> {
                 _ => None,
             },
         });
+        self.log_guard(&tc.name, &verdict);
         // The model reads the note with the result; a stop pauses the run
         // once this turn's calls are done.
         if !matches!(verdict, GuardVerdict::Ok) {

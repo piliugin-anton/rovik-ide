@@ -350,7 +350,7 @@ impl<R: Runtime> Run<R> {
                     format!(
                         "{IDE_NOTE}Your last reply started repeating the same text over and over, so it was stopped. Don't repeat anything. {next}"
                     ),
-                    "checklist",
+                    "repetition",
                 )
                 .await?;
                 continue;
@@ -628,6 +628,7 @@ impl<R: Runtime> Run<R> {
                 failure,
             };
             let (finish_reason, usage) = (s.finish_reason.take(), s.usage.take());
+            let (focus_note, clm_reminder) = (s.focus_note, s.clm_reminder.take());
             drop(s);
 
             // Reasoning forms the provider refused aren't sent again in this run.
@@ -643,6 +644,8 @@ impl<R: Runtime> Run<R> {
                 "toolCalls": if output.failure.is_some() { 0 } else { output.tool_calls.len() },
                 "textChars": output.text.chars().count(),
                 "usage": usage,
+                "focusNote": focus_note,
+                "clmReminder": clm_reminder,
                 "ms": started.elapsed().as_millis() as u64,
             });
             if let Some(error) = &output.failure {
@@ -719,7 +722,7 @@ impl<R: Runtime> Run<R> {
                 "{IDE_NOTE}You wrote the plan in your reply, so it wasn't saved. Submit it with submit_plan (the complete plan, \
                  once), then reply in a sentence or two. Don't write it out again in the reply."
             ),
-            "checklist",
+            "plan",
         )
         .await?;
         Ok(true)
@@ -788,6 +791,16 @@ impl<R: Runtime> Run<R> {
     /// A user-role message the IDE writes to the model (never shown as the
     /// user's, never taken for their request).
     pub(super) async fn add_harness(&self, content: String, kind: &str) -> Result<(), String> {
+        log::write(
+            &self.app,
+            json!({
+                "event": "harness",
+                "dialogId": self.dialog_id,
+                "model": self.profile.model,
+                "kind": kind,
+                "toolCalls": self.guard.tool_calls,
+            }),
+        );
         let mut m = new_message("user", &content);
         m.meta = Some(json!({ "harness": kind }));
         self.append(vec![m]).await
@@ -935,6 +948,10 @@ struct Stream<R: Runtime> {
     started: Instant,
     /// One-time context notes this request carries (CLM).
     notes: Vec<String>,
+    /// The request ended with the focus note (Trimming mode), for the log.
+    focus_note: bool,
+    /// The CLM budget reminder the request carried, if any, for the log.
+    clm_reminder: Option<String>,
     last_output: Instant,
     last_output_ms: i64,
     idle_shown: bool,
@@ -977,6 +994,8 @@ impl<R: Runtime> Stream<R> {
             retrying: false,
             started: now,
             notes: Vec::new(),
+            focus_note: false,
+            clm_reminder: None,
             last_output: now,
             last_output_ms: store::now_ms(),
             idle_shown: false,
@@ -1117,7 +1136,15 @@ impl<R: Runtime> Stream<R> {
                 }
             }
             ChatStreamEvent::Error { error } => self.failure = Some(error),
-            ChatStreamEvent::ContextNotes { notes } => self.notes = notes,
+            ChatStreamEvent::FocusNote => self.focus_note = true,
+            ChatStreamEvent::ContextNotes { notes } => {
+                // A budget reminder (CLM), up to its numbers, for the reply's log.
+                self.clm_reminder = notes
+                    .iter()
+                    .find(|n| n.starts_with("CONTEXT BUDGET"))
+                    .map(|n| n.split(" tokens)").next().unwrap_or(n).to_string());
+                self.notes = notes;
+            }
             ChatStreamEvent::ContextUpdated { status } => {
                 emit(&self.app, AgentEvent::ContextUpdated { dialog_id: self.dialog_id.clone(), status });
             }

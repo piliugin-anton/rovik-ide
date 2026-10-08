@@ -85,6 +85,8 @@ pub struct Guard {
     file_states: HashMap<String, Vec<u64>>,
     nudged: bool,
     stop_reason: Option<String>,
+    /// The pattern behind the latest Nudge or Stop, and its reason (logs).
+    pub finding: Option<(&'static str, String)>,
 }
 
 impl Guard {
@@ -100,13 +102,15 @@ impl Guard {
             file_states: HashMap::new(),
             nudged: false,
             stop_reason: None,
+            finding: None,
         }
     }
 
     /// Records one finished tool call.
     pub fn record(&mut self, call: FinishedCall) -> GuardVerdict {
         self.tool_calls += 1;
-        let Some(reason) = self.detect(&call) else { return GuardVerdict::Ok };
+        let Some((pattern, reason)) = self.detect(&call) else { return GuardVerdict::Ok };
+        self.finding = Some((pattern, reason.clone()));
 
         if !self.nudged {
             self.nudged = true;
@@ -137,7 +141,9 @@ impl Guard {
         }
     }
 
-    fn detect(&mut self, call: &FinishedCall) -> Option<String> {
+    /// The pattern a call completes, by name ("revert", "identical",
+    /// "errorStreak", "sameError"), and the reason the model is told.
+    fn detect(&mut self, call: &FinishedCall) -> Option<(&'static str, String)> {
         let failed = call.result.starts_with("Error:");
 
         // An edit that went through changes what reads and commands return:
@@ -145,7 +151,7 @@ impl Guard {
         if let Some(write) = &call.write {
             self.recent_calls.clear();
             if let Some(revert) = self.record_write(write) {
-                return Some(revert);
+                return Some(("revert", revert));
             }
         }
 
@@ -157,16 +163,19 @@ impl Guard {
         }
         let repeats = self.recent_calls.iter().filter(|k| **k == key).count();
         if call.write.is_none() && repeats >= IDENTICAL_LIMIT {
-            return Some(format!(
-                "{} was called {repeats} times with the same arguments and returned the same result each time",
-                describe_call(call)
+            return Some((
+                "identical",
+                format!(
+                    "{} was called {repeats} times with the same arguments and returned the same result each time",
+                    describe_call(call)
+                ),
             ));
         }
 
         // 2. Failures in a row.
         self.error_streak = if failed { self.error_streak + 1 } else { 0 };
         if self.error_streak >= ERROR_STREAK_LIMIT {
-            return Some(format!("the last {} tool calls all failed", self.error_streak));
+            return Some(("errorStreak", format!("the last {} tool calls all failed", self.error_streak)));
         }
 
         // 3. The same failure again, whatever the arguments.
@@ -179,9 +188,9 @@ impl Guard {
             let same = self.recent_errors.iter().filter(|e| **e == error).count();
             if same >= SAME_ERROR_LIMIT {
                 let first = first_line(&error, 160);
-                return Some(format!(
-                    "the same error came back {same} times: \"{}\"",
-                    first.strip_suffix('.').unwrap_or(&first)
+                return Some((
+                    "sameError",
+                    format!("the same error came back {same} times: \"{}\"", first.strip_suffix('.').unwrap_or(&first)),
                 ));
             }
         }
@@ -286,6 +295,7 @@ mod tests {
         assert_eq!(g.record(call("read", r#"{"x":1,"path":"a"}"#, "same")), GuardVerdict::Ok);
         let v = g.record(call("read", r#"{"path":"a","x":1}"#, "same"));
         assert!(matches!(&v, GuardVerdict::Nudge(n) if n.contains("read (a) was called 3 times")), "{v:?}");
+        assert_eq!(g.finding.as_ref().map(|f| f.0), Some("identical"));
         assert!(g.pause().is_none());
         // Evidence was reset: two more are fine, the third stops.
         g.record(call("read", r#"{"path":"a"}"#, "same"));
@@ -302,6 +312,7 @@ mod tests {
         }
         let v = g.record(call("x", "3", "Error: boom."));
         assert!(matches!(&v, GuardVerdict::Nudge(n) if n.contains("the same error came back 3 times: \"Error: boom\"")));
+        assert_eq!(g.finding.as_ref().map(|f| f.0), Some("sameError"));
     }
 
     #[test]

@@ -52,6 +52,8 @@ pub enum ChatStreamEvent {
         id: String,
         arguments_delta: String,
     },
+    /// The request ends with the focus note (Trimming mode; chat_db::history).
+    FocusNote,
     /// One-time notes about the agent's own context (CLM mode) that went
     /// with this request. A request sent again for the same turn has to carry
     /// them (`ChatParams::carried_notes`): they aren't produced twice.
@@ -703,6 +705,9 @@ pub async fn run_chat(
                     built = build => built?,
                 },
             };
+            if info.focus_note {
+                on_event(ChatStreamEvent::FocusNote);
+            }
             if info.trimmed || info.outdated > 0 {
                 eprintln!(
                     "context budget: ~{}/{} tokens (history ~{}), {} outdated replaced, {} oldest turn(s) omitted",
