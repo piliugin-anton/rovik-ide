@@ -224,7 +224,7 @@ fn todo_schema() -> Value {
         "type": "function",
         "function": {
             "name": "todo",
-            "description": "Keep your checklist for this task, shown to the user as what you are doing. Use it for tasks with three or more distinct steps or that span several files; not for small tasks. Pass the whole list each time. Create it before you start, mark a step in_progress when you begin it and done when it is finished (one step in progress at a time). If a step turns out unnecessary or has to change, mark it skipped or changed with a short note saying why, instead of silently dropping it. Update it when a step starts or finishes, not after every action.",
+            "description": "Keep your checklist for this task, shown to the user as what you are doing. Use it for tasks with three or more distinct steps or that span several files; not for small tasks. Pass the whole list each time. Create it before you start, with the first step in_progress. Work on one step at a time, each with its own todo call: call todo alone to mark a step in_progress before starting it, do the work, then call todo alone again to mark it done before the next step. Never save up finished steps for one update at the end. Only one step in_progress at a time. If a step turns out unnecessary or has to change, mark it skipped or changed with a short note saying why, instead of silently dropping it.",
             "parameters": {
                 "type": "object",
                 "properties": {

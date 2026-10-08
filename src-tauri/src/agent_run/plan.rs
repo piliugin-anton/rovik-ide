@@ -485,10 +485,29 @@ pub fn is_settled(item: &TodoItem) -> bool {
     matches!(item.status.as_str(), "done" | "skipped" | "changed")
 }
 
+/// A checklist the model can't be acting on: more than one step claimed as
+/// current. None when the list is usable (zero in progress is fine: between
+/// steps, or all settled). An error string keeps the model from drifting into
+/// parallel work without adding new concepts to the prompt.
+pub fn todo_problems(items: &[TodoItem]) -> Option<String> {
+    let active: Vec<&TodoItem> = items.iter().filter(|i| i.status == "in_progress").collect();
+    if active.len() > 1 {
+        let names = active.iter().map(|i| format!("\"{}\"", i.title)).collect::<Vec<_>>().join(", ");
+        return Some(format!(
+            "Error: only one step can be in_progress at a time (you marked {names}). \
+             Keep the step you're on in_progress and the rest pending, then call todo again."
+        ));
+    }
+    None
+}
+
 /// What the model reads after an update.
 pub fn describe_todo(items: &[TodoItem]) -> String {
     if items.is_empty() {
         return "Error: the checklist is empty. Pass items: [{ title, status }].".into();
+    }
+    if let Some(problem) = todo_problems(items) {
+        return problem;
     }
     let done = items.iter().filter(|i| is_settled(i)).count();
     let current = items.iter().find(|i| i.status == "in_progress");
@@ -672,5 +691,21 @@ mod tests {
         );
         assert!(all_settled.iter().all(is_settled));
         assert_eq!(describe_todo(&all_settled), "Checklist updated: 3 of 3 done.");
+        // Two steps in_progress: rejected, naming both, so the model narrows to one.
+        let two_active = parse_todo(
+            json!({ "items": [{ "title": "a", "status": "in_progress" }, { "title": "b", "status": "in_progress" }, { "title": "c", "status": "pending" }] })
+                .as_object()
+                .unwrap(),
+        );
+        let err = describe_todo(&two_active);
+        assert!(err.starts_with("Error: only one step"), "{err}");
+        assert!(err.contains("\"a\"") && err.contains("\"b\""), "{err}");
+        // Zero in_progress with open steps stays fine: between steps, not an error.
+        let between = parse_todo(
+            json!({ "items": [{ "title": "a", "status": "done" }, { "title": "b", "status": "pending" }] })
+                .as_object()
+                .unwrap(),
+        );
+        assert_eq!(describe_todo(&between), "Checklist updated: 1 of 2 done.");
     }
 }
