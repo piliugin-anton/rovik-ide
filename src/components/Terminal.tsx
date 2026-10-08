@@ -19,6 +19,30 @@ interface TerminalProps {
   isPanelShortcut?: (e: KeyboardEvent) => boolean;
 }
 
+/** Ctrl with these keys, by physical key: the control characters of `[`, `\` and `]`. */
+const CONTROL_PUNCTUATION: Record<string, string> = {
+  BracketLeft: '\x1b',
+  Backslash: '\x1c',
+  BracketRight: '\x1d',
+};
+
+/**
+ * The control character for Ctrl+key on a non-Latin keyboard layout
+ * (Russian, Greek, Hebrew, Arabic…). The page is told the layout's letter
+ * ("с" for the C key) and, in WebKit (Linux, macOS), no key code, so xterm
+ * sent nothing: Ctrl+C couldn't stop a program, nor Ctrl+D, Ctrl+Z… The
+ * physical key (`code`) says which one it is, as native terminals read it.
+ * Null when xterm handles the key itself: Latin layouts, Ctrl+Shift
+ * (shortcuts), Ctrl+Alt (AltGr on Windows), Cmd.
+ */
+export function controlCharFor(e: KeyboardEvent): string | null {
+  if (e.type !== 'keydown' || !e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return null;
+  if (e.key.length !== 1 || e.key.charCodeAt(0) < 128) return null;
+  const letter = /^Key([A-Z])$/.exec(e.code);
+  if (letter) return String.fromCharCode(letter[1].charCodeAt(0) - 64);
+  return CONTROL_PUNCTUATION[e.code] ?? null;
+}
+
 export default function Terminal(props: TerminalProps) {
   let containerEl: HTMLDivElement | undefined;
   let xterm: XTerm | undefined;
@@ -56,7 +80,17 @@ export default function Terminal(props: TerminalProps) {
     term.open(containerEl);
     fit();
 
-    term.attachCustomKeyEventHandler((e) => !(props.isPanelShortcut?.(e) ?? false));
+    term.attachCustomKeyEventHandler((e) => {
+      if (props.isPanelShortcut?.(e)) return false;
+      // Ctrl+C and the like on a non-Latin layout: sent as typed.
+      const control = controlCharFor(e);
+      if (control) {
+        e.preventDefault();
+        term.input(control, true);
+        return false;
+      }
+      return true;
+    });
     term.onTitleChange((title) => props.onTitleChange?.(title));
 
     // Input typed before the shell is up is kept, not dropped.
