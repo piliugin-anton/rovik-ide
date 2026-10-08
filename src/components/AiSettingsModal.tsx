@@ -93,11 +93,6 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
   return (
     <div
       class="modal-overlay"
-      onMouseDown={(e) => {
-        // Only a press that starts on the backdrop closes, so a drag out of
-        // the modal (or a click on a confirm dialog above it) doesn't.
-        if (e.target === e.currentTarget) commitAndClose();
-      }}
     >
       <div
         class="modal model-settings ai-settings"

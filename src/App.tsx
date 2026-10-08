@@ -1404,8 +1404,6 @@ export default function App() {
     setCursorPosition({ x: adjustedX, y: adjustedY });
   });
 
-  // onContextMenu={handleContextMenu}
-
   return (
     <div class="app">
       <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
