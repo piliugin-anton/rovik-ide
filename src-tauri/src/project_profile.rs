@@ -14,6 +14,8 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
+mod workspaces;
+
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectedCheck {
@@ -24,6 +26,21 @@ pub struct DetectedCheck {
     pub source: String,
     /// Detected but not run by default (builds are slow and rarely needed).
     pub default_enabled: bool,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMember {
+    /// Project-relative dir, forward slashes, e.g. "packages/web".
+    pub path: String,
+    /// package.json `name` / Cargo `[package] name`, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// "node" or "cargo".
+    pub kind: String,
+    /// Node script names (sorted); empty for cargo (cargo check/test cover it).
+    #[serde(default)]
+    pub scripts: Vec<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -41,6 +58,17 @@ pub struct ProjectProfile {
     pub stack: Vec<String>,
     pub checks: Vec<DetectedCheck>,
     pub instructions: Option<ProjectInstructions>,
+    /// Workspace member packages, capped (see workspaces.rs). Empty when the
+    /// project is not a workspace. Powers the "Project checks" suggestions:
+    /// first open pre-fills from these; saved settings win after that.
+    #[serde(default)]
+    pub workspaces: Vec<WorkspaceMember>,
+    /// Node package manager that owns the workspace commands ("npm" |
+    /// "pnpm" | "yarn" | "yarn-berry" | "bun"). Absent when the project has
+    /// no package.json. Lets the settings UI build "add script" commands
+    /// without duplicating manager detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_manager: Option<String>,
 }
 
 /// Agent instruction files, first found wins. README is the fallback.
@@ -61,6 +89,8 @@ pub fn detect(root: &Path) -> ProjectProfile {
     detect_go(root, &mut profile);
     detect_make(root, &mut profile);
     profile.instructions = read_instructions(root);
+    profile.workspaces.sort_by(|a, b| a.path.cmp(&b.path));
+    profile.workspaces.dedup_by(|a, b| a.path == b.path);
     profile
 }
 
@@ -93,15 +123,15 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
 fn detect_node(root: &Path, profile: &mut ProjectProfile) {
     let Some(pkg) = read_json(&root.join("package.json")) else { return };
 
-    let pm = if root.join("pnpm-lock.yaml").exists() {
-        "pnpm"
-    } else if root.join("yarn.lock").exists() {
-        "yarn"
-    } else if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
-        "bun"
-    } else {
-        "npm"
-    };
+    let pm = workspaces::detect_package_manager(root);
+    let yarn_berry = workspaces::is_yarn_berry(root, Some(&pkg));
+    profile.package_manager = Some(
+        match (pm, yarn_berry) {
+            ("yarn", true) => "yarn-berry",
+            (pm, _) => pm,
+        }
+        .to_string(),
+    );
     let run = |script: &str| match (pm, script) {
         ("npm", "test") => "npm test".to_string(),
         (pm, script) => format!("{pm} run {script}"),
@@ -170,6 +200,79 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
     if let Some(name) = script(&["build"]) {
         push_check(profile, "build", run(&name), format!("package.json scripts.{name}"));
     }
+
+    // Workspaces: when the root declares member packages, scan their manifests
+    // (capped) and fill kinds the root doesn't cover with one workspace-wide
+    // command per kind. Sources name the member count so the UI can explain
+    // where the suggestion came from.
+    let member_dirs = workspaces::node_members(root, Some(&pkg));
+    if member_dirs.is_empty() {
+        return;
+    }
+    // Record members for the settings UI (name + script names for pickers).
+    let mut member_scripts: Vec<Vec<String>> = Vec::new();
+    for rel in &member_dirs {
+        if let Some((name, scripts)) = workspaces::read_node_member(root, rel) {
+            member_scripts.push(scripts.clone());
+            profile.workspaces.push(WorkspaceMember {
+                path: rel.clone(),
+                name,
+                kind: "node".to_string(),
+                scripts,
+            });
+        }
+    }
+    if member_scripts.is_empty() {
+        return;
+    }
+    push_stack(profile, "Workspaces");
+
+    // For each kind, find the most common script name for it across members.
+    let candidates: &[(&str, &[&str])] = &[
+        ("typecheck", &["typecheck", "type-check", "check-types", "types", "tsc"]),
+        ("lint", &["lint"]),
+        ("test", &["test"]),
+        ("build", &["build"]),
+    ];
+    for (kind, names) in candidates {
+        if profile.checks.iter().any(|c| c.kind == *kind) {
+            continue;
+        }
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for scripts in &member_scripts {
+            if let Some(found) = names.iter().find(|n| scripts.iter().any(|s| s == **n)) {
+                *counts.entry(found).or_default() += 1;
+            }
+        }
+        if counts.is_empty() {
+            continue;
+        }
+        let (best, n) = counts.into_iter().max_by_key(|(_, c)| *c).unwrap();
+        // Skip npm's placeholder test scripts.
+        if *kind == "test" {
+            let mut real = 0;
+            for rel in &member_dirs {
+                let body = read_json(&root.join(rel).join("package.json"))
+                    .and_then(|p| {
+                        p.get("scripts")?.get(best)?.as_str().map(str::to_string)
+                    })
+                    .unwrap_or_default();
+                if !body.contains("no test specified") {
+                    real += 1;
+                }
+            }
+            if real == 0 {
+                continue;
+            }
+        }
+        let command = workspaces::workspace_run(pm, best, yarn_berry);
+        let source = if member_dirs.len() == 1 {
+            format!("{}/package.json scripts.{best}", member_dirs[0])
+        } else {
+            format!("workspaces ({n} packages): scripts.{best}")
+        };
+        push_check(profile, kind, command, source);
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -196,11 +299,40 @@ fn detect_rust(root: &Path, profile: &mut ProjectProfile) {
     }
     push_stack(profile, "Rust");
     for dir in manifests {
-        let (arg, source) = if dir.is_empty() {
+        let manifest_path = if dir.is_empty() {
+            root.join("Cargo.toml")
+        } else {
+            root.join(&dir).join("Cargo.toml")
+        };
+        let content = fs::read_to_string(&manifest_path).unwrap_or_default();
+        let is_workspace =
+            workspaces::toml_has_section(&content, "workspace") || content.contains("[workspace]");
+        let members = workspaces::cargo_members(root, &dir, &content);
+        for rel in &members {
+            let name = fs::read_to_string(root.join(rel).join("Cargo.toml"))
+                .ok()
+                .and_then(|t| workspaces::cargo_package_name(&t));
+            if !profile.workspaces.iter().any(|w| w.path == *rel) {
+                profile.workspaces.push(WorkspaceMember {
+                    path: rel.clone(),
+                    name,
+                    kind: "cargo".to_string(),
+                    scripts: Vec::new(),
+                });
+            }
+        }
+        if !members.is_empty() {
+            push_stack(profile, "Workspaces");
+        }
+        let (arg, mut source) = if dir.is_empty() {
             (String::new(), "Cargo.toml".to_string())
         } else {
             (format!(" --manifest-path {dir}/Cargo.toml"), format!("{dir}/Cargo.toml"))
         };
+        if is_workspace {
+            // `cargo check` at the workspace root already covers all members.
+            source.push_str(" [workspace]");
+        }
         push_check(profile, "typecheck", format!("cargo check{arg}"), source.clone());
         push_check(profile, "lint", format!("cargo clippy{arg}"), source.clone());
         push_check(profile, "test", format!("cargo test{arg}"), source);
@@ -485,6 +617,66 @@ mod tests {
         assert_eq!(notes.file, "AGENTS.md");
         assert!(notes.truncated);
         assert!(notes.text.len() <= INSTRUCTIONS_MAX_CHARS && notes.text.ends_with("rule"));
+    }
+
+    #[test]
+    fn npm_workspaces_prefill_missing_kinds() {
+        let dir = project(&[
+            ("package.json", r#"{"private":true,"workspaces":["packages/*"]}"#),
+            ("packages/web/package.json", r#"{"name":"web","scripts":{"test":"vitest run","build":"vite build"}}"#),
+            ("packages/api/package.json", r#"{"name":"api","scripts":{"test":"node --test","lint":"eslint ."}}"#),
+        ]);
+        let p = detect(&dir);
+        assert!(p.stack.contains(&"Workspaces".to_string()));
+        assert_eq!(
+            p.workspaces.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
+            ["packages/api", "packages/web"]
+        );
+        // Root had none of these: each kind gets one workspace-wide command.
+        assert!(commands(&p).contains(&"test: npm test --workspaces --if-present".to_string()));
+        assert!(commands(&p).contains(&"lint: npm run lint --workspaces --if-present".to_string()));
+        assert!(commands(&p).contains(&"build: npm run build --workspaces --if-present".to_string()));
+        let test = p.checks.iter().find(|c| c.kind == "test").unwrap();
+        assert!(test.source.starts_with("workspaces (2 packages)"), "source: {}", test.source);
+    }
+
+    #[test]
+    fn pnpm_workspace_uses_recursive_run() {
+        let dir = project(&[
+            ("package.json", r#"{"private":true}"#),
+            ("pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - '!apps/ignored'\n"),
+            ("pnpm-lock.yaml", ""),
+            ("apps/a/package.json", r#"{"name":"a","scripts":{"test":"vitest run"}}"#),
+            ("apps/ignored/package.json", r#"{"name":"ignored","scripts":{"test":"vitest run"}}"#),
+        ]);
+        let p = detect(&dir);
+        assert_eq!(
+            p.workspaces.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
+            ["apps/a"]
+        );
+        assert_eq!(commands(&p), ["test: pnpm -r --if-present run test"]);
+    }
+
+    #[test]
+    fn cargo_workspace_source_and_members() {
+        let dir = project(&[
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+            ("crates/a/Cargo.toml", "[package]\nname = \"a\"\n"),
+            ("crates/b/Cargo.toml", "[package]\nname = \"b\"\n"),
+        ]);
+        let p = detect(&dir);
+        assert!(p.stack.contains(&"Rust".to_string()));
+        assert!(p.stack.contains(&"Workspaces".to_string()));
+        assert_eq!(
+            p.workspaces.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
+            ["crates/a", "crates/b"]
+        );
+        // One workspace root covers all members: no per-member duplication.
+        assert_eq!(
+            commands(&p),
+            ["typecheck: cargo check", "lint: cargo clippy", "test: cargo test"]
+        );
+        assert!(p.checks.iter().all(|c| c.source == "Cargo.toml [workspace]"));
     }
 
     #[test]

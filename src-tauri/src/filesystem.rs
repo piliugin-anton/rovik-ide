@@ -304,6 +304,99 @@ impl WatchBatch {
 }
 
 // A Tauri command to start watching a specific directory
+/// Bounds the fallback walk below: past this many watched dirs we stop
+/// descending (still Ok — the watched part keeps working).
+const MAX_WATCH_DIRS: usize = 30_000;
+
+/// Watch `root` and everything below it, skipping what can't be watched
+/// (e.g. a database dir owned by another user: `Permission denied`).
+/// A single `watch(Recursive)` fails the whole project when one subdir is
+/// unreadable, so on error fall back to watching dir-by-dir and skipping
+/// failures. Returns the skipped dirs (logged, not fatal).
+fn watch_recursive_lenient(
+    watcher: &mut notify::RecommendedWatcher,
+    root: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    if watcher.watch(root, RecursiveMode::Recursive).is_ok() {
+        return Ok(Vec::new());
+    }
+    // Fallback: one non-recursive watch per dir; failures are skipped.
+    watcher
+        .watch(root, RecursiveMode::NonRecursive)
+        .map_err(|e| e.to_string())?;
+    let mut skipped = Vec::new();
+    let mut watched_dirs = 1usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => {
+                skipped.push(dir);
+                continue;
+            }
+        };
+        for entry in entries {
+            if watched_dirs >= MAX_WATCH_DIRS {
+                break;
+            }
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            // file_type() doesn't follow symlinks: linked dirs are skipped,
+            // so we never watch outside the project through a link.
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            if entry.file_name() == "node_modules" {
+                continue; // its events are filtered out anyway (watch_path_kind)
+            }
+            let path = entry.path();
+            match watcher.watch(&path, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    watched_dirs += 1;
+                    stack.push(path);
+                }
+                Err(_) => skipped.push(path),
+            }
+        }
+    }
+    Ok(skipped)
+}
+
+/// Best effort: cover a newly created dir (and its subdirs) with watches.
+/// Needed when the initial watch fell back to per-dir watches above, which
+/// don't pick up new dirs on their own. Re-watching under a recursive
+/// watcher is harmless. Only call for paths under the watched root.
+fn watch_new_dir(app_handle: &AppHandle, dir: &Path) {
+    let state = app_handle.state::<WatcherState>();
+    let Ok(mut guard) = state.active_watcher.lock() else { return };
+    let Some(watcher) = guard.as_mut() else { return };
+    if watcher.watch(dir, RecursiveMode::NonRecursive).is_err() {
+        return;
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    let mut count = 0;
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else { continue };
+        for entry in entries.flatten() {
+            if count >= 500 {
+                return;
+            }
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            if entry.file_name() == "node_modules" {
+                continue;
+            }
+            let p = entry.path();
+            if watcher.watch(&p, RecursiveMode::NonRecursive).is_ok() {
+                count += 1;
+                stack.push(p);
+            }
+        }
+    }
+}
 #[tauri::command]
 pub fn start_file_watch(
     app_handle: AppHandle,
@@ -320,9 +413,21 @@ pub fn start_file_watch(
     let (tx, rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
-    watcher
-        .watch(&root, RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
+    // One unreadable subdir (a database owned by another user, a FUSE mount
+    // with restricted permissions) must not fail the whole project's watch.
+    match watch_recursive_lenient(&mut watcher, &root) {
+        Ok(skipped) => {
+            if !skipped.is_empty() {
+                eprintln!(
+                    "file watch: watching {:?} without {} unreadable dirs (e.g. {:?})",
+                    root,
+                    skipped.len(),
+                    skipped.first()
+                );
+            }
+        }
+        Err(e) => return Err(e),
+    }
 
     println!("Watching: {:?}", root);
 
@@ -385,6 +490,12 @@ pub fn start_file_watch(
                             }
                         }
                         let is_dir = path.is_dir();
+                        // A new dir isn't covered when the initial watch fell back
+                        // to per-dir watches: cover it now, best effort. (Under a
+                        // recursive watcher this re-watch is harmless.)
+                        if operation == WatchOp::Create && is_dir && path.starts_with(&watch_root) {
+                            watch_new_dir(&app_handle, &path);
+                        }
                         let payload = FileWatchPayload {
                             path: path.to_string_lossy().into_owned(),
                             operation: operation.clone(),
@@ -1332,6 +1443,35 @@ mod watch_tests {
         assert_eq!(b.take_due(t0 + Duration::from_millis(400)), WatchFlush::Nothing, "still flooding");
         assert_eq!(b.take_due(t0 + Duration::from_millis(600)), WatchFlush::Everything);
         assert_eq!(b.take_due(t0 + Duration::from_millis(700)), WatchFlush::Nothing);
+    }
+
+    #[test]
+    fn an_unreadable_subdir_does_not_fail_the_whole_watch() {
+        let dir = std::env::temp_dir().join(format!("watch-lenient-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ok/sub")).unwrap();
+        std::fs::create_dir_all(dir.join("locked/sub")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join("locked"), std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+        }
+        let (tx, _rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
+        let mut watcher = notify::recommended_watcher(tx).expect("watcher");
+        let skipped = watch_recursive_lenient(&mut watcher, &dir).expect("watch succeeds");
+        // Rooted at `locked` when we can't read it (non-root users); root
+        // itself always stays watched, so the project keeps live updates.
+        if fs::read_dir(dir.join("locked")).is_err() {
+            assert!(skipped.iter().any(|p| p.starts_with(dir.join("locked"))));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join("locked"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

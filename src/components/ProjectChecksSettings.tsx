@@ -4,7 +4,7 @@
 // runs when the agent finishes a change (src-tauri/src/agent_run/verify.rs).
 // Shows what was detected and lets the user correct it; the corrected list
 // is saved per project right away and wins over detection from then on.
-import { createSignal, For, onMount, Show } from 'solid-js';
+import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
 import {
   CHECK_KINDS,
   CHECK_LABEL,
@@ -12,9 +12,14 @@ import {
   effectiveChecks,
   loadProjectSettings,
   saveProjectSettings,
+  scriptKind,
+  workspaceMemberCommand,
+  workspaceScriptCommand,
+  workspaceScriptSuggestions,
   type CheckKind,
   type ProjectCheck,
   type ProjectProfile,
+  type WorkspaceMember,
 } from '../lib/projectProfile';
 import { checkCommand, type AgentPermissions } from '../lib/permissions';
 
@@ -57,7 +62,63 @@ export default function ProjectChecksSettings(props: {
   }
 
   function update(index: number, patch: Partial<ProjectCheck>) {
-    save(checks().map((c, i) => (i === index ? { ...c, ...patch } : c)));
+    save(
+      checks().map((c, i) => {
+        if (i !== index) return c;
+        const next = { ...c, ...patch };
+        // An edited command is no longer the detected one: drop its origin.
+        if (patch.command !== undefined && patch.command !== c.command) delete next.source;
+        return next;
+      })
+    );
+  }
+
+  function addSuggestion(script: string) {
+    const profileValue = profile();
+    const command = workspaceScriptCommand(profileValue?.packageManager, script);
+    if (checks().some((c) => c.command.trim() === command)) return;
+    save([...checks(), { kind: scriptKind(script), command, enabled: true }]);
+  }
+
+  // Compact per-member picker: one package + one script → one scoped check.
+  // Cargo members expose check kinds (covered by the workspace root otherwise);
+  // node members expose their own package.json scripts.
+  // NOTE: workspacesProfile is defined before the memos below — the memos
+  // evaluate eagerly, so referencing it before its `const` runs throws TDZ
+  // "Cannot access before initialization".
+  /** The detected profile when it has workspace members (undefined while loading). */
+  const workspacesProfile = (): ProjectProfile | undefined => {
+    const found = profile();
+    if (loading() || !found || (found.workspaces?.length ?? 0) === 0) return undefined;
+    return found;
+  };
+  const [memberPath, setMemberPath] = createSignal<string>('');
+  const [memberScript, setMemberScript] = createSignal<string>('');
+  const memberOptions = createMemo(() => workspacesProfile()?.workspaces ?? []);
+  const selectedMember = createMemo(
+    () =>
+      memberOptions().find((m) => m.path === memberPath()) ??
+      memberOptions()[0] ??
+      (undefined as WorkspaceMember | undefined)
+  );
+  const scriptOptions = createMemo(() => {
+    const m = selectedMember();
+    if (!m) return [] as string[];
+    return m.kind === 'cargo' ? ['typecheck', 'lint', 'test', 'build'] : m.scripts;
+  });
+  const selectedScript = createMemo(() => {
+    const opts = scriptOptions();
+    if (opts.includes(memberScript())) return memberScript();
+    return opts[0] ?? '';
+  });
+
+  function addMemberCheck() {
+    const m = selectedMember();
+    const script = selectedScript();
+    if (!m || !script) return;
+    const built = workspaceMemberCommand(profile()?.packageManager, m, script);
+    if (checks().some((c) => c.command.trim() === built.command)) return;
+    save([...checks(), { ...built, enabled: true }]);
   }
 
   function resetToDetected() {
@@ -161,6 +222,11 @@ export default function ProjectChecksSettings(props: {
                       ×
                     </button>
                   </div>
+                  <Show when={check.source}>
+                    <p class="settings-hint project-check-source" title={check.source}>
+                      Detected: {check.source}
+                    </p>
+                  </Show>
                   <Show when={check.enabled && !allowed(check.command)}>
                     <p class="settings-hint project-check-warning">
                       Not in your allowed commands, so it’s skipped.{' '}
@@ -184,6 +250,80 @@ export default function ProjectChecksSettings(props: {
           <p class="settings-hint setting-explain warning">{error()}</p>
         </Show>
       </section>
+
+      <Show when={workspacesProfile()}>
+        {(found) => (
+          <details class="settings-section workspace-details">
+            <summary class="workspace-summary">
+              <span class="settings-section-title">
+                Workspaces ({found().workspaces!.length}{' '}
+                {found().workspaces!.length === 1 ? 'package' : 'packages'})
+              </span>
+              <span class="settings-hint">Add a check for one package</span>
+            </summary>
+            <div class="workspace-add-row">
+              <select
+                class="settings-select workspace-select"
+                value={selectedMember()?.path ?? ''}
+                onChange={(e) => {
+                  setMemberPath(e.currentTarget.value);
+                  setMemberScript('');
+                }}
+                aria-label="Package"
+                title="Package"
+              >
+                <For each={memberOptions()}>
+                  {(m) => (
+                    <option value={m.path}>{m.name ? `${m.name} (${m.path})` : m.path}</option>
+                  )}
+                </For>
+              </select>
+              <select
+                class="settings-select workspace-select"
+                value={selectedScript()}
+                onChange={(e) => setMemberScript(e.currentTarget.value)}
+                aria-label="Script"
+                title="Script"
+              >
+                <For each={scriptOptions()}>{(s) => <option value={s}>{s}</option>}</For>
+              </select>
+              <button
+                class="link-button"
+                onClick={addMemberCheck}
+                disabled={!selectedMember() || !selectedScript()}
+                title={
+                  selectedMember() && selectedScript()
+                    ? workspaceMemberCommand(
+                        found().packageManager,
+                        selectedMember()!,
+                        selectedScript()
+                      ).command
+                    : undefined
+                }
+              >
+                Add
+              </button>
+            </div>
+            <Show when={workspaceScriptSuggestions(found(), checks()).length > 0}>
+              <div class="workspace-suggestions">
+                <span class="settings-hint">All packages:</span>
+                <For each={workspaceScriptSuggestions(found(), checks())}>
+                  {(suggestion) => (
+                    <button
+                      class="workspace-suggestion"
+                      onClick={() => addSuggestion(suggestion.script)}
+                      title={`${suggestion.command} — runs in ${suggestion.packages} ${suggestion.packages === 1 ? 'package' : 'packages'}`}
+                    >
+                      {suggestion.script}
+                      <span class="workspace-suggestion-count">×{suggestion.packages}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </details>
+        )}
+      </Show>
 
       <Show when={profile()}>
         {(found) => (

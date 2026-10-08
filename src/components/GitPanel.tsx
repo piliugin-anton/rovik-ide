@@ -9,6 +9,7 @@ import {
   Switch,
   Match,
   createEffect,
+  on,
   type JSX,
 } from 'solid-js';
 import { listen } from '@tauri-apps/api/event';
@@ -453,8 +454,20 @@ export function GitPanel(props: GitPanelProps) {
     });
   });
 
+  // Refresh when a different project is opened while the Git tab stays
+  // mounted (onMount alone never re-runs on project switch).
+  createEffect(
+    on(
+      () => props.projectPath,
+      () => {
+        void withBusy(refreshStatus);
+      },
+      { defer: true },
+    ),
+  );
+
   onMount(() => {
-    withBusy(refreshStatus);
+    void withBusy(refreshStatus);
   });
 
   // Recreate virtualizer whenever count or scroll element changes

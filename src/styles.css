@@ -4337,6 +4337,89 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin-top: 8px;
 }
 
+.settings-section .project-check-source {
+  margin: 2px 0 0 22px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-details {
+  padding-bottom: 4px;
+}
+
+.workspace-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.workspace-summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-summary::before {
+  content: '▸';
+  color: var(--fg-dim);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.workspace-details[open] .workspace-summary::before {
+  content: '▾';
+}
+
+.workspace-summary .settings-section-title {
+  margin-bottom: 0;
+}
+
+.workspace-summary .settings-hint {
+  margin: 0;
+}
+
+.workspace-add-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.workspace-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.workspace-suggestion {
+  padding: 3px 8px;
+  background: var(--bg-control);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.workspace-suggestion:hover {
+  background: var(--bg-control-hover);
+}
+
+.workspace-suggestion-count {
+  margin-left: 4px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Context used, above the chat input (ContextMeter.tsx) */
 
 .chat-context-bar {

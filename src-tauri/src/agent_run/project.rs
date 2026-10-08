@@ -161,6 +161,7 @@ mod tests {
                 DetectedCheck { kind: "build".into(), command: "cargo build".into(), source: "".into(), default_enabled: false },
             ],
             instructions: Some(ProjectInstructions { file: "AGENTS.md".into(), text: "Be nice.".into(), truncated: false }),
+            ..Default::default()
         };
         let checks = effective_checks(&profile, &serde_json::Value::Null);
         let text = project_context(&profile, &checks, true);
