@@ -667,6 +667,30 @@ pub fn save_tool_call_extras(conn: &mut Connection, message_id: &str, extras: &[
 }
 
 /// Saved extras for these messages, by (message id, call id).
+/// The stored reasoning of messages (`meta.reasoning`), by message id.
+pub fn reasoning_of(conn: &Connection, message_ids: &[&str]) -> DbResult<HashMap<String, Value>> {
+    let mut out = HashMap::new();
+    for chunk in message_ids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id, meta FROM messages WHERE id IN ({placeholders}) AND meta IS NOT NULL"
+            ))
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params_from_iter(chunk.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(err)?;
+        for row in rows {
+            let (id, meta) = row.map_err(err)?;
+            let reasoning = serde_json::from_str::<Value>(&meta).ok().and_then(|m| m.get("reasoning").cloned());
+            if let Some(reasoning) = reasoning {
+                out.insert(id, reasoning);
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn tool_call_extras(conn: &Connection, message_ids: &[&str]) -> DbResult<HashMap<(String, String), Value>> {
     let mut out = HashMap::new();
     for chunk in message_ids.chunks(500) {

@@ -226,7 +226,9 @@ fn is_empty(content: &Value) -> bool {
 /// `commentary`, any other reply its `final_answer`. Its commentary itself
 /// isn't stored as part of the reply (it's shown with the reasoning), so
 /// it isn't sent back, like the reasoning.
-pub fn request_body(chat: &Value, phases: bool) -> Value {
+/// `echo`: reasoning may go back to the server (reasoning_echo.rs): its
+/// items, and the request for encrypted reasoning to send back later.
+pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
     let mut instructions: Vec<String> = Vec::new();
     let mut input: Vec<Value> = Vec::new();
     for message in chat.get("messages").and_then(|m| m.as_array()).into_iter().flatten() {
@@ -249,6 +251,12 @@ pub fn request_body(chat: &Value, phases: bool) -> Value {
             _ => {
                 let assistant = role == "assistant";
                 let calls = message.get("tool_calls").and_then(|c| c.as_array());
+                // The step's reasoning, before what it said and called.
+                if assistant {
+                    if let Some(details) = message.get("reasoning_details").and_then(|d| d.as_array()) {
+                        input.extend(crate::reasoning_echo::to_responses_items(details));
+                    }
+                }
                 if !is_empty(content) {
                     let mut item = json!({ "role": role, "content": content_of(content, assistant) });
                     if assistant && phases {
@@ -311,6 +319,11 @@ pub fn request_body(chat: &Value, phases: bool) -> Value {
         .or_else(|| (chat.pointer("/reasoning/enabled") == Some(&json!(false))).then_some("none"));
     if let Some(effort) = effort {
         body["reasoning"] = json!({ "effort": effort });
+        // Stateless (`store: false`): the reasoning comes back encrypted, to
+        // send with the next step.
+        if echo && effort != "none" {
+            body["include"] = json!(["reasoning.encrypted_content"]);
+        }
     }
     // `stop` and `stream_options` aren't taken: usage always comes with the
     // completed response.
@@ -378,6 +391,13 @@ impl ReplyParser {
                                 self.feed(&delta(json!({ "reasoning_content": "\n\n" })), emit)?;
                             }
                         }
+                    }
+                }
+                // Reasoning to send back with the next request: the whole item.
+                if kind == "response.output_item.done" && str_at(item, "type") == "reasoning" {
+                    let entries = crate::reasoning_echo::from_responses_item(item);
+                    if !entries.is_empty() {
+                        self.feed(&delta(json!({ "reasoning_details": entries })), emit)?;
                     }
                 }
                 if str_at(item, "type") == "function_call" {
@@ -520,6 +540,57 @@ impl ReplyParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reasoning_goes_back_as_items_before_the_step() {
+        let item = json!({
+            "type": "reasoning", "id": "rs_1",
+            "summary": [{ "type": "summary_text", "text": "Read first." }],
+            "encrypted_content": "enc",
+        });
+        let details = crate::reasoning_echo::from_responses_item(&item);
+        let chat = json!({
+            "model": "m",
+            "reasoning_effort": "high",
+            "messages": [
+                { "role": "user", "content": "Read a.txt" },
+                { "role": "assistant", "content": "", "reasoning_details": details,
+                  "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{}" } }] },
+                { "role": "tool", "tool_call_id": "c1", "content": "one" },
+            ],
+        });
+        let body = request_body(&chat, false, true);
+        let input = body["input"].as_array().unwrap();
+        let kinds: Vec<&str> = input.iter().map(|i| i["type"].as_str().unwrap_or("message")).collect();
+        assert_eq!(kinds, ["message", "reasoning", "function_call", "function_call_output"]);
+        assert_eq!(input[1], item);
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+        // Refused by the server: not asked for (the items are stripped before).
+        assert!(request_body(&chat, false, false).get("include").is_none());
+        let off = json!({ "model": "m", "reasoning_effort": "none", "messages": [] });
+        assert!(request_body(&off, false, true).get("include").is_none());
+    }
+
+    #[test]
+    fn a_finished_reasoning_item_is_kept_to_send_back() {
+        let mut parser = ReplyParser::default();
+        let mut events = Vec::new();
+        let mut emit = |e: ChatStreamEvent| events.push(e);
+        let item = json!({ "type": "reasoning", "id": "rs_1", "summary": [{ "type": "summary_text", "text": "Hm." }], "encrypted_content": "enc" });
+        for event in [
+            json!({ "type": "response.reasoning_summary_text.delta", "delta": "Hm." }),
+            json!({ "type": "response.output_item.done", "output_index": 0, "item": item }),
+            json!({ "type": "response.output_text.delta", "output_index": 1, "delta": "Done." }),
+        ] {
+            parser.feed_responses(&event, &mut emit).unwrap();
+        }
+        parser.finish(&mut emit).unwrap();
+        let details = events.iter().find_map(|e| match e {
+            ChatStreamEvent::ReasoningDetails { details } => Some(details.clone()),
+            _ => None,
+        });
+        assert_eq!(details.map(|d| crate::reasoning_echo::to_responses_items(&d)), Some(vec![item]));
+    }
     use crate::chat_request::ErrorKind;
 
     #[test]
@@ -546,7 +617,7 @@ mod tests {
                 { "role": "assistant", "content": "Done." }
             ]
         });
-        let body = request_body(&chat, false);
+        let body = request_body(&chat, false, true);
         assert_eq!(body["instructions"], "Be useful.");
         assert_eq!(body["max_output_tokens"], 1000);
         assert_eq!(body["reasoning"], json!({ "effort": "high" }));
@@ -573,7 +644,7 @@ mod tests {
 
     #[test]
     fn reasoning_off_is_effort_none() {
-        let body = request_body(&json!({ "model": "m", "messages": [], "reasoning": { "enabled": false } }), false);
+        let body = request_body(&json!({ "model": "m", "messages": [], "reasoning": { "enabled": false } }), false, true);
         assert_eq!(body["reasoning"], json!({ "effort": "none" }));
     }
 
@@ -696,11 +767,11 @@ mod tests {
             { "role": "tool", "tool_call_id": "c", "content": "r" },
             { "role": "assistant", "content": "A." }
         ] });
-        let input = request_body(&chat, true)["input"].as_array().unwrap().clone();
+        let input = request_body(&chat, true, true)["input"].as_array().unwrap().clone();
         assert_eq!(input[1]["phase"], "commentary");
         assert_eq!(input[4]["phase"], "final_answer");
         assert!(input[0].get("phase").is_none(), "never on user messages");
-        let plain = request_body(&chat, false)["input"].as_array().unwrap().clone();
+        let plain = request_body(&chat, false, true)["input"].as_array().unwrap().clone();
         assert!(plain.iter().all(|i| i.get("phase").is_none()));
     }
 

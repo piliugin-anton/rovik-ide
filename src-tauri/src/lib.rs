@@ -20,6 +20,7 @@ mod agent_tools;
 mod command_tool;
 mod system_one;
 mod opencode;
+mod reasoning_echo;
 mod filesystem;
 mod terminal;
 mod typings;
