@@ -30,6 +30,7 @@ import {
   renamePath as renamePathOnDisk,
   movePath as movePathOnDisk,
   copyPath as copyPathOnDisk,
+  fsErrorMessage,
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import type {
@@ -871,13 +872,108 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to paste:', err);
-      window.alert(String(err));
+      window.alert(fsErrorMessage(err));
     }
     if (entry.mode === 'cut') setClipboard(null);
   }
 
   /**
+   * Drag-and-drop in the Files tree: moves each dropped id into the folder
+   * (or the project root when destDir is null) via the `move_path` Tauri
+   * command. Ids are stable across a move, so open tabs are re-pointed at
+   * the new paths — including tabs inside a moved folder.
+   */
+  async function handleTreeDrop(sourceIds: string[], destDir: TreeRow | null) {
+    const destDirId = destDir ? destDir.id : rootId();
+    if (!destDirId || sourceIds.length === 0) return;
+    const destPath = destDir ? destDir.path : rootPath();
+    if (!destPath) return;
+
+    const byId = new Map(tree.rows().map((r) => [r.id, r]));
+    // A folder dropped together with its own child moves once, with the
+    // parent: skip ids nested under another dragged folder.
+    const draggedPaths = new Map<string, string>();
+    for (const id of sourceIds) {
+      const row = byId.get(id);
+      if (row) draggedPaths.set(id, row.path);
+    }
+    const topLevel = sourceIds.filter((id) => {
+      const path = draggedPaths.get(id);
+      if (!path) return false;
+      for (const [otherId, otherPath] of draggedPaths) {
+        if (otherId !== id && byId.get(otherId)?.isDir && isAtOrUnder(path, otherPath)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const failures: string[] = [];
+    const moved: { id: string; from: string; to: string }[] = [];
+    for (const id of topLevel) {
+      const src = byId.get(id);
+      if (!src) continue;
+      // Same folder (or onto itself): nothing to do.
+      if (destDir && src.id === destDir.id) continue;
+      if (destDir && isAtOrUnder(destDir.path, src.path)) {
+        failures.push(`${src.name}: can't move a folder into itself`);
+        continue;
+      }
+      if (parentPathOf(src.path) === destPath) continue;
+      try {
+        const to = await movePathOnDisk(id, destDirId);
+        moved.push({ id, from: src.path, to });
+      } catch (err) {
+        console.error(`Failed to move ${src.path}:`, err);
+        failures.push(`${src.name}: ${fsErrorMessage(err)}`);
+      }
+    }
+
+    if (moved.length > 0) {
+      // Tabs at or inside a moved path follow it to the new location.
+      setOpenFiles((prev) =>
+        prev.map((f) => {
+          const m = moved.find((m) => f.path === m.from || isAtOrUnder(f.path, m.from));
+          if (!m) return f;
+          const rest = f.path.slice(m.from.length).replace(/^[\\/]/, '');
+          const path = rest ? `${m.to}/${rest}` : m.to;
+          const name = path.split(/[\\/]/).pop() ?? f.name;
+          return { ...f, path, name };
+        })
+      );
+      if (activePath()) {
+        const m = moved.find((m) => activePath() === m.from || isAtOrUnder(activePath()!, m.from));
+        if (m) {
+          const rest = activePath()!
+            .slice(m.from.length)
+            .replace(/^[\\/]/, '');
+          setActivePath(rest ? `${m.to}/${rest}` : m.to);
+        }
+      }
+      // Refresh both sides right away instead of waiting for the watcher.
+      for (const m of moved) {
+        tree.refresh(m.from);
+        tree.refresh(m.to);
+      }
+      // A pending cut of something just moved no longer applies.
+      const entry = clipboard();
+      if (entry?.mode === 'cut' && entry.ids.some((id) => moved.some((m) => m.id === id))) {
+        setClipboard(null);
+      }
+    }
+    if (failures.length > 0) window.alert(failures.join('\n'));
+  }
+
+  function parentPathOf(path: string): string | null {
+    const trimmed = path.replace(/[\\/]+$/, '');
+    const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+    if (idx < 0) return null;
+    return idx === 0 ? trimmed.slice(0, 1) : trimmed.slice(0, idx);
+  }
+
+  /**
    * The folder a new file or folder goes in: the clicked folder itself, the
+
    * folder a clicked file is in, or the project root. With several items
    * selected, the topmost one decides.
    */
@@ -943,7 +1039,7 @@ export default function App() {
         }
       } catch (err) {
         console.error(`Failed to create ${draft.isDir ? 'folder' : 'file'}:`, err);
-        window.alert(String(err));
+        window.alert(fsErrorMessage(err));
       }
       return;
     }
@@ -958,7 +1054,7 @@ export default function App() {
       if (activePath() === row.path) setActivePath(newPath);
     } catch (err) {
       console.error('Failed to rename:', err);
-      window.alert(String(err));
+      window.alert(fsErrorMessage(err));
     }
   }
 
@@ -1319,8 +1415,10 @@ export default function App() {
               rows={displayRows}
               expanded={tree.expanded}
               activePath={activePath}
+              selectedIds={selectedFileIds}
               onToggle={tree.toggle}
               onOpenFile={openFile}
+              onDrop={(ids, destDir) => void handleTreeDrop(ids, destDir)}
               onSelect={handleFileTreeSelect}
               onClearSelection={handleFileTreeClearSelection}
               editingId={editingId}

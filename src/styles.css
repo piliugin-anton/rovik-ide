@@ -361,6 +361,20 @@ body {
   outline: 1px solid var(--fg-dim);
   outline-offset: -1px;
 }
+/* The rows being carried follow the pointer ghost; dim them in place. */
+.tree-row.drag-source {
+  opacity: 0.45;
+}
+/* Pointer-based drag: no text may select and the cursor stays a grab. */
+.file-tree.tree-dragging,
+.file-tree.tree-dragging .tree-row {
+  cursor: grabbing;
+}
+body.tree-dragging {
+  cursor: grabbing;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .tree-drag-ghost {
   position: fixed;
   z-index: 10000;

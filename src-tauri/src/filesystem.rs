@@ -599,35 +599,284 @@ pub fn get_path_id(state: State<'_, WatcherState>, path: String) -> Result<Strin
     Ok(id)
 }
 
+/// Prefixes so the frontend can tell conflicts and bad names apart from
+/// unexpected I/O failures (see `isAlreadyExists` / `isInvalidName` in
+/// lib/commands.ts — same pattern as the existing `trash-unavailable: `).
+const ALREADY_EXISTS_PREFIX: &str = "already-exists: ";
+const INVALID_NAME_PREFIX: &str = "invalid-name: ";
+
+/// Device names Windows refuses as a file or folder (stem before any `.`),
+/// case-insensitively: they address DOS devices instead of files. Creating
+/// or renaming to one fails with a confusing OS error, so reject it here.
+const WINDOWS_RESERVED_STEMS: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Validates a single file/folder name (never a path) before it is joined
+/// onto a parent directory. Without this, a name like `../x` or `a/b` escapes
+/// the directory the id resolved to — through create, rename and move alike.
+///
+/// `windows_rules` is `cfg!(windows)` in production; a parameter so the
+/// Windows-only checks are testable on every OS. The portable checks run
+/// everywhere, so a project created on Linux stays openable on Windows.
+fn validate_file_name_impl(raw: &str, windows_rules: bool) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(format!("{INVALID_NAME_PREFIX}name must not be empty"));
+    }
+    if name == "." || name == ".." {
+        return Err(format!("{INVALID_NAME_PREFIX}{raw:?} is reserved"));
+    }
+    if name.chars().any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control()) {
+        return Err(format!(
+            "{INVALID_NAME_PREFIX}{raw:?}: names can't contain slashes or control characters"
+        ));
+    }
+    // Most filesystems cap a single component at 255 bytes.
+    if name.len() > 255 {
+        return Err(format!("{INVALID_NAME_PREFIX}{raw:?}: name is too long"));
+    }
+    if windows_rules {
+        if name.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')) {
+            return Err(format!(
+                "{INVALID_NAME_PREFIX}{raw:?}: <>:\"|?* aren't allowed in names on Windows"
+            ));
+        }
+        // Win32 silently strips these, so `foo.` would rename to `foo`.
+        if name.ends_with(' ') || name.ends_with('.') {
+            return Err(format!(
+                "{INVALID_NAME_PREFIX}{raw:?}: names can't end with a space or dot on Windows"
+            ));
+        }
+        let stem = name.split('.').next().unwrap_or(name);
+        if WINDOWS_RESERVED_STEMS.contains(&stem.to_ascii_uppercase().as_str()) {
+            return Err(format!(
+                "{INVALID_NAME_PREFIX}{stem:?} is reserved on Windows (a device name)"
+            ));
+        }
+    }
+    Ok(name.to_string())
+}
+
+fn validate_file_name(raw: &str) -> Result<String, String> {
+    validate_file_name_impl(raw, cfg!(windows))
+}
+
+/// Whether `path` is `ancestor` or lives under it, component-wise.
+/// Case-insensitive filesystems (Windows, default macOS) treat `FOO/x` as
+/// under `foo`, so compare lowercased there too — otherwise moving a folder
+/// into its own differently-cased descendant slips past the guard.
+fn is_at_or_under(path: &Path, ancestor: &Path) -> bool {
+    if path == ancestor || path.starts_with(ancestor) {
+        return true;
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+        let (p, a) = (lower(path), lower(ancestor));
+        p == a || p.starts_with(&format!("{}/", a.trim_end_matches(['/', '\\'])))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// Whether both paths point at the same file (same inode / file index).
+/// This is what tells a case-only rename (`foo` → `FOO`, where the target
+/// "exists" but is really the source itself) apart from a genuine conflict.
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    match (file_identity(a), file_identity(b)) {
+        (Some(x), Some(y)) => x == y,
+        // Identity unavailable (broken symlink, exotic fs): same file only
+        // when the paths are literally equal; anything else is a conflict.
+        _ => a == b,
+    }
+}
+
+/// Renames without ever silently replacing an existing destination.
+/// `std::fs::rename` maps to `rename(2)` / `MoveFileExW` *with* replace, so
+/// a plain check-then-rename has a TOCTOU hole: a file created between the
+/// check and the rename gets destroyed. Where the OS offers an atomic
+/// no-replace rename, use it; elsewhere fall back to check-then-rename
+/// (a tiny residual race on those platforms, noted here rather than hidden).
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c_from = CString::new(from.as_os_str().as_bytes()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "source path contains NUL",
+            )
+        })?;
+        let c_to = CString::new(to.as_os_str().as_bytes()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "target path contains NUL",
+            )
+        })?;
+        // SAFETY: plain C call with valid pointers; no locks held.
+        let r = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                c_from.as_ptr(),
+                libc::AT_FDCWD,
+                c_to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if r == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        // Old kernel/libc without renameat2: best-effort fallback.
+        if err.raw_os_error() == Some(libc::ENOSYS) {
+            if fs::symlink_metadata(to).is_ok() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "destination exists",
+                ));
+            }
+            return fs::rename(from, to);
+        }
+        return Err(err);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+        use windows::core::PCWSTR;
+        let wide =
+            |p: &Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (from_w, to_w) = (wide(from), wide(to));
+        // No MOVEFILE_REPLACE_EXISTING: an existing destination fails with
+        // ERROR_ALREADY_EXISTS instead of being destroyed. WRITE_THROUGH
+        // makes the rename durable before we report success.
+        // SAFETY: pointers borrow live Vecs; no locks held across the call.
+        return unsafe {
+            MoveFileExW(
+                PCWSTR::from_raw(from_w.as_ptr()),
+                PCWSTR::from_raw(to_w.as_ptr()),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        }
+        .map_err(|e| std::io::Error::from_raw_os_error(e.code().0));
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        if fs::symlink_metadata(to).is_ok() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "destination exists",
+            ));
+        }
+        fs::rename(from, to)
+    }
+}
+
+/// `rename_no_replace` plus a short retry on Windows, where a rename can
+/// transiently fail with a sharing violation: antivirus, search indexer, or
+/// a just-closed reader holding the file for a moment. Retries only
+/// permission/sharing failures — anything else (and every platform's
+/// AlreadyExists) returns immediately.
+fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        // ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33).
+        let transient = |e: &std::io::Error| {
+            e.kind() == std::io::ErrorKind::PermissionDenied
+                || matches!(e.raw_os_error(), Some(32) | Some(33))
+        };
+        let mut attempt = 0;
+        loop {
+            match rename_no_replace(from, to) {
+                Ok(()) => return Ok(()),
+                Err(e) if transient(&e) && attempt < 5 => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(50 * attempt as u64));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        rename_no_replace(from, to)
+    }
+}
+
+/// Maps a rename/move I/O failure to the message the frontend shows.
+fn rename_error(from: &Path, err: std::io::Error) -> String {
+    match err.kind() {
+        std::io::ErrorKind::AlreadyExists => {
+            format!("{ALREADY_EXISTS_PREFIX}{}: already exists", from.display())
+        }
+        // Cross-device without a fallback (rename in place can't EXDEV, but
+        // keep the message intelligible if the OS disagrees).
+        std::io::ErrorKind::CrossesDevices => {
+            format!("{}: can't move across drives: {err}", from.display())
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            format!("{}: permission denied (locked by another app?): {err}", from.display())
+        }
+        _ => format!("{}: {err}", from.display()),
+    }
+}
+
 #[tauri::command]
 /// Creates an empty file; returns its path (the tree opens it).
+/// Exclusive: fails when the name is taken instead of truncating it —
+/// `File::create` would destroy an existing file's contents on a race.
 pub fn create_file(
     state: State<'_, WatcherState>,
     dir_id: String,
     name: String,
 ) -> Result<String, String> {
     let dir = resolve_id(&state, &dir_id)?;
-    let p = dir.join(&name);
-    if p.exists() {
-        return Err(format!("{name}: already exists"));
+    let name = validate_file_name(&name)?;
+    if !dir.is_dir() {
+        return Err(format!("{}: not a directory", dir.display()));
     }
-    fs::File::create(&p).map_err(|e| format!("{name}: {e}"))?;
+    let p = dir.join(&name);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&p)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("{ALREADY_EXISTS_PREFIX}{name}: already exists")
+            } else {
+                format!("{name}: {e}")
+            }
+        })?;
     remember_id(&state, &stable_file_id(&p), &p);
     Ok(p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
+/// Creates one directory. Fails when the name is taken (`create_dir_all`
+/// would silently succeed on an existing dir and mask the conflict).
 pub fn create_dir(
     state: State<'_, WatcherState>,
     dir_id: String,
     name: String,
 ) -> Result<(), String> {
     let dir = resolve_id(&state, &dir_id)?;
-    let p = dir.join(&name);
-    if p.exists() {
-        return Err(format!("{name}: already exists"));
+    let name = validate_file_name(&name)?;
+    if !dir.is_dir() {
+        return Err(format!("{}: not a directory", dir.display()));
     }
-    fs::create_dir_all(&p).map_err(|e| format!("{name}: {e}"))?;
+    let p = dir.join(&name);
+    fs::create_dir(&p).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            format!("{ALREADY_EXISTS_PREFIX}{name}: already exists")
+        } else {
+            format!("{name}: {e}")
+        }
+    })?;
     remember_id(&state, &stable_file_id(&p), &p);
     Ok(())
 }
@@ -663,6 +912,14 @@ pub fn delete_path(state: State<'_, WatcherState>, id: String, permanent: Option
 /// The id is unchanged by the rename — same inode/file-index — so we just
 /// update where it points. Returns the new absolute path so the frontend can
 /// update any open tab.
+///
+/// Cross-platform notes:
+/// - Never overwrites: an atomic no-replace rename where the OS offers one
+///   (Linux `renameat2`, Windows `MoveFileExW` without REPLACE_EXISTING).
+/// - Case-only renames (`foo` → `FOO`) go through a temporary intermediate
+///   name: on case-insensitive filesystems (Windows, default macOS) the
+///   target "exists" but is the source itself, and a direct rename may
+///   silently do nothing.
 #[tauri::command]
 pub fn rename_path(
     state: State<'_, WatcherState>,
@@ -670,21 +927,62 @@ pub fn rename_path(
     new_name: String,
 ) -> Result<String, String> {
     let from = resolve_id(&state, &id)?;
+    let new_name = validate_file_name(&new_name)?;
     let parent = from
         .parent()
         .ok_or_else(|| "cannot rename the root folder".to_string())?;
     let to = parent.join(&new_name);
-    if to.exists() {
-        return Err(format!("{new_name}: already exists"));
+    if to == from {
+        return Ok(to.to_string_lossy().to_string());
     }
-    fs::rename(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+    if fs::symlink_metadata(&to).is_ok() {
+        if is_same_file(&from, &to) {
+            // Case-only (or normalization-only, on macOS) spelling change.
+            return rename_case_only(&state, &id, &from, &to);
+        }
+        return Err(format!("{ALREADY_EXISTS_PREFIX}{new_name}: already exists"));
+    }
+    rename_with_retry(&from, &to).map_err(|e| rename_error(&from, e))?;
     remember_id(&state, &id, &to);
+    Ok(to.to_string_lossy().to_string())
+}
+
+/// The temp-hop for case-only renames: `from` → unique temp name → `to`.
+/// A direct case-only `rename` is a no-op on some case-insensitive
+/// filesystems, leaving the old spelling in place without an error.
+fn rename_case_only(
+    state: &WatcherState,
+    id: &str,
+    from: &Path,
+    to: &Path,
+) -> Result<String, String> {
+    let parent = from
+        .parent()
+        .ok_or_else(|| "cannot rename the root folder".to_string())?;
+    let tmp = parent.join(format!(
+        ".rename-{}-{}.tmp",
+        std::process::id(),
+        CALL_COUNT.fetch_add(1, Ordering::SeqCst)
+    ));
+    if fs::symlink_metadata(&tmp).is_ok() {
+        return Err(format!("{}: try again", from.display()));
+    }
+    rename_with_retry(from, &tmp).map_err(|e| rename_error(from, e))?;
+    if let Err(e) = rename_with_retry(&tmp, to) {
+        // Best effort rollback so the entry doesn't stay at the temp name.
+        let _ = fs::rename(&tmp, from);
+        return Err(rename_error(from, e));
+    }
+    remember_id(state, id, to);
     Ok(to.to_string_lossy().to_string())
 }
 
 /// Moves an entry into a different directory (optionally renaming it),
 /// i.e. what a cut-then-paste does. `dest_dir_id` must be a directory's id.
 /// Returns the new absolute path so the frontend can update any open tab.
+/// Never overwrites; moving a folder into itself or a descendant is rejected
+/// here (not just in the UI), and a cross-device move falls back to
+/// copy-then-delete, since `rename` cannot cross filesystems (EXDEV).
 #[tauri::command]
 pub fn move_path(
     state: State<'_, WatcherState>,
@@ -694,17 +992,84 @@ pub fn move_path(
 ) -> Result<String, String> {
     let from = resolve_id(&state, &id)?;
     let dest_dir = resolve_id(&state, &dest_dir_id)?;
-    let name = new_name.unwrap_or_else(|| {
-        from.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default()
-    });
-    let to = dest_dir.join(&name);
-    if to.exists() {
-        return Err(format!("{name}: already exists"));
+    if !dest_dir.is_dir() {
+        return Err(format!("{}: not a directory", dest_dir.display()));
     }
-    fs::rename(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
-    remember_id(&state, &id, &to);
+    let name = match new_name {
+        Some(n) => validate_file_name(&n)?,
+        None => from
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    };
+    if name.is_empty() {
+        return Err(format!("{}: cannot move the root folder", from.display()));
+    }
+    if is_at_or_under(&dest_dir, &from) {
+        return Err(format!(
+            "{INVALID_NAME_PREFIX}can't move {} into itself",
+            from.display()
+        ));
+    }
+    let to = dest_dir.join(&name);
+    if to == from {
+        return Ok(to.to_string_lossy().to_string());
+    }
+    if fs::symlink_metadata(&to).is_ok() {
+        if is_same_file(&from, &to) {
+            return rename_case_only(&state, &id, &from, &to);
+        }
+        return Err(format!("{ALREADY_EXISTS_PREFIX}{name}: already exists"));
+    }
+    match rename_with_retry(&from, &to) {
+        Ok(()) => {
+            remember_id(&state, &id, &to);
+            Ok(to.to_string_lossy().to_string())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            move_cross_device(&state, &id, &from, &to)
+        }
+        Err(e) => Err(rename_error(&from, e)),
+    }
+}
+
+/// EXDEV fallback: copy the entry to the target, verify, then remove the
+/// source. The copy gets a *new* inode/file-index, so the stable id changes:
+/// keep the old id pointing at the new path (in-flight frontend ids still
+/// resolve) and register the fresh id too. The tree picks the new ids up on
+/// its next `read_dir_entries`.
+fn move_cross_device(
+    state: &WatcherState,
+    id: &str,
+    from: &Path,
+    to: &Path,
+) -> Result<String, String> {
+    let meta = fs::symlink_metadata(from).map_err(|e| format!("{}: {e}", from.display()))?;
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "{}: can't move a link across drives (copy it instead)",
+            from.display()
+        ));
+    }
+    if meta.is_dir() {
+        copy_dir_recursive(from, to).map_err(|e| format!("{}: {e}", from.display()))?;
+    } else {
+        fs::copy(from, to).map_err(|e| format!("{}: {e}", from.display()))?;
+        // Don't delete the source when the copy looks truncated.
+        let dest_len = fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+        if meta.len() != dest_len {
+            let _ = fs::remove_file(to);
+            return Err(format!("{}: copy was incomplete, source kept", from.display()));
+        }
+    }
+    let remove = if meta.is_dir() {
+        fs::remove_dir_all(from)
+    } else {
+        fs::remove_file(from)
+    };
+    remove.map_err(|e| format!("{}: moved, but couldn't remove the source: {e}", from.display()))?;
+    remember_id(state, id, to);
+    remember_id(state, &stable_file_id(to), to);
     Ok(to.to_string_lossy().to_string())
 }
 
@@ -991,6 +1356,145 @@ mod watch_tests {
         assert_eq!(kind("packages/api/dist/index.js"), WatchPath::Visible, "another package's dist");
         assert_eq!(kind("dist/index.js"), WatchPath::Visible);
         assert_eq!(kind("server.log"), WatchPath::Ignored);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rename-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn watcher() -> WatcherState {
+        WatcherState {
+            active_watcher: Mutex::new(None),
+            gitignore: Mutex::new(None),
+            id_to_path: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[test]
+    fn names_are_validated_before_touching_disk() {
+        // Portable rules, on every OS.
+        for bad in ["", "   ", ".", "..", "a/b", "a\\b", "a\0b", "a\x07b"] {
+            assert!(validate_file_name_impl(bad, false).is_err(), "{bad:?}");
+        }
+        assert!(validate_file_name_impl(&"x".repeat(256), false).is_err());
+        assert_eq!(validate_file_name_impl("  ok.txt  ", false).unwrap(), "ok.txt");
+        assert!(validate_file_name_impl("don't?.txt", false).is_ok());
+        // Windows-only rules, testable anywhere via the flag.
+        for bad in ["CON", "con.txt", "LPT1", "foo?", "a<b", "trail. ", "trail."] {
+            assert!(validate_file_name_impl(bad, true).is_err(), "{bad:?}");
+        }
+        assert!(validate_file_name_impl("don't?.txt", true).is_err());
+        assert!(validate_file_name_impl("contest.txt", true).is_ok());
+        assert!(validate_file_name_impl("okay name (1).txt", true).is_ok());
+    }
+
+    #[test]
+    fn descendant_moves_are_detected() {
+        let root = Path::new("/proj");
+        assert!(is_at_or_under(&root.join("sub/dir"), root));
+        assert!(is_at_or_under(root, root));
+        assert!(!is_at_or_under(&root.join("other"), &root.join("sub")));
+        // A sibling whose name merely shares a prefix is not a descendant.
+        assert!(!is_at_or_under(&Path::new("/proj2/x"), root));
+    }
+
+    #[test]
+    fn no_replace_rename_never_overwrites() {
+        let dir = scratch("noreplace");
+        let (from, to) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&from, "new").unwrap();
+        std::fs::write(&to, "victim").unwrap();
+        let err = rename_no_replace(&from, &to).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "victim");
+        assert!(from.exists(), "source is kept on conflict");
+
+        let ok_to = dir.join("c.txt");
+        rename_no_replace(&from, &ok_to).unwrap();
+        assert_eq!(std::fs::read_to_string(&ok_to).unwrap(), "new");
+        assert!(!from.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn case_only_rename_goes_through_a_temp_name() {
+        let dir = scratch("caseonly");
+        let from = dir.join("MiXeD.txt");
+        std::fs::write(&from, "data").unwrap();
+        let to = dir.join("mixed.txt");
+        let state = watcher();
+        let id = stable_file_id(&from);
+        remember_id(&state, &id, &from);
+        // The temp-hop works whether or not the fs is case-sensitive: same
+        // helper both platforms use once `is_same_file` matched.
+        let out = rename_case_only(&state, &id, &from, &to).unwrap();
+        assert_eq!(Path::new(&out), to);
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "data");
+        assert!(!from.exists());
+        assert_eq!(resolve_id(&state, &id).unwrap(), to);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".rename-"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn temp_hop_rename_updates_the_id_mapping() {
+        let dir = scratch("temphop");
+        let from = dir.join("a.txt");
+        std::fs::write(&from, "data").unwrap();
+        let to = dir.join("b.txt");
+        let state = watcher();
+        let id = stable_file_id(&from);
+        remember_id(&state, &id, &from);
+        // Direct unit test of the helper both legs use.
+        rename_with_retry(&from, &to).unwrap();
+        remember_id(&state, &id, &to);
+        assert_eq!(resolve_id(&state, &id).unwrap(), to);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cross_device_move_copies_then_removes() {
+        let dir = scratch("xdev");
+        let (from, to) = (dir.join("orig.txt"), dir.join("moved.txt"));
+        std::fs::write(&from, "payload").unwrap();
+        let state = watcher();
+        let id = stable_file_id(&from);
+        remember_id(&state, &id, &from);
+        let out = move_cross_device(&state, &id, &from, &to).unwrap();
+        assert_eq!(Path::new(&out), to);
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "payload");
+        assert!(!from.exists(), "source removed after a verified copy");
+        assert_eq!(resolve_id(&state, &id).unwrap(), to);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn links_refuse_the_cross_device_fallback() {
+        let dir = scratch("xdevlink");
+        let link = dir.join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("nowhere"), &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(&link, "x").unwrap();
+        let state = watcher();
+        // Symlinks must never be "moved" by copying their target's bytes.
+        #[cfg(unix)]
+        assert!(move_cross_device(&state, "id", &link, &dir.join("out")).is_err());
+        assert!(fs::symlink_metadata(&link).is_ok(), "source kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

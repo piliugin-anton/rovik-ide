@@ -70,6 +70,25 @@ export function isTrashUnavailable(err: unknown): boolean {
   return String(err).startsWith('trash-unavailable: ');
 }
 
+/**
+ * Backend error kinds from the hardened rename/move/create commands
+ * (src-tauri/src/filesystem.rs): a name the target already has, or a name
+ * no OS (or Windows in particular) accepts. Matched the same way as
+ * isTrashUnavailable so the UI can phrase them instead of dumping Rust text.
+ */
+export function isAlreadyExists(err: unknown): boolean {
+  return String(err).startsWith('already-exists: ');
+}
+
+export function isInvalidName(err: unknown): boolean {
+  return String(err).startsWith('invalid-name: ');
+}
+
+/** Strips the backend's `kind: ` prefixes for display in an alert. */
+export function fsErrorMessage(err: unknown): string {
+  return String(err).replace(/^(already-exists|invalid-name|trash-unavailable):\s*/, '');
+}
+
 // Rename in place (same parent dir, new name). Returns the new absolute
 // path so callers can update any open tab.
 export async function renamePath(id: string, newName: string): Promise<string> {
