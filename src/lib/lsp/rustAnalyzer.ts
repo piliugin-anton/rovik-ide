@@ -102,7 +102,6 @@ export function ensureRustSupport(root: string | null) {
     }
     await launch(root, binary);
   })().catch((err) => {
-    console.error('rust-analyzer:', err);
     notify({
       id: NOTE_INSTALL,
       kind: 'error',
@@ -156,10 +155,11 @@ export function checkForRustAnalyzerUpdate() {
 async function find(): Promise<RaBinary | null> {
   const prefs = loadPrefs();
   try {
-    return await invoke<RaBinary | null>('ra_find', {
+    const binary = await invoke<RaBinary | null>('ra_find', {
       customPath: prefs.customPath ?? null,
       preferSystem: !!prefs.preferSystem,
     });
+    return binary;
   } catch (err) {
     // The custom path doesn't work: say so instead of quietly using another.
     notify({
@@ -366,7 +366,6 @@ async function checkForUpdate({ manual }: { manual: boolean }) {
   try {
     release = await invoke<RaRelease>('ra_latest_release');
   } catch (err) {
-    console.warn('rust-analyzer update check failed:', err);
     if (manual)
       notify({
         kind: 'error',

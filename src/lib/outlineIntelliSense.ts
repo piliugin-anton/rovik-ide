@@ -39,8 +39,7 @@ async function symbolsFor(model: monaco.editor.ITextModel): Promise<OutlineSymbo
       content: model.getValue(),
     });
     return symbols;
-  } catch (err) {
-    console.warn('outline_symbols failed:', err);
+  } catch {
     return null;
   }
 }
@@ -53,9 +52,11 @@ function toSymbolKind(kind: string): monaco.languages.SymbolKind {
   if (k.includes('interface')) return K.Interface;
   if (k.includes('struct') || k.includes('union')) return K.Struct;
   if (k.includes('enum')) return K.Enum;
-  if (k.includes('function') || k.includes('method') || k.includes('constructor')) return K.Function;
+  if (k.includes('function') || k.includes('method') || k.includes('constructor'))
+    return K.Function;
   if (k.includes('module') || k.includes('namespace')) return K.Module;
-  if (k.includes('type') && (k.includes('alias') || k.includes('declaration'))) return K.TypeParameter;
+  if (k.includes('type') && (k.includes('alias') || k.includes('declaration')))
+    return K.TypeParameter;
   if (k.includes('constant')) return K.Constant;
   if (k.includes('variable') || k.includes('field') || k.includes('property')) return K.Variable;
   if (k.includes('heading') || k.includes('section')) return K.String;
@@ -147,10 +148,7 @@ export function ensureOutlineIntelliSense(): void {
       const named = symbols.filter((s) => s.name === word.word);
       if (named.length === 0) return null;
       const atOrAbove = named.filter((s) => s.start_line <= position.lineNumber);
-      const target =
-        atOrAbove.length > 0
-          ? atOrAbove[atOrAbove.length - 1]!
-          : named[0]!;
+      const target = atOrAbove.length > 0 ? atOrAbove[atOrAbove.length - 1]! : named[0]!;
       // Already at the definition: let the typed provider (if any) answer.
       if (target.start_line === position.lineNumber) return null;
       return {

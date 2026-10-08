@@ -48,19 +48,7 @@ pub async fn load_nodejs_project_typings(
                 }
             }
 
-            let file_name = e.file_name().to_string_lossy();
-            if e.file_type().is_dir() {
-                return file_name != ".bin"
-                    && file_name != ".cache"
-                    && file_name != "test"
-                    && file_name != "tests"
-                    && file_name != "__tests__"
-                    && file_name != "coverage"
-                    && file_name != "docs"
-                    && file_name != "examples"
-                    && file_name != ".github";
-            }
-            file_name.ends_with(".d.ts") || file_name == "package.json"
+            filter_entry(e.file_name(), e.file_type().is_dir())
         });
 
     for entry in walker.filter_map(|e| e.ok()) {
@@ -83,4 +71,56 @@ pub async fn load_nodejs_project_typings(
     }
 
     Ok(libs)
+}
+
+/// Whether a directory entry inside `node_modules` is worth descending into
+/// (for directories) or collecting (for files: `*.d.ts` and `package.json`,
+/// which the TS worker needs to resolve bare imports via the `types` field).
+///
+/// pnpm's content store (`.pnpm`), its set-aside copies (`.ignored`) and the
+/// store dir (`.store`) never participate in Node resolution — the top-level
+/// links (e.g. `node_modules/solid-js` → `.pnpm/...`) are what TypeScript
+/// walks up to. Collecting the store too duplicates every package (it was
+/// roughly a third of a 32MB postMessage to the TS worker) under paths like
+/// `node_modules/.pnpm/...` that resolve nothing.
+fn filter_entry(file_name: &std::ffi::OsStr, is_dir: bool) -> bool {
+    let file_name = file_name.to_string_lossy();
+    if is_dir {
+        return file_name != ".bin"
+            && file_name != ".cache"
+            && file_name != ".pnpm"
+            && file_name != ".ignored"
+            && file_name != ".store"
+            && file_name != "test"
+            && file_name != "tests"
+            && file_name != "__tests__"
+            && file_name != "coverage"
+            && file_name != "docs"
+            && file_name != "examples"
+            && file_name != ".github";
+    }
+    file_name.ends_with(".d.ts") || file_name == "package.json"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn keeps_typings_and_package_json_but_skips_pnpm_store_and_test_dirs() {
+        // Directories: pnpm's store dirs are pruned, everything else descends.
+        for dir in [".pnpm", ".ignored", ".store", "test", "node_modules", "solid-js"] {
+            assert_eq!(
+                filter_entry(OsStr::new(dir), true),
+                ![".pnpm", ".ignored", ".store", "test"].contains(&dir),
+                "dir {dir}"
+            );
+        }
+        // Files: only declarations and package manifests are collected.
+        assert!(filter_entry(OsStr::new("index.d.ts"), false));
+        assert!(filter_entry(OsStr::new("package.json"), false));
+        assert!(!filter_entry(OsStr::new("index.js"), false));
+        assert!(!filter_entry(OsStr::new("README.md"), false));
+    }
 }

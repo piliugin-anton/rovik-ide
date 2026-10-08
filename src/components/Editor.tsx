@@ -9,7 +9,7 @@ import { addToChat } from '../lib/editorBridge';
 import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
 import { gitBaseFor } from '../lib/gitMarks';
 import { diffLines, splitLines } from '../lib/lineDiff';
-import { ensureProjectIntelliSense, modelUriFor } from '../lib/intellisense';
+import { ensureProjectIntelliSense, modelUriFor, dropProjectSourceLib } from '../lib/intellisense';
 import { ensureOutlineIntelliSense } from '../lib/outlineIntelliSense';
 import {
   checkForRustAnalyzerUpdate,
@@ -81,6 +81,10 @@ export default function Editor(props: EditorProps) {
     } else {
       model = monaco.editor.createModel(content, props.language(), uri);
     }
+
+    // From here on the worker serves this file from its model (mirror sync),
+    // so its extra-lib snapshot must go — one file in the program, not two.
+    dropProjectSourceLib(props.currentFilePath);
 
     // Create the editor SYNCHRONOUSLY during mount. The previous version
     // awaited `load_nodejs_project_typings` first, so the editor did not

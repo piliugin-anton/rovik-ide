@@ -119,8 +119,7 @@ export class LspClient {
     const channel = new Channel<LspEvent>();
     channel.onmessage = (event) => {
       if (event.type === 'message') this.receive(event.data);
-      else if (event.type === 'log') console.debug(`[${this.opts.name}]`, event.line);
-      else this.handleExit(event.code);
+      else if (event.type === 'exit') this.handleExit(event.code);
     };
     this.serverId = await invoke<string>('lsp_start', {
       command: this.opts.command,
@@ -228,9 +227,7 @@ export class LspClient {
   }
 
   private send(message: Json) {
-    void invoke('lsp_send', { id: this.serverId, message: JSON.stringify(message) }).catch((err) =>
-      console.warn(`[${this.opts.name}] send failed:`, err)
-    );
+    void invoke('lsp_send', { id: this.serverId, message: JSON.stringify(message) }).catch(() => {});
   }
 
   /* -------------------------------------------------------------------------
@@ -313,9 +310,6 @@ export class LspClient {
         this.opts.onShowMessage?.(type, String(params?.message ?? ''));
         break;
       }
-      case 'window/logMessage':
-        console.debug(`[${this.opts.name}]`, params?.message);
-        break;
     }
   }
 

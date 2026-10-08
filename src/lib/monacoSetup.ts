@@ -18,13 +18,30 @@ import JsonWorker from 'monaco-editor/language/json/json.worker.js?worker';
 import CssWorker from 'monaco-editor/language/css/css.worker.js?worker';
 import HtmlWorker from 'monaco-editor/language/html/html.worker.js?worker';
 
+type ViteWorkerFactory = new (options?: { name?: string }) => Worker;
+
+/**
+ * Monaco's workers are ES modules, so each must run as a module worker
+ * (microsoft/monaco-editor docs/integrate-esm.md, "Using Vite"):
+ * `new Worker(url, { type: 'module' })`. Constructing one with no options
+ * makes a classic worker, which throws on the workers' `import` statements —
+ * the worker dies and every IntelliSense feature its language provides
+ * (completions, hover, cross-file go-to-definition, diagnostics) silently
+ * stops, while basic token coloring keeps working. Vite forwards the
+ * constructor argument to the native Worker, so `type` reaches it even
+ * though vite/client's `*?worker` types only declare `name`.
+ */
+function spawn(factory: ViteWorkerFactory, label: string): Worker {
+  return new factory({ name: label, type: 'module' } as { name?: string });
+}
+
 self.MonacoEnvironment = {
   getWorker(_, label) {
-    if (label === 'json') return new JsonWorker();
-    if (label === 'css' || label === 'less' || label === 'scss') return new CssWorker();
-    if (label === 'html' || label === 'handlebars' || label === 'razor') return new HtmlWorker();
-    if (label === 'typescript' || label === 'javascript') return new TsWorker();
-    return new EditorWorker();
+    if (label === 'json') return spawn(JsonWorker, label);
+    if (label === 'css' || label === 'less' || label === 'scss') return spawn(CssWorker, label);
+    if (label === 'html' || label === 'handlebars' || label === 'razor')
+      return spawn(HtmlWorker, label);
+    if (label === 'typescript' || label === 'javascript') return spawn(TsWorker, label);
+    return spawn(EditorWorker, label);
   },
 };
-
