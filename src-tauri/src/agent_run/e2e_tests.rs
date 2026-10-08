@@ -1132,6 +1132,36 @@ async fn a_blocked_command_tried_again_pauses_the_run() {
 }
 
 #[tokio::test]
+async fn a_pattern_sent_as_literal_text_is_searched_as_a_regex() {
+    let css = ".cursor-follower { left: 0; }\n.btn { color: red; }\n.link-hover:hover { transform: rotate(45deg); }\n";
+    let h = harness(&[("src/styles.css", css)]).await;
+    let search = |id: &'static str, query: &'static str| Reply::Call {
+        id,
+        name: "search_code",
+        args: json!({ "context_lines": 2, "path_glob": "styles.css", "query": query }),
+    };
+    let (url, _) = model(vec![
+        search("s1", r"cursor-follower|link-hover|rotate\(45deg\)"),
+        search("s2", r"nothing-here|absent\(x\)"),
+        Reply::Text("Found them."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Find the cursor styles"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let found = result_of(&messages, "s1");
+    // Lines 1 and 3 (link-hover and rotate(45deg) share a line); not .btn.
+    assert!(found.content.starts_with("2 matches in 1 file"), "{}", found.content);
+    assert!(found.content.contains("searched as a regular expression"), "{}", found.content);
+    assert!(!found.content.contains(".btn") || found.content.contains("2- .btn"), "{}", found.content);
+    assert_eq!(found.meta.as_ref().unwrap()["count"], 2);
+    let none = result_of(&messages, "s2");
+    assert!(none.content.starts_with("No matches."), "{}", none.content);
+    assert!(none.content.contains("as a regular expression either"), "{}", none.content);
+    assert_eq!(none.meta.as_ref().unwrap()["count"], 0);
+}
+
+#[tokio::test]
 async fn an_empty_overwrite_is_refused_without_asking() {
     let h = harness(&[("a.txt", "keep\n")]).await;
     let (url, _) = model(vec![
