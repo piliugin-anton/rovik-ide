@@ -2329,45 +2329,50 @@ export default function ChatPanel(props: ChatProps) {
               </For>
             </div>
           </Show>
-        </div>
 
-        <Show
-          when={sending() && !waitingQuestion()}
-          fallback={
-            <button
-              onClick={() => void handleSend()}
-              disabled={
-                !activeProfile() ||
-                !activeDialog() ||
-                (!input().trim() && referencedFiles().length === 0)
+          {/* Send/stop lives in normal flow in its own row below the text —
+              never overlaid — so typed text uses the full width and can
+              never slide underneath the button. */}
+          <div class="chat-input-actions">
+            <Show
+              when={sending() && !waitingQuestion()}
+              fallback={
+                <button
+                  onClick={() => void handleSend()}
+                  disabled={
+                    !activeProfile() ||
+                    !activeDialog() ||
+                    (!input().trim() && referencedFiles().length === 0)
+                  }
+                  class="chat-send-button"
+                  title={waitingQuestion() ? 'Send as the answer' : 'Send'}
+                  aria-label={waitingQuestion() ? 'Send as the answer' : 'Send message'}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" />
+                  </svg>
+                </button>
               }
-              class="chat-send-button"
-              title={waitingQuestion() ? 'Send as the answer' : 'Send'}
-              aria-label={waitingQuestion() ? 'Send as the answer' : 'Send message'}
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="14"
-                height="14"
-                fill="currentColor"
-                aria-hidden="true"
+              <button
+                onClick={stopRequest}
+                class="chat-send-button stop"
+                title="Stop"
+                aria-label="Stop the response"
               >
-                <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" />
-              </svg>
-            </button>
-          }
-        >
-          <button
-            onClick={stopRequest}
-            class="chat-send-button stop"
-            title="Stop"
-            aria-label="Stop the response"
-          >
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true">
-              <rect x="5" y="5" width="14" height="14" rx="2" />
-            </svg>
-          </button>
-        </Show>
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true">
+                  <rect x="5" y="5" width="14" height="14" rx="2" />
+                </svg>
+              </button>
+            </Show>
+          </div>
+        </div>
       </div>
       <div class="chat-model-select">
         <div class="chat-model-select-row">

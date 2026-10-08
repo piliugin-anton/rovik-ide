@@ -1020,9 +1020,7 @@ body.tree-dragging {
   display: flex;
   align-items: center;
   justify-content: center;
-  position: absolute;
-  bottom: 12px;
-  right: 12px;
+  flex-shrink: 0;
   height: 20px;
   width: 20px;
   background: var(--accent);
@@ -1031,7 +1029,6 @@ body.tree-dragging {
   border-radius: 4px;
   padding: 0 12px;
   cursor: pointer;
-  z-index: 2;
 }
 
 .chat-send-button svg {
@@ -2235,9 +2232,17 @@ body.tree-dragging {
 
 .chat-input-container {
   display: flex;
+  flex-direction: column;
   position: relative;
   flex: 1;
   min-width: 0;
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.chat-input-container:focus-within {
+  border-color: var(--accent);
 }
 
 .chat-input-textarea {
@@ -2372,10 +2377,12 @@ body.tree-dragging {
   min-height: 60px;
   max-height: 200px;
   overflow-y: auto;
-  background: var(--bg-editor);
+  background: transparent;
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  border: none;
+  border-radius: 0;
+  /* Full width, no keep-out: the button is in normal flow below in
+     .chat-input-actions, so nothing can slide underneath it. */
   padding: 6px 8px;
   font-family: inherit;
   font-size: 13px;
@@ -2385,14 +2392,17 @@ body.tree-dragging {
   outline: none;
 }
 
+/* The send/stop button's own row, below the text, right-aligned. */
+.chat-input-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 4px 4px;
+}
+
 .chat-input-contenteditable:empty:before {
   content: attr(data-placeholder);
   color: var(--fg-dim);
   pointer-events: none;
-}
-
-.chat-input-contenteditable:focus {
-  border-color: var(--accent);
 }
 
 /* Inline file reference chip */
