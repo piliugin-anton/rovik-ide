@@ -58,7 +58,7 @@ fn stable_file_id(path: &Path) -> String {
 static CALL_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Clean, unified cross-platform operation types
-#[derive(Clone, Serialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")] // Turns variants into "create", "modify", "remove", "unknown"
 enum WatchOp {
     Create,
@@ -67,7 +67,7 @@ enum WatchOp {
     Unknown,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct FileWatchPayload {
     path: String,
     operation: WatchOp,
@@ -161,26 +161,147 @@ enum WatchPath {
     /// Inside `.git/`: git's own bookkeeping, reported as one "git-changed"
     /// (visible changes are followed by one too: they change the status).
     Git,
-    /// Matched by .gitignore (build output, dependencies): not reported.
+    /// Matched by a .gitignore (build output, dependencies): not reported.
     Ignored,
     Visible,
 }
 
-fn watch_path_kind(root: &Path, matcher: Option<&Gitignore>, path: &Path) -> WatchPath {
+/// The project's .gitignore files for the watcher, each matching under its
+/// own folder: the root's and every package's. In a workspace, a package's
+/// build output is often ignored only by `packages/x/.gitignore`; with the
+/// root's alone, every rebuild of a dev server reached the app as the
+/// user's changes. (A pattern in one file doesn't undo another's here.)
+struct WatchIgnores {
+    matchers: Vec<(PathBuf, Gitignore)>,
+}
+
+impl WatchIgnores {
+    /// The root's .gitignore (and `.git/`): at once, while `all` looks for the rest.
+    fn root_only(root: &Path) -> Self {
+        WatchIgnores { matchers: build_gitignore(root).ok().map(|m| (root.to_path_buf(), m)).into_iter().collect() }
+    }
+
+    /// Every .gitignore in the project, found without entering what's ignored.
+    fn all(root: &Path) -> Self {
+        let mut ignores = Self::root_only(root);
+        let walker = ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(false)
+            .git_exclude(false)
+            .require_git(false)
+            .parents(false)
+            .filter_entry(|e| e.file_name() != ".git" && e.file_name() != "node_modules")
+            .build();
+        for entry in walker.flatten() {
+            let (path, depth) = (entry.path(), entry.depth());
+            if depth == 1 || entry.file_name() != ".gitignore" || !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue; // the root's is in already
+            }
+            let Some(dir) = path.parent() else { continue };
+            let mut builder = GitignoreBuilder::new(dir);
+            if builder.add(path).is_none() {
+                if let Ok(matcher) = builder.build() {
+                    ignores.matchers.push((dir.to_path_buf(), matcher));
+                }
+            }
+        }
+        ignores
+    }
+
+    fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        self.matchers
+            .iter()
+            .any(|(dir, m)| path.starts_with(dir) && m.matched_path_or_any_parents(path, is_dir).is_ignore())
+    }
+}
+
+fn watch_path_kind(root: &Path, ignores: &WatchIgnores, path: &Path) -> WatchPath {
     let Ok(rel) = path.strip_prefix(root) else { return WatchPath::Visible };
     if rel.components().any(|c| c.as_os_str() == ".git") {
         return WatchPath::Git;
     }
-    match matcher {
-        Some(m) if m.matched_path_or_any_parents(rel, path.is_dir()).is_ignore() => WatchPath::Ignored,
-        _ => WatchPath::Visible,
+    // Dependencies: always ignored, and checked without asking the disk
+    // whether it's a folder (installs and caches churn there).
+    if rel.components().any(|c| c.as_os_str() == "node_modules") {
+        return WatchPath::Ignored;
     }
+    if ignores.is_ignored(path, path.is_dir()) {
+        return WatchPath::Ignored;
+    }
+    WatchPath::Visible
 }
 
 /// More changes than this in one burst (a branch switch, an unpacked
-/// archive) are reported as a single "re-check everything" event: the
-/// frontend handles each event, and thousands at once froze it.
+/// archive, a dev server's rebuild) are reported as a single "re-check
+/// everything" event: the frontend handles each event, and thousands at
+/// once froze it.
 const MAX_EVENTS_PER_FLUSH: usize = 300;
+/// Raw events handled per pass, so a flood can't keep the loop from ever
+/// reporting anything.
+const MAX_RAW_EVENTS_PER_PASS: usize = 5_000;
+/// Changes are reported once things are quiet for this long...
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
+/// ...or at the latest this long after the first, while they keep coming.
+const WATCH_MAX_WAIT: Duration = Duration::from_secs(2);
+
+/// The watcher's changes waiting to be reported: each path once, when the
+/// burst is quiet for WATCH_DEBOUNCE or WATCH_MAX_WAIT after it began; past
+/// MAX_EVENTS_PER_FLUSH, one "re-check everything" instead.
+#[derive(Default)]
+struct WatchBatch {
+    events: HashMap<FileWatchPayload, Instant>,
+    started: Option<Instant>,
+    last: Option<Instant>,
+    overflowed: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum WatchFlush {
+    Nothing,
+    Events(Vec<FileWatchPayload>),
+    Everything,
+}
+
+impl WatchBatch {
+    fn add(&mut self, payload: FileWatchPayload, now: Instant) {
+        self.started.get_or_insert(now);
+        self.last = Some(now);
+        if self.overflowed {
+            return;
+        }
+        self.events.insert(payload, now);
+        if self.events.len() > MAX_EVENTS_PER_FLUSH {
+            // Too many to report one by one: stop collecting them.
+            self.events.clear();
+            self.overflowed = true;
+        }
+    }
+
+    fn take_due(&mut self, now: Instant) -> WatchFlush {
+        let (Some(started), Some(last)) = (self.started, self.last) else { return WatchFlush::Nothing };
+        let overdue = now.duration_since(started) >= WATCH_MAX_WAIT;
+        if self.overflowed {
+            if !overdue && now.duration_since(last) < WATCH_DEBOUNCE {
+                return WatchFlush::Nothing;
+            }
+            *self = WatchBatch::default();
+            return WatchFlush::Everything;
+        }
+        let mut ready = Vec::new();
+        self.events.retain(|payload, seen| {
+            let due = overdue || now.duration_since(*seen) >= WATCH_DEBOUNCE;
+            if due {
+                ready.push(payload.clone());
+            }
+            !due
+        });
+        if self.events.is_empty() {
+            *self = WatchBatch::default();
+        }
+        if ready.is_empty() { WatchFlush::Nothing } else { WatchFlush::Events(ready) }
+    }
+}
 
 // A Tauri command to start watching a specific directory
 #[tauri::command]
@@ -197,7 +318,6 @@ pub fn start_file_watch(
 
     // Set up the new cross-thread channel
     let (tx, rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
-
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| e.to_string())?;
 
     watcher
@@ -208,20 +328,33 @@ pub fn start_file_watch(
 
     let app_handle = app_handle.clone();
     let watch_root = root.clone();
-    // The project's .gitignore, rebuilt when it changes.
-    let mut matcher: Option<Arc<Gitignore>> = build_gitignore(&root).ok().map(Arc::new);
 
     // Use Tauri's built-in async runtime to handle async sleeping & debounce intervals smoothly
     tauri::async_runtime::spawn(async move {
-        // We'll collect events over a short window and evaluate them on the trailing edge
-        let mut event_bucket: HashMap<FileWatchPayload, Instant> = HashMap::new();
-        let debounce_duration = Duration::from_millis(300); // 300ms should be enough for file-system quiet down
+        // The project's .gitignore files: the root's at once, all of them
+        // when found (and again whenever one changes).
+        let mut ignores = Arc::new(WatchIgnores::root_only(&watch_root));
+        let (ignores_tx, ignores_rx) = std::sync::mpsc::channel::<WatchIgnores>();
+        let find_ignores = |root: PathBuf, tx: std::sync::mpsc::Sender<WatchIgnores>| {
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = tx.send(WatchIgnores::all(&root));
+            });
+        };
+        find_ignores(watch_root.clone(), ignores_tx.clone());
+
+        let mut batch = WatchBatch::default();
         // Last activity inside .git/ (a commit writes hundreds of files there).
         let mut git_touched: Option<Instant> = None;
 
         loop {
-            // Step 1: Drain any available events from the native channel without blocking indefinitely
-            while let Ok(res) = rx.try_recv() {
+            if let Ok(found) = ignores_rx.try_recv() {
+                ignores = Arc::new(found);
+            }
+            // Step 1: Drain the native channel, a bounded number of events per pass.
+            let mut handled = 0;
+            while handled < MAX_RAW_EVENTS_PER_PASS {
+                let Ok(res) = rx.try_recv() else { break };
+                handled += 1;
                 if let Ok(event) = res {
                     let operation = match event.kind {
                         EventKind::Create(_) => WatchOp::Create,
@@ -237,7 +370,7 @@ pub fn start_file_watch(
                     for path in event.paths {
                         // Git's own files and ignored paths (target/, node_modules/)
                         // aren't the user's files: reporting each one flooded the app.
-                        match watch_path_kind(&watch_root, matcher.as_deref(), &path) {
+                        match watch_path_kind(&watch_root, &ignores, &path) {
                             WatchPath::Git => {
                                 git_touched = Some(Instant::now());
                                 continue;
@@ -246,7 +379,7 @@ pub fn start_file_watch(
                             WatchPath::Visible => {}
                         }
                         if path.file_name().is_some_and(|n| n == ".gitignore") {
-                            matcher = build_gitignore(&watch_root).ok().map(Arc::new);
+                            find_ignores(watch_root.clone(), ignores_tx.clone());
                             if let Ok(mut cached) = app_handle.state::<WatcherState>().gitignore.lock() {
                                 *cached = None; // the tree's listing re-reads it too
                             }
@@ -257,49 +390,38 @@ pub fn start_file_watch(
                             operation: operation.clone(),
                             is_dir,
                         };
-
-                        // Overwrite or update the timestamp. Every new activity resets the trailing timer.
-                        event_bucket.insert(payload, Instant::now());
+                        batch.add(payload, Instant::now());
                     }
                 }
             }
 
-            // Step 2: Check if any debounced events are ready to emit
+            // Step 2: what's due, reported. A flood is one "re-check
+            // everything" (operation "unknown", the project root).
             let now = Instant::now();
-            let mut ready_to_emit = Vec::new();
-
-            // Retain only items that haven't expired yet; extract the ones that have
-            event_bucket.retain(|payload, last_seen| {
-                if now.duration_since(*last_seen) >= debounce_duration {
-                    ready_to_emit.push(payload.clone());
-                    false // Removes it from the bucket, preventing memory leaks!
-                } else {
-                    true // Keep waiting, it's still bouncing
-                }
-            });
-
+            let flush = batch.take_due(now);
             // A visible file changed: git's status of the working tree did too.
-            let tree_changed = !ready_to_emit.is_empty();
-
-            // Step 3: Emit the stabilized events to the frontend. A flood becomes
-            // one "re-check everything" (operation "unknown", the project root).
-            if ready_to_emit.len() > MAX_EVENTS_PER_FLUSH {
-                let _ = app_handle.emit(
-                    "fs-changes",
-                    FileWatchPayload {
-                        path: watch_root.to_string_lossy().into_owned(),
-                        operation: WatchOp::Unknown,
-                        is_dir: true,
-                    },
-                );
-            } else {
-                for payload in ready_to_emit {
-                    let _ = app_handle.emit("fs-changes", payload);
+            let tree_changed = flush != WatchFlush::Nothing;
+            match flush {
+                WatchFlush::Nothing => {}
+                WatchFlush::Everything => {
+                    let _ = app_handle.emit(
+                        "fs-changes",
+                        FileWatchPayload {
+                            path: watch_root.to_string_lossy().into_owned(),
+                            operation: WatchOp::Unknown,
+                            is_dir: true,
+                        },
+                    );
+                }
+                WatchFlush::Events(events) => {
+                    for payload in events {
+                        let _ = app_handle.emit("fs-changes", payload);
+                    }
                 }
             }
             // Git activity once it has settled, or a change to the working tree:
             // the Git tab refreshes.
-            let git_settled = git_touched.is_some_and(|t| now.duration_since(t) >= debounce_duration);
+            let git_settled = git_touched.is_some_and(|t| now.duration_since(t) >= WATCH_DEBOUNCE);
             if git_settled {
                 git_touched = None;
             }
@@ -478,11 +600,12 @@ pub fn get_path_id(state: State<'_, WatcherState>, path: String) -> Result<Strin
 }
 
 #[tauri::command]
+/// Creates an empty file; returns its path (the tree opens it).
 pub fn create_file(
     state: State<'_, WatcherState>,
     dir_id: String,
     name: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let dir = resolve_id(&state, &dir_id)?;
     let p = dir.join(&name);
     if p.exists() {
@@ -490,7 +613,7 @@ pub fn create_file(
     }
     fs::File::create(&p).map_err(|e| format!("{name}: {e}"))?;
     remember_id(&state, &stable_file_id(&p), &p);
-    Ok(())
+    Ok(p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -788,8 +911,8 @@ mod watch_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("target/debug")).unwrap();
         std::fs::write(dir.join(".gitignore"), "target/\n*.log\n").unwrap();
-        let m = build_gitignore(&dir).unwrap();
-        let kind = |p: &str| watch_path_kind(&dir, Some(&m), &dir.join(p));
+        let m = WatchIgnores::root_only(&dir);
+        let kind = |p: &str| watch_path_kind(&dir, &m, &dir.join(p));
         assert_eq!(kind(".git/objects/ab/cdef0123"), WatchPath::Git);
         assert_eq!(kind(".git/index"), WatchPath::Git);
         assert_eq!(kind("sub/.git/HEAD"), WatchPath::Git);
@@ -798,6 +921,76 @@ mod watch_tests {
         assert_eq!(kind("src/main.rs"), WatchPath::Visible);
         assert_eq!(kind(".gitignore"), WatchPath::Visible);
         assert_eq!(kind(".github/workflows/ci.yml"), WatchPath::Visible);
-        assert_eq!(watch_path_kind(&dir, Some(&m), Path::new("/elsewhere/x")), WatchPath::Visible);
+        assert_eq!(watch_path_kind(&dir, &m, Path::new("/elsewhere/x")), WatchPath::Visible);
+        assert_eq!(kind("packages/a/node_modules/.vite/deps/x.js"), WatchPath::Ignored);
+    }
+
+    fn change(path: &str) -> FileWatchPayload {
+        FileWatchPayload { path: path.into(), operation: WatchOp::Modify, is_dir: false }
+    }
+
+    #[test]
+    fn changes_are_reported_once_quiet_or_at_the_latest_after_the_max_wait() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut b = WatchBatch::default();
+        assert_eq!(b.take_due(t0), WatchFlush::Nothing);
+        b.add(change("a"), t0);
+        b.add(change("a"), ms(100));
+        assert_eq!(b.take_due(ms(200)), WatchFlush::Nothing, "still changing");
+        assert_eq!(b.take_due(ms(400)), WatchFlush::Events(vec![change("a")]), "once, when quiet");
+        assert_eq!(b.take_due(ms(500)), WatchFlush::Nothing);
+
+        // A dev server writing every 200ms: reported anyway after WATCH_MAX_WAIT.
+        let mut b = WatchBatch::default();
+        let mut reported = None;
+        for i in 0..20u64 {
+            b.add(change("out.js"), ms(i * 200));
+            if let WatchFlush::Events(e) = b.take_due(ms(i * 200 + 50)) {
+                reported = Some((i, e));
+                break;
+            }
+        }
+        let (i, events) = reported.expect("reported while still changing");
+        assert_eq!((i * 200 + 50 >= 2_000, events), (true, vec![change("out.js")]));
+    }
+
+    #[test]
+    fn a_flood_becomes_one_recheck_of_everything() {
+        let t0 = Instant::now();
+        let mut b = WatchBatch::default();
+        for i in 0..=MAX_EVENTS_PER_FLUSH {
+            b.add(change(&format!("f{i}")), t0);
+        }
+        assert!(b.events.is_empty(), "no longer collected one by one");
+        b.add(change("more"), t0 + Duration::from_millis(250));
+        assert_eq!(b.take_due(t0 + Duration::from_millis(400)), WatchFlush::Nothing, "still flooding");
+        assert_eq!(b.take_due(t0 + Duration::from_millis(600)), WatchFlush::Everything);
+        assert_eq!(b.take_due(t0 + Duration::from_millis(700)), WatchFlush::Nothing);
+    }
+
+    #[test]
+    fn a_packages_own_gitignore_counts_under_that_package_only() {
+        let dir = std::env::temp_dir().join(format!("watch-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["packages/web/src", "packages/web/.turbo", "packages/api/src", "node_modules/x"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join(".gitignore"), "*.log\n").unwrap();
+        // Anchored: packages/web/dist, not a dist anywhere else.
+        std::fs::write(dir.join("packages/web/.gitignore"), "/dist\n.turbo/\n*.timestamp-*.mjs\n").unwrap();
+        // In node_modules: never looked at.
+        std::fs::write(dir.join("node_modules/x/.gitignore"), "*\n").unwrap();
+        let m = WatchIgnores::all(&dir);
+        assert_eq!(m.matchers.len(), 2, "the root's and packages/web's");
+        let kind = |p: &str| watch_path_kind(&dir, &m, &dir.join(p));
+        assert_eq!(kind("packages/web/dist/index.js"), WatchPath::Ignored);
+        assert_eq!(kind("packages/web/.turbo/cache.json"), WatchPath::Ignored);
+        assert_eq!(kind("packages/web/vite.config.ts.timestamp-1700000000-ab12.mjs"), WatchPath::Ignored);
+        assert_eq!(kind("packages/web/src/app.ts"), WatchPath::Visible);
+        assert_eq!(kind("packages/api/dist/index.js"), WatchPath::Visible, "another package's dist");
+        assert_eq!(kind("dist/index.js"), WatchPath::Visible);
+        assert_eq!(kind("server.log"), WatchPath::Ignored);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

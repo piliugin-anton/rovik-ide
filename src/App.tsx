@@ -63,7 +63,7 @@ import { isPlanFile, requestImplementPlan } from './lib/plans';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines } from './lib/lineDiff';
 import { isProjectSource, updateProjectSource } from './lib/intellisense';
-import { clearAgentChanges, onAgentEdit } from './lib/agentChanges';
+import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
 import { contextRealPath, isContextPath } from './lib/contextMode';
 import { chatStore } from './lib/chatStore';
@@ -304,6 +304,9 @@ export default function App() {
   });
 
   /** `activate: false` opens it in a tab without switching to it. */
+  /** Files being read for a new tab: a second open waits for the first. */
+  const opening = new Set<string>();
+
   async function openFile(row: TreeRow, opts: { activate?: boolean } = {}) {
     const activate = opts.activate ?? true;
     // By path too: a file opened from search results may carry a different id.
@@ -312,10 +315,13 @@ export default function App() {
       if (activate) setActivePath(existing.path);
       return;
     }
+    // Two opens at once (two quick writes by the agent): one tab.
+    if (opening.has(row.path)) return;
     if (isLikelyBinary(row.name)) {
       window.alert(`"${row.name}" looks like a binary file and can't be opened in the editor.`);
       return;
     }
+    opening.add(row.path);
     try {
       const content = await readFileContent(row.path);
       const file: OpenFile = {
@@ -332,6 +338,8 @@ export default function App() {
     } catch (err) {
       console.error(`Failed to open ${row.path}:`, err);
       if (activate) window.alert(String(err));
+    } finally {
+      opening.delete(row.path);
     }
   }
 
@@ -352,13 +360,19 @@ export default function App() {
   // The agent's edits: open files to review them, and refresh open tabs
   // after a write (an unsaved tab keeps the user's text).
   const stopReveal = onRevealEdit((path) => void openPath(path));
-  const stopWritten = onFileWritten((path, content) =>
+  const stopWritten = onFileWritten((path, content) => {
     setOpenFiles((prev) =>
       prev.map((f) =>
         f.path === path && !f.dirty ? { ...f, content, originalContent: content } : f
       )
-    )
-  );
+    );
+    // A write the user approved (a new file, say) isn't an unreviewed edit,
+    // which opens its file itself (onAgentEdit): open it here, in the
+    // background unless nothing else is open.
+    if (!openFiles().some((f) => f.path === path) && !agentChangesFor(path)) {
+      void openPath(path, { activate: activePath() === null });
+    }
+  });
   // An unreviewed agent edit: its file opens in a tab so the changes can be
   // seen. In the background while another file is being worked on, so a
   // long run doesn't keep switching tabs; focused when nothing else is open.
@@ -924,7 +938,8 @@ export default function App() {
         if (draft.isDir) {
           await createFolderOnDisk(draft.parentId, name);
         } else {
-          await createFileOnDisk(draft.parentId, name);
+          // Opened once the tree lists it (the effect on pendingOpenPath).
+          setPendingOpenPath(await createFileOnDisk(draft.parentId, name));
         }
       } catch (err) {
         console.error(`Failed to create ${draft.isDir ? 'folder' : 'file'}:`, err);
@@ -1099,14 +1114,10 @@ export default function App() {
     unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
       const { path, operation, is_dir } = event.payload;
       switch (operation) {
+        // Files are opened by whoever made them (the tree's New File, the
+        // agent's writes), never because they appeared: dev servers and
+        // builds create files all the time.
         case 'create':
-          tree.refresh(path);
-
-          if (is_dir) break;
-
-          setPendingOpenPath(path);
-
-          break;
         case 'modify':
         case 'remove':
           tree.refresh(path);
@@ -1117,13 +1128,10 @@ export default function App() {
       }
       void syncDeletedTabs(operation === 'unknown' ? undefined : path);
       // IntelliSense's copy of the project's sources (lib/intellisense.ts).
+      // Batched there: read and applied together once changes settle.
       if (!is_dir && isProjectSource(path)) {
         if (operation === 'remove') updateProjectSource(path, null);
-        else if (operation === 'create' || operation === 'modify') {
-          readFileContent(path)
-            .then((content) => updateProjectSource(path, content))
-            .catch(() => updateProjectSource(path, null));
-        }
+        else if (operation === 'create' || operation === 'modify') updateProjectSource(path);
       }
     });
   });

@@ -47,8 +47,9 @@ export async function getPathId(path: string): Promise<string> {
   return invoke('get_path_id', { path });
 }
 
-export async function createFile(dirId: string, name: string): Promise<void> {
-  await invoke('create_file', { dirId, name });
+/** Creates an empty file; resolves to its path. */
+export async function createFile(dirId: string, name: string): Promise<string> {
+  return invoke<string>('create_file', { dirId, name });
 }
 
 export async function createFolder(dirId: string, name: string): Promise<void> {
