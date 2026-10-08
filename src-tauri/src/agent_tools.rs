@@ -317,11 +317,31 @@ pub fn tool_write_file(root: String, path: String, content: String) -> Result<St
     // Reject '..' up front (same rule as resolve_within_root) before we
     // create any directories on disk.
     let target = resolve_within_root(&root, &path)?;
+    if let Ok(current) = fs::read_to_string(&target) {
+        if let Some(error) = empty_overwrite_error(&path, &current, &content) {
+            return Err(error);
+        }
+    }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&target, &content).map_err(|e| format!("{path}: {e}"))?;
     Ok(format!("wrote {} bytes to {path}", content.len()))
+}
+
+/// A whole-file write with nothing in it over a file that has content:
+/// almost always a call that lost its content, not a wish to empty the
+/// file, and it would wipe the file before anything could notice.
+pub fn empty_overwrite_error(path: &str, current: &str, content: &str) -> Option<String> {
+    if !content.trim().is_empty() || current.trim().is_empty() {
+        return None;
+    }
+    Some(format!(
+        "refusing to replace {path} ({} lines) with empty content; the file was not changed. \
+         A write without old_text must contain the complete new file. To change part of it, use old_text; \
+         to delete the file, run a command or ask the user.",
+        current.lines().count()
+    ))
 }
 
 #[cfg(all(test, unix))]
@@ -338,6 +358,23 @@ mod tests {
         let link = base.join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         (base, link)
+    }
+
+    #[test]
+    fn empty_content_never_overwrites_a_file() {
+        let (base, root) = linked_project("empty");
+        let root_s = root.to_string_lossy().to_string();
+        fs::write(root.join("a.txt"), "keep\nme\n").unwrap();
+        let err = tool_write_file(root_s.clone(), "a.txt".into(), "  \n".into()).unwrap_err();
+        assert!(err.contains("refusing to replace a.txt (2 lines)"), "{err}");
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "keep\nme\n");
+        // Empty files may still be created, or written empty again.
+        tool_write_file(root_s.clone(), "pkg/__init__.py".into(), String::new()).unwrap();
+        tool_write_file(root_s.clone(), "pkg/__init__.py".into(), String::new()).unwrap();
+        // Content is fine whatever was there.
+        tool_write_file(root_s, "a.txt".into(), "new\n".into()).unwrap();
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "new\n");
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

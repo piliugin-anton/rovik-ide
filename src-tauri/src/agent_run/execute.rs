@@ -622,7 +622,8 @@ impl<R: Runtime> Run<R> {
         let root = self.root.as_deref()?;
         let args = permissions::parse_args(args_json);
         let path = args.get("path").and_then(|p| p.as_str())?.to_string();
-        let proposed = if tools::is_partial_write(tool_name, &args) {
+        let partial = tools::is_partial_write(tool_name, &args);
+        let proposed = if partial {
             let edit = match tools::edit_args(&args) {
                 Ok(edit) => edit,
                 Err(e) => return Some(Prepared::Invalid(e)),
@@ -636,6 +637,13 @@ impl<R: Runtime> Run<R> {
         };
         let abs_path = tools::to_absolute_path(&path, root);
         let Ok(current) = std::fs::read_to_string(&abs_path) else { return Some(Prepared::New) };
+        // Nothing to approve: the write itself refuses it. (An edit may
+        // remove everything: its old_text says what it replaces.)
+        if !partial {
+            if let Some(error) = crate::agent_tools::empty_overwrite_error(&path, &current, &proposed) {
+                return Some(Prepared::Invalid(format!("Error: {error}")));
+            }
+        }
         let hunks = diff::diff_lines(&diff::split_lines(&current), &diff::split_lines(&proposed));
         if hunks.is_empty() {
             return Some(Prepared::Unchanged);
