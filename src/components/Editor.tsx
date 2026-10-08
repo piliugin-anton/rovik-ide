@@ -10,12 +10,15 @@ import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
 import { gitBaseFor } from '../lib/gitMarks';
 import { diffLines, splitLines } from '../lib/lineDiff';
 import { ensureProjectIntelliSense, modelUriFor } from '../lib/intellisense';
+import { ensureOutlineIntelliSense } from '../lib/outlineIntelliSense';
 import {
   checkForRustAnalyzerUpdate,
   ensureRustSupport,
   restartRustAnalyzer,
 } from '../lib/lsp/rustAnalyzer';
 import { pendingEditFor } from '../lib/approvals';
+import { editorSettings } from '../lib/editorSettings';
+import { applyTheme } from '../lib/monacoThemes';
 import {
   hunkLine,
   renderEditReview,
@@ -84,13 +87,40 @@ export default function Editor(props: EditorProps) {
     // exist when the content-sync effect below ran - and since `editor`
     // is a plain (non-reactive) variable, that effect never re-ran after
     // creation. The editor got exactly one chance to receive content.
+    // Community themes are defineTheme'd lazily (lib/monacoThemes.ts):
+    // create with a safe theme, then apply the real one once defined.
+    const initialTheme = editorSettings().theme;
+    void applyTheme(initialTheme);
     editor = monaco.editor.create(containerRef, {
       model,
-      theme: 'vs-dark',
+      theme: initialTheme === 'hc-black' ? 'hc-black' : 'vs-dark',
       automaticLayout: true,
+      fontSize: editorSettings().fontSize,
+      tabSize: editorSettings().tabSize,
+      insertSpaces: editorSettings().insertSpaces,
+      detectIndentation: false,
+      wordWrap: editorSettings().wordWrap,
       minimap: {
-        enabled: false,
+        enabled: editorSettings().minimap,
       },
+      renderWhitespace: editorSettings().renderWhitespace,
+    });
+
+    // Settings → Editor (theme, font size, formatting): applied live.
+    // applyTheme is global (defineTheme + setTheme); updateOptions targets this instance.
+    createEffect(() => {
+      const s = editorSettings();
+      if (!editor || disposed) return;
+      void applyTheme(s.theme);
+      editor.updateOptions({
+        fontSize: s.fontSize,
+        tabSize: s.tabSize,
+        insertSpaces: s.insertSpaces,
+        detectIndentation: false,
+        wordWrap: s.wordWrap,
+        minimap: { enabled: s.minimap },
+        renderWhitespace: s.renderWhitespace,
+      });
     });
 
     const contentDisposable = editor.onDidChangeModelContent(() => {
@@ -246,6 +276,13 @@ export default function Editor(props: EditorProps) {
     // Load typings in the background - never block editor creation on it.
     // Once per project (later mounts reuse it).
     void ensureProjectIntelliSense(props.projectDir());
+
+    // Worker-free fallback from the Rust backend's tree-sitter outlines
+    // (lib/outlineIntelliSense.ts): document symbols, hover signatures and
+    // same-file go-to-definition for every language. Registered once; the
+    // TypeScript worker and rust-analyzer keep providing typed results
+    // alongside these.
+    ensureOutlineIntelliSense();
 
     // Rust: rust-analyzer, started with the project's first Rust file.
     if (props.language() === 'rust') {

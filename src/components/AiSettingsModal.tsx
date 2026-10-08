@@ -1,8 +1,9 @@
 // AiSettingsModal.tsx
 //
-// The chat's settings: a menu of pages (model providers, permissions &
-// approval). Sub-pages keep a Back bar pinned under the header, outside the
-// scrolling body. Changes are kept here and handed to the chat on close.
+// The app-wide Settings dialog: a menu of pages (editor, model providers,
+// permissions & approval, …). Sub-pages keep a Back bar pinned under the
+// header, outside the scrolling body. AI changes are kept here and handed
+// to the chat on close; editor changes apply live (lib/editorSettings.ts).
 import { createSignal, Match, onCleanup, onMount, Show, Switch } from 'solid-js';
 import type { Provider } from '../types';
 import type { AgentPermissions, ApprovalRule } from '../lib/permissions';
@@ -10,8 +11,10 @@ import ModelProvidersSettings, { type ProvidersSettingsController } from './Mode
 import PermissionsSettings from './PermissionsSettings';
 import ProjectChecksSettings from './ProjectChecksSettings';
 import VirtualFilesSettings from './VirtualFilesSettings';
+import EditorSettings from './EditorSettings';
+import { editorSettings, EDITOR_THEMES } from '../lib/editorSettings';
 
-export type AiSettingsPage = 'menu' | 'providers' | 'permissions' | 'project' | 'vfs';
+export type AiSettingsPage = 'menu' | 'editor' | 'providers' | 'permissions' | 'project' | 'vfs';
 
 interface AiSettingsModalProps {
   providers: Provider[];
@@ -25,7 +28,8 @@ interface AiSettingsModalProps {
 }
 
 const PAGE_TITLE: Record<AiSettingsPage, string> = {
-  menu: 'AI Chat settings',
+  menu: 'Settings',
+  editor: 'Editor',
   providers: 'Model providers',
   permissions: 'Permissions & Approval',
   project: 'Project checks',
@@ -44,9 +48,7 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
   };
 
   const backLabel = () =>
-    page() === 'providers' && providersApi()?.draftTitle() != null
-      ? 'Model providers'
-      : 'AI Chat settings';
+    page() === 'providers' && providersApi()?.draftTitle() != null ? 'Model providers' : 'Settings';
 
   function goBack() {
     const api = providersApi();
@@ -126,6 +128,23 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
           <Switch>
             <Match when={page() === 'menu'}>
               <div class="settings-menu">
+                <button class="settings-menu-item" onClick={() => setPage('editor')}>
+                  <span class="settings-menu-text">
+                    <span class="settings-menu-label">Editor</span>
+                    <span class="settings-menu-sub">
+                      Theme:{' '}
+                      {EDITOR_THEMES.find((t) => t.id === editorSettings().theme)?.label ??
+                        editorSettings().theme}{' '}
+                      · Font {editorSettings().fontSize}px ·{' '}
+                      {editorSettings().insertSpaces
+                        ? `Spaces (${editorSettings().tabSize})`
+                        : 'Tabs'}
+                    </span>
+                  </span>
+                  <span class="settings-menu-chevron" aria-hidden="true">
+                    ›
+                  </span>
+                </button>
                 <button class="settings-menu-item" onClick={() => setPage('providers')}>
                   <span class="settings-menu-text">
                     <span class="settings-menu-label">Model providers</span>
@@ -171,6 +190,9 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                   </span>
                 </button>
               </div>
+            </Match>
+            <Match when={page() === 'editor'}>
+              <EditorSettings />
             </Match>
             <Match when={page() === 'providers'}>
               <ModelProvidersSettings

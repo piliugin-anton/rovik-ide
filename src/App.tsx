@@ -69,8 +69,22 @@ import { toAbsolutePath } from './lib/fileTools';
 import { contextRealPath, isContextPath } from './lib/contextMode';
 import { chatStore } from './lib/chatStore';
 import { notify } from './lib/notifications';
-import { startVirtualFiles, vfsSettingsRequested } from './lib/virtualFilesStartup';
+import {
+  startVirtualFiles,
+  vfsSettingsRequested,
+  clearVfsSettingsRequest,
+} from './lib/virtualFilesStartup';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
+import AiSettingsModal from './components/AiSettingsModal';
+import {
+  appSettingsPage,
+  closeAppSettings,
+  notifyAiSettingsSaved,
+  openAppSettings,
+} from './lib/appSettings';
+import { loadAiSettings, reconcileSelection, saveAiSettings } from './lib/aiSettings';
+import { DEFAULT_PERMISSIONS, type AgentPermissions } from './lib/permissions';
+import type { ModelSelection, Provider } from './types';
 
 let unlistenFSChanges: (() => void) | undefined;
 
@@ -110,10 +124,52 @@ export default function App() {
   const [searchActive, setSearchActive] = createSignal(false);
   const [revealRequest, setRevealRequest] = createSignal<RevealRequest | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat' | 'git'>('files');
-  // "Show steps" for virtual files: their settings live in the chat panel.
+  // App-wide Settings (the gear next to the project selector): a virtual
+  // files notification's "Show steps" opens its page directly.
   createEffect(() => {
-    if (vfsSettingsRequested()) setSidebarTab('chat');
+    if (!vfsSettingsRequested()) return;
+    clearVfsSettingsRequest();
+    openAppSettings('vfs');
   });
+  // The Settings dialog's copy of the AI settings, loaded once at startup
+  // (ChatPanel keeps its own copy and reloads when the dialog saves).
+  const [settingsProviders, setSettingsProviders] = createSignal<Provider[]>([]);
+  const [settingsPermissions, setSettingsPermissions] =
+    createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
+  onMount(async () => {
+    try {
+      const settings = await loadAiSettings();
+      setSettingsProviders(settings.providers);
+      setSettingsPermissions(settings.permissions);
+    } catch (err) {
+      console.error('Failed to load AI settings for Settings dialog:', err);
+    }
+  });
+  function handleAppSettingsSaved(changes: {
+    providers: Provider[];
+    permissions: AgentPermissions;
+  }) {
+    setSettingsProviders(changes.providers);
+    setSettingsPermissions(changes.permissions);
+    // Keep the chat's current model choice: only the providers/permissions
+    // changed here, so reconcile against the saved selection.
+    void loadAiSettings()
+      .catch(() => null)
+      .then((current) => {
+        const active: ModelSelection | null = reconcileSelection(
+          changes.providers,
+          current?.active ?? null
+        );
+        return saveAiSettings({
+          version: 2,
+          providers: changes.providers,
+          active,
+          permissions: changes.permissions,
+        });
+      })
+      .then(() => notifyAiSettingsSaved())
+      .catch((err) => console.error('Failed to save AI settings:', err));
+  }
   const [cursorInfo, setCursorInfo] = createSignal<CursorInfo | null>(null);
 
   const [contextMenuVisible, setContextMenuVisible] = createSignal(false);
@@ -397,7 +453,16 @@ export default function App() {
       return;
     }
     if (open) return;
-    void openPath(path, { activate: activePath() === null });
+    // Newly opened by the agent's edit: center the first changed line,
+    // like openPathAtLine does for chat links and search results.
+    const line = Math.max(1, agentChangesFor(path)?.hunks[0]?.origStart ?? 1);
+    void (async () => {
+      await openPath(path, { activate: activePath() === null });
+      // Background tab (something else is being worked on): not visible,
+      // so there is nothing to scroll.
+      if (activePath() !== path) return;
+      setRevealRequest({ path, line, column: 1, length: 0, nonce: Date.now() });
+    })();
   });
 
   // "Open in editor" anywhere in the chat (lib/editorBridge.ts): open the
@@ -1342,15 +1407,25 @@ export default function App() {
   // onContextMenu={handleContextMenu}
 
   return (
-    <div class="app" >
+    <div class="app">
       <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
-        <ProjectSwitcher
-          onOpenFolder={() => void handlePickFolder()}
-          onNewProject={() => setNewProjectOpen(true)}
-          onOpen={(p) => openProjectAt(p.path)}
-          onRelink={(p) => void relinkProject(p)}
-          onDelete={(p) => void deleteProject(p)}
-        />
+        <div class="sidebar-topbar">
+          <ProjectSwitcher
+            onOpenFolder={() => void handlePickFolder()}
+            onNewProject={() => setNewProjectOpen(true)}
+            onOpen={(p) => openProjectAt(p.path)}
+            onRelink={(p) => void relinkProject(p)}
+            onDelete={(p) => void deleteProject(p)}
+          />
+          <button
+            class="icon-button sidebar-settings-button"
+            onClick={() => openAppSettings('menu')}
+            title="Settings"
+            aria-label="Settings"
+          >
+            ⚙
+          </button>
+        </div>
         <div class="sidebar-tabs">
           <button
             classList={{ active: sidebarTab() === 'files' }}
@@ -1545,6 +1620,18 @@ export default function App() {
         />
       </Show>
       <NotificationHost />
+      <Show when={appSettingsPage()} keyed>
+        {(page) => (
+          <AiSettingsModal
+            providers={settingsProviders()}
+            permissions={settingsPermissions()}
+            initialPage={page}
+            rootPath={rootPath()}
+            onSave={handleAppSettingsSaved}
+            onClose={closeAppSettings}
+          />
+        )}
+      </Show>
     </div>
   );
 }

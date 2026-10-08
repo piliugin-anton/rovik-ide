@@ -81,8 +81,7 @@ import {
   type AgentConfig,
   type StartKind,
 } from '../lib/agentRuns';
-import AiSettingsModal, { type AiSettingsPage } from './AiSettingsModal';
-import { clearVfsSettingsRequest, vfsSettingsRequested } from '../lib/virtualFilesStartup';
+import { aiSettingsRevision, openAppSettings } from '../lib/appSettings';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
 import ChatList, { type ChatListRow } from './ChatList';
@@ -128,14 +127,6 @@ export default function ChatPanel(props: ChatProps) {
   const activeDialogId = () => store.state.activeId;
 
   const [input, setInput] = createSignal('');
-  /** The open settings page, or null when the settings modal is closed. */
-  const [settingsPage, setSettingsPage] = createSignal<AiSettingsPage | null>(null);
-  // A virtual files notification's "Show steps" (lib/virtualFilesStartup.ts).
-  createEffect(() => {
-    if (!vfsSettingsRequested()) return;
-    clearVfsSettingsRequest();
-    setSettingsPage('vfs');
-  });
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const [historyQuery, setHistoryQuery] = createSignal('');
   /** Lags historyQuery slightly so fast typing doesn't search on every key. */
@@ -196,6 +187,29 @@ export default function ChatPanel(props: ChatProps) {
 
   let isMounted = true;
   let inputTextareaRef: HTMLTextAreaElement | undefined;
+
+  // The Settings dialog lives in App (gear next to the project selector).
+  // Its saves bump aiSettingsRevision — reload our copy (providers /
+  // permissions may have changed elsewhere).
+  createEffect(
+    on(
+      aiSettingsRevision,
+      () => {
+        void (async () => {
+          try {
+            const settings = await loadAiSettings();
+            if (!isMounted) return;
+            setProviders(settings.providers);
+            setSelection((sel) => reconcileSelection(settings.providers, sel ?? settings.active));
+            setPermissions(settings.permissions);
+          } catch (err) {
+            console.error('Failed to reload AI settings:', err);
+          }
+        })();
+      },
+      { defer: true }
+    )
+  );
 
   // Provider + model resolved into what the send path needs.
   const activeProfile = createMemo(() => resolveProfile(providers(), selection()));
@@ -1607,14 +1621,6 @@ export default function ChatPanel(props: ChatProps) {
     }).catch((err) => console.error('Failed to save AI settings:', err));
   }
 
-  function handleSettingsSaved(changes: { providers: Provider[]; permissions: AgentPermissions }) {
-    const nextSelection = reconcileSelection(changes.providers, selection());
-    setProviders(changes.providers);
-    setSelection(nextSelection);
-    setPermissions(changes.permissions);
-    persistAiSettings(changes.providers, nextSelection, changes.permissions);
-  }
-
   function handleModelChange(next: ModelSelection) {
     setSelection(next);
     persistAiSettings(providers(), next);
@@ -2171,15 +2177,6 @@ export default function ChatPanel(props: ChatProps) {
           <button class="icon-button" onClick={() => startNewChat()} title="New chat">
             ＋
           </button>
-
-          <button
-            class="icon-button"
-            onClick={() => setSettingsPage('menu')}
-            title="AI Chat settings"
-            aria-label="AI Chat settings"
-          >
-            ⚙
-          </button>
         </div>
       </div>
       <Show when={historyOpen()}>
@@ -2246,7 +2243,7 @@ export default function ChatPanel(props: ChatProps) {
         onContinue={continueReply}
         onContinueRun={continueRun}
         onRunChecks={runApprovedChecks}
-        onOpenProjectChecks={() => setSettingsPage('project')}
+        onOpenProjectChecks={() => openAppSettings('project')}
         planMessageId={planMessageId()}
         onImplementPlan={implementPlan}
       />
@@ -2366,7 +2363,13 @@ export default function ChatPanel(props: ChatProps) {
                 title="Stop"
                 aria-label="Stop the response"
               >
-                <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true">
+                <svg
+                  viewBox="0 0 24 24"
+                  width="12"
+                  height="12"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
                   <rect x="5" y="5" width="14" height="14" rx="2" />
                 </svg>
               </button>
@@ -2383,7 +2386,7 @@ export default function ChatPanel(props: ChatProps) {
             providers={providers()}
             selection={selection()}
             onSelect={handleModelChange}
-            onOpenSettings={() => setSettingsPage('providers')}
+            onOpenSettings={() => openAppSettings('providers')}
           />
           <Show when={showEffort()}>
             <EffortSelector value={effortFor(activeProfile()?.id)} onChange={setEffort} />
@@ -2393,21 +2396,9 @@ export default function ChatPanel(props: ChatProps) {
           dialogId={activeDialogId()}
           budget={clmBudget()?.dialogId === activeDialogId() ? clmBudget()!.budget : null}
           sending={sending()}
-          onOpenVirtualFiles={() => setSettingsPage('vfs')}
+          onOpenVirtualFiles={() => openAppSettings('vfs')}
         />
       </div>
-      <Show when={settingsPage()} keyed>
-        {(page) => (
-          <AiSettingsModal
-            providers={providers()}
-            permissions={permissions()}
-            initialPage={page}
-            rootPath={props.rootPath()}
-            onSave={handleSettingsSaved}
-            onClose={() => setSettingsPage(null)}
-          />
-        )}
-      </Show>
     </div>
   );
 }

@@ -43,7 +43,7 @@ const SIGNATURE_LINES: usize = 8;
 const NAME_CHARS: usize = 80;
 
 /// One declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Symbol {
     /// What it's called, as best the tree says (a function's name, a
     /// heading's text, a key).
@@ -64,6 +64,23 @@ pub struct Symbol {
 /// An empty list: parsed, and no declarations.
 pub fn outline(path: &str, content: &str) -> Option<Vec<Symbol>> {
     analyze(path, content, false).map(|a| a.symbols)
+}
+
+/// Editor-facing commands (see `src/lib/outlineIntelliSense.ts`).
+///
+/// The editor holds unsaved text, so these take `content` directly instead
+/// of reading from disk: no round-trip, no stale results while typing.
+/// Parsing is capped by time and size (see above), so this never hangs the
+/// editor on generated or minified files — those return None.
+///
+/// This covers what tree-sitter can do without a language server:
+/// document symbols, same-file hover signatures and same-file go-to-
+/// definition. It can't replace typed intelligence (cross-file TS
+/// definitions, hover types, completions, diagnostics): that still comes
+/// from the TypeScript worker / language servers.
+#[tauri::command]
+pub fn outline_symbols(path: String, content: String) -> Option<Vec<Symbol>> {
+    outline(&path, &content)
 }
 
 /// Outlines of files on disk, by absolute path: modified time and size,

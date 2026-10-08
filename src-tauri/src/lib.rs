@@ -155,6 +155,7 @@ pub fn run() {
             project_profile::save_project_settings,
             agent::chat_context_estimate,
             command_tool::tool_run_command,
+            outline::outline_symbols,
             vfs::vfs_status,
             vfs::vfs_install_driver,
             vfs::vfs_mount,
