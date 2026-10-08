@@ -5,6 +5,9 @@
 // session: the id is made the first time a chat talks to opencode.ai and
 // reused for every later request of that chat while the app runs. A request
 // outside any chat gets a session of its own.
+//
+// Every chat request to opencode.ai also lists the tools "bash" and "read",
+// which it requires (`with_required_tools`).
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use std::collections::HashMap;
@@ -62,9 +65,92 @@ pub fn headers(url: &str, chat_id: Option<&str>) -> HeaderMap {
     headers
 }
 
+/// Tools every chat request to opencode.ai must list.
+const REQUIRED_TOOLS: [&str; 2] = ["bash", "read"];
+
+/// A required tool the request doesn't offer: listed, said to be
+/// unavailable, so the model doesn't reach for it. A call anyway is
+/// refused as usual (Plan mode, the permission settings, no project).
+fn placeholder(name: &str) -> serde_json::Value {
+    let (param, what) = match name {
+        "bash" => ("command", "The command line."),
+        _ => ("path", "File path relative to the project root."),
+    };
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": format!("Not available here: don't call {name}; a call is refused."),
+            "parameters": {
+                "type": "object",
+                "properties": { param: { "type": "string", "description": what } },
+                "required": [param]
+            }
+        }
+    })
+}
+
+/// The tools and `no_tool_calls` (`tool_choice: "none"`) for a request to
+/// `url`: unchanged unless it's on opencode.ai, where the required tools
+/// the request lacks are added as placeholders. A request that offered no
+/// tools at all still may not call any.
+pub fn with_required_tools(
+    url: &str,
+    tools: Option<Vec<serde_json::Value>>,
+    no_tool_calls: bool,
+) -> (Option<Vec<serde_json::Value>>, bool) {
+    if !is_opencode(url) {
+        return (tools, no_tool_calls);
+    }
+    let mut tools = tools.unwrap_or_default();
+    let offered_none = tools.is_empty();
+    let name = |t: &serde_json::Value| t.pointer("/function/name").and_then(|n| n.as_str()).map(str::to_string);
+    for required in REQUIRED_TOOLS {
+        if !tools.iter().any(|t| name(t).as_deref() == Some(required)) {
+            tools.push(placeholder(required));
+        }
+    }
+    (Some(tools), no_tool_calls || offered_none)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_requests_always_list_bash_and_read() {
+        let tool = |name: &str| serde_json::json!({ "type": "function", "function": { "name": name } });
+        let names = |tools: &Option<Vec<serde_json::Value>>| -> Vec<String> {
+            tools.iter().flatten().map(|t| t["function"]["name"].as_str().unwrap().to_string()).collect()
+        };
+        let zen = "https://opencode.ai/zen/v1";
+
+        // Elsewhere: untouched.
+        let (tools, none) = with_required_tools("https://api.openai.com/v1", None, false);
+        assert_eq!((tools, none), (None, false));
+        let plan = Some(vec![tool("read"), tool("search_code")]);
+        assert_eq!(with_required_tools("https://api.openai.com/v1", plan.clone(), false).0, plan);
+
+        // Agent mode with both: the same list, nothing added or doubled.
+        let agent = Some(vec![tool("read"), tool("bash"), tool("todo")]);
+        assert_eq!(with_required_tools(zen, agent.clone(), false), (agent, false));
+
+        // Plan mode (no bash): bash is added as a placeholder; calls stay allowed.
+        let (tools, none) = with_required_tools(zen, plan, false);
+        assert_eq!(names(&tools), ["read", "search_code", "bash"]);
+        assert!(!none);
+        let bash = &tools.unwrap()[2];
+        assert!(bash["function"]["description"].as_str().unwrap().starts_with("Not available here"));
+        assert_eq!(bash["function"]["parameters"]["required"][0], "command");
+
+        // No tools (one-off requests, "no tools" models): both, and no calls.
+        let (tools, none) = with_required_tools(zen, Some(Vec::new()), false);
+        assert_eq!(names(&tools), ["bash", "read"]);
+        assert!(none);
+        assert!(with_required_tools(zen, None, false).1);
+        // A words-only request stays words-only.
+        assert!(with_required_tools(zen, Some(vec![tool("read"), tool("bash")]), true).1);
+    }
 
     #[test]
     fn only_opencode_hosts() {

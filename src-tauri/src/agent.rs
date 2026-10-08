@@ -603,6 +603,9 @@ pub async fn run_chat(
     let window = context_tokens.filter(|t| *t > 0).unwrap_or(DEFAULT_CONTEXT_TOKENS);
     let max_tokens = options.as_ref().and_then(|o| o.max_tokens);
     let reserve = reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens);
+    // opencode.ai requires some tools in every request; a request that had
+    // none (`has_tools` above) still may not call them (opencode.rs).
+    let (tools, no_tool_calls) = crate::opencode::with_required_tools(&base_url, tools, no_tool_calls);
     let tool_chars = tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
     let budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
 
@@ -1287,7 +1290,12 @@ pub async fn chat_context_estimate(
         // The estimate is shown for Trimming only.
         false,
     );
-    let tool_chars = if tools.is_empty() { 0 } else { serde_json::to_string(&tools).map_or(0, |j| j.chars().count()) };
+    // As sent: with the tools opencode.ai requires (opencode.rs).
+    let sent_chars = |tools: Vec<serde_json::Value>| {
+        let (sent, _) = crate::opencode::with_required_tools(&base_url, Some(tools), false);
+        sent.filter(|t| !t.is_empty()).map_or(0, |t| serde_json::to_string(&t).map_or(0, |j| j.chars().count()))
+    };
+    let tool_chars = sent_chars(tools.clone());
     // CLM requests offer its tools too (chat_request decides the same way).
     let d = dialog_id.clone();
     let clm_mode = db.read(move |conn| crate::clm::store::context_mode(conn, &d)).await?;
@@ -1303,7 +1311,7 @@ pub async fn chat_context_estimate(
             mode.as_deref() == Some("plan"),
             true,
         );
-        serde_json::to_string(&tools).map_or(0, |j| j.chars().count())
+        sent_chars(tools)
     });
     let project_chars = match root {
         Some(root) => {
