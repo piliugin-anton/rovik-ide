@@ -23,6 +23,18 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 
+/// How a loop warning in a tool result starts, and what follows its reason.
+const NOTE_START: &str = "[Note from the IDE: ";
+const LOOP_MARK: &str = ". This looks like a loop.";
+
+/// The reason of the loop warning in a tool result, if it has one (the
+/// focus note names it again a few calls later; chat_db::history).
+pub fn loop_warning(result: &str) -> Option<&str> {
+    let end = result.rfind(LOOP_MARK)?;
+    let start = result[..end].rfind(NOTE_START)? + NOTE_START.len();
+    Some(&result[start..end])
+}
+
 /// Same call, same arguments, same result: this many times is a loop.
 const IDENTICAL_LIMIT: usize = 3;
 /// Two calls taking turns (A B A B A B), each with the same result every
@@ -138,7 +150,7 @@ impl Guard {
             // change course isn't paused by what it did before the note.
             self.reset_evidence();
             return GuardVerdict::Nudge(format!(
-                "\n\n[Note from the IDE: {reason}. This looks like a loop. Step back before going on: \
+                "\n\n{NOTE_START}{reason}{LOOP_MARK} Step back before going on: \
                  re-read the relevant code, try a different approach, or stop and ask the user. \
                  If it happens again, the run is paused for the user.]"
             ));
@@ -364,6 +376,23 @@ mod tests {
         g.record(call("read", r#"{"path":"a"}"#, "same"));
         assert!(matches!(g.record(call("read", r#"{"path":"a"}"#, "same")), GuardVerdict::Stop(_)));
         assert_eq!(g.pause().unwrap().kind, "loop");
+    }
+
+    #[test]
+    fn the_warning_reason_can_be_read_back() {
+        let mut g = Guard::new(None, 0);
+        let mut result = String::from("file text");
+        for _ in 0..3 {
+            if let Some(note) = g.record(call("read", r#"{"path":"a"}"#, "same")).note() {
+                result.push_str(note);
+            }
+        }
+        assert_eq!(
+            loop_warning(&result),
+            Some("read (a) was called 3 times with the same arguments and returned the same result each time")
+        );
+        assert_eq!(loop_warning("file text [Note from the IDE: something else.]"), None);
+        assert_eq!(loop_warning("This looks like a loop."), None);
     }
 
     #[test]
