@@ -385,6 +385,28 @@ fn uint(args: &Map<String, Value>, key: &str) -> Option<usize> {
     num(args, key).filter(|n| *n >= 0.0).map(|n| n.floor() as usize)
 }
 
+/// A boolean; models sometimes send "true" for true.
+fn flag(args: &Map<String, Value>, key: &str) -> bool {
+    match args.get(key) {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s.trim().eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+/// Regex syntax in a query sent as literal text: an escaped special
+/// character (`\(`, `\s`), an alternation or a wildcard, in a pattern that
+/// compiles and can't match an empty line (`a || b` would match everything).
+fn looks_like_regex(query: &str, case_sensitive: bool) -> bool {
+    static SYNTAX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\\[sSdDwWbB.()\[\]{}|+*?^$]|\||\.[*+]").unwrap());
+    SYNTAX.is_match(query)
+        && regex::RegexBuilder::new(query)
+            .case_insensitive(!case_sensitive)
+            .build()
+            .is_ok_and(|re| !re.is_match(""))
+}
+
 fn text<'a>(args: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
@@ -591,16 +613,29 @@ async fn run<R: Runtime>(
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"query\" is required."));
             };
-            let result = crate::agent_tools::tool_search_code(
-                root_owned.clone(),
-                query.into(),
-                text(args, "path_glob").map(str::to_string),
-                uint(args, "max_results"),
-                Some(args.get("regex") == Some(&Value::Bool(true))),
-                Some(args.get("case_sensitive") == Some(&Value::Bool(true))),
-                uint(args, "context_lines"),
-            )
-            .await?;
+            let regex = flag(args, "regex");
+            let search = |regex: bool| {
+                crate::agent_tools::tool_search_code(
+                    root_owned.clone(),
+                    query.into(),
+                    text(args, "path_glob").map(str::to_string),
+                    uint(args, "max_results"),
+                    Some(regex),
+                    Some(flag(args, "case_sensitive")),
+                    uint(args, "context_lines"),
+                )
+            };
+            let mut result = search(regex).await?;
+            // Regex syntax sent as literal text (regex: true forgotten): the
+            // literal finds nothing, so search it as the pattern it is.
+            let mut as_regex = None;
+            if !regex && result.total_matches == 0 && looks_like_regex(query, flag(args, "case_sensitive")) {
+                let retried = search(true).await?;
+                as_regex = Some(retried.total_matches > 0);
+                if retried.total_matches > 0 {
+                    result = retried;
+                }
+            }
             // The declaration each line is in: the files' outlines, briefly.
             let root = root_owned;
             let outlines = tauri::async_runtime::spawn_blocking(move || {
@@ -610,7 +645,15 @@ async fn run<R: Runtime>(
             })
             .await
             .map_err(|e| e.to_string())?;
-            format_search_result(&outlines.0, &outlines.1)
+            let shown = format_search_result(&outlines.0, &outlines.1);
+            match as_regex {
+                Some(true) => format!(
+                    "{shown}\n[The literal text had no matches, so the query was searched as a regular expression. \
+                     Pass regex: true for patterns.]"
+                ),
+                Some(false) => format!("{shown}\n[No matches as a regular expression either.]"),
+                None => shown,
+            }
         }
         _ => format!("Error: unknown tool \"{name}\"."),
     };
@@ -815,7 +858,7 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
         "list_dir" => one("count", json!(if result.starts_with("(empty") { 0 } else { count_lines(result) })),
         "search_code" => {
             // First line: "12 matches in 3 files" (context lines aren't matches).
-            if result.trim() == "No matches." {
+            if result.trim_start().starts_with("No matches.") {
                 return one("count", json!(0));
             }
             let count = MATCH_COUNT.captures(result).and_then(|c| c[1].parse::<u64>().ok());
@@ -841,6 +884,30 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regex_syntax_in_a_literal_query_is_recognised() {
+        assert!(looks_like_regex(r"cursor-follower|link-hover|rotate\(45deg\)", false));
+        assert!(looks_like_regex(r"fn\s+handle_\w+", false));
+        assert!(looks_like_regex("useState.*null", false));
+        // Plain text, and text that only looks like a pattern.
+        assert!(!looks_like_regex("rotate(45deg)", false));
+        assert!(!looks_like_regex("a.b(c)", false));
+        // Would match every line, or doesn't compile.
+        assert!(!looks_like_regex("a || b", false));
+        assert!(!looks_like_regex(".*", false));
+        assert!(!looks_like_regex(r"foo\(|bar[", false));
+    }
+
+    #[test]
+    fn flags_may_come_as_strings() {
+        let args = |v: Value| v.as_object().unwrap().clone();
+        assert!(flag(&args(json!({ "regex": true })), "regex"));
+        assert!(flag(&args(json!({ "regex": "true" })), "regex"));
+        assert!(flag(&args(json!({ "regex": " TRUE " })), "regex"));
+        assert!(!flag(&args(json!({ "regex": "false" })), "regex"));
+        assert!(!flag(&args(json!({})), "regex"));
+    }
     use crate::code_search::SearchLine;
 
     #[test]
