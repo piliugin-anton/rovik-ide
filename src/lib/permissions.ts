@@ -569,6 +569,17 @@ export function describeToolCall(name: string, argsJson: string): string {
       return `Search the web for “${str('query') ?? '…'}”`;
     case 'browse_url':
       return `Open ${str('url') ?? 'a web page'}`;
+    case 'browser_automate': {
+      const steps = Array.isArray(args.steps) ? args.steps : [];
+      const first = steps[0] as Record<string, unknown> | undefined;
+      const where_ =
+        (typeof first?.url === 'string' && first.url) ||
+        (typeof first?.selector === 'string' && first.selector) ||
+        (typeof first?.text === 'string' && first.text) ||
+        '';
+      const noun = steps.length === 1 ? 'step' : 'steps';
+      return `Automate the browser (${steps.length} ${noun}${where_ ? ` · ${where_}` : ''})`;
+    }
     case 'browser_screenshot':
       return `Take a screenshot of ${str('url') ?? 'a web page'}`;
     default:

@@ -1,7 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type {
+  AutomatedPage,
   BrowsedPage,
+  BrowserAutomateStep,
   BrowserScreenshot,
   DirEntryInfo,
   ToolDirEntry,
@@ -214,6 +216,18 @@ export function toolBrowseUrl(url: string, maxChars?: number): Promise<BrowsedPa
 
 export function toolBrowserScreenshot(url?: string): Promise<BrowserScreenshot> {
   return invoke('browser_screenshot', { url });
+}
+
+/**
+ * Drives the shared browser tab through steps (open, wait, click, type,
+ * capture text) with a bot-check solver between them. The first call starts
+ * a headless Chrome, so it can take a few seconds.
+ */
+export function toolBrowserAutomate(
+  steps: BrowserAutomateStep[],
+  maxChars?: number
+): Promise<AutomatedPage> {
+  return invoke('browser_automate', { steps, maxChars });
 }
 
 export interface SearchInFilesOptions {

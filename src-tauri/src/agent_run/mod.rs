@@ -102,7 +102,7 @@ pub struct StopSignal {
 }
 
 impl StopSignal {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         StopSignal { flag: AtomicBool::new(false), tx: watch::channel(false).0 }
     }
 
@@ -110,12 +110,12 @@ impl StopSignal {
         self.flag.load(Ordering::SeqCst)
     }
 
-    fn set(&self) {
+    pub(crate) fn set(&self) {
         self.flag.store(true, Ordering::SeqCst);
         let _ = self.tx.send(true);
     }
 
-    pub fn subscribe(&self) -> watch::Receiver<bool> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
         self.tx.subscribe()
     }
 }
