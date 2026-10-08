@@ -112,6 +112,16 @@ const NEW_CHAT_TITLE = 'New Chat';
 /** Chats whose interrupted tool calls were offered again this session: once each. */
 const resumed = new Set<string>();
 
+/*
+ * The context bar above the input (and the CLM budget in the context row)
+ * is estimated async, 400ms after mounting. The panel unmounts whenever the
+ * sidebar tab switches away from chat, so without a cache the details would
+ * blank on every tab switch until the next estimate arrives. The last estimate
+ * per chat is kept here and shown at once on remount, then refreshed.
+ */
+const usageCache = new Map<string, ContextUsage>();
+const clmBudgetCache = new Map<string, number | null>();
+
 interface ChatProps {
   rootPath: Accessor<string | null>;
   activeFileContext: Accessor<ActiveFileContext | null>;
@@ -184,13 +194,23 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  const [contextUsage, setContextUsage] = createSignal<ContextUsage | null>(null);
+  const [contextUsage, setContextUsage] = createSignal<ContextUsage | null>(
+    (() => {
+      const id = chatStore.state.activeId;
+      return (id && usageCache.get(id)) || null;
+    })()
+  );
   // The CLM budget the active chat's next request would get, from the
   // model's context length as it is now (the context row shows it).
   const [clmBudget, setClmBudget] = createSignal<{
     dialogId: string;
     budget: number | null;
-  } | null>(null);
+  } | null>(
+    (() => {
+      const id = chatStore.state.activeId;
+      return id ? { dialogId: id, budget: clmBudgetCache.get(id) ?? null } : null;
+    })()
+  );
 
   let isMounted = true;
   let inputTextareaRef: HTMLTextAreaElement | undefined;
@@ -373,8 +393,30 @@ export default function ChatPanel(props: ChatProps) {
       ([dialogId, profile]) => {
         window.clearTimeout(contextTimer);
         if (!dialogId || !profile) {
-          setContextUsage(null);
+          // Keep the last estimate for the chat (a remount before the
+          // providers load must not blank the bar); clear only with no chat.
+          if (!dialogId) {
+            setContextUsage(null);
+            setClmBudget(null);
+          }
           return;
+        }
+        // Switching chats/tabs: show the last estimate at once, then refresh.
+        const cached = usageCache.get(dialogId);
+        if (cached) {
+          if (cached !== contextUsage()) setContextUsage(cached);
+        } else if (contextUsage()) {
+          // Another chat's bar: drop it instead of showing it stale.
+          setContextUsage(null);
+        }
+        const cachedBudget = clmBudgetCache.get(dialogId);
+        if (cachedBudget !== undefined) {
+          const cur = clmBudget();
+          if (!cur || cur.dialogId !== dialogId || cur.budget !== cachedBudget)
+            setClmBudget({ dialogId, budget: cachedBudget });
+        } else {
+          const cur = clmBudget();
+          if (!cur || cur.dialogId !== dialogId) setClmBudget({ dialogId, budget: null });
         }
         const request = ++contextRequest;
         contextTimer = window.setTimeout(async () => {
@@ -389,8 +431,9 @@ export default function ChatPanel(props: ChatProps) {
             });
             if (request !== contextRequest) return;
             setClmBudget({ dialogId, budget: estimate.clmBudget });
+            clmBudgetCache.set(dialogId, estimate.clmBudget);
             const known = !!profile.contextTokens && profile.contextTokens > 0;
-            setContextUsage({
+            const usage = {
               promptTokens: estimate.promptTokens,
               windowTokens: known ? profile.contextTokens! : DEFAULT_CONTEXT_TOKENS,
               windowGuessed: !known,
@@ -401,7 +444,9 @@ export default function ChatPanel(props: ChatProps) {
                 estimate.outdated > 0 ||
                 estimate.droppedTurns > 0 ||
                 estimate.fullHistoryTokens > estimate.historyTokens,
-            });
+            };
+            usageCache.set(dialogId, usage);
+            setContextUsage(usage);
           } catch (err) {
             console.error('Context estimate failed:', err);
           }

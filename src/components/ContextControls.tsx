@@ -62,7 +62,7 @@ export default function ContextControls(props: {
   sending: boolean;
   onOpenVirtualFiles: () => void;
 }) {
-  const [status, setStatus] = createSignal<ClmStatus | null>(null);
+  const [status, setStatus] = createSignal<ClmStatus | null>(liveClmStatus(props.dialogId));
   const [menuOpen, setMenuOpen] = createSignal(false);
   const [revisionsOpen, setRevisionsOpen] = createSignal(false);
   const [revisions, setRevisions] = createSignal<ContextRevision[]>([]);
@@ -99,21 +99,41 @@ export default function ContextControls(props: {
       noteContextMode(id, s.mode);
       setStatus(s);
     } catch {
-      setStatus(null);
+      // Keep whatever is shown (e.g. the live status from this session):
+      // a failed refresh while remounting must not blank the row.
+      if (!status()) setStatus(null);
     }
   }
 
-  // On opening a chat, and whenever a run ends.
+  // On opening a chat (every mount: the panel unmounts when the sidebar
+  // tab switches away), and whenever a run ends. The mount refresh runs
+  // even while a run is going: otherwise switching tabs mid-run would
+  // blank the row until the run ends.
   createEffect(
     on(
-      () => [props.dialogId, props.sending] as const,
-      ([, sending]) => {
-        if (!sending) void refresh();
+      () => props.dialogId,
+      () => {
+        const live = liveClmStatus(props.dialogId);
+        // No live state for the new chat: drop the old chat's row at once
+        // instead of showing it until the refresh answers.
+        setStatus(live ?? null);
+        void refresh();
       }
+    )
+  );
+  createEffect(
+    on(
+      () => props.sending,
+      (sending) => {
+        if (!sending) void refresh();
+      },
+      { defer: true }
     )
   );
 
   // Each request a run prepares: the context as it went out, edits taken in.
+  // Not deferred: a remount picks up the latest live status at once instead
+  // of waiting for the next request.
   createEffect(
     on(
       () => liveClmStatus(props.dialogId),
@@ -121,8 +141,7 @@ export default function ContextControls(props: {
         if (!live) return;
         setStatus(live);
         if (revisionsOpen()) void reloadRevisions();
-      },
-      { defer: true }
+      }
     )
   );
 
