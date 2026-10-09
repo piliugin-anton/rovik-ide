@@ -389,3 +389,36 @@ fn a_large_real_world_sized_file_is_quick() {
     // Generous: catches accidental quadratic work, not machine speed.
     assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
 }
+
+// ---- syntax errors ----
+
+#[test]
+fn clean_files_have_no_syntax_errors() {
+    for (name, src) in [
+        ("a.rs", "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n"),
+        ("a.ts", "export function add(a: number, b: number): number {\n  return a + b;\n}\n"),
+        ("a.py", "def add(a, b):\n    return a + b\n"),
+    ] {
+        assert_eq!(syntax_errors(name, src), Some(Vec::new()), "{name}");
+    }
+}
+
+#[test]
+fn broken_files_report_lines() {
+    let errors = syntax_errors("a.rs", "pub fn add(a: i32, b: i32) -> i32 {\n    a + \n}\n").unwrap();
+    assert!(!errors.is_empty(), "an unfinished expression is an error");
+    assert!(errors.iter().all(|e| e.start_line >= 1 && e.start_col >= 1), "{errors:?}");
+    assert!(errors.iter().all(|e| !e.message.is_empty()), "{errors:?}");
+
+    let errors = syntax_errors("a.ts", "export function add( {\n  return 1;\n}\n").unwrap();
+    assert!(!errors.is_empty(), "{errors:?}");
+
+    // One problem per broken region, not per nested node.
+    let errors = syntax_errors("a.py", "def f(:\n    pass\n").unwrap();
+    assert!(errors.len() <= 3, "{errors:?}");
+}
+
+#[test]
+fn syntax_errors_need_a_known_language() {
+    assert_eq!(syntax_errors("notes.txt", "hello ((("), None);
+}

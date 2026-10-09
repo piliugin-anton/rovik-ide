@@ -100,6 +100,24 @@ type Found = (String, PathBuf, SystemTime, u64, Arc<FileTags>);
 /// Per project root, most recently used last.
 static CACHE: LazyLock<Mutex<Vec<(PathBuf, Cache)>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
+/// Forgets the cached tags for one file under `root`, if cached. Call after
+/// the agent writes the file: mtime granularity (and same-size rewrites)
+/// can otherwise keep serving the old parse, leaving the mid-run map stale.
+pub fn invalidate_path(root: &Path, abs: &Path) {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    for (cached_root, files) in cache.iter_mut() {
+        if cached_root != root {
+            continue;
+        }
+        files.remove(abs);
+        // The walk may have stored the canonical path while the caller
+        // holds a symlinked one (macOS /tmp), or vice versa.
+        if let Ok(canon) = abs.canonicalize() {
+            files.remove(&canon);
+        }
+    }
+}
+
 /// The map for `root`, or None when there's nothing to show (no source
 /// files with declarations).
 pub fn repo_map(root: &Path, focus: &Focus, options: &Options) -> Option<String> {
@@ -111,7 +129,8 @@ pub fn repo_map(root: &Path, focus: &Focus, options: &Options) -> Option<String>
 const HEADER: &str = "## Repository map\n\
 The project's most relevant files for this request and their declarations, with line ranges (`start-end`), \
 nested ones indented under their parent. It's a starting point, not the whole project: \
-read what you need with read by symbol (a declaration's name) or start_line/end_line, and search for anything not shown.";
+read what you need with read by symbol (a declaration's name) or start_line/end_line, search for anything not shown, \
+and query the structural graph with neighbours (files a file uses / is used by) and callers (a symbol's declarations and users).";
 
 /// The project's source files and their tags, by project-relative path.
 fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
@@ -440,6 +459,392 @@ fn pagerank(n: usize, links: &BTreeMap<(usize, usize, &str), f64>, start: &[f64]
         }
     }
     rank
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Graph queries: the agent's `neighbours` and `callers` tools
+ * ---------------------------------------------------------------------------
+ *
+ * The map above computes a file↔file graph and throws the edges away; these
+ * queries keep them. Both collect the same tags (same cache, same limits)
+ * and rebuild the same links, but with no request focus: the query itself
+ * is the focus, so link weights are structural only.
+ */
+
+/// Cap on either tool's output, in characters.
+const GRAPH_MAX_CHARS: usize = 6_000;
+/// Files listed per direction (uses / used-by) or per section.
+const GRAPH_MAX_FILES: usize = 20;
+/// Shared names shown per neighbouring file.
+const GRAPH_MAX_NAMES_PER_FILE: usize = 8;
+/// Declaring files shown for a symbol.
+const GRAPH_MAX_DECLARERS: usize = 10;
+/// Using files shown per symbol.
+const GRAPH_MAX_USERS: usize = 30;
+/// Candidates listed when a path or symbol doesn't resolve.
+const GRAPH_MAX_CANDIDATES: usize = 12;
+
+/// The file↔file graph behind the map, with owned names: paths in order,
+/// which files declare each name, and user-file → declaring-file links.
+struct Graph {
+    paths: Vec<String>,
+    declared_by: HashMap<String, Vec<usize>>,
+    links: BTreeMap<(usize, usize, String), f64>,
+}
+
+fn build_graph(files: &BTreeMap<String, Arc<FileTags>>) -> Graph {
+    let paths: Vec<String> = files.keys().cloned().collect();
+    let n = paths.len();
+    let scopes: Vec<Vec<Scope>> = paths.iter().map(|p| scopes(&files[p].symbols)).collect();
+    let mut declared_by: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, path) in paths.iter().enumerate() {
+        let mut names: Vec<&str> = files[path]
+            .symbols
+            .iter()
+            .zip(&scopes[i])
+            .filter(|(_, scope)| !scope.local)
+            .map(|(s, _)| s.name.as_str())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        for name in names {
+            if name.chars().count() >= MIN_NAME_CHARS {
+                declared_by.entry(name.to_string()).or_default().push(i);
+            }
+        }
+    }
+    // How many files use each declared name (for rarity, as in the map).
+    let empty: HashSet<&str> = HashSet::new();
+    let mut used_in: HashMap<&str, usize> = HashMap::new();
+    for tags in files.values() {
+        for name in tags.identifiers.keys() {
+            if let Some((declared, _)) = declared_by.get_key_value(name.as_str()) {
+                *used_in.entry(declared.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let mut links: BTreeMap<(usize, usize, String), f64> = BTreeMap::new();
+    for (from, path) in paths.iter().enumerate() {
+        let tags = &files[path];
+        let mut used: Vec<(&String, &u32)> = tags.identifiers.iter().collect();
+        used.sort();
+        for (name, &count) in used {
+            let Some(declarers) = declared_by.get(name.as_str()) else { continue };
+            if tags.symbols.iter().any(|s| &s.name == name) {
+                continue;
+            }
+            let weight = name_weight(name, declarers.len(), &empty)
+                * rarity(used_in.get(name.as_str()).copied().unwrap_or(1), n)
+                * f64::from(count).sqrt();
+            for &to in declarers {
+                if to != from {
+                    links.insert((from, to, name.clone()), weight);
+                }
+            }
+        }
+    }
+    Graph { paths, declared_by, links }
+}
+
+/// A query path as the walk stores it: forward slashes, no leading `./`.
+fn normalize_query_path(input: &str) -> String {
+    let mut p = input.trim().replace('\\', "/");
+    // `path/to/file.ts:42` → the file.
+    if !p.contains("::") {
+        if let Some((before, _)) = p.split_once(':') {
+            p = before.to_string();
+        }
+    }
+    p = p.trim().to_string();
+    while let Some(rest) = p.strip_prefix("./") {
+        p = rest.to_string();
+    }
+    while p.starts_with('/') && p.len() > 1 {
+        p = p[1..].to_string();
+    }
+    p.trim_end_matches('/').to_string()
+}
+
+fn resolve_graph_file(paths: &[String], input: &str) -> Result<usize, String> {
+    let norm = normalize_query_path(input);
+    if norm.is_empty() {
+        return Err("Error: \"path\" is empty: give a file path from the project, e.g. \"src/lib/foo.ts\".".into());
+    }
+    if let Some(i) = paths.iter().position(|p| p == &norm) {
+        return Ok(i);
+    }
+    // `chatStore.ts` for `src/lib/chatStore.ts`: a unique suffix still finds it.
+    let suffixes: Vec<usize> =
+        paths.iter().enumerate().filter(|(_, p)| *p == &norm || p.ends_with(&format!("/{norm}"))).map(|(i, _)| i).collect();
+    match suffixes.as_slice() {
+        [one] => return Ok(*one),
+        [_, _, ..] => {
+            let mut out = vec![format!("Error: \"{input}\" matches several files; give the full path from the project root:")];
+            for i in suffixes.into_iter().take(GRAPH_MAX_CANDIDATES) {
+                out.push(format!("- {}", paths[i]));
+            }
+            return Err(out.join("\n"));
+        }
+        [] => {}
+    }
+    // Last resort: files containing it, to point the model at search instead.
+    let mut near: Vec<&String> =
+        paths.iter().filter(|p| p.contains(&norm) || norm.split('/').last().is_some_and(|f| p.ends_with(f))).collect();
+    near.sort();
+    near.truncate(GRAPH_MAX_CANDIDATES);
+    let mut out = vec![format!("Error: \"{input}\" is not a source file in the project graph.")];
+    if !near.is_empty() {
+        out.push("Did you mean:".into());
+        for p in near {
+            out.push(format!("- {p}"));
+        }
+    }
+    out.push("List folders with list_dir or search for the file with search_code.".into());
+    Err(out.join("\n"))
+}
+
+/// The one-hop structural neighbourhood of a file: what it uses and what
+/// uses it, through shared symbol names. Names are static (tree-sitter):
+/// dynamic uses (getattr, reflection) don't appear.
+pub fn neighbours(root: &Path, path: &str, options: &Options) -> Result<String, String> {
+    let files = collect(root, options);
+    if files.is_empty() {
+        return Err("Error: no source files found for the project graph.".into());
+    }
+    let graph = build_graph(&files);
+    let me = resolve_graph_file(&graph.paths, path)?;
+    let mine = &graph.paths[me];
+
+    // Per neighbouring file, in each direction: the shared names, heaviest first.
+    let mut uses: HashMap<usize, Vec<(&str, f64)>> = HashMap::new();
+    let mut used_by: HashMap<usize, Vec<(&str, f64)>> = HashMap::new();
+    for ((from, to, name), &w) in &graph.links {
+        if *from == me {
+            uses.entry(*to).or_default().push((name.as_str(), w));
+        } else if *to == me {
+            used_by.entry(*from).or_default().push((name.as_str(), w));
+        }
+    }
+    let mut uses: Vec<(usize, Vec<(&str, f64)>)> = uses.into_iter().collect();
+    let mut used_by: Vec<(usize, Vec<(&str, f64)>)> = used_by.into_iter().collect();
+    for (_, names) in uses.iter_mut().chain(used_by.iter_mut()) {
+        names.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(b.0)));
+        names.truncate(GRAPH_MAX_NAMES_PER_FILE);
+    }
+    let total = |names: &[Vec<(&str, f64)>]| names.iter().flat_map(|v| v.iter().map(|(_, w)| w)).sum::<f64>();
+    uses.sort_by(|a, b| total(&[b.1.clone()]).total_cmp(&total(&[a.1.clone()])).then(graph.paths[a.0].cmp(&graph.paths[b.0])));
+    used_by.sort_by(|a, b| total(&[b.1.clone()]).total_cmp(&total(&[a.1.clone()])).then(graph.paths[a.0].cmp(&graph.paths[b.0])));
+    uses.truncate(GRAPH_MAX_FILES);
+    used_by.truncate(GRAPH_MAX_FILES);
+
+    let mut out = vec![format!("## Neighbours of {mine}")];
+    // The file's own top-level declarations, so the model knows what it offers.
+    let own: Vec<String> = files[mine]
+        .symbols
+        .iter()
+        .filter(|s| s.depth == 0)
+        .take(GRAPH_MAX_FILES)
+        .map(|s| {
+            let lines = if s.end_line > s.start_line { format!("{}-{}", s.start_line, s.end_line) } else { s.start_line.to_string() };
+            format!("- {lines} {}", s.signature)
+        })
+        .collect();
+    if !own.is_empty() {
+        out.push(format!("Declares:\n{}", own.join("\n")));
+    }
+    let render_side = |title: &str, side: &[(usize, Vec<(&str, f64)>)], verb: &str| {
+        if side.is_empty() {
+            return format!("{title}:\n(none found by name{verb})");
+        }
+        let mut lines = vec![title.to_string()];
+        for (other, names) in side {
+            let via = names.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>().join(", ");
+            lines.push(format!("- {} (via {via})", graph.paths[*other]));
+        }
+        lines.join("\n")
+    };
+    let uses_total: usize = graph.links.keys().filter(|(f, _, _)| *f == me).count();
+    let used_total: usize = graph.links.keys().filter(|(_, t, _)| *t == me).count();
+    out.push(render_side(&format!("{mine} uses ({} file{})", uses.len(), if uses.len() == 1 { "" } else { "s" }), &uses, ""));
+    out.push(render_side(
+        &format!("Used by ({} file{})", used_by.len(), if used_by.len() == 1 { "" } else { "s" }),
+        &used_by,
+        "; it may be an entry point or used dynamically",
+    ));
+    let _ = (uses_total, used_total);
+    out.push("Read a file with read; find exact use sites with search_code.".into());
+    let mut text = out.join("\n\n");
+    if text.chars().count() > GRAPH_MAX_CHARS {
+        let mut cut: String = text.chars().take(GRAPH_MAX_CHARS).collect();
+        if let Some(i) = cut.rfind('\n') {
+            cut.truncate(i);
+        }
+        text = format!("{cut}\n[…truncated]");
+    }
+    Ok(text)
+}
+
+/// A symbol query split into parts: `Parser::parse`, `Parser > parse` and
+/// `Parser.parse` all mean outer `Parser`, name `parse`.
+fn split_symbol_query(query: &str) -> Vec<String> {
+    query
+        .split(" > ")
+        .flat_map(|p| p.split("::"))
+        .flat_map(|p| p.split(['.', '/', '#']))
+        .map(|p| {
+            let mut s = p.trim();
+            s = s.trim_start_matches('#').trim();
+            s = s.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+            let s = match s.find(['<', '(', '[', ':']) {
+                Some(0) | None => s,
+                Some(i) => &s[..i],
+            };
+            s.trim().trim_end_matches(':').trim().to_string()
+        })
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// Indexes of the declarations `query` names in one file's symbols (as
+/// `read` by symbol resolves them: whole name first, else the last part
+/// with its outers among the ancestors).
+fn match_in_file(symbols: &[Symbol], query: &str) -> Vec<usize> {
+    let has_separator = query.contains("::") || query.contains(" > ") || query.contains(['.', '/', '#']);
+    if has_separator {
+        let whole: Vec<usize> = (0..symbols.len()).filter(|&i| symbols[i].name.trim() == query.trim()).collect();
+        if !whole.is_empty() {
+            return whole;
+        }
+    } else {
+        let want = query.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
+        let hit: Vec<usize> = (0..symbols.len()).filter(|&i| symbols[i].name.trim() == want).collect();
+        if !hit.is_empty() {
+            return hit;
+        }
+    }
+    let parts = split_symbol_query(query);
+    let Some((last, outer)) = parts.split_last() else { return Vec::new() };
+    (0..symbols.len())
+        .filter(|&i| symbols[i].name.trim() == *last)
+        .filter(|&i| {
+            let chain: Vec<String> = ancestors(symbols, i).iter().rev().map(|&a| symbols[a].name.trim().to_string()).collect();
+            let mut want = outer.iter();
+            let mut next = want.next();
+            for name in &chain {
+                if Some(name) == next {
+                    next = want.next();
+                }
+            }
+            next.is_none()
+        })
+        .collect()
+}
+
+/// Where a symbol is declared and which files use the name: the static
+/// callers/dependents the graph sees. For exact use sites (lines), follow
+/// up with search_code.
+pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, String> {
+    let query = symbol.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    if query.is_empty() {
+        return Err("Error: \"symbol\" is empty: give a declaration's name, e.g. \"parse\" or \"Parser::parse\".".into());
+    }
+    let files = collect(root, options);
+    if files.is_empty() {
+        return Err("Error: no source files found for the project graph.".into());
+    }
+    let graph = build_graph(&files);
+    let parts = split_symbol_query(query);
+    let Some((bare, _)) = parts.split_last() else {
+        return Err(format!("Error: \"{symbol}\" names no symbol."));
+    };
+    let Some(declarers) = graph.declared_by.get(bare.as_str()) else {
+        // Suggest names containing it, most-declared first for stability.
+        let mut near: Vec<(&String, usize)> =
+            graph.declared_by.iter().filter(|(n, _)| n.contains(bare.as_str())).map(|(n, d)| (n, d.len())).collect();
+        near.sort_by(|a, b| a.0.cmp(b.0));
+        near.truncate(GRAPH_MAX_CANDIDATES);
+        let mut out = vec![format!("Error: no declaration named \"{query}\" in the project graph.")];
+        if !near.is_empty() {
+            out.push("Similar names:".into());
+            for (n, _) in near {
+                out.push(format!("- {n}"));
+            }
+        }
+        out.push("Search for it with search_code (it may be dynamic or outside parsed sources).".into());
+        return Err(out.join("\n"));
+    };
+    // The declarations themselves, with lines and signatures.
+    let mut shown: Vec<(usize, usize)> = Vec::new(); // (file, symbol index)
+    for &i in declarers {
+        for j in match_in_file(&files[&graph.paths[i]].symbols, query) {
+            shown.push((i, j));
+        }
+    }
+    if shown.is_empty() {
+        // Qualified but the nesting never matched: fall back to bare matches.
+        for &i in declarers {
+            for (j, s) in files[&graph.paths[i]].symbols.iter().enumerate() {
+                if s.name.trim() == bare.as_str() {
+                    shown.push((i, j));
+                }
+            }
+        }
+    }
+    shown.sort();
+    shown.truncate(GRAPH_MAX_DECLARERS * 2);
+    // Using files, heaviest first.
+    let mut users: HashMap<usize, (f64, u32)> = HashMap::new();
+    for ((from, to, name), &w) in &graph.links {
+        if name == bare && declarers.contains(to) {
+            let e = users.entry(*from).or_insert((0.0, 0));
+            e.0 += w;
+            e.1 += files[&graph.paths[*from]].identifiers.get(bare.as_str()).copied().unwrap_or(1);
+        }
+    }
+    let mut users: Vec<(usize, f64, u32)> = users.into_iter().map(|(f, (w, c))| (f, w, c)).collect();
+    users.sort_by(|a, b| b.1.total_cmp(&a.1).then(graph.paths[a.0].cmp(&graph.paths[b.0])));
+    let users_total = users.len();
+    users.truncate(GRAPH_MAX_USERS);
+
+    let mut out = vec![format!("## Callers of `{query}`")];
+    if shown.is_empty() {
+        out.push(format!("Declared in:\n(declared as `{bare}` in {} file{}; no outline entry matched)", declarers.len(), if declarers.len() == 1 { "" } else { "s" }));
+    } else {
+        let mut lines = vec!["Declared in:".to_string()];
+        for (i, j) in &shown {
+            let s = &files[&graph.paths[*i]].symbols[*j];
+            let range = if s.end_line > s.start_line { format!("{}-{}", s.start_line, s.end_line) } else { s.start_line.to_string() };
+            lines.push(format!("- {} [{range}]: {}", graph.paths[*i], s.signature));
+        }
+        if declarers.len() > shown.len() {
+            lines.push(format!("(…and {} more declaring file{} not shown)", declarers.len() - shown.len(), if declarers.len() - shown.len() == 1 { "" } else { "s" }));
+        }
+        out.push(lines.join("\n"));
+    }
+    if users.is_empty() {
+        out.push(format!("Used by:\n(no other file uses `{bare}` by name; it may be an entry point or used dynamically)"));
+    } else {
+        let mut lines = vec![format!("Used by ({} file{}):", users_total, if users_total == 1 { "" } else { "s" })];
+        for (f, _, count) in &users {
+            let times = if *count == 1 { "1 use".to_string() } else { format!("{count} uses") };
+            lines.push(format!("- {} ({times} via `{bare}`)", graph.paths[*f]));
+        }
+        if users_total > users.len() {
+            lines.push(format!("(…and {} more not shown)", users_total - users.len()));
+        }
+        out.push(lines.join("\n"));
+    }
+    out.push(format!("Find exact use sites with search_code for `{bare}`; read a declaration with read by symbol."));
+    let mut text = out.join("\n\n");
+    if text.chars().count() > GRAPH_MAX_CHARS {
+        let mut cut: String = text.chars().take(GRAPH_MAX_CHARS).collect();
+        if let Some(i) = cut.rfind('\n') {
+            cut.truncate(i);
+        }
+        text = format!("{cut}\n[…truncated]");
+    }
+    Ok(text)
 }
 
 /// The chosen declarations grouped by file (the request's files first, then

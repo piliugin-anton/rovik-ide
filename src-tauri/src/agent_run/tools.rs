@@ -89,6 +89,61 @@ fn file_tool_schemas() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "neighbours",
+                "description": "The one-hop structural neighbourhood of a file from the repository map's graph: which parsed source files it uses by symbol name, and which files use it, with the shared names. Static (tree-sitter) only: dynamic uses don't appear. Use it before editing to find hidden dependencies and blast radius, and to pick files to read next. For exact use sites (lines), follow up with search_code.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "File path relative to the project root, e.g. \"src/lib/foo.ts\". A unique suffix (\"foo.ts\") works when only one file matches." }
+                    },
+                    "required": ["path"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "callers",
+                "description": "Where a symbol is declared (file, line range, signature) and which files use the name, from the repository map's graph. Static (tree-sitter) only: dynamic uses don't appear. Use it to find what depends on a function, class or type before changing it. For exact use sites (lines), follow up with search_code for the name; read a declaration with read by symbol.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": { "type": "string", "description": "A declaration's name, e.g. \"parse\" or \"Parser::parse\". Matches read's symbol syntax." }
+                    },
+                    "required": ["symbol"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "outline",
+                "description": "List a file's declarations (functions, classes, types, methods…) with line ranges and signatures, without returning its content. From the same tree-sitter outline as read's symbol navigation and the repo map. Use it to learn a file's shape before reading, or to find a declaration's exact symbol name for read. Cheaper than reading a large file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "File path relative to the project root, e.g. \"src/lib/foo.ts\"." }
+                    },
+                    "required": ["path"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "diagnostics",
+                "description": "Errors and warnings for a file: what the editor shows (TypeScript worker, rust-analyzer) plus a fresh syntax check, each with line numbers. Use it after editing to find what broke, before finishing. Omit path for a project summary of files with reported problems. Typed (cross-file) errors need the project's type checker — run it with bash; the IDE also runs checks itself at the end when verification is on.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "File path relative to the project root, e.g. \"src/lib/foo.ts\". Omit for a project-wide summary." }
+                    }
+                }
+            }
+        }),
     ]
 }
 
@@ -667,6 +722,30 @@ async fn run<R: Runtime>(
                 None => shown,
             }
         }
+        "neighbours" => {
+            let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
+                return Ok(ToolResult::text("Error: \"path\" is required."));
+            };
+            crate::agent_tools::tool_neighbours(root_owned, path.into()).await?
+        }
+        "callers" => {
+            let Some(symbol) = text(args, "symbol").filter(|s| !s.is_empty()) else {
+                return Ok(ToolResult::text("Error: \"symbol\" is required."));
+            };
+            crate::agent_tools::tool_callers(root_owned, symbol.into()).await?
+        }
+        "outline" => {
+            let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
+                return Ok(ToolResult::text("Error: \"path\" is required."));
+            };
+            crate::agent_tools::tool_outline(root_owned, path.into())?
+        }
+        "diagnostics" => {
+            crate::agent_tools::tool_diagnostics(
+                root_owned,
+                text(args, "path").filter(|p| !p.trim().is_empty()).map(str::to_string),
+            )?
+        }
         _ => format!("Error: unknown tool \"{name}\"."),
     };
     Ok(ToolResult::text(content))
@@ -868,6 +947,12 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
             Some(meta)
         }
         "list_dir" => one("count", json!(if result.starts_with("(empty") { 0 } else { count_lines(result) })),
+        "neighbours" | "callers" | "outline" | "diagnostics" => {
+            if result.trim_start().starts_with("Error:") {
+                return None;
+            }
+            one("count", json!(result.split('\n').filter(|l| l.starts_with("- ")).count()))
+        },
         "search_code" => {
             // First line: "12 matches in 3 files" (context lines aren't matches).
             if result.trim_start().starts_with("No matches.") {

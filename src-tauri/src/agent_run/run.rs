@@ -66,6 +66,23 @@ pub struct Run<R: Runtime> {
     /// The project's checks and the system-prompt section about it.
     pub(super) checks: Vec<ProjectCheck>,
     pub(super) project_context: String,
+    /// The project section without the repository map: the map is rebuilt
+    /// mid-run while this stays fixed, then recombined into project_context.
+    pub(super) base_project_context: String,
+    /// The current repository map text (the `## Repository map` section),
+    /// if any. Updated mid-run as files change; the next model turn sends it.
+    pub(super) repo_map: Option<String>,
+    /// Map budget in chars (about 2% of the context window), fixed at prepare.
+    pub(super) repo_map_chars: usize,
+    /// Successful file writes since the map was last (re)built. Set in
+    /// record(), consumed by the mid-run refresh: same-file rewrites count,
+    /// so this is a counter, not changed_files' length.
+    pub(super) map_writes_since_refresh: u32,
+    /// When the map was last (re)built: bounds how stale external edits
+    /// (the editor, git) can get before a catch-all refresh.
+    pub(super) map_refreshed_at: Instant,
+    /// Successful refreshes this run (for logs and tests).
+    pub(super) map_refreshes: u32,
     /// Project-relative paths written in this run, in order.
     pub(super) changed_files: Vec<String>,
     /// Files changed since the gate last ran: there is something to check.
@@ -196,32 +213,33 @@ impl<R: Runtime> Run<R> {
             String::new()
         };
         let current_user_content = request.current_user_content.or_else(|| last_user_wire_content(&recent));
-        // The repository map: the declarations most relevant to the request,
-        // fixed for the run like the rest of the project section.
-        let project_context = match &root {
+        // The repository map: the declarations most relevant to the request.
+        // Built once here, then refreshed mid-run as files change
+        // (refresh_repo_map_if_needed): the base section stays fixed while
+        // the map is rebuilt and recombined into project_context before the
+        // next model turn.
+        let repo_map_chars = repo_map_chars(request.profile.context_tokens);
+        let base_project_context = project_context;
+        let repo_map = match &root {
             Some(r) => {
                 let (r, request_text) = (r.clone(), current_user_content.clone().unwrap_or_default());
                 let touched = touched_paths(&recent);
                 let options = crate::repo_map::Options {
-                    max_chars: repo_map_chars(request.profile.context_tokens),
+                    max_chars: repo_map_chars,
                     ..Default::default()
                 };
-                let map = tauri::async_runtime::spawn_blocking(move || {
+                tauri::async_runtime::spawn_blocking(move || {
                     let root = std::path::Path::new(&r);
                     let focus = crate::repo_map::focus_from(root, &request_text, &touched);
                     crate::repo_map::repo_map(root, &focus, &options)
                 })
                 .await
                 .ok()
-                .flatten();
-                match map {
-                    Some(map) if project_context.is_empty() => map,
-                    Some(map) => format!("{project_context}\n\n{map}"),
-                    None => project_context,
-                }
+                .flatten()
             }
-            None => project_context,
+            None => None,
         };
+        let project_context = join_project_context(&base_project_context, &repo_map);
 
         let run = Run {
             app: app.clone(),
@@ -239,6 +257,12 @@ impl<R: Runtime> Run<R> {
             questions_asked: 0,
             checks,
             project_context,
+            base_project_context,
+            repo_map,
+            repo_map_chars,
+            map_writes_since_refresh: 0,
+            map_refreshed_at: Instant::now(),
+            map_refreshes: 0,
             writes_since_verify: !changed_files.is_empty(),
             changed_files,
             verify_rounds,
@@ -405,6 +429,10 @@ impl<R: Runtime> Run<R> {
             if self.stopped() {
                 return Ok("stopped".into());
             }
+            // Files changed: the run-start map is stale. Rebuild before the
+            // next turn so it sees the new declarations; a no-op when
+            // nothing was written or the ranking didn't move.
+            self.refresh_repo_map_if_needed().await?;
 
             // Every tool call has its result, so the chat can wait here as
             // long as it likes: Continue picks up with the next request.
@@ -802,6 +830,75 @@ impl<R: Runtime> Run<R> {
             "checklist",
         )
         .await?;
+        Ok(true)
+    }
+
+    /// Recombines the fixed project section with the current map.
+    fn rebuild_project_context(&mut self) {
+        self.project_context = join_project_context(&self.base_project_context, &self.repo_map);
+    }
+
+    /// Rebuilds the repository map mid-run, so the next model turn sees the
+    /// new declarations (not the run-start snapshot).
+    ///
+    /// Bullet-proofing, in order of cheap to expensive:
+    /// - Skips when nothing was written since the last build, the map is
+    ///   fresh, stopped, or there is no project root: the common no-op is a
+    ///   counter check plus an Instant comparison.
+    /// - Per-file caches were already invalidated in record(), so a rewrite
+    ///   with the same mtime+size can't serve a stale parse; a failed rebuild
+    ///   keeps the old map and never breaks the run.
+    /// - A successful bash marks the map dirty too (git checkout, codegen):
+    ///   mtime/size catches those on the next collect, since no same-tick
+    ///   cache race is possible across processes.
+    /// - Past MAP_MAX_AGE, rebuilds even with no writes: the catch-all for
+    ///   edits outside the run (the editor, git). Incremental (only changed
+    ///   files re-parse) and a no-op when the ranking didn't move.
+    /// - Focus is recomputed from the latest chat (reads + writes) plus the
+    ///   original request, so new files the run touched steer the ranking.
+    /// - Identical output keeps the old string (no context churn, no log spam).
+    /// Returns true when the map text changed.
+    async fn refresh_repo_map_if_needed(&mut self) -> Result<bool, String> {
+        let Some(root) = self.root.clone() else { return Ok(false) };
+        if self.stopped() {
+            return Ok(false);
+        }
+        let dirty = self.map_writes_since_refresh > 0;
+        let aged = self.map_refreshed_at.elapsed() >= MAP_MAX_AGE;
+        if !dirty && !aged {
+            return Ok(false);
+        }
+        // Consume the counter first: a failed rebuild must not retry every turn.
+        self.map_writes_since_refresh = 0;
+        self.map_refreshed_at = Instant::now();
+        let recent = self.recent().await?;
+        let touched = touched_paths(&recent);
+        let request_text = self.current_user_content.clone().unwrap_or_default();
+        let max_chars = self.repo_map_chars;
+        let new_map = tauri::async_runtime::spawn_blocking(move || {
+            let root_path = std::path::Path::new(&root);
+            let focus = crate::repo_map::focus_from(root_path, &request_text, &touched);
+            let options = crate::repo_map::Options { max_chars, ..Default::default() };
+            crate::repo_map::repo_map(root_path, &focus, &options)
+        })
+        .await
+        .ok()
+        .flatten();
+        if new_map == self.repo_map {
+            return Ok(false);
+        }
+        self.repo_map = new_map;
+        self.rebuild_project_context();
+        self.map_refreshes += 1;
+        log::write(
+            &self.app,
+            json!({
+                "event": "repoMapRefresh",
+                "dialogId": self.dialog_id,
+                "refreshes": self.map_refreshes,
+                "mapChars": self.repo_map.as_ref().map(|m| m.chars().count()).unwrap_or(0),
+            }),
+        );
         Ok(true)
     }
 
@@ -1418,6 +1515,21 @@ fn repo_map_chars(context_tokens: Option<usize>) -> usize {
     (window * CHARS_PER_TOKEN / 50).clamp(1_500, 6_000)
 }
 
+/// A map older than this is rebuilt on the next turn even with no writes:
+/// the catch-all for edits outside the run (the editor, git). The rebuild
+/// is incremental (only changed files re-parse) and a no-op when the
+/// ranking didn't move, so idle long runs pay one cheap walk per interval.
+const MAP_MAX_AGE: Duration = Duration::from_secs(120);
+
+/// The system-prompt project section: the fixed base plus the current map.
+fn join_project_context(base: &str, map: &Option<String>) -> String {
+    match (base, map) {
+        (base, Some(map)) if base.is_empty() => map.clone(),
+        (base, Some(map)) => format!("{base}\n\n{map}"),
+        (base, None) => base.to_string(),
+    }
+}
+
 /// Files the chat read or changed, latest last.
 fn touched_paths(messages: &[MessageRow]) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
@@ -1532,6 +1644,15 @@ mod tests {
         assert_eq!(run_mode_for(&messages).as_deref(), Some("plan"));
         assert_eq!(last_user_wire_content(&messages).as_deref(), Some("wire"));
         assert_eq!(chat_plan_file(&messages).as_deref(), Some("/p/a.md"));
+    }
+
+    #[test]
+    fn the_project_section_recombines_with_the_current_map() {
+        let map = Some("## Repository map\nbody".to_string());
+        assert_eq!(join_project_context("## Project\nbase", &map), "## Project\nbase\n\n## Repository map\nbody");
+        assert_eq!(join_project_context("", &map), "## Repository map\nbody");
+        assert_eq!(join_project_context("## Project\nbase", &None), "## Project\nbase");
+        assert_eq!(join_project_context("", &None), "");
     }
 }
 

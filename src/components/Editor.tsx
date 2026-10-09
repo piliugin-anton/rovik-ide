@@ -16,6 +16,7 @@ import {
   dropProjectSourceLib,
 } from '../lib/intellisense';
 import { ensureOutlineIntelliSense } from '../lib/outlineIntelliSense';
+import { ensureDiagnosticsReporting } from '../lib/diagnostics';
 import {
   checkForRustAnalyzerUpdate,
   ensureRustSupport,
@@ -320,6 +321,10 @@ export default function Editor(props: EditorProps) {
     // TypeScript worker and rust-analyzer keep providing typed results
     // alongside these.
     ensureOutlineIntelliSense();
+
+    // Editor markers (TS worker, rust-analyzer) to the backend, so the
+    // agent's `diagnostics` tool sees what the editor shows.
+    ensureDiagnosticsReporting(props.projectDir());
 
     // Rust: rust-analyzer, started with the project's first Rust file.
     if (props.language() === 'rust') {

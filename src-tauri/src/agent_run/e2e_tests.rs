@@ -1945,6 +1945,25 @@ async fn the_system_prompt_carries_a_map_centred_on_the_request() {
 }
 
 #[tokio::test]
+async fn the_map_refreshes_mid_run_after_a_write() {
+    let h = harness(&[("src/a.rs", "pub fn alpha_one() {}\n")]).await;
+    let (url, seen) = model(vec![
+        Reply::Call { id: "c1", name: "write", args: json!({ "path": "src/b.rs", "content": "pub fn beta_two_fresh() {}\n" }) },
+        Reply::Text("Added it."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Add beta"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    // The first turn's map can't know the new file; the second turn's must.
+    let first = system_prompt(&seen.lock().unwrap()[0]);
+    assert!(!first.contains("beta_two_fresh"), "{first}");
+    let second = system_prompt(&seen.lock().unwrap()[1]);
+    let map = &second[second.find("## Repository map").expect("a refreshed map in the second turn")..];
+    assert!(map.contains("beta_two_fresh"), "{map}");
+}
+
+#[tokio::test]
 async fn a_project_without_code_has_no_map() {
     let h = harness(&[("a.txt", "hello"), ("data.json", "{\"a\": 1}")]).await;
     let (url, seen) = model(vec![Reply::Text("Ok.")]).await;

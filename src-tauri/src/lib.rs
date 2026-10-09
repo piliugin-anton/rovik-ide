@@ -152,6 +152,7 @@ pub fn run() {
             agent_tools::tool_read_file_range,
             agent_tools::tool_write_file,
             agent_tools::tool_edit_file,
+            agent_tools::report_editor_diagnostics,
             project_profile::project_profile,
             project_profile::load_project_settings,
             project_profile::save_project_settings,

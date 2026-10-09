@@ -817,6 +817,10 @@ fn same_call(name: &str, a: &str, b: &str) -> bool {
         // Another range of the same file, or the same folder deeper.
         "read" | "list_dir" => a.get("path").is_some() && a.get("path") == b.get("path"),
         "search_code" => a.get("query").is_some() && a.get("query") == b.get("query"),
+        "neighbours" => a.get("path").is_some() && a.get("path") == b.get("path"),
+        "callers" => a.get("symbol").is_some() && a.get("symbol") == b.get("symbol"),
+        "outline" => a.get("path").is_some() && a.get("path") == b.get("path"),
+        "diagnostics" => a.get("path") == b.get("path"),
         "bash" => a.get("command").is_some() && a.get("command") == b.get("command"),
         _ => false,
     }

@@ -554,6 +554,14 @@ export function describeToolCall(name: string, argsJson: string): string {
       return `List ${str('path') || 'the project root'}`;
     case 'search_code':
       return `Search the project for “${str('query') ?? '…'}”`;
+    case 'neighbours':
+      return `Graph neighbours of ${str('path') ?? 'a file'}`;
+    case 'callers':
+      return `Callers of ${str('symbol') ?? '…'}`;
+    case 'outline':
+      return `Outline ${str('path') ?? 'a file'}`;
+    case 'diagnostics':
+      return str('path') ? `Diagnostics for ${str('path')}` : 'Diagnostics summary';
     case 'write': {
       if (args.old_text !== undefined && args.old_text !== null) {
         const start = args.start_line;

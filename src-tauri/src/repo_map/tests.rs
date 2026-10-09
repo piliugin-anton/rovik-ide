@@ -444,6 +444,99 @@ fn focus_of_an_empty_request() {
     assert!(f.files.is_empty() && f.words.is_empty());
 }
 
+// ---- graph queries (neighbours / callers) ----
+
+#[test]
+fn neighbours_show_what_a_file_uses_and_what_uses_it() {
+    let p = two_parts();
+    let n = neighbours(&p.0, "billing/invoice.rs", &Options::default()).unwrap();
+    assert!(n.contains("## Neighbours of billing/invoice.rs"), "{n}");
+    assert!(n.contains("billing/tax.rs"), "{n}");
+    assert!(n.contains("compute_tax_total"), "{n}");
+    assert!(!n.contains("chat/"), "{n}");
+    // A suffix finds the file.
+    let n = neighbours(&p.0, "invoice.rs", &Options::default()).unwrap();
+    assert!(n.contains("## Neighbours of billing/invoice.rs"), "{n}");
+}
+
+#[test]
+fn neighbours_of_unknown_or_ambiguous_paths_suggest() {
+    let p = two_parts();
+    let err = neighbours(&p.0, "billing/missing.rs", &Options::default()).unwrap_err();
+    assert!(err.contains("not a source file"), "{err}");
+    // A unique suffix resolves.
+    let n = neighbours(&p.0, "message.rs", &Options::default()).unwrap();
+    assert!(n.contains("## Neighbours of chat/message.rs"), "{n}");
+    // Two files with the same name: ambiguous.
+    let q = project(&[
+        ("a/store.ts", "export function loadStore() {}\n"),
+        ("b/store.ts", "export function saveStore() {}\n"),
+        ("c/app.ts", "import { loadStore } from '../a/store';\nloadStore();\n"),
+    ]);
+    let err = neighbours(&q.0, "store.ts", &Options::default()).unwrap_err();
+    assert!(err.contains("several files") && err.contains("a/store.ts") && err.contains("b/store.ts"), "{err}");
+}
+
+#[test]
+fn callers_show_declarers_and_users() {
+    let p = two_parts();
+    let c = callers(&p.0, "compute_tax_total", &Options::default()).unwrap();
+    assert!(c.contains("## Callers of `compute_tax_total`"), "{c}");
+    assert!(c.contains("billing/tax.rs"), "{c}");
+    assert!(c.contains("billing/invoice.rs"), "{c}");
+    assert!(!c.contains("chat/"), "{c}");
+}
+
+#[test]
+fn callers_of_unknown_names_suggest() {
+    let p = two_parts();
+    let err = callers(&p.0, "no_such_thing_xyz", &Options::default()).unwrap_err();
+    assert!(err.contains("no declaration"), "{err}");
+    let err = callers(&p.0, "", &Options::default()).unwrap_err();
+    assert!(err.contains("empty"), "{err}");
+}
+
+// ---- mid-run refresh: cache invalidation ----
+
+#[test]
+fn invalidate_path_forgets_one_cached_file() {
+    clear_cache();
+    let p = project(&[("a.rs", "pub fn alpha_one() {}\n"), ("b.rs", "pub fn bee_two() {}\n")]);
+    let _ = map(&p, Focus::default()).unwrap();
+    let abs = p.0.join("a.rs");
+    {
+        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let (_, files) = cache.iter().find(|(r, _)| r == &p.0).expect("this root is cached");
+        assert!(files.contains_key(&abs), "a.rs is cached");
+    }
+    invalidate_path(&p.0, &abs);
+    {
+        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((_, files)) = cache.iter().find(|(r, _)| r == &p.0) else { return };
+        assert!(!files.contains_key(&abs), "a.rs is forgotten");
+        assert!(files.contains_key(&p.0.join("b.rs")), "b.rs is kept");
+    }
+    clear_cache();
+}
+
+#[test]
+fn a_rewritten_file_reparses_on_the_next_map() {
+    clear_cache();
+    let p = project(&[("a.rs", "pub fn alpha_one() {}\n")]);
+    let before = map(&p, Focus::default()).unwrap();
+    assert!(before.contains("alpha_one"), "{before}");
+    // A rewrite the caches would otherwise key as unchanged: invalidate as
+    // the run's record() does after every write, then the new name shows.
+    fs::write(p.0.join("a.rs"), "pub fn beta_two() {}\n").unwrap();
+    let abs = p.0.join("a.rs");
+    crate::outline::invalidate_path(&abs);
+    invalidate_path(&p.0, &abs);
+    let after = map(&p, Focus::default()).unwrap();
+    assert!(after.contains("beta_two"), "{after}");
+    assert!(!after.contains("alpha_one"), "{after}");
+    clear_cache();
+}
+
 // ---- on a real project ----
 
 #[test]

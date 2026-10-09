@@ -531,6 +531,13 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
         }
         "list_dir" => format!("List {}", s("path").filter(|p| !p.is_empty()).unwrap_or_else(|| "the project root".into())),
         "search_code" => format!("Search the project for “{}”", s("query").unwrap_or_else(|| "…".into())),
+        "neighbours" => format!("Graph neighbours of {}", s("path").unwrap_or_else(|| "a file".into())),
+        "callers" => format!("Callers of {}", s("symbol").unwrap_or_else(|| "…".into())),
+        "outline" => format!("Outline {}", s("path").unwrap_or_else(|| "a file".into())),
+        "diagnostics" => match s("path").filter(|p| !p.trim().is_empty()) {
+            Some(p) => format!("Diagnostics for {p}"),
+            None => "Diagnostics summary".to_string(),
+        },
         "write" if args.get("old_text").is_some_and(|v| !v.is_null()) => {
             let range = match raw("start_line") {
                 Some(start) => format!(" (only lines {start}-{})", raw("end_line").unwrap_or_else(|| start.clone())),

@@ -16,9 +16,11 @@
 //      string the model can see and react to, not crash the app.
 
 use ignore::WalkBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::SystemTime;
 
 const DENYLIST_DIRS: &[&str] = &[
     "node_modules",
@@ -233,6 +235,339 @@ pub async fn tool_search_code(
     .map_err(|e| e.to_string())?
 }
 
+/// The one-hop structural neighbourhood of a file from the repository map's
+/// graph (see repo_map.rs): which parsed files it uses by name, and which
+/// use it. Runs off the main thread; the walk reuses the map's cache.
+pub async fn tool_neighbours(root: String, path: String) -> Result<String, String> {
+    if path.trim().is_empty() {
+        return Err("path must not be empty".to_string());
+    }
+    // Confine to the project like every other tool: no `..`, and an
+    // absolute path must sit under the root (then made relative: the graph
+    // keys are project-relative).
+    let rel = {
+        let root_canon = canonicalize_or_err(Path::new(&root))?;
+        let candidate = Path::new(&path);
+        if candidate.is_absolute() {
+            candidate
+                .strip_prefix(&root_canon)
+                .map_err(|_| format!("path escapes project root: {path}"))?
+                .to_string_lossy()
+                .replace('\\', "/")
+        } else {
+            if candidate.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                return Err(format!("path must not contain '..': {path}"));
+            }
+            path.clone()
+        }
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::repo_map::neighbours(Path::new(&root), &rel, &crate::repo_map::Options::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Where a symbol is declared and which files use the name, from the
+/// repository map's graph (see repo_map.rs). For exact use sites (lines),
+/// follow up with search_code. Runs off the main thread.
+pub async fn tool_callers(root: String, symbol: String) -> Result<String, String> {
+    if symbol.trim().is_empty() {
+        return Err("symbol must not be empty".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::repo_map::callers(Path::new(&root), &symbol, &crate::repo_map::Options::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A file's declarations with line ranges and signatures, without its
+/// content: the same tree-sitter outline as read's symbol navigation and
+/// the repo map. Cheaper than reading a large file to learn its shape.
+pub fn tool_outline(root: String, path: String) -> Result<String, String> {
+    let (abs, rel) = resolve_project_file(&root, &path, "outline")?;
+    let symbols = match crate::outline::outline_of_file(&abs, &rel) {
+        Some(s) => s,
+        // `.h`/`.m` need content to pick a language; the cache lookup
+        // above only tries the extension.
+        None => {
+            let meta = fs::metadata(&abs).map_err(|e| format!("{path}: {e}"))?;
+            if meta.len() > 8 * 1024 * 1024 {
+                return Err(format!("{path}: too large to outline; read it by start_line/end_line instead."));
+            }
+            let content = fs::read_to_string(&abs).map_err(|e| format!("{path}: {e}"))?;
+            match crate::outline::outline(&rel, &content) {
+                Some(symbols) => std::sync::Arc::new(symbols),
+                None => {
+                    return Err(match crate::outline::language_for(&rel, &content) {
+                        None => format!("{path}: no outline (language not known); read it by start_line/end_line instead."),
+                        Some(_) => format!("{path}: couldn't be outlined (too large or too slow to parse); read it by start_line/end_line instead."),
+                    });
+                }
+            }
+        }
+    };
+    Ok(render_outline(&rel, &symbols))
+}
+
+fn render_outline(rel: &str, symbols: &[crate::outline::Symbol]) -> String {
+    if symbols.is_empty() {
+        return format!("## Outline of {rel}\n(no declarations found; the file parses but declares nothing)");
+    }
+    const MAX_CHARS: usize = 8_000;
+    let mut out = vec![format!("## Outline of {rel}")];
+    let mut omitted = 0usize;
+    for s in symbols {
+        let lines = if s.end_line > s.start_line { format!("{}-{}", s.start_line, s.end_line) } else { s.start_line.to_string() };
+        let line = format!("{}{lines} {}", "  ".repeat(s.depth + 1), s.signature);
+        if out.join("\n").len() + line.len() + 1 > MAX_CHARS {
+            omitted += 1;
+            continue;
+        }
+        out.push(line);
+    }
+    if omitted > 0 {
+        out.push(format!("[…{omitted} more declarations; read by symbol for the rest]"));
+    }
+    out.push("Read a declaration with read by symbol.".into());
+    out.join("\n")
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Diagnostics: what the editor shows, for the agent
+ * ---------------------------------------------------------------------------
+ *
+ * The frontend reports its visible markers (TypeScript worker,
+ * rust-analyzer via LSP) per open file; the agent reads them back with
+ * `diagnostics`, paired with a fresh tree-sitter syntax check of the file
+ * on disk. Backend-run language servers would duplicate the ones the
+ * editor already runs, so the bridge goes the other way: editor → backend
+ * → agent.
+ */
+
+/// One editor marker, as the frontend's monaco reports it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorMarker {
+    pub start_line: usize,
+    pub start_col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+    /// "error" | "warning" | "info" | "hint".
+    pub severity: String,
+    pub message: String,
+    /// Which owner set it ("typescript", "rust-analyzer"…).
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+struct DiagReport {
+    markers: Vec<EditorMarker>,
+    reported_at: SystemTime,
+}
+
+/// Editor-reported diagnostics by (canonical root, project-relative path).
+static EDITOR_DIAGS: LazyLock<Mutex<std::collections::HashMap<(PathBuf, String), DiagReport>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+/// Reported files kept per project root, at most.
+const DIAG_MAX_FILES: usize = 300;
+/// Markers kept per file, at most (errors first).
+const DIAG_MAX_MARKERS: usize = 100;
+
+/// The editor's current markers for a file (fire-and-forget from the
+/// frontend's marker listener). Never fails the caller: bad input is an
+/// error string, never a panic.
+#[tauri::command]
+pub fn report_editor_diagnostics(root: String, path: String, markers: Vec<EditorMarker>) -> Result<(), String> {
+    let root_canon = canonicalize_or_err(Path::new(&root))?;
+    let rel = if Path::new(&path).is_absolute() {
+        // Canonicalize when possible: the caller may hand us a symlinked
+        // path (macOS /tmp → /private/tmp), while the root is canonical.
+        let canon = canonicalize_or_err(Path::new(&path)).unwrap_or_else(|_| Path::new(&path).to_path_buf());
+        canon
+            .strip_prefix(&root_canon)
+            .map_err(|_| format!("path escapes project root: {path}"))?
+            .to_string_lossy()
+            .replace('\\', "/")
+    } else {
+        if Path::new(&path).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(format!("path must not contain '..': {path}"));
+        }
+        path.trim().replace('\\', "/")
+    };
+    let mut markers = markers;
+    for m in &mut markers {
+        m.start_line = m.start_line.max(1);
+        m.end_line = m.end_line.max(m.start_line);
+        m.start_col = m.start_col.max(1);
+        m.end_col = m.end_col.max(1);
+        m.severity = m.severity.to_ascii_lowercase();
+        if !["error", "warning", "info", "hint"].contains(&m.severity.as_str()) {
+            m.severity = "info".to_string();
+        }
+        if m.message.len() > 1_000 {
+            m.message.truncate(1_000);
+        }
+    }
+    // Errors first, then by line: the cap keeps what matters.
+    markers.sort_by_key(|m| (match m.severity.as_str() {
+        "error" => 0,
+        "warning" => 1,
+        _ => 2,
+    }, m.start_line, m.start_col));
+    markers.truncate(DIAG_MAX_MARKERS);
+    let mut diags = EDITOR_DIAGS.lock().unwrap_or_else(|e| e.into_inner());
+    diags.insert((root_canon, rel), DiagReport { markers, reported_at: SystemTime::now() });
+    // Evict the oldest reports beyond the cap.
+    while diags.len() > DIAG_MAX_FILES {
+        let oldest = diags.iter().min_by_key(|(_, r)| r.reported_at).map(|(k, _)| k.clone());
+        match oldest {
+            Some(k) => { diags.remove(&k); }
+            None => break,
+        }
+    }
+    Ok(())
+}
+
+/// A project file, resolved and checked: its absolute path and its
+/// project-relative path with forward slashes.
+fn resolve_project_file(root: &str, path: &str, verb: &str) -> Result<(PathBuf, String), String> {
+    if path.trim().is_empty() {
+        return Err("path must not be empty".to_string());
+    }
+    let abs = resolve_within_root(root, path)?;
+    if !abs.is_file() {
+        return Err(format!("{path}: not a file"));
+    }
+    if looks_binary(&abs)? {
+        return Err(format!("{path}: binary file, cannot {verb}"));
+    }
+    let root_canon = canonicalize_or_err(Path::new(root))?;
+    let rel = abs.strip_prefix(&root_canon).unwrap_or(&abs).to_string_lossy().replace('\\', "/");
+    Ok((abs, rel))
+}
+
+/// Errors and warnings for one file (its editor markers plus a fresh syntax
+/// check), or, without a path, a summary of the files with reported
+/// problems. Typed cross-file errors need the project's type checker;
+/// the result says which command that is.
+pub fn tool_diagnostics(root: String, path: Option<String>) -> Result<String, String> {
+    let root_canon = canonicalize_or_err(Path::new(&root))?;
+    match path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => file_diagnostics(&root, &root_canon, &p),
+        None => diagnostics_summary(&root, &root_canon),
+    }
+}
+
+fn file_diagnostics(root: &str, root_canon: &Path, path: &str) -> Result<String, String> {
+    let (abs, rel) = resolve_project_file(root, path, "check")?;
+    let mut out = vec![format!("## Diagnostics for {rel}")];
+
+    // What the editor shows (possibly newer or older than the file on disk).
+    let editor = EDITOR_DIAGS.lock().unwrap_or_else(|e| e.into_inner()).get(&(root_canon.to_path_buf(), rel.clone())).map(|r| {
+        (r.markers.clone(), r.reported_at)
+    });
+    match editor {
+        Some((markers, at)) if !markers.is_empty() => {
+            let stale = fs::metadata(&abs).ok().and_then(|m| m.modified().ok()).is_some_and(|m| m > at);
+            let age = SystemTime::now().duration_since(at).map(|d| d.as_secs()).unwrap_or(0);
+            let when = if age < 60 { format!("{age}s ago") } else { format!("{}m ago", age / 60) };
+            let mut lines = vec![format!("Editor (reported {when}{}):", if stale { ", stale: the file changed since" } else { "" })];
+            for m in markers.iter().take(DIAG_MAX_MARKERS) {
+                let at_ = if m.start_line == m.end_line {
+                    format!("{}:{}", m.start_line, m.start_col)
+                } else {
+                    format!("{}:{}-{}:{}", m.start_line, m.start_col, m.end_line, m.end_col)
+                };
+                let kind = match m.code.as_deref().filter(|c| !c.is_empty()) {
+                    Some(code) => format!(" [{code}]"),
+                    None => String::new(),
+                };
+                let from = m.source.as_deref().filter(|s| !s.is_empty()).map(|s| format!(" ({s})")).unwrap_or_default();
+                lines.push(format!("- {at_} {}: {}{}{}", m.severity, m.message.lines().next().unwrap_or(""), kind, from));
+            }
+            out.push(lines.join("\n"));
+        }
+        _ => out.push("Editor: no diagnostics reported (the file may not be open).".into()),
+    }
+
+    // A fresh syntax check of what's on disk now.
+    match fs::read_to_string(&abs) {
+        Ok(content) => match crate::outline::syntax_errors(&rel, &content) {
+            Some(errors) if !errors.is_empty() => {
+                let mut lines = vec!["Syntax (current):".to_string()];
+                for e in errors {
+                    lines.push(format!("- {}:{}: {}", e.start_line, e.start_col, e.message));
+                }
+                out.push(lines.join("\n"));
+            }
+            Some(_) => out.push("Syntax: parses clean.".into()),
+            None => out.push("Syntax: not checked (language not known or file too large).".into()),
+        },
+        Err(e) => out.push(format!("Syntax: couldn't read the file: {e}")),
+    }
+
+    if let Some(hint) = typecheck_hint(root) {
+        out.push(hint);
+    }
+    Ok(out.join("\n\n"))
+}
+
+/// The command for typed errors, from the detected project checks.
+fn typecheck_hint(root: &str) -> Option<String> {
+    let profile = crate::project_profile::detect(Path::new(root));
+    let typed = profile.checks.iter().find(|c| c.kind == "typecheck").or_else(|| profile.checks.iter().find(|c| c.kind == "lint"))?;
+    Some(format!(
+        "Typed (cross-file) errors need the type checker: run `{}` with bash. The IDE also runs checks itself at the end when verification is on.",
+        typed.command
+    ))
+}
+
+fn diagnostics_summary(root: &str, root_canon: &Path) -> Result<String, String> {
+    let diags = EDITOR_DIAGS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut files: Vec<(String, usize, usize, String)> = Vec::new(); // rel, errors, warnings, age/stale
+    for ((r, rel), report) in diags.iter() {
+        if r != root_canon {
+            continue;
+        }
+        let errors = report.markers.iter().filter(|m| m.severity == "error").count();
+        let warnings = report.markers.iter().filter(|m| m.severity == "warning").count();
+        if errors == 0 && warnings == 0 {
+            continue;
+        }
+        let stale = Path::new(root).join(rel).metadata().ok().and_then(|m| m.modified().ok()).is_some_and(|m| m > report.reported_at);
+        let age = SystemTime::now().duration_since(report.reported_at).map(|d| d.as_secs()).unwrap_or(0);
+        files.push((rel.clone(), errors, warnings, format!("{}m ago{}", age / 60, if stale { ", stale" } else { "" })));
+    }
+    drop(diags);
+    if files.is_empty() {
+        return Ok("## Diagnostics summary\n(no editor diagnostics reported for this project yet — open files in the editor, or query one file for its syntax check.)".into());
+    }
+    files.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+    const MAX_FILES: usize = 20;
+    let total = files.len();
+    let mut out = vec!["## Diagnostics summary (editor-reported)".to_string()];
+    for (rel, errors, warnings, age) in files.into_iter().take(MAX_FILES) {
+        let mut parts = Vec::new();
+        if errors > 0 {
+            parts.push(format!("{} error{}", errors, if errors == 1 { "" } else { "s" }));
+        }
+        if warnings > 0 {
+            parts.push(format!("{} warning{}", warnings, if warnings == 1 { "" } else { "s" }));
+        }
+        out.push(format!("- {rel}: {} ({age})", parts.join(", ")));
+    }
+    if total > MAX_FILES {
+        out.push(format!("(…and {} more files)", total - MAX_FILES));
+    }
+    out.push("Query one file with diagnostics for details; syntax is checked fresh per file.".into());
+    Ok(out.join("\n"))
+}
+
 /// Reads a text file: a 1-indexed inclusive line range, one declaration by
 /// name (`symbol`, see read_symbol.rs), or all of it. A file too large to
 /// read whole comes back as its start and a map of its declarations, and
@@ -393,6 +728,74 @@ mod tests {
         let (base, root) = linked_project("dangling");
         std::os::unix::fs::symlink(base.join("outside.txt"), root.join("escape.txt")).unwrap();
         assert!(resolve_within_root(root.to_str().unwrap(), "escape.txt").is_err());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn outline_project(name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf, String) {
+        let (base, root) = linked_project(name);
+        for (path, content) in files {
+            let p = root.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, content).unwrap();
+        }
+        let root_s = root.to_string_lossy().to_string();
+        (base, root, root_s)
+    }
+
+    #[test]
+    fn outline_lists_declarations_without_content() {
+        let (base, _root, root_s) = outline_project(
+            "outline",
+            &[("src/a.ts", "export class Store {\n  append(text: string) {}\n}\n\nexport function load() {}\n")],
+        );
+        let out = tool_outline(root_s, "src/a.ts".into()).unwrap();
+        assert!(out.contains("## Outline of src/a.ts"), "{out}");
+        assert!(out.contains("export class Store"), "{out}");
+        assert!(out.contains("append(text: string)"), "{out}");
+        assert!(out.contains("export function load()"), "{out}");
+        assert!(out.contains("read by symbol"), "{out}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn diagnostics_reports_syntax_errors_fresh() {
+        let (base, _root, root_s) = outline_project(
+            "diags",
+            &[("a.rs", "pub fn broken( {\n    1 +\n}\n"), ("ok.rs", "pub fn fine() {}\n")],
+        );
+        let broken = tool_diagnostics(root_s.clone(), Some("a.rs".into())).unwrap();
+        assert!(broken.contains("## Diagnostics for a.rs"), "{broken}");
+        assert!(broken.contains("Syntax (current):"), "{broken}");
+        let clean = tool_diagnostics(root_s, Some("ok.rs".into())).unwrap();
+        assert!(clean.contains("parses clean"), "{clean}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn diagnostics_shows_reported_editor_markers_and_summary() {
+        let (base, root, root_s) = outline_project("diagstore", &[("a.ts", "const x = 1;\n")]);
+        let abs = root.join("a.ts").to_string_lossy().to_string();
+        report_editor_diagnostics(
+            root_s.clone(),
+            abs,
+            vec![EditorMarker {
+                start_line: 1,
+                start_col: 7,
+                end_line: 1,
+                end_col: 8,
+                severity: "error".into(),
+                message: "Cannot find name 'y'.".into(),
+                source: Some("typescript".into()),
+                code: Some("2304".into()),
+            }],
+        )
+        .unwrap();
+        let out = tool_diagnostics(root_s.clone(), Some("a.ts".into())).unwrap();
+        assert!(out.contains("Cannot find name 'y'"), "{out}");
+        assert!(out.contains("[2304]"), "{out}");
+        assert!(out.contains("(typescript)"), "{out}");
+        let summary = tool_diagnostics(root_s, None).unwrap();
+        assert!(summary.contains("a.ts") && summary.contains("1 error"), "{summary}");
         let _ = fs::remove_dir_all(&base);
     }
 }

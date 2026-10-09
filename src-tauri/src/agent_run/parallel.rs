@@ -17,7 +17,7 @@ pub(super) const MAX_PARALLEL: usize = 8;
 /// The tools that may run alongside each other: local reads. (The browser
 /// tools share one tab, one call at a time, and what a screenshot shows
 /// depends on the order pages were opened.)
-pub(super) const PARALLEL_TOOLS: &[&str] = &["read", "list_dir", "search_code"];
+pub(super) const PARALLEL_TOOLS: &[&str] = &["read", "list_dir", "search_code", "neighbours", "callers", "outline", "diagnostics"];
 
 /// Batches run so far, by chat: their calls' ids (for the tests to see
 /// which calls ran together).

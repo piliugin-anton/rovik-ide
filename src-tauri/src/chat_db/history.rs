@@ -302,7 +302,7 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
                     })
             }
             // Listings and pages can be fetched again; keep their start.
-            "search_code" | "list_dir" | "web_search" | "browse_url"
+            "search_code" | "list_dir" | "neighbours" | "callers" | "outline" | "diagnostics" | "web_search" | "browse_url"
                 if messages[e.at].full_chars > LISTING_KEEP_CHARS * 2 && !messages[e.at].needs_body =>
             {
                 Some(format!(

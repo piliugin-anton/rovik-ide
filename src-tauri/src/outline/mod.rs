@@ -89,6 +89,13 @@ type FileCache = HashMap<std::path::PathBuf, (std::time::SystemTime, u64, Arc<Ve
 static FILE_CACHE: LazyLock<Mutex<FileCache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 const CACHED_FILES: usize = 5_000;
 
+/// Forgets the cached outline for `abs`, if any. Call after writing the
+/// file: mtime granularity (and same-size rewrites) can otherwise serve a
+/// stale outline, and with it a stale repo map mid-run.
+pub fn invalidate_path(abs: &std::path::Path) {
+    FILE_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(abs);
+}
+
 /// The outline of the file at `abs` (named `rel` in the project), from the
 /// cache while the file is unchanged. None as for `outline`, or when the
 /// file can't be read.
@@ -123,6 +130,103 @@ pub struct Tags {
 /// The outline and the identifiers, from one parse (for the repo map).
 pub fn tags(path: &str, content: &str) -> Option<Tags> {
     analyze(path, content, true)
+}
+
+/// One syntax problem: an ERROR or MISSING node from the parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxError {
+    /// 1-based, inclusive.
+    pub start_line: usize,
+    /// 1-based, in bytes.
+    pub start_col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+    /// `syntax error: "fn broken(("` or ``missing ";"``.
+    pub message: String,
+}
+
+/// Syntax problems collected from one file, at most.
+const MAX_SYNTAX_ERRORS: usize = 50;
+/// Characters of source shown in a syntax problem.
+const SYNTAX_SNIPPET_CHARS: usize = 80;
+
+/// The syntax problems in `content` (the file at `path`): ERROR and MISSING
+/// nodes from a tree-sitter parse, outermost only (an ERROR node containing
+/// another is one problem, not two). None when the file isn't in a language
+/// with a grammar, is too large, or can't be parsed in time — the same
+/// limits as `outline`. An empty list: parses clean.
+///
+/// This is untyped (a missing bracket, not a wrong type): the agent's
+/// `diagnostics` tool pairs it with what the editor's language servers
+/// report.
+pub fn syntax_errors(path: &str, content: &str) -> Option<Vec<SyntaxError>> {
+    let lang = language_for(path, content)?;
+    if content.len() > MAX_BYTES {
+        return None;
+    }
+    let grammar = lang.grammar();
+    let mut parser = Parser::new();
+    parser.set_language(&grammar).ok()?;
+
+    let deadline = Instant::now() + TIME_LIMIT;
+    let mut parse_progress = |_: &tree_sitter::ParseState| {
+        if Instant::now() > deadline { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+    };
+    let bytes = content.as_bytes();
+    let tree = parser.parse_with_options(
+        &mut |offset, _| if offset < bytes.len() { &bytes[offset..] } else { &[] as &[u8] },
+        None,
+        Some(ParseOptions::new().progress_callback(&mut parse_progress)),
+    )?;
+    let root = tree.root_node();
+    if !root.has_error() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut visited = 0usize;
+    // Nodes whose whole subtree may hold an error; clean subtrees never
+    // enter (has_error), and an error node's insides never do either.
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visited += 1;
+            if visited.is_multiple_of(4096) && Instant::now() > deadline {
+                return Some(out);
+            }
+            if out.len() >= MAX_SYNTAX_ERRORS {
+                return Some(out);
+            }
+            if child.is_error() {
+                out.push(error_of(content, &child, false));
+            } else if child.is_missing() {
+                out.push(error_of(content, &child, true));
+            } else if child.has_error() {
+                stack.push(child);
+            }
+        }
+    }
+    Some(out)
+}
+
+fn error_of(content: &str, node: &Node, missing: bool) -> SyntaxError {
+    let start = node.start_position();
+    let end = node.end_position();
+    let message = if missing {
+        format!("missing `{}`", node.kind())
+    } else {
+        let text = &content[node.start_byte()..node.end_byte()];
+        let first = text.lines().next().unwrap_or("").trim();
+        let snippet = shorten(&collapse(first), SYNTAX_SNIPPET_CHARS);
+        if snippet.is_empty() { "syntax error".to_string() } else { format!("syntax error: `{snippet}`") }
+    };
+    SyntaxError {
+        start_line: start.row + 1,
+        start_col: start.column + 1,
+        end_line: end.row + 1,
+        end_col: end.column + 1,
+        message,
+    }
 }
 
 /// Leaf node kinds that are names, beyond `…identifier`.

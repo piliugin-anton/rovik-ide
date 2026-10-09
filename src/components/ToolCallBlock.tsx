@@ -180,6 +180,11 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
       const count = Number(result.match(/^(\d+) match/)?.[1]);
       return Number.isFinite(count) ? { count } : { count: countLines(result) };
     }
+    case 'neighbours':
+    case 'callers':
+    case 'outline':
+    case 'diagnostics':
+      return { count: result.split('\n').filter((line) => line.startsWith('- ')).length };
     case 'web_search':
       return { count: result.split('\n').filter((line) => /^\d+\. /.test(line)).length };
     case 'bash': {
@@ -335,6 +340,34 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
         (glob ? ` in ${glob}` : '');
       if (count === undefined) return { title };
       return { title, meta: count === 0 ? 'no matches' : plural(count, 'match', 'matches') };
+    }
+
+    case 'neighbours': {
+      const title = `${active ? 'Mapping' : 'Mapped'} neighbours of ${path ?? 'file'}`;
+      if (count === undefined) return { title };
+      return { title, meta: count === 0 ? 'no links' : plural(count, 'file', 'files') };
+    }
+
+    case 'callers': {
+      const symbol = str(args.symbol);
+      const title = `${active ? 'Finding' : 'Found'} callers of ${symbol ? `"${symbol}"` : 'symbol'}`;
+      if (count === undefined) return { title };
+      return { title, meta: count === 0 ? 'no uses' : plural(count, 'file', 'files') };
+    }
+
+    case 'outline': {
+      const title = `${active ? 'Outlining' : 'Outlined'} ${path ?? 'file'}`;
+      if (count === undefined) return { title };
+      return { title, meta: count === 0 ? 'no declarations' : plural(count, 'declaration', 'declarations') };
+    }
+
+    case 'diagnostics': {
+      const symbol = str(args.path);
+      const title = symbol
+        ? `${active ? 'Checking' : 'Checked'} ${symbol}`
+        : `${active ? 'Summarizing' : 'Summarized'} diagnostics`;
+      if (count === undefined) return { title };
+      return { title, meta: count === 0 ? 'clean' : plural(count, 'problem', 'problems') };
     }
 
     case 'web_search': {

@@ -401,7 +401,23 @@ impl<R: Runtime> Run<R> {
                     self.changed_files.push(path.clone());
                 }
                 self.writes_since_verify = true;
+                self.map_writes_since_refresh += 1;
             }
+            // The parse caches key on mtime+size: a fast same-size rewrite
+            // could otherwise serve the old parse all run. Invalidate now,
+            // while the absolute path is at hand; failures never break the run.
+            if let (Some(root), Some(abs)) = (self.root.as_deref(), abs_write_path.as_deref()) {
+                let abs_path = std::path::Path::new(abs);
+                crate::outline::invalidate_path(abs_path);
+                crate::repo_map::invalidate_path(std::path::Path::new(root), abs_path);
+            }
+        }
+        // A shell command may have changed any files (git checkout, codegen,
+        // formatters): mtime/size catches it on the next collect, so only
+        // the refresh flag is needed — unlike the write tool, no same-tick
+        // cache race is possible across processes.
+        if tool_name == "bash" && !failed {
+            self.map_writes_since_refresh += 1;
         }
 
         // Open tabs of the file show what was written; an edit the user
