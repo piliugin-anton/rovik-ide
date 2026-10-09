@@ -23,7 +23,10 @@ const out = mkdtempSync(join(tmpdir(), 'rovik-tests-'));
 try {
   const bundles = [];
   for (const file of files) {
-    const outfile = join(out, relative('src', file).replace(/[\\/]/g, '__').replace(/\.ts$/, '.mjs'));
+    const outfile = join(
+      out,
+      relative('src', file).replace(/[\\/]/g, '__').replace(/\.ts$/, '.mjs')
+    );
     await build({
       entryPoints: [file],
       outfile,
