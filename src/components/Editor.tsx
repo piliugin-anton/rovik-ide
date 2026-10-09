@@ -1,4 +1,4 @@
-import { onMount, onCleanup, createEffect, untrack, createRoot } from 'solid-js';
+import { onMount, onCleanup, createEffect, untrack, createRoot, createSignal, Show } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import type { RevealRequest } from '../types';
@@ -9,7 +9,12 @@ import { addToChat } from '../lib/editorBridge';
 import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
 import { gitBaseFor } from '../lib/gitMarks';
 import { diffLines, splitLines } from '../lib/lineDiff';
-import { ensureProjectIntelliSense, modelUriFor, dropProjectSourceLib } from '../lib/intellisense';
+import {
+  ensureProjectIntelliSense,
+  isIntelliSenseReady,
+  modelUriFor,
+  dropProjectSourceLib,
+} from '../lib/intellisense';
 import { ensureOutlineIntelliSense } from '../lib/outlineIntelliSense';
 import {
   checkForRustAnalyzerUpdate,
@@ -44,6 +49,14 @@ export default function Editor(props: EditorProps) {
 
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
   let disposed = false;
+
+  // While the TS worker has no project libs, every import looks like an
+  // error (TS2307). Cover the editor with a centered "loading" note until
+  // definitions arrive instead of flashing false squiggles.
+  const needsDefs = (lang: string) => lang === 'typescript' || lang === 'javascript';
+  const [defsLoading, setDefsLoading] = createSignal(
+    needsDefs(props.language()) && !isIntelliSenseReady(props.projectDir())
+  );
 
   onMount(() => {
     // Register cleanup FIRST, synchronously - it must run even if the
@@ -277,9 +290,29 @@ export default function Editor(props: EditorProps) {
     const gitMarks = createGitMarks(editor, () => gitBaseFor(props.currentFilePath));
     onCleanup(() => gitMarks.dispose());
 
-    // Load typings in the background - never block editor creation on it.
-    // Once per project (later mounts reuse it).
-    void ensureProjectIntelliSense(props.projectDir());
+    // Definitions load in the background - never block editor creation on
+    // them. Once per project (later mounts reuse them). While they load,
+    // TS/JS files show a centered loading note (see defsLoading below) and
+    // semantic diagnostics stay off (lib/intellisense.ts), so imports don't
+    // flash as errors. Tracked on projectDir: a project switch without a
+    // remount re-arms the overlay for the new root.
+    createEffect(() => {
+      const root = props.projectDir();
+      if (!needsDefs(props.language()) || isIntelliSenseReady(root)) {
+        setDefsLoading(false);
+        void ensureProjectIntelliSense(root);
+        return;
+      }
+      setDefsLoading(true);
+      void ensureProjectIntelliSense(root).then(
+        () => {
+          if (!disposed) setDefsLoading(false);
+        },
+        () => {
+          if (!disposed) setDefsLoading(false);
+        }
+      );
+    });
 
     // Worker-free fallback from the Rust backend's tree-sitter outlines
     // (lib/outlineIntelliSense.ts): document symbols, hover signatures and
@@ -327,13 +360,26 @@ export default function Editor(props: EditorProps) {
 
   return (
     <div
-      ref={containerRef}
-      class="editor"
       style={{
+        position: 'relative',
         height: '100%',
         width: '100%',
+        flex: '1',
+        'min-height': '0',
+        display: 'flex',
       }}
-    />
+    >
+      <div
+        ref={containerRef}
+        class="editor"
+        style={{ height: '100%', width: '100%' }}
+      />
+      <Show when={defsLoading()}>
+        <div class="editor-loading-overlay">
+          <span>Loading definitions…</span>
+        </div>
+      </Show>
+    </div>
   );
 }
 

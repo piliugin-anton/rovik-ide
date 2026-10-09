@@ -90,6 +90,39 @@ js.setCompilerOptions(BASE_OPTIONS);
 ts.setEagerModelSync(true);
 js.setEagerModelSync(true);
 
+// While typings / project sources are still loading, the worker resolves
+// every bare import (and cross-file symbol) to nothing, so it reports
+// TS2307 on each import line. Those squiggles are false positives that
+// vanish once the libs arrive — suppress semantic diagnostics until the
+// first load finishes, then turn them back on.
+function setSemanticValidationEnabled(enabled: boolean): void {
+  for (const defaults of [ts, js]) {
+    try {
+      defaults.setDiagnosticsOptions({
+        ...defaults.getDiagnosticsOptions(),
+        noSemanticValidation: !enabled,
+      });
+    } catch {
+      // ignore: diagnostics stay as they were
+    }
+  }
+}
+
+// Start suppressed: the very first paint happens before any project libs
+// have reached the worker.
+setSemanticValidationEnabled(false);
+
+// Roots whose libs have fully reached the worker. `loadedRoot` is set when
+// a load *starts*; this is set when it *finishes* — the Editor overlay and
+// the diagnostics gate both key off this.
+const readyRoots = new Set<string>();
+
+/** True when the project's definitions are fully loaded (or no project). */
+export function isIntelliSenseReady(root: string | null): boolean {
+  if (!root) return true;
+  return readyRoots.has(root);
+}
+
 // Monaco stores extra libs in a null-prototype map (Object.create(null)) and
 // forwards that same object to the TS worker via postMessage
 // (workerManager _updateExtraLibs / createData). Null-prototype objects are a
@@ -98,7 +131,7 @@ js.setEagerModelSync(true);
 // method name. Hand the worker plain-prototype copies instead; internal
 // storage is untouched, only what getExtraLibs() returns (and hence what is
 // posted) changes. Verified in the log line below.
-for (const [name, defaults] of [
+for (const [, defaults] of [
   ['ts', ts],
   ['js', js],
 ] as const) {
@@ -108,6 +141,35 @@ for (const [name, defaults] of [
 
 let loadedRoot: string | null = null;
 let loading: Promise<void> | null = null;
+
+/**
+ * URIs contributed by the last typings fetch (`load_nodejs_project_typings`,
+ * re-anchored via libUriFor). Tracked so a typings-only refresh can swap
+ * exactly those entries and leave project sources (and live models) alone.
+ */
+let typingsUris = new Set<string>();
+
+/** Manifests whose change means node_modules may have changed. */
+const TYPINGS_MANIFESTS = new Set([
+  'package.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
+]);
+
+/** True for a root-level manifest write (any operation). */
+export function isTypingsManifest(path: string): boolean {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return TYPINGS_MANIFESTS.has(path.slice(slash + 1));
+}
+
+// Typings-only refresh state (see notifyTypingsMaybeStale below).
+const TYPINGS_QUIET_MS = 2_500;
+let typingsTimer: ReturnType<typeof setTimeout> | undefined;
+let typingsInFlight = false;
+let typingsRequeued = false;
 
 /*
  * Everything handed to the TypeScript worker crosses a `postMessage`
@@ -160,52 +222,159 @@ function safeSetExtraLibs(libs: ExtraLibInput[]): void {
 /** Loads the project into Monaco, once per project root. */
 export function ensureProjectIntelliSense(root: string | null): Promise<void> {
   if (!root) return Promise.resolve();
+  if (readyRoots.has(root)) return Promise.resolve();
   if (root === loadedRoot && loading) return loading;
   // Changes queued for the previous project don't apply to this one.
   queued.clear();
   firstQueuedAt = null;
   clearTimeout(flushTimer);
   clearTimeout(reloadTimer);
+  clearTimeout(typingsTimer);
+  typingsInFlight = false;
+  typingsRequeued = false;
   stale = false;
   loadedRoot = root;
+  // A new project has no libs yet: suppress semantic errors until its load
+  // finishes, and clear any stale markers from the previous project.
+  setSemanticValidationEnabled(false);
   loading = load(root);
   return loading;
 }
 
 async function load(root: string) {
-  const [typings, sources, options] = await Promise.all([
-    invoke<MonacoLibEntry[]>('load_nodejs_project_typings', { projectRoot: root }).catch(() => {
-      return [] as MonacoLibEntry[];
-    }),
-    invoke<{ files: { path: string; content: string }[]; truncated: boolean }>(
-      'load_project_sources',
-      { root }
-    ).catch(() => {
-      return { files: [], truncated: false };
-    }),
-    projectCompilerOptions(root),
-  ]);
-  if (root !== loadedRoot) return; // another project was opened meanwhile
+  try {
+    const [typings, sources, options] = await Promise.all([
+      invoke<MonacoLibEntry[]>('load_nodejs_project_typings', { projectRoot: root }).catch(() => {
+        return [] as MonacoLibEntry[];
+      }),
+      invoke<{ files: { path: string; content: string }[]; truncated: boolean }>(
+        'load_project_sources',
+        { root }
+      ).catch(() => {
+        return { files: [], truncated: false };
+      }),
+      projectCompilerOptions(root),
+    ]);
+    if (root !== loadedRoot) return; // another project was opened meanwhile
 
-  ts.setCompilerOptions(sanitizeCompilerOptions(options));
-  js.setCompilerOptions(sanitizeCompilerOptions(options));
-  // One call each: adding thousands of files one by one would resync the
-  // worker every time. Typings (node_modules .d.ts) are never opened as
-  // models, so they all go in; project sources skip URIs that already have
-  // a live model — the worker serves those from the model itself.
-  // package.json files must stay in the lib set: the TS worker resolves
-  // bare imports (solid-js → types/index.d.ts via the "types" field) by
-  // reading package.json through readFile/fileExists, which only see
-  // extraLibs + open models. Dropping them caused TS2307 for every bare
-  // import (verified via __rovikIntellisense worker.semantic).
-  const have = liveModelUris();
-  const libs = [
-    ...typings.map((t) => ({ filePath: libUriFor(root, t.name), content: t.content })),
-    ...sources.files
-      .filter((f) => !have.has(modelUriFor(f.path).toString()))
-      .map((f) => ({ filePath: modelUriFor(f.path).toString(), content: f.content })),
-  ];
-  safeSetExtraLibs(libs);
+    ts.setCompilerOptions(sanitizeCompilerOptions(options));
+    js.setCompilerOptions(sanitizeCompilerOptions(options));
+    // One call each: adding thousands of files one by one would resync the
+    // worker every time. Typings (node_modules .d.ts) are never opened as
+    // models, so they all go in; project sources skip URIs that already have
+    // a live model — the worker serves those from the model itself.
+    // package.json files must stay in the lib set: the TS worker resolves
+    // bare imports (solid-js → types/index.d.ts via the "types" field) by
+    // reading package.json through readFile/fileExists, which only see
+    // extraLibs + open models. Dropping them caused TS2307 for every bare
+    // import (verified via __rovikIntellisense worker.semantic).
+    const have = liveModelUris();
+    const typingLibs = sanitizeExtraLibs(
+      typings.map((t) => ({ filePath: libUriFor(root, t.name), content: t.content }))
+    );
+    const libs = [
+      ...typingLibs,
+      ...sources.files
+        .filter((f) => !have.has(modelUriFor(f.path).toString()))
+        .map((f) => ({ filePath: modelUriFor(f.path).toString(), content: f.content })),
+    ];
+    safeSetExtraLibs(libs);
+    typingsUris = new Set(typingLibs.map((l) => l.filePath));
+  } finally {
+    // This root still current and never marked ready (first load, success
+    // or failure — the fetches above all have fallbacks, but even a throw
+    // must not leave validation off and the overlay up forever): mark it
+    // ready, clear stale markers from the half-loaded program so no false
+    // TS2307 survives, and re-enable semantic diagnostics. Background
+    // refreshes of an already-ready root skip this: clearing markers there
+    // would erase real errors on every burst reload.
+    if (root === loadedRoot && !readyRoots.has(root)) {
+      readyRoots.add(root);
+      for (const m of monaco.editor.getModels()) {
+        try {
+          monaco.editor.setModelMarkers(m, 'typescript', []);
+          monaco.editor.setModelMarkers(m, 'javascript', []);
+        } catch {
+          // ignore
+        }
+      }
+      setSemanticValidationEnabled(true);
+    }
+  }
+}
+
+/*
+ * A dependency install writes root manifests (package.json, lockfiles) and
+ * then settles node_modules — but node_modules itself is watcher-ignored,
+ * so no fs event marks the typings stale. The manifest write is the signal:
+ * debounce past it (install writes manifests several times, before
+ * node_modules settles), then re-fetch typings ONLY and merge them into the
+ * existing extra-libs, leaving project sources untouched.
+ *
+ * Deliberately NOT a full load(): no overlay, no diagnostic toggle, no
+ * marker wipe — the old libs stay valid throughout and the worker
+ * revalidates incrementally, so at most the new import shows a (true)
+ * TS2307 until the refresh lands. A backend failure keeps the old libs
+ * (never wipes to empty). A project switch drops the pending refresh via
+ * the root guard. A pending source flush/reload covers typings anyway via
+ * its own full load(), so the refresh yields to it.
+ */
+
+/** A manifest changed on disk: schedule a typings-only refresh (no-op otherwise). */
+export function notifyTypingsMaybeStale(path: string): void {
+  const root = loadedRoot;
+  if (!root || !isTypingsManifest(path) || !path.startsWith(root)) return;
+  // The initial load hasn't finished: it reads node_modules itself, so it
+  // already picks up whatever the install wrote.
+  if (!readyRoots.has(root)) return;
+  clearTimeout(typingsTimer);
+  typingsTimer = setTimeout(() => void runTypingsRefresh(root), TYPINGS_QUIET_MS);
+}
+
+async function runTypingsRefresh(root: string): Promise<void> {
+  if (typingsInFlight) {
+    typingsRequeued = true;
+    return;
+  }
+  // A source flush/reload is pending or running: its full load() re-fetches
+  // typings too, so a separate refresh would only race it (both do a
+  // read-modify-write over the same extra-libs map).
+  if (stale || queued.size > 0) return;
+  typingsInFlight = true;
+  try {
+    let typings: MonacoLibEntry[];
+    try {
+      typings = await invoke<MonacoLibEntry[]>('load_nodejs_project_typings', {
+        projectRoot: root,
+      });
+    } catch {
+      return; // keep the old libs
+    }
+    if (root !== loadedRoot) return;
+    if (stale || queued.size > 0) return; // source activity started meanwhile
+    const fresh = sanitizeExtraLibs(
+      typings.map((t) => ({ filePath: libUriFor(root, t.name), content: t.content }))
+    );
+    // Typings are never opened as models, but guard the passthrough shape
+    // (libUriFor returning a non-node_modules URI): the worker serves live
+    // models itself, so never add an extra-lib copy of one.
+    const have = liveModelUris();
+    const addable = fresh.filter((l) => !have.has(l.filePath));
+    const next = new Map(Object.entries(ts.getExtraLibs()).map(([uri, lib]) => [uri, lib.content]));
+    for (const uri of typingsUris) next.delete(uri);
+    for (const { filePath, content } of addable) next.set(filePath, content);
+    typingsUris = new Set(addable.map((l) => l.filePath));
+    safeSetExtraLibs([...next].map(([filePath, content]) => ({ filePath, content })));
+  } finally {
+    typingsInFlight = false;
+    if (typingsRequeued) {
+      typingsRequeued = false;
+      if (root === loadedRoot) {
+        clearTimeout(typingsTimer);
+        typingsTimer = setTimeout(() => void runTypingsRefresh(root), TYPINGS_QUIET_MS);
+      }
+    }
+  }
 }
 
 /*

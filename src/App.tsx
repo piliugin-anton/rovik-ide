@@ -63,7 +63,7 @@ import { findSnippetLine } from './lib/codeLocation';
 import { isPlanFile, requestImplementPlan } from './lib/plans';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines } from './lib/lineDiff';
-import { isProjectSource, updateProjectSource } from './lib/intellisense';
+import { isProjectSource, notifyTypingsMaybeStale, updateProjectSource } from './lib/intellisense';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
 import { contextRealPath, isContextPath } from './lib/contextMode';
@@ -1294,6 +1294,10 @@ export default function App() {
         if (operation === 'remove') updateProjectSource(path, null);
         else if (operation === 'create' || operation === 'modify') updateProjectSource(path);
       }
+      // A root manifest write (package.json, lockfiles) means node_modules
+      // may have changed: debounced typings-only refresh there (no overlay,
+      // sources untouched). node_modules itself is watcher-ignored.
+      if (!is_dir) notifyTypingsMaybeStale(path);
     });
   });
 
