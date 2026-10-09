@@ -1009,6 +1009,9 @@ pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
 ///   ignored so `get_user` also matches `getUserName` (compact form), or
 /// - the patch itself: added/removed lines, raw or compacted the same way,
 ///   so function/variable/class names (or any identifier, partial) match.
+///   Single-character terms never scan patch content: they match
+///   metadata/filenames only (a 1-char content scan matches almost every
+///   commit and costs a full diff walk for no signal).
 ///
 /// Approach (researched `git log -S/-G` pickaxe, `git log --name-status`,
 /// and `git grep $(git rev-list …)`): rather than shelling out, walk with
@@ -1020,20 +1023,46 @@ pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
 /// care about. Full tree-sitter symbol extraction per historic blob was
 /// considered and rejected: substring + compact-form matching on patch
 /// lines already covers partial identifier matches in every language at a
-/// fraction of the cost. The walk is capped (`SCAN_CAP`) and results to
-/// `limit` so typing stays interactive on large histories.
+/// fraction of the cost.
+///
+/// Pagination: `offset` counts raw revwalk commits already scanned
+/// (not results), so a search page can resume where the previous one
+/// stopped without re-scanning. Each call scans at most `SCAN_CAP`
+/// commits and returns at most `limit` matches; `has_more` tells the UI
+/// whether older commits remain, and `next_offset` is the `offset` for
+/// the next page. The walk is capped per call so typing stays interactive
+/// on large histories; "load more / search further" pages further back
+/// instead of raising the cap.
 #[tauri::command]
 pub async fn git_log(
     path: String,
     limit: Option<u32>,
     query: Option<String>,
-) -> Result<Vec<GitCommitEntry>, String> {
-    off_main_thread(move || git_log_blocking(path, limit, query)).await
+    offset: Option<usize>,
+) -> Result<GitLogPage, String> {
+    off_main_thread(move || git_log_blocking(path, limit, query, offset)).await
 }
 
-/// Commits scanned for one query before giving up (results still capped
+/// One page of history: the matches plus the cursor for the next page.
+/// `offset`/`next_offset` count scanned (raw) commits, so pages resume
+/// the revwalk without re-scanning. `has_more` is true when the walk
+/// still has older commits the cap stopped us from reaching — a query
+/// can return fewer than `limit` matches and still have more history
+/// worth searching.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitLogPage {
+    pub commits: Vec<GitCommitEntry>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub next_offset: usize,
+    #[serde(default)]
+    pub scanned: usize,
+}
+
+/// Commits scanned for one page before stopping (results still capped
 /// to `limit`; newest first, so this bounds latency, not correctness of
-/// the top matches).
+/// the top matches — the UI pages further with `offset`).
 const GIT_LOG_SCAN_CAP: usize = 400;
 
 /// Added/deleted content lines examined per commit before stopping the
@@ -1042,8 +1071,20 @@ const GIT_LOG_SCAN_CAP: usize = 400;
 /// a keystroke).
 const GIT_LOG_LINES_PER_COMMIT_CAP: usize = 20_000;
 
+/// Per-file share of the content budget: one giant generated file must
+/// not eat the whole per-commit budget and starve the other files.
+const GIT_LOG_LINES_PER_FILE_CAP: usize = 5_000;
+
+/// Binary deltas never match content (their patch has no usable text).
+/// Filename/message matches still count.
+fn delta_is_binary(delta: &git2::DiffDelta) -> bool {
+    delta.new_file().is_binary() || delta.old_file().is_binary()
+}
+
 /// Lowercase alphanumeric only: `get_user-name` → `getusername`, so
 /// snake_case, kebab-case and camelCase match each other partially.
+/// Only used for short strings (query terms, filenames). Patch lines use
+/// `compact_contains` instead to avoid allocating per line.
 fn compact_ident(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -1051,10 +1092,62 @@ fn compact_ident(s: &str) -> String {
         .collect()
 }
 
+/// Compact-substring check without allocating the compacted haystack:
+/// true when `needle_compact` (already lowercase alnum-only) appears in
+/// `haystack_lower` after ignoring non-alphanumeric characters — i.e.
+/// `compact(haystack).contains(needle)` without building the string.
+/// Byte-oriented; both sides are lowercased before calling.
+fn compact_contains(haystack_lower: &str, needle_compact: &str) -> bool {
+    if needle_compact.is_empty() {
+        return false;
+    }
+    let needle = needle_compact.as_bytes();
+    let hay = haystack_lower.as_bytes();
+    // Streaming match: needle bytes must appear in order, skipping
+    // non-alphanumeric haystack bytes (which `compact()` would drop).
+    // Comparison is ASCII case-insensitive so callers may pass a raw
+    // (non-lowered) haystack; the needle is already compact+lowercase.
+    let mut ni = 0usize;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < hay.len() {
+        let b = hay[i].to_ascii_lowercase();
+        if !b.is_ascii_alphanumeric() {
+            // Separator: skippable mid-match, never a match itself.
+            i += 1;
+            continue;
+        }
+        if b == needle[ni] {
+            if ni == 0 {
+                start = i;
+            }
+            ni += 1;
+            if ni == needle.len() {
+                return true;
+            }
+            i += 1;
+        } else if ni > 0 {
+            // Mismatch mid-match: restart just after the attempt's start.
+            ni = 0;
+            i = start + 1;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 /// One normalized search term: raw lowercase plus compact form.
 struct SearchTerm {
     raw: String,
     compact: String,
+}
+
+/// True when this term may scan patch content. Single-character terms
+/// match metadata/filenames only: a 1-char content scan hits nearly
+/// every commit and costs a full patch walk for no signal.
+fn term_scans_content(term: &SearchTerm) -> bool {
+    term.raw.chars().count() > 1
 }
 
 fn normalize_query(query: &str) -> Vec<SearchTerm> {
@@ -1070,51 +1163,46 @@ fn normalize_query(query: &str) -> Vec<SearchTerm> {
 }
 
 /// Filenames for one side of the match: full repo-relative path plus
-/// basename and stem, raw-lowercased and compacted once per commit.
+/// basename, lowercased once per commit. Compact matching streams over
+/// these via `compact_contains` (no compact allocation per file).
 struct FileHaystack {
     path: String,
     base: String,
-    compact_path: String,
-    compact_base: String,
 }
 
 fn file_haystack(rel: &str) -> FileHaystack {
     let path = rel.to_lowercase();
     let base = rel.rsplit('/').next().unwrap_or(rel).to_lowercase();
-    let compact_path = compact_ident(&path);
-    let compact_base = compact_ident(&base);
-    FileHaystack {
-        path,
-        base,
-        compact_path,
-        compact_base,
-    }
+    FileHaystack { path, base }
 }
 
 fn term_matches_file(term: &SearchTerm, f: &FileHaystack) -> bool {
     f.path.contains(&term.raw)
         || f.base.contains(&term.raw)
         || (!term.compact.is_empty()
-            && (f.compact_path.contains(&term.compact) || f.compact_base.contains(&term.compact)))
+            && (compact_contains(&f.path, &term.compact)
+                || compact_contains(&f.base, &term.compact)))
 }
 
 /// Added/removed line matches when the raw line or its compact form
 /// contains the term (raw or compact). Covers identifiers, strings,
-/// comments — anything textual in the patch.
-fn term_matches_line(term: &SearchTerm, line_lower: &str, line_compact: &str) -> bool {
+/// comments — anything textual in the patch. The compact check streams
+/// (no allocation); callers check the cheap raw `contains` first only
+/// when they already hold the lowered line.
+fn term_matches_line(term: &SearchTerm, line_lower: &str) -> bool {
     line_lower.contains(&term.raw)
-        || (!term.compact.is_empty()
-            && !line_compact.is_empty()
-            && line_compact.contains(&term.compact))
+        || (!term.compact.is_empty() && compact_contains(line_lower, &term.compact))
 }
 
 pub fn git_log_blocking(
     path: String,
     limit: Option<u32>,
     query: Option<String>,
-) -> Result<Vec<GitCommitEntry>, String> {
+    offset: Option<usize>,
+) -> Result<GitLogPage, String> {
     let repo = open_repo(&path)?;
     let limit = limit.unwrap_or(20).clamp(1, 100) as usize;
+    let skip = offset.unwrap_or(0);
     let terms = query
         .as_deref()
         .map(normalize_query)
@@ -1123,7 +1211,12 @@ pub fn git_log_blocking(
     walk.set_sorting(git2::Sort::TIME).map_err(|e| e.to_string())?;
     // No commits yet: empty history, not an error.
     if walk.push_head().is_err() {
-        return Ok(Vec::new());
+        return Ok(GitLogPage {
+            commits: Vec::new(),
+            has_more: false,
+            next_offset: skip,
+            scanned: 0,
+        });
     }
     let scan_cap = if terms.is_some() {
         GIT_LOG_SCAN_CAP
@@ -1132,9 +1225,19 @@ pub fn git_log_blocking(
     };
     let mut diff_opts = git2::DiffOptions::new();
     diff_opts.context_lines(0);
+    diff_opts.interhunk_lines(0);
     let mut entries = Vec::new();
-    for oid in walk.take(scan_cap) {
+    let mut scanned = 0usize;
+    let mut exhausted = true;
+    for oid in walk.skip(skip).take(scan_cap + 1) {
+        if scanned >= scan_cap {
+            // The +1 probe: there is at least one more commit beyond
+            // this page's budget.
+            exhausted = false;
+            break;
+        }
         let oid = oid.map_err(|e| e.to_string())?;
+        scanned += 1;
         let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
         let (file_count, matched_file_count) = if let Some(terms) = &terms {
             match commit_match_details(&repo, &commit, terms, &mut diff_opts) {
@@ -1163,10 +1266,31 @@ pub fn git_log_blocking(
             matched_file_count,
         });
         if entries.len() >= limit {
+            // Page is full. Older commits may still hold (more) matches;
+            // whether anything remains is resolved by the probe below.
             break;
         }
     }
-    Ok(entries)
+    // If we stopped because the page filled up, we don't yet know
+    // whether older commits remain. The loop above breaks out of the
+    // iterator, so re-open a cheap walk to probe: skip(skip+scanned)
+    // and check for one more oid. Bounded to a single step.
+    let mut has_more = !exhausted;
+    if !has_more && entries.len() >= limit {
+        let mut probe_walk = repo.revwalk().map_err(|e| e.to_string())?;
+        probe_walk.set_sorting(git2::Sort::TIME).map_err(|e| e.to_string())?;
+        if probe_walk.push_head().is_ok() {
+            if probe_walk.skip(skip + scanned).next().is_some() {
+                has_more = true;
+            }
+        }
+    }
+    Ok(GitLogPage {
+        commits: entries,
+        has_more,
+        next_offset: skip + scanned,
+        scanned,
+    })
 }
 
 /// Total files changed in a commit (parent→commit diff, no content scan).
@@ -1191,6 +1315,10 @@ fn commit_file_count(
 /// where `matched_files` counts files matching ANY term via filename or
 /// content. Message-only matches yield `matched_files == 0` — the caller
 /// still shows the commit, and the file list shows all files unfiltered.
+///
+/// Two phases: metadata + filenames first (one diff, no patch text), then
+/// patch content only for terms still unmatched. Single-character terms
+/// never reach the content phase (see `term_scans_content`).
 fn commit_match_details(
     repo: &Repository,
     commit: &git2::Commit,
@@ -1199,20 +1327,19 @@ fn commit_match_details(
 ) -> Option<(usize, usize)> {
     let summary = commit.summary().ok().flatten().unwrap_or("");
     let msg_lower = summary.to_lowercase();
-    let msg_compact = compact_ident(&msg_lower);
     let author_lower = commit.author().name().unwrap_or("?").to_lowercase();
     let oid_str = commit.id().to_string();
     let short = oid_str.chars().take(7).collect::<String>();
 
-    let mut meta_matched = vec![false; terms.len()];
     let mut pending: Vec<&SearchTerm> = Vec::with_capacity(terms.len());
-    for (idx, term) in terms.iter().enumerate() {
+    for term in terms.iter() {
+        // Cheap raw checks first; the compact (streaming, allocation-free)
+        // check runs only when the raw substring missed.
         let hit = oid_str.contains(&term.raw)
             || short.starts_with(&term.raw)
             || msg_lower.contains(&term.raw)
-            || (!term.compact.is_empty() && msg_compact.contains(&term.compact))
-            || author_lower.contains(&term.raw);
-        meta_matched[idx] = hit;
+            || author_lower.contains(&term.raw)
+            || (!term.compact.is_empty() && compact_contains(&msg_lower, &term.compact));
         if !hit {
             pending.push(term);
         }
@@ -1263,25 +1390,40 @@ fn commit_match_details(
         }
         haystacks.push(h);
     }
-    // Terms still needing content.
+    // Terms still needing content. Single-char terms never scan content:
+    // unmatched by now, they fail the commit.
     let mut need_content: Vec<(usize, &SearchTerm)> = Vec::new();
     for (pi, term) in pending.iter().enumerate() {
-        if !file_satisfied[pi] {
-            need_content.push((pi, *term));
+        if file_satisfied[pi] {
+            continue;
         }
+        if !term_scans_content(term) {
+            return None;
+        }
+        need_content.push((pi, *term));
     }
     // Content scan per file (pickaxe-style, added/removed lines only).
+    // Binary files are skipped (no usable text); each file gets its own
+    // budget share so one generated file can't starve the rest; the loop
+    // stops as soon as every needed term has hit somewhere.
     let mut content_satisfied = vec![false; pending.len()];
-    if !need_content.is_empty() {
+    let mut remaining = need_content.len();
+    if remaining > 0 {
         let mut examined = 0usize;
-        for i in 0..n {
-            if examined >= GIT_LOG_LINES_PER_COMMIT_CAP {
+        'files: for i in 0..n {
+            if examined >= GIT_LOG_LINES_PER_COMMIT_CAP || remaining == 0 {
                 break;
+            }
+            if let Some(d) = diff.get_delta(i) {
+                if delta_is_binary(&d) {
+                    continue;
+                }
             }
             let patch = match git2::Patch::from_diff(&diff, i) {
                 Ok(Some(p)) => p,
                 Ok(None) | Err(_) => continue,
             };
+            let mut per_file = 0usize;
             let hunks = patch.num_hunks();
             for h in 0..hunks {
                 let lines = match patch.num_lines_in_hunk(h) {
@@ -1289,7 +1431,10 @@ fn commit_match_details(
                     Err(_) => continue,
                 };
                 for l in 0..lines {
-                    if examined >= GIT_LOG_LINES_PER_COMMIT_CAP {
+                    if examined >= GIT_LOG_LINES_PER_COMMIT_CAP
+                        || per_file >= GIT_LOG_LINES_PER_FILE_CAP
+                        || remaining == 0
+                    {
                         break;
                     }
                     let line = match patch.line_in_hunk(h, l) {
@@ -1301,17 +1446,19 @@ fn commit_match_details(
                         _ => continue,
                     }
                     examined += 1;
+                    per_file += 1;
                     let text = String::from_utf8_lossy(line.content()).to_lowercase();
                     if text.trim().is_empty() {
                         continue;
                     }
-                    let compact = compact_ident(&text);
                     for (pi, term) in need_content.iter() {
-                        if !content_satisfied[*pi]
-                            && term_matches_line(term, &text, &compact)
-                        {
+                        if !content_satisfied[*pi] && term_matches_line(term, &text) {
                             content_satisfied[*pi] = true;
                             content_hit_any[i] = true;
+                            remaining -= 1;
+                            if remaining == 0 {
+                                break 'files;
+                            }
                         }
                     }
                 }
@@ -1397,8 +1544,13 @@ pub fn git_commit_show_blocking(
     let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
     let tree = commit.tree().map_err(|e| e.to_string())?;
     let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    // No context lines: only added/removed lines are ever scanned, and
+    // stats (added/removed counts) don't need context either.
+    let mut show_opts = git2::DiffOptions::new();
+    show_opts.context_lines(0);
+    show_opts.interhunk_lines(0);
     let diff = repo
-        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut show_opts))
         .map_err(|e| e.to_string())?;
     let stats = diff_line_stats(&diff);
     let terms = query.as_deref().map(normalize_query).filter(|t| !t.is_empty());
@@ -1418,10 +1570,24 @@ pub fn git_commit_show_blocking(
     }
     // Per-file content hits: which terms appear in added/removed lines.
     // content_hits[i][t] = term t matched in file i's patch.
+    // Binary files are skipped; single-char terms match filenames only.
     let mut content_hits: Vec<Vec<bool>> = vec![Vec::new(); n];
     if let Some(terms) = &terms {
+        // Terms eligible for the content phase.
+        let scannable: Vec<bool> = terms.iter().map(term_scans_content).collect();
+        let scannable_count = scannable.iter().filter(|v| **v).count();
         for i in 0..n {
             let mut hits = vec![false; terms.len()];
+            if scannable_count == 0 {
+                content_hits[i] = hits;
+                continue;
+            }
+            if let Some(d) = diff.get_delta(i) {
+                if delta_is_binary(&d) {
+                    content_hits[i] = hits;
+                    continue;
+                }
+            }
             let patch = match git2::Patch::from_diff(&diff, i) {
                 Ok(Some(p)) => p,
                 Ok(None) | Err(_) => {
@@ -1431,13 +1597,14 @@ pub fn git_commit_show_blocking(
             };
             let hunks = patch.num_hunks();
             let mut examined = 0usize;
+            let mut remaining = scannable_count;
             'outer: for h in 0..hunks {
                 let lines = match patch.num_lines_in_hunk(h) {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
                 for l in 0..lines {
-                    if examined >= GIT_LOG_LINES_PER_COMMIT_CAP {
+                    if examined >= GIT_LOG_LINES_PER_FILE_CAP || remaining == 0 {
                         break 'outer;
                     }
                     let line = match patch.line_in_hunk(h, l) {
@@ -1453,13 +1620,13 @@ pub fn git_commit_show_blocking(
                     if text.trim().is_empty() {
                         continue;
                     }
-                    let compact = compact_ident(&text);
                     for (ti, term) in terms.iter().enumerate() {
-                        if !hits[ti] && term_matches_line(term, &text, &compact) {
+                        if scannable[ti] && !hits[ti] && term_matches_line(term, &text) {
                             hits[ti] = true;
+                            remaining -= 1;
                         }
                     }
-                    if hits.iter().all(|v| *v) {
+                    if remaining == 0 {
                         break 'outer;
                     }
                 }
@@ -1962,36 +2129,50 @@ mod revert_tests {
             .unwrap()
             .to_string();
         // Baseline: no query returns both commits, newest first.
-        let all = git_log_blocking(path(&dir), Some(20), None).unwrap();
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].oid, oid2);
+        let all = git_log_blocking(path(&dir), Some(20), None, None).unwrap();
+        assert_eq!(all.commits.len(), 2);
+        assert_eq!(all.commits[0].oid, oid2);
+        assert!(!all.has_more);
         // Message match.
-        let by_msg = git_log_blocking(path(&dir), Some(20), Some("widget".into())).unwrap();
-        assert_eq!(by_msg.len(), 1);
-        assert_eq!(by_msg[0].oid, oid2);
+        let by_msg =
+            git_log_blocking(path(&dir), Some(20), Some("widget".into()), None).unwrap();
+        assert_eq!(by_msg.commits.len(), 1);
+        assert_eq!(by_msg.commits[0].oid, oid2);
         // Filename match: partial basename.
         let by_file =
-            git_log_blocking(path(&dir), Some(20), Some("unique_widget".into())).unwrap();
-        assert_eq!(by_file.len(), 1);
-        assert_eq!(by_file[0].oid, oid2);
+            git_log_blocking(path(&dir), Some(20), Some("unique_widget".into()), None).unwrap();
+        assert_eq!(by_file.commits.len(), 1);
+        assert_eq!(by_file.commits[0].oid, oid2);
         // Content match: identifier and its partial form.
         let by_symbol =
-            git_log_blocking(path(&dir), Some(20), Some("unique_foobar_xyz".into())).unwrap();
-        assert_eq!(by_symbol.len(), 1);
-        assert_eq!(by_symbol[0].oid, oid2);
-        let by_partial = git_log_blocking(path(&dir), Some(20), Some("foobar".into())).unwrap();
-        assert_eq!(by_partial.len(), 1);
-        assert_eq!(by_partial[0].oid, oid2);
+            git_log_blocking(path(&dir), Some(20), Some("unique_foobar_xyz".into()), None)
+                .unwrap();
+        assert_eq!(by_symbol.commits.len(), 1);
+        assert_eq!(by_symbol.commits[0].oid, oid2);
+        let by_partial =
+            git_log_blocking(path(&dir), Some(20), Some("foobar".into()), None).unwrap();
+        assert_eq!(by_partial.commits.len(), 1);
+        assert_eq!(by_partial.commits[0].oid, oid2);
         // AND semantics: every term must match somewhere.
-        let both =
-            git_log_blocking(path(&dir), Some(20), Some("widget unique_foobar".into())).unwrap();
-        assert_eq!(both.len(), 1);
-        let none =
-            git_log_blocking(path(&dir), Some(20), Some("widget nosuchthingzzz".into())).unwrap();
-        assert!(none.is_empty());
+        let both = git_log_blocking(
+            path(&dir),
+            Some(20),
+            Some("widget unique_foobar".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(both.commits.len(), 1);
+        let none = git_log_blocking(
+            path(&dir),
+            Some(20),
+            Some("widget nosuchthingzzz".into()),
+            None,
+        )
+        .unwrap();
+        assert!(none.commits.is_empty());
         // Empty/blank query behaves like no query.
-        let blank = git_log_blocking(path(&dir), Some(20), Some("   ".into())).unwrap();
-        assert_eq!(blank.len(), 2);
+        let blank = git_log_blocking(path(&dir), Some(20), Some("   ".into()), None).unwrap();
+        assert_eq!(blank.commits.len(), 2);
     }
 
     #[test]
@@ -1999,13 +2180,14 @@ mod revert_tests {
         let (dir, repo) = repo_with_commit();
         let oid2 = second_commit(&dir, &repo);
         // No query: file counts present, no matched count.
-        let all = git_log_blocking(path(&dir), Some(20), None).unwrap();
-        let newest = all.iter().find(|e| e.oid == oid2).unwrap();
+        let all = git_log_blocking(path(&dir), Some(20), None, None).unwrap();
+        let newest = all.commits.iter().find(|e| e.oid == oid2).unwrap();
         assert_eq!(newest.file_count, 3);
         assert_eq!(newest.matched_file_count, None);
         // Query matching one filename: matched count narrows to that file.
-        let filtered = git_log_blocking(path(&dir), Some(20), Some("c.txt".into())).unwrap();
-        let entry = filtered.iter().find(|e| e.oid == oid2).unwrap();
+        let filtered =
+            git_log_blocking(path(&dir), Some(20), Some("c.txt".into()), None).unwrap();
+        let entry = filtered.commits.iter().find(|e| e.oid == oid2).unwrap();
         assert_eq!(entry.file_count, 3);
         assert_eq!(entry.matched_file_count, Some(1));
         // Per-file flags: only c.txt matches, sorted first.
@@ -2020,5 +2202,82 @@ mod revert_tests {
         let plain = git_commit_show_blocking(path(&dir), oid2, None).unwrap();
         assert!(plain.iter().all(|f| f.matched));
         assert!(plain.iter().all(|f| f.match_kind.is_none()));
+    }
+
+    #[test]
+    fn git_log_pages_through_limit_and_offset() {
+        let (dir, repo) = repo_with_commit();
+        // Three more commits on top of the fixture (4 total).
+        for i in 0..3 {
+            fs::write(dir.join(format!("p{i}.txt")), format!("p{i}\n")).unwrap();
+            let mut index = repo.index().unwrap();
+            index
+                .add_path(std::path::Path::new(&format!("p{i}.txt")))
+                .unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = git2::Signature::now("t", "t@t").unwrap();
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                &format!("page {i}"),
+                &tree,
+                &[&head],
+            )
+            .unwrap();
+        }
+        // Page 1: newest 2, more remain.
+        let first = git_log_blocking(path(&dir), Some(2), None, None).unwrap();
+        assert_eq!(first.commits.len(), 2);
+        assert!(first.has_more);
+        assert_eq!(first.next_offset, 2);
+        // Page 2 resumes where page 1 stopped: next 2, exhausted.
+        let second = git_log_blocking(path(&dir), Some(2), None, Some(first.next_offset)).unwrap();
+        assert_eq!(second.commits.len(), 2);
+        assert!(!second.has_more);
+        assert_ne!(first.commits[0].oid, second.commits[0].oid);
+        // Query pages the same way: "page-1" is one compact term
+        // (compact "page1" matches "page 1" with the space ignored,
+        // but not "page 0"/"page 2" — and never a hex oid).
+        let q1 = git_log_blocking(path(&dir), Some(20), Some("page-1".into()), None).unwrap();
+        assert_eq!(q1.commits.len(), 1);
+        let q2 = git_log_blocking(
+            path(&dir),
+            Some(20),
+            Some("page-1".into()),
+            Some(q1.next_offset),
+        )
+        .unwrap();
+        assert!(q2.commits.is_empty());
+    }
+
+    #[test]
+    fn git_log_single_char_skips_content_scan() {
+        let (dir, repo) = repo_with_commit();
+        fs::write(dir.join("zz_top.txt"), "qqqqqq\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("zz_top.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add zz", &tree, &[&head]).unwrap();
+        // "q" appears only in content: single-char terms match
+        // metadata/filenames, so this must NOT match.
+        let page = git_log_blocking(path(&dir), Some(20), Some("q".into()), None).unwrap();
+        assert!(page.commits.is_empty());
+        // The filename itself still matches.
+        let by_name = git_log_blocking(path(&dir), Some(20), Some("zz_top".into()), None).unwrap();
+        assert_eq!(by_name.commits.len(), 1);
+    }
+
+    #[test]
+    fn compact_contains_matches_compacted_forms() {
+        assert!(compact_contains("get_user-name", "getusername"));
+        assert!(compact_contains("fn getUserName() {", "getusername"));
+        assert!(!compact_contains("fn other() {", "getusername"));
+        assert!(!compact_contains("abc", ""));
     }
 }

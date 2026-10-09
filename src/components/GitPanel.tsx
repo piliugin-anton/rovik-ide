@@ -22,6 +22,7 @@ import {
   GitStashEntry,
   GitStashFile,
   GitCommitEntry,
+  GitLogPage,
 } from '../types';
 import { confirmDialog } from './ConfirmDialog';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
@@ -450,6 +451,7 @@ export function GitPanel(props: GitPanelProps) {
     withBusy(async () => {
       await invoke('git_pull', { path: props.projectPath });
       await refreshStatus();
+      refreshHistoryIfOpen();
     });
 
   const commitAndMaybePush = () =>
@@ -466,6 +468,7 @@ export function GitPanel(props: GitPanelProps) {
         if (st.ahead <= 0) return;
         await invoke('git_push', { path: props.projectPath });
         await refreshStatus();
+        refreshHistoryIfOpen();
         return;
       }
 
@@ -477,6 +480,7 @@ export function GitPanel(props: GitPanelProps) {
         await invoke('git_push', { path: props.projectPath });
         await refreshStatus();
       }
+      refreshHistoryIfOpen();
     });
 
   const switchBranch = (branch: string) =>
@@ -484,6 +488,7 @@ export function GitPanel(props: GitPanelProps) {
       await invoke('git_checkout', { path: props.projectPath, branch });
       setBranchOpen(false);
       await refreshStatus();
+      refreshHistoryIfOpen();
     });
 
   const loadBranches = async () => {
@@ -529,8 +534,18 @@ export function GitPanel(props: GitPanelProps) {
   const [commitsLoading, setCommitsLoading] = createSignal(false);
   // Smart history search: query text, a seq guard so stale backend replies
   // can't overwrite newer results, and debounce delay for typing.
-  const HISTORY_SEARCH_DEBOUNCE_MS = 250;
+  // 400ms: each keystroke can scan up to 400 commits with diffs, so a
+  // shorter delay fires overlapping backend searches while typing.
+  const HISTORY_SEARCH_DEBOUNCE_MS = 400;
+  const HISTORY_PAGE_LIMIT = 20;
   const [historyQuery, setHistoryQuery] = createSignal('');
+  // Pagination cursor: raw commits already scanned (`next_offset` from the
+  // backend). `hasMoreHistory` means older commits remain beyond this
+  // page's scan budget — keep it separate from `commitsLoading` so the
+  // first page and "load more" have their own spinners.
+  const [historyOffset, setHistoryOffset] = createSignal(0);
+  const [hasMoreHistory, setHasMoreHistory] = createSignal(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = createSignal(false);
   let historySeq = 0;
   // History preview: which commit is expanded and the files each expanded
   // commit touched (`git_commit_show`). Clicking a file opens its content
@@ -579,7 +594,9 @@ export function GitPanel(props: GitPanelProps) {
       historyDebounce = undefined;
       setHistoryQuery('');
       setExpandedCommit(null);
-      void loadLog('');
+      setHistoryOffset(0);
+      setHasMoreHistory(false);
+      void loadLog('', 'reset');
     }
   };
 
@@ -649,26 +666,70 @@ export function GitPanel(props: GitPanelProps) {
   // the rest per expanded commit. Keyed by commit oid.
   const [showAllFiles, setShowAllFiles] = createSignal<Record<string, boolean>>({});
 
-  const loadLog = async (query?: string) => {
+  /**
+   * Load one page of history. `mode: 'reset'` (default) replaces the list
+   * (open, new search, refresh after a commit); `mode: 'more'` appends the
+   * next page at the stored cursor. The backend scans at most ~400 commits
+   * per call — `hasMoreHistory` + `historyOffset` let the UI page further
+   * back instead of raising that cap.
+   */
+  const loadLog = async (query?: string, mode: 'reset' | 'more' = 'reset') => {
     const q = (query ?? historyQuery()).trim();
     const run = ++historySeq;
-    setCommitsLoading(true);
+    const offset = mode === 'more' ? historyOffset() : 0;
+    if (mode === 'more') setHistoryLoadingMore(true);
+    else setCommitsLoading(true);
     try {
-      const list = await invoke<GitCommitEntry[]>('git_log', {
+      const page = await invoke<GitLogPage | GitCommitEntry[]>('git_log', {
         path: props.projectPath,
-        limit: 20,
+        limit: HISTORY_PAGE_LIMIT,
         query: q ? q : null,
+        offset,
       });
       if (run !== historySeq) return;
-      setCommits(list);
+      // Accept the legacy `Vec` shape too (older backend): no cursor.
+      const list = Array.isArray(page) ? page : (page.commits ?? []);
+      const hasMore = Array.isArray(page) ? false : !!page.has_more;
+      const nextOffset = Array.isArray(page) ? offset + list.length : page.next_offset;
+      setCommits((prev) => {
+        if (mode === 'more') {
+          const seen = new Set(prev.map((c) => c.oid));
+          return [...prev, ...list.filter((c) => !seen.has(c.oid))];
+        }
+        return list;
+      });
+      setHistoryOffset(nextOffset);
+      setHasMoreHistory(hasMore);
       // Drop expansion for a commit that's no longer in the results.
-      const expanded = expandedCommit();
-      if (expanded && !list.some((c) => c.oid === expanded)) setExpandedCommit(null);
+      // On 'more' the list only grows, so keep the expansion.
+      if (mode === 'reset') {
+        const expanded = expandedCommit();
+        if (expanded && !list.some((c) => c.oid === expanded)) setExpandedCommit(null);
+      }
     } catch (e) {
       if (run !== historySeq) return;
       setErrorMsg(e instanceof Error ? e.message : String(e));
     } finally {
-      if (run === historySeq) setCommitsLoading(false);
+      if (run === historySeq) {
+        setCommitsLoading(false);
+        setHistoryLoadingMore(false);
+      }
+    }
+  };
+
+  /** Append the next page (older commits / further search). */
+  const loadMoreHistory = () => {
+    if (commitsLoading() || historyLoadingMore() || !hasMoreHistory()) return;
+    void loadLog(historyQuery(), 'more');
+  };
+
+  /** Re-run the visible history after an operation that moves HEAD
+   * (commit, pull, checkout, branch create/delete) so an open history
+   * view never shows stale commits. No-op unless history is open. */
+  const refreshHistoryIfOpen = (query?: string) => {
+    if (moreOpen() && moreView() === 'history') {
+      setHistoryOffset(0);
+      void loadLog(query ?? historyQuery(), 'reset');
     }
   };
 
@@ -679,12 +740,16 @@ export function GitPanel(props: GitPanelProps) {
     // Cached per-commit file lists carry the previous query's match flags.
     setCommitFiles({});
     setShowAllFiles({});
+    setHistoryOffset(0);
+    setHasMoreHistory(false);
     if (historyDebounce) clearTimeout(historyDebounce);
+    // Empty query reloads immediately (cheap: newest 20, no scan);
+    // typing waits for a pause, and Enter searches at once.
     historyDebounce =
       value.trim() === ''
         ? undefined
-        : setTimeout(() => void loadLog(value), HISTORY_SEARCH_DEBOUNCE_MS);
-    if (value.trim() === '') void loadLog('');
+        : setTimeout(() => void loadLog(value, 'reset'), HISTORY_SEARCH_DEBOUNCE_MS);
+    if (value.trim() === '') void loadLog('', 'reset');
   };
   onCleanup(() => {
     if (historyDebounce) clearTimeout(historyDebounce);
@@ -719,6 +784,7 @@ export function GitPanel(props: GitPanelProps) {
       setNewBranchName('');
       closeMore();
       await refreshStatus();
+      if (checkout) refreshHistoryIfOpen();
     });
 
   const deleteBranch = async (name: string) => {
@@ -1393,6 +1459,14 @@ export function GitPanel(props: GitPanelProps) {
                         if (e.key === 'Escape') {
                           e.stopPropagation();
                           onHistorySearchInput('');
+                        } else if (e.key === 'Enter') {
+                          // Search immediately instead of waiting for debounce.
+                          e.preventDefault();
+                          if (historyDebounce) clearTimeout(historyDebounce);
+                          historyDebounce = undefined;
+                          setHistoryOffset(0);
+                          setHasMoreHistory(false);
+                          void loadLog(e.currentTarget.value, 'reset');
                         }
                       }}
                       disabled={busy()}
@@ -1624,6 +1698,37 @@ export function GitPanel(props: GitPanelProps) {
                     }}
                   </For>
                 </ul>
+                {/* Pagination: the backend scans at most ~400 commits per
+                    call, so older history needs explicit paging. Without a
+                    query this loads older commits; with a query it keeps
+                    searching further back. */}
+                <Show when={!commitsLoading() && commits().length > 0 && hasMoreHistory()}>
+                  <button
+                    type="button"
+                    class="link-button git-match-toggle"
+                    style={{ margin: '4px 8px 8px' }}
+                    title={
+                      historyQuery().trim() !== ''
+                        ? 'Keep searching older commits (next ~400)'
+                        : 'Load older commits'
+                    }
+                    disabled={historyLoadingMore()}
+                    onClick={loadMoreHistory}
+                  >
+                    {historyLoadingMore()
+                      ? 'Loading…'
+                      : historyQuery().trim() !== ''
+                        ? 'Search further back…'
+                        : 'Load more…'}
+                  </button>
+                </Show>
+                <Show when={!commitsLoading() && commits().length > 0 && !hasMoreHistory()}>
+                  <div class="git-more-note">
+                    {historyQuery().trim() !== ''
+                      ? 'Searched the full history.'
+                      : 'Reached the oldest commit.'}
+                  </div>
+                </Show>
               </Show>
             </div>
           </Show>

@@ -426,6 +426,18 @@ export interface GitCommitEntry {
   matched_file_count?: number | null;
 }
 
+/** One page of history (src-tauri/src/git.rs, git_log → GitLogPage).
+ * `offset`/`next_offset` count scanned (raw) commits; pass `next_offset`
+ * back as `offset` to continue. `has_more` means older commits remain
+ * beyond this page's scan budget — a query can return few matches and
+ * still be worth searching further. */
+export interface GitLogPage {
+  commits: GitCommitEntry[];
+  has_more: boolean;
+  next_offset: number;
+  scanned: number;
+}
+
 /** One file's stashed content plus the base it changed from (src-tauri/src/git.rs). */
 export interface GitStashFilePreview {
   /** The stashed version; null when the file was deleted in the stash. */
