@@ -652,6 +652,9 @@ async fn attempt(
     let started = Instant::now();
     let deadline = started + spec.limits.overall;
     let fail = |error: ChatError, visible: bool| AttemptFailure { error, visible };
+    // Debugging only (ROVIK_API_LOG): the request now, the reply when this
+    // attempt ends, whichever way it ends.
+    let mut log = crate::api_log::Exchange::start(spec.url, spec.body, spec.streaming);
     let overall_error = || {
         ChatError::new(
             ErrorKind::Timeout,
@@ -684,6 +687,9 @@ async fn attempt(
     };
 
     let status = response.status();
+    if let Some(log) = log.as_mut() {
+        log.status = Some(status.as_u16());
+    }
     if !status.is_success() {
         let headers = response.headers().clone();
         // The error body is small, but a misbehaving server could still
@@ -694,6 +700,10 @@ async fn attempt(
                 r.ok().and_then(|t| t.ok()).unwrap_or_default()
             }
         };
+        if let Some(log) = log.as_mut() {
+            log.raw = body.clone();
+            log.outcome = "error status";
+        }
         return Err(fail(classify_status(status.as_u16(), &headers, &body), false));
     }
     let headers = response.headers().clone();
@@ -714,6 +724,10 @@ async fn attempt(
                 Ok(Ok(t)) => t,
             },
         };
+        if let Some(log) = log.as_mut() {
+            log.raw = text.clone();
+            log.outcome = "complete";
+        }
         let body: serde_json::Value = serde_json::from_str(&text).map_err(|_| {
             fail(ChatError::new(ErrorKind::Provider, "The provider sent a response that isn't JSON.").with_details(&text), false)
         })?;
@@ -758,7 +772,13 @@ async fn attempt(
                 };
                 return Err(fail(ChatError::new(ErrorKind::Stalled, message), parser.visible()));
             }
-            Ok(None) => break, // connection closed without [DONE]
+            Ok(None) => {
+                // Connection closed without [DONE].
+                if let Some(log) = log.as_mut() {
+                    log.outcome = "closed";
+                }
+                break;
+            }
             Ok(Some(Err(e))) => {
                 return Err(fail(
                     ChatError::new(ErrorKind::Network, "The connection dropped.").with_details(e.to_string()),
@@ -768,6 +788,9 @@ async fn attempt(
             Ok(Some(Ok(bytes))) => bytes,
         };
         buffer.extend_from_slice(&chunk);
+        if let Some(log) = log.as_mut() {
+            log.raw.push_str(&String::from_utf8_lossy(&chunk));
+        }
 
         while let Some((pos, sep)) = find_sse_boundary(&buffer) {
             let event = buffer.split_to(pos);
@@ -781,6 +804,9 @@ async fn attempt(
                 }
                 last_data = Some(Instant::now());
                 if data == "[DONE]" {
+                    if let Some(log) = log.as_mut() {
+                        log.outcome = "done";
+                    }
                     return parser.finish(emit).map_err(|e| fail(e, parser.visible()));
                 }
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else { continue };
@@ -791,7 +817,12 @@ async fn attempt(
                 };
                 match fed {
                     Ok(false) => {}
-                    Ok(true) => return parser.finish(emit).map_err(|e| fail(e, parser.visible())),
+                    Ok(true) => {
+                        if let Some(log) = log.as_mut() {
+                            log.outcome = "done";
+                        }
+                        return parser.finish(emit).map_err(|e| fail(e, parser.visible()));
+                    }
                     Err(mut error) => {
                         if error.kind == ErrorKind::RateLimited && error.retry_after_ms.is_none() {
                             error = error.with_retry_after(retry_after(&headers, Some(&value)));
