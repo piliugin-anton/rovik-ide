@@ -253,6 +253,8 @@ export default function MessageList(props: {
   function queueAnchorCorrection(delta: number) {
     const el = scrollRef;
     if (!el || Math.abs(delta) < 0.5) return;
+    // The top lock owns every compensation while it is held.
+    if (topLock) return;
     if (fightsScrollCorrections && (scrollingNow() || pendingCorrection !== 0)) {
       pendingCorrection += delta;
       if (innerRef) innerRef.style.transform = `translateY(${-pendingCorrection}px)`;
@@ -280,6 +282,195 @@ export default function MessageList(props: {
     }, SETTLE_MS);
   }
   onCleanup(() => window.clearTimeout(settleTimer));
+
+  /*
+   * -----------------------------------------------------------------------
+   * Top lock: scrolling is frozen while older messages load.
+   * -----------------------------------------------------------------------
+   *
+   * Scrolling up through history jumped because three things raced: the
+   * database fetch resolving (messages prepended) at one moment, the window
+   * shifting (more rows rendered above) at another, and the user's own wheel
+   * scroll animating underneath both (on WebKitGTK a scrollTop set mid
+   * animation is lost or fought). Patching each jump after the fact never
+   * converged, so the top path no longer patches: while older messages load
+   * the list can't scroll at all, and the viewport is re-anchored instead.
+   *
+   * While locked:
+   * - the container gets .scroll-lock (overflow-y: hidden, touch-action:
+   *   none): user scrolling stops, programmatic scrollTop still works, and
+   *   any in-flight wheel animation is cancelled rather than fought;
+   * - wheel/touch/scroll-key inputs are swallowed in the capture phase;
+   * - every scroll event is clamped back to the locked position, so queued
+   *   events from before the lock can't move the view either;
+   * - the first visible message (id + offset from the container top) is the
+   *   anchor: after each change above the viewport scrollTop is moved by how
+   *   far the anchor moved, which — unlike a scrollHeight delta — ignores
+   *   rows trimmed below the viewport by the window;
+   * - the item observer and the follow logic stay quiet; the lock's own
+   *   settle loop owns every compensation until heights stop changing
+   *   (content-visibility placeholders resolving, code colorizing), then the
+   *   lock lifts. A generation counter aborts a settle left behind by an
+   *   explicit jump-to-latest, and try/finally always unlocks.
+   */
+  interface TopAnchor {
+    id: string;
+    offset: number;
+    top: number;
+    height: number;
+  }
+  let topLock: TopAnchor | null = null;
+  let topLockGen = 0;
+  let adjustingScroll = false;
+  const [topLocked, setTopLocked] = createSignal(false);
+
+  const nextFrame = () =>
+    new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+  function captureTopAnchor(): TopAnchor | null {
+    const el = scrollRef;
+    if (!el) return null;
+    const top = el.getBoundingClientRect().top;
+    for (const item of el.querySelectorAll<HTMLElement>('.chat-item')) {
+      const rect = item.getBoundingClientRect();
+      if (rect.bottom > top + 1) {
+        return { id: item.dataset.id ?? '', offset: rect.top - top, top: el.scrollTop, height: el.scrollHeight };
+      }
+    }
+    return { id: '', offset: 0, top: el.scrollTop, height: el.scrollHeight };
+  }
+
+  /** Moves scrollTop so the locked anchor sits where it sat, before paint. */
+  function compensateTopAnchor() {
+    const el = scrollRef;
+    if (!el || !topLock) return;
+    if (topLock.id) {
+      const anchor = el.querySelector<HTMLElement>(
+        `.chat-item[data-id="${CSS.escape(topLock.id)}"]`
+      );
+      if (anchor) {
+        const delta =
+          anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - topLock.offset;
+        topLock.height = el.scrollHeight;
+        if (Math.abs(delta) < 0.5) {
+          topLock.top = el.scrollTop;
+          lastScrollTop = el.scrollTop;
+          return;
+        }
+        adjustingScroll = true;
+        el.scrollTop += delta;
+        adjustingScroll = false;
+        topLock.top = el.scrollTop;
+        lastScrollTop = el.scrollTop;
+        return;
+      }
+    }
+    // The anchor isn't rendered (window jumped past it): fall back to keeping
+    // the distance from the bottom edge of the added content.
+    const growth = el.scrollHeight - topLock.height;
+    topLock.height = el.scrollHeight;
+    if (Math.abs(growth) < 0.5) {
+      topLock.top = el.scrollTop;
+      lastScrollTop = el.scrollTop;
+      return;
+    }
+    adjustingScroll = true;
+    el.scrollTop = topLock.top + growth;
+    adjustingScroll = false;
+    topLock.top = el.scrollTop;
+    lastScrollTop = el.scrollTop;
+  }
+
+  function blockScrollInput(e: Event) {
+    if (topLock) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+
+  function blockScrollKey(e: KeyboardEvent) {
+    if (!topLock) return;
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key))
+      return;
+    const target = e.target as HTMLElement | null;
+    const inList = !!scrollRef && !!target && scrollRef.contains(target);
+    const onPage = !target || target === document.body || target === document.documentElement;
+    if (inList || onPage) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+
+  function lockTopScroll() {
+    const el = scrollRef;
+    // Fold a pending WebKit transform correction into the scroll position so
+    // the lock starts from the exact visual position.
+    if (pendingCorrection !== 0 && el) {
+      const shift = pendingCorrection;
+      pendingCorrection = 0;
+      if (innerRef) innerRef.style.transform = '';
+      el.scrollTop += shift;
+    }
+    window.clearTimeout(settleTimer);
+    topLockGen += 1;
+    topLock = captureTopAnchor();
+    setTopLocked(true);
+    el?.classList.add('scroll-lock');
+    el?.addEventListener('wheel', blockScrollInput, { capture: true, passive: false });
+    el?.addEventListener('touchmove', blockScrollInput, { capture: true, passive: false });
+    window.addEventListener('keydown', blockScrollKey, true);
+  }
+
+  function unlockTopScroll() {
+    const el = scrollRef;
+    el?.classList.remove('scroll-lock');
+    el?.removeEventListener('wheel', blockScrollInput, { capture: true });
+    el?.removeEventListener('touchmove', blockScrollInput, { capture: true });
+    window.removeEventListener('keydown', blockScrollKey, true);
+    topLockGen += 1;
+    topLock = null;
+    setTopLocked(false);
+    if (el) lastScrollTop = el.scrollTop;
+  }
+
+  /**
+   * Holds the viewport on its anchor until inserted rows stop changing height
+   * (placeholders resolving to real heights, code colorizing). Every
+   * compensation runs inside the rAF callback, before paint, so a wrong
+   * height is never shown for a frame.
+   */
+  async function settleTopLock(maxMs = 1200, quietMs = 200) {
+    const el = scrollRef;
+    if (!el || !topLock) return;
+    const gen = topLockGen;
+    const frameWithAnchor = () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => {
+          if (topLock && gen === topLockGen) compensateTopAnchor();
+          resolve();
+        })
+      );
+    await frameWithAnchor();
+    if (!topLock || gen !== topLockGen) return;
+    await frameWithAnchor();
+    if (!topLock || gen !== topLockGen) return;
+    const start = performance.now();
+    let lastChange = performance.now();
+    let lastHeight = el.scrollHeight;
+    while (performance.now() - start < maxMs) {
+      await frameWithAnchor();
+      if (!topLock || gen !== topLockGen) return;
+      if (Math.abs(el.scrollHeight - lastHeight) >= 1) {
+        lastHeight = el.scrollHeight;
+        lastChange = performance.now();
+      } else if (performance.now() - lastChange >= quietMs) break;
+    }
+    if (topLock && gen === topLockGen) compensateTopAnchor();
+  }
+  // Never leave the page with swallowed inputs if the panel unmounts mid-load.
+  onCleanup(() => {
+    if (topLock) unlockTopScroll();
+  });
   /**
    * Following the newest message resumes only when the user is scrolling
    * down to the bottom themselves (wheel, keys, scrollbar). Not on any scroll
@@ -292,6 +483,9 @@ export default function MessageList(props: {
     (performance.now() - lastUserInput < FOLLOW_INTENT_MS && userDirection !== 'up');
 
   function handleKeyInput(e: KeyboardEvent) {
+    // Frozen while older messages load: the capture-phase blocker already
+    // swallowed scroll keys; don't let them mark input or set a direction.
+    if (topLock) return;
     markUserInput();
     markScrollActivity();
     userHeadingToEnd = e.key === 'End';
@@ -318,6 +512,17 @@ export default function MessageList(props: {
   function handleScroll() {
     const el = scrollRef;
     if (!el) return;
+    if (topLock) {
+      // Frozen: clamp back anything that moved (a queued event from before
+      // the lock, a programmatic scroll). Our own compensations update
+      // topLock.top first, so they pass through untouched.
+      if (!adjustingScroll && Math.abs(el.scrollTop - topLock.top) >= 1) {
+        adjustingScroll = true;
+        el.scrollTop = topLock.top;
+        adjustingScroll = false;
+      }
+      return;
+    }
     markScrollActivity();
     const top = el.scrollTop;
     const movedUp = top < lastScrollTop - 1;
@@ -336,6 +541,9 @@ export default function MessageList(props: {
   }
 
   function handleWheel(e: WheelEvent) {
+    // Frozen while older messages load: the capture-phase blocker already
+    // swallowed this input; don't let it change follow state or direction.
+    if (topLock) return;
     markUserInput();
     // Starts an animated scroll whose first scroll event comes a frame later.
     markScrollActivity();
@@ -348,6 +556,8 @@ export default function MessageList(props: {
   }
 
   function handlePointerDown(e: PointerEvent) {
+    // Frozen while older messages load: no scrollbar to drag (it's hidden).
+    if (topLock) return;
     // Only the container itself: a press on its scrollbar, not on content.
     if (e.target !== scrollRef) return;
     draggingScrollbar = true;
@@ -418,6 +628,10 @@ export default function MessageList(props: {
   });
 
   async function jumpToLatest() {
+    // An explicit jump outranks a history load in flight: drop the lock so
+    // its settle loop aborts (generation check) instead of dragging the view
+    // back to the anchor it was holding.
+    if (topLock) unlockTopScroll();
     if (props.chat?.hasNewer) await props.onReloadLatest();
     setWin(initialWindow(messages().length));
     setStick(true);
@@ -447,6 +661,8 @@ export default function MessageList(props: {
       ([dialogId, length, firstId]) => {
         if (dialogId !== prevDialog) {
           prevDialog = dialogId;
+          // A history load from the previous chat must not hold the new one.
+          if (topLock) unlockTopScroll();
           setWin(initialWindow(length));
           setStick(true);
           requestAnimationFrame(scrollToBottom);
@@ -491,6 +707,10 @@ export default function MessageList(props: {
       const height = innerRef?.offsetHeight ?? 0;
       const shrank = height < lastHeight;
       lastHeight = height;
+      // The top lock owns the scroll position while held; its settle loop
+      // compensates every height change, so stay out of its way (but keep
+      // lastHeight fresh, so unlocking never sees a stale "shrank").
+      if (topLock) return;
       if (stick()) return scrollToBottom();
       // Content shrinking under the view (a tool result collapsed) can leave
       // it at the very end: nothing is below any more, so follow again, or
@@ -547,7 +767,10 @@ export default function MessageList(props: {
         ? !item.checkVisibility({ contentVisibilityAuto: true })
         : true;
       if (item.dataset.id && !skipped) measuredHeights.set(item.dataset.id, height);
-      if (before === undefined || !el || stick() || entry.target === lastItem) continue;
+      // While the top lock is held its settle loop owns every compensation;
+      // still record heights above so placeholders stay accurate.
+      if (before === undefined || !el || stick() || topLock || entry.target === lastItem)
+        continue;
       if (entry.target.getBoundingClientRect().top < anchorTop) delta += height - before;
     }
     if (delta !== 0) queueAnchorCorrection(delta); // ours, not the user's
@@ -577,19 +800,35 @@ export default function MessageList(props: {
   }
 
   async function onTopVisible() {
-    if (busy) return;
+    if (busy || topLock) return;
+    if (!(win().start > 0 || (win().start === 0 && props.chat?.hasOlder))) return;
     busy = true;
+    lockTopScroll();
     let moved = false;
     try {
       if (win().start === 0 && props.chat?.hasOlder) {
-        await props.onLoadOlder(); // the effect above shifts the window
+        await props.onLoadOlder();
+        // The prepend (and the window shift the bookkeeping effect applies
+        // for it) lands across microtasks and frames: hold the anchor over
+        // two frames so both are compensated before the settle loop decides
+        // heights are quiet.
+        await nextFrame();
+        if (topLock) compensateTopAnchor();
+        await nextFrame();
+        if (topLock) compensateTopAnchor();
       }
       if (win().start > 0) {
         setStick(false);
-        keepAnchor(() => setWin((w) => shiftUp(w)));
+        setWin((w) => shiftUp(w));
+        // Synchronous first compensation: Solid reconciles the <For> in the
+        // same task, so a forced layout here sees the new rows and no wrong
+        // frame is ever painted.
+        if (topLock) compensateTopAnchor();
         moved = true;
       }
+      await settleTopLock();
     } finally {
+      unlockTopScroll();
       busy = false;
     }
     // The observer only reports changes: if the sentinel never left the
@@ -598,7 +837,7 @@ export default function MessageList(props: {
   }
 
   async function onBottomVisible() {
-    if (busy) return;
+    if (busy || topLock) return;
     busy = true;
     let moved = false;
     try {
@@ -652,6 +891,13 @@ export default function MessageList(props: {
         setStick(false);
         setWin(clampWindow({ start: index - AROUND, end: index + AROUND + 1 }, messages().length));
         requestAnimationFrame(() => {
+          // A history load in flight owns the scroll position; its lock
+          // clamps this back, so don't fight it — the highlight still shows.
+          if (topLock) {
+            setFlashId(id);
+            window.setTimeout(() => setFlashId((f) => (f === id ? null : f)), FLASH_MS);
+            return;
+          }
           const el = scrollRef?.querySelector<HTMLElement>(
             `.chat-item[data-id="${CSS.escape(id)}"]`
           );
@@ -668,13 +914,18 @@ export default function MessageList(props: {
       <div
         ref={scrollRef}
         class="chat-messages"
+        classList={{ 'scroll-lock': topLocked() }}
         onScroll={handleScroll}
         onWheel={handleWheel}
         onTouchMove={() => {
+          if (topLock) return;
           markUserInput();
           userDirection = null; // a swipe's direction isn't known here
         }}
-        onKeyDown={markUserInput}
+        onKeyDown={() => {
+          if (topLock) return;
+          markUserInput();
+        }}
         onPointerDown={handlePointerDown}
         onMouseDown={handleSelectMouseDown}
         onMouseUp={handleSelectMouseUp}

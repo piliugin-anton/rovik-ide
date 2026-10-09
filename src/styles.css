@@ -705,18 +705,29 @@ body.tree-dragging {
   overflow-y: auto;
   /* MessageList anchors by hand; the browser doing it too would double up. */
   overflow-anchor: none;
+  /* Locking the list (overflow hidden while older messages load) hides the
+     scrollbar: with classic scrollbars that would widen the content for a
+     frame. The gutter keeps its space reserved, so nothing shifts. */
+  scrollbar-gutter: stable;
   /* Its own corrections must be instant; only explicit actions animate. */
-  scroll-behavior: auto;
 
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  scroll-behavior: auto;
 }
 
 .chat-messages * {
   overflow-anchor: none;
+}
+
+.chat-messages.scroll-lock {
+  /* Frozen while older messages load (MessageList's top lock): no user
+     scrolling of any kind, but scrollTop stays settable so the list can
+     compensate for content inserted above without the view moving. */
+  overflow-y: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
 }
 
 /* The scroll container's frame: the jump button is placed against it, so
