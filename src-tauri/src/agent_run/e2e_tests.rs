@@ -2342,3 +2342,40 @@ src/parser.rs (2 matches)
     assert!(prompt.contains("results are grouped by the declaration each match is in"), "{prompt}");
     assert!(prompt.contains("call read with the group's name as `symbol`"));
 }
+
+#[tokio::test]
+async fn the_code_tools_run_together_and_word_their_errors_once() {
+    let h = harness(&[
+        ("src/tax.rs", "pub fn compute_tax_total(x: f64) -> f64 { x }\n"),
+        ("src/invoice.rs", "pub fn invoice_sum() -> f64 { compute_tax_total(1.0) }\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("g1", "neighbours", json!({ "path": "src/invoice.rs" })),
+            ("g2", "callers", json!({ "symbol": "compute_tax_total" })),
+            ("g3", "outline", json!({ "path": "src/tax.rs" })),
+            ("g4", "diagnostics", json!({ "path": "src/tax.rs" })),
+            ("g5", "callers", json!({ "symbol": "no_such_name_xyz" })),
+            ("g6", "neighbours", json!({})),
+        ]),
+        Reply::Text("Looked."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Look around"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    // Local reads: one parallel batch.
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [vec!["g1", "g2", "g3", "g4", "g5", "g6"]]);
+    let n = &result_of(&messages, "g1").content;
+    assert!(n.contains("## Neighbours of src/invoice.rs") && n.contains("src/tax.rs"), "{n}");
+    let c = &result_of(&messages, "g2").content;
+    assert!(c.contains("src/invoice.rs"), "{c}");
+    assert!(result_of(&messages, "g3").content.contains("compute_tax_total"), "{}", result_of(&messages, "g3").content);
+    assert!(result_of(&messages, "g4").content.contains("parses clean"), "{}", result_of(&messages, "g4").content);
+    // A tool's own error text, and a missing argument: "Error:" once.
+    let unknown = &result_of(&messages, "g5").content;
+    assert!(unknown.starts_with("Error: no declaration named"), "{unknown}");
+    assert!(!unknown.contains("Error: Error:"), "{unknown}");
+    assert_eq!(result_of(&messages, "g6").content, "Error: \"path\" is required.");
+}

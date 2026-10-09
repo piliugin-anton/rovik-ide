@@ -249,7 +249,10 @@ pub async fn tool_neighbours(root: String, path: String) -> Result<String, Strin
         let root_canon = canonicalize_or_err(Path::new(&root))?;
         let candidate = Path::new(&path);
         if candidate.is_absolute() {
-            candidate
+            // Canonicalize when possible: the path may be symlinked (macOS
+            // /tmp → /private/tmp) while the root is canonical.
+            let canon = canonicalize_or_err(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+            canon
                 .strip_prefix(&root_canon)
                 .map_err(|_| format!("path escapes project root: {path}"))?
                 .to_string_lossy()
@@ -317,14 +320,18 @@ fn render_outline(rel: &str, symbols: &[crate::outline::Symbol]) -> String {
     }
     const MAX_CHARS: usize = 8_000;
     let mut out = vec![format!("## Outline of {rel}")];
+    let mut len = out[0].len();
     let mut omitted = 0usize;
-    for s in symbols {
+    for (i, s) in symbols.iter().enumerate() {
         let lines = if s.end_line > s.start_line { format!("{}-{}", s.start_line, s.end_line) } else { s.start_line.to_string() };
         let line = format!("{}{lines} {}", "  ".repeat(s.depth + 1), s.signature);
-        if out.join("\n").len() + line.len() + 1 > MAX_CHARS {
-            omitted += 1;
-            continue;
+        // Stop at the cap: the rest is left out as a block, never with
+        // holes where a long line didn't fit but a later short one did.
+        if len + line.len() + 1 > MAX_CHARS {
+            omitted = symbols.len() - i;
+            break;
         }
+        len += line.len() + 1;
         out.push(line);
     }
     if omitted > 0 {
@@ -409,8 +416,14 @@ pub fn report_editor_diagnostics(root: String, path: String, markers: Vec<Editor
         if !["error", "warning", "info", "hint"].contains(&m.severity.as_str()) {
             m.severity = "info".to_string();
         }
+        // At most 1,000 bytes, cut on a character boundary: a byte index
+        // inside a multi-byte character (Cyrillic, CJK) would panic.
         if m.message.len() > 1_000 {
-            m.message.truncate(1_000);
+            let mut cut = 1_000;
+            while !m.message.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            m.message.truncate(cut);
         }
     }
     // Errors first, then by line: the cap keeps what matters.
@@ -472,10 +485,18 @@ fn file_diagnostics(root: &str, root_canon: &Path, path: &str) -> Result<String,
         (r.markers.clone(), r.reported_at)
     });
     match editor {
-        Some((markers, at)) if !markers.is_empty() => {
+        // Reported, and the editor shows nothing for it.
+        Some((markers, at)) if markers.is_empty() => {
             let stale = fs::metadata(&abs).ok().and_then(|m| m.modified().ok()).is_some_and(|m| m > at);
-            let age = SystemTime::now().duration_since(at).map(|d| d.as_secs()).unwrap_or(0);
-            let when = if age < 60 { format!("{age}s ago") } else { format!("{}m ago", age / 60) };
+            out.push(format!(
+                "Editor: no problems (reported {}{}).",
+                ago(at),
+                if stale { ", stale: the file changed since" } else { "" }
+            ));
+        }
+        Some((markers, at)) => {
+            let stale = fs::metadata(&abs).ok().and_then(|m| m.modified().ok()).is_some_and(|m| m > at);
+            let when = ago(at);
             let mut lines = vec![format!("Editor (reported {when}{}):", if stale { ", stale: the file changed since" } else { "" })];
             for m in markers.iter().take(DIAG_MAX_MARKERS) {
                 let at_ = if m.start_line == m.end_line {
@@ -492,7 +513,7 @@ fn file_diagnostics(root: &str, root_canon: &Path, path: &str) -> Result<String,
             }
             out.push(lines.join("\n"));
         }
-        _ => out.push("Editor: no diagnostics reported (the file may not be open).".into()),
+        None => out.push("Editor: no diagnostics reported (the file may not be open).".into()),
     }
 
     // A fresh syntax check of what's on disk now.
@@ -515,6 +536,16 @@ fn file_diagnostics(root: &str, root_canon: &Path, path: &str) -> Result<String,
         out.push(hint);
     }
     Ok(out.join("\n\n"))
+}
+
+/// How long ago a report came in: seconds under a minute, else minutes.
+fn ago(at: SystemTime) -> String {
+    let secs = SystemTime::now().duration_since(at).map(|d| d.as_secs()).unwrap_or(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else {
+        format!("{}m ago", secs / 60)
+    }
 }
 
 /// The command for typed errors, from the detected project checks.
@@ -540,8 +571,7 @@ fn diagnostics_summary(root: &str, root_canon: &Path) -> Result<String, String> 
             continue;
         }
         let stale = Path::new(root).join(rel).metadata().ok().and_then(|m| m.modified().ok()).is_some_and(|m| m > report.reported_at);
-        let age = SystemTime::now().duration_since(report.reported_at).map(|d| d.as_secs()).unwrap_or(0);
-        files.push((rel.clone(), errors, warnings, format!("{}m ago{}", age / 60, if stale { ", stale" } else { "" })));
+        files.push((rel.clone(), errors, warnings, format!("{}{}", ago(report.reported_at), if stale { ", stale" } else { "" })));
     }
     drop(diags);
     if files.is_empty() {
@@ -796,6 +826,96 @@ mod tests {
         assert!(out.contains("(typescript)"), "{out}");
         let summary = tool_diagnostics(root_s, None).unwrap();
         assert!(summary.contains("a.ts") && summary.contains("1 error"), "{summary}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn marker(severity: &str, message: String) -> EditorMarker {
+        EditorMarker { start_line: 1, start_col: 1, end_line: 1, end_col: 2, severity: severity.into(), message, source: None, code: None }
+    }
+
+    #[test]
+    fn long_multibyte_marker_messages_are_cut_on_a_character() {
+        let (base, root, root_s) = outline_project("diagutf8", &[("a.ts", "const x = 1;\n")]);
+        let abs = root.join("a.ts").to_string_lossy().to_string();
+        // Byte 1,000 falls inside a 2-byte character: cutting there panicked.
+        let message = format!("a{}", "ж".repeat(600));
+        report_editor_diagnostics(root_s.clone(), abs, vec![marker("error", message)]).unwrap();
+        let out = tool_diagnostics(root_s, Some("a.ts".into())).unwrap();
+        let line = out.lines().find(|l| l.contains("error: a")).expect("the marker");
+        let shown = line.split("error: ").nth(1).unwrap();
+        assert!(shown.len() <= 1_000 && shown.starts_with("aжж"), "{} bytes", shown.len());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_clean_reported_file_says_so() {
+        let (base, root, root_s) = outline_project("diagclean", &[("a.ts", "const x = 1;\n")]);
+        let abs = root.join("a.ts").to_string_lossy().to_string();
+        report_editor_diagnostics(root_s.clone(), abs, Vec::new()).unwrap();
+        let out = tool_diagnostics(root_s.clone(), Some("a.ts".into())).unwrap();
+        assert!(out.contains("Editor: no problems (reported 0s ago)"), "{out}");
+        assert!(!out.contains("may not be open"), "{out}");
+        // Never reported: that one may really not be open.
+        fs::write(root.join("b.ts"), "const y = 2;\n").unwrap();
+        let out = tool_diagnostics(root_s, Some("b.ts".into())).unwrap();
+        assert!(out.contains("may not be open"), "{out}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_summary_says_seconds_for_fresh_reports() {
+        let (base, root, root_s) = outline_project("diagage", &[("a.ts", "const x = 1;\n")]);
+        let abs = root.join("a.ts").to_string_lossy().to_string();
+        report_editor_diagnostics(root_s.clone(), abs, vec![marker("warning", "unused".into())]).unwrap();
+        let summary = tool_diagnostics(root_s, None).unwrap();
+        assert!(summary.contains("a.ts: 1 warning (0s ago)"), "{summary}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn graph_and_diagnostics_paths_stay_in_the_project() {
+        let (base, root, root_s) = outline_project("confine", &[("src/a.rs", "pub fn alpha_one() {}\n")]);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // neighbours: no `..`, no absolute path outside the root.
+        let err = rt.block_on(tool_neighbours(root_s.clone(), "../outside.rs".into())).unwrap_err();
+        assert!(err.contains("must not contain '..'"), "{err}");
+        let err = rt.block_on(tool_neighbours(root_s.clone(), "/etc/passwd".into())).unwrap_err();
+        assert!(err.contains("escapes project root"), "{err}");
+        // An absolute path through the symlinked root still resolves.
+        let inside = root.join("src/a.rs").to_string_lossy().to_string();
+        let n = rt.block_on(tool_neighbours(root_s.clone(), inside)).unwrap();
+        assert!(n.contains("## Neighbours of src/a.rs"), "{n}");
+        // Editor reports: the same confinement.
+        let err = report_editor_diagnostics(root_s.clone(), "../x.ts".into(), Vec::new()).unwrap_err();
+        assert!(err.contains("must not contain '..'"), "{err}");
+        let err = report_editor_diagnostics(root_s, "/etc/hosts".into(), Vec::new()).unwrap_err();
+        assert!(err.contains("escapes project root"), "{err}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_long_outline_stops_at_the_cap_without_holes() {
+        // Long and short declarations mixed: a skipped long line must not
+        // let a later short one in.
+        let mut src = String::new();
+        for i in 0..400 {
+            if i % 2 == 0 {
+                src.push_str(&format!("export function f{i}() {{}}\n"));
+            } else {
+                src.push_str(&format!("export function f{i}_{}(a: string) {{}}\n", "x".repeat(60)));
+            }
+        }
+        let (base, _root, root_s) = outline_project("outlinecap", &[("big.ts", &src)]);
+        let out = tool_outline(root_s, "big.ts".into()).unwrap();
+        let shown: Vec<usize> = out
+            .lines()
+            .filter_map(|l| l.split("function f").nth(1))
+            .map(|rest| rest.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap())
+            .collect();
+        assert!(!shown.is_empty() && shown.len() < 400, "{} shown", shown.len());
+        assert_eq!(shown, (0..shown.len()).collect::<Vec<_>>(), "contiguous, no holes");
+        assert!(out.contains(&format!("[…{} more declarations", 400 - shown.len())), "{out}");
+        assert!(out.len() <= 8_200, "{} chars", out.len());
         let _ = fs::remove_dir_all(&base);
     }
 }

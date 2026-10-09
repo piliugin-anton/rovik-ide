@@ -1404,15 +1404,19 @@ impl<R: Runtime> Run<R> {
         let touched = touched_paths(&recent);
         let request_text = self.current_user_content.clone().unwrap_or_default();
         let max_chars = self.repo_map_chars;
-        let new_map = tauri::async_runtime::spawn_blocking(move || {
+        let rebuilt = tauri::async_runtime::spawn_blocking(move || {
             let root_path = std::path::Path::new(&root);
             let focus = crate::repo_map::focus_from(root_path, &request_text, &touched);
             let options = crate::repo_map::Options { max_chars, ..Default::default() };
             crate::repo_map::repo_map(root_path, &focus, &options)
         })
-        .await
-        .ok()
-        .flatten();
+        .await;
+        // A rebuild that failed (the task panicked) keeps the map the run
+        // has, instead of leaving the model without one for the rest of the
+        // run. One that found nothing is real (no declarations left): no map.
+        let Ok(new_map) = rebuilt else {
+            return Ok(false);
+        };
         if new_map == self.repo_map {
             return Ok(false);
         }
