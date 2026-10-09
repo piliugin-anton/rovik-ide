@@ -2118,18 +2118,10 @@ export default function ChatPanel(props: ChatProps) {
       }
     )
   );
-  /** Dismiss the idle panel's ✕: closes the checklist via `checklistClosed`. */
+  /** Dismiss the idle panel's ✕: closes the checklist on the message holding it. */
   function dismissIdleChecklist() {
     const dialogId = activeDialogId();
-    if (!dialogId) return;
-    const list = messages();
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i];
-      if (m.role === 'user' && !m.meta?.harness) {
-        void dismissChecklist(dialogId, m.id, m.meta as Record<string, unknown> | undefined);
-        return;
-      }
-    }
+    if (dialogId) void dismissChecklist(dialogId);
   }
   /** The plan file the running request implements, if any. */
   const runPlanFile = createMemo(() => {

@@ -11,6 +11,7 @@
 use super::events::{emit, AgentEvent, OutMessage, Patch, Status};
 use super::guard::Guard;
 use super::project::{self, ProjectCheck};
+use super::permissions::ChecklistMode;
 use super::{failure, log, plan, repetition, tools, AgentState, Controls, EffortPick, ModelProfile, StartKind, StartRequest, StopSignal};
 use crate::agent::{ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS};
 use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage, ToolCall};
@@ -59,15 +60,13 @@ pub(super) const CLM_STEP_COMPACT_MIN: u32 = 35;
 /// escalates when it is ignored).
 #[derive(Debug, Clone)]
 pub(super) struct PendingStepCompaction {
-    pub(super) revision: Option<u64>,
     pub(super) tool_calls: u32,
 }
 
-/// When a compaction pressure started (Phase E): the context revision and
-/// the tool-call count then, plus the run's turn then (for turns-to-edit).
+/// When a compaction pressure started (Phase E): the tool-call count then,
+/// and the run's turn then (for turns-to-edit). Any edit clears it.
 #[derive(Debug, Clone)]
 pub(super) struct ClmWait {
-    pub(super) revision: Option<u64>,
     pub(super) tool_calls: u32,
     pub(super) turn: u32,
 }
@@ -170,11 +169,15 @@ pub struct Run<R: Runtime> {
     /// since (revision, tool calls and turn when first seen).
     pub(super) tier75_since: Option<ClmWait>,
     pub(super) urgent_since: Option<ClmWait>,
-    /// Context tracking for edit detection: started once the first CLM
-    /// state is seen, then the last revision and token count.
+    /// CLM tracking started (the first CLM state was seen).
     pub(super) clm_tracking_started: bool,
-    pub(super) clm_last_revision: Option<u64>,
-    pub(super) clm_last_tokens: Option<usize>,
+    /// A write to the context file (or a restore) succeeded since the last
+    /// turn (set in execute.rs). The file is rewritten before every request,
+    /// so a new revision alone doesn't mean the agent edited anything.
+    pub(super) context_edited: bool,
+    /// An edit seen last turn, waiting for its size: the context is only
+    /// re-measured by the next request (tokens before the edit).
+    pub(super) edit_delta_pending: Option<usize>,
     /// The next request may not call tools (a summary before a pause).
     pub(super) words_only: bool,
     /// Plan mode: the current plan, shown to the model so it revises it.
@@ -357,7 +360,9 @@ impl<R: Runtime> Run<R> {
             emit(app, AgentEvent::Checklist { dialog_id: dialog_id.to_string(), items });
         }
 
-        if is_send {
+        // Agent mode only: Plan mode has no `todo` tool, so a note asking
+        // for it would only confuse the plan.
+        if is_send && !plan_mode {
             if let Some(carried) = plan::current_checklist(&recent) {
                 if carried.carried && !plan::open_steps(&carried.items).is_empty() {
                     append_carry_note(
@@ -374,7 +379,7 @@ impl<R: Runtime> Run<R> {
                 }
             }
         }
-        if is_continue_run {
+        if is_continue_run && !plan_mode {
             if let Some(current) = plan::current_checklist(&recent) {
                 if !plan::open_steps(&current.items).is_empty() {
                     append_carry_note(
@@ -457,8 +462,19 @@ impl<R: Runtime> Run<R> {
         // Forcing `todo` on a plan implementation's first turn only makes
         // sense when no checklist exists yet (nothing to carry, nothing
         // made): otherwise the carry note / live list already governs.
-        let force_todo_next =
-            implements_plan && !plan_mode && plan::current_checklist(&recent).is_none();
+        // "Always" (the checklist setting) forces it on the first turn of
+        // every Agent-mode message with a project, unless the request already
+        // has its own checklist. A carried one still gets a fresh `todo`
+        // call: the model confirms or closes it before anything else.
+        let checklist_mode = config.permissions.checklist;
+        let has_own_checklist = plan::current_checklist(&recent).is_some_and(|c| !c.carried);
+        let force_todo_next = !plan_mode
+            && root.is_some()
+            && !has_own_checklist
+            && match checklist_mode {
+                ChecklistMode::Always => is_send,
+                _ => implements_plan && plan::current_checklist(&recent).is_none(),
+            };
 
         let run = Run {
             app: app.clone(),
@@ -507,8 +523,8 @@ impl<R: Runtime> Run<R> {
             tier75_since: None,
             urgent_since: None,
             clm_tracking_started: false,
-            clm_last_revision: None,
-            clm_last_tokens: None,
+            context_edited: false,
+            edit_delta_pending: None,
             words_only: false,
             plan_context,
             plan_nudged: false,
@@ -1121,14 +1137,18 @@ impl<R: Runtime> Run<R> {
     /// up to MAX_CHECKLIST_NUDGES times, and the run goes on. True: the
     /// agent was told, continue. The second nudge also forces the `todo`
     /// call on the next turn (when the provider supports a named
-    /// `tool_choice`). Carried checklists count: a run that never made its
-    /// own `todo` call still has to answer for the open steps it continued.
+    /// `tool_choice`). A carried checklist counts only when this run worked
+    /// on the task (changed files): a quick unrelated question after an
+    /// unfinished run is answered, not pushed back into the old work. The
+    /// carry note already told the model about it, and the idle panel
+    /// still offers Continue.
     async fn check_checklist(&mut self) -> Result<bool, String> {
         if self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
             return Ok(false);
         }
         let recent = self.recent().await?;
         let open: Vec<plan::TodoItem> = plan::current_checklist(&recent)
+            .filter(|c| !c.carried || !self.changed_files.is_empty())
             .map(|c| c.items)
             .unwrap_or_default()
             .into_iter()
@@ -1203,40 +1223,41 @@ impl<R: Runtime> Run<R> {
             }
         }
         self.clm_reminders_fired.sort_unstable();
-        let revision = state.rendered_revision;
 
-        // An edit landed: everything lifts, turns-to-edit are recorded.
+        // An edit: a successful write to the context file, a restore, or a
+        // command on the file's real path, flagged as it happens
+        // (execute.rs). Not a new revision as such: the file is rewritten
+        // before every request with the new messages, so its revision moves
+        // every turn whether the agent edited it or not.
+        let edited = std::mem::take(&mut self.context_edited);
+        // Last turn's edit, now measured by the request that read it back.
+        if let (Some(before), Some(r)) = (self.edit_delta_pending.take(), state.rendered_revision) {
+            self.clm_edit_deltas.push((r, before, state.tokens));
+        }
         if !self.clm_tracking_started {
             self.clm_tracking_started = true;
-            self.clm_last_revision = revision;
-            self.clm_last_tokens = Some(state.tokens);
-            return;
-        }
-        if revision != self.clm_last_revision {
-            self.clm_edits_seen += 1;
-            if let Some(r) = revision {
-                self.clm_edit_deltas.push((r, self.clm_last_tokens.unwrap_or(state.tokens), state.tokens));
+            if !edited {
+                return;
             }
-            if self.pending_step_compaction.is_some() {
-                if let Some(asked) = self.step_asked_turn {
-                    self.step_turns_to_edit = Some(self.clm_turns.saturating_sub(asked));
+        }
+        if edited {
+            self.clm_edits_seen += 1;
+            self.edit_delta_pending = Some(state.tokens);
+            if self.pending_step_compaction.take().is_some() {
+                if let Some(asked) = self.step_asked_turn.take() {
+                    self.step_turns_to_edit.get_or_insert(self.clm_turns.saturating_sub(asked));
                 }
-                self.pending_step_compaction = None;
-                self.step_asked_turn = None;
             }
             if let Some(w) = self.urgent_since.take() {
-                self.urgent_turns_to_edit = Some(self.clm_turns.saturating_sub(w.turn));
+                self.urgent_turns_to_edit.get_or_insert(self.clm_turns.saturating_sub(w.turn));
             }
             if let Some(w) = self.tier75_since.take() {
-                self.tier75_turns_to_edit = Some(self.clm_turns.saturating_sub(w.turn));
+                self.tier75_turns_to_edit.get_or_insert(self.clm_turns.saturating_sub(w.turn));
             }
             self.clm_restricted = false;
             self.restricted_stall = 0;
-            self.clm_last_revision = revision;
-            self.clm_last_tokens = Some(state.tokens);
             return;
         }
-        self.clm_last_tokens = Some(state.tokens);
 
         // Safety valve first: two restricted turns already, still no edit.
         if self.clm_restricted && self.restricted_stall >= CLM_MAX_RESTRICTED_STALL {
@@ -1262,12 +1283,13 @@ impl<R: Runtime> Run<R> {
             self.restricted_stall = 0;
         }
 
-        // Remember when each pressure started waiting for its edit.
-        if state.nudged.contains(&75) && self.tier75_since.is_none() && self.tier75_turns_to_edit.is_none() {
-            self.tier75_since = Some(ClmWait { revision, tool_calls: self.guard.tool_calls, turn: self.clm_turns });
+        // Remember when each pressure started waiting for its edit; an edit
+        // clears it, and it re-arms if the pressure is still there.
+        if state.nudged.contains(&75) && self.tier75_since.is_none() {
+            self.tier75_since = Some(ClmWait { tool_calls: self.guard.tool_calls, turn: self.clm_turns });
         }
-        if pct >= crate::clm::prompt::URGENT && self.urgent_since.is_none() && self.urgent_turns_to_edit.is_none() {
-            self.urgent_since = Some(ClmWait { revision, tool_calls: self.guard.tool_calls, turn: self.clm_turns });
+        if pct >= crate::clm::prompt::URGENT && self.urgent_since.is_none() {
+            self.urgent_since = Some(ClmWait { tool_calls: self.guard.tool_calls, turn: self.clm_turns });
         }
 
         if self.clm_non_compliant || self.clm_restricted {
@@ -1277,29 +1299,13 @@ impl<R: Runtime> Run<R> {
             }
             return;
         }
-        let mut reason: Option<&str> = None;
-        if pct >= crate::clm::prompt::URGENT
-            && self.urgent_since.as_ref().is_some_and(|w| w.revision == revision)
-        {
-            reason = Some("urgent");
-        } else if pct >= CLM_ESCALATE_MIN_PCT {
-            if let Some(p) = &self.pending_step_compaction {
-                if p.revision == revision
-                    && self.guard.tool_calls.saturating_sub(p.tool_calls) >= CLM_ESCALATE_AFTER_CALLS
-                {
-                    reason = Some("step");
-                }
-            }
-            if reason.is_none() {
-                if let Some(w) = &self.tier75_since {
-                    if w.revision == revision
-                        && self.guard.tool_calls.saturating_sub(w.tool_calls) >= CLM_ESCALATE_AFTER_CALLS
-                    {
-                        reason = Some("tier75");
-                    }
-                }
-            }
-        }
+        let reason = restriction_reason(
+            pct,
+            self.urgent_since.is_some(),
+            self.pending_step_compaction.as_ref().map(|p| p.tool_calls),
+            self.tier75_since.as_ref().map(|w| w.tool_calls),
+            self.guard.tool_calls,
+        );
         if let Some(reason) = reason {
             self.clm_restricted = true;
             self.restricted_turns += 1;
@@ -1346,7 +1352,8 @@ impl<R: Runtime> Run<R> {
                 "turnsToEdit75": self.tier75_turns_to_edit,
                 "turnsToEditUrgent": self.urgent_turns_to_edit,
                 "edits": self.clm_edits_seen,
-                "editRevisions": edit_revisions,
+                // Chat-wide (every run so far), not this run only.
+                "chatEditRevisions": edit_revisions,
                 "editDeltas": self.clm_edit_deltas.iter().map(|(r, before, after)| json!({
                     "revision": r, "before": before, "after": after,
                 })).collect::<Vec<_>>(),
@@ -2081,6 +2088,30 @@ fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     sent_content(m).or_else(|| Some(m.content.clone()))
 }
 
+/// Whether this CLM turn is restricted to context tools, and why: at 90%+
+/// while the urgent state waits for an edit, or at 50%+ once a
+/// step-compaction request or the 75% reminder has gone unanswered for
+/// CLM_ESCALATE_AFTER_CALLS tool calls. The waits are cleared by an edit,
+/// so a wait that's still here means no edit since it started.
+fn restriction_reason(
+    pct: u32,
+    urgent_waiting: bool,
+    step_asked_at: Option<u32>,
+    tier75_seen_at: Option<u32>,
+    tool_calls: u32,
+) -> Option<&'static str> {
+    let waited = |since: u32| tool_calls.saturating_sub(since) >= CLM_ESCALATE_AFTER_CALLS;
+    if pct >= crate::clm::prompt::URGENT && urgent_waiting {
+        Some("urgent")
+    } else if pct >= CLM_ESCALATE_MIN_PCT && step_asked_at.is_some_and(waited) {
+        Some("step")
+    } else if pct >= CLM_ESCALATE_MIN_PCT && tier75_seen_at.is_some_and(waited) {
+        Some("tier75")
+    } else {
+        None
+    }
+}
+
 /// The real user message before the latest one, as sent: what a short
 /// "continue" is continuing. None when there is no earlier request.
 fn previous_user_wire_content(messages: &[MessageRow]) -> Option<String> {
@@ -2247,5 +2278,26 @@ mod repo_map_tests {
         assert_eq!(paths.len(), MAX_TOUCHED_PATHS);
         assert_eq!(paths.first().unwrap(), "f10.rs");
         assert_eq!(paths.last().unwrap(), "f29.rs");
+    }
+}
+
+#[cfg(test)]
+mod clm_pressure_tests {
+    use super::*;
+
+    #[test]
+    fn restriction_needs_an_unanswered_pressure() {
+        // Urgent: restricted at once while it waits for an edit.
+        assert_eq!(restriction_reason(92, true, None, None, 0), Some("urgent"));
+        assert_eq!(restriction_reason(92, false, None, None, 0), None, "an edit cleared the wait");
+        // A step-compaction request escalates after 4 calls with no edit, at 50%+.
+        assert_eq!(restriction_reason(60, false, Some(10), None, 13), None);
+        assert_eq!(restriction_reason(60, false, Some(10), None, 14), Some("step"));
+        assert_eq!(restriction_reason(40, false, Some(10), None, 30), None, "below 50%");
+        // The 75% reminder, likewise.
+        assert_eq!(restriction_reason(78, false, None, Some(5), 9), Some("tier75"));
+        assert_eq!(restriction_reason(78, false, None, Some(5), 8), None);
+        // Nothing waiting: never restricted, whatever the size.
+        assert_eq!(restriction_reason(85, false, None, None, 100), None);
     }
 }

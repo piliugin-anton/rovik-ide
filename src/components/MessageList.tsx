@@ -164,6 +164,8 @@ export default function MessageList(props: {
       outer: for (let i = messages().length - 1; i >= 0; i--) {
         for (const tc of messages()[i].toolCalls ?? []) {
           if (tc.id === latest && tc.name === 'todo') {
+            // Dismissed by the user: closed, not interrupted.
+            if (messages()[i].meta?.checklistClosed) break outer;
             try {
               const items = parseTodo(JSON.parse(tc.arguments));
               interruptedLatest = items.length > 0 && items.some((item) => !isSettled(item));

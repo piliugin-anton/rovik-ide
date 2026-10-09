@@ -523,8 +523,9 @@ pub fn is_harness(m: &MessageRow) -> bool {
     m.meta.as_ref().and_then(|meta| meta.get("harness")).is_some_and(|h| !h.is_null())
 }
 
-/// Whether the user dismissed the open checklist with this message
-/// (`meta.checklistClosed`, set by the checklist panel's dismiss ✕).
+/// Whether the user dismissed a checklist here (`meta.checklistClosed`):
+/// on the message holding its `todo` call (the panel's dismiss ✕), or, as
+/// older chats have it, on the user message that followed it.
 pub fn is_checklist_dismissed(m: &MessageRow) -> bool {
     m.meta
         .as_ref()
@@ -551,7 +552,11 @@ fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
 /// - `carried == true`: the current request made no `todo` call, so the
 ///   latest open checklist from the previous request is carried forward. It
 ///   counts as closed (and is not carried) when every step is settled or the
-///   user dismissed it with `meta.checklistClosed` on the new message.
+///   user dismissed it.
+///
+/// A dismissed checklist (`meta.checklistClosed` on the message holding the
+/// `todo` call) is closed wherever it is: nothing is current until a newer
+/// `todo` call.
 ///
 /// Looking back past exactly one user message (to the latest `todo` in the
 /// previous request only) keeps a checklist alive across a short follow-up
@@ -573,6 +578,9 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
         // No user message yet: whatever the latest todo call says.
         for m in messages.iter().rev() {
             if let Some(items) = todo_in_message(m) {
+                if is_checklist_dismissed(m) {
+                    return None;
+                }
                 return Some(CurrentChecklist { items, carried: false, from_message_id: Some(m.id.clone()) });
             }
         }
@@ -581,6 +589,9 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
     // The current request: everything after the last real user message.
     for m in messages[last + 1..].iter().rev() {
         if let Some(items) = todo_in_message(m) {
+            if is_checklist_dismissed(m) {
+                return None;
+            }
             return Some(CurrentChecklist { items, carried: false, from_message_id: Some(m.id.clone()) });
         }
     }
@@ -595,13 +606,58 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
     let from = prev_user.map(|p| p + 1).unwrap_or(0);
     for m in messages[from..last].iter().rev() {
         if let Some(items) = todo_in_message(m) {
-            if items.iter().all(is_settled) {
+            if items.iter().all(is_settled) || is_checklist_dismissed(m) {
                 return None;
             }
             return Some(CurrentChecklist { items, carried: true, from_message_id: Some(m.id.clone()) });
         }
     }
     None
+}
+
+/// Past these, a task without a checklist has clearly outgrown the "3 or
+/// more steps" rule (the checklist gate, Agent mode): a write to a 3rd
+/// distinct file, a command after 2 changed files, or this many tool calls.
+pub const GATE_FILES: usize = 3;
+pub const GATE_FILES_BEFORE_COMMAND: usize = 2;
+pub const GATE_TOOL_CALLS: u32 = 12;
+
+/// Why the gate asks for a checklist before this call, if it does. Only
+/// work counts (writes and commands); `changed_files` are the distinct
+/// project files written so far in the run. Below the thresholds a small
+/// task finishes without a checklist, as the rule allows.
+pub fn checklist_gate_reason(
+    tool: &str,
+    path: Option<&str>,
+    changed_files: &[String],
+    tool_calls: u32,
+) -> Option<String> {
+    let norm = |p: &str| p.trim().trim_start_matches("./").to_string();
+    match tool {
+        "write" => {
+            let new_file = path.map(norm).is_some_and(|p| !changed_files.iter().any(|f| norm(f) == p));
+            let files = changed_files.len() + usize::from(new_file);
+            if files >= GATE_FILES {
+                return Some(format!("{files} files changed"));
+            }
+        }
+        "bash" => {
+            if changed_files.len() >= GATE_FILES_BEFORE_COMMAND {
+                return Some(format!("{} files changed, now a command", changed_files.len()));
+            }
+        }
+        _ => return None,
+    }
+    (tool_calls >= GATE_TOOL_CALLS).then(|| format!("{tool_calls} tool calls made"))
+}
+
+/// The gate's refusal: what to put in the checklist, finished work included.
+pub fn checklist_gate_error(reason: &str, tool: &str) -> String {
+    format!(
+        "Error: this task has grown past a few steps ({reason}) and has no checklist. Create it now with the \
+         todo tool: the steps you've already finished as done, the current one in_progress, the rest pending. \
+         Then repeat this {tool} call."
+    )
 }
 
 /// Steps still open, for carry notes and nudges.
@@ -930,6 +986,50 @@ mod tests {
             row("u3", "user", None),
         ];
         assert_eq!(current_checklist(&messages), None);
+    }
+
+    /// The gate follows the "3 or more steps" rule: a 3rd distinct file, a
+    /// command after 2 changed files, or 12 tool calls; never reads.
+    #[test]
+    fn checklist_gate_thresholds() {
+        let files = |n: usize| (0..n).map(|i| format!("f{i}.rs")).collect::<Vec<_>>();
+        // Writes: the 3rd distinct file trips it; rewriting a known one doesn't.
+        assert_eq!(checklist_gate_reason("write", Some("new.rs"), &files(1), 2), None);
+        assert_eq!(checklist_gate_reason("write", Some("new.rs"), &files(2), 3).as_deref(), Some("3 files changed"));
+        assert_eq!(checklist_gate_reason("write", Some("./f1.rs"), &files(2), 3), None);
+        // Commands: after 2 changed files, not after 1 (edit, then test).
+        assert_eq!(checklist_gate_reason("bash", None, &files(1), 2), None);
+        assert!(checklist_gate_reason("bash", None, &files(2), 3).is_some());
+        // Many calls without a checklist trip it for work, not for reads.
+        assert_eq!(checklist_gate_reason("bash", None, &[], GATE_TOOL_CALLS).as_deref(), Some("12 tool calls made"));
+        assert_eq!(checklist_gate_reason("read", Some("a.rs"), &files(5), 40), None);
+        let error = checklist_gate_error("3 files changed", "write");
+        assert!(error.starts_with("Error:") && error.contains("already finished as done"), "{error}");
+    }
+
+    /// Dismissed on the message holding the `todo` call (the panel's ✕):
+    /// closed in its own request, and never carried.
+    #[test]
+    fn dismissed_on_its_own_message_closes_the_checklist() {
+        let mut held = todo_row("a1", json!({ "items": ["step"] }));
+        held.meta = Some(json!({ "checklistClosed": true }));
+        // In the current request.
+        let current = vec![row("u1", "user", None), held.clone()];
+        assert_eq!(current_checklist(&current), None);
+        // Not carried into the next one.
+        let next = vec![row("u1", "user", None), held, row("u2", "user", None)];
+        assert_eq!(current_checklist(&next), None);
+        // An older, undismissed one isn't resurrected by the dismissal.
+        let older = vec![
+            row("u1", "user", None),
+            todo_row("a0", json!({ "items": ["old"] })),
+            {
+                let mut m = todo_row("a1", json!({ "items": ["new"] }));
+                m.meta = Some(json!({ "checklistClosed": true }));
+                m
+            },
+        ];
+        assert_eq!(current_checklist(&older), None);
     }
 
     /// The panel's dismiss (meta.checklistClosed) closes the checklist.
