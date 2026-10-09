@@ -7,7 +7,7 @@
 
 use git2::{
     BranchType, Cred, CredentialHelper, CredentialType, FetchOptions, PushOptions,
-    RemoteCallbacks, Repository, Status, StatusOptions,
+    RemoteCallbacks, Repository, ResetType, StashFlags, Status, StatusOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -467,6 +467,262 @@ pub async fn git_init(path: String) -> Result<(), String> {
 pub fn git_init_blocking(path: String) -> Result<(), String> {
     Repository::init(&path).map_err(|e| format!("Failed to initialize repository: {e}"))?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Extra operations for the Git panel's "More actions" menu.
+// What the panel already does elsewhere (commit, push, fetch, pull,
+// branch switching, reverting one file) is deliberately not repeated here.
+// ---------------------------------------------------------------------------
+
+/// The obvious mistakes in a branch name, rejected before libgit2 sees them
+/// so the error reads like guidance rather than a plumbing complaint.
+fn validate_branch_name(name: &str) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Branch name can't be empty".to_string());
+    }
+    if name == "HEAD"
+        || name.starts_with('-')
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name.ends_with('.')
+        || name.ends_with(".lock")
+        || name.contains("..")
+        || name.contains("//")
+        || name.contains("@{")
+        || name.contains(|c: char| {
+            c.is_whitespace() || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+    {
+        return Err(format!("'{name}' isn't a valid branch name"));
+    }
+    Ok(name)
+}
+
+/// Creates a local branch at the current HEAD; with `checkout`, switches to
+/// it straight away (the panel's usual "new branch" flow).
+#[tauri::command]
+pub async fn git_create_branch(path: String, name: String, checkout: bool) -> Result<(), String> {
+    off_main_thread(move || git_create_branch_blocking(path, name, checkout)).await
+}
+
+pub fn git_create_branch_blocking(path: String, name: String, checkout: bool) -> Result<(), String> {
+    let name = validate_branch_name(&name)?;
+    let repo = open_repo(&path)?;
+    let head = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .ok_or_else(|| "Can't create a branch yet: there are no commits".to_string())?;
+    repo.branch(&name, &head, false)
+        .map_err(|e| format!("Couldn't create branch '{name}': {e}"))?;
+    drop(head);
+    if checkout {
+        git_checkout_blocking(path, name)?;
+    }
+    Ok(())
+}
+
+/// Deletes a local branch. The branch that's checked out can't be deleted.
+#[tauri::command]
+pub async fn git_delete_branch(path: String, name: String) -> Result<(), String> {
+    off_main_thread(move || git_delete_branch_blocking(path, name)).await
+}
+
+pub fn git_delete_branch_blocking(path: String, name: String) -> Result<(), String> {
+    let repo = open_repo(&path)?;
+    if let Ok(head) = repo.head() {
+        if head.is_branch() && head.shorthand().ok() == Some(name.as_str()) {
+            return Err(format!("Can't delete '{name}': it's the current branch"));
+        }
+    }
+    let mut branch = repo
+        .find_branch(&name, BranchType::Local)
+        .map_err(|_| format!("Branch '{name}' not found"))?;
+    branch.delete().map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitStashEntry {
+    pub index: usize,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitCommitEntry {
+    pub oid: String,
+    pub short: String,
+    pub summary: String,
+    pub author: String,
+    /// Commit time, seconds since the epoch.
+    pub time: i64,
+}
+
+/// Shelves the working tree (tracked changes and untracked files) on the
+/// stash, so the tree comes back clean. Needs a git identity, like commit.
+#[tauri::command]
+pub async fn git_stash_push(path: String, message: Option<String>) -> Result<(), String> {
+    off_main_thread(move || git_stash_push_blocking(path, message)).await
+}
+
+pub fn git_stash_push_blocking(path: String, message: Option<String>) -> Result<(), String> {
+    let mut repo = open_repo(&path)?;
+    let signature = repo
+        .signature()
+        .map_err(|e| format!("No Git identity configured (user.name / user.email): {e}"))?;
+    let message = match message {
+        Some(m) if !m.trim().is_empty() => Some(m.trim().to_string()),
+        _ => None,
+    };
+    repo.stash_save2(&signature, message.as_deref(), Some(StashFlags::INCLUDE_UNTRACKED))
+        .map_err(|e| {
+            if e.message().contains("no changes") || e.message().contains("No changes") {
+                "Nothing to stash: there are no changes".to_string()
+            } else {
+                format!("Couldn't stash the changes: {e}")
+            }
+        })?;
+    Ok(())
+}
+
+/// The stash list, newest first — what `git stash list` shows.
+#[tauri::command]
+pub async fn git_stash_list(path: String) -> Result<Vec<GitStashEntry>, String> {
+    off_main_thread(move || git_stash_list_blocking(path)).await
+}
+
+pub fn git_stash_list_blocking(path: String) -> Result<Vec<GitStashEntry>, String> {
+    let mut repo = open_repo(&path)?;
+    let mut entries = Vec::new();
+    repo.stash_foreach(|index, message, _oid| {
+        entries.push(GitStashEntry {
+            index,
+            message: message.to_string(),
+        });
+        true
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(entries)
+}
+
+/// Restores a stashed state and drops it from the list (`git stash pop`).
+/// `index` defaults to the newest entry. On conflicts nothing is dropped —
+/// the error says to resolve them first.
+#[tauri::command]
+pub async fn git_stash_pop(path: String, index: Option<usize>) -> Result<(), String> {
+    off_main_thread(move || git_stash_pop_blocking(path, index)).await
+}
+
+pub fn git_stash_pop_blocking(path: String, index: Option<usize>) -> Result<(), String> {
+    let mut repo = open_repo(&path)?;
+    repo.stash_pop(index.unwrap_or(0), None)
+        .map_err(|e| format!("Couldn't restore the stash: {e}"))?;
+    Ok(())
+}
+
+/// Forgets a stashed state without restoring it.
+#[tauri::command]
+pub async fn git_stash_drop(path: String, index: usize) -> Result<(), String> {
+    off_main_thread(move || git_stash_drop_blocking(path, index)).await
+}
+
+pub fn git_stash_drop_blocking(path: String, index: usize) -> Result<(), String> {
+    let mut repo = open_repo(&path)?;
+    repo.stash_drop(index).map_err(|e| e.to_string())
+}
+
+/// Throws away every change in the working tree: tracked files go back to
+/// HEAD, and files git doesn't know yet go to the trash (as with reverting
+/// one file, so the action can be undone from there).
+#[tauri::command]
+pub async fn git_discard_all(path: String) -> Result<(), String> {
+    off_main_thread(move || git_discard_all_blocking(path)).await
+}
+
+pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
+    let repo = open_repo(&path)?;
+    let workdir = repo.workdir().ok_or("the repository has no working folder")?.to_path_buf();
+
+    // Files git doesn't know go to the trash; a hard reset leaves them (and
+    // previously staged-new files) on disk, so collect them first.
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .renames_head_to_index(true);
+    let mut trash_untracked = |repo: &Repository| -> Result<(), String> {
+        let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+        for entry in statuses.iter() {
+            if !entry.status().is_wt_new() {
+                continue;
+            }
+            let rel = entry.path().unwrap_or_default();
+            if rel.is_empty() {
+                continue;
+            }
+            let abs = workdir.join(rel);
+            if abs.is_file() {
+                trash::delete(&abs)
+                    .map_err(|e| format!("{rel}: couldn't move it to the trash: {e}"))?;
+            }
+        }
+        Ok(())
+    };
+    trash_untracked(&repo)?;
+
+    match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+        // Tracked changes (staged or not) back to the last commit.
+        Some(head) => repo
+            .reset(head.as_object(), ResetType::Hard, None)
+            .map_err(|e| e.to_string())?,
+        // No commits yet: nothing to reset to, so empty the index instead.
+        None => {
+            let mut index = repo.index().map_err(|e| e.to_string())?;
+            index.clear().map_err(|e| e.to_string())?;
+            index.write().map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Staged-new files survived the reset as untracked files; they were part
+    // of "all changes" too.
+    trash_untracked(&repo)?;
+    Ok(())
+}
+
+/// Recent commits on the current HEAD, newest first, for the history view.
+#[tauri::command]
+pub async fn git_log(path: String, limit: Option<u32>) -> Result<Vec<GitCommitEntry>, String> {
+    off_main_thread(move || git_log_blocking(path, limit)).await
+}
+
+pub fn git_log_blocking(path: String, limit: Option<u32>) -> Result<Vec<GitCommitEntry>, String> {
+    let repo = open_repo(&path)?;
+    let limit = limit.unwrap_or(20).clamp(1, 100) as usize;
+    let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
+    walk.set_sorting(git2::Sort::TIME).map_err(|e| e.to_string())?;
+    // No commits yet: empty history, not an error.
+    if walk.push_head().is_err() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    for oid in walk.take(limit) {
+        let oid = oid.map_err(|e| e.to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
+        let full = oid.to_string();
+        entries.push(GitCommitEntry {
+            short: full.chars().take(7).collect(),
+            oid: full,
+            summary: commit
+                .summary()
+                .ok()
+                .flatten()
+                .unwrap_or("(no message)")
+                .to_string(),
+            author: commit.author().name().unwrap_or("?").to_string(),
+            time: commit.time().seconds(),
+        });
+    }
+    Ok(entries)
 }
 
 // ---------------------------------------------------------------------------

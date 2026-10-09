@@ -15,7 +15,13 @@ import {
 import { listen } from '@tauri-apps/api/event';
 import { createVirtualizer, Virtualizer } from '@tanstack/solid-virtual';
 import { invoke } from '@tauri-apps/api/core';
-import { GitFileStatusCode, GitPanelPhase, GitStatus } from '../types';
+import {
+  GitFileStatusCode,
+  GitPanelPhase,
+  GitStatus,
+  GitStashEntry,
+  GitCommitEntry,
+} from '../types';
 import { confirmDialog } from './ConfirmDialog';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
@@ -125,6 +131,54 @@ function IconSpinner(props: { size?: number }) {
   return (
     <svg {...iconProps} width={props.size ?? 14} height={props.size ?? 14} class="git-spin">
       <path d="M21 12a9 9 0 1 1-9-9" />
+    </svg>
+  );
+}
+
+function IconDots() {
+  return (
+    <svg {...iconProps}>
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="12" cy="19" r="1" />
+    </svg>
+  );
+}
+
+function IconBack() {
+  return (
+    <svg {...iconProps} width={12} height={12}>
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  );
+}
+
+function IconArchive() {
+  return (
+    <svg {...iconProps}>
+      <rect x="2" y="3" width="20" height="5" rx="1" />
+      <path d="M4 8v11a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V8" />
+      <path d="M10 12h4" />
+    </svg>
+  );
+}
+
+function IconHistory() {
+  return (
+    <svg {...iconProps}>
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg {...iconProps}>
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
     </svg>
   );
 }
@@ -401,11 +455,194 @@ export function GitPanel(props: GitPanelProps) {
     }
   };
 
+  // -------------------------------------------------------------------------
+  // "More actions" menu: the git operations the panel has no dedicated
+  // control for (create/delete branch, stash, discard-all, history).
+  // One dropdown with small inline sub-views, so no new components are
+  // needed. What the panel already does — commit, push, fetch, pull,
+  // switching branches, reverting one file — stays where it is.
+  // -------------------------------------------------------------------------
+
+  type MoreView = 'menu' | 'new-branch' | 'delete-branch' | 'stash-save' | 'stash-list' | 'history';
+
+  const [moreOpen, setMoreOpen] = createSignal(false);
+  const [moreView, setMoreView] = createSignal<MoreView>('menu');
+  const [newBranchName, setNewBranchName] = createSignal('');
+  const [stashMessage, setStashMessage] = createSignal('');
+  const [stashes, setStashes] = createSignal<GitStashEntry[]>([]);
+  const [stashesLoading, setStashesLoading] = createSignal(false);
+  const [commits, setCommits] = createSignal<GitCommitEntry[]>([]);
+  const [commitsLoading, setCommitsLoading] = createSignal(false);
+
+  const closeMore = () => {
+    setMoreOpen(false);
+    setMoreView('menu');
+  };
+
+  const toggleMore = () => {
+    const next = !moreOpen();
+    setMoreOpen(next);
+    setBranchOpen(false);
+    if (next) {
+      setMoreView('menu');
+      void loadStashes();
+    }
+  };
+
+  const openMoreView = (view: MoreView) => {
+    setMoreView(view);
+    if (view === 'delete-branch') void loadBranches();
+    if (view === 'stash-list') void loadStashes();
+    if (view === 'history') void loadLog();
+  };
+
+  const loadStashes = async () => {
+    setStashesLoading(true);
+    try {
+      const list = await invoke<GitStashEntry[]>('git_stash_list', { path: props.projectPath });
+      setStashes(list);
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStashesLoading(false);
+    }
+  };
+
+  const loadLog = async () => {
+    setCommitsLoading(true);
+    try {
+      const list = await invoke<GitCommitEntry[]>('git_log', {
+        path: props.projectPath,
+        limit: 20,
+      });
+      setCommits(list);
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCommitsLoading(false);
+    }
+  };
+
+  /** The obvious mistakes, caught inline; the backend re-checks for real. */
+  const branchNameProblem = (name: string): string | null => {
+    const n = name.trim();
+    if (!n) return null;
+    if (
+      n === 'HEAD' ||
+      n.startsWith('-') ||
+      n.startsWith('/') ||
+      n.endsWith('/') ||
+      n.endsWith('.') ||
+      n.endsWith('.lock') ||
+      n.includes('..') ||
+      n.includes('//') ||
+      n.includes('@{') ||
+      /[\s~^:?*\[\\]/.test(n)
+    ) {
+      return `'${n}' isn't a valid branch name.`;
+    }
+    return null;
+  };
+
+  const createBranch = (checkout: boolean) =>
+    withBusy(async () => {
+      const name = newBranchName().trim();
+      if (!name || branchNameProblem(name)) return;
+      await invoke('git_create_branch', { path: props.projectPath, name, checkout });
+      setNewBranchName('');
+      closeMore();
+      await refreshStatus();
+    });
+
+  const deleteBranch = async (name: string) => {
+    const ok = await confirmDialog({
+      title: `Delete branch ${name}?`,
+      message: 'The branch itself is gone right away; its commits linger until git cleans them up.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    await withBusy(async () => {
+      await invoke('git_delete_branch', { path: props.projectPath, name });
+      await loadBranches();
+      await refreshStatus();
+    });
+  };
+
+  const stashPush = () =>
+    withBusy(async () => {
+      if (filesCount() === 0) return;
+      await invoke('git_stash_push', {
+        path: props.projectPath,
+        message: stashMessage().trim() || null,
+      });
+      setStashMessage('');
+      closeMore();
+      await refreshStatus();
+    });
+
+  const stashPop = (index: number) =>
+    withBusy(async () => {
+      await invoke('git_stash_pop', { path: props.projectPath, index });
+      await loadStashes();
+      await refreshStatus();
+    });
+
+  const stashDrop = async (index: number) => {
+    const ok = await confirmDialog({
+      title: 'Forget this stash?',
+      message: 'Its changes are thrown away without restoring them.',
+      confirmLabel: 'Forget',
+      danger: true,
+    });
+    if (!ok) return;
+    await withBusy(async () => {
+      await invoke('git_stash_drop', { path: props.projectPath, index });
+      await loadStashes();
+      await refreshStatus();
+    });
+  };
+
+  const discardAll = async () => {
+    const files = status()?.files ?? [];
+    if (files.length === 0) return;
+    const ok = await confirmDialog({
+      title: `Throw away all ${files.length} changed file${files.length === 1 ? '' : 's'}?`,
+      message:
+        'Every tracked change goes back to the last commit. New files go to the trash, where you can still restore them.',
+      confirmLabel: 'Discard all',
+      danger: true,
+    });
+    if (!ok) return;
+    // Tabs showing these files reload from disk afterwards.
+    const absPaths = files.map((f) => absPathOf(f.path));
+    await withBusy(async () => {
+      await invoke('git_discard_all', { path: props.projectPath });
+      closeMore();
+      await refreshStatus();
+      for (const abs of absPaths) props.onFileReverted?.(abs);
+    });
+  };
+
   const toggleBranchDropdown = () => {
     const next = !branchOpen();
     setBranchOpen(next);
+    setMoreOpen(false);
     if (next) loadBranches();
   };
+
+  // Close both header dropdowns on a click outside the header (same pattern
+  // as the project switcher / effort menu). The triggers and menus all live
+  // inside the header, so anything outside it dismisses them.
+  let headerRoot: HTMLDivElement | undefined;
+  const onOutsideHeader = (e: PointerEvent) => {
+    if (headerRoot && !headerRoot.contains(e.target as Node)) {
+      setBranchOpen(false);
+      closeMore();
+    }
+  };
+  window.addEventListener('pointerdown', onOutsideHeader, true);
+  onCleanup(() => window.removeEventListener('pointerdown', onOutsideHeader, true));
 
   // Derived, reactive values (memoized so they actually update on signal
   // changes — reading a signal into a plain `const` outside of a memo/JSX
@@ -484,8 +721,8 @@ export function GitPanel(props: GitPanelProps) {
       () => {
         void withBusy(refreshStatus);
       },
-      { defer: true },
-    ),
+      { defer: true }
+    )
   );
 
   onMount(() => {
@@ -547,12 +784,23 @@ export function GitPanel(props: GitPanelProps) {
 
       <Show when={phase() === 'ready'}>
         {/* Header */}
-        <div class="git-panel-header">
+        <div
+          class="git-panel-header"
+          ref={headerRoot}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setBranchOpen(false);
+              closeMore();
+            }
+          }}
+        >
           <div class="git-branch-row">
             <button
               class="git-branch-button icon-button"
               onClick={toggleBranchDropdown}
               title="Switch branch"
+              aria-haspopup="menu"
+              aria-expanded={branchOpen()}
               disabled={busy()}
             >
               <IconBranch />
@@ -584,6 +832,17 @@ export function GitPanel(props: GitPanelProps) {
               </button>
             </div>
           </div>
+          <button
+            class="icon-button git-more-trigger"
+            onClick={toggleMore}
+            title="More actions"
+            aria-label="More git actions"
+            aria-haspopup="menu"
+            aria-expanded={moreOpen()}
+            disabled={busy()}
+          >
+            <IconDots />
+          </button>
 
           <Show when={branchOpen()}>
             <div class="git-branch-dropdown context-menu">
@@ -606,6 +865,295 @@ export function GitPanel(props: GitPanelProps) {
                   )}
                 </For>
               </ul>
+            </div>
+          </Show>
+
+          <Show when={moreOpen()}>
+            <div
+              class="git-branch-dropdown git-more-dropdown context-menu"
+              role="menu"
+              aria-label="More git actions"
+            >
+              {/* Main menu */}
+              <Show when={moreView() === 'menu'}>
+                <div class="git-menu-section-label">Branch</div>
+                <ul class="context-menu-list">
+                  <li class="context-menu-item" onClick={() => openMoreView('new-branch')}>
+                    <IconBranch />
+                    <span>New branch…</span>
+                  </li>
+                  <li class="context-menu-item" onClick={() => openMoreView('delete-branch')}>
+                    <IconTrash />
+                    <span>Delete branch…</span>
+                  </li>
+                </ul>
+                <div class="git-menu-section-label">Stash</div>
+                <ul class="context-menu-list">
+                  <li
+                    class="context-menu-item"
+                    classList={{ 'git-menu-disabled': filesCount() === 0 }}
+                    aria-disabled={filesCount() === 0}
+                    title={
+                      filesCount() === 0
+                        ? 'Nothing to stash: there are no changes'
+                        : 'Shelve the working tree on the stash'
+                    }
+                    onClick={() => {
+                      if (filesCount() > 0) openMoreView('stash-save');
+                    }}
+                  >
+                    <IconArchive />
+                    <span>Stash changes…</span>
+                  </li>
+                  <li class="context-menu-item" onClick={() => openMoreView('stash-list')}>
+                    <IconArchive />
+                    <span>
+                      Stashed changes{stashes().length > 0 ? ` (${stashes().length})` : ''}…
+                    </span>
+                  </li>
+                  <Show when={stashes().length > 0}>
+                    <li
+                      class="context-menu-item"
+                      title={stashes()[0]?.message || 'Restore the newest stash'}
+                      onClick={() => {
+                        closeMore();
+                        void stashPop(0);
+                      }}
+                    >
+                      <IconArchive />
+                      <span>Pop latest stash</span>
+                    </li>
+                  </Show>
+                </ul>
+                <div class="git-menu-section-label">Changes</div>
+                <ul class="context-menu-list">
+                  <li
+                    class="context-menu-item git-menu-danger"
+                    classList={{ 'git-menu-disabled': filesCount() === 0 }}
+                    aria-disabled={filesCount() === 0}
+                    title={
+                      filesCount() === 0
+                        ? 'Nothing to discard: there are no changes'
+                        : 'Throw away every change in the working tree'
+                    }
+                    onClick={() => void discardAll()}
+                  >
+                    <IconTrash />
+                    <span>Discard all changes…</span>
+                  </li>
+                </ul>
+                <div class="git-menu-section-label">History</div>
+                <ul class="context-menu-list">
+                  <li class="context-menu-item" onClick={() => openMoreView('history')}>
+                    <IconHistory />
+                    <span>Recent commits…</span>
+                  </li>
+                </ul>
+              </Show>
+
+              {/* New branch */}
+              <Show when={moreView() === 'new-branch'}>
+                <button class="icon-button git-more-back" onClick={() => setMoreView('menu')}>
+                  <IconBack />
+                  <span>New branch</span>
+                </button>
+                <div class="git-more-form">
+                  <input
+                    class="tree-row-input git-more-input"
+                    placeholder="Branch name"
+                    value={newBranchName()}
+                    spellcheck={false}
+                    autocomplete="off"
+                    onInput={(e) => setNewBranchName(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void createBranch(true);
+                    }}
+                    disabled={busy()}
+                  />
+                  <Show when={branchNameProblem(newBranchName())}>
+                    <div class="git-more-note error">{branchNameProblem(newBranchName())}</div>
+                  </Show>
+                  <div class="git-more-actions">
+                    <button
+                      class="icon-button"
+                      disabled={
+                        busy() || !newBranchName().trim() || !!branchNameProblem(newBranchName())
+                      }
+                      onClick={() => void createBranch(false)}
+                    >
+                      Create
+                    </button>
+                    <button
+                      class="icon-button primary"
+                      disabled={
+                        busy() || !newBranchName().trim() || !!branchNameProblem(newBranchName())
+                      }
+                      onClick={() => void createBranch(true)}
+                    >
+                      Create & switch
+                    </button>
+                  </div>
+                </div>
+              </Show>
+
+              {/* Delete branch */}
+              <Show when={moreView() === 'delete-branch'}>
+                <button class="icon-button git-more-back" onClick={() => setMoreView('menu')}>
+                  <IconBack />
+                  <span>Delete branch</span>
+                </button>
+                <Show when={branchesLoading()}>
+                  <div class="context-menu-item context-menu-loading">
+                    <IconSpinner /> <span>Loading branches...</span>
+                  </div>
+                </Show>
+                <Show
+                  when={
+                    !branchesLoading() &&
+                    branches().filter((b) => b !== status()?.branch).length === 0
+                  }
+                >
+                  <div class="git-more-note">No other branches to delete.</div>
+                </Show>
+                <ul class="context-menu-list">
+                  <For each={branches().filter((b) => b !== status()?.branch)}>
+                    {(b) => (
+                      <li class="context-menu-item git-more-row">
+                        <IconBranch />
+                        <span class="git-more-row-label">{b}</span>
+                        <button
+                          type="button"
+                          class="git-more-row-button"
+                          title={`Delete branch ${b}`}
+                          aria-label={`Delete branch ${b}`}
+                          disabled={busy()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void deleteBranch(b);
+                          }}
+                        >
+                          <IconTrash />
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+
+              {/* Stash: save */}
+              <Show when={moreView() === 'stash-save'}>
+                <button class="icon-button git-more-back" onClick={() => setMoreView('menu')}>
+                  <IconBack />
+                  <span>Stash changes</span>
+                </button>
+                <div class="git-more-form">
+                  <input
+                    class="tree-row-input git-more-input"
+                    placeholder="Message (optional)"
+                    value={stashMessage()}
+                    spellcheck={false}
+                    autocomplete="off"
+                    onInput={(e) => setStashMessage(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void stashPush();
+                    }}
+                    disabled={busy()}
+                  />
+                  <div class="git-more-note">
+                    Shelves tracked changes and new files; the tree comes back clean.
+                  </div>
+                  <div class="git-more-actions">
+                    <button
+                      class="icon-button primary"
+                      disabled={busy() || filesCount() === 0}
+                      onClick={() => void stashPush()}
+                    >
+                      Stash changes
+                    </button>
+                  </div>
+                </div>
+              </Show>
+
+              {/* Stash: list */}
+              <Show when={moreView() === 'stash-list'}>
+                <button class="icon-button git-more-back" onClick={() => setMoreView('menu')}>
+                  <IconBack />
+                  <span>Stashed changes</span>
+                </button>
+                <Show when={stashesLoading()}>
+                  <div class="context-menu-item context-menu-loading">
+                    <IconSpinner /> <span>Loading stashes...</span>
+                  </div>
+                </Show>
+                <Show when={!stashesLoading() && stashes().length === 0}>
+                  <div class="git-more-note">No stashes yet.</div>
+                </Show>
+                <ul class="context-menu-list">
+                  <For each={stashes()}>
+                    {(s) => (
+                      <li class="context-menu-item git-more-row" title={s.message}>
+                        <IconArchive />
+                        <span class="git-more-row-label">{s.message}</span>
+                        <button
+                          type="button"
+                          class="git-more-row-button"
+                          title="Restore this stash and remove it from the list"
+                          aria-label={`Restore stash ${s.message}`}
+                          disabled={busy()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void stashPop(s.index);
+                          }}
+                        >
+                          <span class="git-more-row-text">Pop</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="git-more-row-button git-menu-danger"
+                          title="Forget this stash without restoring it"
+                          aria-label={`Forget stash ${s.message}`}
+                          disabled={busy()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void stashDrop(s.index);
+                          }}
+                        >
+                          <IconTrash />
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+
+              {/* History */}
+              <Show when={moreView() === 'history'}>
+                <button class="icon-button git-more-back" onClick={() => setMoreView('menu')}>
+                  <IconBack />
+                  <span>Recent commits</span>
+                </button>
+                <Show when={commitsLoading()}>
+                  <div class="context-menu-item context-menu-loading">
+                    <IconSpinner /> <span>Loading history...</span>
+                  </div>
+                </Show>
+                <Show when={!commitsLoading() && commits().length === 0}>
+                  <div class="git-more-note">No commits yet.</div>
+                </Show>
+                <ul class="context-menu-list">
+                  <For each={commits()}>
+                    {(c) => (
+                      <li
+                        class="git-commit-row"
+                        title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}`}
+                      >
+                        <span class="git-commit-short">{c.short}</span>
+                        <span class="git-commit-summary">{c.summary}</span>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
             </div>
           </Show>
         </div>

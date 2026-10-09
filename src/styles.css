@@ -3158,13 +3158,17 @@ body.tree-dragging {
   user-select: none;
 }
 
-.file-context-menu .context-menu-list {
+/* Shared item look for every .context-menu (file tree, git menus): same
+   padding, radius and hover as the app's other popups (model picker,
+   effort menu, project switcher). Scoped variants below only add icons,
+   danger/disabled states — never their own padding or hover. */
+.context-menu .context-menu-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.file-context-menu .context-menu-item {
+.context-menu .context-menu-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3172,10 +3176,17 @@ body.tree-dragging {
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.file-context-menu .context-menu-item:hover {
+.context-menu .context-menu-item:hover {
   background: var(--hover-strong);
+}
+
+.context-menu .context-menu-item > svg {
+  flex-shrink: 0;
+  color: var(--fg-muted);
 }
 
 .file-context-menu .context-menu-icon {
@@ -3423,11 +3434,13 @@ body.tree-dragging {
 /* Header */
 .git-panel-header {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: 6px;
-  padding: 8px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  position: relative;
 }
 
 /* Branch row */
@@ -3435,6 +3448,8 @@ body.tree-dragging {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1;
+  min-width: 0;
 }
 
 .git-branch-label {
@@ -3445,6 +3460,10 @@ body.tree-dragging {
 .git-branch-button {
   font-size: 12px;
   padding: 2px 6px;
+}
+
+.git-branch-button[aria-expanded='true'] {
+  background: var(--hover-strong);
 }
 
 .git-branch-arrow {
@@ -3458,10 +3477,10 @@ body.tree-dragging {
   top: calc(100% + 4px);
   left: 8px;
   margin-top: 0;
-  background: var(--bg-sidebar);
+  background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 4px 12px var(--shadow);
+  box-shadow: 0 6px 20px var(--shadow);
   z-index: 50;
   min-width: 160px;
 }
@@ -3473,8 +3492,18 @@ body.tree-dragging {
 /* Fetch / Pull row */
 .git-fetch-pull-row {
   display: flex;
-  gap: 6px;
-  margin-top: 2px;
+  align-items: center;
+  gap: 2px;
+}
+
+/* "More actions" trigger pinned to the far right of the header. */
+.git-more-trigger {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.git-more-trigger[aria-expanded='true'] {
+  background: var(--hover-strong);
 }
 
 /* Files area */
@@ -3579,7 +3608,9 @@ body.is-resizing * {
 .git-panel-header {
   position: relative;
   display: flex;
+  flex-direction: row;
   align-items: center;
+  gap: 6px;
   justify-content: space-between;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
@@ -3589,6 +3620,7 @@ body.is-resizing * {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1;
   min-width: 0;
 }
 
@@ -3651,6 +3683,10 @@ body.is-resizing * {
   background: var(--hover-strong);
 }
 
+.icon-button[aria-expanded='true']:not(:disabled) {
+  background: var(--hover-strong);
+}
+
 .icon-button:active:not(:disabled) {
   background: var(--active);
 }
@@ -3697,43 +3733,22 @@ body.is-resizing * {
   top: 100%;
   left: 8px;
   z-index: 20;
-  /* It shares .context-menu with the file menu; keep its own spacing. */
-  padding: 4px 0;
-  font-size: 13px;
+  /* Same popup look as the app's other menus (model picker, effort menu,
+     project switcher, file context menu); only the position is its own. */
+  padding: 4px;
+  font-size: 12px;
   min-width: 200px;
   max-height: 260px;
   overflow-y: auto;
   margin-top: 2px;
   background: var(--menu-bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  box-shadow: 0 4px 12px var(--shadow);
-}
-
-.git-branch-dropdown .context-menu-list {
-  list-style: none;
-  margin: 0;
-  padding: 4px 0;
-}
-
-.git-branch-dropdown .context-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.git-branch-dropdown .context-menu-item:hover {
-  background: var(--hover-strong);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px var(--shadow);
 }
 
 .git-branch-dropdown .context-menu-item.git-branch-item-active {
-  color: var(--fg-on-accent);
-  font-weight: 600;
+  background: var(--row-active);
 }
 
 .context-menu-loading {
@@ -3743,6 +3758,176 @@ body.is-resizing * {
 
 .context-menu-loading:hover {
   background: transparent;
+}
+
+/* ---------------------------------------------------------------------- */
+/* "More actions" menu (GitPanel)                                         */
+/* ---------------------------------------------------------------------- */
+
+/* Same base as the branch dropdown; pinned to the header's right edge
+   under the ⋯ button instead of the left edge. */
+.git-more-dropdown {
+  left: auto;
+  right: 8px;
+  min-width: 240px;
+  max-width: 300px;
+  max-height: 340px;
+}
+
+.git-menu-section-label {
+  padding: 6px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  cursor: default;
+}
+
+.git-branch-dropdown .context-menu-item.git-menu-disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.git-branch-dropdown .context-menu-item.git-menu-disabled:hover {
+  background: none;
+}
+
+.git-branch-dropdown .context-menu-item.git-menu-danger,
+.git-branch-dropdown .context-menu-item.git-menu-danger > svg {
+  color: var(--error);
+}
+
+.git-branch-dropdown .context-menu-item.git-menu-danger:hover {
+  background: var(--error-soft);
+}
+
+/* Back row heading each sub-view */
+.git-more-back {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  margin: 0 2px;
+}
+
+/* Inline forms (new branch, stash message) */
+.git-more-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0 4px;
+}
+
+.git-more-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: inherit;
+  font-size: 12px;
+}
+
+.git-more-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.git-more-input:disabled {
+  opacity: 0.6;
+}
+
+.git-more-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.git-more-note {
+  padding: 2px 2px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.git-more-note.error {
+  color: var(--error);
+}
+
+/* Rows with an action button on the right (branches, stashes) */
+.git-branch-dropdown .context-menu-item.git-more-row {
+  gap: 6px;
+}
+
+.git-more-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-more-row-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.git-more-row-button:hover:not(:disabled) {
+  background: var(--hover-strong);
+  color: inherit;
+}
+
+.git-more-row-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.git-more-row-button.git-menu-danger:hover:not(:disabled) {
+  color: var(--error);
+}
+
+.git-more-row-text {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* History rows */
+.git-commit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: default;
+  min-width: 0;
+}
+
+.git-commit-row:hover {
+  background: var(--hover-strong);
+}
+
+.git-commit-short {
+  flex-shrink: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.git-commit-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------------- */

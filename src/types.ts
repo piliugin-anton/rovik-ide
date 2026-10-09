@@ -384,6 +384,22 @@ export type GitStatus = {
 
 export type GitPanelPhase = 'uninitialized' | 'ready' | 'no-repo' | 'error';
 
+/** One entry of `git stash list`, newest first (src-tauri/src/git.rs). */
+export interface GitStashEntry {
+  index: number;
+  message: string;
+}
+
+/** One recent commit for the history view (src-tauri/src/git.rs, git_log). */
+export interface GitCommitEntry {
+  oid: string;
+  short: string;
+  summary: string;
+  author: string;
+  /** Commit time, seconds since the epoch. */
+  time: number;
+}
+
 export interface WebSearchHit {
   title: string;
   url: string;
