@@ -38,6 +38,7 @@ Requirements:
 | 2 GiB RAM limit, build output | Content stored on disk; build output and dependency folders on plain disk (phases 2, 4) |
 | Crash or restart | Overlay index and landing journal on disk (phases 2, 5) |
 | No git, no driver | Built-in hashing, `git2::merge_file` on buffers, copied-tree fallback |
+| Several chats building at once and freezing the machine | Queue for heavy work (track Q): find heavy commands, give them slots, slow down the rest |
 
 ## Phase 0: protect direct mode (A + B)
 
@@ -211,8 +212,9 @@ Tasks
    overlay / Restore.
 
 Tests: `sed -i`, `cargo fmt`, codegen and `rm` in one chat leave the project
-and the other chats untouched; two chats `cargo build` at the same time
-without blocking each other. **Size: L.**
+and the other chats untouched; two chats `cargo build` into their own
+`out/` folders without sharing a cargo lock (track Q decides whether they
+run at the same time). **Size: L.**
 
 ## Phase 5: landing
 
@@ -328,16 +330,173 @@ tree. **Size: L.**
 4. Logging (`api_log.rs` / `agent_run/log.rs`): landing results, conflicts,
    merge retries, budget warnings, writes outside the sandbox.
 
+## Track Q: a queue for CPU-heavy work
+
+Separate from overlays and useful on its own: even today, in direct mode,
+three chats running `cargo build` at once can freeze a laptop. Isolation
+makes this more likely, because each chat builds into its own folder and
+nothing makes them wait for each other.
+
+You can't know for certain in advance whether a command will be heavy: it
+depends on caches and inputs (`cargo build` with nothing changed takes a
+second; after `cargo clean` it takes minutes). So detection has four layers.
+The first three **predict** before the command starts; the fourth
+**observes** it while it runs and is the safety net for wrong predictions.
+
+### Q1. Predicting from the command text (`src-tauri/src/workload/classify.rs`)
+
+Each command gets one class: `Heavy`, `Light`, `LongRunning` (dev servers,
+watchers) or `Unknown`.
+
+1. Split the command with the existing parser (`permissions.rs:169
+   parse_command`) into segments (`&&`, `;`, `|`), skipping `cd`, `env`
+   and `VAR=x` prefixes. A command's class is the heaviest of its
+   segments. Commands the parser marks `opaque` (`$(...)`, backticks,
+   `eval`) → `Unknown`.
+2. A rule table of program + subcommand, stored as data and editable in
+   settings:
+
+   | Class | Examples |
+   |---|---|
+   | Heavy | `cargo build/check/test/clippy/run/bench/doc/install`, `rustc`, `go build/test`, `tsc`, `vite build`, `webpack`, `next build`, `jest`, `vitest run`, `pytest`, `make`, `ninja`, `cmake --build`, `gradle`, `mvn`, `dotnet build/test`, `msbuild`, `docker build`, `gcc/clang/cc` |
+   | LongRunning | `vite` / `vite dev`, `next dev`, `cargo watch`, any `--watch` / `-w`, `npm start`, `serve`, `tauri dev` |
+   | Light | `ls`, `cat`, `head`, `grep`, `rg`, `find`, `sed`, `git` (except `gc`/`repack`), `echo`, `cargo fmt`, `cargo metadata`, `prettier --check` on a few files |
+
+3. Follow indirection, at most 3 levels deep:
+   - `npm|pnpm|yarn|bun run <s>` / `npm test` → the script body from
+     `package.json` (the workspace helpers in `project_profile/workspaces.rs`
+     already read it), including `run-s`, `run-p`, `concurrently`. A script
+     named `dev`, `start`, `serve` or `watch` → `LongRunning`.
+   - `npx` / `pnpm exec` / `yarn dlx <tool>` → classify `<tool>`.
+   - `just <r>` / `task <r>` → the recipe from `justfile` / `Taskfile.yml`.
+   - `./script.sh` / `sh|bash script.sh` inside the project → classify the
+     script's lines.
+   - `make <target>` → `Heavy` (Makefiles are too varied to read).
+4. The project's own checks (`project.rs`, `ordered_checks`) are always
+   `Heavy`: their commands are known exactly.
+
+### Q2. Learning from past runs (`workload/history.rs`)
+
+The most accurate prediction is what the same command cost last time.
+
+- Every finished command records a **fingerprint**: program, subcommand,
+  script name and flags, with paths and file names stripped. For example,
+  `cargo test -p foo some_test` → `cargo test -p foo`.
+- Saved per fingerprint: CPU seconds, peak memory, wall time and average
+  cores used (CPU ÷ wall), as running averages. Store the 75th percentile
+  per project in `chat_db` (a schema migration).
+- With 3+ samples, history overrides the Q1 rules:
+  `Heavy` if the 75th percentile is over **15 CPU seconds**, or over
+  **1.5 cores** on average, or over **1 GB** peak memory.
+- Memory history is also used for admission (Q5): don't start a job whose
+  usual peak doesn't fit in free memory.
+
+### Q3. Watching a command's process tree (`workload/tracker.rs`)
+
+Every command (the agent's, the checks', and optionally the terminal
+panel's) runs in a container the app can measure, slow down and pause as
+a whole:
+
+| OS | Container | Measures | Slows down / pauses |
+|---|---|---|---|
+| Linux (cgroup v2 delegated, which is usual with systemd) | One cgroup per command | `cpu.stat`, `memory.peak`, exactly, including daemons that left the process group | `cpu.max` (CPU cap), `cgroup.freeze` |
+| Linux fallback, macOS | Process group (`process_group(0)`, which `command_tool.rs:185` already sets) | Poll the group's processes (`/proc` on Linux, `proc_listpids` / `proc_pidinfo` through `libc` on macOS) | `setpriority` (lower priority), `SIGSTOP`/`SIGCONT` |
+| Windows | Job Object: start the process suspended, assign it to the job, resume | `JobObjectBasicAccountingInformation` (CPU of the whole tree), `JobObjectExtendedLimitInformation` (peak memory) | `JOBOBJECT_CPU_RATE_CONTROL_INFORMATION` (hard CPU cap); this also replaces `taskkill` in `kill_tree` |
+
+The tracker samples every 500 ms. A command becomes **observed heavy** when:
+- it averages over 1.5 cores across 3 seconds, or
+- its memory goes over 1.5 GB, or
+- a known heavy program appears in its tree: `rustc`, `cc1`, `cc1plus`,
+  `clang`, `ld`, `lld`, `link.exe`, `javac`, `kotlinc`, `swiftc`,
+  `esbuild`, `go` (`compile`), or `node` running `tsc`, `webpack` or
+  `jest`. This one triggers at once, without the 3-second window.
+
+### Q4. The scheduler (`workload/queue.rs`)
+
+- **Slots.** Default "auto": 1 slot, or 2 on machines with 12+ cores and
+  24 GB+ memory. Each slot is a lock file
+  `<app data>/locks/heavy-slot-N.lock` (`try_lock`), so several app windows
+  share them.
+- **Predicted `Heavy`:** waits for a slot before it starts.
+- **`Light` / `Unknown`:** starts at once. If the tracker sees it turn
+  heavy and no slot is free, it is **slowed down** (CPU capped at about
+  one core, lowest priority) until a slot frees up; then the limit is
+  lifted. It is **paused** (freeze, `SIGSTOP`) only when memory is
+  running low, because a paused process can trip network or test
+  timeouts.
+- **`LongRunning`:** starts at once and holds a slot only while it's busy.
+- **A slot follows activity, not the process's lifetime.** It's released
+  when the tree has been idle (under 0.3 cores) for 5 seconds, even if the
+  process is still running, and taken again the next time it gets busy.
+  So a dev server that only works hard while starting doesn't hold a slot
+  forever.
+- **Priority:** landing checks (phase 5) → commands from the chat the user
+  is looking at → background chats; first come, first served within each.
+- **Memory admission:** don't start the next heavy job unless free memory ≥
+  its usual peak (Q2) + 1 GB.
+- **Fair CPU split** when 2+ slots run: `CARGO_BUILD_JOBS`,
+  `MAKEFLAGS=-jN`, `GOMAXPROCS` = cores ÷ running heavy jobs. Lower
+  priority for agent work, so the editor stays responsive.
+- **Timeouts:** time spent waiting, slowed or paused doesn't count toward
+  the command's timeout (`command_tool.rs`, `CHECK_TIMEOUT_MS` in
+  `verify.rs`). Stop cancels a wait at once.
+- **The user's terminal** (`terminal.rs`): the app can't make it wait, but
+  it can observe it. If the user's own build is busy, it counts as one
+  occupied slot.
+
+### Q5. User interface
+
+- In the tool call: "Waiting for a CPU slot (chat B: `cargo build`, 40 s)"
+  or "Slowed down: chat B is building". Buttons: **Run now** (skip the
+  queue) and **Stop**.
+- A small queue indicator in the status bar listing what's running and
+  waiting.
+- "Treat this command as heavy / light" on a tool call. It writes a rule,
+  which takes precedence over history.
+- Settings: slots, thresholds, the rule table.
+
+### Limits
+
+- Prediction is a guess. Q3 corrects it within 1–3 seconds, so a wrong
+  guess costs a few seconds of contention, not a frozen machine.
+- Without delegated cgroups (Linux fallback, macOS), a daemon that leaves
+  the process group (`setsid`) escapes measurement. The leftover-process
+  check in `command_tool.rs` still sees it.
+- macOS has no hard CPU cap for normal apps: only lower priority and
+  `SIGSTOP`.
+- The user's terminal can be observed, never queued.
+
+### Steps and tests
+
+| Step | Contents | Size |
+|---|---|---|
+| Q-a | Tracker (Q3) on all three OSes; record history (Q2). Observe only, no behaviour change | M |
+| Q-b | Classifier (Q1) + scheduler (Q4) for agent commands and project checks | M |
+| Q-c | Slowing down / pausing; slot released when idle; memory admission; UI (Q5) | M |
+| Q-d | Landing checks get priority (after phase 5); terminal counted as load | S |
+
+Tests:
+- The rule table and script expansion, on fixtures (`package.json`,
+  `justfile`, shell scripts).
+- History fingerprints and the 75th-percentile override.
+- The tracker on a synthetic busy loop (`sh -c 'while :; do :; done'`):
+  detected heavy within 3 s; capping and lifting work; a slot is released
+  after it goes idle.
+- The queue: priority order; timeouts don't count waiting; Stop while
+  waiting; two app instances share slots.
+
 ## Order and dependencies
 
 ```
 0 ─► 1 ─► 2 ─► 3 ─► 4 ─► 5 ─► 6 ─► 9
                      └──► 7 ─► 8
+Q-a ─► Q-b ─► Q-c ─────────► Q-d (after 5)
 ```
 
 Phases 0–3 already remove every in-app way for chats to overwrite each other.
 Phase 4 adds shell commands, phase 5 makes it usable day to day, and phases
-6–8 improve speed and how early problems show up.
+6–8 improve speed and how early problems show up. Track Q doesn't depend on
+overlays and can start at any time; it helps direct mode too.
 
 ## Open decisions
 
@@ -348,3 +507,5 @@ Phase 4 adds shell commands, phase 5 makes it usable day to day, and phases
    copy (disk and time) or a prompt.
 4. Whether to offer frozen mode at all (phase 6.3).
 5. Budget defaults: memory cache size, per-chat soft and hard limits.
+6. Heavy-work slots: "auto" (1, or 2 on big machines), or a fixed number;
+   whether the terminal panel's own commands are also counted (Q4).
