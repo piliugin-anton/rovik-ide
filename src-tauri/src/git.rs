@@ -28,6 +28,12 @@ pub struct GitFile {
     /// Changed in the index (staged) / in the working tree (not staged).
     pub staged: bool,
     pub unstaged: bool,
+    /// Added / removed lines vs HEAD (`git diff --numstat`). 0 for binary,
+    /// untracked-but-unreadable, or when the diff is unavailable.
+    #[serde(default)]
+    pub additions: usize,
+    #[serde(default)]
+    pub deletions: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -142,6 +148,107 @@ fn default_remote_name(repo: &Repository) -> Result<String, String> {
 
 }
 
+/// Per-file added/removed line counts for one diff, keyed by the
+/// repo-relative `/`-separated path. Binary files report no hunks, so
+/// they (and any patch that fails to materialize) come back as 0/0.
+fn diff_line_stats(diff: &git2::Diff) -> std::collections::HashMap<String, (usize, usize)> {
+    let mut out = std::collections::HashMap::new();
+    let mut i = 0;
+    loop {
+        let delta = match diff.get_delta(i) {
+            Some(d) => d,
+            None => break,
+        };
+        let rel = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().into_owned());
+        let counts = git2::Patch::from_diff(diff, i)
+            .ok()
+            .flatten()
+            .and_then(|patch| patch.line_stats().ok())
+            .map(|(_, added, removed)| (added, removed))
+            .unwrap_or((0, 0));
+        if let Some(rel) = rel {
+            // A file appearing twice (staged + unstaged hunks in separate
+            // diffs) is merged by summing by the caller; within one diff
+            // each path appears once.
+            out.insert(rel, counts);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Added/removed lines vs HEAD for every dirty file (`git diff --numstat`).
+/// Merges the staged (HEAD→index) and unstaged (index→workdir) diffs so a
+/// file changed in both places reports the total. Untracked files report
+/// their line count as additions (when readable); anything that fails
+/// (binary, missing, diff error) stays 0/0 rather than failing status.
+fn workdir_line_stats(repo: &Repository) -> std::collections::HashMap<String, (usize, usize)> {
+    let mut merged: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+    let mut add = |path: String, a: usize, d: usize| {
+        merged
+            .entry(path)
+            .and_modify(|e| {
+                e.0 += a;
+                e.1 += d;
+            })
+            .or_insert((a, d));
+    };
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    // Staged: HEAD → index.
+    if let Ok(diff) = repo.diff_tree_to_index(head_tree.as_ref(), None, None) {
+        for (path, (a, d)) in diff_line_stats(&diff) {
+            add(path, a, d);
+        }
+    }
+    // Unstaged: index → workdir, with untracked content so new files get
+    // real counts instead of 0/0.
+    let mut opts = git2::DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    if let Ok(diff) = repo.diff_index_to_workdir(None, Some(&mut opts)) {
+        for (path, (a, d)) in diff_line_stats(&diff) {
+            add(path, a, d);
+        }
+    }
+    // Fallback for untracked files libgit2 didn't emit content for
+    // (empty diff, binary check skipped): count lines on disk.
+    let workdir = repo.workdir().map(|w| w.to_path_buf());
+    for (path, counts) in merged.clone() {
+        if counts != (0, 0) {
+            continue;
+        }
+        let abs = match &workdir {
+            Some(w) => w.join(&path),
+            None => continue,
+        };
+        if !abs.is_file() {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(&abs) {
+            if bytes.len() > 1024 * 1024 || bytes.contains(&0) {
+                continue; // binary or too large: leave 0/0
+            }
+            let lines = bytes.iter().filter(|&&b| b == b'\n').count();
+            // A trailing-newline-less last line still counts.
+            let lines = if bytes.is_empty() || bytes.ends_with(b"\n") {
+                lines
+            } else {
+                lines + 1
+            };
+            if lines > 0 {
+                merged.insert(path, (lines, 0));
+            }
+        }
+    }
+    merged
+}
+
 fn compute_ahead_behind(repo: &Repository) -> Option<(usize, usize)> {
     let head = repo.head().ok()?;
     if !head.is_branch() {
@@ -186,13 +293,17 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
 
     let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
 
+    let stats = workdir_line_stats(&repo);
+
     let files = statuses
         .iter()
         .filter(|entry| !entry.status().is_ignored())
         .map(|entry| {
             let s = entry.status();
+            let path = entry.path().unwrap_or_default().to_string();
+            let (additions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
             GitFile {
-                path: entry.path().unwrap_or_default().to_string(),
+                path,
                 status: classify_status(s).to_string(),
                 staged: s.intersects(
                     Status::INDEX_NEW
@@ -208,6 +319,8 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
                         | Status::WT_RENAMED
                         | Status::WT_TYPECHANGE,
                 ),
+                additions,
+                deletions,
             }
         })
         .collect();
@@ -636,6 +749,11 @@ pub fn git_stash_drop_blocking(path: String, index: usize) -> Result<(), String>
 pub struct GitStashFile {
     pub path: String,
     pub status: String, // "M" | "A" | "D" | "R" | "?"
+    /// Added / removed lines in this stash (`git stash show --numstat`).
+    #[serde(default)]
+    pub additions: usize,
+    #[serde(default)]
+    pub deletions: usize,
 }
 
 fn delta_status(s: git2::Delta) -> &'static str {
@@ -683,13 +801,15 @@ pub async fn git_stash_show(path: String, index: usize) -> Result<Vec<GitStashFi
 pub fn git_stash_show_blocking(path: String, index: usize) -> Result<Vec<GitStashFile>, String> {
     let repo = open_repo(&path)?;
     let (stash, base, untracked) = stash_trees(&repo, index)?;
-    let mut files: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    // Untracked first: on overlap the tracked diff wins.
+    let mut files: std::collections::HashMap<String, (String, usize, usize)> =
+        std::collections::HashMap::new();
+    // Untracked first: on overlap the tracked diff wins (both status and counts).
     for other in [untracked.as_ref(), Some(&stash)] {
         let Some(other) = other else { continue };
         let diff = repo
             .diff_tree_to_tree(base.as_ref(), Some(other), None)
             .map_err(|e| e.to_string())?;
+        let stats = diff_line_stats(&diff);
         for delta in diff.deltas() {
             let rel = delta
                 .new_file()
@@ -697,13 +817,19 @@ pub fn git_stash_show_blocking(path: String, index: usize) -> Result<Vec<GitStas
                 .or_else(|| delta.old_file().path())
                 .map(|p| p.to_string_lossy().into_owned());
             if let Some(rel) = rel {
-                files.insert(rel, delta_status(delta.status()).to_string());
+                let (a, d) = stats.get(&rel).copied().unwrap_or((0, 0));
+                files.insert(rel, (delta_status(delta.status()).to_string(), a, d));
             }
         }
     }
     let mut out: Vec<GitStashFile> = files
         .into_iter()
-        .map(|(path, status)| GitStashFile { path, status })
+        .map(|(path, (status, additions, deletions))| GitStashFile {
+            path,
+            status,
+            additions,
+            deletions,
+        })
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
@@ -886,6 +1012,87 @@ pub fn git_log_blocking(path: String, limit: Option<u32>) -> Result<Vec<GitCommi
         });
     }
     Ok(entries)
+}
+
+/// What a commit changed: the files it touched, from diffing its first
+/// parent against the commit tree (no parent = initial commit, everything
+/// is added). Same shape as `git_stash_show` so the history view reuses
+/// the stash file list UI.
+#[tauri::command]
+pub async fn git_commit_show(path: String, oid: String) -> Result<Vec<GitStashFile>, String> {
+    off_main_thread(move || git_commit_show_blocking(path, oid)).await
+}
+
+pub fn git_commit_show_blocking(path: String, oid: String) -> Result<Vec<GitStashFile>, String> {
+    let repo = open_repo(&path)?;
+    let oid = oid
+        .parse::<git2::Oid>()
+        .map_err(|_| format!("'{oid}' is not a valid commit id"))?;
+    let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
+    let tree = commit.tree().map_err(|e| e.to_string())?;
+    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .map_err(|e| e.to_string())?;
+    let stats = diff_line_stats(&diff);
+    let mut out = Vec::new();
+    for delta in diff.deltas() {
+        let rel = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().into_owned());
+        if let Some(rel) = rel {
+            let (additions, deletions) = stats.get(&rel).copied().unwrap_or((0, 0));
+            out.push(GitStashFile {
+                path: rel,
+                status: delta_status(delta.status()).to_string(),
+                additions,
+                deletions,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+/// One file's content at a commit plus the version it changed from, in a
+/// single call: enough to open a read-only editor tab with change marks.
+/// `content`: the file at the commit (None: deleted in the commit);
+/// `base`: the version at the first parent (None: new in the commit, or
+/// the initial commit). Same shape as the stash preview.
+#[tauri::command]
+pub async fn git_commit_file_preview(
+    path: String,
+    oid: String,
+    file: String,
+) -> Result<GitStashFilePreview, String> {
+    off_main_thread(move || git_commit_file_preview_blocking(path, oid, file)).await
+}
+
+pub fn git_commit_file_preview_blocking(
+    path: String,
+    oid: String,
+    file: String,
+) -> Result<GitStashFilePreview, String> {
+    let repo = open_repo(&path)?;
+    let rel = std::path::Path::new(&file);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("{file}: not a path inside the repository"));
+    }
+    let oid = oid
+        .parse::<git2::Oid>()
+        .map_err(|_| format!("'{oid}' is not a valid commit id"))?;
+    let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
+    let tree = commit.tree().map_err(|e| e.to_string())?;
+    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let content = read_tree_blob(&repo, Some(&tree), rel)?
+        .map(|id| read_blob_text(&repo, id, &file))
+        .transpose()?;
+    let base = read_tree_blob(&repo, parent_tree.as_ref(), rel)?
+        .map(|id| read_blob_text(&repo, id, &file))
+        .transpose()?;
+    Ok(GitStashFilePreview { content, base })
 }
 
 // ---------------------------------------------------------------------------
@@ -1191,5 +1398,80 @@ mod revert_tests {
         // Bad index and outside paths error.
         assert!(git_stash_file_preview_blocking(path(&dir), 42, "src/a.rs".into()).is_err());
         assert!(git_stash_file_preview_blocking(path(&dir), 0, "../etc/passwd".into()).is_err());
+    }
+
+    /// Second commit on top of the fixture: modifies a.rs, deletes b.txt,
+    /// adds c.txt. Returns the new commit's full oid.
+    fn second_commit(dir: &std::path::Path, repo: &Repository) -> String {
+        fs::write(dir.join("src/a.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        fs::remove_file(dir.join("b.txt")).unwrap();
+        fs::write(dir.join("c.txt"), "c\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.remove_path(std::path::Path::new("b.txt")).unwrap_or(());
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&head])
+            .unwrap();
+        oid.to_string()
+    }
+
+    #[test]
+    fn commit_show_lists_changed_files_with_stats() {
+        let (dir, repo) = repo_with_commit();
+        let oid = second_commit(&dir, &repo);
+        let files = git_commit_show_blocking(path(&dir), oid.clone()).unwrap();
+        let a = files.iter().find(|f| f.path == "src/a.rs").unwrap();
+        assert_eq!(a.status, "M");
+        assert_eq!((a.additions, a.deletions), (1, 0));
+        let b = files.iter().find(|f| f.path == "b.txt").unwrap();
+        assert_eq!(b.status, "D");
+        let c = files.iter().find(|f| f.path == "c.txt").unwrap();
+        assert_eq!(c.status, "A");
+        assert_eq!((c.additions, c.deletions), (1, 0));
+        // Bad oid and outside paths error.
+        assert!(git_commit_show_blocking(path(&dir), "not-an-oid".into()).is_err());
+        assert!(git_commit_show_blocking(
+            path(&dir),
+            "0000000000000000000000000000000000000000".into()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn commit_file_preview_returns_content_and_parent_base() {
+        let (dir, repo) = repo_with_commit();
+        let oid = second_commit(&dir, &repo);
+        // Modified: content at the commit plus the parent's version.
+        let p =
+            git_commit_file_preview_blocking(path(&dir), oid.clone(), "src/a.rs".into()).unwrap();
+        assert_eq!(p.content.as_deref(), Some("fn a() {}\nfn b() {}\n"));
+        assert_eq!(p.base.as_deref(), Some("fn a() {}\n"));
+        // Deleted: no content, parent base present.
+        let p = git_commit_file_preview_blocking(path(&dir), oid.clone(), "b.txt".into()).unwrap();
+        assert_eq!(p.content, None);
+        assert_eq!(p.base.as_deref(), Some("b\n"));
+        // Added: content present, no base.
+        let p = git_commit_file_preview_blocking(path(&dir), oid.clone(), "c.txt".into()).unwrap();
+        assert_eq!(p.content.as_deref(), Some("c\n"));
+        assert_eq!(p.base, None);
+        assert!(git_commit_file_preview_blocking(path(&dir), oid, "../etc/passwd".into()).is_err());
+    }
+
+    #[test]
+    fn commit_show_initial_commit_reports_everything_added() {
+        let (dir, _repo) = repo_with_commit();
+        let repo = Repository::open(&dir).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let oid = head.id().to_string();
+        let files = git_commit_show_blocking(path(&dir), oid.clone()).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|f| f.status == "A"));
+        let p = git_commit_file_preview_blocking(path(&dir), oid, "b.txt".into()).unwrap();
+        assert_eq!(p.content.as_deref(), Some("b\n"));
+        assert_eq!(p.base, None);
     }
 }

@@ -133,6 +133,8 @@ pub fn run() {
             git::git_stash_file_preview,
             git::git_discard_all,
             git::git_log,
+            git::git_commit_show,
+            git::git_commit_file_preview,
             typings::nodejs::load_nodejs_project_typings,
             typings::sources::load_project_sources,
             typings::sources::list_project_files,

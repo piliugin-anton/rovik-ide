@@ -31,6 +31,8 @@ export interface OpenFile {
   readOnly?: boolean;
   /** Which stash a read-only preview tab shows. */
   stash?: { index: number; file: string; message?: string };
+  /** Which commit a read-only preview tab shows. */
+  commit?: { oid: string; file: string; summary?: string };
 }
 
 /**
@@ -381,6 +383,9 @@ export type GitStatus = {
     /** Changed in the index / in the working tree. */
     staged: boolean;
     unstaged: boolean;
+    /** Added / removed lines vs HEAD (`git diff --numstat`). */
+    additions: number;
+    deletions: number;
   }[];
   /** The repository's working folder (may be above the project folder). */
   workdir: string;
@@ -398,6 +403,9 @@ export interface GitStashEntry {
 export interface GitStashFile {
   path: string;
   status: GitFileStatusCode;
+  /** Added / removed lines in this stash. */
+  additions: number;
+  deletions: number;
 }
 
 /** One recent commit for the history view (src-tauri/src/git.rs, git_log). */

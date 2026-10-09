@@ -3935,13 +3935,19 @@ body.is-resizing * {
 }
 
 /* History rows */
+.git-commit-entry {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 .git-commit-row {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   padding: 5px 8px;
   border-radius: 4px;
-  cursor: default;
+  cursor: pointer;
   min-width: 0;
 }
 
@@ -3949,11 +3955,21 @@ body.is-resizing * {
   background: var(--hover-strong);
 }
 
-.git-commit-short {
+.git-commit-hash {
   flex-shrink: 0;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--accent);
+  cursor: pointer;
   font-family: ui-monospace, monospace;
   font-size: 11px;
-  color: var(--accent);
+}
+
+.git-commit-hash:hover {
+  background: var(--hover-strong);
+  text-decoration: underline;
 }
 
 .git-commit-summary {
@@ -5460,6 +5476,26 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 10px;
   line-height: 15px;
   text-align: center;
+}
+
+/* Added/removed line counts (`+3 −3`) in the git file tree and stash lists. */
+.git-diff-stats {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-right: 2px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.git-diff-add {
+  color: var(--success);
+}
+
+.git-diff-del {
+  color: var(--error);
 }
 
 /* The agent's checklist above the input (TodoPanel.tsx), the same docked

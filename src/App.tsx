@@ -762,6 +762,65 @@ export default function App() {
     }
   }
 
+  /*
+   * From the Git tab's history view: open a file's content at a commit in
+   * a read-only tab, with change marks against the commit's first parent —
+   * showing what the commit changed. Deleted files are never opened (there
+   * is no content to show); binary/too-large files alert and stay closed.
+   */
+  async function openFromCommit(abs: string, file: string, oid: string, summary?: string) {
+    const root = rootPath();
+    if (!root) return;
+    let preview: import('./types').GitStashFilePreview;
+    try {
+      preview = await invoke<import('./types').GitStashFilePreview>('git_commit_file_preview', {
+        path: root,
+        oid,
+        file,
+      });
+    } catch (err) {
+      window.alert(`Couldn't preview ${file}: ${String(err)}`);
+      return;
+    }
+    // Deleted in the commit: nothing to open.
+    if (preview.content === null) return;
+    const short = oid.slice(0, 7);
+    const virtualPath = `commit@${oid}:${abs}`;
+    const existing = openFiles().find((f) => f.path === virtualPath);
+    if (existing) {
+      setActivePath(existing.path);
+      return;
+    }
+    const shortName = file.split('/').pop() ?? file;
+    const commitFile: OpenFile = {
+      id: virtualPath,
+      path: virtualPath,
+      name: `${shortName} (${short})`,
+      content: preview.content,
+      originalContent: preview.content,
+      dirty: false,
+      language: languageForFile(shortName),
+      readOnly: true,
+      commit: { oid, file, summary },
+    };
+    setGitBase(virtualPath, file, preview.base ?? '');
+    setOpenFiles((prev) => [...prev, commitFile]);
+    setActivePath(virtualPath);
+    const first = diffLines(
+      splitLines(preview.base ?? '').lines,
+      splitLines(preview.content).lines
+    )[0];
+    if (first) {
+      setRevealRequest({
+        path: virtualPath,
+        line: first.origStart,
+        column: 1,
+        length: 0,
+        nonce: Date.now(),
+      });
+    }
+  }
+
   /**
    * "Implement this plan" over a plan file: saves it, then hands its text to
    * the chat, which starts the run in Agent mode (lib/plans.ts).
@@ -787,8 +846,8 @@ export default function App() {
     if (!root) return;
     const run = ++gitRefresh;
     for (const { absPath, file } of markedFiles()) {
-      // Stash preview tabs keep the stash's own base commit, not HEAD.
-      if (absPath.startsWith('stash@')) continue;
+      // Stash/commit preview tabs keep their own base commit, not HEAD.
+      if (absPath.startsWith('stash@') || absPath.startsWith('commit@')) continue;
       void invoke<string | null>('git_base_content', { path: root, file })
         .then((base) => {
           if (run === gitRefresh) setGitBase(absPath, file, base);
@@ -1636,6 +1695,9 @@ export default function App() {
                 onOpenStashFile={(abs, file, index, message) =>
                   void openFromStash(abs, file, index, message)
                 }
+                onOpenCommitFile={(abs, file, oid, summary) =>
+                  void openFromCommit(abs, file, oid, summary)
+                }
                 onFileReverted={(abs) => void reloadFromDisk(abs)}
                 onChanged={refreshGitBases}
                 onStashChanged={closeStashTabs}
@@ -1689,7 +1751,11 @@ export default function App() {
                 reveal={revealRequest}
                 onRevealed={() => setRevealRequest(null)}
                 readOnly={() => openFiles().find((f) => f.path === path)?.readOnly ?? false}
-                readOnlyMessage="Stashed preview — read-only. Pop the stash to edit."
+                readOnlyMessage={
+                  openFiles().find((f) => f.path === path)?.commit
+                    ? 'Committed version — read-only.'
+                    : 'Stashed preview — read-only. Pop the stash to edit.'
+                }
               />
             )}
           </Show>

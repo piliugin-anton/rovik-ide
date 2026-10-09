@@ -35,6 +35,8 @@ interface GitPanelProps {
   onOpenFile?: (absPath: string, file: string) => void;
   /** A stashed file was clicked: open its stashed content read-only. */
   onOpenStashFile?: (absPath: string, file: string, index: number, message?: string) => void;
+  /** A committed file was clicked: open its content at the commit read-only. */
+  onOpenCommitFile?: (absPath: string, file: string, oid: string, summary?: string) => void;
   /** A file was reverted on disk (its tab should show the restored text). */
   onFileReverted?: (absPath: string) => void;
   /** Git's state may have changed (commit, revert, checkout, refresh). */
@@ -220,6 +222,25 @@ function statusMeta(status: GitFileStatusCode): {
 
 type GitFile = GitStatus['files'][number];
 
+/** `+3 −3` line counts, green for additions and red for deletions. */
+function DiffStats(props: { additions?: number; deletions?: number }) {
+  const additions = props.additions ?? 0;
+  const deletions = props.deletions ?? 0;
+  if (additions <= 0 && deletions <= 0) return null;
+  const title =
+    additions > 0 && deletions > 0
+      ? `${additions} added line${additions === 1 ? '' : 's'}, ${deletions} removed`
+      : additions > 0
+        ? `${additions} added line${additions === 1 ? '' : 's'}`
+        : `${deletions} removed line${deletions === 1 ? '' : 's'}`;
+  return (
+    <span class="git-diff-stats" title={title}>
+      {additions > 0 && <span class="git-diff-add">+{additions}</span>}
+      {deletions > 0 && <span class="git-diff-del">−{deletions}</span>}
+    </span>
+  );
+}
+
 interface GitDirNode {
   name: string;
   /** Relative to `workdir`, `/`-separated; '' for the root. */
@@ -228,6 +249,9 @@ interface GitDirNode {
   files: GitFile[];
   /** Changed files anywhere below this folder. */
   count: number;
+  /** Summed added / removed lines of everything below this folder. */
+  additions: number;
+  deletions: number;
 }
 
 type GitTreeRow =
@@ -240,11 +264,21 @@ const asFileRow = (r: GitTreeRow) => (r.kind === 'file' ? r : undefined);
 const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
 
 function buildGitTree(files: GitFile[]): GitDirNode {
-  const root: GitDirNode = { name: '', path: '', dirs: new Map(), files: [], count: 0 };
+  const root: GitDirNode = {
+    name: '',
+    path: '',
+    dirs: new Map(),
+    files: [],
+    count: 0,
+    additions: 0,
+    deletions: 0,
+  };
   for (const file of files) {
     const parts = file.path.split('/').filter(Boolean);
     let node = root;
     node.count++;
+    node.additions += file.additions ?? 0;
+    node.deletions += file.deletions ?? 0;
     for (const part of parts.slice(0, -1)) {
       let next = node.dirs.get(part);
       if (!next) {
@@ -254,10 +288,14 @@ function buildGitTree(files: GitFile[]): GitDirNode {
           dirs: new Map(),
           files: [],
           count: 0,
+          additions: 0,
+          deletions: 0,
         };
         node.dirs.set(part, next);
       }
       next.count++;
+      next.additions += file.additions ?? 0;
+      next.deletions += file.deletions ?? 0;
       node = next;
     }
     node.files.push(file);
@@ -489,6 +527,28 @@ export function GitPanel(props: GitPanelProps) {
   };
   const [commits, setCommits] = createSignal<GitCommitEntry[]>([]);
   const [commitsLoading, setCommitsLoading] = createSignal(false);
+  // History preview: which commit is expanded and the files each expanded
+  // commit touched (`git_commit_show`). Clicking a file opens its content
+  // at the commit in a read-only editor tab, like stashed files.
+  const [expandedCommit, setExpandedCommit] = createSignal<string | null>(null);
+  const [commitFiles, setCommitFiles] = createSignal<Record<string, GitStashFile[]>>({});
+  const [commitFilesLoading, setCommitFilesLoading] = createSignal<string | null>(null);
+  // Full hash copied via the clickable short hash; shows a "Copied" tick.
+  const [copiedHash, setCopiedHash] = createSignal<string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  const copyHash = async (oid: string) => {
+    try {
+      await navigator.clipboard.writeText(oid);
+      setCopiedHash(oid);
+      if (copiedTimer) clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => setCopiedHash((cur) => (cur === oid ? null : cur)), 1200);
+    } catch (err) {
+      console.error('Copy failed:', err);
+    }
+  };
+  onCleanup(() => {
+    if (copiedTimer) clearTimeout(copiedTimer);
+  });
 
   const closeMore = () => {
     setMoreOpen(false);
@@ -544,6 +604,29 @@ export function GitPanel(props: GitPanelProps) {
       setExpandedStash(null);
     } finally {
       setStashFilesLoading(null);
+    }
+  };
+
+  /** Expand a commit to show the files it changed (`git_commit_show`). */
+  const toggleCommitExpanded = async (oid: string) => {
+    if (expandedCommit() === oid) {
+      setExpandedCommit(null);
+      return;
+    }
+    setExpandedCommit(oid);
+    if (commitFiles()[oid]) return;
+    setCommitFilesLoading(oid);
+    try {
+      const files = await invoke<GitStashFile[]>('git_commit_show', {
+        path: props.projectPath,
+        oid,
+      });
+      setCommitFiles((prev) => ({ ...prev, [oid]: files }));
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : String(e));
+      setExpandedCommit(null);
+    } finally {
+      setCommitFilesLoading(null);
     }
   };
 
@@ -676,14 +759,16 @@ export function GitPanel(props: GitPanelProps) {
     if (next) loadBranches();
   };
 
-  // Close both header dropdowns on a click outside the header (same pattern
+  // Close header dropdowns on a click outside the header (same pattern
   // as the project switcher / effort menu). The triggers and menus all live
-  // inside the header, so anything outside it dismisses them.
+  // inside the header, so anything outside it dismisses them — except the
+  // stash list and history: opening a file moves focus to the editor, and
+  // the menu must stay open so more files can be opened.
   let headerRoot: HTMLDivElement | undefined;
   const onOutsideHeader = (e: PointerEvent) => {
     if (headerRoot && !headerRoot.contains(e.target as Node)) {
       setBranchOpen(false);
-      closeMore();
+      if (moreView() !== 'stash-list' && moreView() !== 'history') closeMore();
     }
   };
   window.addEventListener('pointerdown', onOutsideHeader, true);
@@ -1224,6 +1309,7 @@ export function GitPanel(props: GitPanelProps) {
                                     >
                                       {name()}
                                     </span>
+                                    <DiffStats additions={f.additions} deletions={f.deletions} />
                                     <span
                                       class={`tree-row-badge git-file-badge ${meta().className}`}
                                       title={meta().title}
@@ -1259,12 +1345,92 @@ export function GitPanel(props: GitPanelProps) {
                 <ul class="context-menu-list">
                   <For each={commits()}>
                     {(c) => (
-                      <li
-                        class="git-commit-row"
-                        title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}`}
-                      >
-                        <span class="git-commit-short">{c.short}</span>
-                        <span class="git-commit-summary">{c.summary}</span>
+                      <li class="git-commit-entry">
+                        <div
+                          class="git-commit-row"
+                          title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}\nClick to see the files this commit changed`}
+                          onClick={() => void toggleCommitExpanded(c.oid)}
+                        >
+                          <span class="tree-row-chevron">
+                            <ChevronIcon open={expandedCommit() === c.oid} />
+                          </span>
+                          <button
+                            type="button"
+                            class="git-commit-hash"
+                            title={`${c.oid}\nClick to copy the full hash`}
+                            aria-label={`Copy commit hash ${c.oid}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void copyHash(c.oid);
+                            }}
+                          >
+                            {copiedHash() === c.oid ? 'Copied' : c.short}
+                          </button>
+                          <span class="git-commit-summary">{c.summary}</span>
+                        </div>
+                        <Show when={expandedCommit() === c.oid}>
+                          <div class="git-stash-files">
+                            <Show when={commitFilesLoading() === c.oid}>
+                              <div class="context-menu-item context-menu-loading">
+                                <IconSpinner /> <span>Loading commit contents...</span>
+                              </div>
+                            </Show>
+                            <Show
+                              when={
+                                commitFilesLoading() !== c.oid &&
+                                (commitFiles()[c.oid] ?? []).length === 0
+                              }
+                            >
+                              <div class="git-more-note">Empty commit.</div>
+                            </Show>
+                            <For each={commitFiles()[c.oid] ?? []}>
+                              {(f) => {
+                                const meta = () => statusMeta(f.status);
+                                const name = () => f.path.split('/').pop() ?? f.path;
+                                const deleted = () => f.status === 'D';
+                                return (
+                                  <div
+                                    class="context-menu-item git-stash-file-row"
+                                    classList={{ clickable: !deleted() }}
+                                    title={
+                                      deleted()
+                                        ? `${f.path} (deleted in this commit)`
+                                        : `${f.path}: click to open the version at this commit`
+                                    }
+                                    onClick={() => {
+                                      // A deleted file has no content to open.
+                                      if (!deleted())
+                                        props.onOpenCommitFile?.(
+                                          absPathOf(f.path),
+                                          f.path,
+                                          c.oid,
+                                          c.summary
+                                        );
+                                    }}
+                                  >
+                                    <span class="tree-row-icon">
+                                      <FileIcon />
+                                    </span>
+                                    <span
+                                      class="tree-row-name"
+                                      classList={{ 'git-file-deleted': deleted() }}
+                                      title={f.path}
+                                    >
+                                      {name()}
+                                    </span>
+                                    <DiffStats additions={f.additions} deletions={f.deletions} />
+                                    <span
+                                      class={`tree-row-badge git-file-badge ${meta().className}`}
+                                      title={meta().title}
+                                    >
+                                      {meta().label}
+                                    </span>
+                                  </div>
+                                );
+                              }}
+                            </For>
+                          </div>
+                        </Show>
                       </li>
                     )}
                   </For>
@@ -1337,6 +1503,10 @@ export function GitPanel(props: GitPanelProps) {
                                     <FolderIcon open={open()} />
                                   </span>
                                   <span class="tree-row-name">{dirRow().name}</span>
+                                  <DiffStats
+                                    additions={dir().additions}
+                                    deletions={dir().deletions}
+                                  />
                                   <span
                                     class="git-dir-count"
                                     title={`${dir().count} changed file${dir().count === 1 ? '' : 's'}`}
@@ -1411,6 +1581,10 @@ export function GitPanel(props: GitPanelProps) {
                                       </svg>
                                     </button>
                                   </Show>
+                                  <DiffStats
+                                    additions={file().additions}
+                                    deletions={file().deletions}
+                                  />
                                   <span
                                     class={`tree-row-badge git-file-badge ${meta().className}`}
                                     title={meta().title}
