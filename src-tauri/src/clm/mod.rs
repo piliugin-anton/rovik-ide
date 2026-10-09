@@ -1107,7 +1107,8 @@ pub async fn status(db: &DbState, vfs: &VfsState, dialog_id: String) -> Result<C
 /// popover already says how often the agent edited its context. The
 /// per-run log (`"event": "clm"`) has the exact turns-to-edit.
 fn compliance_summary(state: &store::State) -> Option<String> {
-    let mut waiting = state.nudged.clone();
+    // The 25% heads-up asks for no edit, so nothing is due for it.
+    let mut waiting: Vec<u32> = state.nudged.iter().copied().filter(|t| *t > prompt::HEADS_UP).collect();
     if prompt::percent(state.tokens, state.budget) >= prompt::URGENT && !waiting.contains(&90) {
         waiting.push(90);
     }

@@ -161,7 +161,7 @@ pub struct Run<R: Runtime> {
     /// Redone work: recall-hint notes offered after a compaction removed
     /// an earlier result the model then asked for again.
     pub(super) clm_recall_hits: u32,
-    /// Reminder tiers seen this run (50, 75, 90), and turns-to-edit after
+    /// Reminder tiers seen this run (25, 50, 75, 90), and turns-to-edit after
     /// each pressure started.
     pub(super) clm_reminders_fired: Vec<u32>,
     pub(super) step_asked_turn: Option<u32>,
