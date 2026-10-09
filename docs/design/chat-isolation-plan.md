@@ -28,6 +28,7 @@ Decisions:
 | Memory cache                              | **128 MiB**, shared by all overlays.                                                                                                                                      |
 | Per-chat limit                            | **512 MiB** of changed files per chat (warning at 80%, writes refused at 100%). Build output and dependencies are not counted; they are watched through free disk space.  |
 | Heavy-work slots                          | **Auto, leaning low:** 1 slot; 2 only on 16+ cores and 32 GB+ memory while the machine has room (Q4). More only by manual setting.                                        |
+| Terminal panel                            | **Counted.** A heavy command in your terminal takes a slot and is never slowed; chats wait instead, with a note in the chat naming the terminal command (Q4, Q5).         |
 
 ## Summary of the design
 
@@ -476,8 +477,7 @@ The most accurate prediction is what the same command cost last time.
 
 ### Q3. Watching a command's process tree (`workload/tracker.rs`)
 
-Every command (the agent's, the checks', and optionally the terminal
-panel's) runs in a container the app can measure, slow down and pause as
+Every command (the agent's, the checks', and the terminal panel's) runs in a container the app can measure, slow down and pause as
 a whole:
 
 | OS                                                       | Container                                                                    | Measures                                                                                                         | Slows down / pauses                                                                                   |
@@ -528,17 +528,35 @@ The tracker samples every 500 ms. A command becomes **observed heavy** when:
 - **Timeouts:** time spent waiting, slowed or paused doesn't count toward
   the command's timeout (`command_tool.rs`, `CHECK_TIMEOUT_MS` in
   `verify.rs`). Stop cancels a wait at once.
-- **The user's terminal** (`terminal.rs`): the app can't make it wait, but
-  it can observe it. If the user's own build is busy, it counts as one
-  occupied slot.
+- **The user's terminal counts too** (decision). The terminal panel's shell
+  (`terminal.rs`) runs in a tracked container like any command, but only
+  for measuring: the user is never made to wait or slowed down.
+  - When the terminal turns heavy, it takes a slot, even if all slots are
+    in use. The agent work holding that slot is slowed down until one
+    frees up.
+  - What's running is read from the terminal's foreground process (the
+    process group in front of the PTY, with its command line), so notes
+    can name it, e.g. `cargo build`.
 
 ### Q5. User interface
 
 - In the tool call: "Waiting for a CPU slot (chat B: `cargo build`, 40 s)"
   or "Slowed down: chat B is building". Buttons: **Run now** (skip the
   queue) and **Stop**.
+- **Notes in the chat** whenever a chat waits or is slowed down, naming
+  the cause:
+  - "Waiting: your terminal is running `cargo build` (1 min 20 s)"
+  - "Slowed down: your terminal is running `npm test`"
+  - "Waiting: chat B is running `cargo test`"
+
+  The note updates while it waits and stays in the chat afterwards as
+  "Waited 1 min 20 s for your terminal (`cargo build`)", saved with the
+  chat like other notes. The model gets one line in the tool result only
+  when the wait was over 10 s ("waited 80 s for a CPU slot"), so it
+  doesn't mistake the wait for a slow command.
+
 - A small queue indicator in the status bar listing what's running and
-  waiting.
+  waiting, the terminal included.
 - "Treat this command as heavy / light" on a tool call. It writes a rule,
   which takes precedence over history.
 - Settings: slots, thresholds, the rule table.
@@ -556,12 +574,12 @@ The tracker samples every 500 ms. A command becomes **observed heavy** when:
 
 ### Steps and tests
 
-| Step | Contents                                                                               | Size |
-| ---- | -------------------------------------------------------------------------------------- | ---- |
-| Q-a  | Tracker (Q3) on all three OSes; record history (Q2). Observe only, no behaviour change | M    |
-| Q-b  | Classifier (Q1) + scheduler (Q4) for agent commands and project checks                 | M    |
-| Q-c  | Slowing down / pausing; slot released when idle; memory admission; UI (Q5)             | M    |
-| Q-d  | Landing checks get priority (after phase 5); terminal counted as load                  | S    |
+| Step | Contents                                                                                                    | Size |
+| ---- | ----------------------------------------------------------------------------------------------------------- | ---- |
+| Q-a  | Tracker (Q3) on all three OSes; record history (Q2). Observe only, no behaviour change                      | M    |
+| Q-b  | Classifier (Q1) + scheduler (Q4) for agent commands and project checks                                      | M    |
+| Q-c  | Slowing down / pausing; slot released when idle; memory admission; terminal counted; UI and chat notes (Q5) | M    |
+| Q-d  | Landing checks get priority (after phase 5)                                                                 | S    |
 
 Tests:
 
@@ -589,10 +607,7 @@ overlays and can start at any time; it helps direct mode too.
 
 ## Open decisions
 
-1. Whether the terminal panel's own commands are also counted as using a
-   slot (Q4).
-
-(Decided: see "Decisions" at the top.)
+None. All decisions are in the table at the top.
 
 ## Implementation order for an AI agent
 
@@ -643,13 +658,14 @@ says when it is done.
 
 **Milestone 2: the heavy-work queue (track Q, useful before isolation)**
 
-| ID  | Task                                                                                                                                                    | Needs   | Done when                                                                                                                      |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| T06 | Q-a: `workload/tracker.rs`: containers per OS (cgroup → process group fallback; Windows Job Object, replacing `taskkill` in `kill_tree`); sampling only | –       | A busy-loop child is reported over 1.5 cores within 3 s on each OS; a killed tree leaves no processes                          |
-| T07 | Q-a: `workload/history.rs`: fingerprints, saved stats, `chat_db` migration                                                                              | T06     | Fingerprint tests (paths stripped); the 75th percentile is computed from saved runs                                            |
-| T08 | Q-b: `workload/classify.rs`: rule table and following `npm run`, `just`, scripts; `parse_command` reused                                                | –       | Fixture tests for each rule and indirection; `opaque` → Unknown                                                                |
-| T09 | Q-b: `workload/queue.rs`: slot lock files, priority order, waiting outside the timeout, Stop while waiting; used by `command_tool.rs` and `verify.rs`   | T06–T08 | Tests: priority order, timeout excludes waiting, two app instances share slots                                                 |
-| T10 | Q-c: slowing down / pausing, slot released after 5 s idle, memory admission, CPU split variables; UI (Q5)                                               | T09     | Busy loop is capped and released; a dev-server-like process frees its slot when idle; tool call shows "Waiting for a CPU slot" |
+| ID   | Task                                                                                                                                                                                        | Needs   | Done when                                                                                                                                                                        |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T06  | Q-a: `workload/tracker.rs`: containers per OS (cgroup → process group fallback; Windows Job Object, replacing `taskkill` in `kill_tree`); sampling only                                     | –       | A busy-loop child is reported over 1.5 cores within 3 s on each OS; a killed tree leaves no processes                                                                            |
+| T07  | Q-a: `workload/history.rs`: fingerprints, saved stats, `chat_db` migration                                                                                                                  | T06     | Fingerprint tests (paths stripped); the 75th percentile is computed from saved runs                                                                                              |
+| T08  | Q-b: `workload/classify.rs`: rule table and following `npm run`, `just`, scripts; `parse_command` reused                                                                                    | –       | Fixture tests for each rule and indirection; `opaque` → Unknown                                                                                                                  |
+| T09  | Q-b: `workload/queue.rs`: slot lock files, priority order, waiting outside the timeout, Stop while waiting; used by `command_tool.rs` and `verify.rs`                                       | T06–T08 | Tests: priority order, timeout excludes waiting, two app instances share slots                                                                                                   |
+| T10  | Q-c: slowing down / pausing, slot released after 5 s idle, memory admission, CPU split variables; UI (Q5)                                                                                   | T09     | Busy loop is capped and released; a dev-server-like process frees its slot when idle; tool call shows "Waiting for a CPU slot"                                                   |
+| T10a | The terminal panel counted: its shell's tree tracked (`terminal.rs`), takes a slot when heavy and never waits; agent work slowed instead; chat notes name the terminal's foreground command | T10     | A busy loop in the terminal makes a chat's build wait with "Waiting: your terminal is running …"; the note stays in the chat after the wait; the terminal itself is never slowed |
 
 **Milestone 3: the `Workspace` interface (phase 1, no behaviour change)**
 
@@ -717,7 +733,7 @@ says when it is done.
 
 ```
 M1: T01 ─► T02 ─► T03 ─► T04 ─► T05
-M2: T06 ─► T07 ─► T08 ─► T09 ─► T10            (can run in parallel with M3–M4)
+M2: T06 ─► T07 ─► T08 ─► T09 ─► T10 ─► T10a     (can run in parallel with M3–M4)
 M3: T11 ─► T12 ─► T13 ─► T14
 M4: T15 ─► T16 ─► T17 ─► T18 ─► T19 ─► T20
 M5: T21 ─► T22 ─► T23 ─► T24 ─► T25 ─► T26 ─► T27
