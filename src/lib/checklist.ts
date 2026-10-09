@@ -48,14 +48,14 @@ export function noteChecklist(dialogId: string, items: TodoItem[]): void {
   setState('live', dialogId, items);
 }
 
-/** The run ended: drop the live items; the next `refreshChecklist` decides. */
+/**
+ * Drop the live items (a run ended, or another is starting); the next
+ * `refreshChecklist` decides what the idle panel shows. A store setter
+ * merges an object into the existing one, so a copy without the key would
+ * keep it: setting the key to `undefined` is what removes it.
+ */
 export function clearLiveChecklist(dialogId: string): void {
-  setState('live', (live) => {
-    if (!(dialogId in live)) return live;
-    const next = { ...live };
-    delete next[dialogId];
-    return next;
-  });
+  setState('live', dialogId, undefined!);
 }
 
 /**
@@ -77,12 +77,7 @@ export async function refreshChecklist(dialogId: string): Promise<BackendCheckli
     console.error('Checklist unavailable:', err);
     return dialogId ? (state.settled[dialogId] ?? null) : null;
   } finally {
-    setState('pending', (pending) => {
-      if (!(dialogId in pending)) return pending;
-      const next = { ...pending };
-      delete next[dialogId];
-      return next;
-    });
+    setState('pending', dialogId, undefined!);
   }
 }
 
