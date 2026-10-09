@@ -5491,11 +5491,11 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .git-diff-add {
-  color: var(--success);
+  color: var(--diff-added-strong);
 }
 
 .git-diff-del {
-  color: var(--error);
+  color: var(--diff-deleted-strong);
 }
 
 /* The agent's checklist above the input (TodoPanel.tsx), the same docked
