@@ -9,7 +9,13 @@ import { requestOpenFile } from '../lib/editorBridge';
 
 const COLLAPSED_KEY = 'rovik.todoPanelCollapsed';
 
-export function StatusIcon(props: { status: TodoItem['status']; paused?: boolean }) {
+export function StatusIcon(props: {
+  status: TodoItem['status'];
+  /** The latest checklist of an interrupted run: its current step is paused. */
+  paused?: boolean;
+  /** An earlier snapshot: its current step was in progress then, not now. */
+  stale?: boolean;
+}) {
   const common = {
     width: 13,
     height: 13,
@@ -28,6 +34,16 @@ export function StatusIcon(props: { status: TodoItem['status']; paused?: boolean
       <svg {...common} class="todo-icon paused" aria-label="Paused">
         <circle cx="8" cy="8" r="6.25" />
         <path d="M6.5 5.75v4.5M9.5 5.75v4.5" />
+      </svg>
+    );
+  }
+  // An earlier snapshot's "current" step: the in-progress arc, still and
+  // dimmed. History, not work happening now, and not a pause either.
+  if (props.stale && props.status === 'in_progress') {
+    return (
+      <svg {...common} class="todo-icon stale">
+        <circle cx="8" cy="8" r="6.25" opacity="0.35" />
+        <path d="M8 1.75a6.25 6.25 0 0 1 6.25 6.25" />
       </svg>
     );
   }

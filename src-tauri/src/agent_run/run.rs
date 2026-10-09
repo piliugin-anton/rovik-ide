@@ -132,6 +132,9 @@ pub struct Run<R: Runtime> {
     /// The checklist gate refused one call this run (small-task safety):
     /// everything after that is let through, repeats included.
     pub(super) checklist_gate_refused: bool,
+    /// The run ended as unfinished-checklist with this many open steps
+    /// (for the run's log line).
+    pub(super) open_steps_at_end: Option<usize>,
     /// A step-compaction request is outstanding (Phase D, for Phase E
     /// escalation): the step that just finished, the context revision it
     /// was asked at, and how many tool calls had run then.
@@ -505,6 +508,7 @@ impl<R: Runtime> Run<R> {
             checklist_nudges: 0,
             force_todo_next,
             checklist_gate_refused: false,
+            open_steps_at_end: None,
             pending_step_compaction: None,
             clm_restricted: false,
             restricted_turns: 0,
@@ -563,19 +567,20 @@ impl<R: Runtime> Run<R> {
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
-        log::write(
-            &self.app,
-            json!({
-                "event": "run",
-                "dialogId": self.dialog_id,
-                "model": self.profile.model,
-                "outcome": outcome,
-                "toolCalls": self.guard.tool_calls,
-                "filesChanged": self.changed_files.len(),
-                "verifyRounds": self.verify_rounds,
-                "ms": self.started_at.elapsed().as_millis() as u64,
-            }),
-        );
+        let mut entry = json!({
+            "event": "run",
+            "dialogId": self.dialog_id,
+            "model": self.profile.model,
+            "outcome": outcome,
+            "toolCalls": self.guard.tool_calls,
+            "filesChanged": self.changed_files.len(),
+            "verifyRounds": self.verify_rounds,
+            "ms": self.started_at.elapsed().as_millis() as u64,
+        });
+        if let Some(open) = self.open_steps_at_end {
+            entry["openSteps"] = json!(open);
+        }
+        log::write(&self.app, entry);
         outcome
     }
 
@@ -697,16 +702,8 @@ impl<R: Runtime> Run<R> {
                             .unwrap_or_else(|| json!({}));
                         meta["checklistOpen"] = json!(open);
                         let _ = self.update_meta(&turn.message_id, meta).await;
-                        log::write(
-                            &self.app,
-                            json!({
-                                "event": "run",
-                                "dialogId": self.dialog_id,
-                                "model": self.profile.model,
-                                "outcome": "unfinished-checklist",
-                                "openSteps": open,
-                            }),
-                        );
+                        // Logged with the run's one `run` line (go()).
+                        self.open_steps_at_end = Some(open);
                         return Ok("unfinished-checklist".into());
                     }
                 }

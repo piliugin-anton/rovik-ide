@@ -5752,9 +5752,15 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg-dim);
 }
 
-/* A paused "in progress" step (interrupted run, or an old snapshot): a plain
-   pause mark, never the spinning arc. */
+/* A paused "in progress" step (the latest checklist of an interrupted run):
+   a pause mark, never the spinning arc. */
 .todo-icon.paused {
+  color: var(--fg-dim);
+  animation: none;
+}
+
+/* An earlier snapshot's "in progress" step: the arc, still and dimmed. */
+.todo-icon.stale {
   color: var(--fg-dim);
   animation: none;
 }
