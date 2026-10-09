@@ -122,6 +122,11 @@ export const toolNotes = () => state.toolNotes;
  * The chat counts as running from now on, so it can't be started twice.
  */
 export async function startRun(request: StartRequest): Promise<string | null> {
+  // A new run shows only its own checklist: whatever an earlier run left
+  // live goes now, before the backend can send this run's first one (a
+  // carried checklist arrives while the run is prepared, before
+  // runStarted, so clearing there would drop it).
+  clearLiveChecklist(request.dialogId);
   chatStore.setStarting(request.dialogId, true);
   try {
     return await invoke<string | null>('agent_start', { request });

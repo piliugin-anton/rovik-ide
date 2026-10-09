@@ -10,7 +10,8 @@
     "serve": "vite preview",
     "tauri": "tauri",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test": "node scripts/test.mjs"
   },
   "dependencies": {
     "@tanstack/solid-virtual": "^3.13.40",
