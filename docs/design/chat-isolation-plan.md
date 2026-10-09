@@ -8,6 +8,7 @@ one **landing** path that merges a chat's changes into the project, checks
 them, and applies them.
 
 Requirements:
+
 - Overlays hold changes only. Their content lives on disk, and memory is a
   cache, so the 2 GiB virtual-files pool (`vfs/mod.rs`, `CAPACITY`) is not a
   limit.
@@ -15,6 +16,17 @@ Requirements:
   Git, when present, only makes some steps cheaper.
 - Works without the FUSE / macFUSE / WinFsp driver. The driver makes shell
   commands faster; it isn't required.
+
+Decisions:
+
+| Question                                  | Decision                                                                                                                                                                  |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A single active chat: direct or isolated? | **Always isolated.** Every agent run works in its own overlay. Direct writes are left only for the user's editor and for landing.                                         |
+| Landing: automatic or ask?                | **Automatic when possible:** a clean merge and passing checks land without asking. Conflicts, failing checks, or anything else that can't land on its own → ask the user. |
+| Dependency installs without cheap copies  | **Use package managers with one shared global store** (section "Dependencies" in phase 4). A private copy only for ecosystems that have no such option.                   |
+| Frozen mode                               | **Not offered.** Overlays always see the live project for files they haven't changed.                                                                                     |
+| Memory cache                              | **128 MiB**, shared by all overlays.                                                                                                                                      |
+| Per-chat limit                            | **512 MiB** of changed files per chat (warning at 80%, writes refused at 100%). Build output and dependencies are not counted; they are watched through free disk space.  |
 
 ## Summary of the design
 
@@ -27,25 +39,27 @@ Requirements:
    ▲ shell commands: copied tree (phase 4) or mounted overlay (phase 7)
 ```
 
-| Problem | Solved by |
-|---|---|
-| Chats' tool edits overwriting each other | Overlays (phases 2–3) |
-| An approval wait overwriting a file (`execute.rs:798`) | Approvals write into the chat's own overlay (phase 3); the change check in direct mode (phase 0) |
-| Shell commands (`fmt`, codegen, `git checkout`) | Commands run in the chat's tree (phases 4, 7) |
-| Logic conflicts across files | Checks run on the merged result before landing (phase 5) |
-| Two app instances | OS file lock on landing (phase 5) |
-| Conflicts found only at the end | Base changes pushed to overlays, merged in the background (phase 6) |
-| 2 GiB RAM limit, build output | Content stored on disk; build output and dependency folders on plain disk (phases 2, 4) |
-| Crash or restart | Overlay index and landing journal on disk (phases 2, 5) |
-| No git, no driver | Built-in hashing, `git2::merge_file` on buffers, copied-tree fallback |
-| Several chats building at once and freezing the machine | Queue for heavy work (track Q): find heavy commands, give them slots, slow down the rest |
+| Problem                                                 | Solved by                                                                                        |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Chats' tool edits overwriting each other                | Overlays (phases 2–3)                                                                            |
+| An approval wait overwriting a file (`execute.rs:798`)  | Approvals write into the chat's own overlay (phase 3); the change check in direct mode (phase 0) |
+| Shell commands (`fmt`, codegen, `git checkout`)         | Commands run in the chat's tree (phases 4, 7)                                                    |
+| Logic conflicts across files                            | Checks run on the merged result before landing (phase 5)                                         |
+| Two app instances                                       | OS file lock on landing (phase 5)                                                                |
+| Conflicts found only at the end                         | Base changes pushed to overlays, merged in the background (phase 6)                              |
+| 2 GiB RAM limit, build output                           | Content stored on disk; build output and dependency folders on plain disk (phases 2, 4)          |
+| Crash or restart                                        | Overlay index and landing journal on disk (phases 2, 5)                                          |
+| No git, no driver                                       | Built-in hashing, `git2::merge_file` on buffers, copied-tree fallback                            |
+| Several chats building at once and freezing the machine | Queue for heavy work (track Q): find heavy commands, give them slots, slow down the rest         |
 
 ## Phase 0: protect direct mode (A + B)
 
-Direct mode (no overlay) remains: for single chats, for users who switch
-isolation off, and for the user's own editor. Landing needs this check too.
+Chats will always be isolated, but direct writes remain in two places: the
+user's own editor and landing. Both need this check. It also protects
+agent runs today, until isolation ships (phase 9).
 
 Tasks
+
 1. `src-tauri/src/file_guard.rs` (new):
    - `PathLocks`: a lock per file path, keyed by the normalised path:
      canonicalise the parent folder, and lowercase on case-insensitive file
@@ -72,6 +86,7 @@ Tasks
    a diff for large files), so it can retry without a separate re-read.
 
 Tests
+
 - e2e harness (`agent_run/e2e_tests.rs`): two chats, same file; an approval
   waiting while another chat writes; edits whose `old_text` still matches.
 - Unit: path normalisation, edits that race each other (two threads).
@@ -99,6 +114,7 @@ pub trait Workspace: Send + Sync {
 ```
 
 Tasks
+
 1. `src-tauri/src/workspace/mod.rs` with `RelPath` (relative, checked,
    rejects `..`; moves the check out of `resolve_within_root`) and
    `DirectWorkspace` (today's code plus the phase-0 checks).
@@ -118,17 +134,18 @@ phase. **Size: M** (wide but mechanical).
 
 New module `src-tauri/src/overlay/`:
 
-| File | Contents |
-|---|---|
-| `blobs.rs` | Content store keyed by hash at `<app data>/overlays/blobs/<sha256>`; written with `atomic_file::write_atomic`; reference counts and cleanup; an in-memory cache shared by all overlays (default 512 MiB) |
-| `entry.rs` | `Entry { Modified{content, base, meta}, Created{content, meta}, Deleted, ReplacedDir, Moved{from}, Symlink{target} }`; `BaseRef { Blob(hash), Absent }` (+ `GitBlob(oid)` later, optional) |
-| `index.rs` | Each overlay's entries + `read_set`, saved as `<app data>/overlays/<chat>/index.json` (versioned format); rewritten atomically, debounced, and always on close / end of a turn |
-| `tiers.rs` | Which tier a path belongs to: `Source`, `BuildOutput`, `Dependencies`. Built-in list + `.gitignore`/`.ignore` via the `ignore` crate (no git needed) + `project_profile` rules |
-| `fs.rs` | `OverlayFs`: resolve a path (entry → else base on disk), copy on first write (none on truncate), merged folder listing (cached and refreshed by the watcher), `Moved` folders, deletes, stable inode table |
-| `budget.rs` | Limits per chat (soft 80% warning → event; hard → `NoSpace`) for in-memory and on-disk bytes |
-| `workspace.rs` | `OverlayWorkspace: Workspace`; `walk` merges the base walk with entries |
+| File           | Contents                                                                                                                                                                                                                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blobs.rs`     | Content store keyed by hash at `<app data>/overlays/blobs/<sha256>`; written with `atomic_file::write_atomic`; reference counts and cleanup; an in-memory cache shared by all overlays (**128 MiB**, least recently used dropped first)                                                     |
+| `entry.rs`     | `Entry { Modified{content, base, meta}, Created{content, meta}, Deleted, ReplacedDir, Moved{from}, Symlink{target} }`; `BaseRef { Blob(hash), Absent }` (+ `GitBlob(oid)` later, optional)                                                                                                  |
+| `index.rs`     | Each overlay's entries + `read_set`, saved as `<app data>/overlays/<chat>/index.json` (versioned format); rewritten atomically, debounced, and always on close / end of a turn                                                                                                              |
+| `tiers.rs`     | Which tier a path belongs to: `Source`, `BuildOutput`, `Dependencies`. Built-in list + `.gitignore`/`.ignore` via the `ignore` crate (no git needed) + `project_profile` rules                                                                                                              |
+| `fs.rs`        | `OverlayFs`: resolve a path (entry → else base on disk), copy on first write (none on truncate), merged folder listing (cached and refreshed by the watcher), `Moved` folders, deletes, stable inode table                                                                                  |
+| `budget.rs`    | Limit per chat: **512 MiB** of changed files (source tier). Warning event at 80%; at 100% writes fail with `NoSpace` and a clear message to the model and the user. Build output and dependencies are not counted: they're watched through free disk space (warning under 10% or 5 GB free) |
+| `workspace.rs` | `OverlayWorkspace: Workspace`; `walk` merges the base walk with entries                                                                                                                                                                                                                     |
 
 Rules
+
 - Build-output and dependency tiers are not stored as entries. They map to
   `<app data>/overlays/<chat>/out/<path>`, a plain folder. Dependencies are
   read from the project's copy until the chat first writes there, then the
@@ -149,10 +166,12 @@ folder copy.
 ## Phase 3: connect chats to overlays (in-app tools, approvals, UI)
 
 Tasks
-1. Isolation mode per chat (`Direct` | `Isolated`), stored in `chat_db`
-   (`schema.rs` migration). App setting: default `Direct` for now (rollout:
-   phase 9).
-2. When a run starts in an isolated chat, open or create its overlay; the
+
+1. Every chat is isolated. While the work is in progress, a hidden
+   development setting (`isolate_chats`, off) switches it on; it is removed
+   in phase 9. Store the chat's overlay id in `chat_db` (`schema.rs`
+   migration).
+2. When a run starts, open or create the chat's overlay; the
    `Run.workspace` is an `OverlayWorkspace`. Runs that resume after a
    restart reopen the same overlay from `index.json`.
 3. Approvals read and write through the workspace, so the review compares
@@ -165,8 +184,9 @@ Tasks
      `EditDiffBlock.tsx`).
    - A read-only "View as chat X" tab mode in `Editor.tsx`.
    - Overlay status in `ChatList.tsx` (changes, conflicts, budget).
-6. Until phase 4, isolated chats run shell commands in direct mode, behind
-   an approval prompt that warns about it.
+6. Until phase 4, isolated chats (only with the development setting on) run
+   shell commands in direct mode, behind an approval prompt that warns about
+   it.
 
 Tests: e2e with two isolated chats editing the same file → both succeed, the
 project is unchanged, both diffs are right. **Size: M.**
@@ -177,6 +197,7 @@ The fallback that makes isolation complete before the mount exists, and
 keeps working on machines without a driver.
 
 Tasks
+
 1. `overlay/materialize.rs`: a real folder per chat at
    `<app data>/overlays/<chat>/tree`, built once and then kept in sync:
    - Copy-on-write clone (`clonefile` on APFS, `FICLONE` on btrfs/XFS,
@@ -185,11 +206,8 @@ Tasks
    - The overlay's entries are applied on top. Writes by in-app tools go to
      both the overlay and the tree.
    - Build output: the tree's `target/` etc. are the chat's `out/` folders.
-   - Dependencies: cloned with copy-on-write where possible. Otherwise
-     linked to the project's copy **read-only**; a command matching an
-     install rule (`npm|pnpm|yarn install`, `pip install`, `cargo add`, …;
-     a list in `permissions.rs`) first switches that folder to a private
-     copy.
+   - Dependencies: the project's folders, **read-only**, until the chat
+     installs something; then see "Dependencies" below.
 2. `command_tool.rs:168` → `current_dir(workspace.command_dir())`. The
    environment sets `CARGO_TARGET_DIR` (and the same for other tools) to
    the chat's `out/`, and gives each chat its own `PORT` range.
@@ -211,7 +229,68 @@ Tasks
    the chat ("this command wrote outside its sandbox"), with Move to
    overlay / Restore.
 
-Tests: `sed -i`, `cargo fmt`, codegen and `rm` in one chat leave the project
+### Dependencies: package managers with one shared store
+
+Decision: dependency installs in chats go through package managers that keep
+one global store, so a chat's own dependency folder is made of links, not
+copies. A private copy is made only where an ecosystem has no such option.
+
+1. **Already shared, nothing to do.** These ecosystems keep dependencies in
+   a global store outside the project: Rust (cargo), Go modules,
+   Maven / Gradle, NuGet, Dart pub, Haskell cabal / stack, Julia, Zig,
+   Conan, Ruby Bundler (default settings), R renv. An install in a chat
+   changes only manifests and lockfiles (source tier, landed as usual) and
+   the global store. The store is only ever added to, so sharing it is
+   safe.
+2. **JavaScript:**
+   - pnpm, Bun or Yarn 4 (PnP) → the chat gets its own `node_modules` (or
+     PnP files) in its `out/` folder, linked from the global store.
+   - npm → no shared store. On the first install in a chat, suggest
+     switching the project to pnpm, **once per project**. It replaces
+     `package-lock.json` with `pnpm-lock.yaml`, which affects everyone on
+     the repository, so it is never done without the user's yes. If the
+     user says no: a private copy of `node_modules` (copy-on-write where
+     the file system supports it).
+3. **Python:**
+   - uv → the chat's own venv in `out/`, filled from uv's global cache.
+     It needs **no project change**: it reads the same
+     `requirements.txt` / `pyproject.toml`. If uv isn't installed, suggest
+     installing it.
+   - In chats, `pip install …` is refused (`permissions.rs`) with "use
+     `uv pip install …`", and the system prompt says so. Without uv, the
+     plain command is allowed and the venv is copied privately.
+   - conda / pixi: shared package cache, linked the same way.
+4. **No shared option (PHP Composer, Elixir mix, vcpkg manifest mode):**
+   a private copy, made only when the chat installs (copy-on-write where
+   possible).
+5. **Protecting the shared store.** On ext4 and NTFS the links are **hard
+   links**: the same file as in the store. A command that edits one in
+   place (debug patching, `patch-package`) would change it for every
+   project. So:
+   - Use clone mode where the file system supports it (pnpm
+     `package-import-method=clone-or-copy`, `UV_LINK_MODE=clone`,
+     `bun install --backend=clonefile`).
+   - Otherwise, after each install, mark the chat's linked dependency
+     files **read-only** (the shared inode, so the store is protected
+     too). An in-place write then fails. Tools that save via a temporary
+     file and rename only break the link and never touch the store. The
+     package managers themselves re-link and never write into files.
+   - In the mount (phase 7), writes to the dependency tier are copied
+     first, as for any other file.
+6. **Suggestions:** `project_profile` already detects the package manager
+   (`workspaces.rs:15 detect_package_manager`). A one-time card per project
+   offers "Install uv" or "Switch to pnpm", with what changes and who it
+   affects. Installing runs the official installer **only after the user
+   approves**.
+7. A chat's dependency folders are deleted when it lands or is closed.
+
+Tests: install in chat A doesn't change the project's or chat B's
+dependencies; a hard-linked file is read-only after install; `sed -i` on a
+linked file breaks the link and leaves the store intact; `pip install` in a
+chat is refused with the uv hint; the npm → pnpm suggestion appears once per
+project.
+
+Tests (phase 4 as a whole): `sed -i`, `cargo fmt`, codegen and `rm` in one chat leave the project
 and the other chats untouched; two chats `cargo build` into their own
 `out/` folders without sharing a cargo lock (track Q decides whether they
 run at the same time). **Size: L.**
@@ -254,8 +333,12 @@ New `src-tauri/src/overlay/land.rs` + `src-tauri/src/merge.rs`.
    written to the overlay and landing runs again.
 6. Undo landing: apply the journal's old versions, using the same change
    check; if something changed since, merge, or report a conflict.
-7. Auto-land per chat: when a run ends, the merge is clean and the checks
-   pass, land. Otherwise show **Land** in the changes panel.
+7. **Automatic when possible, otherwise ask.** When a run ends, the merge
+   is clean and the checks pass, land without asking and show "Landed N
+   files · Undo" in the chat. Otherwise the chat shows why it didn't land
+   (conflicts, failing checks after the fix rounds, budget, a command that
+   wrote outside its sandbox) with **Land anyway** / **Resolve** /
+   **Discard**. Nothing that failed lands without the user's yes.
 
 Tests: user typing during the checks (step 4 retries); crash injected
 between journal and apply; undo after a later edit; conflicting landings
@@ -278,11 +361,8 @@ from two chats; landing a binary file; two app instances landing at once.
        the UI.
    - Large changes (more than N paths in one batch, e.g. a branch switch or
      a pull): pause the run and ask the user to Rebase / Discard / Keep.
-3. Optional frozen mode: before the app itself writes a file, it gives a
-   copy of the old version to active frozen overlays that haven't touched
-   it. Outside writers are noticed only afterwards, so frozen mode is
-   offered only with copy-on-write snapshots or git (snapshot of tracked
-   files). Otherwise it is hidden.
+3. No frozen mode (decision): files a chat hasn't changed always show the
+   live project.
 
 Tests: landing in A creates a conflict notice in B within one turn; notes
 only for files that were read; a branch switch pauses the runs.
@@ -316,17 +396,19 @@ tree. **Size: L.**
 - Language servers per chat for `diagnostics`: started inside the chat's
   tree or mount when first needed, stopped when idle.
 - Git, when present: `BaseRef::GitBlob` for files that match HEAD (no base
-  copy); read-only `git status/diff/log` in chats; frozen snapshots of
-  tracked files.
+  copy); read-only `git status/diff/log` in chats.
 - Cleanup: deleting or archiving a chat removes its overlay; unreferenced
   blobs are cleared at startup.
 
 ## Phase 9: rollout
 
-1. Behind a setting ("Isolate chats"), off by default, through phases 3–6.
-2. Then on by default when more than one chat in a project is changing
-   files; a single chat keeps working directly unless set otherwise.
-3. Auto-land on by default once phase 5's undo is solid.
+1. The hidden development setting `isolate_chats` stays off through
+   phases 3–6 and Q-a…Q-c.
+2. Then isolation is switched on for **every** chat, and the setting is
+   removed. Chats that existed before get an empty overlay the next time
+   they run; what they already wrote stays in the project as it is.
+3. Auto-land (phase 5.7) is on from the start of isolation; Undo landing
+   must be done first.
 4. Logging (`api_log.rs` / `agent_run/log.rs`): landing results, conflicts,
    merge retries, budget warnings, writes outside the sandbox.
 
@@ -349,18 +431,18 @@ Each command gets one class: `Heavy`, `Light`, `LongRunning` (dev servers,
 watchers) or `Unknown`.
 
 1. Split the command with the existing parser (`permissions.rs:169
-   parse_command`) into segments (`&&`, `;`, `|`), skipping `cd`, `env`
+parse_command`) into segments (`&&`, `;`, `|`), skipping `cd`, `env`
    and `VAR=x` prefixes. A command's class is the heaviest of its
    segments. Commands the parser marks `opaque` (`$(...)`, backticks,
    `eval`) → `Unknown`.
 2. A rule table of program + subcommand, stored as data and editable in
    settings:
 
-   | Class | Examples |
-   |---|---|
-   | Heavy | `cargo build/check/test/clippy/run/bench/doc/install`, `rustc`, `go build/test`, `tsc`, `vite build`, `webpack`, `next build`, `jest`, `vitest run`, `pytest`, `make`, `ninja`, `cmake --build`, `gradle`, `mvn`, `dotnet build/test`, `msbuild`, `docker build`, `gcc/clang/cc` |
-   | LongRunning | `vite` / `vite dev`, `next dev`, `cargo watch`, any `--watch` / `-w`, `npm start`, `serve`, `tauri dev` |
-   | Light | `ls`, `cat`, `head`, `grep`, `rg`, `find`, `sed`, `git` (except `gc`/`repack`), `echo`, `cargo fmt`, `cargo metadata`, `prettier --check` on a few files |
+   | Class       | Examples                                                                                                                                                                                                                                                                         |
+   | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | Heavy       | `cargo build/check/test/clippy/run/bench/doc/install`, `rustc`, `go build/test`, `tsc`, `vite build`, `webpack`, `next build`, `jest`, `vitest run`, `pytest`, `make`, `ninja`, `cmake --build`, `gradle`, `mvn`, `dotnet build/test`, `msbuild`, `docker build`, `gcc/clang/cc` |
+   | LongRunning | `vite` / `vite dev`, `next dev`, `cargo watch`, any `--watch` / `-w`, `npm start`, `serve`, `tauri dev`                                                                                                                                                                          |
+   | Light       | `ls`, `cat`, `head`, `grep`, `rg`, `find`, `sed`, `git` (except `gc`/`repack`), `echo`, `cargo fmt`, `cargo metadata`, `prettier --check` on a few files                                                                                                                         |
 
 3. Follow indirection, at most 3 levels deep:
    - `npm|pnpm|yarn|bun run <s>` / `npm test` → the script body from
@@ -397,13 +479,14 @@ Every command (the agent's, the checks', and optionally the terminal
 panel's) runs in a container the app can measure, slow down and pause as
 a whole:
 
-| OS | Container | Measures | Slows down / pauses |
-|---|---|---|---|
-| Linux (cgroup v2 delegated, which is usual with systemd) | One cgroup per command | `cpu.stat`, `memory.peak`, exactly, including daemons that left the process group | `cpu.max` (CPU cap), `cgroup.freeze` |
-| Linux fallback, macOS | Process group (`process_group(0)`, which `command_tool.rs:185` already sets) | Poll the group's processes (`/proc` on Linux, `proc_listpids` / `proc_pidinfo` through `libc` on macOS) | `setpriority` (lower priority), `SIGSTOP`/`SIGCONT` |
-| Windows | Job Object: start the process suspended, assign it to the job, resume | `JobObjectBasicAccountingInformation` (CPU of the whole tree), `JobObjectExtendedLimitInformation` (peak memory) | `JOBOBJECT_CPU_RATE_CONTROL_INFORMATION` (hard CPU cap); this also replaces `taskkill` in `kill_tree` |
+| OS                                                       | Container                                                                    | Measures                                                                                                         | Slows down / pauses                                                                                   |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Linux (cgroup v2 delegated, which is usual with systemd) | One cgroup per command                                                       | `cpu.stat`, `memory.peak`, exactly, including daemons that left the process group                                | `cpu.max` (CPU cap), `cgroup.freeze`                                                                  |
+| Linux fallback, macOS                                    | Process group (`process_group(0)`, which `command_tool.rs:185` already sets) | Poll the group's processes (`/proc` on Linux, `proc_listpids` / `proc_pidinfo` through `libc` on macOS)          | `setpriority` (lower priority), `SIGSTOP`/`SIGCONT`                                                   |
+| Windows                                                  | Job Object: start the process suspended, assign it to the job, resume        | `JobObjectBasicAccountingInformation` (CPU of the whole tree), `JobObjectExtendedLimitInformation` (peak memory) | `JOBOBJECT_CPU_RATE_CONTROL_INFORMATION` (hard CPU cap); this also replaces `taskkill` in `kill_tree` |
 
 The tracker samples every 500 ms. A command becomes **observed heavy** when:
+
 - it averages over 1.5 cores across 3 seconds, or
 - its memory goes over 1.5 GB, or
 - a known heavy program appears in its tree: `rustc`, `cc1`, `cc1plus`,
@@ -468,14 +551,15 @@ The tracker samples every 500 ms. A command becomes **observed heavy** when:
 
 ### Steps and tests
 
-| Step | Contents | Size |
-|---|---|---|
-| Q-a | Tracker (Q3) on all three OSes; record history (Q2). Observe only, no behaviour change | M |
-| Q-b | Classifier (Q1) + scheduler (Q4) for agent commands and project checks | M |
-| Q-c | Slowing down / pausing; slot released when idle; memory admission; UI (Q5) | M |
-| Q-d | Landing checks get priority (after phase 5); terminal counted as load | S |
+| Step | Contents                                                                               | Size |
+| ---- | -------------------------------------------------------------------------------------- | ---- |
+| Q-a  | Tracker (Q3) on all three OSes; record history (Q2). Observe only, no behaviour change | M    |
+| Q-b  | Classifier (Q1) + scheduler (Q4) for agent commands and project checks                 | M    |
+| Q-c  | Slowing down / pausing; slot released when idle; memory admission; UI (Q5)             | M    |
+| Q-d  | Landing checks get priority (after phase 5); terminal counted as load                  | S    |
 
 Tests:
+
 - The rule table and script expansion, on fixtures (`package.json`,
   `justfile`, shell scripts).
 - History fingerprints and the 75th-percentile override.
@@ -500,12 +584,148 @@ overlays and can start at any time; it helps direct mode too.
 
 ## Open decisions
 
-1. Default mode when only one chat is active: direct (fast, as today) or
-   always isolated (one consistent model).
-2. Auto-land, or always ask, when the merge is clean and the checks pass.
-3. Dependency installs on file systems without copy-on-write: a private
-   copy (disk and time) or a prompt.
-4. Whether to offer frozen mode at all (phase 6.3).
-5. Budget defaults: memory cache size, per-chat soft and hard limits.
-6. Heavy-work slots: "auto" (1, or 2 on big machines), or a fixed number;
+1. Heavy-work slots: "auto" (1, or 2 on big machines), or a fixed number;
    whether the terminal panel's own commands are also counted (Q4).
+
+(Decided: see "Decisions" at the top.)
+
+## Implementation order for an AI agent
+
+The plan above split into tasks an agent can do one at a time. Each task is
+small enough for one branch and one review, leaves the app working, and
+says when it is done.
+
+### Rules for every task
+
+1. **One task per branch / PR.** Don't start the next task until the
+   current one is merged. Don't mix in refactors from other tasks.
+2. **Read first:** the files named in the task, plus this plan's section
+   for it. Follow the surrounding code's style: module doc comments that
+   explain _why_, small functions, tests next to the code (as in
+   `vfs/store.rs`, `agent_run/e2e_tests.rs`).
+3. **Keep the app working.** All new behaviour sits behind `isolate_chats`
+   (off) until T34. Phase 0 and track Q work in today's mode and need no
+   setting.
+4. **Checks before every push:**
+   - `cd src-tauri && cargo check && cargo test`
+   - `npm test`
+   - `npx tsc --noEmit`
+   - `npm run format:check`
+
+   For a task that touches platform code (T27, T32–T34), also build on
+   macOS and Windows, or mark the PR as needing it.
+
+5. **Tests in the same task**: each task's "Done when" names them.
+6. **When a task doesn't fit reality** (an API is missing, a file works
+   differently than this plan assumes): don't improvise a new design. Add
+   a short note under "Notes from implementation" at the end of this file,
+   take the smallest safe path, and say so in the PR.
+7. **Tauri commands:** a new or changed command is registered in
+   `lib.rs` and given a typed wrapper in `src/lib/commands.ts` in the same
+   task.
+
+### Tasks
+
+**Milestone 1: chats can't silently overwrite each other's files today (phase 0)**
+
+| ID  | Task                                                                                                                                                              | Needs    | Done when                                                                                                                                     |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| T01 | `file_guard.rs`: `PathLocks` (normalised keys), `ContentHash` (sha2), `write_if_unchanged`                                                                        | –        | Unit tests: same file through different path spellings → same lock; two threads racing → no lost update; mismatch returns the current content |
+| T02 | Track what each run read (path → hash). Check it in `tool_write_file` / `tool_edit_file` (the `old_text` rule from phase 0.2), with the error text from phase 0.5 | T01      | e2e: two chats writing the same file → the second gets "changed since you read it"; an `old_text` edit after an unrelated change succeeds     |
+| T03 | Move the three-way merge (`git_sync.rs:796-809` + `parse_merged`) into `merge.rs`; `git_sync` calls it                                                            | –        | Existing git_sync tests pass unchanged; new tests on plain buffers (clean, conflict, one side deleted, binary)                                |
+| T04 | Approvals: remember the reviewed file's hash. When writing, re-apply the accepted hunks with `merge.rs`; on a conflict, show a fresh review                       | T01, T03 | e2e: another chat writes during an approval wait → both changes are kept; overlapping hunks → a new review, nothing written                   |
+| T05 | Editor saves check the hash the tab loaded; "changed on disk: Reload / Overwrite / Compare" in `Editor.tsx`                                                       | T01      | Rust test for the command; manual: saving after an agent edit prompts instead of overwriting                                                  |
+
+**Milestone 2: the heavy-work queue (track Q, useful before isolation)**
+
+| ID  | Task                                                                                                                                                    | Needs   | Done when                                                                                                                      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| T06 | Q-a: `workload/tracker.rs`: containers per OS (cgroup → process group fallback; Windows Job Object, replacing `taskkill` in `kill_tree`); sampling only | –       | A busy-loop child is reported over 1.5 cores within 3 s on each OS; a killed tree leaves no processes                          |
+| T07 | Q-a: `workload/history.rs`: fingerprints, saved stats, `chat_db` migration                                                                              | T06     | Fingerprint tests (paths stripped); the 75th percentile is computed from saved runs                                            |
+| T08 | Q-b: `workload/classify.rs`: rule table and following `npm run`, `just`, scripts; `parse_command` reused                                                | –       | Fixture tests for each rule and indirection; `opaque` → Unknown                                                                |
+| T09 | Q-b: `workload/queue.rs`: slot lock files, priority order, waiting outside the timeout, Stop while waiting; used by `command_tool.rs` and `verify.rs`   | T06–T08 | Tests: priority order, timeout excludes waiting, two app instances share slots                                                 |
+| T10 | Q-c: slowing down / pausing, slot released after 5 s idle, memory admission, CPU split variables; UI (Q5)                                               | T09     | Busy loop is capped and released; a dev-server-like process frees its slot when idle; tool call shows "Waiting for a CPU slot" |
+
+**Milestone 3: the `Workspace` interface (phase 1, no behaviour change)**
+
+| ID  | Task                                                                                                   | Needs    | Done when                                                                        |
+| --- | ------------------------------------------------------------------------------------------------------ | -------- | -------------------------------------------------------------------------------- |
+| T11 | `workspace/mod.rs`: `Workspace` trait, `RelPath`, `DirectWorkspace` (with T01's check). No callers yet | T01      | Unit tests for `RelPath` (rejects `..`, absolute paths) and `DirectWorkspace`    |
+| T12 | Move `agent_tools.rs`, `read_file.rs`, `edit_file.rs` callers, `read_symbol.rs` onto `Workspace`       | T11      | All existing tests pass unchanged                                                |
+| T13 | Move `code_search.rs`, `outline/`, `repo_map/` onto `Workspace::walk`                                  | T11      | All existing tests pass unchanged; search results identical on a fixture project |
+| T14 | `Run.workspace` in `run.rs`; `execute.rs` / `tools.rs` use it                                          | T12, T13 | All existing tests pass unchanged                                                |
+
+**Milestone 4: the overlay core (phase 2)**
+
+| ID  | Task                                                                                                                                     | Needs    | Done when                                                                         |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------- |
+| T15 | `overlay/blobs.rs`: content store keyed by hash, 128 MiB cache, reference counts, cleanup                                                | –        | Tests: dedupe, cache eviction, crash-safe writes, cleanup of unreferenced content |
+| T16 | `overlay/entry.rs` + `index.rs`: entries, base versions, `read_set`, versioned `index.json`                                              | T15      | Round-trip and reload tests; old format versions are rejected cleanly             |
+| T17 | `overlay/tiers.rs`: built-in list + `.gitignore` / `.ignore` + `project_profile` rules                                                   | –        | Fixture tests for Rust, Node and Python layouts                                   |
+| T18 | `overlay/fs.rs`: `OverlayFs`: read through, copy on first write, delete, recreate, rename, `Moved` folders, merged listings, inode table | T16, T17 | Property test comparing random operations with a real temporary folder copy       |
+| T19 | `overlay/budget.rs`: 512 MiB per chat, 80% warning, free-disk warning                                                                    | T18      | Tests for the warning event and the refused write                                 |
+| T20 | `overlay/workspace.rs`: `OverlayWorkspace` incl. merged `walk`                                                                           | T14, T18 | The Workspace test suite from T11 passes against `OverlayWorkspace` too           |
+
+**Milestone 5: chats in overlays (phases 3–4, behind `isolate_chats`)**
+
+| ID  | Task                                                                                                                                                        | Needs | Done when                                                                                                      |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------- |
+| T21 | The `isolate_chats` setting; overlay id in `chat_db`; open the overlay on run start or resume                                                               | T20   | e2e: two isolated chats edit one file → project unchanged, each sees its own version, resumed after restart    |
+| T22 | Approvals through the workspace; `overlay_status/diff/read/discard` commands                                                                                | T21   | e2e: an approval writes into the overlay only                                                                  |
+| T23 | Frontend: changes panel per chat, "View as chat", status in `ChatList.tsx`                                                                                  | T22   | `npm test` covers the diff and status logic; manual check in the app                                           |
+| T24 | `overlay/materialize.rs`: copied tree (copy-on-write or source-tier copy), changes brought back by a watcher, mtime+size scan backup                        | T21   | Tests: `sed -i`, `rm`, codegen in the tree become overlay entries; build folders are ignored                   |
+| T25 | `command_dir()`, environment (`CARGO_TARGET_DIR`, `PORT` range), git commands blocked in chats                                                              | T24   | e2e: `cargo fmt` in chat A leaves the project and chat B untouched; `git checkout` is refused with the message |
+| T26 | Dependencies (phase 4 "Dependencies"): detection, shared-store installs, read-only linked files, `pip` → `uv` rule, private-copy fallback, suggestion cards | T25   | The tests listed in that section                                                                               |
+| T27 | Detect writes outside the sandbox: unexplained changes to the project during a command → chat warning with Move to overlay / Restore                        | T25   | e2e: a command writing the project's full path is flagged                                                      |
+
+**Milestone 6: landing (phase 5)**
+
+| ID  | Task                                                                                                                                                               | Needs         | Done when                                                                                     |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- | --------------------------------------------------------------------------------------------- |
+| T28 | Landing lock (mutex + OS lock file), journal, recovery at startup                                                                                                  | T21           | Crash injected after the journal → finished at next start                                     |
+| T29 | Merge per entry, check-and-apply with retries, Undo landing                                                                                                        | T03, T28      | Tests: user typing during landing retries; undo after a later edit merges or reports          |
+| T30 | Checks on the merged result in a temporary overlay; failures become a fix turn (`verify.rs` rounds); landing checks get queue priority (Q-d)                       | T24, T29, T09 | e2e: chat B's change breaks with chat A's landed change → not landed, chat B gets the failure |
+| T31 | Auto-land when clean and passing; otherwise ask (Land anyway / Resolve / Discard); conflict resolution in the overlay with `ConflictResolver.tsx` or an agent turn | T30, T23      | e2e: clean → landed with Undo; conflict → asks, project unchanged                             |
+
+**Milestone 7: conflicts found early (phase 6)**
+
+| ID  | Task                                                                                                               | Needs    | Done when                                                                    |
+| --- | ------------------------------------------------------------------------------------------------------------------ | -------- | ---------------------------------------------------------------------------- |
+| T32 | Base-change hub: watcher + announcements from landing and the editor; refresh trees; notes for files the chat read | T24, T29 | e2e: landing in A → note in B's next turn only if B read the file            |
+| T33 | Background merges for changed files; immediate conflict notices; pause on large changes                            | T32      | e2e: conflicting landing → notice within one turn; branch switch pauses runs |
+
+**Milestone 8: switch it on (phase 9)**
+
+| ID  | Task                                                                        | Needs                   | Done when                                                                               |
+| --- | --------------------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------- |
+| T34 | Every chat isolated: remove `isolate_chats`, handle existing chats, logging | T26, T27, T31, T33, T10 | Full e2e suite passes with isolation on; manual run with three chats on this repository |
+
+**Milestone 9: speed and hardening (phases 7–8)**
+
+| ID  | Task                                                                                                                                                  | Needs    | Done when                                                          |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------ |
+| T35 | `FsBackend` interface in the VFS drivers; `VirtualFs` implements it                                                                                   | –        | Existing `vfs` tests pass unchanged                                |
+| T36 | `OverlayFs` served at `/chats/<id>/`; passthrough on Linux 6.9+; `flock`; `command_dir()` prefers the mount, falls back to the tree                   | T34, T35 | T24–T27 tests pass through the mount; benchmark recorded in the PR |
+| T37 | Linux mount namespaces over the project path; copy-on-write seeding of `out/`; language servers per chat; `BaseRef::GitBlob`; cleanup of closed chats | T36      | Tests per item; full paths can't escape on Linux                   |
+
+### Order at a glance
+
+```
+M1: T01 ─► T02 ─► T03 ─► T04 ─► T05
+M2: T06 ─► T07 ─► T08 ─► T09 ─► T10            (can run in parallel with M3–M4)
+M3: T11 ─► T12 ─► T13 ─► T14
+M4: T15 ─► T16 ─► T17 ─► T18 ─► T19 ─► T20
+M5: T21 ─► T22 ─► T23 ─► T24 ─► T25 ─► T26 ─► T27
+M6: T28 ─► T29 ─► T30 ─► T31
+M7: T32 ─► T33
+M8: T34   ← isolation on for every chat
+M9: T35 ─► T36 ─► T37
+```
+
+M1 helps users right away. M2 can run alongside M3–M4 if two agents work at
+once; they touch different files. Everything else is sequential.
+
+## Notes from implementation
+
+(Empty. Agents add short notes here when the code doesn't match an
+assumption in this plan; see rule 6.)
