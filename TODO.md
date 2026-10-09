@@ -6,4 +6,4 @@
 All this questions have to be answered and the main line is models can ignore instructions in messages, but
 
 
-4. Don't ask to add a verify step in checklist if user enabled checks in Project checks
+4. Don't ask to add a verify step in checklist if user enabled checks in Project checks!
