@@ -114,7 +114,8 @@ setSemanticValidationEnabled(false);
 
 // Roots whose libs have fully reached the worker. `loadedRoot` is set when
 // a load *starts*; this is set when it *finishes* — the Editor overlay and
-// the diagnostics gate both key off this.
+// the diagnostics gate both key off this. At most the loaded root: the
+// worker holds one project's libs, so switching projects empties it.
 const readyRoots = new Set<string>();
 
 /** True when the project's definitions are fully loaded (or no project). */
@@ -222,8 +223,13 @@ function safeSetExtraLibs(libs: ExtraLibInput[]): void {
 /** Loads the project into Monaco, once per project root. */
 export function ensureProjectIntelliSense(root: string | null): Promise<void> {
   if (!root) return Promise.resolve();
-  if (readyRoots.has(root)) return Promise.resolve();
+  // Ready only while it's the loaded project: after A → B → A the worker
+  // holds B's libs and compiler options, so A loads again.
+  if (root === loadedRoot && readyRoots.has(root)) return Promise.resolve();
   if (root === loadedRoot && loading) return loading;
+  // Another project replaces what the worker has: no root is ready until
+  // its own load finishes.
+  readyRoots.clear();
   // Changes queued for the previous project don't apply to this one.
   queued.clear();
   firstQueuedAt = null;
@@ -489,6 +495,32 @@ export function dropProjectSourceLib(filePath: string): void {
       .map(([filePath, lib]) => ({ filePath, content: lib.content }))
   );
   safeSetExtraLibs(all);
+}
+
+/**
+ * Project sources whose models are being disposed (idle-model clean-up,
+ * see lib/models.ts): hand their text back to the worker as extra libs, as
+ * `load` would have, so files that import them still resolve. A model is
+ * its file's only copy in the worker (see dropProjectSourceLib). One
+ * update for all of them: each update resyncs the worker.
+ */
+export function restoreProjectSourceLibs(models: monaco.editor.ITextModel[]): void {
+  const root = loadedRoot;
+  if (!root) return;
+  const rootPath = modelUriFor(root).path.replace(/\/+$/, '');
+  const libs = ts.getExtraLibs();
+  const added = models
+    .filter((m) => !m.isDisposed() && m.uri.scheme === 'file')
+    .filter((m) => m.uri.path.startsWith(`${rootPath}/`) && isProjectSource(m.uri.path))
+    .filter((m) => !(m.uri.toString() in libs))
+    .map((m) => ({ filePath: m.uri.toString(), content: m.getValue() }));
+  if (added.length === 0) return;
+  safeSetExtraLibs(
+    sanitizeExtraLibs([
+      ...Object.entries(libs).map(([filePath, lib]) => ({ filePath, content: lib.content })),
+      ...added,
+    ])
+  );
 }
 
 /* ---------------------------------------------------------------------------

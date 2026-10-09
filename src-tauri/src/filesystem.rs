@@ -264,6 +264,11 @@ enum WatchFlush {
 }
 
 impl WatchBatch {
+    /// Nothing waiting to be reported (a flush resets the batch to this).
+    fn is_empty(&self) -> bool {
+        self.started.is_none()
+    }
+
     fn add(&mut self, payload: FileWatchPayload, now: Instant) {
         self.started.get_or_insert(now);
         self.last = Some(now);
@@ -397,6 +402,21 @@ fn watch_new_dir(app_handle: &AppHandle, dir: &Path) {
         }
     }
 }
+/// The current file watch (see `start_file_watch`): bumped by each new
+/// watch, so the task of the one it replaced stops.
+static WATCH_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A newer watch has started since `generation`'s.
+fn watch_replaced(generation: u64) -> bool {
+    WATCH_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation
+}
+
+/// The watcher is gone (`disconnected`) and nothing is left to report: no
+/// event can arrive any more, so the watch's task can end.
+fn watch_finished(disconnected: bool, batch: &WatchBatch, git_touched: Option<Instant>) -> bool {
+    disconnected && batch.is_empty() && git_touched.is_none()
+}
+
 #[tauri::command]
 pub fn start_file_watch(
     app_handle: AppHandle,
@@ -408,6 +428,10 @@ pub fn start_file_watch(
     // Lock and clean up any existing watcher first
     let mut current_watcher = state.active_watcher.lock().unwrap();
     *current_watcher = None; // Drops the old watcher, killing its channel thread automatically
+    // This watch's generation: the previous watch's task sees it change and
+    // ends (dropping the watcher alone only stops new events; its loop would
+    // keep waking every 50 ms forever, one more per project opened).
+    let generation = WATCH_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
 
     // Set up the new cross-thread channel
     let (tx, rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
@@ -452,13 +476,27 @@ pub fn start_file_watch(
         let mut git_touched: Option<Instant> = None;
 
         loop {
+            // Another project's watch replaced this one: stop.
+            if watch_replaced(generation) {
+                break;
+            }
             if let Ok(found) = ignores_rx.try_recv() {
                 ignores = Arc::new(found);
             }
             // Step 1: Drain the native channel, a bounded number of events per pass.
             let mut handled = 0;
+            let mut disconnected = false;
             while handled < MAX_RAW_EVENTS_PER_PASS {
-                let Ok(res) = rx.try_recv() else { break };
+                let res = match rx.try_recv() {
+                    Ok(res) => res,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    // The watcher is gone (dropped on a switch): no event can
+                    // come any more.
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                };
                 handled += 1;
                 if let Ok(event) = res {
                     let operation = match event.kind {
@@ -538,6 +576,10 @@ pub fn start_file_watch(
             }
             if git_settled || tree_changed {
                 let _ = app_handle.emit("git-changed", ());
+            }
+
+            if watch_finished(disconnected, &batch, git_touched) {
+                break;
             }
 
             // Step 4: Short pause to rest the CPU before polling for new events/timeouts again
@@ -1403,6 +1445,29 @@ mod watch_tests {
 
     fn change(path: &str) -> FileWatchPayload {
         FileWatchPayload { path: path.into(), operation: WatchOp::Modify, is_dir: false }
+    }
+
+    #[test]
+    fn a_replaced_or_finished_watch_stops() {
+        // A newer watch replaces an older one's task.
+        let mine = WATCH_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        assert!(!watch_replaced(mine));
+        WATCH_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(watch_replaced(mine));
+
+        // The watcher gone: done once nothing is left to report.
+        let t0 = Instant::now();
+        let mut b = WatchBatch::default();
+        assert!(b.is_empty());
+        assert!(!watch_finished(false, &b, None), "still connected");
+        assert!(watch_finished(true, &b, None));
+        b.add(change("a"), t0);
+        assert!(!b.is_empty());
+        assert!(!watch_finished(true, &b, None), "a change still to report");
+        assert!(matches!(b.take_due(t0 + Duration::from_secs(5)), WatchFlush::Events(_)));
+        assert!(b.is_empty(), "reported");
+        assert!(!watch_finished(true, &b, Some(t0)), "git activity still to report");
+        assert!(watch_finished(true, &b, None));
     }
 
     #[test]
