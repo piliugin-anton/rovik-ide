@@ -15,6 +15,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { readFileContent } from '../commands';
 import { languageForFile } from '../language';
 import { modelUriFor } from '../intellisense';
+import { scheduleModelPrune } from '../models';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
@@ -463,10 +464,12 @@ export class LspClient {
     if (parsed.scheme !== 'file') return null;
     try {
       const text = await readFileContent(parsed.fsPath);
-      return (
+      const model =
         monaco.editor.getModel(parsed) ??
-        monaco.editor.createModel(text, languageForFile(parsed.path), parsed)
-      );
+        monaco.editor.createModel(text, languageForFile(parsed.path), parsed);
+      // A model for a file no tab holds: counts toward the idle limit.
+      scheduleModelPrune();
+      return model;
     } catch {
       return null;
     }

@@ -23,6 +23,7 @@ import {
   modelUriFor,
   dropProjectSourceLib,
 } from '../lib/intellisense';
+import { touchModel } from '../lib/models';
 import { ensureOutlineIntelliSense } from '../lib/outlineIntelliSense';
 import { ensureDiagnosticsReporting } from '../lib/diagnostics';
 import {
@@ -106,6 +107,9 @@ export default function Editor(props: EditorProps) {
     } else {
       model = monaco.editor.createModel(content, props.language(), uri);
     }
+
+    // Shown again: the most recently used (idle clean-up, lib/models.ts).
+    touchModel(uri);
 
     // From here on the worker serves this file from its model (mirror sync),
     // so its extra-lib snapshot must go — one file in the program, not two.

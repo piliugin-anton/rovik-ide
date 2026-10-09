@@ -64,7 +64,13 @@ import { findSnippetLine } from './lib/codeLocation';
 import { isPlanFile, requestImplementPlan } from './lib/plans';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines } from './lib/lineDiff';
-import { isProjectSource, notifyTypingsMaybeStale, updateProjectSource } from './lib/intellisense';
+import {
+  isProjectSource,
+  modelUriFor,
+  notifyTypingsMaybeStale,
+  updateProjectSource,
+} from './lib/intellisense';
+import { scheduleModelPrune, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath } from './lib/fileTools';
 import { contextRealPath, isContextPath } from './lib/contextMode';
@@ -120,6 +126,13 @@ export default function App() {
   });
   const [rootId, setRootId] = createSignal<string | null>(null);
   const [openFiles, setOpenFiles] = createSignal<OpenFile[]>([]);
+  // Idle editor models (closed tabs, go-to-definition targets) are kept
+  // up to a limit, then the least recently used are disposed (lib/models.ts).
+  trackModels(() => new Set(openFiles().map((f) => modelUriFor(f.path).toString())));
+  createEffect(() => {
+    openFiles();
+    scheduleModelPrune();
+  });
   const [activePath, setActivePath] = createSignal<string | null>(null);
   /** The Files tab shows search results instead of the tree while searching. */
   const [searchActive, setSearchActive] = createSignal(false);
