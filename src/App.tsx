@@ -58,6 +58,7 @@ import { chatApi, type ProjectSummary } from './lib/chatApi';
 import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { notifyFileWritten, onFileWritten, onRevealEdit } from './lib/approvals';
+import { editorSettings } from './lib/editorSettings';
 import { onAddToChat, onOpenFileRequest, setProjectFileResolver } from './lib/editorBridge';
 import { findSnippetLine } from './lib/codeLocation';
 import { isPlanFile, requestImplementPlan } from './lib/plans';
@@ -414,9 +415,13 @@ export default function App() {
     await openFile(row, opts);
   }
 
-  // The agent's edits: open files to review them, and refresh open tabs
+  // The agent's edits: open files to review them when the "Open files
+  // after agent edits" editor setting is on, and refresh open tabs
   // after a write (an unsaved tab keeps the user's text).
-  const stopReveal = onRevealEdit((path) => void openPath(path));
+  const stopReveal = onRevealEdit((path) => {
+    if (!editorSettings().openFilesAfterAgentEdits) return;
+    void openPath(path);
+  });
   const stopWritten = onFileWritten((path, content) => {
     setOpenFiles((prev) =>
       prev.map((f) =>
@@ -426,13 +431,19 @@ export default function App() {
     // A write the user approved (a new file, say) isn't an unreviewed edit,
     // which opens its file itself (onAgentEdit): open it here, in the
     // background unless nothing else is open.
-    if (!openFiles().some((f) => f.path === path) && !agentChangesFor(path)) {
-      void openPath(path, { activate: activePath() === null });
+    if (
+      !editorSettings().openFilesAfterAgentEdits ||
+      openFiles().some((f) => f.path === path) ||
+      agentChangesFor(path)
+    ) {
+      return;
     }
+    void openPath(path, { activate: activePath() === null });
   });
-  // An unreviewed agent edit: its file opens in a tab so the changes can be
-  // seen. In the background while another file is being worked on, so a
-  // long run doesn't keep switching tabs; focused when nothing else is open.
+  // An unreviewed agent edit: when "Open files after agent edits" is on,
+  // its file opens in a tab so the changes can be seen. In the background
+  // while another file is being worked on, so a long run doesn't keep
+  // switching tabs; focused when nothing else is open.
   // Language servers belong to a project: a different one (or none) stops them.
   createEffect(
     on(
@@ -453,6 +464,7 @@ export default function App() {
       return;
     }
     if (open) return;
+    if (!editorSettings().openFilesAfterAgentEdits) return;
     // Newly opened by the agent's edit: center the first changed line,
     // like openPathAtLine does for chat links and search results.
     const line = Math.max(1, agentChangesFor(path)?.hunks[0]?.origStart ?? 1);

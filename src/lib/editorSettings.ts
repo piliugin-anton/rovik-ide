@@ -36,6 +36,8 @@ export interface EditorSettings {
   wordWrap: 'on' | 'off';
   minimap: boolean;
   renderWhitespace: 'none' | 'boundary' | 'all';
+  /** Automatically open a file the agent edited (approval reviews, writes, unreviewed edits). Default false. */
+  openFilesAfterAgentEdits: boolean;
 }
 
 const STORAGE_KEY = 'rovik.editorSettings.v1';
@@ -48,6 +50,7 @@ const DEFAULTS: EditorSettings = {
   wordWrap: 'off',
   minimap: false,
   renderWhitespace: 'none',
+  openFilesAfterAgentEdits: false,
 };
 
 function load(): EditorSettings {
@@ -76,6 +79,10 @@ function load(): EditorSettings {
         parsed.renderWhitespace === 'all' || parsed.renderWhitespace === 'boundary'
           ? parsed.renderWhitespace
           : 'none',
+      openFilesAfterAgentEdits:
+        typeof parsed.openFilesAfterAgentEdits === 'boolean'
+          ? parsed.openFilesAfterAgentEdits
+          : DEFAULTS.openFilesAfterAgentEdits,
     };
   } catch {
     return DEFAULTS;

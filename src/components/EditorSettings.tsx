@@ -178,6 +178,25 @@ export default function EditorSettings() {
           </span>
         </label>
       </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Agent</div>
+        <label class="setting-checkbox">
+          <input
+            type="checkbox"
+            checked={s().openFilesAfterAgentEdits}
+            onChange={(e) =>
+              updateEditorSettings({ openFilesAfterAgentEdits: e.currentTarget.checked })
+            }
+          />
+          <span>
+            Open files after agent edits
+            <span class="setting-checkbox-sub">
+              Automatically open a file the agent edited so you can review it.
+            </span>
+          </span>
+        </label>
+      </div>
     </div>
   );
 }
