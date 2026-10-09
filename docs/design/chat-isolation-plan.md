@@ -27,6 +27,7 @@ Decisions:
 | Frozen mode                               | **Not offered.** Overlays always see the live project for files they haven't changed.                                                                                     |
 | Memory cache                              | **128 MiB**, shared by all overlays.                                                                                                                                      |
 | Per-chat limit                            | **512 MiB** of changed files per chat (warning at 80%, writes refused at 100%). Build output and dependencies are not counted; they are watched through free disk space.  |
+| Heavy-work slots                          | **Auto, leaning low:** 1 slot; 2 only on 16+ cores and 32 GB+ memory while the machine has room (Q4). More only by manual setting.                                        |
 
 ## Summary of the design
 
@@ -496,8 +497,12 @@ The tracker samples every 500 ms. A command becomes **observed heavy** when:
 
 ### Q4. The scheduler (`workload/queue.rs`)
 
-- **Slots.** Default "auto": 1 slot, or 2 on machines with 12+ cores and
-  24 GB+ memory. Each slot is a lock file
+- **Slots.** Default "auto", leaning low (decision): **1 slot**. 2 only on
+  machines with **16+ cores and 32 GB+ memory**, and never more than 2
+  automatically. Even then the second slot opens only while free memory is
+  over 8 GB and the user's own processes leave at least half the cores idle;
+  otherwise auto drops back to 1. A higher number is a manual setting. Each
+  slot is a lock file
   `<app data>/locks/heavy-slot-N.lock` (`try_lock`), so several app windows
   share them.
 - **Predicted `Heavy`:** waits for a slot before it starts.
@@ -584,8 +589,8 @@ overlays and can start at any time; it helps direct mode too.
 
 ## Open decisions
 
-1. Heavy-work slots: "auto" (1, or 2 on big machines), or a fixed number;
-   whether the terminal panel's own commands are also counted (Q4).
+1. Whether the terminal panel's own commands are also counted as using a
+   slot (Q4).
 
 (Decided: see "Decisions" at the top.)
 
