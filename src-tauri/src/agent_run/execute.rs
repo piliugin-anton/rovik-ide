@@ -361,7 +361,6 @@ impl<R: Runtime> Run<R> {
                                 content.push_str("\n\nUpdate @context/TASK.md: done/NEXT.");
                             }
                             self.pending_step_compaction = Some(super::run::PendingStepCompaction {
-                                step: newly[0].title.clone(),
                                 revision,
                                 tool_calls: self.guard.tool_calls,
                             });

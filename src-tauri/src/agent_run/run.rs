@@ -59,7 +59,6 @@ pub(super) const CLM_STEP_COMPACT_MIN: u32 = 35;
 /// escalates when it is ignored).
 #[derive(Debug, Clone)]
 pub(super) struct PendingStepCompaction {
-    pub(super) step: String,
     pub(super) revision: Option<u64>,
     pub(super) tool_calls: u32,
 }
