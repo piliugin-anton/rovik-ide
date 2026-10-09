@@ -539,6 +539,11 @@ export function GitPanel(props: GitPanelProps) {
   const HISTORY_SEARCH_DEBOUNCE_MS = 400;
   const HISTORY_PAGE_LIMIT = 20;
   const [historyQuery, setHistoryQuery] = createSignal('');
+  // The query the shown list belongs to. While typing, the input runs
+  // ahead of the results for the debounce (and the search): badges,
+  // per-file match flags and the list's notes must describe the results
+  // on screen, not the text being typed.
+  const [resultsQuery, setResultsQuery] = createSignal('');
   // Pagination cursor: raw commits already scanned (`next_offset` from the
   // backend). `hasMoreHistory` means older commits remain beyond this
   // page's scan budget — keep it separate from `commitsLoading` so the
@@ -593,6 +598,7 @@ export function GitPanel(props: GitPanelProps) {
       if (historyDebounce) clearTimeout(historyDebounce);
       historyDebounce = undefined;
       setHistoryQuery('');
+      setResultsQuery('');
       setExpandedCommit(null);
       setHistoryOffset(0);
       setHasMoreHistory(false);
@@ -644,7 +650,7 @@ export function GitPanel(props: GitPanelProps) {
       return;
     }
     setExpandedCommit(oid);
-    const q = historyQuery().trim();
+    const q = resultsQuery();
     const key = `${oid}::${q}`;
     if (commitFiles()[key]) return;
     setCommitFilesLoading(oid);
@@ -657,9 +663,10 @@ export function GitPanel(props: GitPanelProps) {
       setCommitFiles((prev) => ({ ...prev, [key]: files }));
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
-      setExpandedCommit(null);
+      setExpandedCommit((cur) => (cur === oid ? null : cur));
     } finally {
-      setCommitFilesLoading(null);
+      // Another commit may have been expanded meanwhile: its spinner stays.
+      setCommitFilesLoading((cur) => (cur === oid ? null : cur));
     }
   };
   // When searching, show only matching files by default; user can reveal
@@ -700,6 +707,7 @@ export function GitPanel(props: GitPanelProps) {
       });
       setHistoryOffset(nextOffset);
       setHasMoreHistory(hasMore);
+      setResultsQuery(q);
       // Drop expansion for a commit that's no longer in the results.
       // On 'more' the list only grows, so keep the expansion.
       if (mode === 'reset') {
@@ -720,7 +728,7 @@ export function GitPanel(props: GitPanelProps) {
   /** Append the next page (older commits / further search). */
   const loadMoreHistory = () => {
     if (commitsLoading() || historyLoadingMore() || !hasMoreHistory()) return;
-    void loadLog(historyQuery(), 'more');
+    void loadLog(resultsQuery(), 'more');
   };
 
   /** Re-run the visible history after an operation that moves HEAD
@@ -742,6 +750,9 @@ export function GitPanel(props: GitPanelProps) {
     setShowAllFiles({});
     setHistoryOffset(0);
     setHasMoreHistory(false);
+    // A "load more" still in flight belongs to the old query: its reply is
+    // dropped (historySeq), so its spinner must not linger.
+    setHistoryLoadingMore(false);
     if (historyDebounce) clearTimeout(historyDebounce);
     // Empty query reloads immediately (cheap: newest 20, no scan);
     // typing waits for a pause, and Enter searches at once.
@@ -1493,15 +1504,15 @@ export function GitPanel(props: GitPanelProps) {
                   </div>
                 </Show>
                 <Show
-                  when={!commitsLoading() && commits().length === 0 && historyQuery().trim() === ''}
+                  when={!commitsLoading() && commits().length === 0 && resultsQuery() === ''}
                 >
                   <div class="git-more-note">No commits yet.</div>
                 </Show>
                 <Show
-                  when={!commitsLoading() && commits().length === 0 && historyQuery().trim() !== ''}
+                  when={!commitsLoading() && commits().length === 0 && resultsQuery() !== ''}
                 >
                   <div class="git-more-note">
-                    No matching commits for “{historyQuery().trim()}”. Try a file name, symbol, or
+                    No matching commits for “{resultsQuery()}”. Try a file name, symbol, or
                     word from the message.
                   </div>
                 </Show>
@@ -1509,7 +1520,7 @@ export function GitPanel(props: GitPanelProps) {
                   <ul class="context-menu-list">
                     <For each={commits()}>
                     {(c) => {
-                      const q = () => historyQuery().trim();
+                      const q = () => resultsQuery();
                       const searching = () => q() !== '';
                       const filesKey = () => `${c.oid}::${q()}`;
                       const allFiles = () => commitFiles()[filesKey()] ?? [];
@@ -1710,7 +1721,7 @@ export function GitPanel(props: GitPanelProps) {
                     class="link-button git-match-toggle"
                     style={{ margin: '4px 8px 8px' }}
                     title={
-                      historyQuery().trim() !== ''
+                      resultsQuery() !== ''
                         ? 'Keep searching older commits (next ~400)'
                         : 'Load older commits'
                     }
@@ -1719,14 +1730,14 @@ export function GitPanel(props: GitPanelProps) {
                   >
                     {historyLoadingMore()
                       ? 'Loading…'
-                      : historyQuery().trim() !== ''
+                      : resultsQuery() !== ''
                         ? 'Search further back…'
                         : 'Load more…'}
                   </button>
                 </Show>
                 <Show when={!commitsLoading() && commits().length > 0 && !hasMoreHistory()}>
                   <div class="git-more-note">
-                    {historyQuery().trim() !== ''
+                    {resultsQuery() !== ''
                       ? 'Searched the full history.'
                       : 'Reached the oldest commit.'}
                   </div>
