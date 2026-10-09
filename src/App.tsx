@@ -852,6 +852,14 @@ export default function App() {
     if (content !== null) notifyFileWritten(abs, content);
   }
 
+  /** A pull, merge or rebase rewrote files: open tabs without unsaved
+   *  edits show the disk's text; files it removed are marked deleted. */
+  async function reloadOpenFiles() {
+    await syncDeletedTabs();
+    const clean = openFiles().filter((f) => !f.readOnly && !f.dirty && !f.deleted);
+    await Promise.all(clean.map((f) => reloadFromDisk(f.path)));
+  }
+
   /** Git's state changed: the marked files' bases may have too. */
   let gitRefresh = 0;
   function refreshGitBases() {
@@ -1712,6 +1720,7 @@ export default function App() {
                 onFileReverted={(abs) => void reloadFromDisk(abs)}
                 onChanged={refreshGitBases}
                 onStashChanged={closeStashTabs}
+                onFilesChangedOnDisk={() => void reloadOpenFiles()}
               />
             </Match>
             <Match when={!rootPath()}>

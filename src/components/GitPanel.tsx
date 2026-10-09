@@ -23,8 +23,13 @@ import {
   GitStashFile,
   GitCommitEntry,
   GitLogPage,
+  GitPullConfig,
+  GitPullOutcome,
+  GitPushOutcome,
 } from '../types';
 import { confirmDialog } from './ConfirmDialog';
+import { ConflictResolver } from './ConflictResolver';
+import { PullStrategyDialog, type PullStrategyPick } from './PullStrategyDialog';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
 const GIT_ROW_HEIGHT = 22;
@@ -44,6 +49,8 @@ interface GitPanelProps {
   onChanged?: () => void;
   /** Stash list changed (push/pop/drop): preview tabs are now stale. */
   onStashChanged?: () => void;
+  /** Files may have changed on disk (pull, merge, rebase): reload open tabs. */
+  onFilesChangedOnDisk?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -447,12 +454,161 @@ export function GitPanel(props: GitPanelProps) {
       await refreshStatus();
     });
 
+  // -------------------------------------------------------------------------
+  // Pull / push with the remote's commits merged or rebased in, as git
+  // config says (src-tauri/src/git_sync.rs), and the conflicts that leaves
+  // resolved in ConflictResolver.
+  // -------------------------------------------------------------------------
+
+  /** The resolver is open (on this file first, if a string). */
+  const [resolver, setResolver] = createSignal<{ file?: string } | null>(null);
+  /** A push the remote turned down waits for the pull's conflicts. */
+  const [pendingPush, setPendingPush] = createSignal(false);
+  /** The merge-or-rebase question, while it's asked. */
+  const [strategyAsk, setStrategyAsk] = createSignal<{
+    reason: string;
+    resolve: (pick: PullStrategyPick | null) => void;
+  } | null>(null);
+  const askStrategy = (reason: string) =>
+    new Promise<PullStrategyPick | null>((resolve) => setStrategyAsk({ reason, resolve }));
+  const answerStrategy = (pick: PullStrategyPick | null) => {
+    strategyAsk()?.resolve(pick);
+    setStrategyAsk(null);
+  };
+
+  const operation = () => status()?.operation ?? null;
+
+  /** Pulls; asks how when the config doesn't say. 'conflicts' opens the resolver. */
+  const runPull = async (pick?: PullStrategyPick): Promise<'done' | 'conflicts' | 'cancelled'> => {
+    let out = await invoke<GitPullOutcome>('git_pull', {
+      path: props.projectPath,
+      strategy: pick?.strategy,
+      remember: pick?.remember ?? false,
+    });
+    if (out.result === 'needs-strategy') {
+      const asked = await askStrategy(
+        'Your branch and its upstream have diverged, and git config (pull.rebase) doesn’t say how to combine them.'
+      );
+      if (!asked) return 'cancelled';
+      out = await invoke<GitPullOutcome>('git_pull', {
+        path: props.projectPath,
+        strategy: asked.strategy,
+        remember: asked.remember,
+      });
+    }
+    await refreshStatus();
+    props.onFilesChangedOnDisk?.();
+    refreshHistoryIfOpen();
+    if (out.result === 'conflicts') {
+      setResolver({ file: out.conflicts[0] });
+      return 'conflicts';
+    }
+    return 'done';
+  };
+
   const pullGit = () =>
     withBusy(async () => {
-      await invoke('git_pull', { path: props.projectPath });
+      await runPull();
+    });
+
+  const strategyWords = (cfg: GitPullConfig) =>
+    cfg.strategy === 'rebase'
+      ? `rebasing your commits onto them (${cfg.source})`
+      : `merging them into your branch (${cfg.source})`;
+
+  /** Pushes; a push the remote turns down (it has new commits) offers to
+   *  pull them in first, the way git config says, then push again. */
+  const push = async () => {
+    const out = await invoke<GitPushOutcome>('git_push', { path: props.projectPath });
+    if (out.result === 'pushed') {
+      setPendingPush(false);
+      return;
+    }
+    const cfg = await invoke<GitPullConfig>('git_pull_config', { path: props.projectPath });
+    let pick: PullStrategyPick | undefined;
+    if (cfg.strategy === 'merge' || cfg.strategy === 'rebase') {
+      const ok = await confirmDialog({
+        title: 'The remote has new commits',
+        message: `The remote branch has commits yours doesn’t, so the push was rejected.\n\nPull them in by ${strategyWords(cfg)}, then push again? Conflicts, if any, open for you to resolve first.`,
+        confirmLabel: cfg.strategy === 'rebase' ? 'Rebase & push' : 'Merge & push',
+      });
+      if (!ok) return;
+    } else {
+      const asked = await askStrategy(
+        cfg.strategy === 'ff-only'
+          ? 'The push was rejected: the remote branch has commits yours doesn’t. pull.ff is “only”, which can’t combine diverged branches, so choose how this time.'
+          : 'The push was rejected: the remote branch has commits yours doesn’t. Pull them in first, then push again.'
+      );
+      if (!asked) return;
+      pick = asked;
+    }
+    setPendingPush(true);
+    const pulled = await runPull(pick);
+    if (pulled !== 'done') {
+      // Conflicts: the push waits for the resolver to finish.
+      if (pulled === 'cancelled') setPendingPush(false);
+      return;
+    }
+    setPendingPush(false);
+    const again = await invoke<GitPushOutcome>('git_push', { path: props.projectPath });
+    if (again.result === 'rejected') {
+      throw new Error('The remote moved again while pulling. Push once more.');
+    }
+  };
+
+  /** Like withBusy, but the error goes back to the caller (the resolver shows it). */
+  const busyOrThrow = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setErrorMsg(null);
+    try {
+      await fn();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const continueOperation = (message?: string) =>
+    busyOrThrow(async () => {
+      const out = await invoke<GitPullOutcome>('git_operation_continue', {
+        path: props.projectPath,
+        message,
+      });
       await refreshStatus();
+      props.onFilesChangedOnDisk?.();
+      refreshHistoryIfOpen();
+      // A rebase stopped again at a later commit: the resolver stays.
+      if (out.result === 'conflicts') return;
+      setResolver(null);
+      if (pendingPush()) {
+        setPendingPush(false);
+        await push();
+        await refreshStatus();
+        refreshHistoryIfOpen();
+      }
+    });
+
+  const abortOperation = () =>
+    busyOrThrow(async () => {
+      await invoke('git_operation_abort', { path: props.projectPath });
+      setPendingPush(false);
+      setResolver(null);
+      await refreshStatus();
+      props.onFilesChangedOnDisk?.();
       refreshHistoryIfOpen();
     });
+
+  const confirmAbort = async () => {
+    const op = operation();
+    if (!op) return;
+    const ok = await confirmDialog({
+      title: `Abort the ${op.kind}?`,
+      message:
+        'Your branch goes back to where it was before it started. Resolutions made so far are lost.',
+      confirmLabel: `Abort ${op.kind}`,
+      danger: true,
+    });
+    if (ok) await withBusy(abortOperation);
+  };
 
   const commitAndMaybePush = () =>
     withBusy(async () => {
@@ -466,9 +622,12 @@ export function GitPanel(props: GitPanelProps) {
       // nothing to commit, so just push.
       if (!msg || !hasChanges) {
         if (st.ahead <= 0) return;
-        await invoke('git_push', { path: props.projectPath });
-        await refreshStatus();
-        refreshHistoryIfOpen();
+        try {
+          await push();
+        } finally {
+          await refreshStatus();
+          refreshHistoryIfOpen();
+        }
         return;
       }
 
@@ -476,11 +635,12 @@ export function GitPanel(props: GitPanelProps) {
       setCommitMessage('');
 
       const updated = await refreshStatus();
-      if (updated && updated.ahead > 0) {
-        await invoke('git_push', { path: props.projectPath });
+      try {
+        if (updated && updated.ahead > 0) await push();
+      } finally {
         await refreshStatus();
+        refreshHistoryIfOpen();
       }
-      refreshHistoryIfOpen();
     });
 
   const switchBranch = (branch: string) =>
@@ -921,6 +1081,8 @@ export function GitPanel(props: GitPanelProps) {
   const canCommit = createMemo(() => {
     const s = status();
     if (!s || busy()) return false;
+    // A merge / rebase in progress is finished from its banner, not here.
+    if (s.operation) return false;
     if (s.ahead > 0) return true;
     return !!commitMessage().trim() && s.files.length > 0;
   });
@@ -1761,6 +1923,54 @@ export function GitPanel(props: GitPanelProps) {
           </Show>
         </div>
 
+        <Show when={operation()}>
+          {(op) => (
+            <div class="git-operation-banner" role="status">
+              <IconAlert />
+              <div class="git-operation-text">
+                <strong>
+                  {op().kind === 'rebase'
+                    ? `Rebasing${op().step && op().total ? ` ${op().step}/${op().total}` : ''}${op().incoming ? ` onto ${op().incoming}` : ''}`
+                    : op().kind === 'merge'
+                      ? `Merging${op().incoming ? ` ${op().incoming}` : ''}`
+                      : `${op().kind[0].toUpperCase()}${op().kind.slice(1)} in progress`}
+                </strong>
+                <span>
+                  {op().conflicts.length > 0
+                    ? `${op().conflicts.length} conflicted file${op().conflicts.length === 1 ? '' : 's'}`
+                    : op().canContinue
+                      ? 'Conflicts resolved: ready to finish'
+                      : 'Finish it from a terminal, or abort'}
+                  {pendingPush() ? ' · push follows' : ''}
+                </span>
+              </div>
+              <div class="git-operation-actions">
+                <button
+                  type="button"
+                  classList={{ primary: op().conflicts.length > 0 }}
+                  disabled={busy()}
+                  onClick={() => setResolver({})}
+                >
+                  {op().conflicts.length > 0 ? 'Resolve…' : 'Review…'}
+                </button>
+                <Show when={op().conflicts.length === 0 && op().canContinue}>
+                  <button
+                    type="button"
+                    class="primary"
+                    disabled={busy()}
+                    onClick={() => void withBusy(() => continueOperation())}
+                  >
+                    {op().kind === 'merge' ? 'Commit merge' : 'Continue'}
+                  </button>
+                </Show>
+                <button type="button" disabled={busy()} onClick={() => void confirmAbort()}>
+                  Abort
+                </button>
+              </div>
+            </div>
+          )}
+        </Show>
+
         <Show when={errorMsg()}>
           <div class="git-inline-error">
             <IconAlert />
@@ -1849,11 +2059,18 @@ export function GitPanel(props: GitPanelProps) {
                                   class="tree-row git-file-row"
                                   classList={{ clickable: file().status !== 'D' }}
                                   title={
-                                    file().status === 'D'
-                                      ? `${file().path} (deleted)`
-                                      : `${file().path}: click to open with its changes marked`
+                                    file().status === 'U'
+                                      ? `${file().path}: conflicted, click to resolve`
+                                      : file().status === 'D'
+                                        ? `${file().path} (deleted)`
+                                        : `${file().path}: click to open with its changes marked`
                                   }
                                   onClick={() => {
+                                    if (file().status === 'U') {
+                                      if (operation()) setResolver({ file: file().path });
+                                      else props.onOpenFile?.(absPathOf(file().path), file().path);
+                                      return;
+                                    }
                                     // A deleted file has nothing to open; revert brings it back.
                                     if (file().status !== 'D')
                                       props.onOpenFile?.(absPathOf(file().path), file().path);
@@ -1930,7 +2147,9 @@ export function GitPanel(props: GitPanelProps) {
         <div class="git-commit-bar">
           <input
             class="tree-row-input git-commit-input"
-            placeholder="Commit message"
+            placeholder={
+              operation() ? `Finish or abort the ${operation()!.kind} first` : 'Commit message'
+            }
             value={commitMessage()}
             onInput={(e) => setCommitMessage(e.currentTarget.value)}
             onKeyDown={(e) => {
@@ -1938,7 +2157,7 @@ export function GitPanel(props: GitPanelProps) {
                 commitAndMaybePush();
               }
             }}
-            disabled={busy()}
+            disabled={busy() || !!operation()}
           />
           <button
             class="git-commit-button primary icon-button"
@@ -1953,6 +2172,30 @@ export function GitPanel(props: GitPanelProps) {
             <span>{commitButtonText()}</span>
           </button>
         </div>
+      </Show>
+
+      <Show when={resolver() && operation()}>
+        <ConflictResolver
+          projectPath={props.projectPath}
+          operation={operation()!}
+          initialFile={resolver()?.file}
+          onFileWritten={(file) => {
+            props.onFileReverted?.(absPathOf(file));
+            void refreshStatus();
+          }}
+          onContinue={continueOperation}
+          onAbort={abortOperation}
+          onClose={() => setResolver(null)}
+        />
+      </Show>
+      <Show when={strategyAsk()}>
+        {(ask) => (
+          <PullStrategyDialog
+            reason={ask().reason}
+            onPick={(pick) => answerStrategy(pick)}
+            onCancel={() => answerStrategy(null)}
+          />
+        )}
       </Show>
     </div>
   );

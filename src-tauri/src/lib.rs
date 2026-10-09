@@ -28,6 +28,7 @@ mod typings;
 mod vfs;
 mod clm;
 mod git;
+mod git_sync;
 mod process;
 mod open_url;
 
@@ -115,7 +116,12 @@ pub fn run() {
             filesystem::copy_path,
             git::git_init,
             git::git_fetch,
-            git::git_pull,
+            git_sync::git_pull,
+            git_sync::git_pull_config,
+            git_sync::git_operation_continue,
+            git_sync::git_operation_abort,
+            git_sync::git_conflict_file,
+            git_sync::git_conflict_resolve,
             git::git_commit,
             git::git_push,
             git::git_checkout,

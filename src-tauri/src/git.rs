@@ -15,7 +15,7 @@ use std::path::PathBuf;
 /// Git commands run on a worker thread. As plain commands they ran on the
 /// app's main thread, so a slow commit (hashing every changed file), or a
 /// push waiting on the network, froze the whole window.
-async fn off_main_thread<T: Send + 'static>(
+pub(crate) async fn off_main_thread<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
@@ -45,13 +45,16 @@ pub struct GitStatus {
     /// The repository's working folder: file paths are relative to it,
     /// which isn't the project folder when the project is inside a repo.
     pub workdir: String,
+    /// A merge / rebase in progress (conflicts to resolve, or to continue).
+    #[serde(default)]
+    pub operation: Option<crate::git_sync::GitOperation>,
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn open_repo(path: &str) -> Result<Repository, String> {
+pub(crate) fn open_repo(path: &str) -> Result<Repository, String> {
     Repository::discover(path).map_err(|e| format!("Not a git repository: {e}"))
 }
 
@@ -284,6 +287,13 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
         Err(_) => "unborn".to_string(), // repo has no commits yet
     };
 
+    let operation = crate::git_sync::current_operation(&repo);
+    // A rebase detaches HEAD; it's still the branch being rebased.
+    let branch = match operation.as_ref().and_then(|o| o.branch.clone()) {
+        Some(b) if operation.as_ref().is_some_and(|o| o.kind == "rebase") => b,
+        _ => branch,
+    };
+
     let (ahead, behind) = compute_ahead_behind(&repo).unwrap_or((0, 0));
 
     let mut opts = StatusOptions::new();
@@ -339,6 +349,7 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
                 w.trim_end_matches(['/', '\\']).to_string()
             })
             .unwrap_or_default(),
+        operation,
     })
 }
 
@@ -456,78 +467,32 @@ pub fn git_fetch_blocking(path: String) -> Result<(), String> {
         .map_err(|e| format!("Fetch failed: {e}"))
 }
 
-#[tauri::command]
-pub async fn git_pull(path: String) -> Result<(), String> {
-    off_main_thread(move || git_pull_blocking(path)).await
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PushOutcome {
+    /// "pushed" | "rejected": the remote branch has commits this one
+    /// doesn't, so they have to be pulled (merged or rebased) first.
+    pub result: &'static str,
+    /// The remote's reason, for "rejected".
+    pub message: Option<String>,
 }
 
-pub fn git_pull_blocking(path: String) -> Result<(), String> {
-    git_fetch_blocking(path.clone())?;
-
-    let repo = open_repo(&path)?;
-    let head = repo.head().map_err(|e| e.to_string())?;
-
-    if !head.is_branch() {
-        return Err("Cannot pull: HEAD is detached, not on a branch".to_string());
-    }
-
-    let branch_name = head
-        .shorthand()
-        .map_err(|e| format!("Could not determine current branch name: {e}"))?
-        .to_string();
-
-    let branch = repo
-        .find_branch(&branch_name, BranchType::Local)
-        .map_err(|e| e.to_string())?;
-
-    let upstream = branch
-        .upstream()
-        .map_err(|_| format!("Branch '{branch_name}' has no upstream configured"))?;
-
-    let upstream_oid = upstream
-        .get()
-        .target()
-        .ok_or("Upstream branch has no target commit")?;
-
-    let upstream_commit = repo
-        .find_annotated_commit(upstream_oid)
-        .map_err(|e| e.to_string())?;
-
-    let (analysis, _) = repo
-        .merge_analysis(&[&upstream_commit])
-        .map_err(|e| e.to_string())?;
-
-    if analysis.is_up_to_date() {
-        return Ok(());
-    }
-
-    if analysis.is_fast_forward() {
-        let refname = format!("refs/heads/{branch_name}");
-        let mut reference = repo.find_reference(&refname).map_err(|e| e.to_string())?;
-        reference
-            .set_target(upstream_oid, "Fast-forward")
-            .map_err(|e| e.to_string())?;
-        repo.set_head(&refname).map_err(|e| e.to_string())?;
-        return repo
-            .checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
-            .map_err(|e| e.to_string());
-    }
-
-    // A real (non-fast-forward) merge needs conflict handling that's out of
-    // scope for a lightweight panel command — surface it clearly instead of
-    // silently doing something surprising.
-    Err(
-        "Pull requires a merge (branches have diverged). Please merge from a terminal."
-            .to_string(),
-    )
+/// The remote has moved on: what a pull fixes, as opposed to a hook or a
+/// protected branch turning the push down.
+fn is_behind_remote(reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    r.contains("non-fast-forward")
+        || r.contains("non-fastforward")
+        || r.contains("fetch first")
+        || r.contains("not present locally")
 }
 
 #[tauri::command]
-pub async fn git_push(path: String) -> Result<(), String> {
+pub async fn git_push(path: String) -> Result<PushOutcome, String> {
     off_main_thread(move || git_push_blocking(path)).await
 }
 
-pub fn git_push_blocking(path: String) -> Result<(), String> {
+pub fn git_push_blocking(path: String) -> Result<PushOutcome, String> {
     let repo = open_repo(&path)?;
     let head = repo.head().map_err(|e| e.to_string())?;
 
@@ -544,12 +509,33 @@ pub fn git_push_blocking(path: String) -> Result<(), String> {
     let mut remote = repo.find_remote(&remote_name).map_err(|e| e.to_string())?;
 
     let refspec = format!("refs/heads/{branch_name}:refs/heads/{branch_name}");
+    // The server turns a ref down through this callback, not as an error.
+    let refused = std::cell::RefCell::new(None::<String>);
+    let mut callbacks = make_callbacks();
+    callbacks.push_update_reference(|_, status| {
+        if let Some(reason) = status {
+            *refused.borrow_mut() = Some(reason.to_string());
+        }
+        Ok(())
+    });
     let mut push_opts = PushOptions::new();
-    push_opts.remote_callbacks(make_callbacks());
+    push_opts.remote_callbacks(callbacks);
 
-    remote
-        .push(&[&refspec], Some(&mut push_opts))
-        .map_err(|e| format!("Push failed: {e}"))?;
+    let pushed = remote.push(&[&refspec], Some(&mut push_opts));
+    drop(push_opts);
+    match pushed {
+        Err(e) if e.code() == git2::ErrorCode::NotFastForward || is_behind_remote(e.message()) => {
+            return Ok(PushOutcome { result: "rejected", message: Some(e.message().to_string()) });
+        }
+        Err(e) => return Err(format!("Push failed: {e}")),
+        Ok(()) => {}
+    }
+    if let Some(reason) = refused.into_inner() {
+        if is_behind_remote(&reason) {
+            return Ok(PushOutcome { result: "rejected", message: Some(reason) });
+        }
+        return Err(format!("Push rejected by the remote: {reason}"));
+    }
 
     // First push on a branch with no upstream yet: set one, so future
     // fetch/pull/ahead-behind calculations have something to compare against.
@@ -569,7 +555,7 @@ pub fn git_push_blocking(path: String) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    Ok(PushOutcome { result: "pushed", message: None })
 }
 
 #[tauri::command]

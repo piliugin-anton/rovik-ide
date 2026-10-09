@@ -402,7 +402,70 @@ export type GitStatus = {
   }[];
   /** The repository's working folder (may be above the project folder). */
   workdir: string;
+  /** A merge / rebase in progress (src-tauri/src/git_sync.rs). */
+  operation?: GitOperation | null;
 };
+
+/** A merge / rebase / … in progress (src-tauri/src/git_sync.rs). */
+export interface GitOperation {
+  kind: 'merge' | 'rebase' | 'cherry-pick' | 'revert' | 'bisect';
+  /** The branch it's on (a rebase detaches HEAD). */
+  branch: string | null;
+  /** The merged branch, or what a rebase replays onto. */
+  incoming: string | null;
+  /** Rebase: the step being applied (1-based), of how many. */
+  step: number | null;
+  total: number | null;
+  /** Rebase: summary of the commit being applied. */
+  commit: string | null;
+  conflicts: string[];
+  /** The app can continue it (merge, rebase); others can only be aborted. */
+  canContinue: boolean;
+}
+
+export type PullStrategy = 'merge' | 'rebase' | 'ff-only';
+
+/** What `git pull` does here, per git config (git_pull_config). */
+export interface GitPullConfig {
+  strategy: PullStrategy | null;
+  /** The key it comes from: "pull.rebase", "branch.main.rebase", "pull.ff". */
+  source: string | null;
+  noFf: boolean;
+}
+
+export interface GitPullOutcome {
+  result: 'up-to-date' | 'fast-forward' | 'merged' | 'rebased' | 'conflicts' | 'needs-strategy';
+  conflicts: string[];
+}
+
+export interface GitPushOutcome {
+  /** "rejected": the remote has commits this branch doesn't. */
+  result: 'pushed' | 'rejected';
+  message: string | null;
+}
+
+/** A run of a conflicted file: shared lines, or a conflict. */
+export type GitMergeSegment =
+  | { kind: 'common'; text: string }
+  | { kind: 'conflict'; ours: string; base: string; theirs: string };
+
+/** One conflicted file, its sides and how git would merge them. */
+export interface GitConflictFile {
+  path: string;
+  /** null: that side deleted the file. */
+  ours: string | null;
+  theirs: string | null;
+  base: string | null;
+  /** Not text: only a whole side can be taken. */
+  binary: boolean;
+  segments: GitMergeSegment[];
+  /** Resolved (staged) already. */
+  resolved: boolean;
+  /** The working tree's version now. */
+  current: string | null;
+  oursLabel: string;
+  theirsLabel: string;
+}
 
 export type GitPanelPhase = 'uninitialized' | 'ready' | 'no-repo' | 'error';
 
