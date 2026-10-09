@@ -440,15 +440,17 @@ export interface GitCommitEntry {
 }
 
 /** One page of history (src-tauri/src/git.rs, git_log → GitLogPage).
- * `offset`/`next_offset` count scanned (raw) commits; pass `next_offset`
- * back as `offset` to continue. `has_more` means older commits remain
- * beyond this page's scan budget — a query can return few matches and
- * still be worth searching further. */
+ * `offset`/`next_offset` count scanned (raw) commits from `tip`; pass
+ * `next_offset` back as `offset`, and `tip` back as `tip`, to continue.
+ * `has_more` means older commits remain beyond this page's scan budget —
+ * a query can return few matches and still be worth searching further. */
 export interface GitLogPage {
   commits: GitCommitEntry[];
   has_more: boolean;
   next_offset: number;
   scanned: number;
+  /** The commit the walk started from (HEAD on the first page). */
+  tip?: string | null;
 }
 
 /** One file's stashed content plus the base it changed from (src-tauri/src/git.rs). */

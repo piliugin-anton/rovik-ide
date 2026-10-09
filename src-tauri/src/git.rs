@@ -1027,7 +1027,12 @@ pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
 ///
 /// Pagination: `offset` counts raw revwalk commits already scanned
 /// (not results), so a search page can resume where the previous one
-/// stopped without re-scanning. Each call scans at most `SCAN_CAP`
+/// stopped without re-scanning. Offsets count from `tip`: the first page
+/// walks from HEAD and returns it as `tip`, and later pages pass it back,
+/// so commits made meanwhile (a terminal, another tool) can't shift the
+/// offsets and repeat or skip a commit. A tip that no longer exists
+/// (history rewritten and pruned) falls back to HEAD; the reply's `tip`
+/// then differs from the one sent, and the UI starts over. Each call scans at most `SCAN_CAP`
 /// commits and returns at most `limit` matches; `has_more` tells the UI
 /// whether older commits remain, and `next_offset` is the `offset` for
 /// the next page. The walk is capped per call so typing stays interactive
@@ -1039,6 +1044,7 @@ pub async fn git_log(
     limit: Option<u32>,
     query: Option<String>,
     offset: Option<usize>,
+    tip: Option<String>,
 ) -> Result<GitLogPage, String> {
     // Each call supersedes the ones before it (the panel shows only the
     // latest reply): an older search still scanning stops at its next
@@ -1046,7 +1052,7 @@ pub async fn git_log(
     let generation = GIT_LOG_LATEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     off_main_thread(move || {
         let superseded = || GIT_LOG_LATEST.load(std::sync::atomic::Ordering::SeqCst) != generation;
-        git_log_scan(path, limit, query, offset, &superseded)
+        git_log_scan(path, limit, query, offset, tip.as_deref(), &superseded)
     })
     .await
 }
@@ -1069,6 +1075,10 @@ pub struct GitLogPage {
     pub next_offset: usize,
     #[serde(default)]
     pub scanned: usize,
+    /// The commit this page's walk started from (offsets count from it);
+    /// pass it back with the next page. None for an empty repository.
+    #[serde(default)]
+    pub tip: Option<String>,
 }
 
 /// Commits scanned for one page before stopping (results still capped
@@ -1317,7 +1327,31 @@ pub fn git_log_blocking(
     query: Option<String>,
     offset: Option<usize>,
 ) -> Result<GitLogPage, String> {
-    git_log_scan(path, limit, query, offset, &|| false)
+    git_log_scan(path, limit, query, offset, None, &|| false)
+}
+
+/// A history walk, newest first, from `tip` when it's still a commit in
+/// the repository, else from HEAD. Returns the walk and the commit it
+/// starts from; None when the repository has no commits yet.
+fn history_walk<'r>(repo: &'r Repository, tip: Option<&str>) -> Result<Option<(git2::Revwalk<'r>, git2::Oid)>, String> {
+    let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
+    // Newest first, but never a parent before its child (git's
+    // --date-order): commits made in the same second (rebases, scripts,
+    // quick amends) otherwise come out in any order.
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME).map_err(|e| e.to_string())?;
+    let pinned = tip
+        .and_then(|t| t.parse::<git2::Oid>().ok())
+        .filter(|oid| repo.find_commit(*oid).is_ok());
+    let start = match pinned {
+        Some(oid) => oid,
+        None => match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+            Some(c) => c.id(),
+            // No commits yet.
+            None => return Ok(None),
+        },
+    };
+    walk.push(start).map_err(|e| e.to_string())?;
+    Ok(Some((walk, start)))
 }
 
 /// `git_log_blocking`, stopping early once `superseded` says a newer call
@@ -1327,6 +1361,7 @@ fn git_log_scan(
     limit: Option<u32>,
     query: Option<String>,
     offset: Option<usize>,
+    tip: Option<&str>,
     superseded: &dyn Fn() -> bool,
 ) -> Result<GitLogPage, String> {
     let repo = open_repo(&path)?;
@@ -1336,17 +1371,19 @@ fn git_log_scan(
         .as_deref()
         .map(normalize_query)
         .filter(|t| !t.is_empty());
-    let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
-    walk.set_sorting(git2::Sort::TIME).map_err(|e| e.to_string())?;
     // No commits yet: empty history, not an error.
-    if walk.push_head().is_err() {
+    let Some((walk, start)) = history_walk(&repo, tip)? else {
         return Ok(GitLogPage {
             commits: Vec::new(),
             has_more: false,
             next_offset: skip,
             scanned: 0,
+            tip: None,
         });
-    }
+    };
+    // A tip that no longer resolves fell back to HEAD: the offset counted
+    // from the old tip means nothing here, so this page starts over.
+    let skip = if tip.is_some_and(|t| t != start.to_string()) { 0 } else { skip };
     let scan_cap = if terms.is_some() {
         GIT_LOG_SCAN_CAP
     } else {
@@ -1410,9 +1447,7 @@ fn git_log_scan(
     // and check for one more oid. Bounded to a single step.
     let mut has_more = !exhausted;
     if !has_more && entries.len() >= limit {
-        let mut probe_walk = repo.revwalk().map_err(|e| e.to_string())?;
-        probe_walk.set_sorting(git2::Sort::TIME).map_err(|e| e.to_string())?;
-        if probe_walk.push_head().is_ok() {
+        if let Some((probe_walk, _)) = history_walk(&repo, Some(&start.to_string()))? {
             if probe_walk.skip(skip + scanned).next().is_some() {
                 has_more = true;
             }
@@ -1423,6 +1458,7 @@ fn git_log_scan(
         has_more,
         next_offset: skip + scanned,
         scanned,
+        tip: Some(start.to_string()),
     })
 }
 
@@ -2349,10 +2385,53 @@ mod revert_tests {
     #[test]
     fn a_superseded_search_stops_scanning() {
         let (dir, _repo) = repo_with_commit();
-        let page = git_log_scan(path(&dir), Some(20), Some("init".into()), None, &|| true).unwrap();
+        let page = git_log_scan(path(&dir), Some(20), Some("init".into()), None, None, &|| true).unwrap();
         assert!(page.commits.is_empty() && page.scanned == 0);
         assert!(page.has_more, "stopped, not exhausted");
-        let page = git_log_scan(path(&dir), Some(20), Some("init".into()), None, &|| false).unwrap();
+        let page = git_log_scan(path(&dir), Some(20), Some("init".into()), None, None, &|| false).unwrap();
         assert_eq!(page.commits.len(), 1);
+    }
+
+    fn page_from(dir: &std::path::Path, offset: Option<usize>, tip: Option<&str>) -> GitLogPage {
+        git_log_scan(path(dir), Some(2), None, offset, tip, &|| false).unwrap()
+    }
+
+    #[test]
+    fn a_commit_made_while_paging_doesnt_repeat_or_skip_one() {
+        let (dir, repo) = repo_with_commit();
+        for i in 0..3 {
+            fs::write(dir.join(format!("p{i}.txt")), format!("p{i}\n")).unwrap();
+            commit_all(&repo, &format!("page {i}"));
+        }
+        // 4 commits: page 2 of 2 each.
+        let first = page_from(&dir, None, None);
+        let tip = first.tip.clone().expect("the walk's start");
+        assert_eq!(tip, repo.head().unwrap().peel_to_commit().unwrap().id().to_string());
+        // Someone commits from a terminal before "load more".
+        fs::write(dir.join("late.txt"), "late\n").unwrap();
+        commit_all(&repo, "made meanwhile");
+        let second = page_from(&dir, Some(first.next_offset), Some(&tip));
+        assert_eq!(second.tip.as_deref(), Some(tip.as_str()), "still the same session");
+        let summaries: Vec<&str> =
+            first.commits.iter().chain(&second.commits).map(|c| c.summary.as_str()).collect();
+        // Every commit of the session once, in order; the new one isn't in it.
+        assert_eq!(summaries, ["page 2", "page 1", "page 0", "init"]);
+        assert!(!second.has_more);
+        // Counting from HEAD instead (what paging did before) repeats one.
+        let shifted = page_from(&dir, Some(first.next_offset), None);
+        assert_eq!(shifted.commits[0].summary, "page 1", "the old behaviour: page 1 again");
+        // A fresh session sees the new commit.
+        assert_eq!(page_from(&dir, None, None).commits[0].summary, "made meanwhile");
+    }
+
+    #[test]
+    fn a_tip_that_no_longer_exists_starts_over_from_head() {
+        let (dir, _repo) = repo_with_commit();
+        let gone = "0123456789abcdef0123456789abcdef01234567";
+        let page = page_from(&dir, Some(5), Some(gone));
+        // Fell back to HEAD, from the start: the old offset meant nothing here.
+        assert_ne!(page.tip.as_deref(), Some(gone));
+        assert_eq!(page.commits.len(), 1);
+        assert_eq!(page.commits[0].summary, "init");
     }
 }

@@ -549,6 +549,10 @@ export function GitPanel(props: GitPanelProps) {
   // page's scan budget — keep it separate from `commitsLoading` so the
   // first page and "load more" have their own spinners.
   const [historyOffset, setHistoryOffset] = createSignal(0);
+  // The commit the paging session walks from (HEAD when it started):
+  // offsets count from it, so commits made meanwhile (a terminal) can't
+  // make "load more" repeat or skip one. A reset starts a new session.
+  let historyTip: string | null = null;
   const [hasMoreHistory, setHasMoreHistory] = createSignal(false);
   const [historyLoadingMore, setHistoryLoadingMore] = createSignal(false);
   let historySeq = 0;
@@ -684,6 +688,7 @@ export function GitPanel(props: GitPanelProps) {
     const q = (query ?? historyQuery()).trim();
     const run = ++historySeq;
     const offset = mode === 'more' ? historyOffset() : 0;
+    const tip = mode === 'more' ? historyTip : null;
     if (mode === 'more') setHistoryLoadingMore(true);
     else setCommitsLoading(true);
     try {
@@ -692,8 +697,17 @@ export function GitPanel(props: GitPanelProps) {
         limit: HISTORY_PAGE_LIMIT,
         query: q ? q : null,
         offset,
+        tip,
       });
       if (run !== historySeq) return;
+      // The session's tip no longer exists (history rewritten and pruned):
+      // the backend started over from HEAD, so this isn't the next page.
+      if (mode === 'more' && !Array.isArray(page) && page.tip && tip && page.tip !== tip) {
+        historyTip = page.tip;
+        void loadLog(q, 'reset');
+        return;
+      }
+      if (!Array.isArray(page)) historyTip = page.tip ?? null;
       // Accept the legacy `Vec` shape too (older backend): no cursor.
       const list = Array.isArray(page) ? page : (page.commits ?? []);
       const hasMore = Array.isArray(page) ? false : !!page.has_more;
