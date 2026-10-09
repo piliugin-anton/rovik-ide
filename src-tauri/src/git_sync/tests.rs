@@ -1,4 +1,5 @@
 use super::*;
+use crate::merge::MARKER;
 use std::fs;
 use std::path::PathBuf;
 

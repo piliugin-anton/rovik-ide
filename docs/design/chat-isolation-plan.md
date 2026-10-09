@@ -748,5 +748,19 @@ once; they touch different files. Everything else is sequential.
 
 ## Notes from implementation
 
-(Empty. Agents add short notes here when the code doesn't match an
-assumption in this plan; see rule 6.)
+- **Phase 0 (T01–T05).**
+  - A whole-file write over a file the run never read is refused only when
+    its current content is another writer's change through the app (the
+    ledger in `file_guard.rs`). Requiring a read before every write would
+    have changed how existing chats work. A run that did read the file is
+    refused on any change since.
+  - libgit2's in-memory merge fails with "no error" unless libgit2 was
+    initialised first; the Git panel used to do that by accident.
+    `merge::merge3_raw` initialises it itself.
+  - The editor's dialog offers **Overwrite** and **Compare** (the version
+    on disk in a read-only tab, differences from the unsaved text marked)
+    instead of Reload / Overwrite / Compare. Reload would throw away the
+    unsaved text in one click; it stays reachable by closing the tab.
+  - `e2e_tests::plan_mode_asks_and_saves_the_plan` and
+    `e2e_tests::a_revised_plan_replaces_the_chats_plan_file` already fail
+    on the base branch, unrelated to this work.

@@ -403,6 +403,126 @@ async fn a_partly_accepted_edit_writes_only_those_changes() {
 }
 
 #[tokio::test]
+async fn a_whole_write_over_another_chats_unseen_change_is_refused() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    // Another chat changed the file; this one never read it.
+    let other = crate::file_guard::Seen::new("other-chat");
+    other.record(&h.project.join("a.txt"), b"one\n");
+    crate::file_guard::write_for_chat(&h.project.join("a.txt"), b"other's change\n", &other).unwrap();
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "mine\n" }) },
+        // The refusal showed the whole file: it counts as read.
+        Reply::Call { id: "w2", name: "write", args: json!({ "path": "a.txt", "content": "other's change\nmine\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Write"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let refused = result_of(&messages, "w1");
+    assert!(
+        refused.content.starts_with("Error: a.txt changed since you last read it (by another chat); your write was not applied."),
+        "{}",
+        refused.content
+    );
+    assert!(refused.content.contains("other's change"), "{}", refused.content);
+    assert_eq!(h.file("a.txt").as_deref(), Some("other's change\nmine\n"));
+}
+
+#[tokio::test]
+async fn an_edit_after_an_unrelated_change_still_applies() {
+    let h = harness(&[("a.txt", "one\ntwo\n")]).await;
+    let other = crate::file_guard::Seen::new("other-chat");
+    other.record(&h.project.join("a.txt"), b"one\ntwo\n");
+    crate::file_guard::write_for_chat(&h.project.join("a.txt"), b"one\ntwo\nthree\n", &other).unwrap();
+    let (url, _) = model(vec![
+        Reply::Call { id: "e1", name: "write", args: json!({ "path": "a.txt", "old_text": "one", "content": "ONE" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Edit"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nthree\n"));
+}
+
+fn user_approves_edits() -> Permissions {
+    Permissions {
+        edit_approval: permissions::ApprovalRule { required: true, by: permissions::Approver::User },
+        ..quiet_permissions()
+    }
+}
+
+#[tokio::test]
+async fn an_approved_edit_merges_with_a_change_made_while_it_waited() {
+    let h = harness(&[("a.txt", "one\ntwo\nthree\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "ONE\ntwo\nthree\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Caps"), user_approves_edits())).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
+    // Another chat changes another line while the user reviews.
+    std::fs::write(h.project.join("a.txt"), "one\ntwo\nTHREE\n").unwrap();
+    let app = h.app.handle().clone();
+    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Allow);
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nTHREE\n"));
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "w1").content.contains("changed while this edit waited for approval"));
+}
+
+#[tokio::test]
+async fn a_partly_accepted_edit_keeps_a_change_made_while_it_waited() {
+    let h = harness(&[("a.txt", "one\ntwo\nthree\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "old_text": "one", "content": "ONE" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Caps"), user_approves_edits())).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
+    std::fs::write(h.project.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+    let app = h.app.handle().clone();
+    agent_resolve_approval(
+        app.clone(),
+        app.state(),
+        "w1".into(),
+        ApprovalDecision::Partial { content: "ONE\ntwo\nthree\n".into(), total: 1, rejected: Vec::new() },
+    );
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nthree\nfour\n"));
+}
+
+#[tokio::test]
+async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
+    let h = harness(&[("a.txt", "one\ntwo\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "ONE\ntwo\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Caps"), user_approves_edits())).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
+    std::fs::write(h.project.join("a.txt"), "uno\ntwo\n").unwrap();
+    let app = h.app.handle().clone();
+    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Allow);
+    // The same call is asked again, against the file as it is now.
+    for _ in 0..200 {
+        if h.events_of("approvalRequested").len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let again = h.events_of("approvalRequested");
+    assert_eq!(again.len(), 2, "{again:#?}");
+    assert_eq!(again[1]["request"]["edit"]["current"], "uno\ntwo\n");
+    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Deny);
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("uno\ntwo\n"));
+}
+
+#[tokio::test]
 async fn stop_ends_a_run_waiting_for_approval() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![Reply::Call { id: "r1", name: "bash", args: json!({ "command": "ls" }) }]).await;

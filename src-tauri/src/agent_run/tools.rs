@@ -9,6 +9,7 @@ use super::plan::{MAX_TODO_ITEMS, PLAN_BLOCKED_TOOLS};
 use super::StopSignal;
 use crate::code_search::SearchResult;
 use crate::command_tool::CommandOutput;
+use crate::file_guard::Seen;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use crate::outline::Symbol;
@@ -538,17 +539,21 @@ pub fn edit_args(args: &Map<String, Value>) -> Result<EditArgs, String> {
     })
 }
 
-/// Computes (or, unless `dry_run`, makes) a partial write.
-pub fn apply_edit(root: &str, edit: &EditArgs, dry_run: bool) -> Result<crate::agent_tools::EditOutcome, String> {
-    crate::agent_tools::tool_edit_file(
-        root.into(),
-        edit.path.clone(),
-        edit.old_text.clone(),
-        edit.new_text.clone(),
-        edit.start_line,
-        edit.end_line,
-        Some(dry_run),
-    )
+/// Computes (or, unless `dry_run`, makes) a partial write. A run's write
+/// passes what it has `seen` (file_guard.rs).
+pub fn apply_edit(
+    root: &str,
+    edit: &EditArgs,
+    dry_run: bool,
+    seen: Option<&Seen>,
+) -> Result<crate::agent_tools::EditOutcome, String> {
+    let change = crate::agent_tools::Edit {
+        old_text: &edit.old_text,
+        new_text: &edit.new_text,
+        start_line: edit.start_line,
+        end_line: edit.end_line,
+    };
+    crate::agent_tools::edit_file(root, &edit.path, &change, dry_run, seen)
 }
 
 /// Runs one tool call. Never fails: problems come back as an "Error: ..."
@@ -560,6 +565,7 @@ pub async fn execute<R: Runtime>(
     name: &str,
     args_json: &str,
     stop: &Arc<StopSignal>,
+    seen: &Seen,
 ) -> ToolResult {
     let args = if args_json.trim().is_empty() {
         Map::new()
@@ -570,7 +576,7 @@ pub async fn execute<R: Runtime>(
             Err(_) => return ToolResult::text(format!("Error: could not parse arguments as JSON: {args_json}")),
         }
     };
-    match run(app, root, name, &args, stop).await {
+    match run(app, root, name, &args, stop, seen).await {
         Ok(result) => result,
         // Some tools word their own errors ("Error: no declaration named…"):
         // don't prefix those twice.
@@ -585,6 +591,7 @@ async fn run<R: Runtime>(
     name: &str,
     args: &Map<String, Value>,
     stop: &Arc<StopSignal>,
+    seen: &Seen,
 ) -> Result<ToolResult, String> {
     match name {
         "web_search" => {
@@ -663,19 +670,20 @@ async fn run<R: Runtime>(
                 Ok(edit) => edit,
                 Err(e) => return Ok(ToolResult::text(e)),
             };
-            let outcome = apply_edit(root, &edit, false)?;
+            let outcome = apply_edit(root, &edit, false, Some(seen))?;
             return Ok(ToolResult { content: outcome.summary, attachments: Vec::new(), written: Some((edit.path, outcome.content)) });
         }
         "read" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"path\" is required."));
             };
-            crate::agent_tools::tool_read_file_range(
-                root_owned,
-                path.into(),
+            crate::agent_tools::read_file_range(
+                root,
+                path,
                 uint(args, "start_line"),
                 uint(args, "end_line"),
                 text(args, "symbol").map(|s| s.trim().to_string()),
+                Some(seen),
             )?
         }
         "write" => {
@@ -685,7 +693,7 @@ async fn run<R: Runtime>(
             let Some(content) = text(args, "content") else {
                 return Ok(ToolResult::text("Error: \"content\" is required."));
             };
-            crate::agent_tools::tool_write_file(root_owned, path.into(), content.into())?
+            crate::agent_tools::write_file(root, path, content, Some(seen))?
         }
         "bash" => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {

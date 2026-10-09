@@ -91,6 +91,9 @@ pub struct Run<R: Runtime> {
     pub(super) plan_mode: bool,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
+    /// What this run has read and written of each file, so a whole-file
+    /// write over a change it hasn't seen is refused (file_guard.rs).
+    pub(super) seen: Arc<crate::file_guard::Seen>,
     /// The request's user message as sent (with editor context).
     pub(super) current_user_content: Option<String>,
     pub(super) local_date: String,
@@ -483,6 +486,7 @@ impl<R: Runtime> Run<R> {
             app: app.clone(),
             state: state.clone(),
             db: db.clone(),
+            seen: crate::file_guard::Seen::new(dialog_id.clone()),
             dialog_id,
             profile: request.profile,
             options: request.options,

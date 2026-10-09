@@ -20,6 +20,7 @@ import {
   pickProjectFolder,
   readFileContent,
   writeFileContent,
+  CHANGED_ON_DISK,
   pathExists,
   dirEntryCount,
   getPathId,
@@ -596,12 +597,16 @@ export default function App() {
     );
   }
 
-  async function saveActiveFile() {
+  async function saveActiveFile(overwrite = false) {
     const file = activeFile();
     // Read-only preview tabs (e.g. stashed content) are never saved.
     if (!file || file.readOnly || (!file.dirty && !file.deleted)) return;
     try {
-      await writeFileContent(file.path, file.content);
+      // Checked against what the tab loaded, so a save can't erase a change
+      // made on disk meanwhile (an agent chat, a command). A deleted file
+      // has nothing to protect.
+      const expected = overwrite || file.deleted ? undefined : file.originalContent;
+      await writeFileContent(file.path, file.content, expected);
       // A re-created file is a new inode, so it has a new id.
       const id = file.deleted ? await getPathId(file.path).catch(() => file.id) : file.id;
       setOpenFiles((prev) =>
@@ -619,9 +624,59 @@ export default function App() {
       // (which can miss files written into a just-created folder).
       if (file.deleted) tree.refreshAncestors(file.path);
     } catch (err) {
+      const message = String(err);
+      if (message.startsWith(CHANGED_ON_DISK)) {
+        await resolveChangedOnDisk(file, message.slice(CHANGED_ON_DISK.length));
+        return;
+      }
       console.error(`Failed to save ${file.path}:`, err);
-      window.alert(`Couldn't save ${file.name}: ${String(err)}`);
+      window.alert(`Couldn't save ${file.name}: ${message}`);
     }
+  }
+
+  /**
+   * A save refused because the file changed on disk since the tab loaded
+   * it. Overwrite replaces that change with the tab's text; Compare keeps
+   * the tab unsaved and opens the version on disk beside it, with the
+   * differences from the tab's text marked.
+   */
+  async function resolveChangedOnDisk(file: OpenFile, by: string) {
+    const overwrite = await confirmDialog({
+      title: `${file.name} changed on disk`,
+      message:
+        `It was changed ${by} since you opened it. ` +
+        'Overwrite replaces that change with your version. ' +
+        'Compare keeps your text unsaved and opens the version on disk next to it.',
+      confirmLabel: 'Overwrite',
+      cancelLabel: 'Compare',
+      danger: true,
+    });
+    if (overwrite) {
+      if (activePath() !== file.path) setActivePath(file.path);
+      await saveActiveFile(true);
+      return;
+    }
+    let disk: string;
+    try {
+      disk = await readFileContent(file.path);
+    } catch (err) {
+      window.alert(`Couldn't read ${file.name}: ${String(err)}`);
+      return;
+    }
+    const virtualPath = `disk:${file.path}`;
+    const tab: OpenFile = {
+      id: virtualPath,
+      path: virtualPath,
+      name: `${file.name} (on disk)`,
+      content: disk,
+      originalContent: disk,
+      dirty: false,
+      language: file.language,
+      readOnly: true,
+    };
+    setGitBase(virtualPath, file.name, file.content);
+    setOpenFiles((prev) => [...prev.filter((f) => f.path !== virtualPath), tab]);
+    setActivePath(virtualPath);
   }
 
   function isAtOrUnder(path: string, base: string) {
@@ -1766,7 +1821,7 @@ export default function App() {
                 content={() => openFiles().find((f) => f.path === path)?.content ?? ''}
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
                 onChange={(value) => updateContent(path, value)}
-                onSave={saveActiveFile}
+                onSave={() => saveActiveFile()}
                 onCursorChange={setCursorInfo}
                 reveal={revealRequest}
                 onRevealed={() => setRevealRequest(null)}

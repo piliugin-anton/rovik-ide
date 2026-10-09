@@ -5,6 +5,8 @@ use tauri::Manager;
 mod agent;
 mod agent_run;
 mod atomic_file;
+mod file_guard;
+mod merge;
 mod edit_file;
 mod read_file;
 mod read_symbol;

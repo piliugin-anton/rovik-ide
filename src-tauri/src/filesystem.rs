@@ -679,13 +679,43 @@ pub fn read_file_content(path: String) -> Result<String, String> {
     fs::read_to_string(p).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Starts the error of a save refused because the file changed on disk;
+/// the rest is who changed it. The editor offers Overwrite / Compare.
+pub const CHANGED_ON_DISK: &str = "changed-on-disk:";
+
 /// Writes a file, creating any missing parent directories first — saving a
 /// tab whose file (or whole folder) was deleted puts it back. Plain
 /// `fs::write` rather than an atomic rename on purpose: it keeps the inode,
 /// and with it the file's stable id.
+///
+/// `expected`: the content the tab loaded. If the file on disk is no longer
+/// that (an agent, another chat or a program changed it since), nothing is
+/// written and the error starts with [`CHANGED_ON_DISK`], so a save can't
+/// silently erase that change (file_guard.rs). Without it, the file is
+/// written regardless (the user chose to overwrite).
 #[tauri::command]
-pub fn write_file_content(path: String, content: String) -> Result<(), String> {
+pub fn write_file_content(path: String, content: String, expected: Option<String>) -> Result<(), String> {
     let p = Path::new(&path);
+    let expected = expected.map(|e| crate::file_guard::hash(e.as_bytes()));
+    match crate::file_guard::write_for_editor(p, content.as_bytes(), expected) {
+        Ok(()) => Ok(()),
+        Err(crate::file_guard::WriteError::Changed(changed)) => Err(format!(
+            "{CHANGED_ON_DISK}{}",
+            match changed.by {
+                Some(crate::file_guard::Writer::Chat(_)) => "by an agent chat",
+                Some(crate::file_guard::Writer::Editor) => "by another save in the editor",
+                None => "outside the editor: by a command or another program",
+            }
+        )),
+        Err(crate::file_guard::WriteError::Io(e)) => Err(format!("{path}: {e}")),
+    }
+}
+
+/// A file the app writes itself (a saved plan): created with its folders,
+/// in place, under the file's lock, but not as the user's save.
+pub fn write_app_file(path: &str, content: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    let _lock = crate::file_guard::lock(p);
     if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
@@ -1701,5 +1731,32 @@ mod rename_tests {
         assert!(move_cross_device(&state, "id", &link, &dir.join("out")).is_err());
         assert!(fs::symlink_metadata(&link).is_ok(), "source kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+
+    #[test]
+    fn a_save_over_a_change_on_disk_is_refused_until_overwritten() {
+        let dir = std::env::temp_dir().join(format!("editor-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        fs::write(&path, "loaded\n").unwrap();
+        let p = path.to_string_lossy().to_string();
+
+        // Nothing changed: saved.
+        write_file_content(p.clone(), "mine\n".into(), Some("loaded\n".into())).unwrap();
+        // Changed on disk since the tab loaded it (a command, here).
+        fs::write(&path, "theirs\n").unwrap();
+        let err = write_file_content(p.clone(), "mine again\n".into(), Some("mine\n".into())).unwrap_err();
+        assert_eq!(err, format!("{CHANGED_ON_DISK}outside the editor: by a command or another program"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs\n");
+        // Overwrite: no expectation.
+        write_file_content(p, "mine again\n".into(), None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine again\n");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
