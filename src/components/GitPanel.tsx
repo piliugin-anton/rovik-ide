@@ -357,8 +357,20 @@ export function GitPanel(props: GitPanelProps) {
 
   const commitAndMaybePush = () =>
     withBusy(async () => {
+      const st = status();
+      if (!st) return;
       const msg = commitMessage().trim();
-      if (!msg || !status()) return;
+      const hasChanges = st.files.length > 0;
+
+      // Retry / push-only: no message but commits waiting to be pushed
+      // (e.g. a previous push failed with an SSH/network error). There is
+      // nothing to commit, so just push.
+      if (!msg || !hasChanges) {
+        if (st.ahead <= 0) return;
+        await invoke('git_push', { path: props.projectPath });
+        await refreshStatus();
+        return;
+      }
 
       await invoke('git_commit', { path: props.projectPath, message: msg });
       setCommitMessage('');
@@ -398,7 +410,17 @@ export function GitPanel(props: GitPanelProps) {
   // Derived, reactive values (memoized so they actually update on signal
   // changes — reading a signal into a plain `const` outside of a memo/JSX
   // only captures its value once).
-  const canCommit = createMemo(() => !!commitMessage().trim() && !!status() && !busy());
+  // Push-only retry must stay enabled with an empty message: after a commit
+  // succeeds but its auto-push fails (e.g. SSH/network error), `ahead > 0`
+  // with a clean tree and a cleared message is exactly the state we are in —
+  // requiring a message here would leave the Push button disabled forever,
+  // even after a restart.
+  const canCommit = createMemo(() => {
+    const s = status();
+    if (!s || busy()) return false;
+    if (s.ahead > 0) return true;
+    return !!commitMessage().trim() && s.files.length > 0;
+  });
   const commitButtonText = createMemo(() => {
     const s = status();
     return s && s.ahead > 0 ? 'Push' : 'Commit';
