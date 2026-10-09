@@ -1440,6 +1440,25 @@ export default function App() {
             onClick={() => setSidebarTab('chat')}
           >
             AI Chat
+            <Show
+              when={chatStore.hasAnyRunning()}
+              fallback={
+                <Show when={chatStore.hasAnyUnread()}>
+                  <span
+                    class="sidebar-tab-dot"
+                    title="New messages from the agent"
+                    aria-label="New messages from the agent"
+                  />
+                </Show>
+              }
+            >
+              <span
+                class="sidebar-tab-spinner"
+                title="The agent is working"
+                aria-label="The agent is working"
+                role="status"
+              />
+            </Show>
           </button>
           <button
             classList={{ active: sidebarTab() === 'git' }}

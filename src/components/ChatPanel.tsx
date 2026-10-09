@@ -150,6 +150,16 @@ export default function ChatPanel(props: ChatProps) {
   const [searchQuery, setSearchQuery] = createSignal('');
   /** The open chat's agent run is going on (it runs in the backend). */
   const sending = () => isRunning(activeDialogId());
+  /** Chats with a run going on or being started (spinner in the chat list). */
+  const runningListIds = createMemo(() => ({
+    ...store.state.running,
+    ...Object.fromEntries(Object.keys(store.state.starting).map((id) => [id, true as const])),
+  }));
+  /** A background chat (not the open one) finished with unseen messages. */
+  const hasBackgroundUnread = createMemo(() => {
+    const active = activeDialogId();
+    return Object.keys(store.state.unread).some((id) => id !== active);
+  });
   const [loadingHistory, setLoadingHistory] = createSignal(true);
   /** Set when the chat database couldn't be read at startup. */
   const [historyLoadError, setHistoryLoadError] = createSignal<string | null>(null);
@@ -214,6 +224,16 @@ export default function ChatPanel(props: ChatProps) {
 
   let isMounted = true;
   let inputTextareaRef: HTMLTextAreaElement | undefined;
+
+  // This panel is mounted only while the sidebar tab is "chat": while it is,
+  // the active chat's messages are on screen, so arriving agent messages in
+  // it are seen (no dot); anything else gets a dot until it is opened.
+  onMount(() => store.setChatVisible(true));
+  onCleanup(() => store.setChatVisible(false));
+  createEffect(() => {
+    const id = activeDialogId();
+    if (id && store.state.chatVisible) store.markRead(id);
+  });
 
   // The Settings dialog lives in App (gear next to the project selector).
   // Its saves bump aiSettingsRevision — reload our copy (providers /
@@ -2808,6 +2828,13 @@ export default function ChatPanel(props: ChatProps) {
           title="Chat history"
         >
           ☰
+          <Show when={hasBackgroundUnread()}>
+            <span
+              class="chat-history-badge"
+              title="A background chat finished"
+              aria-label="A background chat has new messages"
+            />
+          </Show>
         </button>
 
         <span class="chat-title" title={title()}>
@@ -2837,6 +2864,8 @@ export default function ChatPanel(props: ChatProps) {
             onQueryChange={setHistoryQuery}
             noMatches={!!searchQuery().trim() && searchRows()?.length === 0}
             loading={loadingHistory() || (store.state.list.loading && !store.state.list.loaded)}
+            unreadIds={store.state.unread}
+            runningIds={runningListIds()}
             onSelect={(row) => void selectRow(row)}
             onDelete={(dialog) => void confirmAndDeleteDialog(dialog)}
             onNearEnd={() => {

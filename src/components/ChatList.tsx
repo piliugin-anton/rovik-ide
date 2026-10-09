@@ -41,6 +41,10 @@ export default function ChatList(props: {
   onSelect: (row: ChatListRow) => void;
   onDelete: (dialog: DialogSummary) => void;
   onNearEnd: () => void;
+  /** Chats with unseen agent messages (dot indicator), by dialog id. */
+  unreadIds?: Record<string, true>;
+  /** Chats with an agent run going on (spinner indicator), by dialog id. */
+  runningIds?: Record<string, true>;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let searchRef: HTMLInputElement | undefined;
@@ -210,6 +214,25 @@ export default function ChatList(props: {
                   role="option"
                   aria-selected={entry().row.dialog.id === props.activeId}
                 >
+                  <Show
+                    when={props.runningIds?.[entry().row.dialog.id]}
+                    fallback={
+                      <Show when={props.unreadIds?.[entry().row.dialog.id]}>
+                        <span
+                          class="chat-unread-dot"
+                          title="New messages"
+                          aria-label="New messages from the agent"
+                        />
+                      </Show>
+                    }
+                  >
+                    <span
+                      class="chat-running-spinner"
+                      title="The agent is working"
+                      aria-label="The agent is working"
+                      role="status"
+                    />
+                  </Show>
                   <button
                     class="chat-history-item-main"
                     onClick={() => props.onSelect(entry().row)}

@@ -48,11 +48,43 @@ interface ChatState {
   running: Record<string, true>;
   /** Chats whose run is being started (until the backend answers). */
   starting: Record<string, number>;
+  /** Chats with agent messages the user hasn't seen yet (dot indicator). */
+  unread: Record<string, true>;
+  /** The chat panel is mounted (sidebar tab is "chat"): the active chat is seen. */
+  chatVisible: boolean;
 }
 
 export type MessagePatch = Partial<
   Pick<ChatMessage, 'content' | 'toolCalls' | 'error' | 'failed' | 'pending' | 'meta' | 'finalized'>
 > & { status?: MessageStatus | null };
+
+const UNREAD_KEY = 'tauri-ide:chat-unread';
+
+/** Unread chat ids from the last session (survives restarts; pruned on read/delete). */
+function loadPersistedUnread(): Record<string, true> {
+  try {
+    const raw = localStorage.getItem(UNREAD_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, true> = {};
+    for (const id of Object.keys(parsed as Record<string, unknown>)) {
+      if (typeof id === 'string' && id) out[id] = true;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function savePersistedUnread(unread: Record<string, true>) {
+  try {
+    if (Object.keys(unread).length === 0) localStorage.removeItem(UNREAD_KEY);
+    else localStorage.setItem(UNREAD_KEY, JSON.stringify(unread));
+  } catch (err) {
+    console.error('Failed to persist unread chats:', err);
+  }
+}
 
 function previewOf(text: string): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_CHARS);
@@ -67,6 +99,8 @@ export function createChatStore() {
     error: null,
     running: {},
     starting: {},
+    unread: loadPersistedUnread(),
+    chatVisible: false,
   });
 
   /*
@@ -219,6 +253,7 @@ export function createChatStore() {
 
   function setActive(summary: DialogSummary) {
     setState({ activeId: summary.id, active: { ...summary } });
+    markRead(summary.id);
   }
 
   /** Opens a chat at its newest messages (reusing what's loaded). */
@@ -324,6 +359,48 @@ export function createChatStore() {
 
   /*
    * -------------------------------------------------------------------------
+   * Unread indicators (dot on the "AI Chat" tab + in the chat list)
+   * -------------------------------------------------------------------------
+   */
+
+  /** Whether the user is looking at this chat's messages right now. */
+  function isSeen(dialogId: string): boolean {
+    return state.chatVisible && state.activeId === dialogId;
+  }
+
+  /** Marks a chat unseen when an agent message arrives while it isn't seen. */
+  function markUnreadIfUnseen(dialogId: string) {
+    if (isSeen(dialogId) || state.unread[dialogId]) return;
+    setState('unread', dialogId, true);
+    savePersistedUnread(state.unread);
+  }
+
+  /** The user looked at the chat: its dot goes away. */
+  function markRead(dialogId: string) {
+    if (!state.unread[dialogId]) return;
+    setState(
+      'unread',
+      produce((u) => delete u[dialogId])
+    );
+    savePersistedUnread(state.unread);
+  }
+
+  /** Whether the chat panel's messages are on screen (sidebar tab is chat). */
+  function setChatVisible(visible: boolean) {
+    setState('chatVisible', visible);
+    // Showing the panel means the active chat is seen.
+    if (visible && state.activeId) markRead(state.activeId);
+  }
+
+  /** Any chat the user hasn't looked at yet (drives the tab dot). */
+  const hasAnyUnread = () => Object.keys(state.unread).length > 0;
+
+  /** Any chat with an agent run going on (drives the tab spinner). */
+  const hasAnyRunning = () =>
+    Object.keys(state.running).length > 0 || Object.keys(state.starting).length > 0;
+
+  /*
+   * -------------------------------------------------------------------------
    * Changing chats
    * -------------------------------------------------------------------------
    */
@@ -370,12 +447,14 @@ export function createChatStore() {
       produce((s) => {
         s.list.items = s.list.items.filter((d) => d.id !== dialogId);
         delete s.open[dialogId];
+        delete s.unread[dialogId];
         if (s.activeId === dialogId) {
           s.activeId = null;
           s.active = null;
         }
       })
     );
+    savePersistedUnread(state.unread);
     return persist(() => chatApi.deleteDialog(dialogId));
   }
 
@@ -429,12 +508,18 @@ export function createChatStore() {
     if (added.length === 0) return;
     if (showNew) setState('open', dialogId, 'messages', (list) => [...list, ...added]);
     noteAdded(dialogId, added);
+    // New agent activity the user isn't looking at: dot indicator.
+    if (added.some((m) => m.role !== 'user' && !m.meta?.harness)) markUnreadIfUnseen(dialogId);
   }
 
   /** A change a run made to a stored message (streamed text, its final state). */
   function applyPatch(dialogId: string, messageId: string, patch: MessagePatch) {
     const i = indexOfMessage(dialogId, messageId);
-    if (i < 0) return;
+    if (i < 0) {
+      // Streaming into a chat that isn't open: still unseen activity.
+      markUnreadIfUnseen(dialogId);
+      return;
+    }
     const message = messagesOf(dialogId)[i];
     const { status, ...fields } = patch;
     const next: Partial<ChatMessage> = { ...fields };
@@ -452,6 +537,8 @@ export function createChatStore() {
         d.updatedAt = Date.now();
       });
     }
+    if (message.role !== 'user' && !(message.meta as { harness?: unknown } | undefined)?.harness)
+      markUnreadIfUnseen(dialogId);
   }
 
   /** Store-only change. */
@@ -493,6 +580,10 @@ export function createChatStore() {
     applyPatch,
     markFailed,
     clearError,
+    markRead,
+    setChatVisible,
+    hasAnyUnread,
+    hasAnyRunning,
   };
 }
 

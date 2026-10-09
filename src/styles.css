@@ -657,6 +657,43 @@ body.tree-dragging {
   border-bottom-color: var(--accent);
 }
 
+/* Unseen agent messages: dot on the "AI Chat" tab. */
+.sidebar-tab-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+/* Agent working: spinner on the "AI Chat" tab (replaces the dot while running). */
+.sidebar-tab-spinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  border-top-color: transparent;
+  margin-left: 6px;
+  vertical-align: 0;
+  animation: sidebar-tab-spin 0.8s linear infinite;
+}
+
+@keyframes sidebar-tab-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-tab-spinner,
+  .chat-running-spinner {
+    animation: none;
+  }
+}
+
 .icon-button {
   background: none;
   border: none;
@@ -2091,6 +2128,7 @@ body.tree-dragging {
 
 /* Chat history */
 .chat-history-button {
+  position: relative;
   background: none;
   border: none;
   color: var(--fg-dim);
@@ -2101,6 +2139,17 @@ body.tree-dragging {
 }
 .chat-history-button:hover {
   color: var(--fg);
+}
+/* Background chat finished: dot on the top right corner of the history button. */
+.chat-history-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
 }
 .chat-history {
   border-bottom: 1px solid var(--border);
@@ -2189,6 +2238,29 @@ body.tree-dragging {
 }
 .chat-history-item.active {
   background: var(--bg-history-active);
+}
+/* Unseen agent messages: dot on the far left of the chat row. */
+.chat-unread-dot {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 8px;
+}
+
+/* Agent working: spinner on the far left of the chat row (replaces the dot while running). */
+.chat-running-spinner {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  border-top-color: transparent;
+  margin-left: 8px;
+  animation: sidebar-tab-spin 0.8s linear infinite;
 }
 .chat-history-item-main {
   flex: 1;
