@@ -632,6 +632,169 @@ pub fn git_stash_drop_blocking(path: String, index: usize) -> Result<(), String>
     repo.stash_drop(index).map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitStashFile {
+    pub path: String,
+    pub status: String, // "M" | "A" | "D" | "R" | "?"
+}
+
+fn delta_status(s: git2::Delta) -> &'static str {
+    match s {
+        git2::Delta::Added | git2::Delta::Untracked | git2::Delta::Copied => "A",
+        git2::Delta::Deleted => "D",
+        git2::Delta::Renamed => "R",
+        git2::Delta::Typechange => "M",
+        _ => "M",
+    }
+}
+
+/// The stash commit plus its base tree and optional untracked-files tree.
+///
+/// A stash is a merge commit: parent 0 is the HEAD it was taken on (the
+/// base), parent 1 the index state, and — only when there were untracked
+/// files — parent 2 the untracked files. The stash commit's own tree holds
+/// the tracked working-tree state; untracked files live only in parent 2.
+fn stash_trees(
+    repo: &Repository,
+    index: usize,
+) -> Result<(git2::Tree<'_>, Option<git2::Tree<'_>>, Option<git2::Tree<'_>>), String> {
+    let obj = repo
+        .revparse_single(&format!("stash@{{{index}}}"))
+        .map_err(|_| format!("Stash entry {index} not found"))?;
+    let commit = obj.peel_to_commit().map_err(|e| e.to_string())?;
+    let stash = commit.tree().map_err(|e| e.to_string())?;
+    let base = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let untracked = if commit.parent_count() >= 3 {
+        commit.parent(2).ok().and_then(|p| p.tree().ok())
+    } else {
+        None
+    };
+    Ok((stash, base, untracked))
+}
+
+/// What a stash contains: the files it touched, from diffing the base
+/// against the stash tree (tracked changes) and — when present — the
+/// untracked-files tree. What `git stash show` lists.
+#[tauri::command]
+pub async fn git_stash_show(path: String, index: usize) -> Result<Vec<GitStashFile>, String> {
+    off_main_thread(move || git_stash_show_blocking(path, index)).await
+}
+
+pub fn git_stash_show_blocking(path: String, index: usize) -> Result<Vec<GitStashFile>, String> {
+    let repo = open_repo(&path)?;
+    let (stash, base, untracked) = stash_trees(&repo, index)?;
+    let mut files: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Untracked first: on overlap the tracked diff wins.
+    for other in [untracked.as_ref(), Some(&stash)] {
+        let Some(other) = other else { continue };
+        let diff = repo
+            .diff_tree_to_tree(base.as_ref(), Some(other), None)
+            .map_err(|e| e.to_string())?;
+        for delta in diff.deltas() {
+            let rel = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().into_owned());
+            if let Some(rel) = rel {
+                files.insert(rel, delta_status(delta.status()).to_string());
+            }
+        }
+    }
+    let mut out: Vec<GitStashFile> = files
+        .into_iter()
+        .map(|(path, status)| GitStashFile { path, status })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+/// The stashed version of one file's content, for previewing a stash.
+/// `file` is relative to the repository's working folder. None: the file
+/// was deleted in the stash.
+#[tauri::command]
+pub async fn git_stash_file_content(
+    path: String,
+    index: usize,
+    file: String,
+) -> Result<Option<String>, String> {
+    off_main_thread(move || git_stash_file_content_blocking(path, index, file)).await
+}
+
+pub fn git_stash_file_content_blocking(
+    path: String,
+    index: usize,
+    file: String,
+) -> Result<Option<String>, String> {
+    Ok(git_stash_file_preview_blocking(path, index, file)?.content)
+}
+
+/// One file's stashed content plus the base it changed from, in a single
+/// call: enough to open a read-only editor tab with change marks, showing
+/// what the stash changes. `content`: the stashed version (None: deleted
+/// in the stash); `base`: the version at the stash's base commit (None:
+/// the file is new in the stash). `file` is relative to the repository's
+/// working folder.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitStashFilePreview {
+    pub content: Option<String>,
+    pub base: Option<String>,
+}
+
+#[tauri::command]
+pub async fn git_stash_file_preview(
+    path: String,
+    index: usize,
+    file: String,
+) -> Result<GitStashFilePreview, String> {
+    off_main_thread(move || git_stash_file_preview_blocking(path, index, file)).await
+}
+
+fn read_tree_blob(
+    _repo: &Repository,
+    tree: Option<&git2::Tree<'_>>,
+    rel: &std::path::Path,
+) -> Result<Option<git2::Oid>, String> {
+    let Some(tree) = tree else { return Ok(None) };
+    Ok(tree
+        .get_path(rel)
+        .ok()
+        .and_then(|e| if e.kind() == Some(git2::ObjectType::Blob) { Some(e.id()) } else { None }))
+}
+
+fn read_blob_text(repo: &Repository, id: git2::Oid, file: &str) -> Result<String, String> {
+    let blob = repo.find_blob(id).map_err(|e| e.to_string())?;
+    if blob.is_binary() {
+        return Err(format!("{file}: binary file"));
+    }
+    if blob.size() > 512 * 1024 {
+        return Err(format!("{file}: too large to preview"));
+    }
+    Ok(String::from_utf8_lossy(blob.content()).into_owned())
+}
+
+pub fn git_stash_file_preview_blocking(
+    path: String,
+    index: usize,
+    file: String,
+) -> Result<GitStashFilePreview, String> {
+    let repo = open_repo(&path)?;
+    let rel = std::path::Path::new(&file);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("{file}: not a path inside the repository"));
+    }
+    let (stash, base_tree, untracked) = stash_trees(&repo, index)?;
+    let mut content_id = read_tree_blob(&repo, Some(&stash), rel)?;
+    if content_id.is_none() {
+        content_id = read_tree_blob(&repo, untracked.as_ref(), rel)?;
+    }
+    let content = content_id.map(|id| read_blob_text(&repo, id, &file)).transpose()?;
+    let base = read_tree_blob(&repo, base_tree.as_ref(), rel)?
+        .map(|id| read_blob_text(&repo, id, &file))
+        .transpose()?;
+    Ok(GitStashFilePreview { content, base })
+}
+
 /// Throws away every change in the working tree: tracked files go back to
 /// HEAD, and files git doesn't know yet go to the trash (as with reverting
 /// one file, so the action can be undone from there).
@@ -957,5 +1120,76 @@ mod revert_tests {
         assert_eq!(st.workdir, path(&dir).trim_end_matches(['/', '\\']));
         let b = st.files.iter().find(|f| f.path == "b.txt").unwrap();
         assert!(b.unstaged && !b.staged);
+    }
+
+    fn stash_repo() -> PathBuf {
+        let (dir, repo) = repo_with_commit();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "t").unwrap();
+        config.set_str("user.email", "t@t").unwrap();
+        fs::write(dir.join("src/a.rs"), "fn a() { stashed }\n").unwrap();
+        fs::write(dir.join("new.txt"), "untracked stash me\n").unwrap();
+        git_stash_push_blocking(path(&dir), Some("my stash".into())).unwrap();
+        dir
+    }
+
+    #[test]
+    fn stash_show_lists_tracked_and_untracked_files() {
+        let dir = stash_repo();
+        let files = git_stash_show_blocking(path(&dir), 0).unwrap();
+        let a = files.iter().find(|f| f.path == "src/a.rs").unwrap();
+        assert_eq!(a.status, "M");
+        let n = files.iter().find(|f| f.path == "new.txt").unwrap();
+        assert_eq!(n.status, "A");
+        assert!(git_status_blocking(path(&dir)).unwrap().files.is_empty(), "tree is clean after stash");
+    }
+
+    #[test]
+    fn stash_file_content_returns_stashed_versions() {
+        let dir = stash_repo();
+        assert_eq!(
+            git_stash_file_content_blocking(path(&dir), 0, "src/a.rs".into()).unwrap().as_deref(),
+            Some("fn a() { stashed }\n")
+        );
+        assert_eq!(
+            git_stash_file_content_blocking(path(&dir), 0, "new.txt".into()).unwrap().as_deref(),
+            Some("untracked stash me\n")
+        );
+        // A file untouched by the stash still resolves from the stash commit.
+        assert_eq!(
+            git_stash_file_content_blocking(path(&dir), 0, "b.txt".into()).unwrap().as_deref(),
+            Some("b\n")
+        );
+    }
+
+    #[test]
+    fn stash_file_content_deleted_returns_none_and_bad_index_errors() {
+        let (dir, repo) = repo_with_commit();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "t").unwrap();
+        config.set_str("user.email", "t@t").unwrap();
+        fs::remove_file(dir.join("b.txt")).unwrap();
+        git_stash_push_blocking(path(&dir), None).unwrap();
+        let files = git_stash_show_blocking(path(&dir), 0).unwrap();
+        assert!(files.iter().any(|f| f.path == "b.txt" && f.status == "D"), "{files:?}");
+        assert_eq!(git_stash_file_content_blocking(path(&dir), 0, "b.txt".into()).unwrap(), None);
+        assert!(git_stash_show_blocking(path(&dir), 42).is_err());
+        assert!(git_stash_file_content_blocking(path(&dir), 0, "../etc/passwd".into()).is_err());
+    }
+
+    #[test]
+    fn stash_file_preview_returns_content_and_base() {
+        let dir = stash_repo();
+        // Tracked modification: stashed content plus the base it changed from.
+        let p = git_stash_file_preview_blocking(path(&dir), 0, "src/a.rs".into()).unwrap();
+        assert_eq!(p.content.as_deref(), Some("fn a() { stashed }\n"));
+        assert_eq!(p.base.as_deref(), Some("fn a() {}\n"));
+        // Untracked file: new in the stash, so no base.
+        let p = git_stash_file_preview_blocking(path(&dir), 0, "new.txt".into()).unwrap();
+        assert_eq!(p.content.as_deref(), Some("untracked stash me\n"));
+        assert_eq!(p.base, None);
+        // Bad index and outside paths error.
+        assert!(git_stash_file_preview_blocking(path(&dir), 42, "src/a.rs".into()).is_err());
+        assert!(git_stash_file_preview_blocking(path(&dir), 0, "../etc/passwd".into()).is_err());
     }
 }

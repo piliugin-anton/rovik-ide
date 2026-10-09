@@ -20,6 +20,7 @@ import {
   GitPanelPhase,
   GitStatus,
   GitStashEntry,
+  GitStashFile,
   GitCommitEntry,
 } from '../types';
 import { confirmDialog } from './ConfirmDialog';
@@ -32,10 +33,14 @@ interface GitPanelProps {
   projectPath: string;
   /** A changed file was clicked: open it with its changes marked. */
   onOpenFile?: (absPath: string, file: string) => void;
+  /** A stashed file was clicked: open its stashed content read-only. */
+  onOpenStashFile?: (absPath: string, file: string, index: number, message?: string) => void;
   /** A file was reverted on disk (its tab should show the restored text). */
   onFileReverted?: (absPath: string) => void;
   /** Git's state may have changed (commit, revert, checkout, refresh). */
   onChanged?: () => void;
+  /** Stash list changed (push/pop/drop): preview tabs are now stale. */
+  onStashChanged?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +476,17 @@ export function GitPanel(props: GitPanelProps) {
   const [stashMessage, setStashMessage] = createSignal('');
   const [stashes, setStashes] = createSignal<GitStashEntry[]>([]);
   const [stashesLoading, setStashesLoading] = createSignal(false);
+  // Stash preview: which entry is expanded and the files each expanded
+  // entry touched. Clicking a file opens its stashed content in a
+  // read-only editor tab (deleted files have nothing to open). Cleared
+  // whenever the stash list changes (pop, drop, push shift indices).
+  const [expandedStash, setExpandedStash] = createSignal<number | null>(null);
+  const [stashFiles, setStashFiles] = createSignal<Record<number, GitStashFile[]>>({});
+  const [stashFilesLoading, setStashFilesLoading] = createSignal<number | null>(null);
+  const clearStashPreview = () => {
+    setExpandedStash(null);
+    setStashFiles({});
+  };
   const [commits, setCommits] = createSignal<GitCommitEntry[]>([]);
   const [commitsLoading, setCommitsLoading] = createSignal(false);
 
@@ -505,6 +521,29 @@ export function GitPanel(props: GitPanelProps) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
     } finally {
       setStashesLoading(false);
+    }
+  };
+
+  /** Expand a stash to show the files it touched (`git_stash_show`). */
+  const toggleStashExpanded = async (index: number) => {
+    if (expandedStash() === index) {
+      setExpandedStash(null);
+      return;
+    }
+    setExpandedStash(index);
+    if (stashFiles()[index]) return;
+    setStashFilesLoading(index);
+    try {
+      const files = await invoke<GitStashFile[]>('git_stash_show', {
+        path: props.projectPath,
+        index,
+      });
+      setStashFiles((prev) => ({ ...prev, [index]: files }));
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : String(e));
+      setExpandedStash(null);
+    } finally {
+      setStashFilesLoading(null);
     }
   };
 
@@ -577,6 +616,8 @@ export function GitPanel(props: GitPanelProps) {
         message: stashMessage().trim() || null,
       });
       setStashMessage('');
+      clearStashPreview();
+      props.onStashChanged?.();
       closeMore();
       await refreshStatus();
     });
@@ -584,6 +625,8 @@ export function GitPanel(props: GitPanelProps) {
   const stashPop = (index: number) =>
     withBusy(async () => {
       await invoke('git_stash_pop', { path: props.projectPath, index });
+      clearStashPreview();
+      props.onStashChanged?.();
       await loadStashes();
       await refreshStatus();
     });
@@ -598,6 +641,8 @@ export function GitPanel(props: GitPanelProps) {
     if (!ok) return;
     await withBusy(async () => {
       await invoke('git_stash_drop', { path: props.projectPath, index });
+      clearStashPreview();
+      props.onStashChanged?.();
       await loadStashes();
       await refreshStatus();
     });
@@ -1091,35 +1136,106 @@ export function GitPanel(props: GitPanelProps) {
                 <ul class="context-menu-list">
                   <For each={stashes()}>
                     {(s) => (
-                      <li class="context-menu-item git-more-row" title={s.message}>
-                        <IconArchive />
-                        <span class="git-more-row-label">{s.message}</span>
-                        <button
-                          type="button"
-                          class="git-more-row-button"
-                          title="Restore this stash and remove it from the list"
-                          aria-label={`Restore stash ${s.message}`}
-                          disabled={busy()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void stashPop(s.index);
-                          }}
+                      <li class="git-stash-entry">
+                        <div
+                          class="context-menu-item git-more-row"
+                          title={`${s.message}\nClick to see what this stash contains`}
+                          onClick={() => void toggleStashExpanded(s.index)}
                         >
-                          <span class="git-more-row-text">Pop</span>
-                        </button>
-                        <button
-                          type="button"
-                          class="git-more-row-button git-menu-danger"
-                          title="Forget this stash without restoring it"
-                          aria-label={`Forget stash ${s.message}`}
-                          disabled={busy()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void stashDrop(s.index);
-                          }}
-                        >
-                          <IconTrash />
-                        </button>
+                          <span class="tree-row-chevron">
+                            <ChevronIcon open={expandedStash() === s.index} />
+                          </span>
+                          <IconArchive />
+                          <span class="git-more-row-label">{s.message}</span>
+                          <button
+                            type="button"
+                            class="git-more-row-button"
+                            title="Restore this stash and remove it from the list"
+                            aria-label={`Restore stash ${s.message}`}
+                            disabled={busy()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void stashPop(s.index);
+                            }}
+                          >
+                            <span class="git-more-row-text">Pop</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="git-more-row-button git-menu-danger"
+                            title="Forget this stash without restoring it"
+                            aria-label={`Forget stash ${s.message}`}
+                            disabled={busy()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void stashDrop(s.index);
+                            }}
+                          >
+                            <IconTrash />
+                          </button>
+                        </div>
+                        <Show when={expandedStash() === s.index}>
+                          <div class="git-stash-files">
+                            <Show when={stashFilesLoading() === s.index}>
+                              <div class="context-menu-item context-menu-loading">
+                                <IconSpinner /> <span>Loading stash contents...</span>
+                              </div>
+                            </Show>
+                            <Show
+                              when={
+                                stashFilesLoading() !== s.index &&
+                                (stashFiles()[s.index] ?? []).length === 0
+                              }
+                            >
+                              <div class="git-more-note">Empty stash.</div>
+                            </Show>
+                            <For each={stashFiles()[s.index] ?? []}>
+                              {(f) => {
+                                const meta = () => statusMeta(f.status);
+                                const name = () => f.path.split('/').pop() ?? f.path;
+                                const deleted = () => f.status === 'D';
+                                return (
+                                  <div
+                                    class="context-menu-item git-stash-file-row"
+                                    classList={{ clickable: !deleted() }}
+                                    title={
+                                      deleted()
+                                        ? `${f.path} (deleted in this stash)`
+                                        : `${f.path}: click to open the stashed version`
+                                    }
+                                    onClick={() => {
+                                      // A deleted file has no content to open.
+                                      if (!deleted())
+                                        props.onOpenStashFile?.(
+                                          absPathOf(f.path),
+                                          f.path,
+                                          s.index,
+                                          s.message
+                                        );
+                                    }}
+                                  >
+                                    <span class="tree-row-icon">
+                                      <FileIcon />
+                                    </span>
+                                    <span
+                                      class="tree-row-name"
+                                      classList={{ 'git-file-deleted': deleted() }}
+                                      title={f.path}
+                                    >
+                                      {name()}
+                                    </span>
+                                    <span
+                                      class={`tree-row-badge git-file-badge ${meta().className}`}
+                                      title={meta().title}
+                                    >
+                                      {meta().label}
+                                    </span>
+                                  </div>
+                                );
+                              }}
+                            </For>
+                          </div>
+                        </Show>
                       </li>
                     )}
                   </For>

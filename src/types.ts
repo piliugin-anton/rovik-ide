@@ -27,6 +27,10 @@ export interface OpenFile {
   language: string;
   /** The file is gone from disk; the tab keeps its text until saved or closed. */
   deleted?: boolean;
+  /** A preview tab (e.g. stashed content): shown read-only, never saved. */
+  readOnly?: boolean;
+  /** Which stash a read-only preview tab shows. */
+  stash?: { index: number; file: string; message?: string };
 }
 
 /**
@@ -390,6 +394,12 @@ export interface GitStashEntry {
   message: string;
 }
 
+/** One file touched by a stash, from `git_stash_show` (src-tauri/src/git.rs). */
+export interface GitStashFile {
+  path: string;
+  status: GitFileStatusCode;
+}
+
 /** One recent commit for the history view (src-tauri/src/git.rs, git_log). */
 export interface GitCommitEntry {
   oid: string;
@@ -398,6 +408,14 @@ export interface GitCommitEntry {
   author: string;
   /** Commit time, seconds since the epoch. */
   time: number;
+}
+
+/** One file's stashed content plus the base it changed from (src-tauri/src/git.rs). */
+export interface GitStashFilePreview {
+  /** The stashed version; null when the file was deleted in the stash. */
+  content: string | null;
+  /** The version at the stash's base commit; null when the file is new. */
+  base: string | null;
 }
 
 export interface WebSearchHit {

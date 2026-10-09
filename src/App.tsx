@@ -425,7 +425,7 @@ export default function App() {
   const stopWritten = onFileWritten((path, content) => {
     setOpenFiles((prev) =>
       prev.map((f) =>
-        f.path === path && !f.dirty ? { ...f, content, originalContent: content } : f
+        f.path === path && !f.dirty && !f.readOnly ? { ...f, content, originalContent: content } : f
       )
     );
     // A write the user approved (a new file, say) isn't an unreviewed edit,
@@ -578,15 +578,15 @@ export default function App() {
   function updateContent(path: string, content: string) {
     setOpenFiles((prev) =>
       prev.map((f) =>
-        f.path === path ? { ...f, content, dirty: content !== f.originalContent } : f
+        f.path === path && !f.readOnly ? { ...f, content, dirty: content !== f.originalContent } : f
       )
     );
   }
 
   async function saveActiveFile() {
     const file = activeFile();
-    // A deleted file is saved even without edits: saving is how it comes back.
-    if (!file || (!file.dirty && !file.deleted)) return;
+    // Read-only preview tabs (e.g. stashed content) are never saved.
+    if (!file || file.readOnly || (!file.dirty && !file.deleted)) return;
     try {
       await writeFileContent(file.path, file.content);
       // A re-created file is a new inode, so it has a new id.
@@ -624,7 +624,9 @@ export default function App() {
    * a re-create in one debounce window can be delivered in either order.
    */
   async function syncDeletedTabs(changedPath?: string) {
-    const targets = openFiles().filter((f) => !changedPath || isAtOrUnder(f.path, changedPath));
+    const targets = openFiles().filter(
+      (f) => !f.readOnly && (!changedPath || isAtOrUnder(f.path, changedPath))
+    );
     if (targets.length === 0) return;
     const states = await Promise.all(
       targets.map(async (f) => {
@@ -689,6 +691,77 @@ export default function App() {
     else await openPath(abs);
   }
 
+  /*
+   * From the Git tab's stash list: open a stashed file's stashed content in
+   * a read-only tab, with change marks against the stash's base commit —
+   * showing what the stash changes. Deleted files are never opened (there
+   * is no content to show); binary/too-large files alert and stay closed.
+   */
+  async function openFromStash(abs: string, file: string, index: number, message?: string) {
+    const root = rootPath();
+    if (!root) return;
+    let preview: import('./types').GitStashFilePreview;
+    try {
+      preview = await invoke<import('./types').GitStashFilePreview>('git_stash_file_preview', {
+        path: root,
+        index,
+        file,
+      });
+    } catch (err) {
+      window.alert(`Couldn't preview ${file}: ${String(err)}`);
+      return;
+    }
+    // Deleted in the stash: nothing to open.
+    if (preview.content === null) return;
+    const virtualPath = `stash@${index}:${abs}`;
+    const existing = openFiles().find((f) => f.path === virtualPath);
+    if (existing) {
+      setActivePath(existing.path);
+      return;
+    }
+    const shortName = file.split('/').pop() ?? file;
+    const stashFile: OpenFile = {
+      id: virtualPath,
+      path: virtualPath,
+      name: `${shortName} (stash@${index})`,
+      content: preview.content,
+      originalContent: preview.content,
+      dirty: false,
+      language: languageForFile(shortName),
+      readOnly: true,
+      stash: { index, file, message },
+    };
+    setGitBase(virtualPath, file, preview.base ?? '');
+    setOpenFiles((prev) => [...prev, stashFile]);
+    setActivePath(virtualPath);
+    const first = diffLines(
+      splitLines(preview.base ?? '').lines,
+      splitLines(preview.content).lines
+    )[0];
+    if (first) {
+      setRevealRequest({
+        path: virtualPath,
+        line: first.origStart,
+        column: 1,
+        length: 0,
+        nonce: Date.now(),
+      });
+    }
+  }
+
+  /** Stash list changed (push/pop/drop): indices shift, so drop preview tabs. */
+  function closeStashTabs() {
+    const stale = openFiles().filter((f) => f.readOnly && f.stash);
+    if (stale.length === 0) return;
+    for (const f of stale) clearGitBase(f.path);
+    setOpenFiles((prev) => prev.filter((f) => !(f.readOnly && f.stash)));
+    const current = activePath();
+    if (current && stale.some((f) => f.path === current)) {
+      const remaining = openFiles().filter((f) => !(f.readOnly && f.stash));
+      setActivePath(remaining.length ? remaining[remaining.length - 1].path : null);
+    }
+  }
+
   /**
    * "Implement this plan" over a plan file: saves it, then hands its text to
    * the chat, which starts the run in Agent mode (lib/plans.ts).
@@ -714,6 +787,8 @@ export default function App() {
     if (!root) return;
     const run = ++gitRefresh;
     for (const { absPath, file } of markedFiles()) {
+      // Stash preview tabs keep the stash's own base commit, not HEAD.
+      if (absPath.startsWith('stash@')) continue;
       void invoke<string | null>('git_base_content', { path: root, file })
         .then((base) => {
           if (run === gitRefresh) setGitBase(absPath, file, base);
@@ -1323,7 +1398,8 @@ export default function App() {
   createEffect(() => {
     const root = rootPath();
     const expandedPaths = Array.from(tree.expanded());
-    const files = openFiles();
+    // Read-only preview tabs (stash content) live only for this session.
+    const files = openFiles().filter((f) => !f.readOnly);
     const collapsedTerminal = terminalCollapsed();
     if (!root) return;
     saveLastProject(root, files, expandedPaths, collapsedTerminal).catch((err) => {
@@ -1557,8 +1633,12 @@ export default function App() {
               <GitPanel
                 projectPath={rootPath()!}
                 onOpenFile={(abs, file) => void openFromGit(abs, file)}
+                onOpenStashFile={(abs, file, index, message) =>
+                  void openFromStash(abs, file, index, message)
+                }
                 onFileReverted={(abs) => void reloadFromDisk(abs)}
                 onChanged={refreshGitBases}
+                onStashChanged={closeStashTabs}
               />
             </Match>
             <Match when={!rootPath()}>
@@ -1608,6 +1688,8 @@ export default function App() {
                 onCursorChange={setCursorInfo}
                 reveal={revealRequest}
                 onRevealed={() => setRevealRequest(null)}
+                readOnly={() => openFiles().find((f) => f.path === path)?.readOnly ?? false}
+                readOnlyMessage="Stashed preview — read-only. Pop the stash to edit."
               />
             )}
           </Show>

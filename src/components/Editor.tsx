@@ -1,4 +1,12 @@
-import { onMount, onCleanup, createEffect, untrack, createRoot, createSignal, Show } from 'solid-js';
+import {
+  onMount,
+  onCleanup,
+  createEffect,
+  untrack,
+  createRoot,
+  createSignal,
+  Show,
+} from 'solid-js';
 import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import type { RevealRequest } from '../types';
@@ -43,6 +51,9 @@ interface EditorProps {
   /** Select and center a range (search results); cleared via onRevealed. */
   reveal?: Accessor<RevealRequest | null>;
   onRevealed?: () => void;
+  /** Read-only preview (e.g. stashed content): no edits, with a message. */
+  readOnly?: Accessor<boolean>;
+  readOnlyMessage?: string;
 }
 
 export default function Editor(props: EditorProps) {
@@ -122,6 +133,24 @@ export default function Editor(props: EditorProps) {
         enabled: editorSettings().minimap,
       },
       renderWhitespace: editorSettings().renderWhitespace,
+      readOnly: props.readOnly?.() ?? false,
+      readOnlyMessage: { value: props.readOnlyMessage ?? 'This preview is read-only.' },
+    });
+
+    // Read-only preview tabs (e.g. stashed content): lock the editor.
+    // The component remounts per tab (keyed), so the creation flag above
+    // covers it; this effect keeps it correct if the flag ever flips.
+    createEffect(() => {
+      const ro = props.readOnly?.() ?? false;
+      if (!editor || disposed) return;
+      // Agent-review tabs manage readOnly themselves (pendingEditFor);
+      // preview tabs never have approvals, so no conflict in practice.
+      if (ro) {
+        editor.updateOptions({
+          readOnly: true,
+          readOnlyMessage: { value: props.readOnlyMessage ?? 'This preview is read-only.' },
+        });
+      }
     });
 
     // Settings → Editor (theme, font size, formatting): applied live.
@@ -374,11 +403,7 @@ export default function Editor(props: EditorProps) {
         display: 'flex',
       }}
     >
-      <div
-        ref={containerRef}
-        class="editor"
-        style={{ height: '100%', width: '100%' }}
-      />
+      <div ref={containerRef} class="editor" style={{ height: '100%', width: '100%' }} />
       <Show when={defsLoading()}>
         <div class="editor-loading-overlay">
           <span>Loading definitions…</span>

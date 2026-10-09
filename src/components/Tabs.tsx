@@ -15,7 +15,11 @@ export default function Tabs(props: TabsProps) {
         {(file) => (
           <div
             class="tab"
-            classList={{ active: file.path === props.activePath(), deleted: !!file.deleted }}
+            classList={{
+              active: file.path === props.activePath(),
+              deleted: !!file.deleted,
+              readonly: !!file.readOnly,
+            }}
             onClick={() => props.onSelect(file.path)}
             // Middle click closes, as in browsers and most editors. Pressing
             // the wheel would otherwise start autoscroll.
@@ -27,7 +31,13 @@ export default function Tabs(props: TabsProps) {
               e.preventDefault();
               props.onClose(file.path);
             }}
-            title={file.deleted ? `${file.path} (deleted from disk; save to restore)` : file.path}
+            title={
+              file.stash
+                ? `${file.stash.file} — stashed preview (${file.stash.message ?? `stash@${file.stash.index}`}), read-only`
+                : file.deleted
+                  ? `${file.path} (deleted from disk; save to restore)`
+                  : file.path
+            }
           >
             <span class="tab-name">
               {file.deleted ? `${file.name} [DELETED]` : file.name}
