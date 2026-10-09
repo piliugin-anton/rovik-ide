@@ -1505,8 +1505,9 @@ export function GitPanel(props: GitPanelProps) {
                     word from the message.
                   </div>
                 </Show>
-                <ul class="context-menu-list">
-                  <For each={commits()}>
+                <Show when={!commitsLoading()}>
+                  <ul class="context-menu-list">
+                    <For each={commits()}>
                     {(c) => {
                       const q = () => historyQuery().trim();
                       const searching = () => q() !== '';
@@ -1697,7 +1698,8 @@ export function GitPanel(props: GitPanelProps) {
                       );
                     }}
                   </For>
-                </ul>
+                  </ul>
+                </Show>
                 {/* Pagination: the backend scans at most ~400 commits per
                     call, so older history needs explicit paging. Without a
                     query this loads older commits; with a query it keeps
