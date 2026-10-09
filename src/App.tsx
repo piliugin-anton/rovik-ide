@@ -1088,7 +1088,6 @@ export default function App() {
       for (const id of entry.ids) {
         if (entry.mode === 'copy') {
           const newPath = await copyPathOnDisk(id, destDirId);
-          console.log('Copied to:', newPath);
         } else {
           const newPath = await movePathOnDisk(id, destDirId);
           setOpenFiles((prev) => prev.map((f) => (f.id === id ? { ...f, path: newPath } : f)));
@@ -1483,7 +1482,6 @@ export default function App() {
     const currentPath = rootPath();
     if (!currentPath) return;
     try {
-      console.log('Notifying backend to watch new folder:', currentPath);
       await invoke('start_file_watch', { pathStr: currentPath });
     } catch (error) {
       console.error('Failed to start file watcher:', error);
