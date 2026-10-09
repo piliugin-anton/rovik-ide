@@ -14,6 +14,7 @@ mod lsp;
 mod project_profile;
 mod chat_db;
 mod chat_request;
+mod api_log;
 mod code_search;
 mod browser_tools;
 mod agent_tools;
