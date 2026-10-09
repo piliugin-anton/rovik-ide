@@ -10,6 +10,7 @@ import {
   usesAiReview,
   type AgentPermissions,
   type ApprovalRule,
+  type ChecklistMode,
 } from '../lib/permissions';
 
 interface PermissionsSettingsProps {
@@ -361,6 +362,22 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
             </For>
           </select>
         </SettingRow>
+        <SettingRow label="Checklist">
+          <select
+            class="settings-select"
+            value={p().checklist}
+            onChange={(e) => patch({ checklist: e.currentTarget.value as ChecklistMode })}
+          >
+            <option value="auto">When needed</option>
+            <option value="always">Always</option>
+            <option value="off">Off</option>
+          </select>
+        </SettingRow>
+        <p class="settings-hint">
+          When needed: the agent keeps a checklist for tasks of three or more steps, and is asked
+          for one once if a task outgrows that without it. Always: every request starts with a
+          checklist. Off: never asked (implementing a plan still starts with one).
+        </p>
       </section>
 
       {/* AI reviewer: only when something is approved by AI */}

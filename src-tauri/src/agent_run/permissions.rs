@@ -55,6 +55,23 @@ pub struct Permissions {
     pub tool_call_checkpoint: Option<u32>,
     /// Run the project's checks when a run that changed files finishes.
     pub verify_changes: bool,
+    /// When the agent must keep a checklist (the `todo` tool, Agent mode).
+    pub checklist: ChecklistMode,
+}
+
+/// When the agent must keep a checklist.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ChecklistMode {
+    /// No gate and no forced first call (plan implementations still start
+    /// with one); reminders still apply to a checklist the model made.
+    Off,
+    /// The model decides by the "3 or more steps" rule; the gate refuses
+    /// work once when a task has clearly grown past it without a checklist.
+    #[default]
+    Auto,
+    /// Every Agent-mode request starts with a forced `todo` call.
+    Always,
 }
 
 pub const DEFAULT_ALLOWED_COMMANDS: &[&str] = &[
@@ -91,6 +108,7 @@ impl Default for Permissions {
             approval_typed_input: false,
             tool_call_checkpoint: Some(DEFAULT_TOOL_CALL_CHECKPOINT),
             verify_changes: true,
+            checklist: ChecklistMode::Auto,
         }
     }
 }
@@ -413,6 +431,13 @@ fn segment_is_read_only(seg: &[String]) -> bool {
 pub enum Verdict {
     Permitted { modifies_files: bool },
     Refused(String),
+}
+
+/// Whether a command may change files (the same analysis as
+/// `check_command`, without the allowed-list check).
+pub fn command_modifies_files(command: &str) -> bool {
+    let parsed = parse_command(command);
+    parsed.writes_via_redirect || parsed.opaque || !parsed.segments.iter().all(|s| segment_is_read_only(s))
 }
 
 pub fn check_command(command: &str, permissions: &Permissions) -> Verdict {

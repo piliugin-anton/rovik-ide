@@ -632,6 +632,12 @@ fn target(vfs: &VfsState, dialog_id: &str, path: &str) -> Result<Target, String>
     Ok(Target::Other(rel))
 }
 
+/// Whether a path the agent used names its context file itself (not the
+/// task card, a revision or a note): a write to it is a context edit.
+pub fn is_live_path(vfs: &VfsState, dialog_id: &str, path: &str) -> bool {
+    matches!(target(vfs, dialog_id, path), Ok(Target::Live))
+}
+
 /// The task card with or without its extension, any case: `@context/TASK`,
 /// `@context/task.md`, … all mean the canonical `TASK.md`.
 fn is_task_rel(rel: &str) -> bool {
@@ -1049,8 +1055,8 @@ pub struct ClmStatus {
     pub projected: bool,
     pub tokens: usize,
     pub budget: usize,
-    /// Phase E: how the agent is doing at context management, e.g.
-    /// "acted on 3 of 4 reminders". None before any budget reminder fired.
+    /// Phase E: a budget reminder the agent hasn't acted on yet, e.g. "a
+    /// compaction is due (75% reminder not acted on yet)". None otherwise.
     pub compliance: Option<String>,
 }
 
@@ -1090,25 +1096,24 @@ pub async fn status(db: &DbState, vfs: &VfsState, dialog_id: String) -> Result<C
         projected: state.projection.is_some(),
         tokens: state.tokens,
         budget: state.budget,
-        compliance: compliance_summary(&state, &revisions),
+        compliance: compliance_summary(&state),
     })
 }
 
-/// Phase E: a short compliance summary for the context popover, from what
-/// the database holds (reminder tiers fired, edits made). The per-run log
-/// (`"event": "clm"`) has the exact turns-to-edit; this is the standing
-/// approximation across runs, so it needs no new storage.
-fn compliance_summary(state: &store::State, revisions: &[store::RevisionRow]) -> Option<String> {
-    let mut fired = state.nudged.clone();
-    if prompt::percent(state.tokens, state.budget) >= prompt::URGENT && !fired.contains(&90) {
-        fired.push(90);
+/// Phase E: a short compliance summary for the context popover. A budget
+/// reminder stays armed (`state.nudged`, or the context at 90%+) until an
+/// accepted edit clears it, so the armed ones are exactly the reminders
+/// the agent hasn't acted on yet. None when nothing is waiting: the
+/// popover already says how often the agent edited its context. The
+/// per-run log (`"event": "clm"`) has the exact turns-to-edit.
+fn compliance_summary(state: &store::State) -> Option<String> {
+    // The 25% heads-up asks for no edit, so nothing is due for it.
+    let mut waiting: Vec<u32> = state.nudged.iter().copied().filter(|t| *t > prompt::HEADS_UP).collect();
+    if prompt::percent(state.tokens, state.budget) >= prompt::URGENT && !waiting.contains(&90) {
+        waiting.push(90);
     }
-    if fired.is_empty() {
-        return None;
-    }
-    fired.sort_unstable();
-    let edits = revisions.iter().filter(|r| r.kind != "context").count();
-    Some(format!("acted on {} of {} reminders", edits.min(fired.len()), fired.len()))
+    let highest = waiting.into_iter().max()?;
+    Some(format!("a compaction is due ({highest}% reminder not acted on yet)"))
 }
 
 #[tauri::command]

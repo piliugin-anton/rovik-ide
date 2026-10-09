@@ -44,7 +44,7 @@ export interface ClmStatus {
   projected: boolean;
   tokens: number;
   budget: number;
-  /** How the agent is doing at context management, e.g. "acted on 3 of 4 reminders". */
+  /** A budget reminder the agent hasn't acted on yet, e.g. "a compaction is due (75% reminder not acted on yet)". */
   compliance: string | null;
 }
 

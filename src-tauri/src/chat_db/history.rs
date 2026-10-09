@@ -420,16 +420,22 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     if run.iter().filter(|m| m.role == "tool").count() < FOCUS_AFTER_TOOL_RESULTS {
         return None;
     }
-    let mut checklist = run.iter().rev().find_map(todo_in_msg);
-    if checklist.is_none() && !messages[start].checklist_closed {
+    // The latest todo call in this request; one the user dismissed (on its
+    // own message) leaves no checklist, and nothing is carried past it.
+    let latest = run.iter().rev().find_map(|m| todo_in_msg(m).map(|items| (items, m.checklist_closed)));
+    let mut checklist = match &latest {
+        Some((items, false)) => Some(items.clone()),
+        _ => None,
+    };
+    if latest.is_none() && !messages[start].checklist_closed {
         let prev = messages[..start].iter().rposition(starts_request);
         let from = prev.map(|p| p + 1).unwrap_or(0);
         for m in messages[from..start].iter().rev() {
             if let Some(items) = todo_in_msg(m) {
-                if items.iter().all(crate::agent_run::plan::is_settled) {
-                    return None;
+                // A finished or dismissed one isn't carried.
+                if !m.checklist_closed && !items.iter().all(crate::agent_run::plan::is_settled) {
+                    checklist = Some(items);
                 }
-                checklist = Some(items);
                 break;
             }
         }
@@ -1056,10 +1062,17 @@ mod tests {
         let mut earlier = long_run("next");
         earlier.insert(1, todo(r#"{"items":["old step"]}"#));
         assert!(focus_note(&earlier).unwrap().contains("checklist"));
-        // ...unless every step is settled, when the agent is wrapping up.
+        // ...unless every step is settled: the new request's note stands
+        // on its own, without the finished list.
         let mut settled_earlier = long_run("next");
         settled_earlier.insert(1, todo(r#"{"items":[{"title":"old step","status":"done"}]}"#));
-        assert_eq!(focus_note(&settled_earlier), None);
+        assert!(!focus_note(&settled_earlier).unwrap().contains("Your checklist"));
+        // A dismissed one (on its own message) isn't carried either.
+        let mut dismissed_earlier = long_run("next");
+        let mut closed = todo(r#"{"items":["old step"]}"#);
+        closed.checklist_closed = true;
+        dismissed_earlier.insert(1, closed);
+        assert!(!focus_note(&dismissed_earlier).unwrap().contains("Your checklist"));
     }
 
     #[test]

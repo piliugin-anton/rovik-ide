@@ -15,10 +15,13 @@ let root: string | null = null;
 let registered = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 const pending = new Set<string>();
-/** URIs flushed recently: onDidChangeMarkers fires per owner, so the same
- * file reports several times in a row — skip the echo. */
-const recent = new Map<string, number>();
-const ECHO_MS = 2_000;
+/**
+ * What was last sent per URI. onDidChangeMarkers fires per owner, so the
+ * same file can come up several times in a row with nothing new: those are
+ * skipped. Any real change is sent, however soon after the last one (a
+ * time window here would drop the update that clears a fixed error).
+ */
+const lastSent = new Map<string, string>();
 const DEBOUNCE_MS = 400;
 const MAX_PER_FLUSH = 100;
 
@@ -26,11 +29,17 @@ function fsPathOf(uri: monaco.Uri): string {
   return (uri as unknown as { fsPath?: string }).fsPath ?? uri.path;
 }
 
+/** Forward slashes, and a lower-case drive letter (Windows paths). */
+function normalizePath(p: string): string {
+  const slashed = p.replace(/\\/g, '/');
+  return /^[A-Za-z]:\//.test(slashed) ? slashed[0].toLowerCase() + slashed.slice(1) : slashed;
+}
+
 function underRoot(abs: string): boolean {
   if (!root) return false;
-  if (abs === root) return true;
-  const prefix = root.endsWith('/') ? root : `${root}/`;
-  return abs.startsWith(prefix);
+  const path = normalizePath(abs);
+  const base = normalizePath(root).replace(/\/+$/, '');
+  return path === base || path.startsWith(`${base}/`);
 }
 
 interface Marker {
@@ -67,17 +76,20 @@ function markersOf(uri: monaco.Uri): Marker[] {
 
 async function push(uriStr: string): Promise<void> {
   if (!root) return;
-  const now = Date.now();
-  if ((recent.get(uriStr) ?? 0) + ECHO_MS > now) return;
-  recent.set(uriStr, now);
   const uri = monaco.Uri.parse(uriStr);
   if (uri.scheme !== 'file') return;
   const abs = fsPathOf(uri);
   if (!underRoot(abs)) return;
+  const markers = markersOf(uri);
+  const key = `${root}\n${JSON.stringify(markers)}`;
+  if (lastSent.get(uriStr) === key) return;
+  lastSent.set(uriStr, key);
   try {
-    await invoke('report_editor_diagnostics', { root, path: abs, markers: markersOf(uri) });
+    await invoke('report_editor_diagnostics', { root, path: abs, markers });
   } catch {
     // The backend is gone (or the project closed): markers keep working.
+    // Not sent, so a later identical report isn't skipped.
+    lastSent.delete(uriStr);
   }
 }
 
@@ -85,9 +97,11 @@ function schedule(): void {
   if (timer !== undefined) return;
   timer = setTimeout(() => {
     timer = undefined;
+    // At most MAX_PER_FLUSH per flush; the rest wait for the next one.
     const batch = [...pending].slice(0, MAX_PER_FLUSH);
-    pending.clear();
+    for (const u of batch) pending.delete(u);
     void Promise.all(batch.map((u) => push(u)));
+    if (pending.size > 0) schedule();
   }, DEBOUNCE_MS);
 }
 

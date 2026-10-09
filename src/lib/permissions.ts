@@ -60,7 +60,16 @@ export interface AgentPermissions {
    * project's checks and send failures back to it (agent_run/verify.rs).
    */
   verifyChanges: boolean;
+  /**
+   * When the agent must keep a checklist (the todo tool, Agent mode):
+   * 'auto' lets it decide by the "3 or more steps" rule and refuses work
+   * once when a task clearly outgrew it without one; 'always' starts every
+   * request with a checklist; 'off' never asks (src-tauri/src/agent_run).
+   */
+  checklist: ChecklistMode;
 }
+
+export type ChecklistMode = 'off' | 'auto' | 'always';
 
 export const DEFAULT_ALLOWED_COMMANDS = [
   'ls',
@@ -98,6 +107,7 @@ export const DEFAULT_PERMISSIONS: AgentPermissions = {
   approvalTypedInput: false,
   toolCallCheckpoint: DEFAULT_TOOL_CALL_CHECKPOINT,
   verifyChanges: true,
+  checklist: 'auto',
 };
 
 const isSelection = (v: unknown): v is ModelSelection =>
@@ -179,6 +189,10 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
           ? Math.floor(r.toolCallCheckpoint)
           : DEFAULT_TOOL_CALL_CHECKPOINT,
     verifyChanges: r.verifyChanges !== false,
+    checklist:
+      r.checklist === 'off' || r.checklist === 'always'
+        ? r.checklist
+        : DEFAULT_PERMISSIONS.checklist,
   };
 }
 

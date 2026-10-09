@@ -565,3 +565,33 @@ fn show() {
     println!("{}", first.unwrap_or_else(|| "(no map)".into()));
     eprintln!("cold {cold:?}, cached {:?}", start.elapsed());
 }
+
+// ---- callers: qualified queries ----
+
+fn two_parsers() -> Project {
+    project(&[
+        ("src/parser.rs", "pub struct Parser;\nimpl Parser {\n    pub fn parse_input(&self) {}\n}\n"),
+        ("src/lexer.rs", "pub struct Lexer;\nimpl Lexer {\n    pub fn parse_input(&self) {}\n}\n"),
+        ("src/main.rs", "fn main() {\n    let p = Parser;\n    p.parse_input();\n}\n"),
+    ])
+}
+
+#[test]
+fn qualified_callers_show_the_matching_declaration_only() {
+    let p = two_parsers();
+    for query in ["Parser::parse_input", "Parser > parse_input", "Parser.parse_input"] {
+        let c = callers(&p.0, query, &Options::default()).unwrap();
+        let declared = &c[c.find("Declared in:").unwrap()..c.find("Used by").unwrap()];
+        assert!(declared.contains("src/parser.rs"), "{query}: {c}");
+        assert!(!declared.contains("- src/lexer.rs"), "{query}: {c}");
+        // The other `parse_input` didn't match the qualifier: said as such,
+        // not as declarations cut from the list.
+        assert!(declared.contains("also declared in 1 other file"), "{query}: {c}");
+        assert!(!declared.contains("not shown"), "{query}: {c}");
+        assert!(c.contains("src/main.rs"), "{query}: {c}");
+    }
+    // Unqualified: both declarations, nothing reported as left out.
+    let c = callers(&p.0, "parse_input", &Options::default()).unwrap();
+    assert!(c.contains("src/parser.rs") && c.contains("src/lexer.rs"), "{c}");
+    assert!(!c.contains("not shown") && !c.contains("also declared"), "{c}");
+}

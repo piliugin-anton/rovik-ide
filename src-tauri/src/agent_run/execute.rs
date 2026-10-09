@@ -172,6 +172,11 @@ impl<R: Runtime> Run<R> {
         if resume_note.is_some() || self.stopped() || !parallel::PARALLEL_TOOLS.contains(&tc.name.as_str()) {
             return false;
         }
+        // A restricted CLM turn: every call goes through execute_one, which
+        // refuses project work until the context is compacted.
+        if clm && self.clm_restricted {
+            return false;
+        }
         if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&tc.name.as_str()) {
             return false;
         }
@@ -249,6 +254,20 @@ impl<R: Runtime> Run<R> {
                     && is_context_path(path_arg, context_dir))
         {
             let mut content = self.context_tool(&tc.name, &args).await;
+            // A change to the context file itself (or a restore): the
+            // compaction the CLM pressure waits for (run.rs,
+            // update_clm_pressure). Notes and the task card don't count.
+            if !tools::is_error(&content)
+                && (tc.name == "restore_context"
+                    || tc.name == "write"
+                        && crate::clm::is_live_path(
+                            &self.app.state::<crate::vfs::VfsState>(),
+                            &self.dialog_id,
+                            path_arg.unwrap_or(""),
+                        ))
+            {
+                self.context_edited = true;
+            }
             let verdict = self.guard.record(FinishedCall {
                 name: &tc.name,
                 args_json: &tc.arguments,
@@ -324,20 +343,16 @@ impl<R: Runtime> Run<R> {
                             .collect();
                         if !newly.is_empty() {
                             let dialog_id = self.dialog_id.clone();
-                            let (tokens, budget, revision) = self
+                            let (tokens, budget) = self
                                 .db
                                 .read(move |conn| {
                                     Ok(crate::clm::store::load_state(conn, &dialog_id)
-                                        .map(|s| (s.tokens, s.budget, s.rendered_revision))
+                                        .map(|s| (s.tokens, s.budget))
                                         .unwrap_or_default())
                                 })
                                 .await
                                 .unwrap_or_default();
-                            let pct = if budget == 0 {
-                                0
-                            } else {
-                                ((tokens as f64 / budget as f64) * 100.0).round() as u32
-                            };
+                            let pct = crate::clm::prompt::percent(tokens, budget);
                             let next = items
                                 .iter()
                                 .find(|i| !plan::is_settled(i))
@@ -349,6 +364,11 @@ impl<R: Runtime> Run<R> {
                                 .join(", ");
                             let done_word = if newly.len() == 1 { "Step" } else { "Steps" };
                             if pct >= super::run::CLM_STEP_COMPACT_MIN {
+                                // Asked for: the pressure escalates if it's ignored.
+                                self.pending_step_compaction = Some(super::run::PendingStepCompaction {
+                                    tool_calls: self.guard.tool_calls,
+                                });
+                                self.step_asked_turn = Some(self.clm_turns);
                                 match next {
                                     Some(n) => content.push_str(&format!(
                                         "\n\n{done_word} {done_names} done. Before \"{n}\": compact that step's span in one edit, copy facts forward, and update @context/TASK.md (done, NEXT)."
@@ -358,13 +378,9 @@ impl<R: Runtime> Run<R> {
                                     )),
                                 }
                             } else {
+                                // Only a card update: nothing to escalate.
                                 content.push_str("\n\nUpdate @context/TASK.md: done/NEXT.");
                             }
-                            self.pending_step_compaction = Some(super::run::PendingStepCompaction {
-                                revision,
-                                tool_calls: self.guard.tool_calls,
-                            });
-                            self.step_asked_turn = Some(self.clm_turns);
                         }
                     }
                 }
@@ -389,31 +405,29 @@ impl<R: Runtime> Run<R> {
             _ => {}
         }
 
-        // Checklist gate (Agent mode): no checklist yet, and the model tries
-        // work that changes files or runs a command after already changing a
-        // file or making 8+ calls — refuse once per run, so genuinely small
-        // tasks aren't blocked. A repeated identical call is let through, so
-        // the model can't get stuck. Writes to the CLM context folder are
+        // Checklist gate (Agent mode, the checklist setting not Off): no
+        // checklist yet, and the task has clearly grown past the "3 or more
+        // steps" rule the model decides by (plan::checklist_gate_reason).
+        // Refused once per run: if the model judged the task small and
+        // repeats the call, it runs. Writes to the CLM context folder are
         // exempt (context management, not project work), as are fixes after
         // the checks failed (continuing started work, not new scope).
         if !self.plan_mode
+            && !self.checklist_gate_refused
             && resume_note.is_none()
             && !self.last_verify_failed
-            && (permissions::modifies_files(tc.name.as_str()) || tc.name == "bash")
+            && self.state.config().permissions.checklist != permissions::ChecklistMode::Off
             && !(clm && is_context_path(path_arg, context_dir))
-            && (self.guard.tool_calls >= 8 || !self.changed_files.is_empty())
         {
-            if self.checklist_gate_refused {
-                // Refused once already: let everything through, repeats included.
-            } else if let Ok(recent) = self.recent().await {
-                if plan::current_checklist(&recent).is_none() {
-                    self.checklist_gate_refused = true;
-                    let content = format!(
-                        "Error: no checklist exists yet. Create it first with the todo tool \
-                         (the whole list, first step in_progress), then repeat this {} call.",
-                        tc.name
-                    );
-                    return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+            if let Some(reason) =
+                plan::checklist_gate_reason(&tc.name, path_arg, &self.changed_files, self.guard.tool_calls)
+            {
+                if let Ok(recent) = self.recent().await {
+                    if plan::current_checklist(&recent).is_none() {
+                        self.checklist_gate_refused = true;
+                        let content = plan::checklist_gate_error(&reason, &tc.name);
+                        return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+                    }
                 }
             }
         }
@@ -549,6 +563,19 @@ impl<R: Runtime> Run<R> {
         // cache race is possible across processes.
         if tool_name == "bash" && !failed {
             self.map_writes_since_refresh += 1;
+            // A command on the context file's real path (sed, python3, …)
+            // is a context edit for the CLM pressure (run.rs).
+            if clm {
+                let vfs = self.app.state::<crate::vfs::VfsState>();
+                if let Some((file, _)) = crate::clm::real_paths(&vfs, &self.dialog_id) {
+                    let command = permissions::str_arg(&args_json, "command").unwrap_or_default();
+                    if (command.contains(&file) || command.contains("LIVE_CONTEXT.md"))
+                        && permissions::command_modifies_files(&command)
+                    {
+                        self.context_edited = true;
+                    }
+                }
+            }
         }
 
         // Open tabs of the file show what was written; an edit the user

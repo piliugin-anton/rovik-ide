@@ -117,10 +117,14 @@ pub fn percent(tokens: usize, budget: usize) -> u32 {
 }
 
 /// Reminder tiers (percent of the budget). Each fires once and re-arms when
-/// the context shrinks below it. Below the first, the size readout alone:
-/// a reminder that asks for nothing only adds words, and some models take
-/// talk of their budget as a reason to wrap up early.
-pub const TIERS: [u32; 2] = [50, 75];
+/// the context shrinks below it. Below the first, the size readout alone.
+/// The 25% one is a heads-up, not a request: no edit is due yet, and some
+/// models take talk of their budget as a reason to wrap up early, so it
+/// says to keep working. It asks for nothing the pressure checks wait on
+/// (run.rs escalates only from 50%).
+pub const TIERS: [u32; 3] = [25, 50, 75];
+/// The heads-up tier: not counted as a compaction request.
+pub const HEADS_UP: u32 = 25;
 /// From here on, a reminder on every request.
 pub const URGENT: u32 = 90;
 
@@ -152,6 +156,11 @@ pub fn nudge(tokens: usize, budget: usize, fired: &mut Vec<u32>) -> Option<Strin
         .collect();
     fired.extend(newly);
     Some(match tier {
+        HEADS_UP => format!(
+            "CONTEXT BUDGET: ~{pct}% of your {budget}-token budget ({tokens} tokens). No edit is needed now; \
+             keep working on the task. At the next natural break (a step done), shorten big tool outputs you \
+             no longer need, in place."
+        ),
         50 => format!(
             "CONTEXT BUDGET: ~{pct}% of your {budget}-token budget ({tokens} tokens). Finish the unit of work \
              in flight, then tidy your context file ONCE. {NOTE_CONTRACT}"
@@ -173,18 +182,21 @@ mod tests {
     fn tiers_fire_once_and_rearm() {
         let mut fired = Vec::new();
         assert!(nudge(10, 100, &mut fired).is_none());
-        assert!(nudge(30, 100, &mut fired).is_none(), "the readout alone below 50%");
+        assert!(nudge(20, 100, &mut fired).is_none(), "the readout alone below 25%");
+        let heads_up = nudge(30, 100, &mut fired).unwrap();
+        assert!(heads_up.contains("No edit is needed now") && heads_up.contains("keep working"), "{heads_up}");
+        assert!(nudge(40, 100, &mut fired).is_none(), "same tier, once");
         assert!(nudge(55, 100, &mut fired).unwrap().contains("tidy your context file ONCE"));
         assert!(nudge(60, 100, &mut fired).is_none());
         assert!(nudge(80, 100, &mut fired)
             .unwrap()
             .contains("Compact settled"));
         assert!(nudge(60, 100, &mut fired).is_none());
-        assert_eq!(fired, vec![50]);
-        // Jumping past both tiers gives only the higher one.
+        assert_eq!(fired, vec![25, 50]);
+        // Jumping past every tier gives only the highest one.
         let mut jumped = Vec::new();
         assert!(nudge(80, 100, &mut jumped).unwrap().contains("Compact settled"));
-        assert_eq!(jumped, vec![50, 75]);
+        assert_eq!(jumped, vec![25, 50, 75]);
         assert!(nudge(20, 100, &mut fired).is_none());
         assert!(fired.is_empty(), "re-armed after shrinking");
         let urgent = nudge(95, 100, &mut fired).unwrap();
@@ -203,7 +215,11 @@ mod tests {
         assert_eq!(percent(2000, 1000), 200);
         let mut fired = Vec::new();
         assert!(nudge(5, 0, &mut fired).is_none(), "no budget, no reminder");
-        assert!(nudge(250, 1000, &mut fired).is_none(), "no 25% reminder");
+        assert!(nudge(240, 1000, &mut fired).is_none(), "below 25%: no reminder");
+        assert!(
+            nudge(250, 1000, &mut fired).unwrap().contains("No edit is needed now"),
+            "exactly 25%: the heads-up"
+        );
         assert!(
             nudge(500, 1000, &mut fired).unwrap().contains("ONCE"),
             "exactly at a tier fires"

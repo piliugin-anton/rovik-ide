@@ -794,7 +794,8 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                     <li class={`todo-item ${item.status}`}>
                       <StatusIcon
                         status={item.status}
-                        paused={props.superseded || props.interrupted}
+                        paused={props.interrupted}
+                        stale={props.superseded}
                       />
                       <span class="todo-item-text">
                         <span class="todo-item-title">{item.title}</span>

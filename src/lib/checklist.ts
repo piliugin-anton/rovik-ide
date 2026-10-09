@@ -15,7 +15,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { createStore } from 'solid-js/store';
 import type { TodoItem } from './todo';
 import { isSettled } from './todo';
-import { chatApi } from './chatApi';
 
 export interface BackendChecklist {
   items: TodoItem[];
@@ -88,26 +87,25 @@ export async function refreshChecklist(dialogId: string): Promise<BackendCheckli
 }
 
 /**
- * Dismiss the open checklist (the panel's ✕): marks the latest real user
- * message `checklistClosed` so the backend no longer carries it, then
- * refreshes. Returns false when there was nothing to dismiss.
+ * Dismiss the open checklist (the panel's ✕): the backend marks the message
+ * holding its `todo` call `checklistClosed` (other meta kept), so it's
+ * closed now and never carried into a later request, and answers with the
+ * chat's checklist after that. Returns false when there was nothing to
+ * dismiss or it failed.
  */
-export async function dismissChecklist(
-  dialogId: string,
-  messageId: string | null,
-  meta: Record<string, unknown> | undefined
-): Promise<boolean> {
+export async function dismissChecklist(dialogId: string): Promise<boolean> {
+  const messageId = state.settled[dialogId]?.fromMessageId;
   if (!messageId) return false;
   try {
-    await chatApi.updateMessage(messageId, {
-      meta: { ...(meta ?? {}), checklistClosed: true } as never,
+    const answer = await invoke<BackendChecklist | null>('chat_dismiss_checklist', {
+      dialogId,
+      messageId,
     });
+    clearLiveChecklist(dialogId);
+    setState('settled', dialogId, answer ? { ...answer, items: answer.items ?? [] } : null);
+    return true;
   } catch (err) {
     console.error('Checklist not dismissed:', err);
     return false;
   }
-  clearLiveChecklist(dialogId);
-  setState('settled', dialogId, null);
-  void refreshChecklist(dialogId);
-  return true;
 }

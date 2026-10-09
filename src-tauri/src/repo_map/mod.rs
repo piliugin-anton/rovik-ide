@@ -792,7 +792,13 @@ pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, S
         }
     }
     shown.sort();
+    // Files with a matching declaration, before and after the cap: the ones
+    // cut by the cap are "not shown"; declaring files that didn't match a
+    // qualified query (`Parser::parse` vs another `parse`) are another thing.
+    let distinct = |v: &[(usize, usize)]| v.iter().map(|(i, _)| *i).collect::<HashSet<usize>>().len();
+    let matched_files = distinct(&shown);
     shown.truncate(GRAPH_MAX_DECLARERS * 2);
+    let shown_files = distinct(&shown);
     // Using files, heaviest first.
     let mut users: HashMap<usize, (f64, u32)> = HashMap::new();
     for ((from, to, name), &w) in &graph.links {
@@ -817,8 +823,16 @@ pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, S
             let range = if s.end_line > s.start_line { format!("{}-{}", s.start_line, s.end_line) } else { s.start_line.to_string() };
             lines.push(format!("- {} [{range}]: {}", graph.paths[*i], s.signature));
         }
-        if declarers.len() > shown.len() {
-            lines.push(format!("(…and {} more declaring file{} not shown)", declarers.len() - shown.len(), if declarers.len() - shown.len() == 1 { "" } else { "s" }));
+        let hidden = matched_files - shown_files;
+        if hidden > 0 {
+            lines.push(format!("(…and {hidden} more declaring file{} not shown)", if hidden == 1 { "" } else { "s" }));
+        }
+        let other = declarers.len().saturating_sub(matched_files);
+        if other > 0 {
+            lines.push(format!(
+                "(`{bare}` is also declared in {other} other file{} that don't match `{query}`)",
+                if other == 1 { "" } else { "s" }
+            ));
         }
         out.push(lines.join("\n"));
     }

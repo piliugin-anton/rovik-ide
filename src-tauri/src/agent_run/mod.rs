@@ -531,3 +531,42 @@ pub async fn chat_checklist(
         .map_err(|e| e.to_string())?;
     Ok(plan::current_checklist(&page.messages))
 }
+
+/// The checklist panel's dismiss ✕: marks the message holding the
+/// checklist's `todo` call `checklistClosed` (its other meta kept), so
+/// `plan::current_checklist` treats it as closed now and never carries it
+/// into a later request. Returns the chat's checklist after that.
+#[tauri::command]
+pub async fn chat_dismiss_checklist<R: Runtime>(
+    app: AppHandle<R>,
+    db: State<'_, DbState>,
+    dialog_id: String,
+    message_id: String,
+) -> Result<Option<plan::CurrentChecklist>, String> {
+    let id = message_id.clone();
+    let meta = db
+        .write(move |c| {
+            let current: Option<String> = c
+                .query_row("SELECT meta FROM messages WHERE id = ?1", rusqlite::params![id], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            let mut meta = current
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+                .filter(|m| m.is_object())
+                .unwrap_or_else(|| serde_json::json!({}));
+            meta["checklistClosed"] = serde_json::json!(true);
+            let patch = store::MessagePatch { meta: Some(meta.clone()), ..Default::default() };
+            store::update_message(c, &id, &patch)?;
+            Ok(meta)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    events::emit(
+        &app,
+        events::AgentEvent::MessagePatched {
+            dialog_id: dialog_id.clone(),
+            message_id,
+            patch: events::Patch { meta: Some(meta), ..Default::default() },
+        },
+    );
+    chat_checklist(db, dialog_id).await
+}

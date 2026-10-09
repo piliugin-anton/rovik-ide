@@ -3,6 +3,7 @@
 //! local server that plays the model.
 
 use super::*;
+use super::permissions::ChecklistMode;
 use crate::chat_db::store::{self, MessageRow, NewDialog};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -1094,18 +1095,73 @@ async fn work_without_a_checklist_is_refused_once_then_let_through() {
     let h = harness(&[("a.txt", "x\n")]).await;
     let (url, _) = model(vec![
         Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "y\n" }) },
-        // A second file-changing call with no checklist: refused, not run.
+        // Two files: still within the "3 or more steps" rule.
         Reply::Call { id: "w2", name: "write", args: json!({ "path": "b.txt", "content": "new\n" }) },
+        // A third file with no checklist: refused, not run.
+        Reply::Call { id: "w3", name: "write", args: json!({ "path": "c.txt", "content": "new\n" }) },
         // The repeat goes through: refuse-once-per-run, no stuck loop.
-        Reply::Call { id: "w3", name: "write", args: json!({ "path": "b.txt", "content": "new\n" }) },
+        Reply::Call { id: "w4", name: "write", args: json!({ "path": "c.txt", "content": "new\n" }) },
         Reply::Text("Done."),
     ])
     .await;
-    h.start(h.request(&url, Harness::send("Write two files"), quiet_permissions())).await;
+    h.start(h.request(&url, Harness::send("Write three files"), quiet_permissions())).await;
     assert_eq!(h.run_end().await, "done");
     let messages = h.messages().await;
-    assert!(result_of(&messages, "w2").content.contains("no checklist"), "{}", result_of(&messages, "w2").content);
-    assert_eq!(h.file("b.txt").as_deref(), Some("new\n"));
+    assert!(!result_of(&messages, "w2").content.contains("checklist"), "{}", result_of(&messages, "w2").content);
+    let refused = &result_of(&messages, "w3").content;
+    assert!(refused.contains("no checklist") && refused.contains("3 files changed"), "{refused}");
+    assert!(refused.contains("already finished as done"), "{refused}");
+    assert_eq!(h.file("c.txt").as_deref(), Some("new\n"));
+}
+
+#[tokio::test]
+async fn a_two_step_task_is_not_asked_for_a_checklist() {
+    // Edit one file, then run a command: below the gate's thresholds.
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "y\n" }) },
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "ls" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix a.txt and check"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert!(!result_of(&messages, "b1").content.contains("checklist"), "{}", result_of(&messages, "b1").content);
+}
+
+#[tokio::test]
+async fn checklist_off_never_refuses() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "1\n" }) },
+        Reply::Call { id: "w2", name: "write", args: json!({ "path": "b.txt", "content": "2\n" }) },
+        Reply::Call { id: "w3", name: "write", args: json!({ "path": "c.txt", "content": "3\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions { checklist: ChecklistMode::Off, ..quiet_permissions() };
+    h.start(h.request(&url, Harness::send("Write three files"), permissions)).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert!(!result_of(&messages, "w3").content.contains("checklist"), "{}", result_of(&messages, "w3").content);
+    assert_eq!(seen.lock().unwrap()[0]["tool_choice"], json!("auto"));
+}
+
+#[tokio::test]
+async fn checklist_always_forces_todo_on_every_message() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Call { id: "t1", name: "todo", args: json!({ "items": [{ "title": "Answer", "status": "done" }] }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions { checklist: ChecklistMode::Always, ..quiet_permissions() };
+    h.start(h.request(&url, Harness::send("A small change"), permissions)).await;
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests[0]["tool_choice"], json!({ "type": "function", "function": { "name": "todo" } }));
+    assert_eq!(requests[1]["tool_choice"], json!("auto"));
 }
 
 #[tokio::test]
@@ -1149,6 +1205,7 @@ async fn restart_followed_by_continue_carries_the_checklist() {
         Reply::Text("Done."),
         Reply::Text("Really done."),
         Reply::Text("Truly done."),
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "t.txt", "content": "ok\n" }) },
         Reply::Text("Still going."),
         Reply::Text("Still going again."),
         Reply::Text("Still going a third time."),
@@ -1157,7 +1214,9 @@ async fn restart_followed_by_continue_carries_the_checklist() {
     h.start(h.request(&url, Harness::send("Do"), quiet_permissions())).await;
     assert_eq!(h.run_end().await, "unfinished-checklist");
     // A restart with a short "continue": the app carries the unfinished
-    // checklist itself, and the end-of-run reminder fires again.
+    // checklist itself, and since this run works on the task (it changes a
+    // file), the end-of-run reminders fire again.
+    h.events.lock().unwrap().clear();
     h.start(h.request(&url, Harness::send("continue"), quiet_permissions())).await;
     assert_eq!(h.run_end().await, "unfinished-checklist");
     let messages = h.messages().await;
@@ -1177,6 +1236,35 @@ async fn restart_followed_by_continue_carries_the_checklist() {
     assert!(carried[0].content.contains("Test it"), "{}", carried[0].content);
     let notes = harness_notes(&messages);
     assert!(notes.iter().any(|n| n.content.contains("last reminder")), "{messages:#?}");
+}
+
+#[tokio::test]
+async fn a_quick_question_after_an_unfinished_run_is_just_answered() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Write it", "status": "done" }, { "title": "Test it", "status": "pending" }] }),
+        },
+        Reply::Text("Done."),
+        Reply::Text("Really done."),
+        Reply::Text("Truly done."),
+        // The follow-up: answered in words, no work.
+        Reply::Text("It parses the config."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Do"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "unfinished-checklist");
+    let before = harness_notes(&h.messages().await).len();
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("What does main.rs do?"), quiet_permissions())).await;
+    // Told about the old checklist (the carry note), but not pushed back
+    // into it: no end-of-run reminders for work this run never touched.
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let new_notes: Vec<_> = harness_notes(&messages).into_iter().skip(before).collect();
+    assert!(new_notes.iter().all(|n| !n.content.contains("still has unfinished steps")), "{new_notes:#?}");
 }
 
 #[tokio::test]
@@ -2253,4 +2341,41 @@ src/parser.rs (2 matches)
     let prompt = request["messages"][0]["content"].as_str().unwrap();
     assert!(prompt.contains("results are grouped by the declaration each match is in"), "{prompt}");
     assert!(prompt.contains("call read with the group's name as `symbol`"));
+}
+
+#[tokio::test]
+async fn the_code_tools_run_together_and_word_their_errors_once() {
+    let h = harness(&[
+        ("src/tax.rs", "pub fn compute_tax_total(x: f64) -> f64 { x }\n"),
+        ("src/invoice.rs", "pub fn invoice_sum() -> f64 { compute_tax_total(1.0) }\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("g1", "neighbours", json!({ "path": "src/invoice.rs" })),
+            ("g2", "callers", json!({ "symbol": "compute_tax_total" })),
+            ("g3", "outline", json!({ "path": "src/tax.rs" })),
+            ("g4", "diagnostics", json!({ "path": "src/tax.rs" })),
+            ("g5", "callers", json!({ "symbol": "no_such_name_xyz" })),
+            ("g6", "neighbours", json!({})),
+        ]),
+        Reply::Text("Looked."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Look around"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    // Local reads: one parallel batch.
+    assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [vec!["g1", "g2", "g3", "g4", "g5", "g6"]]);
+    let n = &result_of(&messages, "g1").content;
+    assert!(n.contains("## Neighbours of src/invoice.rs") && n.contains("src/tax.rs"), "{n}");
+    let c = &result_of(&messages, "g2").content;
+    assert!(c.contains("src/invoice.rs"), "{c}");
+    assert!(result_of(&messages, "g3").content.contains("compute_tax_total"), "{}", result_of(&messages, "g3").content);
+    assert!(result_of(&messages, "g4").content.contains("parses clean"), "{}", result_of(&messages, "g4").content);
+    // A tool's own error text, and a missing argument: "Error:" once.
+    let unknown = &result_of(&messages, "g5").content;
+    assert!(unknown.starts_with("Error: no declaration named"), "{unknown}");
+    assert!(!unknown.contains("Error: Error:"), "{unknown}");
+    assert_eq!(result_of(&messages, "g6").content, "Error: \"path\" is required.");
 }

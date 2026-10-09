@@ -572,6 +572,9 @@ pub async fn execute<R: Runtime>(
     };
     match run(app, root, name, &args, stop).await {
         Ok(result) => result,
+        // Some tools word their own errors ("Error: no declaration named…"):
+        // don't prefix those twice.
+        Err(e) if e.trim_start().starts_with("Error:") => ToolResult::text(e),
         Err(e) => ToolResult::text(format!("Error: {e}")),
     }
 }
