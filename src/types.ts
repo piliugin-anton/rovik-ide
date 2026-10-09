@@ -406,6 +406,10 @@ export interface GitStashFile {
   /** Added / removed lines in this stash. */
   additions: number;
   deletions: number;
+  /** Whether this file matches the active history search query. */
+  matched?: boolean;
+  /** Why it matched: "filename", "content", or "both". */
+  match_kind?: 'filename' | 'content' | 'both' | null;
 }
 
 /** One recent commit for the history view (src-tauri/src/git.rs, git_log). */
@@ -416,6 +420,10 @@ export interface GitCommitEntry {
   author: string;
   /** Commit time, seconds since the epoch. */
   time: number;
+  /** Total files changed in this commit. */
+  file_count?: number;
+  /** Files matching the active history search (`undefined` when no query). */
+  matched_file_count?: number | null;
 }
 
 /** One file's stashed content plus the base it changed from (src-tauri/src/git.rs). */

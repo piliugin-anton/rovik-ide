@@ -527,6 +527,11 @@ export function GitPanel(props: GitPanelProps) {
   };
   const [commits, setCommits] = createSignal<GitCommitEntry[]>([]);
   const [commitsLoading, setCommitsLoading] = createSignal(false);
+  // Smart history search: query text, a seq guard so stale backend replies
+  // can't overwrite newer results, and debounce delay for typing.
+  const HISTORY_SEARCH_DEBOUNCE_MS = 250;
+  const [historyQuery, setHistoryQuery] = createSignal('');
+  let historySeq = 0;
   // History preview: which commit is expanded and the files each expanded
   // commit touched (`git_commit_show`). Clicking a file opens its content
   // at the commit in a read-only editor tab, like stashed files.
@@ -569,7 +574,13 @@ export function GitPanel(props: GitPanelProps) {
     setMoreView(view);
     if (view === 'delete-branch') void loadBranches();
     if (view === 'stash-list') void loadStashes();
-    if (view === 'history') void loadLog();
+    if (view === 'history') {
+      if (historyDebounce) clearTimeout(historyDebounce);
+      historyDebounce = undefined;
+      setHistoryQuery('');
+      setExpandedCommit(null);
+      void loadLog('');
+    }
   };
 
   const loadStashes = async () => {
@@ -607,21 +618,26 @@ export function GitPanel(props: GitPanelProps) {
     }
   };
 
-  /** Expand a commit to show the files it changed (`git_commit_show`). */
+  /** Expand a commit to show the files it changed (`git_commit_show`).
+   * Passes the active history search so the backend flags per-file
+   * matches; files are then filtered/highlighted in the UI. */
   const toggleCommitExpanded = async (oid: string) => {
     if (expandedCommit() === oid) {
       setExpandedCommit(null);
       return;
     }
     setExpandedCommit(oid);
-    if (commitFiles()[oid]) return;
+    const q = historyQuery().trim();
+    const key = `${oid}::${q}`;
+    if (commitFiles()[key]) return;
     setCommitFilesLoading(oid);
     try {
       const files = await invoke<GitStashFile[]>('git_commit_show', {
         path: props.projectPath,
         oid,
+        query: q ? q : null,
       });
-      setCommitFiles((prev) => ({ ...prev, [oid]: files }));
+      setCommitFiles((prev) => ({ ...prev, [key]: files }));
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
       setExpandedCommit(null);
@@ -629,21 +645,50 @@ export function GitPanel(props: GitPanelProps) {
       setCommitFilesLoading(null);
     }
   };
+  // When searching, show only matching files by default; user can reveal
+  // the rest per expanded commit. Keyed by commit oid.
+  const [showAllFiles, setShowAllFiles] = createSignal<Record<string, boolean>>({});
 
-  const loadLog = async () => {
+  const loadLog = async (query?: string) => {
+    const q = (query ?? historyQuery()).trim();
+    const run = ++historySeq;
     setCommitsLoading(true);
     try {
       const list = await invoke<GitCommitEntry[]>('git_log', {
         path: props.projectPath,
         limit: 20,
+        query: q ? q : null,
       });
+      if (run !== historySeq) return;
       setCommits(list);
+      // Drop expansion for a commit that's no longer in the results.
+      const expanded = expandedCommit();
+      if (expanded && !list.some((c) => c.oid === expanded)) setExpandedCommit(null);
     } catch (e) {
+      if (run !== historySeq) return;
       setErrorMsg(e instanceof Error ? e.message : String(e));
     } finally {
-      setCommitsLoading(false);
+      if (run === historySeq) setCommitsLoading(false);
     }
   };
+
+  let historyDebounce: ReturnType<typeof setTimeout> | undefined;
+  const onHistorySearchInput = (value: string) => {
+    setHistoryQuery(value);
+    setExpandedCommit(null);
+    // Cached per-commit file lists carry the previous query's match flags.
+    setCommitFiles({});
+    setShowAllFiles({});
+    if (historyDebounce) clearTimeout(historyDebounce);
+    historyDebounce =
+      value.trim() === ''
+        ? undefined
+        : setTimeout(() => void loadLog(value), HISTORY_SEARCH_DEBOUNCE_MS);
+    if (value.trim() === '') void loadLog('');
+  };
+  onCleanup(() => {
+    if (historyDebounce) clearTimeout(historyDebounce);
+  });
 
   /** The obvious mistakes, caught inline; the backend re-checks for real. */
   const branchNameProblem = (name: string): string | null => {
@@ -1334,105 +1379,249 @@ export function GitPanel(props: GitPanelProps) {
                   <IconBack />
                   <span>Recent commits</span>
                 </button>
+                <div class="git-history-search-row">
+                  <div class="git-history-search-wrap">
+                    <input
+                      class="tree-row-input git-more-input git-history-search"
+                      placeholder="Search history: message, file, symbol…"
+                      value={historyQuery()}
+                      spellcheck={false}
+                      autocomplete="off"
+                      aria-label="Search commit history"
+                      onInput={(e) => onHistorySearchInput(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.stopPropagation();
+                          onHistorySearchInput('');
+                        }
+                      }}
+                      disabled={busy()}
+                    />
+                    <Show when={historyQuery().trim() !== ''}>
+                      <button
+                        type="button"
+                        class="git-history-clear"
+                        title="Clear search"
+                        aria-label="Clear history search"
+                        onClick={() => onHistorySearchInput('')}
+                      >
+                        ✕
+                      </button>
+                    </Show>
+                  </div>
+                </div>
                 <Show when={commitsLoading()}>
                   <div class="context-menu-item context-menu-loading">
-                    <IconSpinner /> <span>Loading history...</span>
+                    <IconSpinner />{' '}
+                    <span>
+                      {historyQuery().trim() !== '' ? 'Searching history...' : 'Loading history...'}
+                    </span>
                   </div>
                 </Show>
-                <Show when={!commitsLoading() && commits().length === 0}>
+                <Show
+                  when={!commitsLoading() && commits().length === 0 && historyQuery().trim() === ''}
+                >
                   <div class="git-more-note">No commits yet.</div>
+                </Show>
+                <Show
+                  when={!commitsLoading() && commits().length === 0 && historyQuery().trim() !== ''}
+                >
+                  <div class="git-more-note">
+                    No matching commits for “{historyQuery().trim()}”. Try a file name, symbol, or
+                    word from the message.
+                  </div>
                 </Show>
                 <ul class="context-menu-list">
                   <For each={commits()}>
-                    {(c) => (
-                      <li class="git-commit-entry">
-                        <div
-                          class="git-commit-row"
-                          title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}\nClick to see the files this commit changed`}
-                          onClick={() => void toggleCommitExpanded(c.oid)}
-                        >
-                          <span class="tree-row-chevron">
-                            <ChevronIcon open={expandedCommit() === c.oid} />
-                          </span>
-                          <button
-                            type="button"
-                            class="git-commit-hash"
-                            title={`${c.oid}\nClick to copy the full hash`}
-                            aria-label={`Copy commit hash ${c.oid}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void copyHash(c.oid);
-                            }}
+                    {(c) => {
+                      const q = () => historyQuery().trim();
+                      const searching = () => q() !== '';
+                      const filesKey = () => `${c.oid}::${q()}`;
+                      const allFiles = () => commitFiles()[filesKey()] ?? [];
+                      const matchedCount = () =>
+                        allFiles().filter((f) => f.matched !== false).length;
+                      const showingAll = () => !!showAllFiles()[c.oid];
+                      const visibleFiles = () => {
+                        const all = allFiles();
+                        if (!searching() || showingAll()) return all;
+                        const matched = all.filter((f) => f.matched !== false);
+                        // Message-only match (nothing flagged): show all,
+                        // the header below explains why.
+                        return matched.length > 0 ? matched : all;
+                      };
+                      const matchLabel = (kind?: string | null) =>
+                        kind === 'both'
+                          ? 'file + content'
+                          : kind === 'filename'
+                            ? 'filename'
+                            : kind === 'content'
+                              ? 'content'
+                              : '';
+                      return (
+                        <li class="git-commit-entry">
+                          <div
+                            class="git-commit-row"
+                            title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}\nClick to see the files this commit changed`}
+                            onClick={() => void toggleCommitExpanded(c.oid)}
                           >
-                            {copiedHash() === c.oid ? 'Copied' : c.short}
-                          </button>
-                          <span class="git-commit-summary">{c.summary}</span>
-                        </div>
-                        <Show when={expandedCommit() === c.oid}>
-                          <div class="git-stash-files">
-                            <Show when={commitFilesLoading() === c.oid}>
-                              <div class="context-menu-item context-menu-loading">
-                                <IconSpinner /> <span>Loading commit contents...</span>
-                              </div>
-                            </Show>
+                            <span class="tree-row-chevron">
+                              <ChevronIcon open={expandedCommit() === c.oid} />
+                            </span>
+                            <button
+                              type="button"
+                              class="git-commit-hash"
+                              title={`${c.oid}\nClick to copy the full hash`}
+                              aria-label={`Copy commit hash ${c.oid}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void copyHash(c.oid);
+                              }}
+                            >
+                              {copiedHash() === c.oid ? 'Copied' : c.short}
+                            </button>
+                            <span class="git-commit-summary">{c.summary}</span>
                             <Show
                               when={
-                                commitFilesLoading() !== c.oid &&
-                                (commitFiles()[c.oid] ?? []).length === 0
+                                searching() &&
+                                c.matched_file_count != null &&
+                                (c.file_count ?? 0) > 0
                               }
                             >
-                              <div class="git-more-note">Empty commit.</div>
+                              <span
+                                class="git-commit-match-badge"
+                                title={
+                                  (c.matched_file_count ?? 0) > 0
+                                    ? `${c.matched_file_count} of ${c.file_count} files contain “${q()}”`
+                                    : `Matched via message/author — no changed filename contains “${q()}”`
+                                }
+                              >
+                                {(c.matched_file_count ?? 0) > 0
+                                  ? `${c.matched_file_count}/${c.file_count} files`
+                                  : 'message'}
+                              </span>
                             </Show>
-                            <For each={commitFiles()[c.oid] ?? []}>
-                              {(f) => {
-                                const meta = () => statusMeta(f.status);
-                                const name = () => f.path.split('/').pop() ?? f.path;
-                                const deleted = () => f.status === 'D';
-                                return (
-                                  <div
-                                    class="context-menu-item git-stash-file-row"
-                                    classList={{ clickable: !deleted() }}
-                                    title={
-                                      deleted()
-                                        ? `${f.path} (deleted in this commit)`
-                                        : `${f.path}: click to open the version at this commit`
-                                    }
-                                    onClick={() => {
-                                      // A deleted file has no content to open.
-                                      if (!deleted())
-                                        props.onOpenCommitFile?.(
-                                          absPathOf(f.path),
-                                          f.path,
-                                          c.oid,
-                                          c.summary
-                                        );
-                                    }}
-                                  >
-                                    <span class="tree-row-icon">
-                                      <FileIcon />
-                                    </span>
-                                    <span
-                                      class="tree-row-name"
-                                      classList={{ 'git-file-deleted': deleted() }}
-                                      title={f.path}
-                                    >
-                                      {name()}
-                                    </span>
-                                    <DiffStats additions={f.additions} deletions={f.deletions} />
-                                    <span
-                                      class={`tree-row-badge git-file-badge ${meta().className}`}
-                                      title={meta().title}
-                                    >
-                                      {meta().label}
-                                    </span>
-                                  </div>
-                                );
-                              }}
-                            </For>
                           </div>
-                        </Show>
-                      </li>
-                    )}
+                          <Show when={expandedCommit() === c.oid}>
+                            <div class="git-stash-files">
+                              <Show when={commitFilesLoading() === c.oid}>
+                                <div class="context-menu-item context-menu-loading">
+                                  <IconSpinner /> <span>Loading commit contents...</span>
+                                </div>
+                              </Show>
+                              <Show
+                                when={commitFilesLoading() !== c.oid && allFiles().length === 0}
+                              >
+                                <div class="git-more-note">Empty commit.</div>
+                              </Show>
+                              <Show
+                                when={
+                                  commitFilesLoading() !== c.oid &&
+                                  searching() &&
+                                  allFiles().length > 0
+                                }
+                              >
+                                <div class="git-match-summary-row">
+                                  <Show
+                                    when={matchedCount() > 0 && matchedCount() < allFiles().length}
+                                  >
+                                    <span class="git-more-note">
+                                      {matchedCount()} of {allFiles().length} files match “{q()}”
+                                      {showingAll() ? ' — showing all' : ''}.
+                                    </span>
+                                    <button
+                                      type="button"
+                                      class="link-button git-match-toggle"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setShowAllFiles((prev) => ({
+                                          ...prev,
+                                          [c.oid]: !prev[c.oid],
+                                        }));
+                                      }}
+                                    >
+                                      {showingAll() ? 'Show matches only' : 'Show all'}
+                                    </button>
+                                  </Show>
+                                  <Show when={matchedCount() === allFiles().length}>
+                                    <span class="git-more-note">
+                                      All {allFiles().length} files match “{q()}”.
+                                    </span>
+                                  </Show>
+                                  <Show when={matchedCount() === 0}>
+                                    <span class="git-more-note">
+                                      Matched via message — no changed file contains “{q()}”.
+                                      Showing all {allFiles().length} files.
+                                    </span>
+                                  </Show>
+                                </div>
+                              </Show>
+                              <For each={visibleFiles()}>
+                                {(f) => {
+                                  const meta = () => statusMeta(f.status);
+                                  const name = () => f.path.split('/').pop() ?? f.path;
+                                  const deleted = () => f.status === 'D';
+                                  const isMatch = () => f.matched !== false;
+                                  return (
+                                    <div
+                                      class="context-menu-item git-stash-file-row"
+                                      classList={{
+                                        clickable: !deleted(),
+                                        'git-file-unmatched':
+                                          searching() && !isMatch() && showingAll(),
+                                        'git-file-matched': searching() && isMatch(),
+                                      }}
+                                      title={
+                                        deleted()
+                                          ? `${f.path} (deleted in this commit)`
+                                          : searching() && isMatch() && f.match_kind
+                                            ? `${f.path} (matches via ${matchLabel(f.match_kind)}): click to open the version at this commit`
+                                            : `${f.path}: click to open the version at this commit`
+                                      }
+                                      onClick={() => {
+                                        // A deleted file has no content to open.
+                                        if (!deleted())
+                                          props.onOpenCommitFile?.(
+                                            absPathOf(f.path),
+                                            f.path,
+                                            c.oid,
+                                            c.summary
+                                          );
+                                      }}
+                                    >
+                                      <span class="tree-row-icon">
+                                        <FileIcon />
+                                      </span>
+                                      <span
+                                        class="tree-row-name"
+                                        classList={{ 'git-file-deleted': deleted() }}
+                                        title={f.path}
+                                      >
+                                        {name()}
+                                      </span>
+                                      <Show when={searching() && isMatch() && f.match_kind}>
+                                        <span
+                                          class="git-match-kind"
+                                          title={`Matches via ${matchLabel(f.match_kind)}`}
+                                        >
+                                          {f.match_kind === 'both' ? 'file+content' : f.match_kind}
+                                        </span>
+                                      </Show>
+                                      <DiffStats additions={f.additions} deletions={f.deletions} />
+                                      <span
+                                        class={`tree-row-badge git-file-badge ${meta().className}`}
+                                        title={meta().title}
+                                      >
+                                        {meta().label}
+                                      </span>
+                                    </div>
+                                  );
+                                }}
+                              </For>
+                            </div>
+                          </Show>
+                        </li>
+                      );
+                    }}
                   </For>
                 </ul>
               </Show>
