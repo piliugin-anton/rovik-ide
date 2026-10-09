@@ -61,6 +61,9 @@ pub struct CtxMsg {
     /// Written by the IDE in the user role (check results), not the user.
     #[serde(default)]
     pub harness: bool,
+    /// The user dismissed the open checklist with this message.
+    #[serde(default)]
+    pub checklist_closed: bool,
 }
 
 impl CtxMsg {
@@ -74,6 +77,7 @@ impl CtxMsg {
             tool_call_id: m.tool_call_id.clone(),
             attachments: m.attachments.clone(),
             harness: m.harness,
+            checklist_closed: m.checklist_closed,
         }
     }
 
@@ -96,6 +100,7 @@ impl CtxMsg {
             tool_call_id: self.tool_call_id.clone(),
             attachments: self.attachments.clone(),
             harness: self.harness,
+            checklist_closed: self.checklist_closed,
             reasoning: None,
         }
     }
@@ -115,6 +120,7 @@ impl CtxMsg {
             tool_call_id: None,
             attachments: Vec::new(),
             harness: false,
+            checklist_closed: false,
         }
     }
 

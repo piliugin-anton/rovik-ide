@@ -155,6 +155,7 @@ pub fn run() {
             agent_run::agent_resolve_approval,
             agent_run::agent_answer_questions,
             agent_run::agent_status,
+            agent_run::chat_checklist,
             agent::list_models,
             browser_tools::web_search,
             browser_tools::browse_url,

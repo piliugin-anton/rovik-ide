@@ -9,7 +9,7 @@ import { requestOpenFile } from '../lib/editorBridge';
 
 const COLLAPSED_KEY = 'rovik.todoPanelCollapsed';
 
-export function StatusIcon(props: { status: TodoItem['status'] }) {
+export function StatusIcon(props: { status: TodoItem['status']; paused?: boolean }) {
   const common = {
     width: 13,
     height: 13,
@@ -21,6 +21,16 @@ export function StatusIcon(props: { status: TodoItem['status'] }) {
     'stroke-linejoin': 'round' as const,
     'aria-hidden': true,
   };
+  // An interrupted run's "current" step is paused, not spinning: the model
+  // isn't working on it. Plain circle, no animation.
+  if (props.paused && props.status === 'in_progress') {
+    return (
+      <svg {...common} class="todo-icon paused" aria-label="Paused">
+        <circle cx="8" cy="8" r="6.25" />
+        <path d="M6.5 5.75v4.5M9.5 5.75v4.5" />
+      </svg>
+    );
+  }
   switch (props.status) {
     case 'done':
       return (
@@ -59,7 +69,14 @@ export function StatusIcon(props: { status: TodoItem['status'] }) {
   }
 }
 
-export default function TodoPanel(props: { items: TodoItem[]; plan?: string }) {
+export default function TodoPanel(props: {
+  items: TodoItem[];
+  plan?: string;
+  /** Idle with an open checklist: "Interrupted · N of M done" + Continue/✕. */
+  interrupted?: boolean;
+  onContinue?: () => void;
+  onDismiss?: () => void;
+}) {
   const stored = (() => {
     try {
       return localStorage.getItem(COLLAPSED_KEY) === '1';
@@ -85,9 +102,9 @@ export default function TodoPanel(props: { items: TodoItem[]; plan?: string }) {
   return (
     <div
       class="todo-panel"
-      classList={{ collapsed: collapsed() }}
+      classList={{ collapsed: collapsed(), interrupted: props.interrupted }}
       role="status"
-      aria-label="The agent's checklist"
+      aria-label={props.interrupted ? "The agent's interrupted checklist" : "The agent's checklist"}
     >
       <button type="button" class="todo-panel-head" onClick={toggle} aria-expanded={!collapsed()}>
         <svg
@@ -108,7 +125,13 @@ export default function TodoPanel(props: { items: TodoItem[]; plan?: string }) {
         <span class="todo-panel-title">
           <Show
             when={collapsed() && current()}
-            fallback={props.plan ? 'Implementing the plan' : 'Checklist'}
+            fallback={
+              props.interrupted
+                ? `Interrupted · ${progressLabel(props.items)}`
+                : props.plan
+                  ? 'Implementing the plan'
+                  : 'Checklist'
+            }
           >
             {(c) => c().title}
           </Show>
@@ -118,6 +141,26 @@ export default function TodoPanel(props: { items: TodoItem[]; plan?: string }) {
           <span style={{ width: `${(done() / Math.max(1, props.items.length)) * 100}%` }} />
         </span>
       </button>
+      <Show when={props.interrupted}>
+        <div class="todo-panel-actions">
+          <button
+            type="button"
+            class="chat-action-button primary"
+            onClick={() => props.onContinue?.()}
+          >
+            Continue
+          </button>
+          <button
+            type="button"
+            class="todo-panel-dismiss"
+            onClick={() => props.onDismiss?.()}
+            title="Dismiss the checklist"
+            aria-label="Dismiss the checklist"
+          >
+            ✕
+          </button>
+        </div>
+      </Show>
       <Show when={!collapsed()}>
         <Show when={props.plan}>
           {(plan) => (
@@ -135,7 +178,7 @@ export default function TodoPanel(props: { items: TodoItem[]; plan?: string }) {
           <For each={props.items}>
             {(item) => (
               <li class={`todo-item ${item.status}`}>
-                <StatusIcon status={item.status} />
+                <StatusIcon status={item.status} paused={props.interrupted} />
                 <span class="todo-item-text">
                   <span class="todo-item-title">{item.title}</span>
                   <Show when={item.note}>

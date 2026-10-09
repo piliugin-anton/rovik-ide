@@ -3,7 +3,7 @@
 //! frontend listens once, at the module level (src/lib/agentRuns.ts), and
 //! the database stays the source of truth for anything it misses.
 
-use super::plan::Question;
+use super::plan::{Question, TodoItem};
 use crate::chat_db::store::{NewMessage, ToolCall};
 use serde::Serialize;
 use serde_json::Value;
@@ -217,6 +217,16 @@ pub enum AgentEvent {
     ContextUpdated {
         dialog_id: String,
         status: crate::clm::ClmStatus,
+    },
+    /// The chat's current checklist, after a `todo` result and at run start
+    /// when a checklist is carried. The panel reads this while a run is
+    /// going; when no run is going it asks `chat_checklist` instead. This
+    /// keeps the panel correct even when the chat was opened around a
+    /// search hit (newest messages not loaded) or the checklist is older
+    /// than the newest page.
+    Checklist {
+        dialog_id: String,
+        items: Vec<TodoItem>,
     },
     Notice {
         kind: String,

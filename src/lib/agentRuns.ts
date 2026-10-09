@@ -19,6 +19,7 @@ import { createStore, produce } from 'solid-js/store';
 import type { ApiRoute, ChatMessage, ModelProfile, OpenAIChatOptions } from '../types';
 import type { AgentPermissions } from './permissions';
 import { chatStore, type MessageRow } from './chatStore';
+import { noteChecklist, clearLiveChecklist, refreshChecklist } from './checklist';
 import {
   clearApproval,
   notifyFileWritten,
@@ -84,6 +85,7 @@ type AgentEvent =
   | { type: 'questionsAsked'; request: PendingQuestions }
   | { type: 'questionsSettled'; toolCallId: string }
   | { type: 'toolNote'; dialogId: string; toolCallId: string; note: string | null }
+  | { type: 'checklist'; dialogId: string; items: import('./todo').TodoItem[] }
   | {
       type: 'fileWritten';
       absPath: string;
@@ -233,6 +235,11 @@ function handle(event: AgentEvent) {
       break;
     case 'runEnded':
       chatStore.setRunning(event.dialogId, false);
+      // The run is over: the live items are stale. Re-ask the backend
+      // (whole database, carried checklists included) for the idle panel.
+      // A finished checklist resolves to null and hides the panel.
+      clearLiveChecklist(event.dialogId);
+      void refreshChecklist(event.dialogId);
       break;
     case 'messagesAdded':
       chatStore.receiveMessages(event.dialogId, event.messages);
@@ -281,6 +288,11 @@ function handle(event: AgentEvent) {
           else delete notes[event.toolCallId];
         })
       );
+      break;
+    case 'checklist':
+      // Live source while the run goes: the panel reads this, not the
+      // messages loaded here (which may be a window around a search hit).
+      noteChecklist(event.dialogId, event.items);
       break;
     case 'fileWritten':
       // An edit the user didn't review shows in the editor until they save.

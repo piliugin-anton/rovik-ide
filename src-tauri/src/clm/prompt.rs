@@ -38,7 +38,7 @@ Format: one block per message, in order:
 - A rewritten block is kept as plain text (a rewritten tool result loses its tool-call structure; that's fine).
 - **The user's messages (`role=user`) are protected**: the task, its scope and every instruction since. Removing or rewriting one has no effect; the app puts it back as it was (a very long one, such as a pasted log, you may shorten). Compact your own work around them.
 
-Your task card, `{TASK_PATH}`, is a separate file shown at the end of every request; editing your context file never touches it. When the work is more than a quick answer, write one before you start editing your context. Keep in it what must survive every compaction: the goal, the scope and constraints (what not to touch), decisions taken, what's done, and NEXT. Edit it with the file tools when any of that changes; keep it short (a few hundred words).
+Your task card, `{TASK_PATH}`, is a separate file shown at the end of every request; editing your context file never touches it. It doesn't exist until you write it. When the work is more than a quick answer, write one before you start editing your context. Never read it: its current text is shown at the end of every request. Keep in it what must survive every compaction: the goal, the scope and constraints (what not to touch), decisions taken, what's done, and NEXT. The app shows your checklist separately on every request, so don't copy it into the card. Edit it with the file tools when any of that changes; keep it short (a few hundred words).
 
 When to manage it:
 - Don't edit for every turn. When the context grows (reminders say so), finish the unit of work in flight, then do ONE batched revision.
@@ -71,6 +71,32 @@ pub fn card_gone(last: &str) -> String {
     format!(
         "[context: your task card {TASK_PATH} was deleted or emptied. If the task isn't finished, write it again \
          (only delete it when the task is done). Its last text was:\n{last}]"
+    )
+}
+
+/// No task card yet: a short line in place of the card, shown with the
+/// notes of every request until the agent writes one. Kept separate from
+/// the checklist (shown separately), so the card stays small.
+pub fn no_card_note(has_checklist: bool) -> String {
+    if has_checklist {
+        format!(
+            "[task card {TASK_PATH}: not written yet. Write it before starting work that is more than a quick \
+             answer. The checklist is shown separately, so the card only needs the goal, scope, decisions and NEXT.]"
+        )
+    } else {
+        format!(
+            "[task card {TASK_PATH}: not written yet. Write it before starting work that is more than a quick answer.]"
+        )
+    }
+}
+
+/// A read of the task card before it exists: guidance, not an error, so it
+/// doesn't count as a failed call in the loop checks.
+pub fn no_card_read() -> String {
+    format!(
+        "You have no task card yet. If this work is more than a quick answer, create it now with write \
+         {TASK_PATH}: goal, scope/constraints, decisions, done, NEXT. Once it exists, it's shown at the end of \
+         every request, so you never need to read it."
     )
 }
 
@@ -201,6 +227,12 @@ mod tests {
         assert!(text.contains("@context/revisions/12.md#7"));
         assert!(text.contains("@context/TASK.md"));
         assert!(text.contains("protected"));
+        assert!(text.contains("don't copy it into the card"));
+        assert!(text.contains("doesn't exist until you write it"));
+        assert!(text.contains("Never read it"));
         assert!(card_note("Goal: fix the parser").contains("Goal: fix the parser"));
+        assert!(no_card_note(false).contains("not written yet"));
+        assert!(no_card_note(true).contains("checklist is shown separately"));
+        assert!(no_card_read().contains("no task card yet"));
     }
 }

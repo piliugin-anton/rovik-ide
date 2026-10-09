@@ -77,11 +77,20 @@ fn edits_become_the_context_and_survive_a_restart() {
 
         // First request: the file is written with the chat as stored.
         let vfs = VfsState::default();
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
             .await
             .unwrap();
         assert_eq!(p.messages.len(), 3);
-        assert!(p.notes[0].starts_with("[context: ~"));
+        assert!(
+            p.notes.join("\n").contains("not written yet"),
+            "no card yet: {:?}",
+            p.notes
+        );
+        assert!(
+            p.notes.iter().any(|n| n.starts_with("[context: ~")),
+            "{:?}",
+            p.notes
+        );
         let path = context_file("chat");
         let doc = String::from_utf8(vfs.read_file(&path).unwrap()).unwrap();
         assert!(doc.contains("[[CTX_TURN 3 role=tool id=t1]]"));
@@ -108,7 +117,7 @@ fn edits_become_the_context_and_survive_a_restart() {
             ],
         )
         .await;
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
             .await
             .unwrap();
         assert!(
@@ -165,7 +174,7 @@ fn edits_become_the_context_and_survive_a_restart() {
 
         // An app restart: a new, empty volume. The file and its history come back.
         let vfs = VfsState::default();
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
             .await
             .unwrap();
         assert!(p
@@ -185,7 +194,7 @@ fn edits_become_the_context_and_survive_a_restart() {
         let doc = String::from_utf8(vfs.read_file(&path).unwrap()).unwrap();
         vfs.write_unmounted(&path, format!("{doc}\n{}", "y".repeat(9000)).as_bytes())
             .unwrap();
-        let p = prepare(&db, &vfs, "chat".into(), 2_000, COST, None)
+        let p = prepare(&db, &vfs, "chat".into(), 2_000, COST, None, None)
             .await
             .unwrap();
         assert!(p.notes[0].contains("REJECTED"), "{:?}", p.notes);
@@ -256,6 +265,7 @@ fn later_messages_are_added_once() {
         tool_call_id: None,
         attachments: vec![],
         harness: false,
+        checklist_closed: false,
     };
     // The agent's version already has m2 (rewritten) and m3.
     let base = vec![m("m1"), m("m2~e"), m("m3")];
@@ -295,7 +305,7 @@ fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
             ],
         )
         .await;
-        prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+        prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
             .await
             .unwrap();
 
@@ -311,7 +321,7 @@ fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
             .read(|conn| store::load_state(conn, "chat"))
             .await
             .unwrap();
-        prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+        prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
             .await
             .unwrap();
         // That request's state never reached the database.
@@ -320,7 +330,7 @@ fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
             .unwrap();
 
         add(&db, vec![message("u3", "user", "third")]).await;
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None)
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
             .await
             .unwrap();
         let ids: Vec<&str> = p.messages.iter().map(|m| m.id.as_str()).collect();
@@ -329,6 +339,78 @@ fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
             ["u1", "a1", "u2", "a2", "u3"],
             "every message once, in order"
         );
+
+        let _ = std::fs::remove_dir_all(dir);
+    });
+}
+
+#[test]
+fn missing_task_card_reads_as_guidance() {
+    tauri::async_runtime::block_on(async {
+        let dir = std::env::temp_dir().join(format!("clm-test-{}", uuid::Uuid::new_v4()));
+        let db = DbState::open(&dir).unwrap();
+        db.write(|conn| {
+            create_dialog(
+                conn,
+                &NewDialog {
+                    id: "chat".into(),
+                    title: "t".into(),
+                    created_at: 1,
+                    updated_at: 1,
+                    project_id: None,
+                },
+            )
+        })
+        .await
+        .unwrap();
+        let vfs = VfsState::default();
+        add(&db, vec![message("u1", "user", "task")]).await;
+
+        // No card yet: the notes say so, and any spelling of the card path
+        // is guidance as a normal result (not an error, so it doesn't count
+        // as a failed call in the loop checks).
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
+            .await
+            .unwrap();
+        assert!(p.notes.join("\n").contains("not written yet"), "{:?}", p.notes);
+        for path in ["@context/TASK.md", "@context/TASK"] {
+            let text = tool_read(&db, &vfs, "chat", path, None, None).await.unwrap();
+            assert!(
+                text.contains("no task card yet") && text.contains("write @context/TASK.md"),
+                "{path}: {text}"
+            );
+        }
+
+        // After the card is written, the bare name resolves to it and the
+        // "not written yet" line disappears.
+        tool_write(&vfs, "chat", "@context/TASK.md", "Goal\nNEXT: x").unwrap();
+        let text = tool_read(&db, &vfs, "chat", "@context/TASK", None, None).await.unwrap();
+        assert!(text.contains("Goal"), "{text}");
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
+            .await
+            .unwrap();
+        assert!(!p.notes.join("\n").contains("not written yet"), "{:?}", p.notes);
+        assert!(p.notes.join("\n").contains("Goal"), "{:?}", p.notes);
+
+        // An unknown file lists what the folder actually has.
+        let err = tool_read(&db, &vfs, "chat", "@context/missing", None, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+        assert!(err.contains("Your context folder has:") && err.contains("TASK.md"), "{err}");
+
+        // Deleting the card after it existed reports the deletion once
+        // (card_gone), then points out the missing card again.
+        vfs.remove(&task_file("chat")).unwrap();
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
+            .await
+            .unwrap();
+        assert!(p.notes.join("\n").contains("was deleted"), "{:?}", p.notes);
+        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
+            .await
+            .unwrap();
+        assert!(!p.notes.join("\n").contains("was deleted"), "{:?}", p.notes);
+        assert!(p.notes.join("\n").contains("not written yet"), "{:?}", p.notes);
 
         let _ = std::fs::remove_dir_all(dir);
     });

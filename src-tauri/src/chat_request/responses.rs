@@ -289,10 +289,23 @@ pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
     if let Some(max) = chat.get("max_tokens").or_else(|| chat.get("max_completion_tokens")) {
         body["max_output_tokens"] = max.clone();
     }
-    for field in ["temperature", "top_p", "tool_choice", "parallel_tool_calls"] {
+    for field in ["temperature", "top_p", "parallel_tool_calls"] {
         if let Some(value) = chat.get(field) {
             body[field] = value.clone();
         }
+    }
+    // `tool_choice`: strings pass through; a named chat-completions choice
+    // (`{type: function, function: {name}}`) becomes the Responses form
+    // (`{type: function, name}`).
+    if let Some(choice) = chat.get("tool_choice") {
+        body["tool_choice"] = match choice {
+            Value::String(_) => choice.clone(),
+            other => other
+                .pointer("/function/name")
+                .and_then(|n| n.as_str())
+                .map(|name| json!({ "type": "function", "name": name }))
+                .unwrap_or_else(|| other.clone()),
+        };
     }
     // Chat tools nest the function (`{type, function: {name, …}}`); here
     // it's flat (`{type, name, …}`).

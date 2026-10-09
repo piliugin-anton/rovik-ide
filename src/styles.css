@@ -2704,6 +2704,16 @@ body.tree-dragging {
   color: var(--error);
 }
 
+/* An earlier checklist snapshot: history, not live state. Dimmed, and its
+   "in progress" step never spins (see ToolCallBlock `superseded`). */
+.tool-call.superseded {
+  opacity: 0.55;
+}
+
+.tool-call.superseded .tool-call-title {
+  font-weight: normal;
+}
+
 .tool-call-spinner {
   flex: 0 0 auto;
   width: 10px;
@@ -5680,6 +5690,32 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 11px;
 }
 
+/* Interrupted checklist: Continue + dismiss row under the header. */
+.todo-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 18px;
+}
+
+.todo-panel-dismiss {
+  margin-left: auto;
+  padding: 2px 6px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.todo-panel-dismiss:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
 .todo-list {
   display: flex;
   flex-direction: column;
@@ -5714,6 +5750,13 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .todo-icon.skipped,
 .todo-icon.pending {
   color: var(--fg-dim);
+}
+
+/* A paused "in progress" step (interrupted run, or an old snapshot): a plain
+   pause mark, never the spinning arc. */
+.todo-icon.paused {
+  color: var(--fg-dim);
+  animation: none;
 }
 
 .todo-icon.changed {

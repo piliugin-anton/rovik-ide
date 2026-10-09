@@ -200,6 +200,7 @@ pub async fn prepare(
     budget: usize,
     cost: Cost,
     current_user_content: Option<String>,
+    checklist_note: Option<String>,
 ) -> Result<Prepared, String> {
     let path = context_file(&dialog_id);
     let on_volume = read_text(vfs, &path);
@@ -239,6 +240,7 @@ pub async fn prepare(
         None => None,
     }
     .filter(|t| !t.trim().is_empty());
+    let card_deleted = state.task.is_some() && card.is_none();
     if let (Some(last), None) = (&state.task, &card) {
         notes.push(prompt::card_gone(&card_text(last)));
     }
@@ -365,6 +367,26 @@ pub async fn prepare(
                             summary.describe(),
                             protected_note(&protected),
                         ));
+                        // Phase E: warn about poor edits without rejecting
+                        // them. An edit that drops most of a span without a
+                        // replacement note is usually followed by redoing
+                        // the deleted work; point that out while the
+                        // revision before it still holds the text.
+                        let spanned = summary.kept + summary.edited + summary.removed;
+                        if summary.removed > 0
+                            && summary.added == 0
+                            && spanned > 0
+                            && summary.removed * 5 >= spanned * 4
+                        {
+                            notes.push(format!(
+                                "[context: your edit removed {} of {spanned} blocks without adding a replacement \
+                                 note. Copy the facts forward instead: what was ruled out and why (\"do not retry\"), \
+                                 the exact commands/queries already tried, and values marked VERIFIED or UNVERIFIED. \
+                                 Revision {} still holds the removed text.]",
+                                summary.removed,
+                                latest.map_or("?".into(), |n| n.to_string()),
+                            ));
+                        }
                         state.projection = Some(candidate);
                         state.anchor_id = state.rendered_anchor_id.clone();
                         state.nudged.clear();
@@ -468,8 +490,24 @@ pub async fn prepare(
         .collect();
 
     // 5. Notes for the model.
+    let has_checklist = checklist_note.as_ref().is_some_and(|n| !n.trim().is_empty());
     if let Some(card) = &state.task {
-        notes.push(prompt::card_note(&card_text(card)));
+        let mut note = prompt::card_note(&card_text(card));
+        // Phase E: a task card with no NEXT line can't say where the work
+        // goes next. Warned, not rejected: the note rides on the card and
+        // disappears as soon as a NEXT line is added.
+        if !card.lines().any(|l| l.trim_start().starts_with("NEXT")) {
+            note.push_str("\n[context: your task card has no NEXT line. Add one: the next concrete step.");
+            note.push(']');
+        }
+        notes.push(note);
+    } else if !card_deleted {
+        notes.push(prompt::no_card_note(has_checklist));
+    }
+    // The checklist, right after the task card: repeated on every request
+    // so the model works from it without copying it into the card.
+    if let Some(checklist) = checklist_note.filter(|n| !n.trim().is_empty()) {
+        notes.push(checklist);
     }
     notes.push(prompt::readout(tokens, budget, rendered_revision));
     if let Some(nudge) = prompt::nudge(tokens, budget, &mut state.nudged) {
@@ -592,6 +630,42 @@ fn target(vfs: &VfsState, dialog_id: &str, path: &str) -> Result<Target, String>
         return Err(format!("{path}: invalid path"));
     }
     Ok(Target::Other(rel))
+}
+
+/// The task card with or without its extension, any case: `@context/TASK`,
+/// `@context/task.md`, … all mean the canonical `TASK.md`.
+fn is_task_rel(rel: &str) -> bool {
+    if rel.contains('/') {
+        return false;
+    }
+    let lower = rel.to_ascii_lowercase();
+    lower == "task" || lower == "task.md"
+}
+
+/// What the context folder holds, for a missing-file error.
+fn context_listing(vfs: &VfsState, dialog_id: &str) -> Option<String> {
+    let mut entries = vfs.list(&context_dir(dialog_id)).ok()?;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = Vec::new();
+    for (name, is_dir, _) in entries {
+        if is_dir {
+            out.push(format!("{name}/"));
+        } else {
+            out.push(name);
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.join(", "))
+    }
+}
+
+fn missing_file_error(vfs: &VfsState, dialog_id: &str, path: &str) -> String {
+    match context_listing(vfs, dialog_id) {
+        Some(list) => format!("{path}: not found. Your context folder has: {list}"),
+        None => format!("{path}: not found. Your context folder is empty."),
+    }
 }
 
 fn line_range(content: &str, start: Option<usize>, end: Option<usize>) -> String {
@@ -718,9 +792,29 @@ pub async fn tool_read(
             }
         }
         Target::Other(rel) => {
+            // A read of the card before it exists is guidance, not an error.
+            if is_task_rel(&rel) {
+                match read_text(vfs, &task_file(dialog_id)) {
+                    Some(text) if !text.trim().is_empty() => {
+                        return Ok(line_range(&text, start_line, end_line))
+                    }
+                    _ => return Ok(prompt::no_card_read()),
+                }
+            }
             let p = format!("{}/{rel}", context_dir(dialog_id));
-            let text = read_text(vfs, &p).ok_or_else(|| format!("{path}: not found"))?;
-            Ok(line_range(&text, start_line, end_line))
+            if let Some(text) = read_text(vfs, &p) {
+                return Ok(line_range(&text, start_line, end_line));
+            }
+            // Near miss: `@context/<name>` without an extension may mean
+            // `<name>.md`.
+            let file_name = rel.rsplit('/').next().unwrap_or(&rel);
+            if !file_name.contains('.') {
+                let tried = format!("{p}.md");
+                if let Some(text) = read_text(vfs, &tried) {
+                    return Ok(line_range(&text, start_line, end_line));
+                }
+            }
+            Err(missing_file_error(vfs, dialog_id, path))
         }
     }
 }
@@ -747,7 +841,13 @@ pub async fn clm_tool_edit(
 fn writable(vfs: &VfsState, dialog_id: &str, path: &str) -> Result<String, String> {
     match target(vfs, dialog_id, path)? {
         Target::Live => Ok(context_file(dialog_id)),
-        Target::Other(rel) => Ok(format!("{}/{rel}", context_dir(dialog_id))),
+        Target::Other(rel) => {
+            // `@context/TASK` (any case, with or without `.md`) is the card.
+            if is_task_rel(&rel) {
+                return Ok(task_file(dialog_id));
+            }
+            Ok(format!("{}/{rel}", context_dir(dialog_id)))
+        }
         _ => Err(format!(
             "Revisions can't be changed. Edit {} (copy what you need from a revision into it).",
             prompt::CONTEXT_PATH
@@ -765,8 +865,20 @@ pub fn tool_edit(
     start_line: Option<usize>,
     end_line: Option<usize>,
 ) -> Result<String, String> {
-    let file = writable(vfs, dialog_id, path)?;
-    let content = read_text(vfs, &file).ok_or_else(|| format!("{path}: not found"))?;
+    let mut file = writable(vfs, dialog_id, path)?;
+    let mut content = read_text(vfs, &file);
+    // Near miss: `@context/<name>` without an extension may mean `<name>.md`.
+    if content.is_none() && !file.ends_with(".md") {
+        let file_name = file.rsplit('/').next().unwrap_or(&file);
+        if !file_name.contains('.') {
+            let tried = format!("{file}.md");
+            if read_text(vfs, &tried).is_some() {
+                file = tried;
+                content = read_text(vfs, &file);
+            }
+        }
+    }
+    let content = content.ok_or_else(|| missing_file_error(vfs, dialog_id, path))?;
     let (updated, span) =
         crate::edit_file::apply_edit(&content, old_text, new_text, start_line, end_line)?;
     vfs.write_unmounted(&file, updated.as_bytes())?;
@@ -937,6 +1049,9 @@ pub struct ClmStatus {
     pub projected: bool,
     pub tokens: usize,
     pub budget: usize,
+    /// Phase E: how the agent is doing at context management, e.g.
+    /// "acted on 3 of 4 reminders". None before any budget reminder fired.
+    pub compliance: Option<String>,
 }
 
 #[tauri::command]
@@ -975,7 +1090,25 @@ pub async fn status(db: &DbState, vfs: &VfsState, dialog_id: String) -> Result<C
         projected: state.projection.is_some(),
         tokens: state.tokens,
         budget: state.budget,
+        compliance: compliance_summary(&state, &revisions),
     })
+}
+
+/// Phase E: a short compliance summary for the context popover, from what
+/// the database holds (reminder tiers fired, edits made). The per-run log
+/// (`"event": "clm"`) has the exact turns-to-edit; this is the standing
+/// approximation across runs, so it needs no new storage.
+fn compliance_summary(state: &store::State, revisions: &[store::RevisionRow]) -> Option<String> {
+    let mut fired = state.nudged.clone();
+    if prompt::percent(state.tokens, state.budget) >= prompt::URGENT && !fired.contains(&90) {
+        fired.push(90);
+    }
+    if fired.is_empty() {
+        return None;
+    }
+    fired.sort_unstable();
+    let edits = revisions.iter().filter(|r| r.kind != "context").count();
+    Some(format!("acted on {} of {} reminders", edits.min(fired.len()), fired.len()))
 }
 
 #[tauri::command]
@@ -1183,7 +1316,9 @@ pub async fn tool_list(db: &DbState, vfs: &VfsState, dialog_id: &str, path: &str
             format!("@context/{rel}"),
         ),
     };
-    let entries = vfs.list(&dir).map_err(|_| format!("{path}: not found"))?;
+    let entries = vfs
+        .list(&dir)
+        .map_err(|_| missing_file_error(vfs, dialog_id, path))?;
     let mut out = Vec::new();
     if shown == "@context" {
         let d = dialog_id.to_string();

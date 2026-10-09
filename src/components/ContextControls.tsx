@@ -299,6 +299,7 @@ export default function ContextControls(props: {
                   (status()!.projected
                     ? `The agent has edited it ${status()!.edits} time(s).`
                     : 'The agent has not edited it yet.') +
+                  (status()!.compliance ? ` Context management: ${status()!.compliance}.` : '') +
                   (status()!.realPath ? `\n${status()!.realPath}` : '')
                 : 'The context file is written when the next message is sent.'
             }
@@ -307,6 +308,9 @@ export default function ContextControls(props: {
               rev {status()!.revision}
               <Show when={budget() > 0}>
                 {' · '}~{short(status()!.tokens)}/{short(budget())}
+              </Show>
+              <Show when={status()!.compliance}>
+                {' · '}{status()!.compliance}
               </Show>
             </Show>
           </span>

@@ -83,11 +83,14 @@ pub fn project_context(profile: &ProjectProfile, checks: &[ProjectCheck], verify
         .to_string()];
         list.extend(enabled.iter().map(|c| format!("- {}: `{}`", check_label(&c.kind), c.command)));
         parts.push(list.join("\n"));
-        if verify_on {
+        if verify_on && enabled.iter().any(|c| !c.command.trim().is_empty()) {
             parts.push(
                 "Run a relevant check yourself before finishing when it helps you get the change right. \
                  If a check fails for reasons unrelated to your change (it fails on the original code too), \
                  say so plainly and don't change unrelated code to make it pass. \
+                 Do not add a verification step (running checks, tests, build, or lint) to your todo checklist: \
+                 the IDE runs the checks above itself after you finish and sends any failures back to you to fix. \
+                 Keep the checklist to the work itself. \
                  In your final message, say what was verified."
                     .into(),
             );
@@ -168,6 +171,12 @@ mod tests {
         assert!(text.starts_with("## Project\n\nStack: Rust.\n\nChecks: when you finish"));
         assert!(text.contains("- Type check: `cargo check`\n- Tests: `cargo test`"));
         assert!(!text.contains("cargo build"));
+        assert!(text.contains("Do not add a verification step"), "{text}");
+        assert!(text.contains("Keep the checklist to the work itself"), "{text}");
+        // Verification off: checks are offered as commands, no no-verify-step line.
+        let off = project_context(&profile, &checks, false);
+        assert!(off.contains("Checks you can run with bash after changing code:"), "{off}");
+        assert!(!off.contains("Do not add a verification step"), "{off}");
         assert!(text.ends_with("The project's instructions for agents (AGENTS.md); follow them:\n\nBe nice."));
 
         let saved = serde_json::json!({ "checks": [{ "kind": "lint", "command": "x", "enabled": false }, { "kind": "nope", "command": "y" }] });

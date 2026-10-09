@@ -514,3 +514,20 @@ pub fn agent_status(state: State<'_, AgentState>) -> AgentStatus {
         questions: inner.questions.values().map(|w| w.request.clone()).collect(),
     }
 }
+
+/// The chat's current checklist, as the backend computes it
+/// (`plan::current_checklist`, carried checklists included): the single
+/// source of truth for the UI panel, instead of the UI recomputing it from
+/// the messages it has loaded.
+#[tauri::command]
+pub async fn chat_checklist(
+    db: State<'_, DbState>,
+    dialog_id: String,
+) -> Result<Option<plan::CurrentChecklist>, String> {
+    const RECENT: usize = 500;
+    let page = db
+        .read(move |c| store::get_messages(c, &dialog_id, None, RECENT))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(plan::current_checklist(&page.messages))
+}

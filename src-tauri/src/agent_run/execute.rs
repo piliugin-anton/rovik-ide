@@ -263,6 +263,23 @@ impl<R: Runtime> Run<R> {
             let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
             return self.add_tool_result(&tc.id, content, meta, Vec::new()).await;
         }
+        // Phase E: a restricted turn offers only context tools (handled
+        // above), `restore_context`, and the checklist / plan questions.
+        // Anything else is refused without running, so the model compacts
+        // before doing more work. The restriction lifts with an edit.
+        if clm
+            && self.clm_restricted
+            && !matches!(tc.name.as_str(), "todo" | "ask_user" | "submit_plan")
+        {
+            let content = format!(
+                "Error: this turn offers only context tools (read/write/list_dir on @context/…), \
+                 restore_context and todo: the context is over budget and a compaction request is still \
+                 open. Compact your context file now in one edit, copying facts forward, then repeat \
+                 this {} call.",
+                tc.name
+            );
+            return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+        }
         match tc.name.as_str() {
             // The plan (Plan mode): checked, then saved; problems go back to the model.
             "submit_plan" => {
@@ -271,8 +288,92 @@ impl<R: Runtime> Run<R> {
             // The checklist: shown in the panel, never asks, isn't work the
             // loop checks or the pause limit count.
             "todo" => {
-                let content = plan::describe_todo(&plan::parse_todo(&args));
-                return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+                let items = plan::parse_todo(&args);
+                let mut content = plan::describe_todo(&items);
+                // Phase D: a step just finished in CLM mode asks for a
+                // compaction of that step's span (and a TASK.md update).
+                // The previous checklist is what was current before this
+                // call: the history up to the message holding it.
+                if clm && !items.is_empty() && !content.starts_with("Error") {
+                    let previous: Option<Vec<plan::TodoItem>> = self
+                        .recent()
+                        .await
+                        .ok()
+                        .map(|recent| {
+                            let cut = recent
+                                .iter()
+                                .position(|m| {
+                                    m.tool_calls
+                                        .as_ref()
+                                        .is_some_and(|calls| calls.iter().any(|c| c.id == tc.id))
+                                })
+                                .unwrap_or(recent.len());
+                            plan::current_checklist(&recent[..cut]).map(|c| c.items)
+                        })
+                        .flatten();
+                    if let Some(before) = previous {
+                        let settled_before = |title: &str| {
+                            before
+                                .iter()
+                                .find(|i| i.title == title)
+                                .is_some_and(plan::is_settled)
+                        };
+                        let newly: Vec<&plan::TodoItem> = items
+                            .iter()
+                            .filter(|i| plan::is_settled(i) && !settled_before(&i.title))
+                            .collect();
+                        if !newly.is_empty() {
+                            let dialog_id = self.dialog_id.clone();
+                            let (tokens, budget, revision) = self
+                                .db
+                                .read(move |conn| {
+                                    Ok(crate::clm::store::load_state(conn, &dialog_id)
+                                        .map(|s| (s.tokens, s.budget, s.rendered_revision))
+                                        .unwrap_or_default())
+                                })
+                                .await
+                                .unwrap_or_default();
+                            let pct = if budget == 0 {
+                                0
+                            } else {
+                                ((tokens as f64 / budget as f64) * 100.0).round() as u32
+                            };
+                            let next = items
+                                .iter()
+                                .find(|i| !plan::is_settled(i))
+                                .map(|i| i.title.as_str());
+                            let done_names = newly
+                                .iter()
+                                .map(|i| format!("\"{}\"", i.title))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let done_word = if newly.len() == 1 { "Step" } else { "Steps" };
+                            if pct >= super::run::CLM_STEP_COMPACT_MIN {
+                                match next {
+                                    Some(n) => content.push_str(&format!(
+                                        "\n\n{done_word} {done_names} done. Before \"{n}\": compact that step's span in one edit, copy facts forward, and update @context/TASK.md (done, NEXT)."
+                                    )),
+                                    None => content.push_str(&format!(
+                                        "\n\n{done_word} {done_names} done. Compact that step's span in one edit, copy facts forward, and update @context/TASK.md (done, NEXT)."
+                                    )),
+                                }
+                            } else {
+                                content.push_str("\n\nUpdate @context/TASK.md: done/NEXT.");
+                            }
+                            self.pending_step_compaction = Some(super::run::PendingStepCompaction {
+                                step: newly[0].title.clone(),
+                                revision,
+                                tool_calls: self.guard.tool_calls,
+                            });
+                            self.step_asked_turn = Some(self.clm_turns);
+                        }
+                    }
+                }
+                self.add_tool_result(&tc.id, content, None, Vec::new()).await?;
+                // The panel's live source while the run goes: every update,
+                // even an empty one (which clears a stale panel).
+                emit(&self.app, AgentEvent::Checklist { dialog_id: self.dialog_id.clone(), items });
+                return Ok(());
             }
             // Questions to the user: answered in the chat, no approval
             // involved (a resumed one after a restart is simply asked again).
@@ -287,6 +388,35 @@ impl<R: Runtime> Run<R> {
                 return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
             }
             _ => {}
+        }
+
+        // Checklist gate (Agent mode): no checklist yet, and the model tries
+        // work that changes files or runs a command after already changing a
+        // file or making 8+ calls — refuse once per run, so genuinely small
+        // tasks aren't blocked. A repeated identical call is let through, so
+        // the model can't get stuck. Writes to the CLM context folder are
+        // exempt (context management, not project work), as are fixes after
+        // the checks failed (continuing started work, not new scope).
+        if !self.plan_mode
+            && resume_note.is_none()
+            && !self.last_verify_failed
+            && (permissions::modifies_files(tc.name.as_str()) || tc.name == "bash")
+            && !(clm && is_context_path(path_arg, context_dir))
+            && (self.guard.tool_calls >= 8 || !self.changed_files.is_empty())
+        {
+            if self.checklist_gate_refused {
+                // Refused once already: let everything through, repeats included.
+            } else if let Ok(recent) = self.recent().await {
+                if plan::current_checklist(&recent).is_none() {
+                    self.checklist_gate_refused = true;
+                    let content = format!(
+                        "Error: no checklist exists yet. Create it first with the todo tool \
+                         (the whole list, first step in_progress), then repeat this {} call.",
+                        tc.name
+                    );
+                    return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+                }
+            }
         }
 
         let auth = self.authorize(tc, resume_note).await;
@@ -364,11 +494,13 @@ impl<R: Runtime> Run<R> {
             }
         }
         // Redoing work it compacted away: offer the revision that still has it.
+        // A hint that fires counts redone work (Phase E compliance).
         if clm && auth.refusal.is_none() && !tools::is_error(&result.content) {
             let (d, id, name, a) = (self.dialog_id.clone(), tc.id.clone(), tool_name.clone(), args_json.clone());
             let hint = self.db.read(move |c| crate::clm::recall_hint(c, &d, &id, &name, &a)).await;
             if let Ok(Some(hint)) = hint {
                 result.content.push_str(&hint);
+                self.clm_recall_hits += 1;
             }
         }
 

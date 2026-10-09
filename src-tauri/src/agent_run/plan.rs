@@ -450,7 +450,7 @@ pub fn outcome_kinds(outcome: &QuestionsOutcome) -> Vec<String> {
 const TODO_STATUSES: &[&str] = &["pending", "in_progress", "done", "skipped", "changed"];
 pub const MAX_TODO_ITEMS: usize = 30;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
     pub title: String,
     pub status: String,
@@ -523,24 +523,148 @@ pub fn is_harness(m: &MessageRow) -> bool {
     m.meta.as_ref().and_then(|meta| meta.get("harness")).is_some_and(|h| !h.is_null())
 }
 
-/// The checklist of the current request: the latest todo call since the
-/// user's last message (the IDE's own messages don't start a request).
-pub fn latest_checklist(messages: &[MessageRow]) -> Option<Vec<TodoItem>> {
-    for m in messages.iter().rev() {
-        if m.role == "user" && !is_harness(m) {
-            return None;
-        }
-        let call = m.tool_calls.iter().flatten().rev().find(|c| c.name == "todo");
-        if let Some(call) = call {
-            if let Ok(Value::Object(args)) = serde_json::from_str::<Value>(&call.arguments) {
-                let items = parse_todo(&args);
-                if !items.is_empty() {
-                    return Some(items);
-                }
-            }
+/// Whether the user dismissed the open checklist with this message
+/// (`meta.checklistClosed`, set by the checklist panel's dismiss ✕).
+pub fn is_checklist_dismissed(m: &MessageRow) -> bool {
+    m.meta
+        .as_ref()
+        .and_then(|meta| meta.get("checklistClosed").or_else(|| meta.get("checklist_closed")))
+        .is_some_and(|v| v == &Value::Bool(true))
+}
+
+/// The latest `todo` call in one message, if it parses to a non-empty list.
+fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
+    let call = m.tool_calls.iter().flatten().rev().find(|c| c.name == "todo")?;
+    if let Ok(Value::Object(args)) = serde_json::from_str::<Value>(&call.arguments) {
+        let items = parse_todo(&args);
+        if !items.is_empty() {
+            return Some(items);
         }
     }
     None
+}
+
+/// The checklist the chat is currently working from.
+///
+/// - `carried == false`: the latest `todo` call in the current request
+///   (since the last real user message).
+/// - `carried == true`: the current request made no `todo` call, so the
+///   latest open checklist from the previous request is carried forward. It
+///   counts as closed (and is not carried) when every step is settled or the
+///   user dismissed it with `meta.checklistClosed` on the new message.
+///
+/// Looking back past exactly one user message (to the latest `todo` in the
+/// previous request only) keeps a checklist alive across a short follow-up
+/// like "continue" that never makes a new `todo` call. A second user
+/// message stops the search, so an old checklist doesn't linger across
+/// unrelated work. A newer `todo` call replaces it, and the carry note
+/// tells the model to close the old one when the new message is a different
+/// task.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CurrentChecklist {
+    pub items: Vec<TodoItem>,
+    pub carried: bool,
+    pub from_message_id: Option<String>,
+}
+
+pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
+    let last_user = messages.iter().rposition(|m| m.role == "user" && !is_harness(m));
+    let Some(last) = last_user else {
+        // No user message yet: whatever the latest todo call says.
+        for m in messages.iter().rev() {
+            if let Some(items) = todo_in_message(m) {
+                return Some(CurrentChecklist { items, carried: false, from_message_id: Some(m.id.clone()) });
+            }
+        }
+        return None;
+    };
+    // The current request: everything after the last real user message.
+    for m in messages[last + 1..].iter().rev() {
+        if let Some(items) = todo_in_message(m) {
+            return Some(CurrentChecklist { items, carried: false, from_message_id: Some(m.id.clone()) });
+        }
+    }
+    // No checklist in the current request: a dismissal closes it.
+    if is_checklist_dismissed(&messages[last]) {
+        return None;
+    }
+    // The previous request only: past the last user message, up to the one
+    // before it. A second user message stops the search, so an old
+    // checklist doesn't linger across unrelated work.
+    let prev_user = messages[..last].iter().rposition(|m| m.role == "user" && !is_harness(m));
+    let from = prev_user.map(|p| p + 1).unwrap_or(0);
+    for m in messages[from..last].iter().rev() {
+        if let Some(items) = todo_in_message(m) {
+            if items.iter().all(is_settled) {
+                return None;
+            }
+            return Some(CurrentChecklist { items, carried: true, from_message_id: Some(m.id.clone()) });
+        }
+    }
+    None
+}
+
+/// Steps still open, for carry notes and nudges.
+pub fn open_steps(items: &[TodoItem]) -> Vec<&TodoItem> {
+    items.iter().filter(|i| !is_settled(i)).collect()
+}
+
+/// The app's own message carrying an unfinished checklist into a new
+/// request: lists what is left and says what to do whether the message
+/// continues that work or starts a new task. An app message (harness), so
+/// it never starts a new request itself.
+pub fn carry_note(items: &[TodoItem]) -> String {
+    let done = items.iter().filter(|i| is_settled(i)).count();
+    let mut note = format!(
+        "[Automatic note from the IDE, not written by the user]\nUnfinished checklist from earlier work ({done} of {} done):",
+        items.len()
+    );
+    for item in items {
+        note.push_str(&format!("\n- [{}] {}", item.status, item.title));
+    }
+    note.push_str(
+        "\nIf this message continues that work, mark the first unfinished step in_progress with todo and go on. \
+         If it is a new task, either mark the old steps skipped (with the reason) or changed, or create a new checklist with todo.",
+    );
+    note
+}
+
+/// The app's own message resuming an unfinished checklist on Continue:
+/// the remaining steps, with the first unfinished step to pick up. An app
+/// message (harness), so it never starts a new request itself. No user
+/// message is created, so nothing gets lost.
+pub fn continue_note(items: &[TodoItem]) -> String {
+    let done = items.iter().filter(|i| is_settled(i)).count();
+    let mut note = format!(
+        "[Automatic note from the IDE, not written by the user]\nContinuing the unfinished checklist ({done} of {} done) - pick up the first unfinished step with todo and go on:",
+        items.len()
+    );
+    for item in items {
+        note.push_str(&format!("\n- [{}] {}", item.status, item.title));
+    }
+    note
+}
+
+/// The checklist as repeated on every CLM request (right after the task
+/// card): the app shows it, so the model keeps working from it without
+/// copying it into the card. Trimming mode keeps using `focus_note`.
+pub fn checklist_note(items: &[TodoItem], carried: bool) -> String {
+    let done = items.iter().filter(|i| is_settled(i)).count();
+    let mut note = if carried {
+        format!(
+            "[your checklist, carried from earlier work ({done} of {} done) - the panel shows it, so don't copy it into the task card:]",
+            items.len()
+        )
+    } else {
+        format!(
+            "[your checklist ({done} of {} done) - the panel shows it, so don't copy it into the task card:]",
+            items.len()
+        )
+    };
+    for item in items {
+        note.push_str(&format!("\n- [{}] {}", item.status, item.title));
+    }
+    note
 }
 
 #[cfg(test)]
@@ -707,5 +831,125 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(describe_todo(&between), "Checklist updated: 1 of 2 done.");
+    }
+
+    #[test]
+    fn checklist_note_repeats_the_list_without_copying_it() {
+        let items = parse_todo(
+            json!({ "items": [{ "title": "a", "status": "done" }, { "title": "b", "status": "pending" }] })
+                .as_object()
+                .unwrap(),
+        );
+        let note = checklist_note(&items, false);
+        assert!(note.contains("1 of 2 done"), "{note}");
+        assert!(note.contains("- [done] a") && note.contains("- [pending] b"), "{note}");
+        assert!(note.contains("don't copy it into the task card"), "{note}");
+        assert!(checklist_note(&items, true).contains("carried from earlier work"), "{note}");
+    }
+
+    fn row(id: &str, role: &str, meta: Option<Value>) -> MessageRow {
+        MessageRow {
+            id: id.into(),
+            dialog_id: "d".into(),
+            seq: 0,
+            role: role.into(),
+            content: id.into(),
+            body_external: false,
+            body_bytes: 0,
+            tool_calls: None,
+            tool_call_id: None,
+            meta,
+            error: None,
+            failed: false,
+            finalized: true,
+            attachments: Vec::new(),
+            created_at: 0,
+        }
+    }
+
+    fn todo_row(id: &str, items: Value) -> MessageRow {
+        let mut m = row(id, "assistant", None);
+        m.tool_calls = Some(vec![crate::chat_db::store::ToolCall {
+            id: format!("{id}-call"),
+            name: "todo".into(),
+            arguments: items.to_string(),
+            extra_content: None,
+        }]);
+        m
+    }
+
+    /// An unfinished checklist is carried across one user message.
+    #[test]
+    fn unfinished_checklist_is_carried_across_one_user_message() {
+        let messages = vec![
+            row("u1", "user", None),
+            todo_row("a1", json!({ "items": [{ "title": "a", "status": "done" }, { "title": "b", "status": "pending" }] })),
+            row("u2", "user", None),
+        ];
+        let carried = current_checklist(&messages).expect("carried");
+        assert!(carried.carried, "{carried:?}");
+        assert_eq!(carried.from_message_id.as_deref(), Some("a1"));
+        assert_eq!(carried.items.len(), 2);
+        assert_eq!(open_steps(&carried.items).len(), 1);
+    }
+
+    /// A fully settled checklist is not carried: the agent is wrapping up.
+    #[test]
+    fn settled_checklist_is_not_carried() {
+        let messages = vec![
+            row("u1", "user", None),
+            todo_row("a1", json!({ "items": [{ "title": "a", "status": "done" }] })),
+            row("u2", "user", None),
+        ];
+        assert_eq!(current_checklist(&messages), None);
+    }
+
+    /// A newer `todo` call in the current request wins over the carried one.
+    #[test]
+    fn newer_todo_call_wins() {
+        let messages = vec![
+            row("u1", "user", None),
+            todo_row("a1", json!({ "items": ["old step"] })),
+            row("u2", "user", None),
+            todo_row("a2", json!({ "items": ["new step"] })),
+        ];
+        let current = current_checklist(&messages).expect("current");
+        assert!(!current.carried, "{current:?}");
+        assert_eq!(current.from_message_id.as_deref(), Some("a2"));
+        assert_eq!(current.items[0].title, "new step");
+    }
+
+    /// A second user message stops the search: an old checklist doesn't
+    /// linger across unrelated work.
+    #[test]
+    fn second_user_message_stops_the_search() {
+        let messages = vec![
+            row("u1", "user", None),
+            todo_row("a1", json!({ "items": ["old step"] })),
+            row("u2", "user", None),
+            row("u3", "user", None),
+        ];
+        assert_eq!(current_checklist(&messages), None);
+    }
+
+    /// The panel's dismiss (meta.checklistClosed) closes the checklist.
+    #[test]
+    fn checklist_closed_is_respected() {
+        let dismissed = |key: &str| {
+            vec![
+                row("u1", "user", None),
+                todo_row("a1", json!({ "items": ["old step"] })),
+                row("u2", "user", Some(json!({ key: true }))),
+            ]
+        };
+        assert_eq!(current_checklist(&dismissed("checklistClosed")), None);
+        assert_eq!(current_checklist(&dismissed("checklist_closed")), None);
+        // Without the flag the same history carries.
+        let messages = vec![
+            row("u1", "user", None),
+            todo_row("a1", json!({ "items": ["old step"] })),
+            row("u2", "user", None),
+        ];
+        assert!(current_checklist(&messages).is_some());
     }
 }

@@ -62,7 +62,13 @@ import {
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
-import { latestChecklist } from '../lib/todo';
+import { isSettled, latestChecklist } from '../lib/todo';
+import {
+  dismissChecklist,
+  liveChecklist,
+  refreshChecklist,
+  settledChecklist,
+} from '../lib/checklist';
 import { onImplementPlanRequest, relativePlanPath, takeImplementPlanRequest } from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
 import {
@@ -852,6 +858,10 @@ export default function ChatPanel(props: ChatProps) {
     }
     restoreDraftForDialog(row.dialog.id);
     await restoreComposerDraft(row.dialog.id);
+    // The idle checklist panel reads the backend (whole database), not the
+    // messages loaded here — refresh on open, so a chat opened from a
+    // search hit or with an older checklist page shows the right panel.
+    if (!isRunning(row.dialog.id)) void refreshChecklist(row.dialog.id);
     // resetComposerState above cleared `input` while the old chat was still
     // active, scheduling an empty save for it; drop it, the flush kept it.
     if (prevId && prevId !== row.dialog.id) cancelComposerDraft(prevId);
@@ -1255,11 +1265,9 @@ export default function ChatPanel(props: ChatProps) {
    * mid-line) stay native: the planners return null there.
    */
   function handleChipDeleteCapture(e: KeyboardEvent) {
-    if ((e.key !== 'Backspace' && e.key !== 'Delete') || e.ctrlKey || e.metaKey || e.altKey)
-      return;
+    if ((e.key !== 'Backspace' && e.key !== 'Delete') || e.ctrlKey || e.metaKey || e.altKey) return;
     const sel = window.getSelection();
-    if (!sel?.isCollapsed || !sel.anchorNode || !inputTextareaRef?.contains(sel.anchorNode))
-      return;
+    if (!sel?.isCollapsed || !sel.anchorNode || !inputTextareaRef?.contains(sel.anchorNode)) return;
     const plan = e.key === 'Backspace' ? planBackspaceDelete() : planForwardDelete();
     if (plan) {
       e.preventDefault();
@@ -2061,7 +2069,7 @@ export default function ChatPanel(props: ChatProps) {
       {
         id: crypto.randomUUID(),
         content: rel ? `Implement the plan in \`${rel}\`.` : 'Implement the plan above.',
-        meta: { mode: 'agent', sentContent: wire },
+        meta: { mode: 'agent', sentContent: wire, implementsPlan: true },
       },
       wire
     );
@@ -2077,8 +2085,52 @@ export default function ChatPanel(props: ChatProps) {
   const stopPlanRequests = onImplementPlanRequest(() => takePlanFromEditor());
   onCleanup(stopPlanRequests);
 
-  /** The running request's checklist, for the panel. */
-  const runChecklist = createMemo(() => latestChecklist(messages()));
+  /** The running request's checklist, for the panel.
+   *
+   * Single source of truth (Phase C step 9): while a run goes, the backend's
+   * `checklist` event (`liveChecklist`) — not the messages loaded here
+   * (a window around a search hit, or a checklist older than the newest
+   * page). `latestChecklist(messages())` stays only as the fallback for a
+   * `todo` call still streaming. When idle, `chat_checklist`
+   * (`settledChecklist`, refreshed on open / run end).
+   */
+  const runChecklist = createMemo(() => {
+    const list = liveChecklist(activeDialogId()) ?? latestChecklist(messages());
+    return list && list.length ? list : null;
+  });
+  /** Open checklist while nothing runs: "Interrupted · N of M done". */
+  const idleChecklist = createMemo(() => {
+    if (sending()) return null;
+    const settled = settledChecklist(activeDialogId());
+    if (!settled || settled.items.length === 0) return null;
+    if (settled.items.every(isSettled)) return null;
+    return settled.items;
+  });
+  // When no run goes, ask the backend (whole database, carried checklists
+  // included): chat opened, and after a run ends (agentRuns also refreshes
+  // on runEnded; this covers remounts and chat switches).
+  createEffect(
+    on(
+      () => [activeDialogId(), sending()] as const,
+      ([dialogId, running]) => {
+        if (!dialogId || running) return;
+        if (settledChecklist(dialogId) === undefined) void refreshChecklist(dialogId);
+      }
+    )
+  );
+  /** Dismiss the idle panel's ✕: closes the checklist via `checklistClosed`. */
+  function dismissIdleChecklist() {
+    const dialogId = activeDialogId();
+    if (!dialogId) return;
+    const list = messages();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.role === 'user' && !m.meta?.harness) {
+        void dismissChecklist(dialogId, m.id, m.meta as Record<string, unknown> | undefined);
+        return;
+      }
+    }
+  }
   /** The plan file the running request implements, if any. */
   const runPlanFile = createMemo(() => {
     const list = messages();
@@ -2338,10 +2390,7 @@ export default function ChatPanel(props: ChatProps) {
 
   /** Line wrappers the webview puts composer lines in (Enter splits them). */
   function isComposerBlock(n: Node | null): boolean {
-    return (
-      n instanceof HTMLElement &&
-      /^(DIV|P|LI|BLOCKQUOTE|H[1-6]|SECTION)$/.test(n.tagName)
-    );
+    return n instanceof HTMLElement && /^(DIV|P|LI|BLOCKQUOTE|H[1-6]|SECTION)$/.test(n.tagName);
   }
 
   /** Visible composer content: a chip, non-blank text, or an element holding either. */
@@ -2351,10 +2400,7 @@ export default function ChatPanel(props: ChatProps) {
     if (n instanceof HTMLElement) {
       if (n.classList.contains('chat-file-reference')) return true;
       if (n.tagName === 'BR') return false;
-      return (
-        n.querySelector('.chat-file-reference') !== null ||
-        /\S/.test(n.textContent ?? '')
-      );
+      return n.querySelector('.chat-file-reference') !== null || /\S/.test(n.textContent ?? '');
     }
     return false;
   }
@@ -2363,8 +2409,7 @@ export default function ChatPanel(props: ChatProps) {
   function onlyBlankAfter(el: HTMLElement, from: number): boolean {
     for (let i = from; i < el.childNodes.length; i++) {
       const c = el.childNodes[i];
-      if (!(c.nodeType === Node.TEXT_NODE && /^\s*$/.test(c.textContent ?? '')))
-        return false;
+      if (!(c.nodeType === Node.TEXT_NODE && /^\s*$/.test(c.textContent ?? ''))) return false;
     }
     return true;
   }
@@ -2373,18 +2418,13 @@ export default function ChatPanel(props: ChatProps) {
   function onlyBlankBefore(el: HTMLElement, to: number): boolean {
     for (let i = 0; i < Math.min(to, el.childNodes.length); i++) {
       const c = el.childNodes[i];
-      if (!(c.nodeType === Node.TEXT_NODE && /^\s*$/.test(c.textContent ?? '')))
-        return false;
+      if (!(c.nodeType === Node.TEXT_NODE && /^\s*$/.test(c.textContent ?? ''))) return false;
     }
     return true;
   }
 
   /** Meaningful content after (node, offset) up to the end of its line. */
-  function lineHasMeaningfulAfter(
-    node: Node,
-    offset: number,
-    container: HTMLElement
-  ): boolean {
+  function lineHasMeaningfulAfter(node: Node, offset: number, container: HTMLElement): boolean {
     let n: Node | null = node;
     let o = offset;
     for (;;) {
@@ -2411,11 +2451,7 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /** Meaningful content before (node, offset) back to the start of its line. */
-  function lineHasMeaningfulBefore(
-    node: Node,
-    offset: number,
-    container: HTMLElement
-  ): boolean {
+  function lineHasMeaningfulBefore(node: Node, offset: number, container: HTMLElement): boolean {
     let n: Node | null = node;
     let o = offset;
     for (;;) {
@@ -2452,7 +2488,7 @@ export default function ChatPanel(props: ChatProps) {
 
   /** The chip containing this node, if any (caret inside chip markup). */
   function enclosingChip(n: Node | null, container: HTMLElement): HTMLElement | null {
-    const el = n instanceof HTMLElement ? n : n?.parentElement ?? null;
+    const el = n instanceof HTMLElement ? n : (n?.parentElement ?? null);
     const chip = el?.closest?.('.chat-file-reference') ?? null;
     return chip && container.contains(chip) ? (chip as HTMLElement) : null;
   }
@@ -2920,6 +2956,18 @@ export default function ChatPanel(props: ChatProps) {
       {/* The agent's checklist while it works (read-only). */}
       <Show when={sending() && !waitingQuestion() && runChecklist()}>
         {(items) => <TodoPanel items={items()} plan={runPlanFile()} />}
+      </Show>
+      {/* Open checklist while nothing runs: interrupted, with Continue + dismiss. */}
+      <Show when={!sending() && !waitingQuestion() && idleChecklist()}>
+        {(items) => (
+          <TodoPanel
+            items={items()}
+            plan={runPlanFile()}
+            interrupted
+            onContinue={continueRun}
+            onDismiss={dismissIdleChecklist}
+          />
+        )}
       </Show>
       {/* The agent's questions, one at a time, above the input. */}
       <Show when={waitingQuestion()} keyed>

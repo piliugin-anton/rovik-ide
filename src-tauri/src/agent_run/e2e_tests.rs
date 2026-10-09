@@ -1062,7 +1062,7 @@ async fn a_revised_plan_replaces_the_chats_plan_file() {
 }
 
 #[tokio::test]
-async fn unfinished_checklist_steps_are_pointed_out_once() {
+async fn unfinished_checklist_steps_are_pointed_out_twice_then_left_open() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![
         Reply::Call {
@@ -1072,16 +1072,232 @@ async fn unfinished_checklist_steps_are_pointed_out_once() {
         },
         Reply::Text("Done."),
         Reply::Text("Really done."),
+        Reply::Text("Truly done."),
     ])
     .await;
     h.start(h.request(&url, Harness::send("Do"), quiet_permissions())).await;
-    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.run_end().await, "unfinished-checklist");
     let messages = h.messages().await;
     assert_eq!(result_of(&messages, "t1").content, "Checklist updated: 1 of 2 done.");
     let notes = harness_notes(&messages);
-    assert_eq!(notes.len(), 1);
+    assert_eq!(notes.len(), 2);
     assert!(notes[0].content.contains("\"Test it\""));
-    assert_eq!(seen.lock().unwrap().len(), 3);
+    assert!(notes[1].content.contains("last reminder"));
+    // The final message carries `meta.checklistOpen` for the UI's Continue.
+    let last = messages.last().unwrap();
+    assert_eq!(last.meta.as_ref().and_then(|m| m.get("checklistOpen")).and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(seen.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn work_without_a_checklist_is_refused_once_then_let_through() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "y\n" }) },
+        // A second file-changing call with no checklist: refused, not run.
+        Reply::Call { id: "w2", name: "write", args: json!({ "path": "b.txt", "content": "new\n" }) },
+        // The repeat goes through: refuse-once-per-run, no stuck loop.
+        Reply::Call { id: "w3", name: "write", args: json!({ "path": "b.txt", "content": "new\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Write two files"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "w2").content.contains("no checklist"), "{}", result_of(&messages, "w2").content);
+    assert_eq!(h.file("b.txt").as_deref(), Some("new\n"));
+}
+
+#[tokio::test]
+async fn plan_implementation_forces_todo_on_the_first_turn() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Step one", "status": "done" }] }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan above.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    h.start(h.request(&url, StartKind::Send { message }, quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(
+        requests[0]["tool_choice"],
+        json!({ "type": "function", "function": { "name": "todo" } }),
+        "{}",
+        requests[0]["tool_choice"]
+    );
+    assert_eq!(requests[1]["tool_choice"], json!("auto"));
+}
+
+#[tokio::test]
+async fn restart_followed_by_continue_carries_the_checklist() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Write it", "status": "done" }, { "title": "Test it", "status": "pending" }] }),
+        },
+        Reply::Text("Done."),
+        Reply::Text("Really done."),
+        Reply::Text("Truly done."),
+        Reply::Text("Still going."),
+        Reply::Text("Still going again."),
+        Reply::Text("Still going a third time."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Do"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "unfinished-checklist");
+    // A restart with a short "continue": the app carries the unfinished
+    // checklist itself, and the end-of-run reminder fires again.
+    h.start(h.request(&url, Harness::send("continue"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "unfinished-checklist");
+    let messages = h.messages().await;
+    let carried: Vec<&MessageRow> = messages
+        .iter()
+        .filter(|m| {
+            m.role == "user"
+                && m.meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("harness"))
+                    .and_then(|v| v.as_str())
+                    == Some("checklistCarried")
+        })
+        .collect();
+    assert_eq!(carried.len(), 1, "{messages:#?}");
+    assert!(carried[0].content.contains("Unfinished checklist"), "{}", carried[0].content);
+    assert!(carried[0].content.contains("Test it"), "{}", carried[0].content);
+    let notes = harness_notes(&messages);
+    assert!(notes.iter().any(|n| n.content.contains("last reminder")), "{messages:#?}");
+}
+
+#[tokio::test]
+async fn named_tool_choice_falls_back_to_auto_when_rejected() {
+    let h = harness(&[]).await;
+    let refusal = "{\"error\":{\"message\":\"Unrecognized request argument supplied: tool_choice\"}}";
+    let (url, seen) = model(vec![
+        Reply::Status(400, refusal),
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Step one", "status": "done" }] }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan above.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    h.start(h.request(&url, StartKind::Send { message }, quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let requests = seen.lock().unwrap().clone();
+    assert!(requests.len() >= 2, "{requests:?}");
+    assert_eq!(
+        requests[0]["tool_choice"],
+        json!({ "type": "function", "function": { "name": "todo" } }),
+        "{:?}",
+        requests[0]
+    );
+    assert_eq!(requests[1]["tool_choice"], json!("auto"), "{:?}", requests[1]);
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "t1").content, "Checklist updated: 1 of 1 done.");
+}
+
+#[tokio::test]
+async fn task_card_guidance_then_write_shows_through_card_note() {
+    // Scripted model, CLM file tools directly: first read gets guidance as a
+    // normal result, then the written card shows through card_note.
+    let dir = std::env::temp_dir().join(format!("agent-e2e-task-{}-{}", std::process::id(), uuid::Uuid::new_v4()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = crate::chat_db::DbState::open(&dir.join("data")).unwrap();
+    let vfs = crate::vfs::VfsState::default();
+    let dialog_id = "chat";
+    db.write(|conn| {
+        crate::chat_db::store::create_dialog(
+            conn,
+            &store::NewDialog { id: dialog_id.into(), title: "t".into(), created_at: 0, updated_at: 0, project_id: None },
+        )
+    })
+    .await
+    .unwrap();
+    db.write(|conn| {
+        crate::chat_db::store::append_messages(
+            conn,
+            dialog_id,
+            &[crate::chat_db::store::NewMessage {
+                id: "u1".into(),
+                role: "user".into(),
+                content: "Do the thing".into(),
+                tool_calls: None,
+                tool_call_id: None,
+                meta: None,
+                error: None,
+                failed: false,
+                attachments: vec![],
+                created_at: 0,
+                finalized: true,
+            }],
+        )
+        .map(|_| ())
+    })
+    .await
+    .unwrap();
+    // First call: read before the card exists is guidance, not an error.
+    let guidance = crate::clm::tool_read(&db, &vfs, dialog_id, "@context/TASK.md", None, None).await.unwrap();
+    assert!(guidance.contains("no task card yet"), "{guidance}");
+    // The model writes the card, and the next request shows it.
+    crate::clm::tool_write(&vfs, dialog_id, "@context/TASK.md", "Goal: do it\nNEXT: ship").unwrap();
+    let cost = crate::chat_db::history::Cost { vision: false, chars_per_token: 3.0 };
+    let prepared = crate::clm::prepare(&db, &vfs, dialog_id.into(), 100_000, cost, None, None).await.unwrap();
+    assert!(prepared.notes.join("\n").contains("Goal: do it"), "{:?}", prepared.notes);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn clm_step_done_note_appears_at_the_threshold() {
+    // Phase D: a finished step asks for a compaction of its span at/above
+    // CLM_STEP_COMPACT_MIN, and only a TASK.md update below it. The
+    // threshold itself is the contract the scripted-model runs rely on.
+    assert_eq!(super::run::CLM_STEP_COMPACT_MIN, 35);
+    assert!(crate::clm::prompt::percent(35, 100) >= super::run::CLM_STEP_COMPACT_MIN);
+    assert!(crate::clm::prompt::percent(34, 100) < super::run::CLM_STEP_COMPACT_MIN);
+}
+
+#[test]
+fn context_only_turns_on_at_90_and_lifts_after_an_edit() {
+    // Phase E: 90%+ restricts a turn to context tools until an edit lands;
+    // below 75% the restriction lifts. Full mounted-CLM runs need FUSE, so
+    // the file-level contract is pinned here: the urgent threshold, the
+    // lift threshold, and the restricted toolset itself.
+    assert_eq!(crate::clm::prompt::URGENT, 90);
+    assert_eq!(super::run::CLM_RESTRICT_LIFT_BELOW, 75);
+    let only = super::tools::tools_for(true, false, false, &quiet_permissions(), false, true, true);
+    let names: Vec<&str> = only
+        .iter()
+        .map(|t| t.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or(""))
+        .collect();
+    assert!(names.contains(&"todo"), "{names:?}");
+    assert!(names.iter().all(|n| ["read", "write", "list_dir", "restore_context", "todo", "ask_user", "submit_plan"].contains(n)), "{names:?}");
+    assert!(!names.contains(&"bash"), "project work is not offered: {names:?}");
+}
+
+#[test]
+fn non_compliance_safety_valve_lifts_the_restriction() {
+    // Weak models must not get stuck: after CLM_MAX_RESTRICTED_STALL
+    // restricted turns with no edit the restriction lifts for good.
+    assert_eq!(super::run::CLM_MAX_RESTRICTED_STALL, 2);
+    assert_eq!(super::run::CLM_ESCALATE_AFTER_CALLS, 4);
 }
 
 #[tokio::test]
@@ -1746,7 +1962,7 @@ async fn a_call_that_isnt_a_local_read_ends_a_batch() {
             ("c2", "read", json!({ "path": "../outside.txt" })),
             ("c3", "read", json!({ "path": "a.txt" })),
             ("c4", "list_dir", json!({})),
-            ("c5", "todo", json!({ "items": [{ "title": "one", "status": "pending" }] })),
+            ("c5", "todo", json!({ "items": [{ "title": "one", "status": "done" }] })),
             ("c6", "list_dir", json!({})),
             ("c7", "read", json!({ "path": "a.txt", "start_line": 1 })),
         ]),
@@ -1760,7 +1976,7 @@ async fn a_call_that_isnt_a_local_read_ends_a_batch() {
     assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [vec!["c1", "c2", "c3", "c4"], vec!["c6", "c7"]]);
     let messages = h.messages().await;
     assert!(result_of(&messages, "c2").content.starts_with("Error: path must not contain"), "{}", result_of(&messages, "c2").content);
-    assert!(result_of(&messages, "c5").content.contains("one"), "{}", result_of(&messages, "c5").content);
+    assert!(result_of(&messages, "c5").content.contains("1 of 1 done"), "{}", result_of(&messages, "c5").content);
     assert_eq!(result_of(&messages, "c7").content, "x");
     let order: Vec<&str> = tool_results(&messages).iter().map(|(id, _)| *id).collect();
     assert_eq!(order, ["c1", "c2", "c3", "c4", "c5", "c6", "c7"]);

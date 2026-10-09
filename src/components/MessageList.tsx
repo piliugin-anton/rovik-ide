@@ -33,6 +33,7 @@ import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 import VerificationRecord from './VerificationRecord';
 import { requestOpenFile } from '../lib/editorBridge';
+import { isSettled, parseTodo } from '../lib/todo';
 
 const BOTTOM_TOLERANCE_PX = 8;
 /** A scroll this soon after wheel/touch/key/scrollbar input is the user's. */
@@ -141,6 +142,40 @@ export default function MessageList(props: {
       if (m.role === 'tool' && m.tool_call_id) map.set(m.tool_call_id, m);
     }
     return map;
+  });
+
+  // Checklist snapshots (step 10): every `todo` call writes the whole list,
+  // so only the latest call in the chat is the current state. Earlier ones
+  // are superseded: dimmed, labelled "earlier update", never spinning — an
+  // old snapshot's "in progress" step must not read as work happening now.
+  // The latest snapshot with no run going and steps unfinished is
+  // interrupted: its "in progress" icon becomes paused.
+  const todoCallStates = createMemo(() => {
+    const ids: string[] = [];
+    for (const m of messages()) {
+      for (const tc of m.toolCalls ?? []) {
+        if (tc.name === 'todo') ids.push(tc.id);
+      }
+    }
+    const latest = ids.length ? ids[ids.length - 1] : null;
+    const superseded = new Set(ids.slice(0, -1));
+    let interruptedLatest = false;
+    if (latest && !props.sending) {
+      outer: for (let i = messages().length - 1; i >= 0; i--) {
+        for (const tc of messages()[i].toolCalls ?? []) {
+          if (tc.id === latest && tc.name === 'todo') {
+            try {
+              const items = parseTodo(JSON.parse(tc.arguments));
+              interruptedLatest = items.length > 0 && items.some((item) => !isSettled(item));
+            } catch {
+              interruptedLatest = false;
+            }
+            break outer;
+          }
+        }
+      }
+    }
+    return { superseded, latest, interruptedLatest };
   });
 
   // Tool results render inside their call's block, not as rows of their own.
@@ -324,8 +359,7 @@ export default function MessageList(props: {
   let adjustingScroll = false;
   const [topLocked, setTopLocked] = createSignal(false);
 
-  const nextFrame = () =>
-    new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
   function captureTopAnchor(): TopAnchor | null {
     const el = scrollRef;
@@ -334,7 +368,12 @@ export default function MessageList(props: {
     for (const item of el.querySelectorAll<HTMLElement>('.chat-item')) {
       const rect = item.getBoundingClientRect();
       if (rect.bottom > top + 1) {
-        return { id: item.dataset.id ?? '', offset: rect.top - top, top: el.scrollTop, height: el.scrollHeight };
+        return {
+          id: item.dataset.id ?? '',
+          offset: rect.top - top,
+          top: el.scrollTop,
+          height: el.scrollHeight,
+        };
       }
     }
     return { id: '', offset: 0, top: el.scrollTop, height: el.scrollHeight };
@@ -390,8 +429,7 @@ export default function MessageList(props: {
 
   function blockScrollKey(e: KeyboardEvent) {
     if (!topLock) return;
-    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key))
-      return;
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) return;
     const target = e.target as HTMLElement | null;
     const inList = !!scrollRef && !!target && scrollRef.contains(target);
     const onPage = !target || target === document.body || target === document.documentElement;
@@ -769,8 +807,7 @@ export default function MessageList(props: {
       if (item.dataset.id && !skipped) measuredHeights.set(item.dataset.id, height);
       // While the top lock is held its settle loop owns every compensation;
       // still record heights above so placeholders stay accurate.
-      if (before === undefined || !el || stick() || topLock || entry.target === lastItem)
-        continue;
+      if (before === undefined || !el || stick() || topLock || entry.target === lastItem) continue;
       if (entry.target.getBoundingClientRect().top < anchorTop) delta += height - before;
     }
     if (delta !== 0) queueAnchorCorrection(delta); // ours, not the user's
@@ -1160,6 +1197,10 @@ export default function MessageList(props: {
                           result={toolResults().get(tc.id)}
                           running={props.sending}
                           note={props.toolNotes?.[tc.id]}
+                          superseded={todoCallStates().superseded.has(tc.id)}
+                          interrupted={
+                            tc.id === todoCallStates().latest && todoCallStates().interruptedLatest
+                          }
                         />
                       )}
                     </For>

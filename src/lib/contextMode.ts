@@ -44,6 +44,8 @@ export interface ClmStatus {
   projected: boolean;
   tokens: number;
   budget: number;
+  /** How the agent is doing at context management, e.g. "acted on 3 of 4 reminders". */
+  compliance: string | null;
 }
 
 export interface ContextRevision {

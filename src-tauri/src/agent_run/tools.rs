@@ -361,12 +361,42 @@ fn context_tool_schemas(offered: &[Value]) -> Vec<Value> {
     out
 }
 
+/// Phase E: the reduced tool list for a restricted turn. Only context
+/// management (`read`/`write`/`list_dir` limited to `@context/…`),
+/// `restore_context`, and the checklist (`todo` in Agent mode). Everything
+/// else is withheld until an edit revision lands (or the context drops).
+fn context_only_tool_schemas(plan_mode: bool) -> Vec<Value> {
+    let mut out: Vec<Value> = file_tool_schemas()
+        .into_iter()
+        .filter(|t| matches!(tool_name(t), "read" | "write" | "list_dir"))
+        .map(|mut t| {
+            if let Some(Value::String(d)) = t.pointer_mut("/function/description") {
+                *d = format!(
+                    "CONTEXT BUDGET: only your context folder is available this turn (paths under @context/). \
+                     Compact your context file now, copying facts forward, before anything else. {d}"
+                );
+            }
+            if let Some(Value::String(d)) = t.pointer_mut("/function/parameters/properties/path/description") {
+                *d = "A path under @context/, e.g. \"@context/LIVE_CONTEXT.md\".".into();
+            }
+            t
+        })
+        .collect();
+    out.push(restore_context_schema());
+    if !plan_mode {
+        out.push(todo_schema());
+    }
+    out
+}
+
 fn tool_name(t: &Value) -> &str {
     t.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or("")
 }
 
 /// The tool list for one request, depending on what's available. `clm`:
 /// the agent manages its own context (CLM mode), so it gets the tools for it.
+/// `context_only` (Phase E): a restricted turn — only context tools plus the
+/// checklist, so the model compacts before doing anything else.
 pub fn tools_for(
     has_project: bool,
     vision: bool,
@@ -374,10 +404,14 @@ pub fn tools_for(
     permissions: &Permissions,
     plan_mode: bool,
     clm: bool,
+    context_only: bool,
 ) -> Vec<Value> {
     // Models marked "no tools" in settings get none (and no tool instructions).
     if no_tools {
         return Vec::new();
+    }
+    if context_only {
+        return context_only_tool_schemas(plan_mode);
     }
     let mut all = Vec::new();
     if has_project {
@@ -1011,16 +1045,16 @@ mod tests {
     fn tool_lists_by_mode() {
         let p = Permissions::default();
         let names = |tools: Vec<Value>| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
-        let agent = names(tools_for(true, false, false, &p, false, false));
+        let agent = names(tools_for(true, false, false, &p, false, false, false));
         assert!(agent.contains(&"bash".to_string()) && agent.last().unwrap() == "todo");
-        let plan = names(tools_for(true, true, false, &p, true, false));
+        let plan = names(tools_for(true, true, false, &p, true, false, false));
         assert!(!plan.iter().any(|n| PLAN_BLOCKED_TOOLS.contains(&n.as_str())));
         assert!(plan.contains(&"browser_screenshot".to_string()) && plan.ends_with(&["ask_user".into(), "submit_plan".into()]));
-        assert_eq!(names(tools_for(false, false, false, &p, false, false)), vec!["web_search", "browse_url"]);
-        assert!(tools_for(true, true, true, &p, false, false).is_empty());
-        assert!(tools_for(true, true, true, &p, false, true).is_empty());
+        assert_eq!(names(tools_for(false, false, false, &p, false, false, false)), vec!["web_search", "browse_url"]);
+        assert!(tools_for(true, true, true, &p, false, false, false).is_empty());
+        assert!(tools_for(true, true, true, &p, false, true, false).is_empty());
         let none = Permissions { allowed_commands: vec![], ..Permissions::default() };
-        assert!(!names(tools_for(true, false, false, &none, false, false)).contains(&"bash".to_string()));
+        assert!(!names(tools_for(true, false, false, &none, false, false, false)).contains(&"bash".to_string()));
     }
 
     #[test]
@@ -1029,7 +1063,7 @@ mod tests {
         let names = |tools: &[Value]| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
         let count = |tools: &[Value], name: &str| names(tools).iter().filter(|n| *n == name).count();
         // Agent mode with a project: the project's file tools, once, and restore_context.
-        let agent = tools_for(true, false, false, &p, false, true);
+        let agent = tools_for(true, false, false, &p, false, true, false);
         for name in ["read", "write", "list_dir", "restore_context"] {
             assert_eq!(count(&agent, name), 1, "{name}");
         }
@@ -1038,16 +1072,33 @@ mod tests {
         };
         assert!(!description(&agent, "write").contains("context folder"));
         // Plan mode: edits are offered for the context folder only.
-        let plan = tools_for(true, false, false, &p, true, true);
+        let plan = tools_for(true, false, false, &p, true, true, false);
         assert!(description(&plan, "write").starts_with("Only for your context folder"));
         assert!(!description(&plan, "read").contains("context folder"));
         assert!(names(&plan).contains(&"restore_context".to_string()));
         // No project: all file tools, for the context folder only.
-        let none = tools_for(false, false, false, &p, false, true);
+        let none = tools_for(false, false, false, &p, false, true, false);
         for name in ["read", "write", "list_dir"] {
             assert!(description(&none, name).starts_with("Only for your context folder"), "{name}");
         }
         assert!(!names(&none).contains(&"todo".to_string()));
+    }
+
+    #[test]
+    fn context_only_offers_context_tools_and_todo() {
+        let p = Permissions::default();
+        let names = |tools: &[Value]| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
+        let only = tools_for(true, true, false, &p, false, true, true);
+        let n = names(&only);
+        assert_eq!(n.len(), 5, "{n:?}");
+        for name in ["read", "write", "list_dir", "restore_context", "todo"] {
+            assert!(n.contains(&name.to_string()), "{n:?}");
+        }
+        assert!(!n.contains(&"bash".to_string()));
+        assert!(!n.contains(&"search_code".to_string()));
+        let plan_only = names(&tools_for(true, false, false, &p, true, true, true));
+        assert!(!plan_only.contains(&"todo".to_string()));
+        assert!(plan_only.contains(&"restore_context".to_string()));
     }
 
     #[test]

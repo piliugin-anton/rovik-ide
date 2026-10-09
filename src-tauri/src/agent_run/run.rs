@@ -40,11 +40,47 @@ const UI_EVERY: Duration = Duration::from_millis(50);
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(2);
 /// Recent messages a run reads for its bookkeeping (mode, plan, checklist).
 const RECENT_MESSAGES: usize = 500;
+/// A typed request shorter than this says nothing about the task on its own
+/// ("continue"): the repository map and the focus note fall back to the
+/// previous real request's text as well.
+const SHORT_REQUEST_CHARS: usize = 80;
 
 pub(super) const RESUME_NOTE: &str =
     "Interrupted: the app was closed before this ran. Allow it to continue the task.";
 
 const IDE_NOTE: &str = "[Automatic check by the IDE, not written by the user]\n";
+/// End-of-run checklist reminders before the run ends as unfinished-checklist.
+const MAX_CHECKLIST_NUDGES: u32 = 2;
+/// Context percent at and above which a finished checklist step asks for a
+/// context compaction (Phase D). Below it, only a TASK.md update is asked.
+pub(super) const CLM_STEP_COMPACT_MIN: u32 = 35;
+
+/// A step-compaction request waiting for its edit (Phase D asks, Phase E
+/// escalates when it is ignored).
+#[derive(Debug, Clone)]
+pub(super) struct PendingStepCompaction {
+    pub(super) step: String,
+    pub(super) revision: Option<u64>,
+    pub(super) tool_calls: u32,
+}
+
+/// When a compaction pressure started (Phase E): the context revision and
+/// the tool-call count then, plus the run's turn then (for turns-to-edit).
+#[derive(Debug, Clone)]
+pub(super) struct ClmWait {
+    pub(super) revision: Option<u64>,
+    pub(super) tool_calls: u32,
+    pub(super) turn: u32,
+}
+
+/// Phase E pressure thresholds: a step-compaction request or the 75%
+/// reminder escalates after this many tool calls with no edit (at 50%+);
+/// 90%+ restricts at once until an edit lands.
+pub(super) const CLM_ESCALATE_AFTER_CALLS: u32 = 4;
+pub(super) const CLM_ESCALATE_MIN_PCT: u32 = 50;
+pub(super) const CLM_RESTRICT_LIFT_BELOW: u32 = 75;
+/// Restricted turns with no edit before the safety valve lifts it.
+pub(super) const CLM_MAX_RESTRICTED_STALL: u32 = 2;
 
 pub struct Run<R: Runtime> {
     pub(super) app: AppHandle<R>,
@@ -90,8 +126,56 @@ pub struct Run<R: Runtime> {
     pub(super) verify_rounds: u32,
     /// The last round failed and was sent back to the agent.
     pub(super) last_verify_failed: bool,
-    /// Unfinished checklist steps were pointed out once.
-    pub(super) checklist_nudged: bool,
+    /// Unfinished checklist steps were pointed out; at most MAX_CHECKLIST_NUDGES.
+    pub(super) checklist_nudges: u32,
+    /// Force the `todo` tool on the next model turn (plan implementation
+    /// first turn, second checklist nudge). Consumed by `model_turn`.
+    pub(super) force_todo_next: bool,
+    /// The checklist gate refused one call this run (small-task safety):
+    /// everything after that is let through, repeats included.
+    pub(super) checklist_gate_refused: bool,
+    /// A step-compaction request is outstanding (Phase D, for Phase E
+    /// escalation): the step that just finished, the context revision it
+    /// was asked at, and how many tool calls had run then.
+    pub(super) pending_step_compaction: Option<PendingStepCompaction>,
+    /// Phase E: this turn offers only context tools (the model must compact
+    /// before anything else). Set when a step-compaction request or the 75%
+    /// reminder is ignored, or at 90%+ with no edit since the urgent
+    /// reminder; lifted by an edit, by dropping below 75%, or by the safety
+    /// valve (`clm_non_compliant`).
+    pub(super) clm_restricted: bool,
+    /// Restricted turns so far, and consecutive restricted turns with no
+    /// edit (the safety valve lifts at CLM_MAX_RESTRICTED_STALL).
+    pub(super) restricted_turns: u32,
+    pub(super) restricted_stall: u32,
+    /// The safety valve fired: weak models aren't restricted again.
+    pub(super) clm_non_compliant: bool,
+    /// CLM turns so far (for turns-to-edit), and the peak context percent.
+    pub(super) clm_turns: u32,
+    pub(super) clm_peak_pct: u32,
+    /// Edits seen (new context revisions) and their token deltas
+    /// (revision, tokens before, tokens after), oldest first.
+    pub(super) clm_edits_seen: u32,
+    pub(super) clm_edit_deltas: Vec<(u64, usize, usize)>,
+    /// Redone work: recall-hint notes offered after a compaction removed
+    /// an earlier result the model then asked for again.
+    pub(super) clm_recall_hits: u32,
+    /// Reminder tiers seen this run (50, 75, 90), and turns-to-edit after
+    /// each pressure started.
+    pub(super) clm_reminders_fired: Vec<u32>,
+    pub(super) step_asked_turn: Option<u32>,
+    pub(super) step_turns_to_edit: Option<u32>,
+    pub(super) tier75_turns_to_edit: Option<u32>,
+    pub(super) urgent_turns_to_edit: Option<u32>,
+    /// The 75% reminder and the 90%+ urgent state while no edit has landed
+    /// since (revision, tool calls and turn when first seen).
+    pub(super) tier75_since: Option<ClmWait>,
+    pub(super) urgent_since: Option<ClmWait>,
+    /// Context tracking for edit detection: started once the first CLM
+    /// state is seen, then the last revision and token count.
+    pub(super) clm_tracking_started: bool,
+    pub(super) clm_last_revision: Option<u64>,
+    pub(super) clm_last_tokens: Option<usize>,
     /// The next request may not call tools (a summary before a pause).
     pub(super) words_only: bool,
     /// Plan mode: the current plan, shown to the model so it revises it.
@@ -144,11 +228,29 @@ impl<R: Runtime> Run<R> {
         controls: Controls,
     ) -> Result<Option<(Run<R>, Entry)>, String> {
         let dialog_id = request.dialog_id.clone();
-        let recent = recent_messages(db, &dialog_id).await?;
+        let mut recent = recent_messages(db, &dialog_id).await?;
         let config = state.config();
         let mode = run_mode_for(&recent).or(request.mode.clone()).unwrap_or_else(|| "agent".into());
         let plan_mode = mode == "plan";
         let root = request.root.clone().filter(|r| !r.trim().is_empty());
+        let is_send = matches!(request.start, StartKind::Send { .. });
+        let is_continue_run = matches!(request.start, StartKind::ContinueRun);
+        // Plan-implementation first turn forces the `todo` tool (named
+        // `tool_choice`): "Implement this plan" in Agent mode. Explicit
+        // `meta.implementsPlan` wins; the `Implement the plan…` line is the
+        // fallback for messages sent before the frontend marked them.
+        let implements_plan = match &request.start {
+            StartKind::Send { message } => {
+                message
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.get("implementsPlan"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    || message.content.starts_with("Implement the plan")
+            }
+            _ => false,
+        };
 
         let mut start_at = 0;
         let mut settle_message = None;
@@ -198,6 +300,99 @@ impl<R: Runtime> Run<R> {
             }
         };
 
+        // A new message with an unfinished checklist carried from earlier
+        // work: the app says so itself, so a short "continue" after a
+        // restart doesn't lose the checklist. An app message (harness), so
+        // it never starts a new request itself.
+        //
+        // ContinueRun (the panel's Continue on an interrupted checklist)
+        // gets the same treatment: the remaining steps as an app message,
+        // with no user message created so nothing gets lost. Both also
+        // emit the live Checklist event, so the panel is correct from the
+        // run's first turn.
+        async fn append_carry_note<R: Runtime>(
+            app: &AppHandle<R>,
+            db: &DbState,
+            dialog_id: &str,
+            recent: &mut Vec<MessageRow>,
+            content: String,
+            kind: &str,
+            from_message_id: Option<String>,
+            items: Vec<plan::TodoItem>,
+        ) {
+            let mut m = new_message("user", &content);
+            m.meta = Some(json!({ "harness": kind, "fromMessageId": from_message_id }));
+            let stored = vec![m.clone()];
+            let id = dialog_id.to_string();
+            if let Ok(seqs) = db.write(move |c| store::append_messages(c, &id, &stored)).await {
+                let seq = seqs.into_iter().next().unwrap_or(0);
+                emit(
+                    app,
+                    AgentEvent::MessagesAdded {
+                        dialog_id: dialog_id.to_string(),
+                        messages: vec![OutMessage::from_new(dialog_id, seq, &m, false)],
+                    },
+                );
+                let seq_row = recent.last().map(|r| r.seq + 1).unwrap_or(0);
+                let meta = m.meta.clone();
+                let (mid, mcontent, mtool_calls, mtool_call_id, mcreated) =
+                    (m.id, m.content, m.tool_calls, m.tool_call_id, m.created_at);
+                recent.push(MessageRow {
+                    id: mid,
+                    dialog_id: dialog_id.to_string(),
+                    seq: seq_row,
+                    role: m.role,
+                    content: mcontent,
+                    body_external: false,
+                    body_bytes: 0,
+                    tool_calls: mtool_calls,
+                    tool_call_id: mtool_call_id,
+                    meta,
+                    error: None,
+                    failed: false,
+                    finalized: true,
+                    attachments: Vec::new(),
+                    created_at: mcreated,
+                });
+            }
+            emit(app, AgentEvent::Checklist { dialog_id: dialog_id.to_string(), items });
+        }
+
+        if is_send {
+            if let Some(carried) = plan::current_checklist(&recent) {
+                if carried.carried && !plan::open_steps(&carried.items).is_empty() {
+                    append_carry_note(
+                        app,
+                        db,
+                        &dialog_id,
+                        &mut recent,
+                        plan::carry_note(&carried.items),
+                        "checklistCarried",
+                        carried.from_message_id,
+                        carried.items,
+                    )
+                    .await;
+                }
+            }
+        }
+        if is_continue_run {
+            if let Some(current) = plan::current_checklist(&recent) {
+                if !plan::open_steps(&current.items).is_empty() {
+                    append_carry_note(
+                        app,
+                        db,
+                        &dialog_id,
+                        &mut recent,
+                        plan::continue_note(&current.items),
+                        "checklistContinued",
+                        current.from_message_id,
+                        current.items,
+                    )
+                    .await;
+                }
+            }
+        }
+
         let (checks, project_context) = match &root {
             Some(r) => {
                 let (app, r, verify) = (app.clone(), r.clone(), config.permissions.verify_changes);
@@ -213,6 +408,25 @@ impl<R: Runtime> Run<R> {
             String::new()
         };
         let current_user_content = request.current_user_content.or_else(|| last_user_wire_content(&recent));
+        // A short typed request ("continue") says nothing about the task:
+        // the map is built from the previous real request's text as well,
+        // so it still points at the work being continued.
+        let map_request_text = {
+            let current = current_user_content.clone().unwrap_or_default();
+            if current.trim().chars().count() < SHORT_REQUEST_CHARS {
+                if let Some(prev) = previous_user_wire_content(&recent) {
+                    if prev.trim() != current.trim() {
+                        format!("{prev}\n\n{current}")
+                    } else {
+                        current
+                    }
+                } else {
+                    current
+                }
+            } else {
+                current
+            }
+        };
         // The repository map: the declarations most relevant to the request.
         // Built once here, then refreshed mid-run as files change
         // (refresh_repo_map_if_needed): the base section stays fixed while
@@ -222,7 +436,7 @@ impl<R: Runtime> Run<R> {
         let base_project_context = project_context;
         let repo_map = match &root {
             Some(r) => {
-                let (r, request_text) = (r.clone(), current_user_content.clone().unwrap_or_default());
+                let (r, request_text) = (r.clone(), map_request_text.clone());
                 let touched = touched_paths(&recent);
                 let options = crate::repo_map::Options {
                     max_chars: repo_map_chars,
@@ -240,6 +454,12 @@ impl<R: Runtime> Run<R> {
             None => None,
         };
         let project_context = join_project_context(&base_project_context, &repo_map);
+
+        // Forcing `todo` on a plan implementation's first turn only makes
+        // sense when no checklist exists yet (nothing to carry, nothing
+        // made): otherwise the carry note / live list already governs.
+        let force_todo_next =
+            implements_plan && !plan_mode && plan::current_checklist(&recent).is_none();
 
         let run = Run {
             app: app.clone(),
@@ -267,7 +487,29 @@ impl<R: Runtime> Run<R> {
             changed_files,
             verify_rounds,
             last_verify_failed: false,
-            checklist_nudged: false,
+            checklist_nudges: 0,
+            force_todo_next,
+            checklist_gate_refused: false,
+            pending_step_compaction: None,
+            clm_restricted: false,
+            restricted_turns: 0,
+            restricted_stall: 0,
+            clm_non_compliant: false,
+            clm_turns: 0,
+            clm_peak_pct: 0,
+            clm_edits_seen: 0,
+            clm_edit_deltas: Vec::new(),
+            clm_recall_hits: 0,
+            clm_reminders_fired: Vec::new(),
+            step_asked_turn: None,
+            step_turns_to_edit: None,
+            tier75_turns_to_edit: None,
+            urgent_turns_to_edit: None,
+            tier75_since: None,
+            urgent_since: None,
+            clm_tracking_started: false,
+            clm_last_revision: None,
+            clm_last_tokens: None,
             words_only: false,
             plan_context,
             plan_nudged: false,
@@ -305,6 +547,7 @@ impl<R: Runtime> Run<R> {
         };
         // Ended before the message got any answer.
         self.settle(false).await;
+        self.log_clm_compliance(&outcome).await;
         log::write(
             &self.app,
             json!({
@@ -422,6 +665,36 @@ impl<R: Runtime> Run<R> {
                 if outcome == "continue" {
                     continue;
                 }
+                // Reminders exhausted with steps still open: the run ends as
+                // unfinished-checklist so the UI can offer Continue. The
+                // final message carries `meta.checklistOpen`.
+                if !self.plan_mode && self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
+                    let recent = self.recent().await?;
+                    let open = plan::current_checklist(&recent)
+                        .map(|c| c.items.into_iter().filter(|i| !plan::is_settled(i)).count())
+                        .unwrap_or(0);
+                    if open > 0 {
+                        let mut meta = recent
+                            .iter()
+                            .find(|m| m.id == turn.message_id)
+                            .and_then(|m| m.meta.clone())
+                            .filter(|m| m.is_object())
+                            .unwrap_or_else(|| json!({}));
+                        meta["checklistOpen"] = json!(open);
+                        let _ = self.update_meta(&turn.message_id, meta).await;
+                        log::write(
+                            &self.app,
+                            json!({
+                                "event": "run",
+                                "dialogId": self.dialog_id,
+                                "model": self.profile.model,
+                                "outcome": "unfinished-checklist",
+                                "openSteps": open,
+                            }),
+                        );
+                        return Ok("unfinished-checklist".into());
+                    }
+                }
                 return Ok(outcome);
             }
 
@@ -513,6 +786,10 @@ impl<R: Runtime> Run<R> {
         let config = self.state.config();
         let clm = self.context_mode == crate::clm::MODE_CLM
             && crate::clm::availability(&self.app.state::<crate::vfs::VfsState>()).is_ok();
+        // Phase E: ignored compaction pressure restricts this turn to
+        // context tools (90%+ at once, step/75% after 4 calls with no edit).
+        self.update_clm_pressure(clm).await;
+        let context_only = clm && self.clm_restricted;
         let tools = tools::tools_for(
             self.root.is_some(),
             self.profile.vision,
@@ -520,6 +797,7 @@ impl<R: Runtime> Run<R> {
             &config.permissions,
             self.plan_mode,
             clm,
+            context_only,
         );
         let project_context = if self.plan_mode {
             [self.project_context.as_str(), plan::PLAN_MODE_INSTRUCTIONS, self.plan_context.as_str()]
@@ -533,6 +811,39 @@ impl<R: Runtime> Run<R> {
         };
         let continue_reply = std::mem::take(&mut self.continue_reply);
         let no_tool_calls = std::mem::take(&mut self.words_only);
+        // Forced `todo` (plan-implementation first turn, second checklist
+        // nudge): consumed by this turn, carried across its ask-again
+        // retries. Providers rejecting the named `tool_choice` fall back to
+        // `auto` per request; the execute gate covers them regardless.
+        let force_tool = if std::mem::take(&mut self.force_todo_next) {
+            Some("todo".to_string())
+        } else {
+            None
+        };
+        // The checklist, repeated on every CLM request right after the task
+        // card (Trimming mode keeps the end-of-request focus note instead).
+        // A restricted turn also says why only context tools are offered.
+        let checklist_note = if clm {
+            let list = self
+                .recent()
+                .await
+                .ok()
+                .and_then(|recent| plan::current_checklist(&recent))
+                .map(|c| plan::checklist_note(&c.items, c.carried));
+            if context_only {
+                let restriction = "[context: this turn offers only context tools (read/write/list_dir on \
+                    @context/…, restore_context) and todo: compact your context file now, copying facts forward, \
+                    before anything else. The restriction lifts as soon as an edit revision lands.]";
+                Some(match list {
+                    Some(n) => format!("{n}\n{restriction}"),
+                    None => restriction.to_string(),
+                })
+            } else {
+                list
+            }
+        } else {
+            None
+        };
         // Shown when the request starts (asking again with another effort).
         let mut opening_status: Option<Status> = None;
         // One-time context notes (CLM) an attempt at this turn went out with:
@@ -562,6 +873,8 @@ impl<R: Runtime> Run<R> {
                 no_tool_calls,
                 api_route: self.profile.api_route.clone(),
                 chat_id: None,
+                force_tool: force_tool.clone(),
+                checklist_note: checklist_note.clone(),
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -806,13 +1119,18 @@ impl<R: Runtime> Run<R> {
     }
 
     /// The checklist at the end of a run: unfinished steps are pointed out
-    /// once, and the run goes on. True: the agent was told, continue.
+    /// up to MAX_CHECKLIST_NUDGES times, and the run goes on. True: the
+    /// agent was told, continue. The second nudge also forces the `todo`
+    /// call on the next turn (when the provider supports a named
+    /// `tool_choice`). Carried checklists count: a run that never made its
+    /// own `todo` call still has to answer for the open steps it continued.
     async fn check_checklist(&mut self) -> Result<bool, String> {
-        if self.checklist_nudged {
+        if self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
             return Ok(false);
         }
         let recent = self.recent().await?;
-        let open: Vec<plan::TodoItem> = plan::latest_checklist(&recent)
+        let open: Vec<plan::TodoItem> = plan::current_checklist(&recent)
+            .map(|c| c.items)
             .unwrap_or_default()
             .into_iter()
             .filter(|i| !plan::is_settled(i))
@@ -820,17 +1138,225 @@ impl<R: Runtime> Run<R> {
         if open.is_empty() {
             return Ok(false);
         }
-        self.checklist_nudged = true;
+        self.checklist_nudges += 1;
         let steps = open.iter().map(|i| format!("\"{}\"", i.title)).collect::<Vec<_>>().join(", ");
-        self.add_harness(
-            format!(
-                "{IDE_NOTE}Your checklist still has unfinished steps: {steps}. \
-                 Finish them, or update the checklist marking each skipped or changed with the reason, then finish."
-            ),
-            "checklist",
-        )
-        .await?;
+        if self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
+            // Last reminder: stronger, and the next turn must update the
+            // checklist first.
+            self.force_todo_next = true;
+            self.add_harness(
+                format!(
+                    "{IDE_NOTE}Your checklist still has unfinished steps: {steps}. \
+                     This is the last reminder: call todo now (marking each skipped or changed step with the reason), \
+                     finish the remaining steps, and only then finish."
+                ),
+                "checklist",
+            )
+            .await?;
+        } else {
+            self.add_harness(
+                format!(
+                    "{IDE_NOTE}Your checklist still has unfinished steps: {steps}. \
+                     Finish them, or update the checklist marking each skipped or changed with the reason, then finish."
+                ),
+                "checklist",
+            )
+            .await?;
+        }
         Ok(true)
+    }
+
+    /*
+     * -----------------------------------------------------------------------
+     * CLM context pressure (Phase E)
+     * -----------------------------------------------------------------------
+     */
+
+    /// Tracks the CLM context before this turn and decides whether it is a
+    /// restricted turn (only context tools). Called at the start of every
+    /// `model_turn` in CLM mode, before the tool list is built.
+    ///
+    /// - An edit (a new context revision) lifts everything and records
+    ///   turns-to-edit for each pressure that was waiting for it.
+    /// - At 90%+ with no edit since the urgent state was first seen, the
+    ///   turn is restricted at once.
+    /// - A step-compaction request (Phase D) or the 75% reminder escalates
+    ///   after CLM_ESCALATE_AFTER_CALLS tool calls with no edit (at 50%+).
+    /// - The restriction lifts below 75%, and the safety valve lifts it
+    ///   for good after CLM_MAX_RESTRICTED_STALL restricted turns with no
+    ///   edit (weak models must not get stuck).
+    async fn update_clm_pressure(&mut self, clm: bool) {
+        if !clm {
+            return;
+        }
+        self.clm_turns += 1;
+        let dialog_id = self.dialog_id.clone();
+        let state = self
+            .db
+            .read(move |conn| crate::clm::store::load_state(conn, &dialog_id))
+            .await
+            .unwrap_or_default();
+        let pct = crate::clm::prompt::percent(state.tokens, state.budget);
+        self.clm_peak_pct = self.clm_peak_pct.max(pct);
+        for t in state.nudged.iter().copied().chain((pct >= crate::clm::prompt::URGENT).then_some(90)) {
+            if !self.clm_reminders_fired.contains(&t) {
+                self.clm_reminders_fired.push(t);
+            }
+        }
+        self.clm_reminders_fired.sort_unstable();
+        let revision = state.rendered_revision;
+
+        // An edit landed: everything lifts, turns-to-edit are recorded.
+        if !self.clm_tracking_started {
+            self.clm_tracking_started = true;
+            self.clm_last_revision = revision;
+            self.clm_last_tokens = Some(state.tokens);
+            return;
+        }
+        if revision != self.clm_last_revision {
+            self.clm_edits_seen += 1;
+            if let Some(r) = revision {
+                self.clm_edit_deltas.push((r, self.clm_last_tokens.unwrap_or(state.tokens), state.tokens));
+            }
+            if self.pending_step_compaction.is_some() {
+                if let Some(asked) = self.step_asked_turn {
+                    self.step_turns_to_edit = Some(self.clm_turns.saturating_sub(asked));
+                }
+                self.pending_step_compaction = None;
+                self.step_asked_turn = None;
+            }
+            if let Some(w) = self.urgent_since.take() {
+                self.urgent_turns_to_edit = Some(self.clm_turns.saturating_sub(w.turn));
+            }
+            if let Some(w) = self.tier75_since.take() {
+                self.tier75_turns_to_edit = Some(self.clm_turns.saturating_sub(w.turn));
+            }
+            self.clm_restricted = false;
+            self.restricted_stall = 0;
+            self.clm_last_revision = revision;
+            self.clm_last_tokens = Some(state.tokens);
+            return;
+        }
+        self.clm_last_tokens = Some(state.tokens);
+
+        // Safety valve first: two restricted turns already, still no edit.
+        if self.clm_restricted && self.restricted_stall >= CLM_MAX_RESTRICTED_STALL {
+            self.clm_restricted = false;
+            self.restricted_stall = 0;
+            self.clm_non_compliant = true;
+            log::write(
+                &self.app,
+                json!({
+                    "event": "clmNonCompliant",
+                    "dialogId": self.dialog_id,
+                    "model": self.profile.model,
+                    "turn": self.clm_turns,
+                    "pct": pct,
+                    "restrictedTurns": self.restricted_turns,
+                }),
+            );
+            return;
+        }
+        // Below 75% the restriction no longer applies.
+        if self.clm_restricted && pct < CLM_RESTRICT_LIFT_BELOW {
+            self.clm_restricted = false;
+            self.restricted_stall = 0;
+        }
+
+        // Remember when each pressure started waiting for its edit.
+        if state.nudged.contains(&75) && self.tier75_since.is_none() && self.tier75_turns_to_edit.is_none() {
+            self.tier75_since = Some(ClmWait { revision, tool_calls: self.guard.tool_calls, turn: self.clm_turns });
+        }
+        if pct >= crate::clm::prompt::URGENT && self.urgent_since.is_none() && self.urgent_turns_to_edit.is_none() {
+            self.urgent_since = Some(ClmWait { revision, tool_calls: self.guard.tool_calls, turn: self.clm_turns });
+        }
+
+        if self.clm_non_compliant || self.clm_restricted {
+            if self.clm_restricted {
+                self.restricted_turns += 1;
+                self.restricted_stall += 1;
+            }
+            return;
+        }
+        let mut reason: Option<&str> = None;
+        if pct >= crate::clm::prompt::URGENT
+            && self.urgent_since.as_ref().is_some_and(|w| w.revision == revision)
+        {
+            reason = Some("urgent");
+        } else if pct >= CLM_ESCALATE_MIN_PCT {
+            if let Some(p) = &self.pending_step_compaction {
+                if p.revision == revision
+                    && self.guard.tool_calls.saturating_sub(p.tool_calls) >= CLM_ESCALATE_AFTER_CALLS
+                {
+                    reason = Some("step");
+                }
+            }
+            if reason.is_none() {
+                if let Some(w) = &self.tier75_since {
+                    if w.revision == revision
+                        && self.guard.tool_calls.saturating_sub(w.tool_calls) >= CLM_ESCALATE_AFTER_CALLS
+                    {
+                        reason = Some("tier75");
+                    }
+                }
+            }
+        }
+        if let Some(reason) = reason {
+            self.clm_restricted = true;
+            self.restricted_turns += 1;
+            self.restricted_stall += 1;
+            log::write(
+                &self.app,
+                json!({
+                    "event": "clmRestricted",
+                    "dialogId": self.dialog_id,
+                    "model": self.profile.model,
+                    "reason": reason,
+                    "turn": self.clm_turns,
+                    "pct": pct,
+                    "toolCalls": self.guard.tool_calls,
+                }),
+            );
+        }
+    }
+
+    /// The per-run CLM compliance log (Phase E, step 17): which pressures
+    /// fired, turns-to-edit, edits with their token deltas, recall-hint
+    /// hits (redone work), the peak context, restricted turns and the
+    /// safety-valve fallback.
+    async fn log_clm_compliance(&self, outcome: &str) {
+        if self.context_mode != crate::clm::MODE_CLM || !self.clm_tracking_started {
+            return;
+        }
+        let dialog_id = self.dialog_id.clone();
+        let revisions = self
+            .db
+            .read(move |conn| crate::clm::store::revisions(conn, &dialog_id))
+            .await
+            .unwrap_or_default();
+        let edit_revisions = revisions.iter().filter(|r| r.kind != "context").count();
+        log::write(
+            &self.app,
+            json!({
+                "event": "clm",
+                "dialogId": self.dialog_id,
+                "model": self.profile.model,
+                "outcome": outcome,
+                "remindersFired": self.clm_reminders_fired,
+                "turnsToEditStep": self.step_turns_to_edit,
+                "turnsToEdit75": self.tier75_turns_to_edit,
+                "turnsToEditUrgent": self.urgent_turns_to_edit,
+                "edits": self.clm_edits_seen,
+                "editRevisions": edit_revisions,
+                "editDeltas": self.clm_edit_deltas.iter().map(|(r, before, after)| json!({
+                    "revision": r, "before": before, "after": after,
+                })).collect::<Vec<_>>(),
+                "recallHints": self.clm_recall_hits,
+                "peakPct": self.clm_peak_pct,
+                "restrictedTurns": self.restricted_turns,
+                "nonCompliant": self.clm_non_compliant,
+            }),
+        );
     }
 
     /// Recombines the fixed project section with the current map.
@@ -1553,6 +2079,15 @@ const MAX_TOUCHED_PATHS: usize = 20;
 /// editor context and file references).
 fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     let m = messages.iter().rev().find(|m| m.role == "user" && !m.failed && !plan::is_harness(m))?;
+    sent_content(m).or_else(|| Some(m.content.clone()))
+}
+
+/// The real user message before the latest one, as sent: what a short
+/// "continue" is continuing. None when there is no earlier request.
+fn previous_user_wire_content(messages: &[MessageRow]) -> Option<String> {
+    let mut real = messages.iter().filter(|m| m.role == "user" && !m.failed && !plan::is_harness(m)).rev();
+    real.next()?;
+    let m = real.next()?;
     sent_content(m).or_else(|| Some(m.content.clone()))
 }
 

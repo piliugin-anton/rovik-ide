@@ -43,6 +43,10 @@ export interface ToolCallBlockProps {
   running?: boolean;
   /** Live note while the call waits, e.g. for approval. */
   note?: string;
+  /** An earlier `todo` snapshot: dimmed, "earlier update", never spinning. */
+  superseded?: boolean;
+  /** The latest `todo` snapshot with no run going and steps unfinished. */
+  interrupted?: boolean;
 }
 
 /*
@@ -358,7 +362,10 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
     case 'outline': {
       const title = `${active ? 'Outlining' : 'Outlined'} ${path ?? 'file'}`;
       if (count === undefined) return { title };
-      return { title, meta: count === 0 ? 'no declarations' : plural(count, 'declaration', 'declarations') };
+      return {
+        title,
+        meta: count === 0 ? 'no declarations' : plural(count, 'declaration', 'declarations'),
+      };
     }
 
     case 'diagnostics': {
@@ -588,7 +595,10 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
 
   const status = createMemo<Status>(() => {
-    if (props.result === undefined) return props.running ? 'running' : 'idle';
+    if (props.result === undefined)
+      // A superseded snapshot never spins: its "in progress" step is history,
+      // not work happening now — even while a later run goes.
+      return props.superseded ? 'idle' : props.running ? 'running' : 'idle';
     return isErrorResult(props.result.content) ? 'error' : 'done';
   });
 
@@ -624,7 +634,10 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
     if (a && !a.approved) return a.by === 'ai' ? 'rejected by AI' : 'denied';
     const base = status() === 'error' ? 'failed' : summary().meta;
     const by = a?.by === 'ai' ? 'approved by AI' : undefined;
-    return [base, by].filter(Boolean).join(' · ') || undefined;
+    const parts = [base, by].filter(Boolean);
+    // Earlier checklist snapshots read as history, not live state.
+    if (props.superseded && props.toolCall.name === 'todo') parts.push('earlier update');
+    return parts.join(' · ') || undefined;
   };
 
   const language = () => {
@@ -709,6 +722,8 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
         running: status() === 'running',
         error: status() === 'error' || approval()?.approved === false,
         'not-run': status() === 'idle' && !request(),
+        superseded: !!props.superseded,
+        interrupted: !!props.interrupted,
       }}
     >
       <button
@@ -734,7 +749,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
             </span>
           )}
         </Show>
-        <Show when={status() === 'running' && !request()}>
+        <Show when={status() === 'running' && !request() && !props.superseded}>
           <span class="tool-call-spinner" aria-label="Running" />
         </Show>
       </button>
@@ -777,7 +792,10 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                 <For each={parseTodo(args())}>
                   {(item) => (
                     <li class={`todo-item ${item.status}`}>
-                      <StatusIcon status={item.status} />
+                      <StatusIcon
+                        status={item.status}
+                        paused={props.superseded || props.interrupted}
+                      />
                       <span class="todo-item-text">
                         <span class="todo-item-title">{item.title}</span>
                         <Show when={item.note}>

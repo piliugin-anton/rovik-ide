@@ -63,6 +63,9 @@ pub struct Msg {
     pub attachments: Vec<String>,
     /// Written by the IDE in the user role (check failures), not by the user.
     pub harness: bool,
+    /// The user dismissed the open checklist with this message
+    /// (`meta.checklistClosed`): don't carry an old checklist into it.
+    pub checklist_closed: bool,
     /// Reasoning sent back with an assistant message (`attach_reasoning`):
     /// `{ details }` or `{ text }`.
     pub reasoning: Option<Value>,
@@ -384,12 +387,30 @@ const FOCUS_REQUEST_CHARS: usize = 600;
 /// A loop warning this many tool results back or fewer is named again.
 const FOCUS_LOOP_WINDOW: usize = 5;
 
+/// A typed request shorter than this says nothing about the task on its own
+/// ("continue"): the focus note quotes the previous real request as well.
+const SHORT_REQUEST_CHARS: usize = 80;
+
+fn todo_in_msg(m: &Msg) -> Option<Vec<crate::agent_run::plan::TodoItem>> {
+    m.tool_calls.iter().flatten().rev().filter(|c| c.name == "todo").find_map(|c| match serde_json::from_str::<Value>(&c.arguments) {
+        Ok(Value::Object(args)) => Some(crate::agent_run::plan::parse_todo(&args)).filter(|i| !i.is_empty()),
+        _ => None,
+    })
+}
+
 /// The current request and its checklist, restated for the end of the
 /// request (the CLM task card does this in CLM mode). None while the run
 /// is short, after anything but a tool result (the IDE's own checks speak
 /// for themselves), and once every checklist step is settled: a request
 /// restated while the agent wraps up reads as being asked again, and it
 /// starts over.
+///
+/// The checklist follows the same rule as `current_checklist`: the latest
+/// `todo` in the current request, or the latest open one from the previous
+/// request carried forward (unless the new message dismissed it). A second
+/// user message stops the search. A short typed request ("continue") also
+/// quotes the previous real request, so the model still sees what is being
+/// continued.
 pub fn focus_note(messages: &[Msg]) -> Option<String> {
     let start = messages.iter().rposition(starts_request)?;
     let run = &messages[start + 1..];
@@ -399,15 +420,20 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     if run.iter().filter(|m| m.role == "tool").count() < FOCUS_AFTER_TOOL_RESULTS {
         return None;
     }
-    let checklist = run
-        .iter()
-        .rev()
-        .flat_map(|m| m.tool_calls.iter().flatten().rev())
-        .filter(|c| c.name == "todo")
-        .find_map(|c| match serde_json::from_str::<Value>(&c.arguments) {
-            Ok(Value::Object(args)) => Some(crate::agent_run::plan::parse_todo(&args)).filter(|i| !i.is_empty()),
-            _ => None,
-        });
+    let mut checklist = run.iter().rev().find_map(todo_in_msg);
+    if checklist.is_none() && !messages[start].checklist_closed {
+        let prev = messages[..start].iter().rposition(starts_request);
+        let from = prev.map(|p| p + 1).unwrap_or(0);
+        for m in messages[from..start].iter().rev() {
+            if let Some(items) = todo_in_msg(m) {
+                if items.iter().all(crate::agent_run::plan::is_settled) {
+                    return None;
+                }
+                checklist = Some(items);
+                break;
+            }
+        }
+    }
     if checklist.as_ref().is_some_and(|items| items.iter().all(crate::agent_run::plan::is_settled)) {
         return None;
     }
@@ -422,6 +448,19 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
         note.push_str("\nThe request (quoted):");
         for line in format!("{request}{more}").lines() {
             note.push_str(&format!("\n> {line}"));
+        }
+    }
+    if text.chars().count() < SHORT_REQUEST_CHARS {
+        if let Some(prev) = messages[..start].iter().rposition(starts_request) {
+            let prev_text = messages[prev].text.trim();
+            if !prev_text.is_empty() && prev_text != text {
+                let prev_request = char_prefix(prev_text, FOCUS_REQUEST_CHARS);
+                let prev_more = if prev_request.len() < prev_text.len() || messages[prev].needs_body { " …" } else { "" };
+                note.push_str("\nThe earlier request it continues (quoted):");
+                for line in format!("{prev_request}{prev_more}").lines() {
+                    note.push_str(&format!("\n> {line}"));
+                }
+            }
         }
     }
     if let Some(items) = checklist {
@@ -692,6 +731,9 @@ pub fn load_messages(conn: &Connection, dialog_id: &str, current_user_content: O
             // Added by the IDE (the frontend's verification gate): user-role,
             // but never the user's request.
             harness: m.meta.as_ref().is_some_and(|meta| meta.get("harness").is_some()),
+            checklist_closed: m.meta.as_ref().is_some_and(|meta| {
+                meta.get("checklistClosed").or_else(|| meta.get("checklist_closed")).is_some_and(|v| *v == serde_json::Value::Bool(true))
+            }),
             full_chars: if m.body_external { m.body_bytes as usize } else { m.content.chars().count() },
             needs_body: m.body_external,
             id: m.id,
@@ -747,6 +789,7 @@ pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
                 tool_call_id: Some(id),
                 attachments: Vec::new(),
                 harness: false,
+                checklist_closed: false,
                 reasoning: None,
             });
         }
@@ -914,6 +957,7 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             harness: false,
+            checklist_closed: false,
             reasoning: None,
         }
     }
@@ -983,13 +1027,22 @@ mod tests {
         short.truncate(short.len() - 2);
         assert_eq!(focus_note(&short), None);
 
-        let mut history = long_run("fix the parser");
+        // A long request stands on its own: no earlier request quoted.
+        let long_request = format!("fix the parser {}", "and more context ".repeat(10));
+        let mut history = long_run(&long_request);
         history.insert(3, todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"in_progress"},"test"]}"#));
         let note = focus_note(&history).unwrap();
         assert!(note.contains("not a new request"), "{note}");
-        assert!(note.contains("The request (quoted):\n> fix the parser\n"), "{note}");
+        assert!(note.contains("The request (quoted):"), "{note}");
         assert!(note.contains("Your checklist (1 of 3 done):\n- [done] read\n- [in_progress] fix\n- [pending] test"), "{note}");
         assert!(!note.contains("earlier request"));
+
+        // A short request ("continue") also quotes the previous real request.
+        let mut short_history = long_run("fix the parser");
+        short_history.insert(3, todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"in_progress"},"test"]}"#));
+        let short_note = focus_note(&short_history).unwrap();
+        assert!(short_note.contains("The earlier request it continues (quoted):"), "{short_note}");
+        assert!(short_note.contains("> an earlier request"), "{short_note}");
 
         // The latest checklist wins; once every step is settled the agent
         // is wrapping up, and no note pushes it back into the task.
@@ -999,10 +1052,36 @@ mod tests {
         history.push(todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"skipped"}]}"#));
         history.push(tool("todo-1", 10));
         assert_eq!(focus_note(&history), None);
-        // One from an earlier request doesn't count.
+        // An open checklist from an earlier request is carried forward.
         let mut earlier = long_run("next");
         earlier.insert(1, todo(r#"{"items":["old step"]}"#));
-        assert!(!focus_note(&earlier).unwrap().contains("checklist"));
+        assert!(focus_note(&earlier).unwrap().contains("checklist"));
+        // ...unless every step is settled, when the agent is wrapping up.
+        let mut settled_earlier = long_run("next");
+        settled_earlier.insert(1, todo(r#"{"items":[{"title":"old step","status":"done"}]}"#));
+        assert_eq!(focus_note(&settled_earlier), None);
+    }
+
+    #[test]
+    fn focus_note_carries_a_checklist_into_a_short_request() {
+        // A short follow-up ("continue") with a carried checklist quotes the
+        // previous real request and lists the carried steps.
+        let mut history = long_run("continue");
+        history.insert(1, todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"pending"}]}"#));
+        let note = focus_note(&history).expect("carried checklist with a short request");
+        assert!(note.contains("The earlier request it continues (quoted):"), "{note}");
+        assert!(note.contains("> an earlier request"), "{note}");
+        assert!(note.contains("Your checklist (1 of 2 done):"), "{note}");
+        assert!(note.contains("- [done] read") && note.contains("- [pending] fix"), "{note}");
+
+        // Dismissed on the new message: not carried.
+        let mut dismissed = long_run("continue");
+        dismissed.insert(1, todo(r#"{"items":["old step"]}"#));
+        let at = dismissed.iter().rposition(starts_request).unwrap();
+        dismissed[at].checklist_closed = true;
+        let note = focus_note(&dismissed).unwrap();
+        assert!(!note.contains("Your checklist"), "{note}");
+        assert!(note.contains("The earlier request it continues (quoted):"), "{note}");
     }
 
     #[test]
@@ -1044,8 +1123,11 @@ mod tests {
         history.push(msg("assistant", "finished"));
         assert_eq!(focus_note(&history), None);
         assert_eq!(focus_note(&[]), None);
-        // A request of only file references has no typed text to repeat.
-        assert!(!focus_note(&long_run("")).unwrap().contains("(quoted)"));
+        // A request of only file references has no typed text of its own;
+        // a short one still quotes the previous real request.
+        let empty_note = focus_note(&long_run("")).unwrap();
+        assert!(!empty_note.contains("The request (quoted)"), "{empty_note}");
+        assert!(empty_note.contains("The earlier request it continues (quoted):"), "{empty_note}");
         // After the IDE's own check (a user-role harness message): no note.
         let mut checked = long_run("q");
         let mut check = msg("user", "tests failed");

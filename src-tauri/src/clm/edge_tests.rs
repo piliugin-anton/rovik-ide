@@ -98,7 +98,7 @@ impl Chat {
     }
 
     async fn prepare(&self, budget: usize) -> Prepared {
-        prepare(&self.db, &self.vfs, self.id.clone(), budget, COST, None)
+        prepare(&self.db, &self.vfs, self.id.clone(), budget, COST, None, None)
             .await
             .unwrap()
     }
@@ -242,6 +242,7 @@ fn the_current_request_carries_the_editor_context() {
             ROOMY,
             COST,
             Some("fix it\n\n[App.tsx:3-5 selected]".into()),
+            None,
         )
         .await
         .unwrap();
@@ -308,7 +309,7 @@ fn chats_have_separate_files() {
         let b_vfs_shared = &a.vfs;
         b.add(vec![message("v1", "user", "chat B")]).await;
         a.prepare(ROOMY).await;
-        prepare(&b.db, b_vfs_shared, "other".into(), ROOMY, COST, None)
+        prepare(&b.db, b_vfs_shared, "other".into(), ROOMY, COST, None, None)
             .await
             .unwrap();
         assert_ne!(context_file("chat"), context_file("other"));
@@ -318,7 +319,7 @@ fn chats_have_separate_files() {
         // An edit to one doesn't touch the other.
         a.write(&with_block(&a.file(), 1, "chat A, edited"));
         b.add(vec![message("v2", "user", "more")]).await;
-        let p = prepare(&b.db, b_vfs_shared, "other".into(), ROOMY, COST, None)
+        let p = prepare(&b.db, b_vfs_shared, "other".into(), ROOMY, COST, None, None)
             .await
             .unwrap();
         assert!(!notes(&p).contains("edit applied"));
@@ -1440,6 +1441,7 @@ fn restored_text_appends_only_newer_messages() {
         tool_call_id: None,
         attachments: vec![],
         harness: false,
+        checklist_closed: false,
     };
     let stored: Vec<String> = ["u1", "a1", "u2", "a2"]
         .iter()
@@ -1589,7 +1591,102 @@ fn the_task_card_lives_outside_the_context_file() {
         );
         assert_eq!(chat.state().await.task, None);
         let p = chat.prepare(ROOMY).await;
-        assert!(!notes(&p).contains("task card"), "said once: {}", notes(&p));
+        assert!(
+            !notes(&p).contains("was deleted"),
+            "deletion is said once: {}",
+            notes(&p)
+        );
+        assert!(
+            notes(&p).contains("not written yet"),
+            "the missing card is pointed out again: {}",
+            notes(&p)
+        );
+    });
+}
+
+#[test]
+fn a_missing_task_card_reads_as_guidance_not_an_error() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(vec![message("u1", "user", "task")]).await;
+        let p = chat.prepare(ROOMY).await;
+        assert!(
+            notes(&p).contains("not written yet"),
+            "the notes say there's no card yet: {}",
+            notes(&p)
+        );
+        // Any spelling of the card path is guidance, not an error, so it
+        // doesn't count as a failed call in the loop checks.
+        for path in ["@context/TASK.md", "@context/TASK", "@context/task.md", "@context/task"] {
+            let text = tool_read(&chat.db, &chat.vfs, "chat", path, None, None)
+                .await
+                .unwrap();
+            assert!(
+                text.contains("no task card yet") && text.contains("write @context/TASK.md"),
+                "{path}: {text}"
+            );
+        }
+        // With a checklist, the no-card line says the card stays small.
+        let p = prepare(
+            &chat.db,
+            &chat.vfs,
+            "chat".into(),
+            ROOMY,
+            COST,
+            None,
+            Some("- [ ] step".into()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            notes(&p).contains("not written yet")
+                && notes(&p).contains("checklist is shown separately"),
+            "{}",
+            notes(&p)
+        );
+        // After it exists, the bare name finds it too.
+        tool_write(&chat.vfs, "chat", "@context/TASK.md", "Goal\nNEXT: x").unwrap();
+        for path in ["@context/TASK.md", "@context/TASK", "@context/task.md"] {
+            let text = tool_read(&chat.db, &chat.vfs, "chat", path, None, None)
+                .await
+                .unwrap();
+            assert!(text.contains("Goal"), "{path}: {text}");
+        }
+        // Writing through an alias lands on the canonical card.
+        tool_write(&chat.vfs, "chat", "@context/task", "Goal: alias\nNEXT: y").unwrap();
+        chat.add(vec![message("a1", "assistant", "x")]).await;
+        let p = chat.prepare(ROOMY).await;
+        assert_eq!(
+            chat.state().await.task.as_deref(),
+            Some("Goal: alias\nNEXT: y")
+        );
+        assert!(notes(&p).contains("Goal: alias"), "{}", notes(&p));
+    });
+}
+
+#[test]
+fn missing_files_suggest_the_md_extension_and_list_the_folder() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(vec![message("u1", "user", "task")]).await;
+        chat.prepare(ROOMY).await;
+        tool_write(&chat.vfs, "chat", "@context/notes.md", "plan").unwrap();
+        let text = tool_read(&chat.db, &chat.vfs, "chat", "@context/notes", None, None)
+            .await
+            .unwrap();
+        assert_eq!(text, "plan");
+        let err = tool_read(&chat.db, &chat.vfs, "chat", "@context/missing", None, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+        assert!(
+            err.contains("Your context folder has:") && err.contains("notes.md"),
+            "{err}"
+        );
+        let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/missing")
+            .await
+            .unwrap_err();
+        assert!(err.contains("not found"), "{err}");
     });
 }
 

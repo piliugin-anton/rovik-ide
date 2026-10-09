@@ -222,7 +222,18 @@ export interface ToolMeta {
    * A user-role message the IDE wrote (check failures for the agent). Not
    * shown as a user message, and never mistaken for the user's request.
    */
-  harness?: 'verification' | 'checklist';
+  harness?:
+    | 'verification'
+    | 'checklist'
+    | 'checklistCarried'
+    | 'checklistContinued'
+    | 'pauseSummary'
+    | 'repetition'
+    | 'plan';
+  /** Dismiss the open checklist: don't carry it into the next request. */
+  checklistClosed?: boolean;
+  /** The checklist carry/continue note this harness message refers to. */
+  fromMessageId?: string | null;
   /** A Plan-mode plan: the file it's saved in (lib/plans.ts). */
   planFile?: string;
   /** The model's reasoning for this reply, and how long it took. */
@@ -233,6 +244,8 @@ export interface ToolMeta {
   reasoning?: { text?: string; ms?: number; details?: unknown[]; model?: string };
   /** A user message: the mode it was sent in (lib/chatMode.ts). */
   mode?: import('./lib/chatMode').ChatMode;
+  /** Agent message implementing a saved plan: the first turn forces the `todo` tool. */
+  implementsPlan?: boolean;
   /** An ask_user result: the questions and how they were answered. */
   questions?: {
     questions: import('./lib/questions').Question[];
