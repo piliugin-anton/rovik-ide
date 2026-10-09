@@ -56,8 +56,13 @@ export default function EditDiffBlock(props: {
   };
 
   const numbered = () => props.startLine !== undefined;
+  // A `same` row before any insertion/deletion has oldNo === newNo (e.g. `1 1
+  // something`, read as `11 something`). Showing the same number twice in one
+  // row looks like a duplicated line number, so show it once (new side).
   const oldNo = (row: Row) =>
-    numbered() && row.oldIndex !== undefined ? props.startLine! + row.oldIndex : '';
+    numbered() && row.oldIndex !== undefined && row.oldIndex !== row.newIndex
+      ? props.startLine! + row.oldIndex
+      : '';
   const newNo = (row: Row) =>
     numbered() && row.newIndex !== undefined ? props.startLine! + row.newIndex : '';
 
