@@ -47,6 +47,12 @@ src-tauri/
                      run goes on whatever the UI does (src/lib/agentRuns.ts
                      starts, stops and follows them)
     vfs/            virtual files mounted via FUSE / macFUSE / WinFsp
+    overlay/        each chat's own view of the project: its changes on top,
+                     mounted through the vfs drivers, landed when its run ends
+                     (docs/design/chat-isolation-plan.md)
+    workload/       the queue for CPU-heavy commands (builds, tests) shared by
+                     chats and the terminal
+    file_guard.rs   no write silently overwrites a change it hasn't seen
     lib.rs          Tauri builder, plugin + command registration
   capabilities/
     default.json    permission grants (dialog plugin only — our own fs

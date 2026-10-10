@@ -879,3 +879,18 @@ once; they touch different files. Everything else is sequential.
   - **Not done:** pausing runs on a large change (a note and fresh content
     instead), and "landed by chat B" in notes (the note says another chat
     or the user).
+- **Milestone 8 (on for every chat).**
+  - Every Agent-mode run is isolated. `ROVIK_ISOLATE_CHATS=0` turns it off
+    for troubleshooting; there is no other setting.
+  - Without the driver, the "not isolated" notice comes once per chat per
+    session and points at Settings → Virtual files.
+  - Rust builds of a project's isolated chats share one build folder in
+    the app's data (not the project's `target/`), so only the first chat
+    builds from cold; cargo locks it and the queue runs one build at a
+    time.
+  - Existing chats get an overlay on their next run; what they wrote
+    before stays in the project.
+  - Landing outcomes go to the agent log (`event: landing`).
+  - Known rough edge: reviewing an edit that needs approval opens the file
+    from the chat's view (its mount path); a tab of it stops working once
+    the chat's changes land.

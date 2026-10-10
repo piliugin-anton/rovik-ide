@@ -21,17 +21,30 @@ const LANDS_AFTER: &[&str] = &["done", "verified", "unverified"];
 
 impl<R: Runtime> Run<R> {
     pub(super) async fn land_at_end(&mut self, outcome: &str) {
-        if self.root == self.project_root {
-            return;
+        let result = self.try_land(outcome).await;
+        if let Some((what, files)) = result {
+            super::log::write(
+                &self.app,
+                serde_json::json!({ "event": "landing", "dialogId": self.dialog_id, "result": what, "files": files }),
+            );
         }
-        let Some(overlay) = chats::get(&self.dialog_id) else { return };
+    }
+
+    /// Lands if it may; returns what happened and to how many files, for
+    /// the log (None: nothing to land).
+    async fn try_land(&mut self, outcome: &str) -> Option<(&'static str, usize)> {
+        if self.root == self.project_root {
+            return None;
+        }
+        let overlay = chats::get(&self.dialog_id)?;
         overlay.fs.flush();
         let dialog_id = self.dialog_id.clone();
         let changes = chats::changes(&dialog_id);
         if changes.is_empty() {
             chats::set_pending(&dialog_id, None);
-            return;
+            return None;
         }
+        let count = changes.len();
         if !LANDS_AFTER.contains(&outcome) {
             let reason = match outcome {
                 "stopped" => "the run was stopped",
@@ -41,7 +54,7 @@ impl<R: Runtime> Run<R> {
                 _ => "the run didn't finish",
             };
             chats::set_pending(&dialog_id, Some(&Pending { reason: format!("Not landed: {reason}."), conflicts: Vec::new() }));
-            return;
+            return Some(("waits: run didn't finish", count));
         }
 
         let plan = land::plan(&overlay.project, &changes, false);
@@ -55,7 +68,7 @@ impl<R: Runtime> Run<R> {
                 }),
             );
             self.notice("warning", "This chat's changes didn't land", "They conflict with changes in the project. Review them above the message box.");
-            return;
+            return Some(("waits: conflicts", count));
         }
         if plan.merged {
             if let Some(failed) = self.check_merged(&plan, &overlay.view).await {
@@ -67,7 +80,7 @@ impl<R: Runtime> Run<R> {
                     }),
                 );
                 self.notice("warning", "This chat's changes didn't land", "The checks fail on the merged result.");
-                return;
+                return Some(("waits: merged checks fail", count));
             }
         }
         let result = tauri::async_runtime::spawn_blocking(move || chats::land_now(&dialog_id, false)).await;
@@ -82,13 +95,21 @@ impl<R: Runtime> Run<R> {
                 // The project changed under the chat's view: the next run
                 // starts from it.
                 self.landed = true;
+                Some(("landed", n))
             }
-            Ok(Ok(None)) => {}
+            Ok(Ok(None)) => Some(("nothing new", count)),
             Ok(Err(LandError::Conflicts(_))) => {
                 self.notice("warning", "This chat's changes didn't land", "The project changed meanwhile. Review them above the message box.");
+                Some(("waits: conflicts", count))
             }
-            Ok(Err(e)) => self.notice("error", "This chat's changes didn't land", &e.to_string()),
-            Err(e) => self.notice("error", "This chat's changes didn't land", &e.to_string()),
+            Ok(Err(e)) => {
+                self.notice("error", "This chat's changes didn't land", &e.to_string());
+                Some(("failed", count))
+            }
+            Err(e) => {
+                self.notice("error", "This chat's changes didn't land", &e.to_string());
+                Some(("failed", count))
+            }
         }
     }
 

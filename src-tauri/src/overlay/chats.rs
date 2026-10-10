@@ -28,12 +28,16 @@ pub struct ChatOverlay {
 }
 
 impl ChatOverlay {
-    /// Variables for the chat's commands: build output goes to the
-    /// overlay's own folder on disk instead of through the mount, and isn't
-    /// shared with other chats or the project.
+    /// Variables for the chat's commands. Rust's build output goes to a
+    /// folder on disk outside the mount, shared by the project's isolated
+    /// chats (so only the first chat builds from cold) but not with the
+    /// project's own `target/` (so the user never runs a chat's build).
+    /// Cargo locks it, and the queue for heavy work runs one build at a
+    /// time anyway.
     pub fn command_env(&self) -> Vec<(String, String)> {
-        let out = self.store.join("out");
-        vec![("CARGO_TARGET_DIR".into(), out.join("target").to_string_lossy().into_owned())]
+        let shared = data_dir().map(|d| d.join("overlays").join("targets").join(project_key(&self.project)));
+        let dir = shared.unwrap_or_else(|| self.store.join("out").join("target"));
+        vec![("CARGO_TARGET_DIR".into(), dir.to_string_lossy().into_owned())]
     }
 
     /// Why a command can't run in this chat as written, if it can't.
@@ -99,11 +103,24 @@ pub fn init(data_dir: &Path) {
     }
 }
 
-/// Whether chats work in overlays. A development setting until isolation is
-/// switched on for every chat (milestone 8 of the plan): set
-/// `ROVIK_ISOLATE_CHATS=1`.
+/// Whether chats work in overlays: always (the user's decision), unless
+/// `ROVIK_ISOLATE_CHATS=0` turns it off for troubleshooting.
 pub fn enabled() -> bool {
-    std::env::var("ROVIK_ISOLATE_CHATS").is_ok_and(|v| v == "1")
+    std::env::var("ROVIK_ISOLATE_CHATS").map_or(true, |v| v != "0")
+}
+
+/// A short, stable name for a project folder.
+fn project_key(project: &Path) -> String {
+    let hash = crate::file_guard::hash(project.to_string_lossy().as_bytes());
+    hash[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Chats already told this session that they can't be isolated.
+static TOLD: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Default::default);
+
+/// Whether to tell this chat it isn't isolated: once per session.
+pub fn tell_not_isolated(dialog_id: &str) -> bool {
+    TOLD.lock().unwrap_or_else(|e| e.into_inner()).insert(dialog_id.to_string())
 }
 
 fn data_dir() -> Option<PathBuf> {

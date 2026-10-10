@@ -277,13 +277,15 @@ impl<R: Runtime> Run<R> {
             }
             _ => project_root.clone(),
         };
-        if let Some(problem) = isolation_problem {
+        if let Some(problem) = isolation_problem.filter(|_| crate::overlay::chats::tell_not_isolated(&dialog_id)) {
             emit(
                 app,
                 AgentEvent::Notice {
                     kind: "warning".into(),
                     title: "This chat isn't isolated".into(),
-                    message: format!("{problem}. It works in the project folder directly."),
+                    message: format!(
+                        "{problem}. It works in the project folder directly. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
+                    ),
                 },
             );
         }
