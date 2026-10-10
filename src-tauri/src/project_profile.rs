@@ -121,7 +121,9 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
  * ------------------------------------------------------------------------- */
 
 fn detect_node(root: &Path, profile: &mut ProjectProfile) {
-    let Some(pkg) = read_json(&root.join("package.json")) else { return };
+    let Some(pkg) = read_json(&root.join("package.json")) else {
+        return;
+    };
 
     let pm = workspaces::detect_package_manager(root);
     let yarn_berry = workspaces::is_yarn_berry(root, Some(&pkg));
@@ -149,7 +151,14 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
             .any(|section| pkg.get(section).and_then(|d| d.get(name)).is_some())
     };
     let typescript = root.join("tsconfig.json").exists() || has_dep("typescript");
-    push_stack(profile, if typescript { "TypeScript" } else { "JavaScript" });
+    push_stack(
+        profile,
+        if typescript {
+            "TypeScript"
+        } else {
+            "JavaScript"
+        },
+    );
     for (dep, name) in [
         ("react", "React"),
         ("solid-js", "Solid"),
@@ -170,12 +179,22 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
         let scripts = scripts?;
         names
             .iter()
-            .find(|n| scripts.get(**n).and_then(|v| v.as_str()).is_some_and(|v| !v.trim().is_empty()))
+            .find(|n| {
+                scripts
+                    .get(**n)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|v| !v.trim().is_empty())
+            })
             .map(|n| n.to_string())
     };
 
     match script(&["typecheck", "type-check", "check-types", "types", "tsc"]) {
-        Some(name) => push_check(profile, "typecheck", run(&name), format!("package.json scripts.{name}")),
+        Some(name) => push_check(
+            profile,
+            "typecheck",
+            run(&name),
+            format!("package.json scripts.{name}"),
+        ),
         None if root.join("tsconfig.json").exists() => push_check(
             profile,
             "typecheck",
@@ -185,7 +204,12 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
         None => {}
     }
     if let Some(name) = script(&["lint"]) {
-        push_check(profile, "lint", run(&name), format!("package.json scripts.{name}"));
+        push_check(
+            profile,
+            "lint",
+            run(&name),
+            format!("package.json scripts.{name}"),
+        );
     }
     if let Some(name) = script(&["test"]) {
         let body = scripts
@@ -194,11 +218,21 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
             .unwrap_or_default();
         // npm init's placeholder fails on purpose.
         if !body.contains("no test specified") {
-            push_check(profile, "test", run(&name), format!("package.json scripts.{name}"));
+            push_check(
+                profile,
+                "test",
+                run(&name),
+                format!("package.json scripts.{name}"),
+            );
         }
     }
     if let Some(name) = script(&["build"]) {
-        push_check(profile, "build", run(&name), format!("package.json scripts.{name}"));
+        push_check(
+            profile,
+            "build",
+            run(&name),
+            format!("package.json scripts.{name}"),
+        );
     }
 
     // Workspaces: when the root declares member packages, scan their manifests
@@ -229,7 +263,10 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
 
     // For each kind, find the most common script name for it across members.
     let candidates: &[(&str, &[&str])] = &[
-        ("typecheck", &["typecheck", "type-check", "check-types", "types", "tsc"]),
+        (
+            "typecheck",
+            &["typecheck", "type-check", "check-types", "types", "tsc"],
+        ),
         ("lint", &["lint"]),
         ("test", &["test"]),
         ("build", &["build"]),
@@ -253,9 +290,7 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
             let mut real = 0;
             for rel in &member_dirs {
                 let body = read_json(&root.join(rel).join("package.json"))
-                    .and_then(|p| {
-                        p.get("scripts")?.get(best)?.as_str().map(str::to_string)
-                    })
+                    .and_then(|p| p.get("scripts")?.get(best)?.as_str().map(str::to_string))
                     .unwrap_or_default();
                 if !body.contains("no test specified") {
                     real += 1;
@@ -327,14 +362,27 @@ fn detect_rust(root: &Path, profile: &mut ProjectProfile) {
         let (arg, mut source) = if dir.is_empty() {
             (String::new(), "Cargo.toml".to_string())
         } else {
-            (format!(" --manifest-path {dir}/Cargo.toml"), format!("{dir}/Cargo.toml"))
+            (
+                format!(" --manifest-path {dir}/Cargo.toml"),
+                format!("{dir}/Cargo.toml"),
+            )
         };
         if is_workspace {
             // `cargo check` at the workspace root already covers all members.
             source.push_str(" [workspace]");
         }
-        push_check(profile, "typecheck", format!("cargo check{arg}"), source.clone());
-        push_check(profile, "lint", format!("cargo clippy{arg}"), source.clone());
+        push_check(
+            profile,
+            "typecheck",
+            format!("cargo check{arg}"),
+            source.clone(),
+        );
+        push_check(
+            profile,
+            "lint",
+            format!("cargo clippy{arg}"),
+            source.clone(),
+        );
         push_check(profile, "test", format!("cargo test{arg}"), source);
     }
 }
@@ -357,7 +405,12 @@ fn detect_python(root: &Path, profile: &mut ProjectProfile) {
     if has("tool.mypy") || root.join("mypy.ini").exists() {
         push_check(profile, "typecheck", "mypy .".into(), "mypy config".into());
     } else if root.join("pyrightconfig.json").exists() || has("tool.pyright") {
-        push_check(profile, "typecheck", "pyright".into(), "pyright config".into());
+        push_check(
+            profile,
+            "typecheck",
+            "pyright".into(),
+            "pyright config".into(),
+        );
     }
     if has("tool.ruff") || root.join("ruff.toml").exists() || root.join(".ruff.toml").exists() {
         push_check(profile, "lint", "ruff check .".into(), "ruff config".into());
@@ -380,7 +433,12 @@ fn detect_go(root: &Path, profile: &mut ProjectProfile) {
         return;
     }
     push_stack(profile, "Go");
-    push_check(profile, "typecheck", "go build ./...".into(), "go.mod".into());
+    push_check(
+        profile,
+        "typecheck",
+        "go build ./...".into(),
+        "go.mod".into(),
+    );
     push_check(profile, "lint", "go vet ./...".into(), "go.mod".into());
     push_check(profile, "test", "go test ./...".into(), "go.mod".into());
 }
@@ -390,13 +448,19 @@ fn detect_go(root: &Path, profile: &mut ProjectProfile) {
  * ------------------------------------------------------------------------- */
 
 fn detect_make(root: &Path, profile: &mut ProjectProfile) {
-    let Ok(makefile) = fs::read_to_string(root.join("Makefile")) else { return };
+    let Ok(makefile) = fs::read_to_string(root.join("Makefile")) else {
+        return;
+    };
     let has_target = |t: &str| {
         makefile
             .lines()
             .any(|l| l.starts_with(t) && l[t.len()..].trim_start().starts_with(':'))
     };
-    for (target, kind) in [("typecheck", "typecheck"), ("lint", "lint"), ("test", "test")] {
+    for (target, kind) in [
+        ("typecheck", "typecheck"),
+        ("lint", "lint"),
+        ("test", "test"),
+    ] {
         if has_target(target) && !profile.checks.iter().any(|c| c.kind == kind) {
             push_check(profile, kind, format!("make {target}"), "Makefile".into());
         }
@@ -438,7 +502,11 @@ fn read_instructions(root: &Path) -> Option<ProjectInstructions> {
     } else {
         text.to_string()
     };
-    Some(ProjectInstructions { file, text, truncated })
+    Some(ProjectInstructions {
+        file,
+        text,
+        truncated,
+    })
 }
 
 // ---- tauri commands (not compiled into the standalone tests) ----
@@ -452,7 +520,9 @@ pub fn project_profile(root: String) -> Result<ProjectProfile, String> {
     Ok(detect(root))
 }
 
-fn project_settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
+fn project_settings_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
     use tauri::Manager;
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("project-settings.json"))
@@ -461,7 +531,10 @@ fn project_settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result
 /// The user's settings for one project (e.g. corrected check commands), as
 /// the JSON the frontend stored; null when there are none.
 #[tauri::command]
-pub fn load_project_settings<R: tauri::Runtime>(app: tauri::AppHandle<R>, root: String) -> Result<serde_json::Value, String> {
+pub fn load_project_settings<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    root: String,
+) -> Result<serde_json::Value, String> {
     let path = project_settings_path(&app)?;
     let all: serde_json::Value = fs::read_to_string(&path)
         .ok()
@@ -493,14 +566,20 @@ pub fn save_project_settings(
 
 /// Agent diagnostics: one JSON object per line in agent-log.jsonl in the
 /// app's data folder. Rotated to agent-log.1.jsonl at 5 MB.
-pub fn append_agent_log<R: tauri::Runtime>(app: tauri::AppHandle<R>, line: String) -> Result<(), String> {
+pub fn append_agent_log<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    line: String,
+) -> Result<(), String> {
     use std::io::Write;
     use tauri::Manager;
     const MAX_BYTES: u64 = 5 * 1024 * 1024;
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("agent-log.jsonl");
-    if fs::metadata(&path).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
+    if fs::metadata(&path)
+        .map(|m| m.len() > MAX_BYTES)
+        .unwrap_or(false)
+    {
         let _ = fs::rename(&path, dir.join("agent-log.1.jsonl"));
     }
     let mut file = fs::OpenOptions::new()
@@ -533,7 +612,10 @@ mod tests {
     }
 
     fn commands(p: &ProjectProfile) -> Vec<String> {
-        p.checks.iter().map(|c| format!("{}: {}", c.kind, c.command)).collect()
+        p.checks
+            .iter()
+            .map(|c| format!("{}: {}", c.kind, c.command))
+            .collect()
     }
 
     #[test]
@@ -596,7 +678,10 @@ mod tests {
     #[test]
     fn python_go_and_make() {
         let py = project(&[
-            ("pyproject.toml", "[tool.ruff]\nline-length = 100\n[tool.pytest.ini_options]\n"),
+            (
+                "pyproject.toml",
+                "[tool.ruff]\nline-length = 100\n[tool.pytest.ini_options]\n",
+            ),
             ("mypy.ini", ""),
         ]);
         assert_eq!(
@@ -622,36 +707,66 @@ mod tests {
     #[test]
     fn npm_workspaces_prefill_missing_kinds() {
         let dir = project(&[
-            ("package.json", r#"{"private":true,"workspaces":["packages/*"]}"#),
-            ("packages/web/package.json", r#"{"name":"web","scripts":{"test":"vitest run","build":"vite build"}}"#),
-            ("packages/api/package.json", r#"{"name":"api","scripts":{"test":"node --test","lint":"eslint ."}}"#),
+            (
+                "package.json",
+                r#"{"private":true,"workspaces":["packages/*"]}"#,
+            ),
+            (
+                "packages/web/package.json",
+                r#"{"name":"web","scripts":{"test":"vitest run","build":"vite build"}}"#,
+            ),
+            (
+                "packages/api/package.json",
+                r#"{"name":"api","scripts":{"test":"node --test","lint":"eslint ."}}"#,
+            ),
         ]);
         let p = detect(&dir);
         assert!(p.stack.contains(&"Workspaces".to_string()));
         assert_eq!(
-            p.workspaces.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
+            p.workspaces
+                .iter()
+                .map(|w| w.path.as_str())
+                .collect::<Vec<_>>(),
             ["packages/api", "packages/web"]
         );
         // Root had none of these: each kind gets one workspace-wide command.
         assert!(commands(&p).contains(&"test: npm test --workspaces --if-present".to_string()));
         assert!(commands(&p).contains(&"lint: npm run lint --workspaces --if-present".to_string()));
-        assert!(commands(&p).contains(&"build: npm run build --workspaces --if-present".to_string()));
+        assert!(
+            commands(&p).contains(&"build: npm run build --workspaces --if-present".to_string())
+        );
         let test = p.checks.iter().find(|c| c.kind == "test").unwrap();
-        assert!(test.source.starts_with("workspaces (2 packages)"), "source: {}", test.source);
+        assert!(
+            test.source.starts_with("workspaces (2 packages)"),
+            "source: {}",
+            test.source
+        );
     }
 
     #[test]
     fn pnpm_workspace_uses_recursive_run() {
         let dir = project(&[
             ("package.json", r#"{"private":true}"#),
-            ("pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - '!apps/ignored'\n"),
+            (
+                "pnpm-workspace.yaml",
+                "packages:\n  - 'apps/*'\n  - '!apps/ignored'\n",
+            ),
             ("pnpm-lock.yaml", ""),
-            ("apps/a/package.json", r#"{"name":"a","scripts":{"test":"vitest run"}}"#),
-            ("apps/ignored/package.json", r#"{"name":"ignored","scripts":{"test":"vitest run"}}"#),
+            (
+                "apps/a/package.json",
+                r#"{"name":"a","scripts":{"test":"vitest run"}}"#,
+            ),
+            (
+                "apps/ignored/package.json",
+                r#"{"name":"ignored","scripts":{"test":"vitest run"}}"#,
+            ),
         ]);
         let p = detect(&dir);
         assert_eq!(
-            p.workspaces.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
+            p.workspaces
+                .iter()
+                .map(|w| w.path.as_str())
+                .collect::<Vec<_>>(),
             ["apps/a"]
         );
         assert_eq!(commands(&p), ["test: pnpm -r --if-present run test"]);
@@ -668,15 +783,25 @@ mod tests {
         assert!(p.stack.contains(&"Rust".to_string()));
         assert!(p.stack.contains(&"Workspaces".to_string()));
         assert_eq!(
-            p.workspaces.iter().map(|w| w.path.as_str()).collect::<Vec<_>>(),
+            p.workspaces
+                .iter()
+                .map(|w| w.path.as_str())
+                .collect::<Vec<_>>(),
             ["crates/a", "crates/b"]
         );
         // One workspace root covers all members: no per-member duplication.
         assert_eq!(
             commands(&p),
-            ["typecheck: cargo check", "lint: cargo clippy", "test: cargo test"]
+            [
+                "typecheck: cargo check",
+                "lint: cargo clippy",
+                "test: cargo test"
+            ]
         );
-        assert!(p.checks.iter().all(|c| c.source == "Cargo.toml [workspace]"));
+        assert!(p
+            .checks
+            .iter()
+            .all(|c| c.source == "Cargo.toml [workspace]"));
     }
 
     #[test]

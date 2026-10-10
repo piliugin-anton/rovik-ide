@@ -16,7 +16,9 @@
 //! recipes for gating tool calls and permission prompts.
 
 use super::ModelProfile;
-use crate::agent::{ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, WireChatMessage};
+use crate::agent::{
+    ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, WireChatMessage,
+};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::sync::LazyLock;
@@ -59,10 +61,19 @@ pub struct Check {
 #[derive(Debug, PartialEq)]
 pub enum ReviewResult {
     /// `checks`: typed input's scores (empty for a text reviewer).
-    Decided { approved: bool, reason: String, model: String, checks: Vec<Check> },
+    Decided {
+        approved: bool,
+        reason: String,
+        model: String,
+        checks: Vec<Check>,
+    },
     /// The reviewer answered but wasn't sure either way: ask the user.
-    Unsure { reason: String },
-    Failed { errors: Vec<String> },
+    Unsure {
+        reason: String,
+    },
+    Failed {
+        errors: Vec<String>,
+    },
 }
 
 const MAX_ARGS_CHARS: usize = 6_000;
@@ -88,7 +99,11 @@ Reply with only a JSON object, no other text:
 fn cut(text: &str, max: usize) -> String {
     let count = text.chars().count();
     if count > max {
-        format!("{}\n… ({} more characters)", text.chars().take(max).collect::<String>(), count - max)
+        format!(
+            "{}\n… ({} more characters)",
+            text.chars().take(max).collect::<String>(),
+            count - max
+        )
     } else {
         text.to_string()
     }
@@ -100,10 +115,16 @@ fn prefix(text: &str, max: usize) -> String {
 
 fn build_prompt(input: &ReviewInput) -> String {
     let request = prefix(input.user_request.trim(), MAX_REQUEST_CHARS);
-    let request = if request.is_empty() { "(not available)".to_string() } else { request };
+    let request = if request.is_empty() {
+        "(not available)".to_string()
+    } else {
+        request
+    };
     // For edits the diff says more than the whole new file.
     let details = match (&input.edit_diff, input.group) {
-        (Some(diff), Group::Edits) if !diff.is_empty() => format!("Diff:\n{}", cut(diff, MAX_ARGS_CHARS)),
+        (Some(diff), Group::Edits) if !diff.is_empty() => {
+            format!("Diff:\n{}", cut(diff, MAX_ARGS_CHARS))
+        }
         _ => format!("Arguments:\n{}", cut(&input.args_json, MAX_ARGS_CHARS)),
     };
     [
@@ -121,7 +142,8 @@ fn build_prompt(input: &ReviewInput) -> String {
 
 static THINKING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<think(?:ing)?>.*?(?:</think(?:ing)?>|$)").unwrap());
-static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\W*(approve|approved|reject|rejected)\b").unwrap());
+static WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^\W*(approve|approved|reject|rejected)\b").unwrap());
 
 /// Removes reasoning blocks some local models put into the content.
 pub fn strip_thinking(raw: &str) -> String {
@@ -145,15 +167,23 @@ pub fn parse_decision(raw: &str) -> Option<(bool, String)> {
                         Some(v) if !v.is_null() => v.to_string(),
                         _ => String::new(),
                     };
-                    let reason = if reason.is_empty() { "No reason given.".to_string() } else { reason };
+                    let reason = if reason.is_empty() {
+                        "No reason given.".to_string()
+                    } else {
+                        reason
+                    };
                     return Some((decision == "approve", reason));
                 }
             }
         }
     }
     // Some models answer with just the word.
-    WORD.captures(&text)
-        .map(|c| (c[1].to_lowercase().starts_with("approve"), "No reason given.".to_string()))
+    WORD.captures(&text).map(|c| {
+        (
+            c[1].to_lowercase().starts_with("approve"),
+            "No reason given.".to_string(),
+        )
+    })
 }
 
 /// Providers disagree on request options: OpenAI rejects unknown fields and,
@@ -207,20 +237,45 @@ pub async fn complete_once<R: Runtime>(
     let vfs = app.state::<crate::vfs::VfsState>();
     crate::agent::run_chat(&db, &vfs, params, &mut rx, &mut emit).await?;
     match failure {
-        Some(e) => Err(format!("{}: {}", serde_json::to_value(e.kind).unwrap_or_default().as_str().unwrap_or("error"), e.message)),
+        Some(e) => Err(format!(
+            "{}: {}",
+            serde_json::to_value(e.kind)
+                .unwrap_or_default()
+                .as_str()
+                .unwrap_or("error"),
+            e.message
+        )),
         None => Ok(text),
     }
 }
 
 async fn review_with_text<R: Runtime>(
-    app: &AppHandle<R>, profile: &ModelProfile, input: &ReviewInput, errors: &mut Vec<String>) -> Option<ReviewResult> {
+    app: &AppHandle<R>,
+    profile: &ModelProfile,
+    input: &ReviewInput,
+    errors: &mut Vec<String>,
+) -> Option<ReviewResult> {
     let prompt = build_prompt(input);
     for options in lean_then_plain(300) {
-        match complete_once(app, profile, SYSTEM_PROMPT, prompt.clone(), options, input.chat_id.clone()).await {
+        match complete_once(
+            app,
+            profile,
+            SYSTEM_PROMPT,
+            prompt.clone(),
+            options,
+            input.chat_id.clone(),
+        )
+        .await
+        {
             Err(e) => errors.push(format!("{}: {e}", profile.label)),
             Ok(text) => match parse_decision(&text) {
                 Some((approved, reason)) => {
-                    return Some(ReviewResult::Decided { approved, reason, model: profile.label.clone(), checks: Vec::new() })
+                    return Some(ReviewResult::Decided {
+                        approved,
+                        reason,
+                        model: profile.label.clone(),
+                        checks: Vec::new(),
+                    })
                 }
                 None => errors.push(format!("{}: unclear reply", profile.label)),
             },
@@ -317,7 +372,12 @@ fn typed_state(input: &ReviewInput) -> Map<String, Value> {
         state.insert("task".into(), json!(task));
     }
     let args = args_object(&input.args_json);
-    let arg = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let arg = |k: &str| {
+        args.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     match input.group {
         Group::Commands => {
             state.insert("commands".into(), json!([arg("command")]));
@@ -330,10 +390,16 @@ fn typed_state(input: &ReviewInput) -> Map<String, Value> {
                 cut(input.edit_diff.as_deref().unwrap_or(""), MAX_DIFF_CHARS)
             };
             let path = input.edit_path.clone().unwrap_or_else(|| arg("path"));
-            state.insert("edit".into(), json!({ "path": path, "new_file": input.is_new_file, "diff": diff }));
+            state.insert(
+                "edit".into(),
+                json!({ "path": path, "new_file": input.is_new_file, "diff": diff }),
+            );
         }
         Group::Tools => {
-            state.insert("tool".into(), json!({ "name": input.tool_name, "arguments": args }));
+            state.insert(
+                "tool".into(),
+                json!({ "name": input.tool_name, "arguments": args }),
+            );
         }
     }
     state
@@ -341,7 +407,8 @@ fn typed_state(input: &ReviewInput) -> Map<String, Value> {
 
 /// A model that only speaks System One (Jev), so a text prompt can't work.
 pub fn is_jev_model(model_id: &str) -> bool {
-    static JEV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(^|[/~:-])jev([-_.]|$)").unwrap());
+    static JEV: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)(^|[/~:-])jev([-_.]|$)").unwrap());
     static ROUTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)jev-router").unwrap());
     // Jev Router is a chat model that routes to other models.
     JEV.is_match(model_id) && !ROUTER.is_match(model_id)
@@ -350,56 +417,96 @@ pub fn is_jev_model(model_id: &str) -> bool {
 /// The decision from the probabilities, by the fixed thresholds.
 fn decide(label: &str, scores: &[(&Noul, f64)]) -> ReviewResult {
     let shown = |list: &[&(&Noul, f64)]| {
-        list.iter().map(|(q, p)| format!("{} {}%", q.label, (p * 100.0).round())).collect::<Vec<_>>().join(", ")
+        list.iter()
+            .map(|(q, p)| format!("{} {}%", q.label, (p * 100.0).round()))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
-    let checks = || scores.iter().map(|(q, p)| Check { label: q.label.into(), score: *p }).collect();
+    let checks = || {
+        scores
+            .iter()
+            .map(|(q, p)| Check {
+                label: q.label.into(),
+                score: *p,
+            })
+            .collect()
+    };
     let failed: Vec<&(&Noul, f64)> = scores.iter().filter(|(_, p)| *p <= REJECT_AT).collect();
     if !failed.is_empty() {
         let reason = format!("Failed: {}.", shown(&failed));
-        return ReviewResult::Decided { approved: false, reason, model: label.into(), checks: checks() };
+        return ReviewResult::Decided {
+            approved: false,
+            reason,
+            model: label.into(),
+            checks: checks(),
+        };
     }
     let all: Vec<&(&Noul, f64)> = scores.iter().collect();
     if scores.iter().all(|(_, p)| *p >= APPROVE_AT) {
         let reason = format!("Checks passed: {}.", shown(&all));
-        return ReviewResult::Decided { approved: true, reason, model: label.into(), checks: checks() };
+        return ReviewResult::Decided {
+            approved: true,
+            reason,
+            model: label.into(),
+            checks: checks(),
+        };
     }
-    ReviewResult::Unsure { reason: format!("{label} wasn’t sure ({}).", shown(&all)) }
+    ReviewResult::Unsure {
+        reason: format!("{label} wasn’t sure ({}).", shown(&all)),
+    }
 }
 
-async fn review_with_typed(profile: &ModelProfile, input: &ReviewInput, errors: &mut Vec<String>) -> Option<ReviewResult> {
+async fn review_with_typed(
+    profile: &ModelProfile,
+    input: &ReviewInput,
+    errors: &mut Vec<String>,
+) -> Option<ReviewResult> {
     let state = typed_state(input);
-    let asked: Vec<&Noul> =
-        questions(input.group).iter().filter(|q| q.key != "serves_task" || state.contains_key("task")).collect();
+    let asked: Vec<&Noul> = questions(input.group)
+        .iter()
+        .filter(|q| q.key != "serves_task" || state.contains_key("task"))
+        .collect();
     let body_questions: Map<String, Value> = asked
         .iter()
-        .map(|q| (q.key.to_string(), json!({ "type": "noul", "instructions": q.instructions })))
+        .map(|q| {
+            (
+                q.key.to_string(),
+                json!({ "type": "noul", "instructions": q.instructions }),
+            )
+        })
         .collect();
     let body = json!({ "state": state, "questions": body_questions });
 
-    let response =
-        match crate::system_one::request(
-            &profile.base_url,
-            &profile.api_key,
-            &profile.model,
-            body,
-            Some(15_000),
-            input.chat_id.as_deref(),
-        ).await {
-            Ok(r) => r,
-            Err(e) => {
-                errors.push(format!("{}: {e}", profile.label));
-                return None;
-            }
-        };
+    let response = match crate::system_one::request(
+        &profile.base_url,
+        &profile.api_key,
+        &profile.model,
+        body,
+        Some(15_000),
+        input.chat_id.as_deref(),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            errors.push(format!("{}: {e}", profile.label));
+            return None;
+        }
+    };
 
     // Every asked question needs a probability, or the answer isn't usable.
     let mut scores = Vec::new();
     for q in asked {
-        let p = response.pointer(&format!("/answers/{}/noul", q.key)).and_then(|v| v.as_f64());
+        let p = response
+            .pointer(&format!("/answers/{}/noul", q.key))
+            .and_then(|v| v.as_f64());
         match p {
             Some(p) if (0.0..=1.0).contains(&p) => scores.push((q, p)),
             _ => {
-                errors.push(format!("{}: no usable answer for \"{}\"", profile.label, q.key));
+                errors.push(format!(
+                    "{}: no usable answer for \"{}\"",
+                    profile.label, q.key
+                ));
                 return None;
             }
         }
@@ -440,8 +547,14 @@ mod tests {
             parse_decision("<think>hmm {x}</think>```json\n{\"decision\": \"Approve\", \"reason\": \"fine\"}\n```"),
             Some((true, "fine".into()))
         );
-        assert_eq!(parse_decision("{\"decision\":\"reject\"}"), Some((false, "No reason given.".into())));
-        assert_eq!(parse_decision("Rejected: no"), Some((false, "No reason given.".into())));
+        assert_eq!(
+            parse_decision("{\"decision\":\"reject\"}"),
+            Some((false, "No reason given.".into()))
+        );
+        assert_eq!(
+            parse_decision("Rejected: no"),
+            Some((false, "No reason given.".into()))
+        );
         assert_eq!(parse_decision("maybe"), None);
     }
 
@@ -453,7 +566,10 @@ mod tests {
         assert!(!is_jev_model("jevons"));
         let qs = questions(Group::Edits);
         let scores = [(&qs[0], 0.95), (&qs[1], 0.92), (&qs[2], 0.99)];
-        assert!(matches!(decide("Jev", &scores), ReviewResult::Decided { approved: true, .. }));
+        assert!(matches!(
+            decide("Jev", &scores),
+            ReviewResult::Decided { approved: true, .. }
+        ));
         let scores = [(&qs[0], 0.95), (&qs[1], 0.05), (&qs[2], 0.5)];
         assert_eq!(
             decide("Jev", &scores),
@@ -462,13 +578,25 @@ mod tests {
                 reason: "Failed: stays in scope 5%.".into(),
                 model: "Jev".into(),
                 checks: vec![
-                    Check { label: qs[0].label.into(), score: 0.95 },
-                    Check { label: qs[1].label.into(), score: 0.05 },
-                    Check { label: qs[2].label.into(), score: 0.5 },
+                    Check {
+                        label: qs[0].label.into(),
+                        score: 0.95
+                    },
+                    Check {
+                        label: qs[1].label.into(),
+                        score: 0.05
+                    },
+                    Check {
+                        label: qs[2].label.into(),
+                        score: 0.5
+                    },
                 ],
             }
         );
-        assert!(matches!(decide("Jev", &[(&qs[0], 0.5)]), ReviewResult::Unsure { .. }));
+        assert!(matches!(
+            decide("Jev", &[(&qs[0], 0.5)]),
+            ReviewResult::Unsure { .. }
+        ));
     }
 
     #[test]
@@ -486,8 +614,14 @@ mod tests {
             chat_id: None,
         };
         let state = typed_state(&input);
-        assert_eq!(Value::Object(state.clone()), json!({ "project": "/p", "commands": ["ls"] }));
-        assert!(!state.contains_key("task"), "no task: the serves_task question is skipped");
+        assert_eq!(
+            Value::Object(state.clone()),
+            json!({ "project": "/p", "commands": ["ls"] })
+        );
+        assert!(
+            !state.contains_key("task"),
+            "no task: the serves_task question is skipped"
+        );
         assert!(build_prompt(&input).contains("User's request:\n(not available)"));
     }
 }

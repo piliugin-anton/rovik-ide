@@ -268,10 +268,15 @@ mod tests {
 
         migrate(&mut conn).unwrap();
 
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(version, 7);
-        let project: Option<String> =
-            conn.query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| r.get(0)).unwrap();
+        let project: Option<String> = conn
+            .query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(project, None);
         // The list query uses the new index.
         let plan: String = conn

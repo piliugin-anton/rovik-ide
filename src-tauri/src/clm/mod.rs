@@ -490,14 +490,18 @@ pub async fn prepare(
         .collect();
 
     // 5. Notes for the model.
-    let has_checklist = checklist_note.as_ref().is_some_and(|n| !n.trim().is_empty());
+    let has_checklist = checklist_note
+        .as_ref()
+        .is_some_and(|n| !n.trim().is_empty());
     if let Some(card) = &state.task {
         let mut note = prompt::card_note(&card_text(card));
         // Phase E: a task card with no NEXT line can't say where the work
         // goes next. Warned, not rejected: the note rides on the card and
         // disappears as soon as a NEXT line is added.
         if !card.lines().any(|l| l.trim_start().starts_with("NEXT")) {
-            note.push_str("\n[context: your task card has no NEXT line. Add one: the next concrete step.");
+            note.push_str(
+                "\n[context: your task card has no NEXT line. Add one: the next concrete step.",
+            );
             note.push(']');
         }
         notes.push(note);
@@ -1108,12 +1112,19 @@ pub async fn status(db: &DbState, vfs: &VfsState, dialog_id: String) -> Result<C
 /// per-run log (`"event": "clm"`) has the exact turns-to-edit.
 fn compliance_summary(state: &store::State) -> Option<String> {
     // The 25% heads-up asks for no edit, so nothing is due for it.
-    let mut waiting: Vec<u32> = state.nudged.iter().copied().filter(|t| *t > prompt::HEADS_UP).collect();
+    let mut waiting: Vec<u32> = state
+        .nudged
+        .iter()
+        .copied()
+        .filter(|t| *t > prompt::HEADS_UP)
+        .collect();
     if prompt::percent(state.tokens, state.budget) >= prompt::URGENT && !waiting.contains(&90) {
         waiting.push(90);
     }
     let highest = waiting.into_iter().max()?;
-    Some(format!("a compaction is due ({highest}% reminder not acted on yet)"))
+    Some(format!(
+        "a compaction is due ({highest}% reminder not acted on yet)"
+    ))
 }
 
 #[tauri::command]
@@ -1283,14 +1294,24 @@ pub async fn tool_restore(
                 .await?;
             reset(db, vfs, dialog_id).await?;
             let kept = current
-                .map(|r| format!(" Your context as it was is revision {r} ({}/{r}.md).", prompt::REVISIONS_PATH))
+                .map(|r| {
+                    format!(
+                        " Your context as it was is revision {r} ({}/{r}.md).",
+                        prompt::REVISIONS_PATH
+                    )
+                })
                 .unwrap_or_default();
             return Ok(format!(
                 "Your edits are dropped: from your next request your context is the chat as stored (trimmed \
                  to the budget if it doesn't fit), and the context file is rewritten from it.{kept}"
             ));
         }
-        Some(Value::String(s)) => s.trim().trim_start_matches('r').trim_end_matches(".md").parse().ok(),
+        Some(Value::String(s)) => s
+            .trim()
+            .trim_start_matches('r')
+            .trim_end_matches(".md")
+            .parse()
+            .ok(),
         _ => None,
     };
     let Some(number) = number else {
@@ -1311,10 +1332,19 @@ pub async fn tool_restore(
 
 /// list_dir on `@context/…`: the folder (the context file, revisions, the
 /// agent's own files), or the revisions.
-pub async fn tool_list(db: &DbState, vfs: &VfsState, dialog_id: &str, path: &str) -> Result<String, String> {
+pub async fn tool_list(
+    db: &DbState,
+    vfs: &VfsState,
+    dialog_id: &str,
+    path: &str,
+) -> Result<String, String> {
     let (dir, shown) = match target(vfs, dialog_id, path)? {
         Target::Revisions => return revisions_listing(db, dialog_id).await,
-        Target::Revision(..) => return Err(format!("{path} is a revision, not a folder; read it with read")),
+        Target::Revision(..) => {
+            return Err(format!(
+                "{path} is a revision, not a folder; read it with read"
+            ))
+        }
         Target::Live => (context_dir(dialog_id), "@context".to_string()),
         Target::Other(rel) => (
             format!("{}/{rel}", context_dir(dialog_id)),
@@ -1328,7 +1358,12 @@ pub async fn tool_list(db: &DbState, vfs: &VfsState, dialog_id: &str, path: &str
     if shown == "@context" {
         let d = dialog_id.to_string();
         let (state, count) = db
-            .read(move |conn| Ok((store::load_state(conn, &d)?, store::revisions(conn, &d)?.len())))
+            .read(move |conn| {
+                Ok((
+                    store::load_state(conn, &d)?,
+                    store::revisions(conn, &d)?.len(),
+                ))
+            })
             .await?;
         let revision = state
             .rendered_revision

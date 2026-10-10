@@ -33,7 +33,10 @@ fn mime_for(path: &Path) -> &'static str {
 }
 
 pub fn is_valid_id(id: &str) -> bool {
-    id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 /// The file for an attachment id, whatever its extension.
@@ -49,17 +52,25 @@ pub fn file_for(data_dir: &Path, id: &str) -> Option<PathBuf> {
 
 /// Stores bytes (deduplicated by hash) and returns the attachment id.
 pub async fn store(db: &DbState, bytes: Vec<u8>, mime: &str) -> DbResult<String> {
-    let id: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    let path = db.data_dir().join(DIR).join(format!("{id}.{}", extension(mime)));
+    let id: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let path = db
+        .data_dir()
+        .join(DIR)
+        .join(format!("{id}.{}", extension(mime)));
     let mime = mime.to_string();
     let size = bytes.len() as i64;
 
     if !path.exists() {
         let write_path = path.clone();
-        tauri::async_runtime::spawn_blocking(move || crate::atomic_file::write_atomic(&write_path, &bytes))
-            .await
-            .map_err(err)?
-            .map_err(err)?;
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::atomic_file::write_atomic(&write_path, &bytes)
+        })
+        .await
+        .map_err(err)?
+        .map_err(err)?;
     }
 
     let row_id = id.clone();
@@ -107,7 +118,8 @@ pub fn collect_garbage(conn: &Connection, data_dir: &Path) -> DbResult<usize> {
         rows
     };
     for id in &ids {
-        conn.execute("DELETE FROM attachments WHERE id = ?1", params![id]).map_err(err)?;
+        conn.execute("DELETE FROM attachments WHERE id = ?1", params![id])
+            .map_err(err)?;
         if let Some(path) = file_for(data_dir, id) {
             let _ = std::fs::remove_file(path);
         }

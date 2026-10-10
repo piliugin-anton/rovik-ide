@@ -110,7 +110,14 @@ mod tests {
     #[test]
     fn keeps_typings_and_package_json_but_skips_pnpm_store_and_test_dirs() {
         // Directories: pnpm's store dirs are pruned, everything else descends.
-        for dir in [".pnpm", ".ignored", ".store", "test", "node_modules", "solid-js"] {
+        for dir in [
+            ".pnpm",
+            ".ignored",
+            ".store",
+            "test",
+            "node_modules",
+            "solid-js",
+        ] {
             assert_eq!(
                 filter_entry(OsStr::new(dir), true),
                 ![".pnpm", ".ignored", ".store", "test"].contains(&dir),

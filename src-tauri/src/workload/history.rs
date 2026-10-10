@@ -57,8 +57,13 @@ struct History {
     saved_at: Option<std::time::Instant>,
 }
 
-static HISTORY: LazyLock<Mutex<History>> =
-    LazyLock::new(|| Mutex::new(History { file: None, store: None, saved_at: None }));
+static HISTORY: LazyLock<Mutex<History>> = LazyLock::new(|| {
+    Mutex::new(History {
+        file: None,
+        store: None,
+        saved_at: None,
+    })
+});
 
 /// History is written at most this often (and at exit).
 const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -81,7 +86,10 @@ impl History {
                 .and_then(|f| std::fs::read(f).ok())
                 .and_then(|bytes| serde_json::from_slice::<Store>(&bytes).ok())
                 .filter(|s| s.version == 1);
-            self.store = Some(loaded.unwrap_or(Store { version: 1, ..Default::default() }));
+            self.store = Some(loaded.unwrap_or(Store {
+                version: 1,
+                ..Default::default()
+            }));
         }
         self.store.as_mut().unwrap()
     }
@@ -105,7 +113,10 @@ pub fn flush() {
 }
 
 fn looks_like_a_path(word: &str) -> bool {
-    word.contains(['/', '\\']) || word.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+    word.contains(['/', '\\'])
+        || word.rsplit_once('.').is_some_and(|(stem, ext)| {
+            !stem.is_empty() && ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        })
 }
 
 /// A command without what changes between runs of "the same" command:
@@ -135,7 +146,9 @@ pub fn fingerprint(command: &str) -> String {
             }
             if after_flag && !looks_like_a_path(word) {
                 kept.push(word);
-            } else if positional < keep_positional && (segment[0] == "cd" || !looks_like_a_path(word)) {
+            } else if positional < keep_positional
+                && (segment[0] == "cd" || !looks_like_a_path(word))
+            {
                 kept.push(word);
                 positional += 1;
             }
@@ -162,13 +175,24 @@ pub fn record(project: &str, fingerprint: &str, sample: Sample) {
     }
     entry.last_used = tick;
     if entries.len() > PER_PROJECT {
-        if let Some(oldest) = entries.iter().min_by_key(|(_, e)| e.last_used).map(|(k, _)| k.clone()) {
+        if let Some(oldest) = entries
+            .iter()
+            .min_by_key(|(_, e)| e.last_used)
+            .map(|(k, _)| k.clone())
+        {
             entries.remove(&oldest);
         }
     }
     if store.projects.len() > PROJECTS {
-        let last_used = |entries: &HashMap<String, Entry>| entries.values().map(|e| e.last_used).max().unwrap_or(0);
-        if let Some(oldest) = store.projects.iter().min_by_key(|(_, e)| last_used(e)).map(|(k, _)| k.clone()) {
+        let last_used = |entries: &HashMap<String, Entry>| {
+            entries.values().map(|e| e.last_used).max().unwrap_or(0)
+        };
+        if let Some(oldest) = store
+            .projects
+            .iter()
+            .min_by_key(|(_, e)| last_used(e))
+            .map(|(k, _)| k.clone())
+        {
             store.projects.remove(&oldest);
         }
     }
@@ -192,15 +216,29 @@ pub struct Prediction {
 
 pub fn predict(project: &str, fingerprint: &str) -> Option<Prediction> {
     let mut h = HISTORY.lock().unwrap_or_else(|e| e.into_inner());
-    let samples = h.store().projects.get(project)?.get(fingerprint)?.samples.iter().copied().collect::<Vec<_>>();
+    let samples = h
+        .store()
+        .projects
+        .get(project)?
+        .get(fingerprint)?
+        .samples
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
     if samples.len() < MIN_SAMPLES {
         return None;
     }
     let cpu = p75(samples.iter().map(|s| s.cpu_ms as f64).collect());
-    let cores = p75(samples.iter().map(|s| s.cpu_ms as f64 / s.wall_ms.max(1) as f64).collect());
+    let cores = p75(samples
+        .iter()
+        .map(|s| s.cpu_ms as f64 / s.wall_ms.max(1) as f64)
+        .collect());
     let memory = p75(samples.iter().map(|s| s.peak_memory as f64).collect());
     let heavy = cpu > HEAVY_CPU_MS as f64 || cores > HEAVY_CORES || memory > HEAVY_MEMORY as f64;
-    Some(Prediction { class: if heavy { Class::Heavy } else { Class::Light }, peak_memory: memory as u64 })
+    Some(Prediction {
+        class: if heavy { Class::Heavy } else { Class::Light },
+        peak_memory: memory as u64,
+    })
 }
 
 #[cfg(test)]
@@ -209,12 +247,30 @@ mod tests {
 
     #[test]
     fn fingerprints_drop_what_changes_between_runs() {
-        assert_eq!(fingerprint("cargo test -p foo some_test"), "cargo test -p foo");
-        assert_eq!(fingerprint("cargo test -p foo other_test"), "cargo test -p foo");
-        assert_eq!(fingerprint("cargo build --release"), "cargo build --release");
-        assert_eq!(fingerprint("pytest tests/test_api.py -k login"), "pytest -k login");
-        assert_eq!(fingerprint("npm run build -- --mode=staging"), "npm run build -- --mode");
-        assert_eq!(fingerprint("cd web && npx tsc --noEmit"), "cd web && npx tsc --noEmit");
+        assert_eq!(
+            fingerprint("cargo test -p foo some_test"),
+            "cargo test -p foo"
+        );
+        assert_eq!(
+            fingerprint("cargo test -p foo other_test"),
+            "cargo test -p foo"
+        );
+        assert_eq!(
+            fingerprint("cargo build --release"),
+            "cargo build --release"
+        );
+        assert_eq!(
+            fingerprint("pytest tests/test_api.py -k login"),
+            "pytest -k login"
+        );
+        assert_eq!(
+            fingerprint("npm run build -- --mode=staging"),
+            "npm run build -- --mode"
+        );
+        assert_eq!(
+            fingerprint("cd web && npx tsc --noEmit"),
+            "cd web && npx tsc --noEmit"
+        );
         assert_eq!(fingerprint("RUST_LOG=debug cargo check"), "cargo check");
         assert_eq!(fingerprint("rustfmt src/main.rs"), "rustfmt");
     }
@@ -222,8 +278,16 @@ mod tests {
     #[test]
     fn history_overrides_after_three_runs() {
         let project = format!("/test/history-{}", std::process::id());
-        let light = Sample { cpu_ms: 300, peak_memory: 50 << 20, wall_ms: 1_000 };
-        let heavy = Sample { cpu_ms: 90_000, peak_memory: 2 << 30, wall_ms: 30_000 };
+        let light = Sample {
+            cpu_ms: 300,
+            peak_memory: 50 << 20,
+            wall_ms: 1_000,
+        };
+        let heavy = Sample {
+            cpu_ms: 90_000,
+            peak_memory: 2 << 30,
+            wall_ms: 30_000,
+        };
         record(&project, "cargo build", heavy);
         record(&project, "cargo build", heavy);
         assert!(predict(&project, "cargo build").is_none());
@@ -235,13 +299,20 @@ mod tests {
         for _ in 0..8 {
             record(&project, "cargo build", light);
         }
-        assert_eq!(predict(&project, "cargo build").unwrap().class, Class::Light);
+        assert_eq!(
+            predict(&project, "cargo build").unwrap().class,
+            Class::Light
+        );
     }
 
     #[test]
     fn many_cores_for_a_short_time_is_heavy() {
         let project = format!("/test/cores-{}", std::process::id());
-        let burst = Sample { cpu_ms: 8_000, peak_memory: 1 << 20, wall_ms: 2_000 };
+        let burst = Sample {
+            cpu_ms: 8_000,
+            peak_memory: 1 << 20,
+            wall_ms: 2_000,
+        };
         for _ in 0..3 {
             record(&project, "make -j", burst);
         }

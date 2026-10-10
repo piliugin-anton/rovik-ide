@@ -24,14 +24,20 @@ static SESSIONS: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Defaul
 pub fn is_opencode(url: &str) -> bool {
     reqwest::Url::parse(url.trim())
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.trim_end_matches('.').to_ascii_lowercase()))
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+        })
         .is_some_and(|h| h == "opencode.ai" || h.ends_with(".opencode.ai"))
 }
 
 /// `ses_` + the Unix time in seconds as 12 hex digits + 14 random base62
 /// characters.
 fn new_session() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let random: String = uuid::Uuid::new_v4()
         .as_bytes()
         .iter()
@@ -47,7 +53,10 @@ pub fn session(chat_id: Option<&str>) -> String {
         return new_session();
     };
     let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
-    sessions.entry(chat_id.to_string()).or_insert_with(new_session).clone()
+    sessions
+        .entry(chat_id.to_string())
+        .or_insert_with(new_session)
+        .clone()
 }
 
 /// The extra headers for a request to `url` from chat `chat_id`: empty
@@ -104,7 +113,11 @@ pub fn with_required_tools(
     }
     let mut tools = tools.unwrap_or_default();
     let offered_none = tools.is_empty();
-    let name = |t: &serde_json::Value| t.pointer("/function/name").and_then(|n| n.as_str()).map(str::to_string);
+    let name = |t: &serde_json::Value| {
+        t.pointer("/function/name")
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+    };
     for required in REQUIRED_TOOLS {
         if !tools.iter().any(|t| name(t).as_deref() == Some(required)) {
             tools.push(placeholder(required));
@@ -119,9 +132,14 @@ mod tests {
 
     #[test]
     fn opencode_requests_always_list_bash_and_read() {
-        let tool = |name: &str| serde_json::json!({ "type": "function", "function": { "name": name } });
+        let tool =
+            |name: &str| serde_json::json!({ "type": "function", "function": { "name": name } });
         let names = |tools: &Option<Vec<serde_json::Value>>| -> Vec<String> {
-            tools.iter().flatten().map(|t| t["function"]["name"].as_str().unwrap().to_string()).collect()
+            tools
+                .iter()
+                .flatten()
+                .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+                .collect()
         };
         let zen = "https://opencode.ai/zen/v1";
 
@@ -129,18 +147,27 @@ mod tests {
         let (tools, none) = with_required_tools("https://api.openai.com/v1", None, false);
         assert_eq!((tools, none), (None, false));
         let plan = Some(vec![tool("read"), tool("search_code")]);
-        assert_eq!(with_required_tools("https://api.openai.com/v1", plan.clone(), false).0, plan);
+        assert_eq!(
+            with_required_tools("https://api.openai.com/v1", plan.clone(), false).0,
+            plan
+        );
 
         // Agent mode with both: the same list, nothing added or doubled.
         let agent = Some(vec![tool("read"), tool("bash"), tool("todo")]);
-        assert_eq!(with_required_tools(zen, agent.clone(), false), (agent, false));
+        assert_eq!(
+            with_required_tools(zen, agent.clone(), false),
+            (agent, false)
+        );
 
         // Plan mode (no bash): bash is added as a placeholder; calls stay allowed.
         let (tools, none) = with_required_tools(zen, plan, false);
         assert_eq!(names(&tools), ["read", "search_code", "bash"]);
         assert!(!none);
         let bash = &tools.unwrap()[2];
-        assert!(bash["function"]["description"].as_str().unwrap().starts_with("Not available here"));
+        assert!(bash["function"]["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("Not available here"));
         assert_eq!(bash["function"]["parameters"]["required"][0], "command");
 
         // No tools (one-off requests, "no tools" models): both, and no calls.
@@ -169,7 +196,12 @@ mod tests {
         let s = new_session();
         assert_eq!(s.len(), 4 + 12 + 14, "{s}");
         assert!(s.starts_with("ses_"));
-        assert!(s[4..16].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{s}");
+        assert!(
+            s[4..16]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "{s}"
+        );
         assert!(s[16..].bytes().all(|b| BASE62.contains(&b)), "{s}");
     }
 
@@ -180,7 +212,10 @@ mod tests {
         assert_ne!(session(Some("opencode-test-chat-b")), a);
         assert_ne!(session(None), session(None));
 
-        let h = headers("https://opencode.ai/zen/v1/chat/completions", Some("opencode-test-chat-a"));
+        let h = headers(
+            "https://opencode.ai/zen/v1/chat/completions",
+            Some("opencode-test-chat-a"),
+        );
         assert_eq!(h.get(USER_AGENT).unwrap(), AGENT);
         assert_eq!(h.get("x-opencode-session").unwrap(), a.as_str());
         assert_eq!(h.get("x-opencode-session-id").unwrap(), a.as_str());

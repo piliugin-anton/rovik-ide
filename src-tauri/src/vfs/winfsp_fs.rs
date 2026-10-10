@@ -17,7 +17,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use winfsp::filesystem::{
-    DirBuffer, DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo, VolumeInfo, WideNameInfo,
+    DirBuffer, DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo,
+    VolumeInfo, WideNameInfo,
 };
 use winfsp::host::{FileSystemHost, VolumeParams};
 use winfsp::{FspError, U16CStr};
@@ -123,7 +124,7 @@ fn path(name: &U16CStr) -> String {
 /// user's own scratch space, and permissions on it aren't persisted anyway.
 fn default_security_descriptor() -> Result<Vec<u8>, String> {
     use windows::core::w;
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
@@ -164,7 +165,11 @@ impl WinFs {
                 return Err(status(STATUS_BUFFER_OVERFLOW));
             }
             unsafe {
-                std::ptr::copy_nonoverlapping(self.security.as_ptr(), buffer.as_mut_ptr().cast::<u8>(), self.security.len());
+                std::ptr::copy_nonoverlapping(
+                    self.security.as_ptr(),
+                    buffer.as_mut_ptr().cast::<u8>(),
+                    self.security.len(),
+                );
             }
         }
         Ok(self.security.len() as u64)
@@ -176,24 +181,40 @@ impl WinFs {
             if e == VfsError::NotFound {
                 // Distinguish a missing file from a missing folder on the way.
                 let parent_missing = self.vfs.resolve_parent(&p).is_err();
-                status(if parent_missing { STATUS_OBJECT_PATH_NOT_FOUND } else { STATUS_OBJECT_NAME_NOT_FOUND })
+                status(if parent_missing {
+                    STATUS_OBJECT_PATH_NOT_FOUND
+                } else {
+                    STATUS_OBJECT_NAME_NOT_FOUND
+                })
             } else {
                 nt(e)
             }
         })
     }
 
-    fn open_context(&self, ino: u64, write: bool, file_info: &mut OpenFileInfo) -> winfsp::Result<WinFile> {
+    fn open_context(
+        &self,
+        ino: u64,
+        write: bool,
+        file_info: &mut OpenFileInfo,
+    ) -> winfsp::Result<WinFile> {
         let attr = self.vfs.open(ino, write).map_err(nt)?;
         fill(&attr, file_info.as_mut());
         // On a case-insensitive volume, report the name as stored.
         if let Ok(stored) = self.vfs.path_of(ino) {
-            let wide: Vec<u16> = std::ffi::OsStr::new(&format!("\\{}", stored.replace('/', "\\"))).encode_wide().collect();
+            let wide: Vec<u16> = std::ffi::OsStr::new(&format!("\\{}", stored.replace('/', "\\")))
+                .encode_wide()
+                .collect();
             if wide.len() * 2 < file_info.normalized_name_size() as usize {
                 file_info.set_normalized_name(&wide, None);
             }
         }
-        Ok(WinFile { ino, is_dir: attr.kind == Kind::Dir, dir_buffer: DirBuffer::new(), delete_pending: AtomicBool::new(false) })
+        Ok(WinFile {
+            ino,
+            is_dir: attr.kind == Kind::Dir,
+            dir_buffer: DirBuffer::new(),
+            delete_pending: AtomicBool::new(false),
+        })
     }
 }
 
@@ -209,7 +230,11 @@ impl FileSystemContext for WinFs {
         let ino = self.resolve(file_name)?;
         let attr = self.vfs.getattr(ino).map_err(nt)?;
         let size = self.write_security(security_descriptor)?;
-        Ok(FileSecurity { reparse: false, sz_security_descriptor: size, attributes: attributes(&attr) })
+        Ok(FileSecurity {
+            reparse: false,
+            sz_security_descriptor: size,
+            attributes: attributes(&attr),
+        })
     }
 
     fn open(
@@ -244,14 +269,27 @@ impl FileSystemContext for WinFs {
             VfsError::NotFound => status(STATUS_OBJECT_PATH_NOT_FOUND),
             e => nt(e),
         })?;
-        let kind = if create_options & FILE_DIRECTORY_FILE != 0 { Kind::Dir } else { Kind::File };
+        let kind = if create_options & FILE_DIRECTORY_FILE != 0 {
+            Kind::Dir
+        } else {
+            Kind::File
+        };
         let perm = if kind == Kind::Dir { 0o755 } else { 0o644 };
-        let attr = self.vfs.create(parent, name, kind, perm, 0, 0, None).map_err(nt)?;
+        let attr = self
+            .vfs
+            .create(parent, name, kind, perm, 0, 0, None)
+            .map_err(nt)?;
         let mut extra = file_attributes & !FILE_ATTRIBUTE_DIRECTORY & !FILE_ATTRIBUTE_NORMAL;
         if kind == Kind::File {
             extra |= FILE_ATTRIBUTE_ARCHIVE;
         }
-        let _ = self.vfs.setattr(attr.ino, &SetAttr { attributes: Some(extra), ..Default::default() });
+        let _ = self.vfs.setattr(
+            attr.ino,
+            &SetAttr {
+                attributes: Some(extra),
+                ..Default::default()
+            },
+        );
         self.open_context(attr.ino, true, file_info)
     }
 
@@ -260,7 +298,11 @@ impl FileSystemContext for WinFs {
             if let Some(name) = file_name {
                 let p = path(name);
                 if let Ok((parent, leaf)) = self.vfs.resolve_parent(&p) {
-                    let _ = if context.is_dir { self.vfs.rmdir(parent, leaf) } else { self.vfs.unlink(parent, leaf) };
+                    let _ = if context.is_dir {
+                        self.vfs.rmdir(parent, leaf)
+                    } else {
+                        self.vfs.unlink(parent, leaf)
+                    };
                 }
             }
             return;
@@ -281,19 +323,31 @@ impl FileSystemContext for WinFs {
         let _ = self.vfs.setattr(context.ino, &set);
     }
 
-    fn flush(&self, context: Option<&Self::FileContext>, file_info: &mut FileInfo) -> winfsp::Result<()> {
+    fn flush(
+        &self,
+        context: Option<&Self::FileContext>,
+        file_info: &mut FileInfo,
+    ) -> winfsp::Result<()> {
         if let Some(context) = context {
             fill(&self.vfs.getattr(context.ino).map_err(nt)?, file_info);
         }
         Ok(())
     }
 
-    fn get_file_info(&self, context: &Self::FileContext, file_info: &mut FileInfo) -> winfsp::Result<()> {
+    fn get_file_info(
+        &self,
+        context: &Self::FileContext,
+        file_info: &mut FileInfo,
+    ) -> winfsp::Result<()> {
         fill(&self.vfs.getattr(context.ino).map_err(nt)?, file_info);
         Ok(())
     }
 
-    fn get_security(&self, _context: &Self::FileContext, security_descriptor: Option<&mut [c_void]>) -> winfsp::Result<u64> {
+    fn get_security(
+        &self,
+        _context: &Self::FileContext,
+        security_descriptor: Option<&mut [c_void]>,
+    ) -> winfsp::Result<u64> {
         self.write_security(security_descriptor)
     }
 
@@ -318,10 +372,21 @@ impl FileSystemContext for WinFs {
     ) -> winfsp::Result<()> {
         let current = self.vfs.getattr(context.ino).map_err(nt)?;
         let requested = file_attributes & !FILE_ATTRIBUTE_NORMAL;
-        let attributes = if replace_file_attributes { requested } else { current.attributes | requested } | FILE_ATTRIBUTE_ARCHIVE;
+        let attributes = if replace_file_attributes {
+            requested
+        } else {
+            current.attributes | requested
+        } | FILE_ATTRIBUTE_ARCHIVE;
         let attr = self
             .vfs
-            .setattr(context.ino, &SetAttr { size: Some(0), attributes: Some(attributes), ..Default::default() })
+            .setattr(
+                context.ino,
+                &SetAttr {
+                    size: Some(0),
+                    attributes: Some(attributes),
+                    ..Default::default()
+                },
+            )
             .map_err(nt)?;
         fill(&attr, file_info);
         Ok(())
@@ -371,13 +436,22 @@ impl FileSystemContext for WinFs {
         })?;
         // Windows never replaces a directory by rename.
         if let Ok(target) = self.vfs.lookup(new_parent, new_name) {
-            let same = self.vfs.lookup(parent, name).is_ok_and(|src| src.ino == target.ino);
+            let same = self
+                .vfs
+                .lookup(parent, name)
+                .is_ok_and(|src| src.ino == target.ino);
             if !same && target.kind == Kind::Dir {
                 return Err(status(STATUS_ACCESS_DENIED));
             }
         }
-        let mode = if replace_if_exists { RenameMode::Replace } else { RenameMode::NoReplace };
-        self.vfs.rename(parent, name, new_parent, new_name, mode).map_err(nt)
+        let mode = if replace_if_exists {
+            RenameMode::Replace
+        } else {
+            RenameMode::NoReplace
+        };
+        self.vfs
+            .rename(parent, name, new_parent, new_name, mode)
+            .map_err(nt)
     }
 
     fn set_basic_info(
@@ -392,7 +466,8 @@ impl FileSystemContext for WinFs {
     ) -> winfsp::Result<()> {
         let mut set = SetAttr::default();
         if file_attributes != INVALID_FILE_ATTRIBUTES {
-            set.attributes = Some(file_attributes & !FILE_ATTRIBUTE_DIRECTORY & !FILE_ATTRIBUTE_NORMAL);
+            set.attributes =
+                Some(file_attributes & !FILE_ATTRIBUTE_DIRECTORY & !FILE_ATTRIBUTE_NORMAL);
         }
         if creation_time != 0 {
             set.crtime = Some(from_filetime(creation_time));
@@ -407,7 +482,12 @@ impl FileSystemContext for WinFs {
         Ok(())
     }
 
-    fn set_delete(&self, context: &Self::FileContext, _file_name: &U16CStr, delete_file: bool) -> winfsp::Result<()> {
+    fn set_delete(
+        &self,
+        context: &Self::FileContext,
+        _file_name: &U16CStr,
+        delete_file: bool,
+    ) -> winfsp::Result<()> {
         if delete_file && context.is_dir && !self.vfs.dir_is_empty(context.ino).map_err(nt)? {
             return Err(status(STATUS_DIRECTORY_NOT_EMPTY));
         }
@@ -425,9 +505,21 @@ impl FileSystemContext for WinFs {
         let current = self.vfs.getattr(context.ino).map_err(nt)?;
         // Allocation size isn't tracked; shrinking it below the file size
         // truncates, as on NTFS.
-        let size = if set_allocation_size { current.size.min(new_size) } else { new_size };
+        let size = if set_allocation_size {
+            current.size.min(new_size)
+        } else {
+            new_size
+        };
         let attr = if size != current.size {
-            self.vfs.setattr(context.ino, &SetAttr { size: Some(size), ..Default::default() }).map_err(nt)?
+            self.vfs
+                .setattr(
+                    context.ino,
+                    &SetAttr {
+                        size: Some(size),
+                        ..Default::default()
+                    },
+                )
+                .map_err(nt)?
         } else {
             current
         };
@@ -435,8 +527,16 @@ impl FileSystemContext for WinFs {
         Ok(())
     }
 
-    fn read(&self, context: &Self::FileContext, buffer: &mut [u8], offset: u64) -> winfsp::Result<u32> {
-        let data = self.vfs.read(context.ino, offset, buffer.len()).map_err(nt)?;
+    fn read(
+        &self,
+        context: &Self::FileContext,
+        buffer: &mut [u8],
+        offset: u64,
+    ) -> winfsp::Result<u32> {
+        let data = self
+            .vfs
+            .read(context.ino, offset, buffer.len())
+            .map_err(nt)?;
         if data.is_empty() && !buffer.is_empty() {
             return Err(status(STATUS_END_OF_FILE));
         }
@@ -477,7 +577,11 @@ impl FileSystemContext for WinFs {
         Ok(())
     }
 
-    fn set_volume_label(&self, _volume_label: &U16CStr, volume_info: &mut VolumeInfo) -> winfsp::Result<()> {
+    fn set_volume_label(
+        &self,
+        _volume_label: &U16CStr,
+        volume_info: &mut VolumeInfo,
+    ) -> winfsp::Result<()> {
         self.get_volume_info(volume_info)
     }
 }
@@ -532,9 +636,14 @@ pub fn mount(vfs: Arc<dyn Backend>, mountpoint: &Path) -> Result<WinFspMount, St
         .flush_and_purge_on_cleanup(true)
         .filesystem_name("rovik-vfs");
 
-    let fs = WinFs { vfs, security: default_security_descriptor()? };
-    let mut host: FileSystemHost<WinFs> = FileSystemHost::new(params, fs).map_err(|e| format!("starting WinFsp: {e:?}"))?;
-    host.mount(mountpoint.as_os_str()).map_err(|e| format!("mounting {}: {e:?}", mountpoint.display()))?;
+    let fs = WinFs {
+        vfs,
+        security: default_security_descriptor()?,
+    };
+    let mut host: FileSystemHost<WinFs> =
+        FileSystemHost::new(params, fs).map_err(|e| format!("starting WinFsp: {e:?}"))?;
+    host.mount(mountpoint.as_os_str())
+        .map_err(|e| format!("mounting {}: {e:?}", mountpoint.display()))?;
     if let Err(e) = host.start() {
         host.unmount();
         return Err(format!("starting WinFsp: {e:?}"));

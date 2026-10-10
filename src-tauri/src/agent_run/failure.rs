@@ -59,7 +59,11 @@ pub fn retry_reason(error: &ChatError) -> String {
 
 /// The sentence stored with a failed request.
 pub fn describe(error: &ChatError) -> String {
-    let after = if error.attempts > 1 { format!(" (after {} attempts)", error.attempts) } else { String::new() };
+    let after = if error.attempts > 1 {
+        format!(" (after {} attempts)", error.attempts)
+    } else {
+        String::new()
+    };
     match error.kind {
         ErrorKind::RateLimited => match error.retry_after_ms {
             Some(ms) if ms > 0 => format!("Rate limit reached. Try again in {}.", format_duration(ms as i64)),

@@ -26,7 +26,11 @@ pub use queue::{begin, set_focus, JobKind, Waited};
 pub fn init(data_dir: &std::path::Path) {
     history::init(data_dir);
     let file = data_dir.join("workload-settings.json");
-    if let Some(slots) = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()).and_then(|s| s.slots) {
+    if let Some(slots) = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Saved>(&b).ok())
+        .and_then(|s| s.slots)
+    {
         queue::set_manual_slots(Some(slots.clamp(1, MAX_SLOTS)));
     }
     *SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
@@ -85,7 +89,10 @@ pub fn workload_focus(dialog_id: Option<String>) {
 pub fn workload_set_slots(slots: Option<usize>) -> Result<(), String> {
     let slots = slots.map(|n| n.clamp(1, MAX_SLOTS));
     // Saved first: a setting that can't be kept isn't applied either.
-    let file = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let file = SETTINGS_FILE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     if let Some(file) = file {
         let bytes = serde_json::to_vec(&Saved { slots }).map_err(|e| e.to_string())?;
         crate::atomic_file::write_atomic(&file, &bytes).map_err(|e| e.to_string())?;
@@ -113,7 +120,13 @@ pub struct WorkloadStatus {
 #[tauri::command]
 pub fn workload_status() -> WorkloadStatus {
     let s = queue::slots();
-    let cores = if s.cores > 0 { s.cores } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) };
+    let cores = if s.cores > 0 {
+        s.cores
+    } else {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    };
     let memory = if s.total_memory > 0 {
         s.total_memory
     } else {

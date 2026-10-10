@@ -93,9 +93,10 @@ fn term_matches(conn: &Connection, term: &Term) -> DbResult<HashMap<String, (f64
         )
         .map_err(err)?;
     let rows = stmt
-        .query_map(params![fts_string(term), TITLE_WEIGHT, PER_TERM_ROW_CAP], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
-        })
+        .query_map(
+            params![fts_string(term), TITLE_WEIGHT, PER_TERM_ROW_CAP],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
+        )
         .map_err(err)?;
     let mut by_dialog: HashMap<String, (f64, usize)> = HashMap::new();
     for row in rows {
@@ -142,8 +143,16 @@ fn snippet_to_highlighted(raw: &str) -> Highlighted {
     Highlighted { text, ranges }
 }
 
-fn best_snippet(conn: &Connection, dialog_id: &str, terms: &[Term]) -> DbResult<Option<(String, Highlighted)>> {
-    let any = terms.iter().map(fts_string).collect::<Vec<_>>().join(" OR ");
+fn best_snippet(
+    conn: &Connection,
+    dialog_id: &str,
+    terms: &[Term],
+) -> DbResult<Option<(String, Highlighted)>> {
+    let any = terms
+        .iter()
+        .map(fts_string)
+        .collect::<Vec<_>>()
+        .join(" OR ");
     let mut stmt = conn
         .prepare_cached(
             "SELECT message_id, snippet(search_index, 1, char(2), char(3), '…', 16)
@@ -152,7 +161,9 @@ fn best_snippet(conn: &Connection, dialog_id: &str, terms: &[Term]) -> DbResult<
              ORDER BY bm25(search_index, ?3, 1.0) LIMIT 1",
         )
         .map_err(err)?;
-    let mut rows = stmt.query(params![any, dialog_id, TITLE_WEIGHT]).map_err(err)?;
+    let mut rows = stmt
+        .query(params![any, dialog_id, TITLE_WEIGHT])
+        .map_err(err)?;
     match rows.next().map_err(err)? {
         Some(row) => {
             let message_id: String = row.get(0).map_err(err)?;
@@ -164,7 +175,12 @@ fn best_snippet(conn: &Connection, dialog_id: &str, terms: &[Term]) -> DbResult<
 }
 
 /// Searches the chats of one project (`project` None: the chats with no project).
-pub fn search(conn: &Connection, query: &str, project: Option<&str>, limit: usize) -> DbResult<Vec<SearchHit>> {
+pub fn search(
+    conn: &Connection,
+    query: &str,
+    project: Option<&str>,
+    limit: usize,
+) -> DbResult<Vec<SearchHit>> {
     let terms = parse_query(query);
     if terms.is_empty() {
         return Ok(Vec::new());
@@ -205,9 +221,13 @@ pub fn search(conn: &Connection, query: &str, project: Option<&str>, limit: usiz
     let together: HashSet<String> = if terms.len() > 1 {
         let all = terms.iter().map(fts_string).collect::<Vec<_>>().join(" ");
         let mut stmt = conn
-            .prepare_cached("SELECT DISTINCT dialog_id FROM search_index WHERE search_index MATCH ?1")
+            .prepare_cached(
+                "SELECT DISTINCT dialog_id FROM search_index WHERE search_index MATCH ?1",
+            )
             .map_err(err)?;
-        let rows = stmt.query_map(params![all], |r| r.get::<_, String>(0)).map_err(err)?;
+        let rows = stmt
+            .query_map(params![all], |r| r.get::<_, String>(0))
+            .map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)?
     } else {
         HashSet::new()
@@ -217,12 +237,19 @@ pub fn search(conn: &Connection, query: &str, project: Option<&str>, limit: usiz
     let mut ranked: Vec<(DialogSummary, f64)> = Vec::with_capacity(candidates.len());
     for (dialog_id, text_score) in candidates {
         if let Some(dialog) = get_dialog(conn, &dialog_id)? {
-            let bonus = if together.contains(&dialog_id) { PHRASE_BONUS } else { 0.0 };
+            let bonus = if together.contains(&dialog_id) {
+                PHRASE_BONUS
+            } else {
+                0.0
+            };
             let score = text_score + bonus + recency_bonus(dialog.updated_at);
             ranked.push((dialog, score));
         }
     }
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.updated_at.cmp(&a.0.updated_at)));
+    ranked.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
+            .then(b.0.updated_at.cmp(&a.0.updated_at))
+    });
     ranked.truncate(limit);
 
     // 4. Snippets, unless the title alone already shows every term.
@@ -238,7 +265,12 @@ pub fn search(conn: &Connection, query: &str, project: Option<&str>, limit: usiz
                 None => (None, None),
             }
         };
-        hits.push(SearchHit { dialog, score, message_id, snippet });
+        hits.push(SearchHit {
+            dialog,
+            score,
+            message_id,
+            snippet,
+        });
     }
     Ok(hits)
 }
@@ -301,7 +333,8 @@ fn title_matches_fuzzy(title: &str, term: &str) -> bool {
         .any(|word| {
             let prefix: String = word.chars().take(term_len).collect();
             edit_distance(term, word, budget) <= budget
-                || (word.chars().count() > term_len && edit_distance(term, &prefix, budget) <= budget)
+                || (word.chars().count() > term_len
+                    && edit_distance(term, &prefix, budget) <= budget)
         })
 }
 
@@ -330,12 +363,18 @@ fn fuzzy_title_search(
     // must match some word within its typo budget.
     let mut titles: HashMap<String, String> = HashMap::new();
     let mut stmt = conn
-        .prepare_cached("SELECT dialog_id, title FROM title_trigrams WHERE title_trigrams MATCH ?1 LIMIT ?2")
+        .prepare_cached(
+            "SELECT dialog_id, title FROM title_trigrams WHERE title_trigrams MATCH ?1 LIMIT ?2",
+        )
         .map_err(err)?;
     for term in terms {
-        let Some(q) = trigram_query(&term.text) else { continue };
+        let Some(q) = trigram_query(&term.text) else {
+            continue;
+        };
         let rows = stmt
-            .query_map(params![q, FUZZY_CANDIDATES], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .query_map(params![q, FUZZY_CANDIDATES], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
             .map_err(err)?;
         for row in rows {
             let (id, title) = row.map_err(err)?;
@@ -350,7 +389,12 @@ fn fuzzy_title_search(
         if terms.iter().all(|t| title_matches_fuzzy(&title, &t.text)) {
             if let Some(dialog) = get_dialog(conn, &dialog_id)? {
                 let score = FUZZY_SCORE * terms.len() as f64 + recency_bonus(dialog.updated_at);
-                hits.push(SearchHit { dialog, score, message_id: None, snippet: None });
+                hits.push(SearchHit {
+                    dialog,
+                    score,
+                    message_id: None,
+                    snippet: None,
+                });
             }
         }
     }

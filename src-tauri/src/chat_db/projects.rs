@@ -108,10 +108,14 @@ fn write_id(root: &Path, id: &str) -> bool {
     }
     let ignore = dir.join(".gitignore");
     if !ignore.exists() {
-        let _ = fs::write(&ignore, "# Rovik IDE: the project's local ID (chats are kept on this machine).\nproject.json\n");
+        let _ = fs::write(
+            &ignore,
+            "# Rovik IDE: the project's local ID (chats are kept on this machine).\nproject.json\n",
+        );
     }
     let body = serde_json::to_string_pretty(&IdFile { id: id.to_string() }).unwrap_or_default();
-    crate::atomic_file::write_atomic(&dir.join("project.json"), format!("{body}\n").as_bytes()).is_ok()
+    crate::atomic_file::write_atomic(&dir.join("project.json"), format!("{body}\n").as_bytes())
+        .is_ok()
 }
 
 fn folder_name(root: &Path) -> String {
@@ -160,7 +164,10 @@ pub fn normalize_remote(url: &str) -> String {
             s.replace_range(colon..=colon, "/");
         }
     }
-    s.trim_end_matches('/').trim_end_matches(".git").trim_end_matches('/').to_string()
+    s.trim_end_matches('/')
+        .trim_end_matches(".git")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// The folder's git fingerprint, if it's in a repository with history.
@@ -169,7 +176,11 @@ pub fn fingerprint(root: &Path) -> Option<Fingerprint> {
     let repo = git2::Repository::discover(root).ok()?;
     let workdir = fs::canonicalize(repo.workdir()?).ok()?;
     let here = fs::canonicalize(root).ok()?;
-    let subpath = here.strip_prefix(&workdir).ok()?.to_string_lossy().replace('\\', "/");
+    let subpath = here
+        .strip_prefix(&workdir)
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
     let head = repo.head().ok()?.peel_to_commit().ok()?;
     let mut walk = repo.revwalk().ok()?;
     walk.push(head.id()).ok()?;
@@ -182,7 +193,11 @@ pub fn fingerprint(root: &Path) -> Option<Fingerprint> {
         .find_remote("origin")
         .ok()
         .and_then(|r| r.url().ok().map(normalize_remote));
-    Some(Fingerprint { root_commit: root_commit.to_string(), subpath, remote })
+    Some(Fingerprint {
+        root_commit: root_commit.to_string(),
+        subpath,
+        remote,
+    })
 }
 
 /* ---------------------------------------------------------------------------
@@ -190,7 +205,14 @@ pub fn fingerprint(root: &Path) -> Option<Fingerprint> {
  * ------------------------------------------------------------------------- */
 
 /// `key`: the path for lookups (path_key); `display`: as it was opened.
-fn record_path(tx: &Transaction, id: &str, key: &str, display: &str, name: &str, now: i64) -> DbResult<()> {
+fn record_path(
+    tx: &Transaction,
+    id: &str,
+    key: &str,
+    display: &str,
+    name: &str,
+    now: i64,
+) -> DbResult<()> {
     tx.execute(
         "UPDATE projects SET name = ?2, path = ?3, last_opened_at = ?4 WHERE id = ?1",
         params![id, name, display, now],
@@ -205,7 +227,14 @@ fn record_path(tx: &Transaction, id: &str, key: &str, display: &str, name: &str,
     Ok(())
 }
 
-fn insert_project(tx: &Transaction, id: &str, name: &str, key: &str, display: &str, now: i64) -> DbResult<()> {
+fn insert_project(
+    tx: &Transaction,
+    id: &str,
+    name: &str,
+    key: &str,
+    display: &str,
+    now: i64,
+) -> DbResult<()> {
     tx.execute(
         "INSERT INTO projects (id, name, path, created_at, last_opened_at) VALUES (?1, ?2, ?3, ?4, ?4)",
         params![id, name, display, now],
@@ -216,9 +245,13 @@ fn insert_project(tx: &Transaction, id: &str, name: &str, key: &str, display: &s
 
 fn known_paths(conn: &Connection, id: &str) -> DbResult<Vec<String>> {
     let mut stmt = conn
-        .prepare_cached("SELECT path FROM project_paths WHERE project_id = ?1 ORDER BY last_opened_at DESC")
+        .prepare_cached(
+            "SELECT path FROM project_paths WHERE project_id = ?1 ORDER BY last_opened_at DESC",
+        )
         .map_err(err)?;
-    let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0)).map_err(err)?;
+    let rows = stmt
+        .query_map(params![id], |r| r.get::<_, String>(0))
+        .map_err(err)?;
     rows.collect::<Result<_, _>>().map_err(err)
 }
 
@@ -246,7 +279,9 @@ fn decide(conn: &Connection, key: &str, id: &str, decision: &str) -> DbResult<()
 /// that project's folders. A chat with no project (no folder was open when
 /// it began) isn't tied to one.
 pub fn chat_may_use(conn: &Connection, project_id: Option<&str>, root: &Path) -> DbResult<bool> {
-    let Some(project_id) = project_id else { return Ok(true) };
+    let Some(project_id) = project_id else {
+        return Ok(true);
+    };
     let key = path_key(root);
     conn.query_row(
         "SELECT 1 FROM project_paths WHERE project_id = ?1 AND path = ?2",
@@ -269,9 +304,18 @@ pub fn summary(conn: &Connection, id: &str) -> DbResult<Option<ProjectSummary>> 
         )
         .optional()
         .map_err(err)?;
-    let Some((name, path, last_opened_at, chat_count)) = row else { return Ok(None) };
+    let Some((name, path, last_opened_at, chat_count)) = row else {
+        return Ok(None);
+    };
     let missing = !known_paths(conn, id)?.iter().any(|p| alive_at(p, id));
-    Ok(Some(ProjectSummary { id: id.to_string(), name, path, chat_count, last_opened_at, missing }))
+    Ok(Some(ProjectSummary {
+        id: id.to_string(),
+        name,
+        path,
+        chat_count,
+        last_opened_at,
+        missing,
+    }))
 }
 
 /// The first part of opening a folder, in the database: which project it is.
@@ -304,7 +348,9 @@ pub fn resolve(conn: &mut Connection, root: &Path) -> DbResult<Resolved> {
     let id = match from_file.clone() {
         Some(id) => {
             let exists: bool = tx
-                .query_row("SELECT 1 FROM projects WHERE id = ?1", params![id], |_| Ok(()))
+                .query_row("SELECT 1 FROM projects WHERE id = ?1", params![id], |_| {
+                    Ok(())
+                })
                 .optional()
                 .map_err(err)?
                 .is_some();
@@ -350,13 +396,29 @@ pub fn resolve(conn: &mut Connection, root: &Path) -> DbResult<Resolved> {
         }
     };
     let needs_fingerprint: bool = tx
-        .query_row("SELECT git_root_commit IS NULL FROM projects WHERE id = ?1", params![id], |r| r.get(0))
+        .query_row(
+            "SELECT git_root_commit IS NULL FROM projects WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
         .map_err(err)?;
     tx.commit().map_err(err)?;
 
-    let id_file = if from_file.as_deref() == Some(id.as_str()) { true } else { write_id(root, &id) };
+    let id_file = if from_file.as_deref() == Some(id.as_str()) {
+        true
+    } else {
+        write_id(root, &id)
+    };
     Ok(Resolved {
-        opened: Opened { project: ProjectInfo { id, name, path: display, id_file }, suggestion },
+        opened: Opened {
+            project: ProjectInfo {
+                id,
+                name,
+                path: display,
+                id_file,
+            },
+            suggestion,
+        },
         new_unknown,
         needs_fingerprint,
     })
@@ -364,8 +426,15 @@ pub fn resolve(conn: &mut Connection, root: &Path) -> DbResult<Resolved> {
 
 /// The second part: stores the fingerprint, and for a new project from an
 /// unknown folder, looks for missing projects with the same one.
-pub fn finish_open(conn: &mut Connection, mut resolved: Resolved, fp: Option<Fingerprint>, root: &Path) -> DbResult<Opened> {
-    let Some(fp) = fp else { return Ok(resolved.opened) };
+pub fn finish_open(
+    conn: &mut Connection,
+    mut resolved: Resolved,
+    fp: Option<Fingerprint>,
+    root: &Path,
+) -> DbResult<Opened> {
+    let Some(fp) = fp else {
+        return Ok(resolved.opened);
+    };
     let id = resolved.opened.project.id.clone();
     conn.execute(
         "UPDATE projects SET git_root_commit = ?2, git_subpath = ?3, git_remote = ?4 WHERE id = ?1",
@@ -383,7 +452,9 @@ pub fn finish_open(conn: &mut Connection, mut resolved: Resolved, fp: Option<Fin
         )
         .map_err(err)?;
     let found: Vec<(String, Option<String>)> = stmt
-        .query_map(params![id, fp.root_commit, fp.subpath], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map(params![id, fp.root_commit, fp.subpath], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .map_err(err)?
         .collect::<Result<_, _>>()
         .map_err(err)?;
@@ -408,8 +479,9 @@ pub fn finish_open(conn: &mut Connection, mut resolved: Resolved, fp: Option<Fin
             .then(b.last_opened_at.cmp(&a.last_opened_at))
     });
     if !candidates.is_empty() {
-        resolved.opened.suggestion =
-            Some(Suggestion::Moved { candidates: candidates.into_iter().map(|(_, s)| s).collect() });
+        resolved.opened.suggestion = Some(Suggestion::Moved {
+            candidates: candidates.into_iter().map(|(_, s)| s).collect(),
+        });
     }
     Ok(resolved.opened)
 }
@@ -418,7 +490,11 @@ pub fn finish_open(conn: &mut Connection, mut resolved: Resolved, fp: Option<Fin
 #[cfg(test)]
 pub fn open_project(conn: &mut Connection, root: &Path) -> DbResult<Opened> {
     let resolved = resolve(conn, root)?;
-    let fp = if resolved.needs_fingerprint { fingerprint(root) } else { None };
+    let fp = if resolved.needs_fingerprint {
+        fingerprint(root)
+    } else {
+        None
+    };
     finish_open(conn, resolved, fp, root)
 }
 
@@ -431,39 +507,65 @@ pub fn merge(tx: &Transaction, from: &str, into: &str) -> DbResult<()> {
     if from == into {
         return Ok(());
     }
-    tx.execute("UPDATE dialogs SET project_id = ?2 WHERE project_id = ?1", params![from, into])
-        .map_err(err)?;
+    tx.execute(
+        "UPDATE dialogs SET project_id = ?2 WHERE project_id = ?1",
+        params![from, into],
+    )
+    .map_err(err)?;
     tx.execute(
         "INSERT OR IGNORE INTO project_paths (project_id, path, last_opened_at)
          SELECT ?2, path, last_opened_at FROM project_paths WHERE project_id = ?1",
         params![from, into],
     )
     .map_err(err)?;
-    tx.execute("DELETE FROM projects WHERE id = ?1", params![from]).map_err(err)?;
+    tx.execute("DELETE FROM projects WHERE id = ?1", params![from])
+        .map_err(err)?;
     Ok(())
 }
 
 fn info(conn: &Connection, id: &str, root: &Path) -> DbResult<ProjectInfo> {
     let name: String = conn
-        .query_row("SELECT name FROM projects WHERE id = ?1", params![id], |r| r.get(0))
+        .query_row(
+            "SELECT name FROM projects WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
         .map_err(err)?;
-    Ok(ProjectInfo { id: id.to_string(), name, path: root.to_string_lossy().into_owned(), id_file: read_id(root).as_deref() == Some(id) })
+    Ok(ProjectInfo {
+        id: id.to_string(),
+        name,
+        path: root.to_string_lossy().into_owned(),
+        id_file: read_id(root).as_deref() == Some(id),
+    })
 }
 
 /// "Looks like a copy": share the original's chats, or start a separate
 /// history (a new ID in this folder).
-pub fn answer_copy(conn: &mut Connection, root: &Path, original: &str, share: bool) -> DbResult<ProjectInfo> {
+pub fn answer_copy(
+    conn: &mut Connection,
+    root: &Path,
+    original: &str,
+    share: bool,
+) -> DbResult<ProjectInfo> {
     let key = path_key(root);
     let tx = conn.transaction().map_err(err)?;
-    decide(&tx, &key, original, if share { "share" } else { "separate" })?;
+    decide(
+        &tx,
+        &key,
+        original,
+        if share { "share" } else { "separate" },
+    )?;
     if share {
         tx.commit().map_err(err)?;
         return info(conn, original, root);
     }
     let id = uuid::Uuid::new_v4().to_string();
     let name = folder_name(root);
-    tx.execute("DELETE FROM project_paths WHERE project_id = ?1 AND path = ?2", params![original, key])
-        .map_err(err)?;
+    tx.execute(
+        "DELETE FROM project_paths WHERE project_id = ?1 AND path = ?2",
+        params![original, key],
+    )
+    .map_err(err)?;
     insert_project(&tx, &id, &name, &key, &root.to_string_lossy(), now_ms())?;
     // Same repository: same fingerprint.
     tx.execute(
@@ -479,11 +581,23 @@ pub fn answer_copy(conn: &mut Connection, root: &Path, original: &str, share: bo
 
 /// "Looks like a moved project": use `target`'s chats here. The project made
 /// for the folder meanwhile (`current`) is merged into it.
-pub fn answer_moved(conn: &mut Connection, root: &Path, current: &str, target: &str) -> DbResult<ProjectInfo> {
+pub fn answer_moved(
+    conn: &mut Connection,
+    root: &Path,
+    current: &str,
+    target: &str,
+) -> DbResult<ProjectInfo> {
     let key = path_key(root);
     let tx = conn.transaction().map_err(err)?;
     merge(&tx, current, target)?;
-    record_path(&tx, target, &key, &root.to_string_lossy(), &folder_name(root), now_ms())?;
+    record_path(
+        &tx,
+        target,
+        &key,
+        &root.to_string_lossy(),
+        &folder_name(root),
+        now_ms(),
+    )?;
     tx.commit().map_err(err)?;
     write_id(root, target);
     info(conn, target, root)
@@ -537,7 +651,11 @@ pub fn relink(conn: &mut Connection, id: &str, root: &Path, merge_ok: bool) -> D
     let target = match other {
         Some(other) => {
             let other_known: bool = tx
-                .query_row("SELECT 1 FROM projects WHERE id = ?1", params![other], |_| Ok(()))
+                .query_row(
+                    "SELECT 1 FROM projects WHERE id = ?1",
+                    params![other],
+                    |_| Ok(()),
+                )
                 .optional()
                 .map_err(err)?
                 .is_some();
@@ -556,12 +674,21 @@ pub fn relink(conn: &mut Connection, id: &str, root: &Path, merge_ok: bool) -> D
         }
         None => id.to_string(),
     };
-    record_path(&tx, &target, &key, &root.to_string_lossy(), &folder_name(root), now_ms())?;
+    record_path(
+        &tx,
+        &target,
+        &key,
+        &root.to_string_lossy(),
+        &folder_name(root),
+        now_ms(),
+    )?;
     tx.commit().map_err(err)?;
     if read_id(root).as_deref() != Some(target.as_str()) {
         write_id(root, &target);
     }
-    Ok(Relinked::Done { project: info(conn, &target, root)? })
+    Ok(Relinked::Done {
+        project: info(conn, &target, root)?,
+    })
 }
 
 /// A project and all its chats.
@@ -570,13 +697,16 @@ pub fn delete(conn: &mut Connection, id: &str) -> DbResult<()> {
         let mut stmt = conn
             .prepare_cached("SELECT id FROM dialogs WHERE project_id = ?1")
             .map_err(err)?;
-        let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0)).map_err(err)?;
+        let rows = stmt
+            .query_map(params![id], |r| r.get::<_, String>(0))
+            .map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)?
     };
     for chat in chats {
         super::store::delete_dialog(conn, &chat)?;
     }
-    conn.execute("DELETE FROM projects WHERE id = ?1", params![id]).map_err(err)?;
+    conn.execute("DELETE FROM projects WHERE id = ?1", params![id])
+        .map_err(err)?;
     Ok(())
 }
 

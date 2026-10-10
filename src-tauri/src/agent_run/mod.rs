@@ -23,11 +23,11 @@ pub mod diff;
 mod e2e_tests;
 pub mod events;
 mod execute;
-mod landing;
-mod parallel;
 pub mod failure;
 pub mod guard;
+mod landing;
 pub mod log;
+mod parallel;
 pub mod permissions;
 pub mod plan;
 pub mod project;
@@ -88,12 +88,20 @@ pub struct AgentConfig {
 
 /// The user's decision on a tool call waiting for approval.
 #[derive(Deserialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ApprovalDecision {
     Allow,
     Deny,
     /// Some of an edit's changes accepted: the file with only those.
-    Partial { content: String, total: usize, rejected: Vec<diff::Hunk> },
+    Partial {
+        content: String,
+        total: usize,
+        rejected: Vec<diff::Hunk>,
+    },
 }
 
 /// Stop: set once, seen by the run between steps and by its current request.
@@ -104,7 +112,10 @@ pub struct StopSignal {
 
 impl StopSignal {
     pub(crate) fn new() -> Self {
-        StopSignal { flag: AtomicBool::new(false), tx: watch::channel(false).0 }
+        StopSignal {
+            flag: AtomicBool::new(false),
+            tx: watch::channel(false).0,
+        }
     }
 
     pub fn is_set(&self) -> bool {
@@ -183,31 +194,60 @@ impl AgentState {
     }
 
     /// Registers a run for the chat; None when one is already going there.
-    fn register(&self, dialog_id: &str, profile_id: &str, options: Option<OpenAIChatOptions>) -> Option<Controls> {
+    fn register(
+        &self,
+        dialog_id: &str,
+        profile_id: &str,
+        options: Option<OpenAIChatOptions>,
+    ) -> Option<Controls> {
         let mut inner = self.lock();
         if inner.runs.contains_key(dialog_id) {
             return None;
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         let stop = Arc::new(StopSignal::new());
-        let (effort_tx, effort_rx) = watch::channel(EffortPick { options, here: false });
+        let (effort_tx, effort_rx) = watch::channel(EffortPick {
+            options,
+            here: false,
+        });
         inner.runs.insert(
             dialog_id.to_string(),
-            RunControl { run_id: run_id.clone(), profile_id: profile_id.to_string(), stop: stop.clone(), effort: effort_tx },
+            RunControl {
+                run_id: run_id.clone(),
+                profile_id: profile_id.to_string(),
+                stop: stop.clone(),
+                effort: effort_tx,
+            },
         );
-        Some(Controls { run_id, stop, effort: effort_rx })
+        Some(Controls {
+            run_id,
+            stop,
+            effort: effort_rx,
+        })
     }
 
     /// A reasoning effort chosen for a model: the runs using it take it for
     /// their next request. The run in the chat it was picked in (`dialog_id`)
     /// also asks again at once if its request stopped answering before any of
     /// the reply arrived (run.rs). Returns how many runs it reached.
-    pub fn set_effort(&self, profile_id: &str, options: Option<OpenAIChatOptions>, dialog_id: Option<&str>) -> usize {
+    pub fn set_effort(
+        &self,
+        profile_id: &str,
+        options: Option<OpenAIChatOptions>,
+        dialog_id: Option<&str>,
+    ) -> usize {
         let inner = self.lock();
         let mut reached = 0;
-        for (dialog, run) in inner.runs.iter().filter(|(_, r)| r.profile_id == profile_id) {
+        for (dialog, run) in inner
+            .runs
+            .iter()
+            .filter(|(_, r)| r.profile_id == profile_id)
+        {
             let here = dialog_id == Some(dialog.as_str());
-            run.effort.send_replace(EffortPick { options: options.clone(), here });
+            run.effort.send_replace(EffortPick {
+                options: options.clone(),
+                here,
+            });
             reached += 1;
         }
         reached
@@ -215,7 +255,11 @@ impl AgentState {
 
     fn unregister(&self, dialog_id: &str, run_id: &str) {
         let mut inner = self.lock();
-        if inner.runs.get(dialog_id).is_some_and(|r| r.run_id == run_id) {
+        if inner
+            .runs
+            .get(dialog_id)
+            .is_some_and(|r| r.run_id == run_id)
+        {
             inner.runs.remove(dialog_id);
         }
     }
@@ -229,22 +273,46 @@ impl AgentState {
     /// whatever it waits on (approvals count as denied, questions as stopped).
     pub fn stop<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) -> bool {
         let mut inner = self.lock();
-        let Some(run) = inner.runs.get(dialog_id) else { return false };
+        let Some(run) = inner.runs.get(dialog_id) else {
+            return false;
+        };
         run.stop.set();
-        let approvals: Vec<WaitKey> = inner.approvals.keys().filter(|(d, _)| d == dialog_id).cloned().collect();
+        let approvals: Vec<WaitKey> = inner
+            .approvals
+            .keys()
+            .filter(|(d, _)| d == dialog_id)
+            .cloned()
+            .collect();
         for key in approvals {
             if let Some(w) = inner.approvals.remove(&key) {
                 let _ = w.reply.send(ApprovalDecision::Deny);
                 let (dialog_id, tool_call_id) = key;
-                emit(app, AgentEvent::ApprovalSettled { dialog_id, tool_call_id });
+                emit(
+                    app,
+                    AgentEvent::ApprovalSettled {
+                        dialog_id,
+                        tool_call_id,
+                    },
+                );
             }
         }
-        let questions: Vec<WaitKey> = inner.questions.keys().filter(|(d, _)| d == dialog_id).cloned().collect();
+        let questions: Vec<WaitKey> = inner
+            .questions
+            .keys()
+            .filter(|(d, _)| d == dialog_id)
+            .cloned()
+            .collect();
         for key in questions {
             if let Some(w) = inner.questions.remove(&key) {
                 let _ = w.reply.send(QuestionsOutcome::Stopped { stopped: true });
                 let (dialog_id, tool_call_id) = key;
-                emit(app, AgentEvent::QuestionsSettled { dialog_id, tool_call_id });
+                emit(
+                    app,
+                    AgentEvent::QuestionsSettled {
+                        dialog_id,
+                        tool_call_id,
+                    },
+                );
             }
         }
         true
@@ -259,7 +327,13 @@ impl AgentState {
     ) -> ApprovalDecision {
         let (tx, rx) = oneshot::channel();
         let key = (request.dialog_id.clone(), request.tool_call_id.clone());
-        self.lock().approvals.insert(key.clone(), Waiting { request: request.clone(), reply: tx });
+        self.lock().approvals.insert(
+            key.clone(),
+            Waiting {
+                request: request.clone(),
+                reply: tx,
+            },
+        );
         emit(app, AgentEvent::ApprovalRequested { request });
         // Stopped just before it was registered: nobody would answer.
         if stop.is_set() {
@@ -268,12 +342,26 @@ impl AgentState {
         rx.await.unwrap_or(ApprovalDecision::Deny)
     }
 
-    fn resolve_approval<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str, tool_call_id: &str, decision: ApprovalDecision) -> bool {
+    fn resolve_approval<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        dialog_id: &str,
+        tool_call_id: &str,
+        decision: ApprovalDecision,
+    ) -> bool {
         let key = (dialog_id.to_string(), tool_call_id.to_string());
-        let Some(w) = self.lock().approvals.remove(&key) else { return false };
+        let Some(w) = self.lock().approvals.remove(&key) else {
+            return false;
+        };
         let _ = w.reply.send(decision);
         let (dialog_id, tool_call_id) = key;
-        emit(app, AgentEvent::ApprovalSettled { dialog_id, tool_call_id });
+        emit(
+            app,
+            AgentEvent::ApprovalSettled {
+                dialog_id,
+                tool_call_id,
+            },
+        );
         true
     }
 
@@ -286,20 +374,46 @@ impl AgentState {
     ) -> QuestionsOutcome {
         let (tx, rx) = oneshot::channel();
         let key = (request.dialog_id.clone(), request.tool_call_id.clone());
-        self.lock().questions.insert(key.clone(), Waiting { request: request.clone(), reply: tx });
+        self.lock().questions.insert(
+            key.clone(),
+            Waiting {
+                request: request.clone(),
+                reply: tx,
+            },
+        );
         emit(app, AgentEvent::QuestionsAsked { request });
         if stop.is_set() {
-            self.answer_questions(app, &key.0, &key.1, QuestionsOutcome::Stopped { stopped: true });
+            self.answer_questions(
+                app,
+                &key.0,
+                &key.1,
+                QuestionsOutcome::Stopped { stopped: true },
+            );
         }
-        rx.await.unwrap_or(QuestionsOutcome::Stopped { stopped: true })
+        rx.await
+            .unwrap_or(QuestionsOutcome::Stopped { stopped: true })
     }
 
-    fn answer_questions<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str, tool_call_id: &str, outcome: QuestionsOutcome) -> bool {
+    fn answer_questions<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        dialog_id: &str,
+        tool_call_id: &str,
+        outcome: QuestionsOutcome,
+    ) -> bool {
         let key = (dialog_id.to_string(), tool_call_id.to_string());
-        let Some(w) = self.lock().questions.remove(&key) else { return false };
+        let Some(w) = self.lock().questions.remove(&key) else {
+            return false;
+        };
         let _ = w.reply.send(outcome);
         let (dialog_id, tool_call_id) = key;
-        emit(app, AgentEvent::QuestionsSettled { dialog_id, tool_call_id });
+        emit(
+            app,
+            AgentEvent::QuestionsSettled {
+                dialog_id,
+                tool_call_id,
+            },
+        );
         true
     }
 }
@@ -312,7 +426,11 @@ impl AgentState {
 
 /// How a run starts.
 #[derive(Deserialize, Debug)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum StartKind {
     /// A new message from the user (stored here, first).
     Send { message: UserMessage },
@@ -389,14 +507,21 @@ pub async fn agent_start<R: Runtime>(
         let ok = db
             .read(move |c| {
                 let project = store::dialog_project(c, &id)?;
-                crate::chat_db::projects::chat_may_use(c, project.as_deref(), std::path::Path::new(&root))
+                crate::chat_db::projects::chat_may_use(
+                    c,
+                    project.as_deref(),
+                    std::path::Path::new(&root),
+                )
             })
             .await?;
         if !ok {
-            return Err("This chat belongs to another project. Open that project to continue it.".into());
+            return Err(
+                "This chat belongs to another project. Open that project to continue it.".into(),
+            );
         }
     }
-    let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone()) else {
+    let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone())
+    else {
         return Err("The agent is already working in this chat.".into());
     };
     let run_id = controls.run_id.clone();
@@ -421,7 +546,10 @@ pub async fn agent_start<R: Runtime>(
         };
         let id = dialog_id.clone();
         let stored = vec![new.clone()];
-        match db.write(move |c| store::append_messages(c, &id, &stored)).await {
+        match db
+            .write(move |c| store::append_messages(c, &id, &stored))
+            .await
+        {
             Ok(seqs) => emit(
                 &app,
                 AgentEvent::MessagesAdded {
@@ -451,30 +579,60 @@ pub async fn agent_start<R: Runtime>(
             // The message got no answer: it's marked failed, its draft comes back.
             if let Some(message_id) = sent {
                 let id = message_id.clone();
-                let patch = store::MessagePatch { failed: Some(true), ..Default::default() };
-                if db.write(move |c| store::update_message(c, &id, &patch)).await.is_ok() {
+                let patch = store::MessagePatch {
+                    failed: Some(true),
+                    ..Default::default()
+                };
+                if db
+                    .write(move |c| store::update_message(c, &id, &patch))
+                    .await
+                    .is_ok()
+                {
                     emit(
                         &app,
                         AgentEvent::MessagePatched {
                             dialog_id: dialog_id.clone(),
                             message_id: message_id.clone(),
-                            patch: events::Patch { failed: Some(true), ..Default::default() },
+                            patch: events::Patch {
+                                failed: Some(true),
+                                ..Default::default()
+                            },
                         },
                     );
                 }
-                emit(&app, AgentEvent::UserMessageSettled { dialog_id, message_id, ok: false });
+                emit(
+                    &app,
+                    AgentEvent::UserMessageSettled {
+                        dialog_id,
+                        message_id,
+                        ok: false,
+                    },
+                );
             }
             return Err(e);
         }
     };
 
-    emit(&app, AgentEvent::RunStarted { dialog_id: dialog_id.clone(), run_id: run_id.clone() });
+    emit(
+        &app,
+        AgentEvent::RunStarted {
+            dialog_id: dialog_id.clone(),
+            run_id: run_id.clone(),
+        },
+    );
     let id = run_id.clone();
     tauri::async_runtime::spawn(async move {
         let (mut run, entry) = prepared;
         let outcome = run.go(entry).await;
         state.unregister(&dialog_id, &id);
-        emit(&app, AgentEvent::RunEnded { dialog_id, run_id: id, outcome });
+        emit(
+            &app,
+            AgentEvent::RunEnded {
+                dialog_id,
+                run_id: id,
+                outcome,
+            },
+        );
     });
     Ok(Some(run_id))
 }
@@ -494,7 +652,11 @@ pub fn agent_set_effort(
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;
 /// what it waits on is answered "no").
 #[tauri::command]
-pub fn agent_stop<R: Runtime>(app: AppHandle<R>, state: State<'_, AgentState>, dialog_id: String) -> bool {
+pub fn agent_stop<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AgentState>,
+    dialog_id: String,
+) -> bool {
     state.stop(&app, &dialog_id)
 }
 
@@ -543,10 +705,21 @@ pub fn agent_status(state: State<'_, AgentState>) -> AgentStatus {
         runs: inner
             .runs
             .iter()
-            .map(|(dialog_id, r)| RunningRun { dialog_id: dialog_id.clone(), run_id: r.run_id.clone() })
+            .map(|(dialog_id, r)| RunningRun {
+                dialog_id: dialog_id.clone(),
+                run_id: r.run_id.clone(),
+            })
             .collect(),
-        approvals: inner.approvals.values().map(|w| w.request.clone()).collect(),
-        questions: inner.questions.values().map(|w| w.request.clone()).collect(),
+        approvals: inner
+            .approvals
+            .values()
+            .map(|w| w.request.clone())
+            .collect(),
+        questions: inner
+            .questions
+            .values()
+            .map(|w| w.request.clone())
+            .collect(),
     }
 }
 
@@ -582,14 +755,21 @@ pub async fn chat_dismiss_checklist<R: Runtime>(
     let meta = db
         .write(move |c| {
             let current: Option<String> = c
-                .query_row("SELECT meta FROM messages WHERE id = ?1", rusqlite::params![id], |r| r.get(0))
+                .query_row(
+                    "SELECT meta FROM messages WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
                 .map_err(|e| e.to_string())?;
             let mut meta = current
                 .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
                 .filter(|m| m.is_object())
                 .unwrap_or_else(|| serde_json::json!({}));
             meta["checklistClosed"] = serde_json::json!(true);
-            let patch = store::MessagePatch { meta: Some(meta.clone()), ..Default::default() };
+            let patch = store::MessagePatch {
+                meta: Some(meta.clone()),
+                ..Default::default()
+            };
             store::update_message(c, &id, &patch)?;
             Ok(meta)
         })
@@ -600,7 +780,10 @@ pub async fn chat_dismiss_checklist<R: Runtime>(
         events::AgentEvent::MessagePatched {
             dialog_id: dialog_id.clone(),
             message_id,
-            patch: events::Patch { meta: Some(meta), ..Default::default() },
+            patch: events::Patch {
+                meta: Some(meta),
+                ..Default::default()
+            },
         },
     );
     chat_checklist(db, dialog_id).await

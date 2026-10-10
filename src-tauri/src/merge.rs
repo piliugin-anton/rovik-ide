@@ -15,8 +15,14 @@ use serde::Serialize;
 #[derive(Debug, Serialize, PartialEq, Clone)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MergeSegment {
-    Common { text: String },
-    Conflict { ours: String, base: String, theirs: String },
+    Common {
+        text: String,
+    },
+    Conflict {
+        ours: String,
+        base: String,
+        theirs: String,
+    },
 }
 
 /// What merging two changed versions of one file gave.
@@ -64,7 +70,10 @@ pub fn merge3_raw(base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<RawMerge, S
     let mut opts = MergeFileOptions::new();
     opts.style_diff3(true).marker_size(MARKER as u16);
     let merged = git2::merge_file(&a, &b, &c, Some(&mut opts)).map_err(|e| e.to_string())?;
-    Ok(RawMerge { content: merged.content().to_vec(), automergeable: merged.is_automergeable() })
+    Ok(RawMerge {
+        content: merged.content().to_vec(),
+        automergeable: merged.is_automergeable(),
+    })
 }
 
 fn is_marker(line: &str, ch: char, labelled: bool) -> bool {
@@ -83,7 +92,8 @@ pub fn parse_merged(text: &str) -> Vec<MergeSegment> {
         Theirs,
     }
     let mut out = Vec::new();
-    let (mut common, mut ours, mut base, mut theirs) = (String::new(), String::new(), String::new(), String::new());
+    let (mut common, mut ours, mut base, mut theirs) =
+        (String::new(), String::new(), String::new(), String::new());
     // The open conflict's lines as written, markers included.
     let mut raw = String::new();
     let mut at = At::Common;
@@ -94,7 +104,9 @@ pub fn parse_merged(text: &str) -> Vec<MergeSegment> {
         match at {
             At::Common if is_marker(line, '<', true) => {
                 if !common.is_empty() {
-                    out.push(MergeSegment::Common { text: std::mem::take(&mut common) });
+                    out.push(MergeSegment::Common {
+                        text: std::mem::take(&mut common),
+                    });
                 }
                 raw = line.to_string();
                 at = At::Ours;
@@ -147,15 +159,29 @@ pub fn merge_bytes(base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<Option<Vec
         let decode = |b: &[u8]| -> String {
             let units: Vec<u16> = b[b.len().min(2)..]
                 .chunks_exact(2)
-                .map(|c| if big { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) })
+                .map(|c| {
+                    if big {
+                        u16::from_be_bytes([c[0], c[1]])
+                    } else {
+                        u16::from_le_bytes([c[0], c[1]])
+                    }
+                })
                 .collect();
             String::from_utf16_lossy(&units)
         };
         return match merge3(&decode(base), &decode(ours), &decode(theirs))? {
             Merged::Clean(text) => {
-                let mut out = if big { vec![0xFE, 0xFF] } else { vec![0xFF, 0xFE] };
+                let mut out = if big {
+                    vec![0xFE, 0xFF]
+                } else {
+                    vec![0xFF, 0xFE]
+                };
                 for u in text.encode_utf16() {
-                    out.extend(if big { u.to_be_bytes() } else { u.to_le_bytes() });
+                    out.extend(if big {
+                        u.to_be_bytes()
+                    } else {
+                        u.to_le_bytes()
+                    });
                 }
                 Ok(Some(out))
             }
@@ -185,7 +211,10 @@ mod tests {
         let base = b"caf\xe9\n2\n3\n4\n5\n";
         let ours = b"CAF\xc9\n2\n3\n4\n5\n";
         let theirs = b"caf\xe9\n2\n3\n4\nFIVE\n";
-        assert_eq!(merge_bytes(base, ours, theirs).unwrap().unwrap(), b"CAF\xc9\n2\n3\n4\nFIVE\n");
+        assert_eq!(
+            merge_bytes(base, ours, theirs).unwrap().unwrap(),
+            b"CAF\xc9\n2\n3\n4\nFIVE\n"
+        );
         // UTF-16 with a byte-order mark.
         let enc = |t: &str| {
             let mut v = vec![0xFF, 0xFE];
@@ -194,9 +223,17 @@ mod tests {
             }
             v
         };
-        let merged = merge_bytes(&enc("1\n2\n3\n4\n5\n"), &enc("A\n2\n3\n4\n5\n"), &enc("1\n2\n3\n4\nE\n")).unwrap().unwrap();
+        let merged = merge_bytes(
+            &enc("1\n2\n3\n4\n5\n"),
+            &enc("A\n2\n3\n4\n5\n"),
+            &enc("1\n2\n3\n4\nE\n"),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(merged, enc("A\n2\n3\n4\nE\n"));
-        assert!(merge_bytes(&enc("1\n"), &enc("A\n"), &enc("B\n")).unwrap().is_none());
+        assert!(merge_bytes(&enc("1\n"), &enc("A\n"), &enc("B\n"))
+            .unwrap()
+            .is_none());
         // Real binary: no merge.
         assert!(merge_bytes(b"\0a", b"\0b", b"\0c").is_err());
     }
@@ -215,26 +252,42 @@ mod tests {
     fn changes_to_different_lines_merge_cleanly() {
         let ours = "ONE\ntwo\nthree\nfour\nfive\n";
         let theirs = "one\ntwo\nthree\nfour\nFIVE\n";
-        assert_eq!(merge3(BASE, ours, theirs).unwrap(), Merged::Clean("ONE\ntwo\nthree\nfour\nFIVE\n".into()));
+        assert_eq!(
+            merge3(BASE, ours, theirs).unwrap(),
+            Merged::Clean("ONE\ntwo\nthree\nfour\nFIVE\n".into())
+        );
     }
 
     #[test]
     fn the_same_change_on_both_sides_is_clean() {
         let both = "one\nTWO\nthree\nfour\nfive\n";
-        assert_eq!(merge3(BASE, both, both).unwrap(), Merged::Clean(both.into()));
+        assert_eq!(
+            merge3(BASE, both, both).unwrap(),
+            Merged::Clean(both.into())
+        );
     }
 
     #[test]
     fn changes_to_the_same_line_conflict() {
         let ours = "one\nours\nthree\nfour\nfive\n";
         let theirs = "one\ntheirs\nthree\nfour\nfive\n";
-        let Merged::Conflict(segments) = merge3(BASE, ours, theirs).unwrap() else { panic!("expected a conflict") };
+        let Merged::Conflict(segments) = merge3(BASE, ours, theirs).unwrap() else {
+            panic!("expected a conflict")
+        };
         assert_eq!(
             segments,
             vec![
-                MergeSegment::Common { text: "one\n".into() },
-                MergeSegment::Conflict { ours: "ours\n".into(), base: "two\n".into(), theirs: "theirs\n".into() },
-                MergeSegment::Common { text: "three\nfour\nfive\n".into() },
+                MergeSegment::Common {
+                    text: "one\n".into()
+                },
+                MergeSegment::Conflict {
+                    ours: "ours\n".into(),
+                    base: "two\n".into(),
+                    theirs: "theirs\n".into()
+                },
+                MergeSegment::Common {
+                    text: "three\nfour\nfive\n".into()
+                },
             ]
         );
     }
@@ -242,13 +295,19 @@ mod tests {
     #[test]
     fn a_side_that_emptied_the_file_against_one_that_changed_it_conflicts() {
         let theirs = "one\ntwo\nTHREE\nfour\nfive\n";
-        assert!(matches!(merge3(BASE, "", theirs).unwrap(), Merged::Conflict(_)));
+        assert!(matches!(
+            merge3(BASE, "", theirs).unwrap(),
+            Merged::Conflict(_)
+        ));
     }
 
     #[test]
     fn an_unchanged_side_takes_the_other() {
         let theirs = "one\ntwo\nthree\n";
-        assert_eq!(merge3(BASE, BASE, theirs).unwrap(), Merged::Clean(theirs.into()));
+        assert_eq!(
+            merge3(BASE, BASE, theirs).unwrap(),
+            Merged::Clean(theirs.into())
+        );
     }
 
     #[test]
@@ -261,6 +320,9 @@ mod tests {
     #[test]
     fn short_marker_runs_in_the_files_are_text() {
         let text = "<<<<<<< not a marker\n=======\n>>>>>>> also not\n";
-        assert_eq!(parse_merged(text), vec![MergeSegment::Common { text: text.into() }]);
+        assert_eq!(
+            parse_merged(text),
+            vec![MergeSegment::Common { text: text.into() }]
+        );
     }
 }

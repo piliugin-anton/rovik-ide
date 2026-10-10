@@ -27,10 +27,7 @@ fn write(path: &Path, contents: &[u8], private: bool) -> std::io::Result<()> {
         .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(dir)?;
 
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file");
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     // Unique per process and call, so concurrent writers never share a temp file.
     let tmp = dir.join(format!(
         ".{file_name}.{}.{}.tmp",
@@ -92,7 +89,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let target = dir.join("keys.json");
         write_atomic_private(&target, b"secret").unwrap();
-        assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

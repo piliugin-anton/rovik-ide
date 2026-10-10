@@ -38,7 +38,10 @@ pub enum InstallOutcome {
     /// Installed; the OS must restart before it can be used.
     NeedsRestart { message: String },
     /// The app couldn't install it; the user has to.
-    Manual { message: String, command: Option<String> },
+    Manual {
+        message: String,
+        command: Option<String>,
+    },
 }
 
 // --- Linux ------------------------------------------------------------------
@@ -58,13 +61,19 @@ pub fn status() -> DriverStatus {
     let device = Path::new("/dev/fuse").exists();
     let version = helper.as_ref().and_then(|h| {
         let out = Command::new(h).arg("-V").output().ok()?;
-        let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
-        text.lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
+        let text = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        text.lines()
+            .next()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
     });
     let detail = match (helper.is_some(), device) {
         (true, true) => None,
         (false, _) => Some("The FUSE tools (fusermount3) aren't installed.".to_string()),
-        (true, false) => Some("The FUSE kernel module isn't loaded (/dev/fuse is missing).".to_string()),
+        (true, false) => {
+            Some("The FUSE kernel module isn't loaded (/dev/fuse is missing).".to_string())
+        }
     };
     DriverStatus {
         driver: "FUSE",
@@ -92,7 +101,9 @@ fn linux_install_script() -> Option<String> {
     .into_iter()
     .find(|(manager, _)| which(manager).is_some())
     .map(|(_, script)| script)?;
-    Some(format!("set -e; {install}; modprobe fuse 2>/dev/null || true"))
+    Some(format!(
+        "set -e; {install}; modprobe fuse 2>/dev/null || true"
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -104,7 +115,8 @@ pub async fn install() -> Result<InstallOutcome, String> {
         });
     };
     let is_root = unsafe { libc::geteuid() } == 0;
-    let graphical = std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let graphical =
+        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
     let mut command = if is_root {
         let mut c = Command::new("sh");
         c.args(["-c", &script]);
@@ -139,7 +151,9 @@ pub async fn install() -> Result<InstallOutcome, String> {
     }
     let now = status();
     if now.installed {
-        Ok(InstallOutcome::Installed { version: now.version })
+        Ok(InstallOutcome::Installed {
+            version: now.version,
+        })
     } else {
         Ok(InstallOutcome::NeedsRestart {
             message: now.detail.unwrap_or_default() + " Restart the computer to load it.",
@@ -158,7 +172,10 @@ fn asset_names(html: &str, prefix: &str) -> Vec<String> {
         rest = &rest[at + prefix.len()..];
         let end = rest.find('"').unwrap_or(rest.len());
         let name = &rest[..end];
-        if !name.is_empty() && !name.contains(['/', '\\', '<', '>']) && !names.iter().any(|n| n == name) {
+        if !name.is_empty()
+            && !name.contains(['/', '\\', '<', '>'])
+            && !names.iter().any(|n| n == name)
+        {
             names.push(name.to_string());
         }
     }
@@ -203,9 +220,15 @@ mod download {
             .get(reqwest::header::LOCATION)
             .and_then(|l| l.to_str().ok())
             .ok_or_else(|| format!("unexpected answer from GitHub ({})", response.status()))?;
-        let tag = location.rsplit("/tag/").next().filter(|t| !t.is_empty() && !t.contains('/')).ok_or("no release tag")?;
+        let tag = location
+            .rsplit("/tag/")
+            .next()
+            .filter(|t| !t.is_empty() && !t.contains('/'))
+            .ok_or("no release tag")?;
         let html = client(true)?
-            .get(format!("https://github.com/{repo}/releases/expanded_assets/{tag}"))
+            .get(format!(
+                "https://github.com/{repo}/releases/expanded_assets/{tag}"
+            ))
             .send()
             .await
             .and_then(|r| r.error_for_status())
@@ -214,14 +237,27 @@ mod download {
             .await
             .map_err(|e| e.to_string())?;
         let prefix = format!("/{repo}/releases/download/{tag}/");
-        let name = super::asset_names(&html, &prefix).into_iter().find(|n| matches(n)).ok_or_else(|| format!("no installer in release {tag}"))?;
-        let sha256 = crate::lsp::rust_analyzer::parse_assets(&html, &name).map(|(_, digest)| digest);
-        Ok(Asset { url: format!("https://github.com{prefix}{name}"), name, sha256 })
+        let name = super::asset_names(&html, &prefix)
+            .into_iter()
+            .find(|n| matches(n))
+            .ok_or_else(|| format!("no installer in release {tag}"))?;
+        let sha256 =
+            crate::lsp::rust_analyzer::parse_assets(&html, &name).map(|(_, digest)| digest);
+        Ok(Asset {
+            url: format!("https://github.com{prefix}{name}"),
+            name,
+            sha256,
+        })
     }
 
     /// Downloads into `dir`, checking the checksum when there is one.
     pub async fn fetch(asset: &Asset, dir: &Path) -> Result<std::path::PathBuf, String> {
-        let response = client(true)?.get(&asset.url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+        let response = client(true)?
+            .get(&asset.url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|e| e.to_string())?;
         if response.content_length().is_some_and(|l| l > MAX_BYTES) {
             return Err("download too large".into());
         }
@@ -236,7 +272,11 @@ mod download {
                 return Err("download too large".into());
             }
         }
-        let digest: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let digest: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         if let Some(expected) = &asset.sha256 {
             if &digest != expected {
                 return Err(format!("checksum mismatch for {}: expected {expected}, got {digest}. Nothing was installed.", asset.name));
@@ -253,9 +293,14 @@ mod download {
 
 #[cfg(target_os = "macos")]
 pub fn macfuse_version() -> Option<String> {
-    let plist = std::fs::read_to_string(Path::new(super::macfuse::BUNDLE).join("Contents/version.plist"))
-        .or_else(|_| std::fs::read_to_string(Path::new(super::macfuse::BUNDLE).join("Contents/Info.plist")))
-        .ok()?;
+    let plist =
+        std::fs::read_to_string(Path::new(super::macfuse::BUNDLE).join("Contents/version.plist"))
+            .or_else(|_| {
+                std::fs::read_to_string(
+                    Path::new(super::macfuse::BUNDLE).join("Contents/Info.plist"),
+                )
+            })
+            .ok()?;
     let key = plist.find("<key>CFBundleVersion</key>")?;
     let rest = &plist[key..];
     let start = rest.find("<string>")? + 8;
@@ -265,7 +310,9 @@ pub fn macfuse_version() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 pub fn status() -> DriverStatus {
-    let installed = Path::new(super::macfuse::BUNDLE).join("Contents/Resources/mount_macfuse").exists();
+    let installed = Path::new(super::macfuse::BUNDLE)
+        .join("Contents/Resources/mount_macfuse")
+        .exists();
     DriverStatus {
         driver: "macFUSE",
         installed,
@@ -277,17 +324,26 @@ pub fn status() -> DriverStatus {
 
 #[cfg(target_os = "macos")]
 fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
-    let out = Command::new(cmd).args(args).output().map_err(|e| format!("{cmd}: {e}"))?;
+    let out = Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("{cmd}: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        Err(format!("{cmd}: {}", String::from_utf8_lossy(&out.stderr).trim()))
+        Err(format!(
+            "{cmd}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
     }
 }
 
 #[cfg(target_os = "macos")]
 pub async fn install() -> Result<InstallOutcome, String> {
-    let asset = download::latest_asset("macfuse/macfuse", |n| n.starts_with("macfuse-") && n.ends_with(".dmg")).await?;
+    let asset = download::latest_asset("macfuse/macfuse", |n| {
+        n.starts_with("macfuse-") && n.ends_with(".dmg")
+    })
+    .await?;
     let dir = std::env::temp_dir().join(format!("rovik-macfuse-{}", std::process::id()));
     let dmg = download::fetch(&asset, &dir).await?;
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<InstallOutcome, String> {
@@ -361,7 +417,15 @@ fn winfsp_dir() -> Option<std::path::PathBuf> {
         let mut buf = [0u16; 1024];
         let mut size = (buf.len() * 2) as u32;
         let status = unsafe {
-            RegGetValueW(HKEY_LOCAL_MACHINE, key, w!("InstallDir"), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut size))
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key,
+                w!("InstallDir"),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut size),
+            )
         };
         if status.is_err() {
             return None;
@@ -378,16 +442,28 @@ pub fn load_winfsp() -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::System::LibraryLoader::LoadLibraryW;
-    let dll = winfsp_dir().map(|d| d.join("bin").join(WINFSP_DLL)).filter(|p| p.is_file()).ok_or("WinFsp isn't installed")?;
+    let dll = winfsp_dir()
+        .map(|d| d.join("bin").join(WINFSP_DLL))
+        .filter(|p| p.is_file())
+        .ok_or("WinFsp isn't installed")?;
     let wide: Vec<u16> = dll.as_os_str().encode_wide().chain(Some(0)).collect();
-    unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }.map(|_| ()).map_err(|e| format!("loading {}: {e}", dll.display()))
+    unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }
+        .map(|_| ())
+        .map_err(|e| format!("loading {}: {e}", dll.display()))
 }
 
 #[cfg(windows)]
 fn winfsp_version(dir: &Path) -> Option<String> {
     // Not stored anywhere simple; the installer's product name carries it.
     let out = crate::process::no_window(&mut Command::new("reg"))
-        .args(["query", r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", "/s", "/f", "WinFsp", "/d"])
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            "/s",
+            "/f",
+            "WinFsp",
+            "/d",
+        ])
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -403,11 +479,16 @@ fn winfsp_version(dir: &Path) -> Option<String> {
 #[cfg(windows)]
 pub fn status() -> DriverStatus {
     let dir = winfsp_dir();
-    let installed = dir.as_ref().is_some_and(|d| d.join("bin").join(WINFSP_DLL).is_file());
+    let installed = dir
+        .as_ref()
+        .is_some_and(|d| d.join("bin").join(WINFSP_DLL).is_file());
     DriverStatus {
         driver: "WinFsp",
         installed,
-        version: dir.as_deref().filter(|_| installed).and_then(winfsp_version),
+        version: dir
+            .as_deref()
+            .filter(|_| installed)
+            .and_then(winfsp_version),
         detail: (!installed).then(|| "WinFsp isn't installed.".to_string()),
         can_install: true,
     }
@@ -418,7 +499,10 @@ pub async fn install() -> Result<InstallOutcome, String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    let asset = download::latest_asset("winfsp/winfsp", |n| n.starts_with("winfsp-") && n.ends_with(".msi")).await?;
+    let asset = download::latest_asset("winfsp/winfsp", |n| {
+        n.starts_with("winfsp-") && n.ends_with(".msi")
+    })
+    .await?;
     let dir = std::env::temp_dir().join(format!("rovik-winfsp-{}", std::process::id()));
     let msi = download::fetch(&asset, &dir).await?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -481,7 +565,10 @@ mod tests {
             <li><a href="/winfsp/winfsp/releases/download/v2.1/winfsp-tests-2.1.25156.zip">y</a></li>
             <li><a href="/winfsp/winfsp/archive/refs/tags/v2.1.zip">src</a></li>"#;
         let names = super::asset_names(html, "/winfsp/winfsp/releases/download/v2.1/");
-        assert_eq!(names, ["winfsp-2.1.25156.msi", "winfsp-tests-2.1.25156.zip"]);
+        assert_eq!(
+            names,
+            ["winfsp-2.1.25156.msi", "winfsp-tests-2.1.25156.zip"]
+        );
     }
 
     #[cfg(target_os = "linux")]

@@ -89,7 +89,10 @@ struct Locks {
     freed: Condvar,
 }
 
-static LOCKS: LazyLock<Locks> = LazyLock::new(|| Locks { held: Mutex::new(HashSet::new()), freed: Condvar::new() });
+static LOCKS: LazyLock<Locks> = LazyLock::new(|| Locks {
+    held: Mutex::new(HashSet::new()),
+    freed: Condvar::new(),
+});
 
 /// Holds a file's lock until dropped.
 pub struct PathLock {
@@ -98,7 +101,11 @@ pub struct PathLock {
 
 impl Drop for PathLock {
     fn drop(&mut self) {
-        LOCKS.held.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.key);
+        LOCKS
+            .held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
         LOCKS.freed.notify_all();
     }
 }
@@ -127,7 +134,10 @@ pub struct Seen {
 
 impl Seen {
     pub fn new(owner: impl Into<String>) -> Arc<Seen> {
-        Arc::new(Seen { owner: owner.into(), files: Mutex::new(HashMap::new()) })
+        Arc::new(Seen {
+            owner: owner.into(),
+            files: Mutex::new(HashMap::new()),
+        })
     }
 
     pub fn owner(&self) -> &str {
@@ -139,11 +149,18 @@ impl Seen {
     }
 
     pub fn record_hash(&self, path: &Path, hash: Hash) {
-        self.files.lock().unwrap_or_else(|e| e.into_inner()).insert(key(path), hash);
+        self.files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key(path), hash);
     }
 
     pub fn get(&self, path: &Path) -> Option<Hash> {
-        self.files.lock().unwrap_or_else(|e| e.into_inner()).get(&key(path)).copied()
+        self.files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key(path))
+            .copied()
     }
 
     fn writer(&self) -> Writer {
@@ -159,19 +176,29 @@ impl Seen {
 /// Forgets what was written under `dir` (a chat's view that's gone).
 pub fn forget_under(dir: &Path) {
     let dir = key(dir);
-    LEDGER.lock().unwrap_or_else(|e| e.into_inner()).retain(|path, _| !path.starts_with(&dir));
+    LEDGER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|path, _| !path.starts_with(&dir));
 }
 
-static LEDGER: LazyLock<Mutex<HashMap<PathBuf, (Writer, Hash)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static LEDGER: LazyLock<Mutex<HashMap<PathBuf, (Writer, Hash)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn note_write(path: &Path, writer: Writer, hash: Hash) {
-    LEDGER.lock().unwrap_or_else(|e| e.into_inner()).insert(key(path), (writer, hash));
+    LEDGER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key(path), (writer, hash));
 }
 
 /// Who wrote the file's current content through the app, if anyone did.
 fn writer_of(path: &Path, current: Hash) -> Option<Writer> {
     let ledger = LEDGER.lock().unwrap_or_else(|e| e.into_inner());
-    ledger.get(&key(path)).filter(|(_, h)| *h == current).map(|(w, _)| w.clone())
+    ledger
+        .get(&key(path))
+        .filter(|(_, h)| *h == current)
+        .map(|(w, _)| w.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +266,10 @@ pub fn write_for_chat(path: &Path, content: &[u8], seen: &Seen) -> Result<(), Wr
             None => matches!(writer_of(path, now), Some(w) if w != seen.writer()),
         };
         if refused {
-            return Err(WriteError::Changed(Changed { by: writer_of(path, now), current }));
+            return Err(WriteError::Changed(Changed {
+                by: writer_of(path, now),
+                current,
+            }));
         }
     }
     write_file(path, content)?;
@@ -270,13 +300,20 @@ pub fn update_for_chat<T>(
 /// The editor's save: refused when the file isn't what the tab loaded
 /// (`expected`, the hash of the loaded content). `None` writes regardless:
 /// a new file, or the user chose to overwrite.
-pub fn write_for_editor(path: &Path, content: &[u8], expected: Option<Hash>) -> Result<(), WriteError> {
+pub fn write_for_editor(
+    path: &Path,
+    content: &[u8],
+    expected: Option<Hash>,
+) -> Result<(), WriteError> {
     let _lock = lock(path);
     if let Some(expected) = expected {
         if let Some(current) = read_existing(path)? {
             let now = hash(&current);
             if now != expected {
-                return Err(WriteError::Changed(Changed { by: writer_of(path, now), current }));
+                return Err(WriteError::Changed(Changed {
+                    by: writer_of(path, now),
+                    current,
+                }));
             }
         }
     }
@@ -296,7 +333,11 @@ mod tests {
     use super::*;
 
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("file-guard-{}-{}", std::process::id(), rand_suffix()));
+        let dir = std::env::temp_dir().join(format!(
+            "file-guard-{}-{}",
+            std::process::id(),
+            rand_suffix()
+        ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -346,7 +387,10 @@ mod tests {
         };
         assert_eq!(changed.current, b"b's change\n");
         assert_eq!(changed.by, Some(Writer::Chat("chat-b".into())));
-        assert_eq!(describe_changer(changed.by.as_ref(), Some("chat-a")), "by another chat");
+        assert_eq!(
+            describe_changer(changed.by.as_ref(), Some("chat-a")),
+            "by another chat"
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), "b's change\n");
     }
 
@@ -358,7 +402,9 @@ mod tests {
         let a = Seen::new("chat-a");
         a.record(&path, b"one\n");
         fs::write(&path, "formatted\n").unwrap();
-        let Err(WriteError::Changed(changed)) = write_for_chat(&path, b"x\n", &a) else { panic!("refused") };
+        let Err(WriteError::Changed(changed)) = write_for_chat(&path, b"x\n", &a) else {
+            panic!("refused")
+        };
         assert_eq!(changed.by, None);
     }
 
@@ -410,13 +456,17 @@ mod tests {
         let chat = Seen::new("chat-a");
         chat.record(&path, b"loaded\n");
         write_for_chat(&path, b"agent\n", &chat).unwrap();
-        let Err(WriteError::Changed(changed)) = write_for_editor(&path, b"user\n", Some(loaded)) else {
+        let Err(WriteError::Changed(changed)) = write_for_editor(&path, b"user\n", Some(loaded))
+        else {
             panic!("the save should be refused")
         };
         assert_eq!(changed.current, b"agent\n");
         // Overwrite on purpose.
         write_for_editor(&path, b"user\n", None).unwrap();
         // The chat hasn't seen the user's save: its next write is refused.
-        assert!(matches!(write_for_chat(&path, b"agent 2\n", &chat), Err(WriteError::Changed(_))));
+        assert!(matches!(
+            write_for_chat(&path, b"agent 2\n", &chat),
+            Err(WriteError::Changed(_))
+        ));
     }
 }

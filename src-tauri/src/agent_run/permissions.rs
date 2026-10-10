@@ -31,7 +31,10 @@ pub struct ApprovalRule {
     pub by: Approver,
 }
 
-const NO_APPROVAL: ApprovalRule = ApprovalRule { required: false, by: Approver::User };
+const NO_APPROVAL: ApprovalRule = ApprovalRule {
+    required: false,
+    by: Approver::User,
+};
 
 pub const DEFAULT_TOOL_CALL_CHECKPOINT: u32 = 50;
 
@@ -104,7 +107,10 @@ impl Default for Permissions {
     fn default() -> Self {
         Permissions {
             allow_any_command: false,
-            allowed_commands: DEFAULT_ALLOWED_COMMANDS.iter().map(|s| s.to_string()).collect(),
+            allowed_commands: DEFAULT_ALLOWED_COMMANDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             command_approval: NO_APPROVAL,
             edit_approval: NO_APPROVAL,
             tool_approval: NO_APPROVAL,
@@ -212,7 +218,12 @@ pub fn parse_command(command: &str) -> ParsedCommand {
                 continue;
             }
         }
-        if c == '`' || (c == '$' && next == Some('(')) || (c == '<' && next == Some('(')) || c == '(' || c == ')' {
+        if c == '`'
+            || (c == '$' && next == Some('('))
+            || (c == '<' && next == Some('('))
+            || c == '('
+            || c == ')'
+        {
             opaque = true;
             s.in_word = true;
             s.word.push(c);
@@ -291,10 +302,15 @@ pub fn parse_command(command: &str) -> ParsedCommand {
     }
     s.end_segment();
 
-    ParsedCommand { segments: s.segments, writes_via_redirect, opaque }
+    ParsedCommand {
+        segments: s.segments,
+        writes_via_redirect,
+        opaque,
+    }
 }
 
-static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*=").unwrap());
+static ASSIGNMENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*=").unwrap());
 
 fn drop_assignments(words: Vec<String>) -> Vec<String> {
     let skip = words.iter().take_while(|w| ASSIGNMENT.is_match(w)).count();
@@ -304,7 +320,9 @@ fn drop_assignments(words: Vec<String>) -> Vec<String> {
 /// "git status" permits "git status -s", not "git stash".
 fn matches_allowed(segment: &[String], allowed: &[Vec<String>]) -> bool {
     allowed.iter().any(|entry| {
-        !entry.is_empty() && entry.len() <= segment.len() && entry.iter().zip(segment).all(|(w, s)| w == s)
+        !entry.is_empty()
+            && entry.len() <= segment.len()
+            && entry.iter().zip(segment).all(|(w, s)| w == s)
     })
 }
 
@@ -313,10 +331,55 @@ pub fn split_words(entry: &str) -> Vec<String> {
 }
 
 const READ_ONLY_COMMANDS: &[&str] = &[
-    "ls", "ll", "dir", "pwd", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "ag", "tree", "echo",
-    "printf", "which", "whereis", "type", "whoami", "date", "env", "printenv", "stat", "file", "du", "df", "diff",
-    "cmp", "uniq", "cut", "tr", "nl", "column", "basename", "dirname", "realpath", "readlink", "true", "false",
-    "test", "uname", "hostname", "jq", "sha256sum", "md5sum", "less", "more", "awk",
+    "ls",
+    "ll",
+    "dir",
+    "pwd",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "ag",
+    "tree",
+    "echo",
+    "printf",
+    "which",
+    "whereis",
+    "type",
+    "whoami",
+    "date",
+    "env",
+    "printenv",
+    "stat",
+    "file",
+    "du",
+    "df",
+    "diff",
+    "cmp",
+    "uniq",
+    "cut",
+    "tr",
+    "nl",
+    "column",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "true",
+    "false",
+    "test",
+    "uname",
+    "hostname",
+    "jq",
+    "sha256sum",
+    "md5sum",
+    "less",
+    "more",
+    "awk",
 ];
 
 const READ_ONLY_GIT: &[&str] = &[
@@ -381,18 +444,26 @@ const CHECK_COMMANDS: &[&[&str]] = &[
 static AWK_WRITES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"system\(|>\s*""#).unwrap());
 static BRANCH_CHANGES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^-(d|D|m|M|c|C|f)$|^--(delete|move|copy|force)").unwrap());
-static REWRITES_FILES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(--fix|--write|--in-place)\b").unwrap());
+static REWRITES_FILES: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(--fix|--write|--in-place)\b").unwrap());
 
 fn segment_is_read_only(seg: &[String]) -> bool {
-    let Some((cmd, rest)) = seg.split_first() else { return true };
+    let Some((cmd, rest)) = seg.split_first() else {
+        return true;
+    };
     let cmd = cmd.as_str();
     // Version and help queries never change anything.
-    if rest.len() == 1 && ["--version", "-v", "-V", "--help", "-h", "version"].contains(&rest[0].as_str()) {
+    if rest.len() == 1
+        && ["--version", "-v", "-V", "--help", "-h", "version"].contains(&rest[0].as_str())
+    {
         return true;
     }
     if cmd == "find" {
         return !rest.iter().any(|a| {
-            ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"].contains(&a.as_str())
+            [
+                "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls",
+            ]
+            .contains(&a.as_str())
         });
     }
     if cmd == "sort" {
@@ -406,7 +477,9 @@ fn segment_is_read_only(seg: &[String]) -> bool {
     }
 
     if cmd == "git" {
-        let Some(at) = rest.iter().position(|a| !a.starts_with('-')) else { return true };
+        let Some(at) = rest.iter().position(|a| !a.starts_with('-')) else {
+            return true;
+        };
         let sub = rest[at].as_str();
         let args = &rest[at + 1..];
         if READ_ONLY_GIT.contains(&sub) {
@@ -417,7 +490,9 @@ fn segment_is_read_only(seg: &[String]) -> bool {
             "branch" | "tag" => flags_only && !args.iter().any(|a| BRANCH_CHANGES.is_match(a)),
             "remote" => args.is_empty() || (args.len() == 1 && args[0] == "-v"),
             "stash" => args.first().is_some_and(|a| a == "list" || a == "show"),
-            "config" => args.iter().any(|a| ["--get", "--list", "-l", "--get-all"].contains(&a.as_str())),
+            "config" => args
+                .iter()
+                .any(|a| ["--get", "--list", "-l", "--get-all"].contains(&a.as_str())),
             _ => false,
         };
     }
@@ -426,9 +501,12 @@ fn segment_is_read_only(seg: &[String]) -> bool {
     if rest.iter().any(|a| REWRITES_FILES.is_match(a)) {
         return false;
     }
-    CHECK_COMMANDS
-        .iter()
-        .any(|pattern| pattern.iter().enumerate().all(|(i, w)| seg.get(i).is_some_and(|s| s == w)))
+    CHECK_COMMANDS.iter().any(|pattern| {
+        pattern
+            .iter()
+            .enumerate()
+            .all(|(i, w)| seg.get(i).is_some_and(|s| s == w))
+    })
 }
 
 #[derive(Debug, PartialEq)]
@@ -441,7 +519,9 @@ pub enum Verdict {
 /// `check_command`, without the allowed-list check).
 pub fn command_modifies_files(command: &str) -> bool {
     let parsed = parse_command(command);
-    parsed.writes_via_redirect || parsed.opaque || !parsed.segments.iter().all(|s| segment_is_read_only(s))
+    parsed.writes_via_redirect
+        || parsed.opaque
+        || !parsed.segments.iter().all(|s| segment_is_read_only(s))
 }
 
 pub fn check_command(command: &str, permissions: &Permissions) -> Verdict {
@@ -465,17 +545,31 @@ pub fn check_command(command: &str, permissions: &Permissions) -> Verdict {
         );
     }
 
-    let allowed: Vec<Vec<String>> =
-        permissions.allowed_commands.iter().map(|c| split_words(c)).filter(|w| !w.is_empty()).collect();
-    let refused: Vec<&Vec<String>> = parsed.segments.iter().filter(|seg| !matches_allowed(seg, &allowed)).collect();
+    let allowed: Vec<Vec<String>> = permissions
+        .allowed_commands
+        .iter()
+        .map(|c| split_words(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let refused: Vec<&Vec<String>> = parsed
+        .segments
+        .iter()
+        .filter(|seg| !matches_allowed(seg, &allowed))
+        .collect();
     if !refused.is_empty() {
-        let names = refused.iter().map(|seg| format!("\"{}\"", seg.join(" "))).collect::<Vec<_>>().join(", ");
+        let names = refused
+            .iter()
+            .map(|seg| format!("\"{}\"", seg.join(" ")))
+            .collect::<Vec<_>>()
+            .join(", ");
         let list = if permissions.allowed_commands.is_empty() {
             "(none)".to_string()
         } else {
             permissions.allowed_commands.join(", ")
         };
-        return Verdict::Refused(format!("Not in the user's allowed commands: {names}. Allowed: {list}."));
+        return Verdict::Refused(format!(
+            "Not in the user's allowed commands: {names}. Allowed: {list}."
+        ));
     }
 
     Verdict::Permitted { modifies_files }
@@ -495,7 +589,9 @@ pub fn modifies_files(tool: &str) -> bool {
 #[derive(Debug, PartialEq)]
 pub enum ToolVerdict {
     /// May run; `approval` says who has to approve first, if anyone.
-    Permitted { approval: Option<Approver> },
+    Permitted {
+        approval: Option<Approver>,
+    },
     Refused(String),
 }
 
@@ -512,7 +608,10 @@ pub fn parse_args(args_json: &str) -> serde_json::Map<String, serde_json::Value>
 
 /// One string argument of a tool call.
 pub fn str_arg(args_json: &str, key: &str) -> Option<String> {
-    parse_args(args_json).get(key).and_then(|v| v.as_str()).map(str::to_string)
+    parse_args(args_json)
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 /// Permission first, then who (if anyone) has to approve.
@@ -535,7 +634,9 @@ pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -
     } else {
         permissions.tool_approval
     };
-    ToolVerdict::Permitted { approval: rule.required.then_some(rule.by) }
+    ToolVerdict::Permitted {
+        approval: rule.required.then_some(rule.by),
+    }
 }
 
 /// Whether the model should be offered bash at all.
@@ -547,7 +648,13 @@ pub fn commands_available(p: &Permissions) -> bool {
 pub fn describe_tool_call(name: &str, args_json: &str) -> String {
     let args = parse_args(args_json);
     let s = |k: &str| args.get(k).and_then(|v| v.as_str()).map(str::to_string);
-    let raw = |k: &str| args.get(k).map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
+    let raw = |k: &str| {
+        args.get(k).map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string())
+        })
+    };
 
     match name {
         "bash" => format!("Run `{}`", s("command").unwrap_or_else(|| "…".into())),
@@ -558,9 +665,20 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
                 None => format!("Read {path}"),
             }
         }
-        "list_dir" => format!("List {}", s("path").filter(|p| !p.is_empty()).unwrap_or_else(|| "the project root".into())),
-        "search_code" => format!("Search the project for “{}”", s("query").unwrap_or_else(|| "…".into())),
-        "neighbours" => format!("Graph neighbours of {}", s("path").unwrap_or_else(|| "a file".into())),
+        "list_dir" => format!(
+            "List {}",
+            s("path")
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| "the project root".into())
+        ),
+        "search_code" => format!(
+            "Search the project for “{}”",
+            s("query").unwrap_or_else(|| "…".into())
+        ),
+        "neighbours" => format!(
+            "Graph neighbours of {}",
+            s("path").unwrap_or_else(|| "a file".into())
+        ),
         "callers" => format!("Callers of {}", s("symbol").unwrap_or_else(|| "…".into())),
         "outline" => format!("Outline {}", s("path").unwrap_or_else(|| "a file".into())),
         "diagnostics" => match s("path").filter(|p| !p.trim().is_empty()) {
@@ -569,19 +687,39 @@ pub fn describe_tool_call(name: &str, args_json: &str) -> String {
         },
         "write" if args.get("old_text").is_some_and(|v| !v.is_null()) => {
             let range = match raw("start_line") {
-                Some(start) => format!(" (only lines {start}-{})", raw("end_line").unwrap_or_else(|| start.clone())),
+                Some(start) => format!(
+                    " (only lines {start}-{})",
+                    raw("end_line").unwrap_or_else(|| start.clone())
+                ),
                 None => String::new(),
             };
-            format!("Edit {}{range}", s("path").unwrap_or_else(|| "a file".into()))
+            format!(
+                "Edit {}{range}",
+                s("path").unwrap_or_else(|| "a file".into())
+            )
         }
         "write" => {
-            let size = s("content").map(|c| format!(" ({} lines)", c.split('\n').count())).unwrap_or_default();
-            format!("Write {}{size}", s("path").unwrap_or_else(|| "a file".into()))
+            let size = s("content")
+                .map(|c| format!(" ({} lines)", c.split('\n').count()))
+                .unwrap_or_default();
+            format!(
+                "Write {}{size}",
+                s("path").unwrap_or_else(|| "a file".into())
+            )
         }
-        "web_search" => format!("Search the web for “{}”", s("query").unwrap_or_else(|| "…".into())),
+        "web_search" => format!(
+            "Search the web for “{}”",
+            s("query").unwrap_or_else(|| "…".into())
+        ),
         "browse_url" => format!("Open {}", s("url").unwrap_or_else(|| "a web page".into())),
-        "browser_screenshot" => format!("Take a screenshot of {}", s("url").unwrap_or_else(|| "a web page".into())),
-        _ => format!("{name}({})", crate::chat_db::store::char_prefix(args_json, 200)),
+        "browser_screenshot" => format!(
+            "Take a screenshot of {}",
+            s("url").unwrap_or_else(|| "a web page".into())
+        ),
+        _ => format!(
+            "{name}({})",
+            crate::chat_db::store::char_prefix(args_json, 200)
+        ),
     }
 }
 
@@ -635,16 +773,21 @@ static SECRET_PATH: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-static HIDDEN_PARTS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\(|[<>]\(|`|\\\r?\n").unwrap());
+static HIDDEN_PARTS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\(|[<>]\(|`|\\\r?\n").unwrap());
 /// cmd.exe's own ways of hiding a program name: `%VAR%` expansion and the `^`
 /// escape (`p^owershell` runs powershell). Only checked on Windows: in a
 /// POSIX shell both are plain characters, common in grep patterns.
 static CMD_HIDDEN_PARTS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[^%\s]+%|\^").unwrap());
-static PART_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*(?:&&|\|\||;|\||&|\n|[(){}])\s*").unwrap());
+static PART_SPLIT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s*(?:&&|\|\||;|\||&|\n|[(){}])\s*").unwrap());
 static WRAPPERS: LazyLock<[Regex; 5]> = LazyLock::new(|| {
     [
         Regex::new(r"^(if|then|elif|else|fi|while|until|do|done|for|in|case|esac|!)\s+").unwrap(),
-        Regex::new(r"^(command|builtin|exec|env|nohup|time|timeout(\s+\S+)?|nice|watch|npx|bunx|pnpx)\s+").unwrap(),
+        Regex::new(
+            r"^(command|builtin|exec|env|nohup|time|timeout(\s+\S+)?|nice|watch|npx|bunx|pnpx)\s+",
+        )
+        .unwrap(),
         Regex::new(r#"^[A-Za-z_][A-Za-z0-9_]*=[^\s'"\\$]*\s+"#).unwrap(),
         Regex::new(r"^\\").unwrap(),
         Regex::new(r#"^[^\s'"\\$]*/"#).unwrap(),
@@ -697,10 +840,16 @@ mod tests {
     /// (src/lib/permissions.test.ts): both must judge every one alike.
     #[test]
     fn shared_command_cases_agree_with_the_frontend() {
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../../../test-fixtures/command-permissions.json")).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../test-fixtures/command-permissions.json"
+        ))
+        .unwrap();
         let strings = |v: &serde_json::Value| -> Vec<String> {
-            v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect()
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_string())
+                .collect()
         };
         let default_allowed = strings(&fixture["defaultAllowed"]);
         for case in fixture["cases"].as_array().unwrap() {
@@ -708,28 +857,44 @@ mod tests {
             let expect = &case["expect"];
             let parsed = parse_command(command);
             if let Some(segments) = expect.get("segments") {
-                let want: Vec<Vec<String>> = segments.as_array().unwrap().iter().map(strings).collect();
+                let want: Vec<Vec<String>> =
+                    segments.as_array().unwrap().iter().map(strings).collect();
                 assert_eq!(parsed.segments, want, "segments of {command:?}");
             }
             if let Some(w) = expect.get("writesViaRedirect") {
-                assert_eq!(parsed.writes_via_redirect, w.as_bool().unwrap(), "redirect in {command:?}");
+                assert_eq!(
+                    parsed.writes_via_redirect,
+                    w.as_bool().unwrap(),
+                    "redirect in {command:?}"
+                );
             }
             if let Some(o) = expect.get("opaque") {
                 assert_eq!(parsed.opaque, o.as_bool().unwrap(), "opaque {command:?}");
             }
             let permissions = Permissions {
                 allow_any_command: case["allowAny"].as_bool().unwrap_or(false),
-                allowed_commands: case.get("allowed").map(strings).unwrap_or_else(|| default_allowed.clone()),
+                allowed_commands: case
+                    .get("allowed")
+                    .map(strings)
+                    .unwrap_or_else(|| default_allowed.clone()),
                 ..Permissions::default()
             };
             let verdict = check_command(command, &permissions);
             if let Some(p) = expect.get("permitted") {
-                assert_eq!(matches!(verdict, Verdict::Permitted { .. }), p.as_bool().unwrap(), "permitted {command:?}");
+                assert_eq!(
+                    matches!(verdict, Verdict::Permitted { .. }),
+                    p.as_bool().unwrap(),
+                    "permitted {command:?}"
+                );
             }
             if let Some(m) = expect.get("modifiesFiles") {
                 match verdict {
                     Verdict::Permitted { modifies_files } => {
-                        assert_eq!(modifies_files, m.as_bool().unwrap(), "modifies files {command:?}")
+                        assert_eq!(
+                            modifies_files,
+                            m.as_bool().unwrap(),
+                            "modifies files {command:?}"
+                        )
                     }
                     Verdict::Refused(reason) => panic!("{command:?} refused: {reason}"),
                 }
@@ -739,9 +904,18 @@ mod tests {
 
     #[test]
     fn a_symbol_read_is_described_with_its_symbol() {
-        assert_eq!(describe_tool_call("read", r#"{"path":"src/a.rs"}"#), "Read src/a.rs");
-        assert_eq!(describe_tool_call("read", r#"{"path":"src/a.rs","symbol":" Parser::parse "}"#), "Read Parser::parse in src/a.rs");
-        assert_eq!(describe_tool_call("read", r#"{"path":"src/a.rs","symbol":"  "}"#), "Read src/a.rs");
+        assert_eq!(
+            describe_tool_call("read", r#"{"path":"src/a.rs"}"#),
+            "Read src/a.rs"
+        );
+        assert_eq!(
+            describe_tool_call("read", r#"{"path":"src/a.rs","symbol":" Parser::parse "}"#),
+            "Read Parser::parse in src/a.rs"
+        );
+        assert_eq!(
+            describe_tool_call("read", r#"{"path":"src/a.rs","symbol":"  "}"#),
+            "Read src/a.rs"
+        );
     }
 
     #[test]
@@ -749,7 +923,12 @@ mod tests {
         let p = parse_command(r#"FOO=1 git status -s && echo "a && b" | wc -l; ls 2>/dev/null"#);
         assert_eq!(
             p.segments,
-            vec![words(&["git", "status", "-s"]), words(&["echo", "a && b"]), words(&["wc", "-l"]), words(&["ls"])]
+            vec![
+                words(&["git", "status", "-s"]),
+                words(&["echo", "a && b"]),
+                words(&["wc", "-l"]),
+                words(&["ls"])
+            ]
         );
         assert!(!p.writes_via_redirect && !p.opaque);
         assert!(parse_command("echo hi > out.txt").writes_via_redirect);
@@ -762,19 +941,53 @@ mod tests {
     #[test]
     fn allowed_commands_are_prefixes_of_words() {
         let p = Permissions::default();
-        assert_eq!(check_command("git status -s", &p), Verdict::Permitted { modifies_files: false });
-        assert!(matches!(check_command("git stash", &p), Verdict::Refused(_)));
-        assert!(matches!(check_command("ls $(pwd)", &p), Verdict::Refused(_)));
-        assert_eq!(check_command("cargo test -p x", &p), Verdict::Permitted { modifies_files: false });
-        let any = Permissions { allow_any_command: true, ..Permissions::default() };
-        assert_eq!(check_command("rm -rf build", &any), Verdict::Permitted { modifies_files: true });
+        assert_eq!(
+            check_command("git status -s", &p),
+            Verdict::Permitted {
+                modifies_files: false
+            }
+        );
+        assert!(matches!(
+            check_command("git stash", &p),
+            Verdict::Refused(_)
+        ));
+        assert!(matches!(
+            check_command("ls $(pwd)", &p),
+            Verdict::Refused(_)
+        ));
+        assert_eq!(
+            check_command("cargo test -p x", &p),
+            Verdict::Permitted {
+                modifies_files: false
+            }
+        );
+        let any = Permissions {
+            allow_any_command: true,
+            ..Permissions::default()
+        };
+        assert_eq!(
+            check_command("rm -rf build", &any),
+            Verdict::Permitted {
+                modifies_files: true
+            }
+        );
         assert!(matches!(check_command("   ", &any), Verdict::Refused(_)));
     }
 
     #[test]
     fn read_only_analysis() {
-        let any = Permissions { allow_any_command: true, ..Permissions::default() };
-        let modifies = |c: &str| matches!(check_command(c, &any), Verdict::Permitted { modifies_files: true });
+        let any = Permissions {
+            allow_any_command: true,
+            ..Permissions::default()
+        };
+        let modifies = |c: &str| {
+            matches!(
+                check_command(c, &any),
+                Verdict::Permitted {
+                    modifies_files: true
+                }
+            )
+        };
         assert!(!modifies("git log --oneline | head -5"));
         assert!(modifies("git commit -m x"));
         assert!(!modifies("git branch -a"));
@@ -788,15 +1001,26 @@ mod tests {
     #[test]
     fn tool_calls_go_by_their_group_rule() {
         let p = Permissions {
-            edit_approval: ApprovalRule { required: true, by: Approver::Ai },
+            edit_approval: ApprovalRule {
+                required: true,
+                by: Approver::Ai,
+            },
             ..Permissions::default()
         };
         assert_eq!(
             check_tool_call("write", r#"{"old_text":"a"}"#, &p),
-            ToolVerdict::Permitted { approval: Some(Approver::Ai) }
+            ToolVerdict::Permitted {
+                approval: Some(Approver::Ai)
+            }
         );
-        assert_eq!(check_tool_call("read", "{}", &p), ToolVerdict::Permitted { approval: None });
-        assert!(matches!(check_tool_call("bash", r#"{"command":"rm x"}"#, &p), ToolVerdict::Refused(_)));
+        assert_eq!(
+            check_tool_call("read", "{}", &p),
+            ToolVerdict::Permitted { approval: None }
+        );
+        assert!(matches!(
+            check_tool_call("bash", r#"{"command":"rm x"}"#, &p),
+            ToolVerdict::Refused(_)
+        ));
     }
 
     #[test]
@@ -817,20 +1041,41 @@ mod tests {
 
     #[test]
     fn describes_calls() {
-        assert_eq!(describe_tool_call("bash", r#"{"command":"npm test"}"#), "Run `npm test`");
-        assert_eq!(describe_tool_call("write", r#"{"path":"a.ts","old_text":"x","start_line":3}"#), "Edit a.ts (only lines 3-3)");
-        assert_eq!(describe_tool_call("list_dir", "{}"), "List the project root");
-        assert_eq!(describe_tool_call("write", r#"{"path":"a","content":"x\ny"}"#), "Write a (2 lines)");
+        assert_eq!(
+            describe_tool_call("bash", r#"{"command":"npm test"}"#),
+            "Run `npm test`"
+        );
+        assert_eq!(
+            describe_tool_call("write", r#"{"path":"a.ts","old_text":"x","start_line":3}"#),
+            "Edit a.ts (only lines 3-3)"
+        );
+        assert_eq!(
+            describe_tool_call("list_dir", "{}"),
+            "List the project root"
+        );
+        assert_eq!(
+            describe_tool_call("write", r#"{"path":"a","content":"x\ny"}"#),
+            "Write a (2 lines)"
+        );
     }
 
     #[test]
     fn shell_parsing_edge_cases() {
         // Unterminated quote: the rest is one word, nothing hidden after it.
-        assert_eq!(parse_command("echo 'a; rm x").segments, vec![words(&["echo", "a; rm x"])]);
+        assert_eq!(
+            parse_command("echo 'a; rm x").segments,
+            vec![words(&["echo", "a; rm x"])]
+        );
         // Empty segments and doubled separators.
-        assert_eq!(parse_command(";; ls ||  && pwd ;").segments, vec![words(&["ls"]), words(&["pwd"])]);
+        assert_eq!(
+            parse_command(";; ls ||  && pwd ;").segments,
+            vec![words(&["ls"]), words(&["pwd"])]
+        );
         // Backslash-escaped separator stays in the word.
-        assert_eq!(parse_command(r"echo a\;b").segments, vec![words(&["echo", "a;b"])]);
+        assert_eq!(
+            parse_command(r"echo a\;b").segments,
+            vec![words(&["echo", "a;b"])]
+        );
         // Redirects: to a file writes, from a file or to a descriptor doesn't.
         assert!(parse_command("ls >> log.txt").writes_via_redirect);
         assert!(parse_command("ls &> all.txt").writes_via_redirect);
@@ -844,20 +1089,45 @@ mod tests {
 
     #[test]
     fn allowed_list_edge_cases() {
-        let p = Permissions { allowed_commands: vec!["git status".into(), "  ".into()], ..Permissions::default() };
+        let p = Permissions {
+            allowed_commands: vec!["git status".into(), "  ".into()],
+            ..Permissions::default()
+        };
         // A prefix of the entry isn't enough, nor another subcommand.
         assert!(matches!(check_command("git", &p), Verdict::Refused(_)));
-        assert!(matches!(check_command("git statusx", &p), Verdict::Refused(_)));
+        assert!(matches!(
+            check_command("git statusx", &p),
+            Verdict::Refused(_)
+        ));
         // Every part of a pipeline must be allowed.
-        assert!(matches!(check_command("git status | sh", &p), Verdict::Refused(r) if r.contains("\"sh\"")));
+        assert!(
+            matches!(check_command("git status | sh", &p), Verdict::Refused(r) if r.contains("\"sh\""))
+        );
         // A leading assignment doesn't hide the command.
-        assert!(matches!(check_command("GIT_DIR=x git status", &p), Verdict::Permitted { .. }));
-        let none = Permissions { allowed_commands: vec![], ..Permissions::default() };
-        assert!(matches!(check_command("ls", &none), Verdict::Refused(r) if r.ends_with("Allowed: (none).")));
-        assert!(!commands_available(&Permissions { allowed_commands: vec![" ".into()], ..Permissions::default() }));
+        assert!(matches!(
+            check_command("GIT_DIR=x git status", &p),
+            Verdict::Permitted { .. }
+        ));
+        let none = Permissions {
+            allowed_commands: vec![],
+            ..Permissions::default()
+        };
+        assert!(
+            matches!(check_command("ls", &none), Verdict::Refused(r) if r.ends_with("Allowed: (none)."))
+        );
+        assert!(!commands_available(&Permissions {
+            allowed_commands: vec![" ".into()],
+            ..Permissions::default()
+        }));
         // bash with no command: left to the tool to report.
-        assert_eq!(check_tool_call("bash", "{}", &none), ToolVerdict::Permitted { approval: None });
-        assert_eq!(check_tool_call("bash", "not json", &none), ToolVerdict::Permitted { approval: None });
+        assert_eq!(
+            check_tool_call("bash", "{}", &none),
+            ToolVerdict::Permitted { approval: None }
+        );
+        assert_eq!(
+            check_tool_call("bash", "not json", &none),
+            ToolVerdict::Permitted { approval: None }
+        );
     }
 
     #[test]
@@ -868,19 +1138,30 @@ mod tests {
         assert!(is_risky_command("timeout 5 bash -c x"));
         assert!(is_risky_command("curl -X POST https://x"));
         assert!(!is_risky_command("curl https://example.com"));
-        assert!(!is_risky_command("rm file.txt"), "a single file without -r/-f");
+        assert!(
+            !is_risky_command("rm file.txt"),
+            "a single file without -r/-f"
+        );
         assert!(is_risky_command("'rm' x"), "quoted program name");
     }
 
     #[test]
     fn risky_windows_commands() {
         assert!(is_risky_command("cmd /c del x"));
-        assert!(is_risky_command("git status & powershell.exe -NoProfile -Command \"x\""));
-        assert!(is_risky_command("C:/Windows/System32/cmd.exe /S /C x"), "path prefix stripped");
+        assert!(is_risky_command(
+            "git status & powershell.exe -NoProfile -Command \"x\""
+        ));
+        assert!(
+            is_risky_command("C:/Windows/System32/cmd.exe /S /C x"),
+            "path prefix stripped"
+        );
         assert!(is_risky_command("del /s /q build"));
         assert!(is_risky_command("rd /s build"));
         assert!(is_risky_command("rmdir /S /Q build"));
-        assert!(!is_risky_command("del notes.txt"), "a single file without /s, /q or /f");
+        assert!(
+            !is_risky_command("del notes.txt"),
+            "a single file without /s, /q or /f"
+        );
         assert!(is_risky_command("Remove-Item -Recurse build"));
         assert!(is_risky_command("ri build -Force"));
         assert!(is_risky_command("reg delete HKCU\\Software\\x /f"));

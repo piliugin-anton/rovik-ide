@@ -22,8 +22,8 @@ mod languages;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, Mutex};
 use std::ops::ControlFlow;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tree_sitter::{Node, ParseOptions, Parser, QueryCursor, QueryCursorOptions, StreamingIterator};
 
@@ -93,7 +93,10 @@ const CACHED_FILES: usize = 5_000;
 /// file: mtime granularity (and same-size rewrites) can otherwise serve a
 /// stale outline, and with it a stale repo map mid-run.
 pub fn invalidate_path(abs: &std::path::Path) {
-    FILE_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(abs);
+    FILE_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(abs);
 }
 
 /// The outline of the file at `abs` (named `rel` in the project), from the
@@ -103,7 +106,11 @@ pub fn outline_of_file(abs: &std::path::Path, rel: &str) -> Option<Arc<Vec<Symbo
     let meta = std::fs::metadata(abs).ok()?;
     let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let size = meta.len();
-    if let Some((m, s, symbols)) = FILE_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(abs) {
+    if let Some((m, s, symbols)) = FILE_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(abs)
+    {
         if *m == modified && *s == size {
             return Some(symbols.clone());
         }
@@ -170,11 +177,21 @@ pub fn syntax_errors(path: &str, content: &str) -> Option<Vec<SyntaxError>> {
 
     let deadline = Instant::now() + TIME_LIMIT;
     let mut parse_progress = |_: &tree_sitter::ParseState| {
-        if Instant::now() > deadline { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        if Instant::now() > deadline {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
     };
     let bytes = content.as_bytes();
     let tree = parser.parse_with_options(
-        &mut |offset, _| if offset < bytes.len() { &bytes[offset..] } else { &[] as &[u8] },
+        &mut |offset, _| {
+            if offset < bytes.len() {
+                &bytes[offset..]
+            } else {
+                &[] as &[u8]
+            }
+        },
         None,
         Some(ParseOptions::new().progress_callback(&mut parse_progress)),
     )?;
@@ -218,7 +235,11 @@ fn error_of(content: &str, node: &Node, missing: bool) -> SyntaxError {
         let text = &content[node.start_byte()..node.end_byte()];
         let first = text.lines().next().unwrap_or("").trim();
         let snippet = shorten(&collapse(first), SYNTAX_SNIPPET_CHARS);
-        if snippet.is_empty() { "syntax error".to_string() } else { format!("syntax error: `{snippet}`") }
+        if snippet.is_empty() {
+            "syntax error".to_string()
+        } else {
+            format!("syntax error: `{snippet}`")
+        }
     };
     SyntaxError {
         start_line: start.row + 1,
@@ -231,8 +252,21 @@ fn error_of(content: &str, node: &Node, missing: bool) -> SyntaxError {
 
 /// Leaf node kinds that are names, beyond `…identifier`.
 const NAME_KINDS: &[&str] = &[
-    "constant", "word", "name", "sym_lit", "symbol", "atom", "variable", "simple_identifier", "type_name",
-    "variable_name", "field_name", "property_name", "method_name", "function_name", "package_name",
+    "constant",
+    "word",
+    "name",
+    "sym_lit",
+    "symbol",
+    "atom",
+    "variable",
+    "simple_identifier",
+    "type_name",
+    "variable_name",
+    "field_name",
+    "property_name",
+    "method_name",
+    "function_name",
+    "package_name",
 ];
 /// Longer names are noise (generated, minified).
 const MAX_IDENTIFIER_CHARS: usize = 80;
@@ -252,11 +286,21 @@ fn analyze(path: &str, content: &str, with_identifiers: bool) -> Option<Tags> {
 
     let deadline = Instant::now() + TIME_LIMIT;
     let mut parse_progress = |_: &tree_sitter::ParseState| {
-        if Instant::now() > deadline { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        if Instant::now() > deadline {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
     };
     let bytes = content.as_bytes();
     let tree = parser.parse_with_options(
-        &mut |offset, _| if offset < bytes.len() { &bytes[offset..] } else { &[] as &[u8] },
+        &mut |offset, _| {
+            if offset < bytes.len() {
+                &bytes[offset..]
+            } else {
+                &[] as &[u8]
+            }
+        },
         None,
         Some(ParseOptions::new().progress_callback(&mut parse_progress)),
     )?;
@@ -276,7 +320,11 @@ fn analyze(path: &str, content: &str, with_identifiers: bool) -> Option<Tags> {
         if kinds.contains(&node.kind_id()) && seen.insert(node.id()) && items.len() < MAX_SYMBOLS {
             items.push(node);
         }
-        if with_identifiers && node.child_count() == 0 && node.is_named() && is_name_kind(node.kind()) {
+        if with_identifiers
+            && node.child_count() == 0
+            && node.is_named()
+            && is_name_kind(node.kind())
+        {
             if let Ok(text) = node.utf8_text(bytes) {
                 if (2..=MAX_IDENTIFIER_CHARS).contains(&text.len()) {
                     *identifiers.entry(text.to_string()).or_default() += 1;
@@ -313,7 +361,11 @@ fn analyze(path: &str, content: &str, with_identifiers: bool) -> Option<Tags> {
         let name_index = query.capture_index_for_name("name");
         let mut qcursor = QueryCursor::new();
         let mut query_progress = |_: &tree_sitter::QueryCursorState| {
-            if Instant::now() > deadline { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+            if Instant::now() > deadline {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
         };
         let mut matches = qcursor.matches_with_options(
             query,
@@ -322,7 +374,11 @@ fn analyze(path: &str, content: &str, with_identifiers: bool) -> Option<Tags> {
             QueryCursorOptions::new().progress_callback(&mut query_progress),
         );
         while let Some(m) = matches.next() {
-            let name = m.captures.iter().find(|c| Some(c.index) == name_index).map(|c| c.node);
+            let name = m
+                .captures
+                .iter()
+                .find(|c| Some(c.index) == name_index)
+                .map(|c| c.node);
             for c in m.captures {
                 if !item_indexes.contains(&c.index) {
                     continue;
@@ -340,7 +396,10 @@ fn analyze(path: &str, content: &str, with_identifiers: bool) -> Option<Tags> {
         }
     }
 
-    Some(Tags { symbols: symbols(content, items, &names), identifiers })
+    Some(Tags {
+        symbols: symbols(content, items, &names),
+        identifiers,
+    })
 }
 
 /// Ranges, signatures and nesting for the declarations found.
@@ -349,7 +408,13 @@ fn symbols(content: &str, items: Vec<Node>, names: &HashMap<usize, Node>) -> Vec
         item: Node<'t>,
         range: Node<'t>,
     }
-    let mut found: Vec<Found> = items.into_iter().map(|item| Found { item, range: range_node(item) }).collect();
+    let mut found: Vec<Found> = items
+        .into_iter()
+        .map(|item| Found {
+            item,
+            range: range_node(item),
+        })
+        .collect();
 
     // A declaration directly inside another on the same line is the same
     // thing twice (`typedef struct {…} T`): keep the outer one. (Its own
@@ -367,7 +432,9 @@ fn symbols(content: &str, items: Vec<Node>, names: &HashMap<usize, Node>) -> Vec
             .cmp(&(b.range.start_byte(), std::cmp::Reverse(b.range.end_byte())))
     });
     // The same range twice (two patterns, or a wrapper and its item): once.
-    found.dedup_by(|b, a| a.range.start_byte() == b.range.start_byte() && a.range.end_byte() == b.range.end_byte());
+    found.dedup_by(|b, a| {
+        a.range.start_byte() == b.range.start_byte() && a.range.end_byte() == b.range.end_byte()
+    });
 
     let mut open: Vec<usize> = Vec::new(); // end bytes of the enclosing ones
     let mut out = Vec::with_capacity(found.len());
@@ -378,10 +445,17 @@ fn symbols(content: &str, items: Vec<Node>, names: &HashMap<usize, Node>) -> Vec
         let start_line = f.range.start_position().row + 1;
         let end = f.range.end_position();
         // A node ending at the start of a line ends on the line before.
-        let end_line = if end.column == 0 && end.row + 1 > start_line { end.row } else { end.row + 1 };
+        let end_line = if end.column == 0 && end.row + 1 > start_line {
+            end.row
+        } else {
+            end.row + 1
+        };
         out.push(Symbol {
             name: match names.get(&f.item.id()) {
-                Some(n) => shorten(&collapse(&content[n.start_byte()..n.end_byte()]), NAME_CHARS),
+                Some(n) => shorten(
+                    &collapse(&content[n.start_byte()..n.end_byte()]),
+                    NAME_CHARS,
+                ),
                 None => name(content, f.item),
             },
             kind: f.item.kind().to_string(),
@@ -453,7 +527,9 @@ fn body(item: Node) -> Option<Node> {
         return Some(b);
     }
     let mut cursor = item.walk();
-    let found = item.named_children(&mut cursor).find(|c| is_body(*c) && c.start_byte() > item.start_byte());
+    let found = item
+        .named_children(&mut cursor)
+        .find(|c| is_body(*c) && c.start_byte() > item.start_byte());
     found
 }
 
@@ -461,7 +537,11 @@ fn body(item: Node) -> Option<Node> {
 /// wrapper when it starts on the same line (`export default function…`),
 /// else from the declaration itself (not its decorators).
 fn signature(content: &str, item: Node, range: Node) -> String {
-    let start = if range.start_position().row == item.start_position().row { range.start_byte() } else { item.start_byte() };
+    let start = if range.start_position().row == item.start_position().row {
+        range.start_byte()
+    } else {
+        item.start_byte()
+    };
     let end = match body(item) {
         Some(b) if b.start_byte() > start => b.start_byte(),
         _ => {
@@ -486,7 +566,15 @@ fn signature(content: &str, item: Node, range: Node) -> String {
 }
 
 /// Field names that hold a declaration's name.
-const NAME_FIELDS: &[&str] = &["name", "declarator", "key", "tag", "target", "left", "pattern"];
+const NAME_FIELDS: &[&str] = &[
+    "name",
+    "declarator",
+    "key",
+    "tag",
+    "target",
+    "left",
+    "pattern",
+];
 
 /// A declaration's name: its `name` field, or the first name-like node
 /// near its start, or its first line.
@@ -510,7 +598,15 @@ fn name(content: &str, item: Node) -> String {
             // before the name but aren't it.
             if kind == "type"
                 || kind.ends_with("_type")
-                || ["modifier", "annotation", "attribute", "decorator", "comment"].iter().any(|k| kind.contains(k))
+                || [
+                    "modifier",
+                    "annotation",
+                    "attribute",
+                    "decorator",
+                    "comment",
+                ]
+                .iter()
+                .any(|k| kind.contains(k))
             {
                 continue;
             }
@@ -536,7 +632,10 @@ fn name(content: &str, item: Node) -> String {
     }
     let text = match find(item, 3) {
         Some(n) => &content[n.start_byte()..n.end_byte()],
-        None => content[item.start_byte()..item.end_byte()].lines().next().unwrap_or(""),
+        None => content[item.start_byte()..item.end_byte()]
+            .lines()
+            .next()
+            .unwrap_or(""),
     };
     shorten(&collapse(text), NAME_CHARS)
 }

@@ -50,10 +50,16 @@ impl LspState {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum LspEvent {
     /// One JSON-RPC message from the server.
-    Message { data: String },
+    Message {
+        data: String,
+    },
     /// A line the server logged (rust-analyzer logs to stderr).
-    Log { line: String },
-    Exit { code: Option<i32> },
+    Log {
+        line: String,
+    },
+    Exit {
+        code: Option<i32>,
+    },
 }
 
 /// PATH with the cargo bin folder added. Launched from a desktop entry,
@@ -64,7 +70,11 @@ pub fn tool_path() -> std::ffi::OsString {
         .unwrap_or_default();
     let cargo_bin = std::env::var_os("CARGO_HOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| std::path::Path::new(&h).join(".cargo")))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|h| std::path::Path::new(&h).join(".cargo"))
+        })
         .map(|c| c.join("bin"));
     if let Some(bin) = cargo_bin.filter(|b| b.is_dir() && !dirs.contains(b)) {
         dirs.push(bin);
@@ -163,7 +173,13 @@ pub fn lsp_start(
         .0
         .lock()
         .map_err(|_| "language server state poisoned".to_string())?
-        .insert(id.clone(), Arc::new(Server { stdin: Mutex::new(stdin), child: Mutex::new(child) }));
+        .insert(
+            id.clone(),
+            Arc::new(Server {
+                stdin: Mutex::new(stdin),
+                child: Mutex::new(child),
+            }),
+        );
 
     let messages = on_event.clone();
     std::thread::Builder::new()
@@ -195,8 +211,14 @@ pub fn lsp_start(
         .name(format!("lsp-wait-{id}"))
         .spawn(move || {
             let code = loop {
-                let Some(server) = app.state::<LspState>().get(&waiter_id).ok() else { break None };
-                let status = server.child.lock().ok().and_then(|mut c| c.try_wait().ok().flatten());
+                let Some(server) = app.state::<LspState>().get(&waiter_id).ok() else {
+                    break None;
+                };
+                let status = server
+                    .child
+                    .lock()
+                    .ok()
+                    .and_then(|mut c| c.try_wait().ok().flatten());
                 if let Some(status) = status {
                     break status.code();
                 }
@@ -214,8 +236,13 @@ pub fn lsp_start(
 #[tauri::command]
 pub fn lsp_send(state: State<'_, LspState>, id: String, message: String) -> Result<(), String> {
     let server = state.get(&id)?;
-    let mut stdin = server.stdin.lock().map_err(|_| "stdin poisoned".to_string())?;
-    stdin.write_all(&frame(&message)).map_err(|e| e.to_string())?;
+    let mut stdin = server
+        .stdin
+        .lock()
+        .map_err(|_| "stdin poisoned".to_string())?;
+    stdin
+        .write_all(&frame(&message))
+        .map_err(|e| e.to_string())?;
     stdin.flush().map_err(|e| e.to_string())
 }
 
@@ -223,9 +250,17 @@ pub fn lsp_send(state: State<'_, LspState>, id: String, message: String) -> Resu
 /// makes sure it's gone (waiting briefly for a clean exit).
 #[tauri::command]
 pub fn lsp_stop(state: State<'_, LspState>, id: String) -> Result<(), String> {
-    let Some(server) = state.remove(&id) else { return Ok(()) };
+    let Some(server) = state.remove(&id) else {
+        return Ok(());
+    };
     for _ in 0..20 {
-        if server.child.lock().ok().and_then(|mut c| c.try_wait().ok().flatten()).is_some() {
+        if server
+            .child
+            .lock()
+            .ok()
+            .and_then(|mut c| c.try_wait().ok().flatten())
+            .is_some()
+        {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -248,17 +283,32 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("some-language-server.cmd"), "@echo off\r\n").unwrap();
         let path = std::env::join_paths([&dir]).unwrap();
-        assert_eq!(find_program("some-language-server", &path), dir.join("some-language-server.cmd"));
-        assert_eq!(find_program("not-there", &path), std::path::PathBuf::from("not-there"));
-        assert_eq!(find_program("node.exe", &path), std::path::PathBuf::from("node.exe"));
+        assert_eq!(
+            find_program("some-language-server", &path),
+            dir.join("some-language-server.cmd")
+        );
+        assert_eq!(
+            find_program("not-there", &path),
+            std::path::PathBuf::from("not-there")
+        );
+        assert_eq!(
+            find_program("node.exe", &path),
+            std::path::PathBuf::from("node.exe")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn leaves_names_alone_elsewhere_or_with_an_extension() {
         let path = std::ffi::OsString::new();
-        assert_eq!(find_program("rust-analyzer", &path), std::path::PathBuf::from("rust-analyzer"));
-        assert_eq!(find_program("/usr/bin/x", &path), std::path::PathBuf::from("/usr/bin/x"));
+        assert_eq!(
+            find_program("rust-analyzer", &path),
+            std::path::PathBuf::from("rust-analyzer")
+        );
+        assert_eq!(
+            find_program("/usr/bin/x", &path),
+            std::path::PathBuf::from("/usr/bin/x")
+        );
     }
 
     #[test]

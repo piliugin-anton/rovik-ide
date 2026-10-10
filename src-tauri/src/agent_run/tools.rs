@@ -10,9 +10,9 @@ use super::StopSignal;
 use crate::code_search::SearchResult;
 use crate::command_tool::CommandOutput;
 use crate::file_guard::Seen;
+use crate::outline::Symbol;
 use regex::Regex;
 use serde_json::{json, Map, Value};
-use crate::outline::Symbol;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -391,7 +391,9 @@ fn context_only_tool_schemas(plan_mode: bool) -> Vec<Value> {
 }
 
 fn tool_name(t: &Value) -> &str {
-    t.pointer("/function/name").and_then(|n| n.as_str()).unwrap_or("")
+    t.pointer("/function/name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
 }
 
 /// The tool list for one request, depending on what's available. `clm`:
@@ -462,7 +464,10 @@ pub struct ToolResult {
 
 impl ToolResult {
     fn text(content: impl Into<String>) -> Self {
-        ToolResult { content: content.into(), ..Default::default() }
+        ToolResult {
+            content: content.into(),
+            ..Default::default()
+        }
     }
 }
 
@@ -475,7 +480,9 @@ fn num(args: &Map<String, Value>, key: &str) -> Option<f64> {
 }
 
 fn uint(args: &Map<String, Value>, key: &str) -> Option<usize> {
-    num(args, key).filter(|n| *n >= 0.0).map(|n| n.floor() as usize)
+    num(args, key)
+        .filter(|n| *n >= 0.0)
+        .map(|n| n.floor() as usize)
 }
 
 /// A boolean; models sometimes send "true" for true.
@@ -530,7 +537,9 @@ pub struct EditArgs {
 }
 
 pub fn edit_args(args: &Map<String, Value>) -> Result<EditArgs, String> {
-    let path = text(args, "path").filter(|p| !p.is_empty()).ok_or("Error: \"path\" is required.")?;
+    let path = text(args, "path")
+        .filter(|p| !p.is_empty())
+        .ok_or("Error: \"path\" is required.")?;
     let old_text = text(args, "old_text").ok_or("Error: \"old_text\" is required.")?;
     let new_text = text(args, "content").ok_or("Error: \"content\" is required.")?;
     Ok(EditArgs {
@@ -587,7 +596,11 @@ pub async fn execute<R: Runtime>(
         match serde_json::from_str::<Value>(args_json) {
             Ok(Value::Object(map)) => map,
             Ok(_) => Map::new(),
-            Err(_) => return ToolResult::text(format!("Error: could not parse arguments as JSON: {args_json}")),
+            Err(_) => {
+                return ToolResult::text(format!(
+                    "Error: could not parse arguments as JSON: {args_json}"
+                ))
+            }
         }
     };
     match run(app, root, name, &args, stop, ctx).await {
@@ -614,9 +627,13 @@ async fn run<R: Runtime>(
                 return Ok(ToolResult::text("Error: \"query\" is required."));
             };
             let browser: tauri::State<'_, crate::browser_tools::BrowserState> = app.state();
-            let hits =
-                crate::browser_tools::web_search_inner(&browser, query.into(), uint(args, "max_results"), Some(&**stop))
-                    .await?;
+            let hits = crate::browser_tools::web_search_inner(
+                &browser,
+                query.into(),
+                uint(args, "max_results"),
+                Some(&**stop),
+            )
+            .await?;
             if hits.is_empty() {
                 return Ok(ToolResult::text("No results."));
             }
@@ -624,7 +641,11 @@ async fn run<R: Runtime>(
                 .iter()
                 .enumerate()
                 .map(|(i, h)| {
-                    let snippet = if h.snippet.is_empty() { String::new() } else { format!("\n   {}", h.snippet) };
+                    let snippet = if h.snippet.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n   {}", h.snippet)
+                    };
                     format!("{}. {}\n   {}{snippet}", i + 1, h.title, h.url)
                 })
                 .collect();
@@ -635,12 +656,29 @@ async fn run<R: Runtime>(
                 return Ok(ToolResult::text("Error: \"url\" is required."));
             };
             let browser: tauri::State<'_, crate::browser_tools::BrowserState> = app.state();
-            let page =
-                crate::browser_tools::browse_url_inner(&browser, url.into(), uint(args, "max_chars"), Some(&**stop))
-                    .await?;
-            let title = if page.title.is_empty() { "(untitled)" } else { &page.title };
-            let body = if page.text.is_empty() { "(no text)" } else { &page.text };
-            let mut parts = vec![format!("# {title}"), format!("URL: {}", page.url), String::new(), body.to_string()];
+            let page = crate::browser_tools::browse_url_inner(
+                &browser,
+                url.into(),
+                uint(args, "max_chars"),
+                Some(&**stop),
+            )
+            .await?;
+            let title = if page.title.is_empty() {
+                "(untitled)"
+            } else {
+                &page.title
+            };
+            let body = if page.text.is_empty() {
+                "(no text)"
+            } else {
+                &page.text
+            };
+            let mut parts = vec![
+                format!("# {title}"),
+                format!("URL: {}", page.url),
+                String::new(),
+                body.to_string(),
+            ];
             if page.truncated {
                 parts.push(String::new());
                 parts.push("[...page text truncated; pass a larger max_chars to read more]".into());
@@ -648,7 +686,11 @@ async fn run<R: Runtime>(
             if !page.links.is_empty() {
                 parts.push(String::new());
                 parts.push("## Links".into());
-                parts.extend(page.links.iter().map(|l| format!("- {}: {}", l.text, l.url)));
+                parts.extend(
+                    page.links
+                        .iter()
+                        .map(|l| format!("- {}: {}", l.text, l.url)),
+                );
             }
             return Ok(ToolResult::text(parts.join("\n")));
         }
@@ -662,7 +704,11 @@ async fn run<R: Runtime>(
                 Some(&**stop),
             )
             .await?;
-            let title = if shot.title.is_empty() { "untitled" } else { &shot.title };
+            let title = if shot.title.is_empty() {
+                "untitled"
+            } else {
+                &shot.title
+            };
             return Ok(ToolResult {
                 content: format!(
                     "Screenshot of {} ({title}), {}x{}. The image is attached in the next message.",
@@ -676,7 +722,9 @@ async fn run<R: Runtime>(
     }
 
     let Some(root) = root else {
-        return Ok(ToolResult::text(format!("Error: \"{name}\" needs an open project folder.")));
+        return Ok(ToolResult::text(format!(
+            "Error: \"{name}\" needs an open project folder."
+        )));
     };
     let root_owned = root.to_string();
     let content = match name {
@@ -716,16 +764,25 @@ async fn run<R: Runtime>(
             let Some(content) = text(args, "content") else {
                 return Ok(ToolResult::text("Error: \"content\" is required."));
             };
-            let (root_s, path, content, seen_arc) = (root.to_string(), path.to_string(), content.to_string(), ctx.seen.clone());
-            tauri::async_runtime::spawn_blocking(move || crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc)))
-                .await
-                .map_err(|e| e.to_string())??
+            let (root_s, path, content, seen_arc) = (
+                root.to_string(),
+                path.to_string(),
+                content.to_string(),
+                ctx.seen.clone(),
+            );
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc))
+            })
+            .await
+            .map_err(|e| e.to_string())??
         }
         "bash" => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {
                 return Ok(ToolResult::text("Error: \"command\" is required."));
             };
-            let timeout = num(args, "timeout_seconds").filter(|s| *s > 0.0).map(|s| (s * 1000.0) as u64);
+            let timeout = num(args, "timeout_seconds")
+                .filter(|s| *s > 0.0)
+                .map(|s| (s * 1000.0) as u64);
             let stop = stop.clone();
             match crate::overlay::chats::get(&ctx.owner) {
                 Some(o) => {
@@ -737,7 +794,10 @@ async fn run<R: Runtime>(
                 // runs commands that write.
                 None => {
                     if super::permissions::command_modifies_files(command) {
-                        if let Err(problem) = crate::overlay::chats::claim_direct_writes(std::path::Path::new(root_owned.as_str()), &ctx.owner) {
+                        if let Err(problem) = crate::overlay::chats::claim_direct_writes(
+                            std::path::Path::new(root_owned.as_str()),
+                            &ctx.owner,
+                        ) {
                             return Ok(ToolResult::text(problem));
                         }
                     }
@@ -745,14 +805,23 @@ async fn run<R: Runtime>(
             }
             let note = ctx.note.clone();
             let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Agent { owner: ctx.owner.clone() },
+                kind: crate::workload::JobKind::Agent {
+                    owner: ctx.owner.clone(),
+                },
                 note: Box::new(move |n| note(n)),
-                env: crate::overlay::chats::get(&ctx.owner).map(|o| o.command_env()).unwrap_or_default(),
+                env: crate::overlay::chats::get(&ctx.owner)
+                    .map(|o| o.command_env())
+                    .unwrap_or_default(),
                 confine: crate::overlay::chats::get(&ctx.owner).and_then(|o| o.confine()),
             };
-            let out =
-                crate::command_tool::run_command(root_owned, command.into(), timeout, move || stop.is_set(), Some(queued))
-                    .await?;
+            let out = crate::command_tool::run_command(
+                root_owned,
+                command.into(),
+                timeout,
+                move || stop.is_set(),
+                Some(queued),
+            )
+            .await?;
             format_command_output(command, &out)
         }
         "list_dir" => {
@@ -796,7 +865,10 @@ async fn run<R: Runtime>(
             // Regex syntax sent as literal text (regex: true forgotten): the
             // literal finds nothing, so search it as the pattern it is.
             let mut as_regex = None;
-            if !regex && result.total_matches == 0 && looks_like_regex(query, flag(args, "case_sensitive")) {
+            if !regex
+                && result.total_matches == 0
+                && looks_like_regex(query, flag(args, "case_sensitive"))
+            {
                 let retried = search(true).await?;
                 as_regex = Some(retried.total_matches > 0);
                 if retried.total_matches > 0 {
@@ -840,12 +912,12 @@ async fn run<R: Runtime>(
             };
             crate::agent_tools::tool_outline(root_owned, path.into())?
         }
-        "diagnostics" => {
-            crate::agent_tools::tool_diagnostics(
-                root_owned,
-                text(args, "path").filter(|p| !p.trim().is_empty()).map(str::to_string),
-            )?
-        }
+        "diagnostics" => crate::agent_tools::tool_diagnostics(
+            root_owned,
+            text(args, "path")
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string),
+        )?,
         _ => format!("Error: unknown tool \"{name}\"."),
     };
     Ok(ToolResult::text(content))
@@ -864,7 +936,10 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
         }
     };
     // The first two lines are read back by the chat's tool block (exit code).
-    let mut parts = vec![format!("$ {command}"), format!("{status}, {:.1} s", out.duration_ms as f64 / 1000.0)];
+    let mut parts = vec![
+        format!("$ {command}"),
+        format!("{status}, {:.1} s", out.duration_ms as f64 / 1000.0),
+    ];
     // Third line, read back by the tool block too: a long wait for a CPU slot.
     if let Some(waited) = out.waited.as_ref().and_then(|w| w.describe()) {
         parts.push(waited);
@@ -874,7 +949,11 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
     // A failing run: its errors and summary. Otherwise its start and end.
     let mut shape = |text: &str| {
         let clean = clean_output(text).trim_end().to_string();
-        let shaped = if failed { focus_failures(&clean, 12_000) } else { cap_output(&clean, 200, 200, 24_000) };
+        let shaped = if failed {
+            focus_failures(&clean, 12_000)
+        } else {
+            cap_output(&clean, 200, 200, 24_000)
+        };
         if shaped != clean {
             shortened = true;
         }
@@ -906,7 +985,10 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
 /// ripgrep-style text: "path:line: text" for matches, "path-line- text" for
 /// context, "--" between separate groups. The first line is a summary the
 /// tool block header reads its count from.
-pub fn format_search_result(result: &SearchResult, outlines: &HashMap<String, Arc<Vec<Symbol>>>) -> String {
+pub fn format_search_result(
+    result: &SearchResult,
+    outlines: &HashMap<String, Arc<Vec<Symbol>>>,
+) -> String {
     if result.match_count == 0 {
         return "No matches.".into();
     }
@@ -914,7 +996,13 @@ pub fn format_search_result(result: &SearchResult, outlines: &HashMap<String, Ar
     let files = |n: usize| if n == 1 { "file" } else { "files" };
     // The first line starts with the total ("12 matches"): the UI reads it.
     let header = if !result.truncated {
-        format!("{} {} in {} {}", result.match_count, matches(result.match_count), result.file_count, files(result.file_count))
+        format!(
+            "{} {} in {} {}",
+            result.match_count,
+            matches(result.match_count),
+            result.file_count,
+            files(result.file_count)
+        )
     } else {
         let (more, counted) = if result.totals_complete {
             ("", "")
@@ -938,7 +1026,11 @@ pub fn format_search_result(result: &SearchResult, outlines: &HashMap<String, Ar
     let mut start = 0;
     while start < result.lines.len() {
         let path = &result.lines[start].path;
-        let end = start + result.lines[start..].iter().take_while(|l| &l.path == path).count();
+        let end = start
+            + result.lines[start..]
+                .iter()
+                .take_while(|l| &l.path == path)
+                .count();
         let file_lines = &result.lines[start..end];
         let count = file_lines.iter().filter(|l| l.is_match).count();
         out.push(format!("{path} ({count} {})", matches(count)));
@@ -952,7 +1044,11 @@ pub fn format_search_result(result: &SearchResult, outlines: &HashMap<String, Ar
                     out.push(match here {
                         Some(i) => {
                             let (a, b) = (symbols[i].start_line, symbols[i].end_line);
-                            let lines = if b > a { format!("{a}-{b}") } else { a.to_string() };
+                            let lines = if b > a {
+                                format!("{a}-{b}")
+                            } else {
+                                a.to_string()
+                            };
                             format!("  {} [{lines}]:", crate::read_symbol::qualified(symbols, i))
                         }
                         None => "  (outside any declaration):".to_string(),
@@ -966,9 +1062,16 @@ pub fn format_search_result(result: &SearchResult, outlines: &HashMap<String, Ar
                 out.push(format!("{indent}--"));
             }
             // A match on its declaration's first line is the declaration itself.
-            let declares = symbols.zip(group.flatten()).is_some_and(|(s, i)| s[i].start_line == l.line as usize);
+            let declares = symbols
+                .zip(group.flatten())
+                .is_some_and(|(s, i)| s[i].start_line == l.line as usize);
             out.push(if l.is_match {
-                format!("{indent}{}: {}{}", l.line, l.text, if declares { "   (declaration)" } else { "" })
+                format!(
+                    "{indent}{}: {}{}",
+                    l.line,
+                    l.text,
+                    if declares { "   (declaration)" } else { "" }
+                )
             } else {
                 format!("{indent}{}- {}", l.line, l.text)
             });
@@ -982,7 +1085,11 @@ pub fn format_search_result(result: &SearchResult, outlines: &HashMap<String, Ar
 /// The outlines of the files in a search result, by its paths, for the
 /// declarations its lines are in: as many as `deadline` allows (from the
 /// cache when unchanged).
-pub fn search_outlines(root: &str, result: &SearchResult, deadline: std::time::Instant) -> HashMap<String, Arc<Vec<Symbol>>> {
+pub fn search_outlines(
+    root: &str,
+    result: &SearchResult,
+    deadline: std::time::Instant,
+) -> HashMap<String, Arc<Vec<Symbol>>> {
     let mut outlines = HashMap::new();
     for line in &result.lines {
         if outlines.contains_key(&line.path) || std::time::Instant::now() > deadline {
@@ -1001,7 +1108,8 @@ pub fn search_outlines(root: &str, result: &SearchResult, deadline: std::time::I
  * ---------------------------------------------------------------------------
  */
 
-static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([a-zA-Z]:[\\/]|[\\/])").unwrap());
+static ABSOLUTE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([a-zA-Z]:[\\/]|[\\/])").unwrap());
 static SEPARATORS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\\/]+").unwrap());
 
 /// A path the model gave (relative to the project, or already absolute) as
@@ -1010,8 +1118,15 @@ pub fn to_absolute_path(path: &str, root: &str) -> String {
     if ABSOLUTE.is_match(path) {
         return path.to_string();
     }
-    let sep = if root.contains('\\') && !root.contains('/') { "\\" } else { "/" };
-    let relative = path.strip_prefix("./").or_else(|| path.strip_prefix(".\\")).unwrap_or(path);
+    let sep = if root.contains('\\') && !root.contains('/') {
+        "\\"
+    } else {
+        "/"
+    };
+    let relative = path
+        .strip_prefix("./")
+        .or_else(|| path.strip_prefix(".\\"))
+        .unwrap_or(path);
     let relative = SEPARATORS.replace_all(relative, sep);
     let relative = relative.trim_end_matches(['/', '\\']);
     format!("{}{sep}{relative}", root.trim_end_matches(['/', '\\']))
@@ -1051,28 +1166,52 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
             }
             Some(meta)
         }
-        "list_dir" => one("count", json!(if result.starts_with("(empty") { 0 } else { count_lines(result) })),
+        "list_dir" => one(
+            "count",
+            json!(if result.starts_with("(empty") {
+                0
+            } else {
+                count_lines(result)
+            }),
+        ),
         "neighbours" | "callers" | "outline" | "diagnostics" => {
             if result.trim_start().starts_with("Error:") {
                 return None;
             }
-            one("count", json!(result.split('\n').filter(|l| l.starts_with("- ")).count()))
-        },
+            one(
+                "count",
+                json!(result.split('\n').filter(|l| l.starts_with("- ")).count()),
+            )
+        }
         "search_code" => {
             // First line: "12 matches in 3 files" (context lines aren't matches).
             if result.trim_start().starts_with("No matches.") {
                 return one("count", json!(0));
             }
-            let count = MATCH_COUNT.captures(result).and_then(|c| c[1].parse::<u64>().ok());
+            let count = MATCH_COUNT
+                .captures(result)
+                .and_then(|c| c[1].parse::<u64>().ok());
             one("count", json!(count.unwrap_or(count_lines(result) as u64)))
         }
-        "web_search" => one("count", json!(result.split('\n').filter(|l| NUMBERED_HIT.is_match(l)).count())),
+        "web_search" => one(
+            "count",
+            json!(result
+                .split('\n')
+                .filter(|l| NUMBERED_HIT.is_match(l))
+                .count()),
+        ),
         "bash" => {
             let line = result.split('\n').nth(1).unwrap_or("");
-            let code = EXIT_CODE.captures(line).and_then(|c| c[1].parse::<i64>().ok());
+            let code = EXIT_CODE
+                .captures(line)
+                .and_then(|c| c[1].parse::<i64>().ok());
             let mut meta = Map::new();
             meta.insert("exitCode".into(), json!(code));
-            if let Some(waited) = result.split('\n').nth(2).filter(|l| l.starts_with("Waited ")) {
+            if let Some(waited) = result
+                .split('\n')
+                .nth(2)
+                .filter(|l| l.starts_with("Waited "))
+            {
                 meta.insert("waited".into(), json!(waited.trim_end_matches('.')));
             }
             Some(meta)
@@ -1085,7 +1224,10 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
             meta
         }),
         "browse_url" => {
-            let title = PAGE_TITLE.captures(result).map(|c| c[1].to_string()).filter(|t| t != "(untitled)");
+            let title = PAGE_TITLE
+                .captures(result)
+                .map(|c| c[1].to_string())
+                .filter(|t| t != "(untitled)");
             match title {
                 Some(t) => one("pageTitle", json!(t)),
                 None => Some(Map::new()),
@@ -1109,7 +1251,10 @@ mod tests {
 
     #[test]
     fn regex_syntax_in_a_literal_query_is_recognised() {
-        assert!(looks_like_regex(r"cursor-follower|link-hover|rotate\(45deg\)", false));
+        assert!(looks_like_regex(
+            r"cursor-follower|link-hover|rotate\(45deg\)",
+            false
+        ));
         assert!(looks_like_regex(r"fn\s+handle_\w+", false));
         assert!(looks_like_regex("useState.*null", false));
         // Plain text, and text that only looks like a pattern.
@@ -1135,31 +1280,59 @@ mod tests {
     #[test]
     fn tool_lists_by_mode() {
         let p = Permissions::default();
-        let names = |tools: Vec<Value>| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
+        let names = |tools: Vec<Value>| {
+            tools
+                .iter()
+                .map(|t| tool_name(t).to_string())
+                .collect::<Vec<_>>()
+        };
         let agent = names(tools_for(true, false, false, &p, false, false, false));
         assert!(agent.contains(&"bash".to_string()) && agent.last().unwrap() == "todo");
         let plan = names(tools_for(true, true, false, &p, true, false, false));
-        assert!(!plan.iter().any(|n| PLAN_BLOCKED_TOOLS.contains(&n.as_str())));
-        assert!(plan.contains(&"browser_screenshot".to_string()) && plan.ends_with(&["ask_user".into(), "submit_plan".into()]));
-        assert_eq!(names(tools_for(false, false, false, &p, false, false, false)), vec!["web_search", "browse_url"]);
+        assert!(!plan
+            .iter()
+            .any(|n| PLAN_BLOCKED_TOOLS.contains(&n.as_str())));
+        assert!(
+            plan.contains(&"browser_screenshot".to_string())
+                && plan.ends_with(&["ask_user".into(), "submit_plan".into()])
+        );
+        assert_eq!(
+            names(tools_for(false, false, false, &p, false, false, false)),
+            vec!["web_search", "browse_url"]
+        );
         assert!(tools_for(true, true, true, &p, false, false, false).is_empty());
         assert!(tools_for(true, true, true, &p, false, true, false).is_empty());
-        let none = Permissions { allowed_commands: vec![], ..Permissions::default() };
-        assert!(!names(tools_for(true, false, false, &none, false, false, false)).contains(&"bash".to_string()));
+        let none = Permissions {
+            allowed_commands: vec![],
+            ..Permissions::default()
+        };
+        assert!(
+            !names(tools_for(true, false, false, &none, false, false, false))
+                .contains(&"bash".to_string())
+        );
     }
 
     #[test]
     fn context_tools_in_clm_mode() {
         let p = Permissions::default();
-        let names = |tools: &[Value]| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
-        let count = |tools: &[Value], name: &str| names(tools).iter().filter(|n| *n == name).count();
+        let names = |tools: &[Value]| {
+            tools
+                .iter()
+                .map(|t| tool_name(t).to_string())
+                .collect::<Vec<_>>()
+        };
+        let count =
+            |tools: &[Value], name: &str| names(tools).iter().filter(|n| *n == name).count();
         // Agent mode with a project: the project's file tools, once, and restore_context.
         let agent = tools_for(true, false, false, &p, false, true, false);
         for name in ["read", "write", "list_dir", "restore_context"] {
             assert_eq!(count(&agent, name), 1, "{name}");
         }
         let description = |tools: &[Value], name: &str| {
-            tools.iter().find(|t| tool_name(t) == name).unwrap()["function"]["description"].as_str().unwrap().to_string()
+            tools.iter().find(|t| tool_name(t) == name).unwrap()["function"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
         };
         assert!(!description(&agent, "write").contains("context folder"));
         // Plan mode: edits are offered for the context folder only.
@@ -1170,7 +1343,10 @@ mod tests {
         // No project: all file tools, for the context folder only.
         let none = tools_for(false, false, false, &p, false, true, false);
         for name in ["read", "write", "list_dir"] {
-            assert!(description(&none, name).starts_with("Only for your context folder"), "{name}");
+            assert!(
+                description(&none, name).starts_with("Only for your context folder"),
+                "{name}"
+            );
         }
         assert!(!names(&none).contains(&"todo".to_string()));
     }
@@ -1178,7 +1354,12 @@ mod tests {
     #[test]
     fn context_only_offers_context_tools_and_todo() {
         let p = Permissions::default();
-        let names = |tools: &[Value]| tools.iter().map(|t| tool_name(t).to_string()).collect::<Vec<_>>();
+        let names = |tools: &[Value]| {
+            tools
+                .iter()
+                .map(|t| tool_name(t).to_string())
+                .collect::<Vec<_>>()
+        };
         let only = tools_for(true, true, false, &p, false, true, true);
         let n = names(&only);
         assert_eq!(n.len(), 5, "{n:?}");
@@ -1205,13 +1386,22 @@ mod tests {
             waited: None,
         };
         let text = format_command_output("cargo test", &out);
-        assert_eq!(text, "$ cargo test\nexit code 1, 1.2 s\n--- stderr ---\nerror: boom");
+        assert_eq!(
+            text,
+            "$ cargo test\nexit code 1, 1.2 s\n--- stderr ---\nerror: boom"
+        );
         assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], json!(1));
         assert!(result_meta("bash", &text).unwrap().get("waited").is_none());
 
         // A long wait for a CPU slot: told to the model, kept on the tool block.
-        let waited = crate::workload::Waited { ms: 80_000, reason: Some("your terminal is running `cargo build`".into()) };
-        let out = CommandOutput { waited: Some(waited), ..out };
+        let waited = crate::workload::Waited {
+            ms: 80_000,
+            reason: Some("your terminal is running `cargo build`".into()),
+        };
+        let out = CommandOutput {
+            waited: Some(waited),
+            ..out
+        };
         let text = format_command_output("cargo test", &out);
         assert!(text.starts_with(
             "$ cargo test\nexit code 1, 1.2 s\nWaited 1 min 20 s for a CPU slot (your terminal is running `cargo build`).\n"
@@ -1232,7 +1422,12 @@ mod tests {
             ranges: vec![],
             column: None,
         };
-        let lines = vec![line("a.rs", 1, true), line("a.rs", 2, false), line("a.rs", 9, true), line("b.rs", 3, true)];
+        let lines = vec![
+            line("a.rs", 1, true),
+            line("a.rs", 2, false),
+            line("a.rs", 9, true),
+            line("b.rs", 3, true),
+        ];
         let result = SearchResult {
             lines: lines.clone(),
             match_count: 3,
@@ -1244,19 +1439,36 @@ mod tests {
         };
         let text = format_search_result(&result, &HashMap::new());
         assert_eq!(text, "3 matches in 2 files\na.rs (2 matches)\n  1: x\n  2- x\n  --\n  9: x\nb.rs (1 match)\n  3: x");
-        assert_eq!(result_meta("search_code", &text).unwrap()["count"], json!(3));
+        assert_eq!(
+            result_meta("search_code", &text).unwrap()["count"],
+            json!(3)
+        );
 
         // Over the limit: the totals, and which ones are shown.
-        let result = SearchResult { truncated: true, total_matches: 2345, total_files: 87, ..result };
+        let result = SearchResult {
+            truncated: true,
+            total_matches: 2345,
+            total_files: 87,
+            ..result
+        };
         let text = format_search_result(&result, &HashMap::new());
         assert_eq!(
             text.lines().next().unwrap(),
             "2345 matches in 87 files. Shown: the first 3 by path, in 2 files. Narrow the query or path_glob to see the rest."
         );
-        assert_eq!(result_meta("search_code", &text).unwrap()["count"], json!(2345));
+        assert_eq!(
+            result_meta("search_code", &text).unwrap()["count"],
+            json!(2345)
+        );
 
         // Counting stopped: the totals are lower bounds.
-        let result = SearchResult { totals_complete: false, total_matches: 200_000, total_files: 1, lines, ..result };
+        let result = SearchResult {
+            totals_complete: false,
+            total_matches: 200_000,
+            total_files: 1,
+            lines,
+            ..result
+        };
         let text = format_search_result(&result, &HashMap::new());
         assert!(
             text.starts_with("200000 matches or more in 1 file; counting stopped there. Shown: the first 3 by path, in 2 files."),
@@ -1266,13 +1478,19 @@ mod tests {
 
     /// A search result over `files` (path, content) for lines matching
     /// `needle`, with `context` lines around, and the files' outlines.
-    fn search_in(files: &[(&str, &str)], needle: &str, context: u64) -> (SearchResult, HashMap<String, Arc<Vec<Symbol>>>) {
+    fn search_in(
+        files: &[(&str, &str)],
+        needle: &str,
+        context: u64,
+    ) -> (SearchResult, HashMap<String, Arc<Vec<Symbol>>>) {
         let mut lines = Vec::new();
         let mut outlines = HashMap::new();
         let (mut match_count, mut file_count) = (0, 0);
         for (path, content) in files {
             let all: Vec<&str> = content.lines().collect();
-            let hits: Vec<u64> = (1..=all.len() as u64).filter(|&n| all[n as usize - 1].contains(needle)).collect();
+            let hits: Vec<u64> = (1..=all.len() as u64)
+                .filter(|&n| all[n as usize - 1].contains(needle))
+                .collect();
             if hits.is_empty() {
                 continue;
             }
@@ -1329,7 +1547,11 @@ fn helper() {
 
     #[test]
     fn search_lines_are_grouped_by_the_declaration_they_are_in() {
-        let (result, outlines) = search_in(&[("src/parser.rs", PARSER_RS), ("notes.txt", "build it\n")], "build", 0);
+        let (result, outlines) = search_in(
+            &[("src/parser.rs", PARSER_RS), ("notes.txt", "build it\n")],
+            "build",
+            0,
+        );
         let text = format_search_result(&result, &outlines);
         assert_eq!(
             text,
@@ -1348,12 +1570,17 @@ src/parser.rs (5 matches)
 notes.txt (1 match)
   1: build it"
         );
-        assert_eq!(result_meta("search_code", &text).unwrap()["count"], json!(6), "the UI's count still reads");
+        assert_eq!(
+            result_meta("search_code", &text).unwrap()["count"],
+            json!(6),
+            "the UI's count still reads"
+        );
     }
 
     #[test]
     fn context_lines_stay_in_their_declaration_and_groups_can_come_back() {
-        let src = "fn outer() {\n    hit();\n    fn inner() {\n        hit();\n    }\n    hit();\n}\n";
+        let src =
+            "fn outer() {\n    hit();\n    fn inner() {\n        hit();\n    }\n    hit();\n}\n";
         let (result, outlines) = search_in(&[("a.rs", src)], "hit", 1);
         let text = format_search_result(&result, &outlines);
         assert_eq!(
@@ -1381,13 +1608,23 @@ a.rs (3 matches)
         let name = group.split(" [").next().unwrap();
         assert_eq!(name, "Parser > parse");
         let read = crate::read_symbol::read("src/parser.rs", PARSER_RS, name).unwrap();
-        assert!(read.starts_with("[Symbol read: Parser > parse, lines 6-11 of src/parser.rs]"), "{read}");
+        assert!(
+            read.starts_with("[Symbol read: Parser > parse, lines 6-11 of src/parser.rs]"),
+            "{read}"
+        );
     }
 
     #[test]
     fn files_without_declarations_or_outlines_list_their_lines() {
-        let (result, mut outlines) = search_in(&[("a.py", "print('x')\nprint('x')\n"), ("b.md", "x\n")], "x", 0);
-        assert!(outlines.get("a.py").is_some_and(|o| o.is_empty()), "parsed, no declarations");
+        let (result, mut outlines) = search_in(
+            &[("a.py", "print('x')\nprint('x')\n"), ("b.md", "x\n")],
+            "x",
+            0,
+        );
+        assert!(
+            outlines.get("a.py").is_some_and(|o| o.is_empty()),
+            "parsed, no declarations"
+        );
         let text = format_search_result(&result, &outlines);
         assert_eq!(text, "3 matches in 2 files\na.py (2 matches)\n  1: print('x')\n  2: print('x')\nb.md (1 match)\n  1: x");
         // An outline that didn't come in time: the same.
@@ -1400,7 +1637,10 @@ a.rs (3 matches)
         let (mut result, outlines) = search_in(&[("a.rs", "fn f() {}\n")], "fn", 0);
         result.lines[0].line = 99; // the file changed since it was searched
         let text = format_search_result(&result, &outlines);
-        assert!(text.contains("  (outside any declaration):\n    99: fn f() {}"), "{text}");
+        assert!(
+            text.contains("  (outside any declaration):\n    99: fn f() {}"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1409,7 +1649,14 @@ a.rs (3 matches)
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/a.rs"), "fn first() {}\n").unwrap();
-        let line = |path: &str| SearchLine { path: path.into(), line: 1, text: "x".into(), is_match: true, ranges: vec![], column: None };
+        let line = |path: &str| SearchLine {
+            path: path.into(),
+            line: 1,
+            text: "x".into(),
+            is_match: true,
+            ranges: vec![],
+            column: None,
+        };
         let result = SearchResult {
             lines: vec![line("src/a.rs"), line("src/missing.rs"), line("notes.txt")],
             match_count: 3,
@@ -1422,26 +1669,49 @@ a.rs (3 matches)
         let root = dir.to_string_lossy().to_string();
         let later = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let outlines = search_outlines(&root, &result, later);
-        assert_eq!(outlines.keys().collect::<Vec<_>>(), ["src/a.rs"], "missing and grammar-less files have none");
+        assert_eq!(
+            outlines.keys().collect::<Vec<_>>(),
+            ["src/a.rs"],
+            "missing and grammar-less files have none"
+        );
         assert_eq!(outlines["src/a.rs"][0].name, "first");
         // Out of time: none, and the result is listed plainly.
-        assert!(search_outlines(&root, &result, std::time::Instant::now() - std::time::Duration::from_secs(1)).is_empty());
+        assert!(search_outlines(
+            &root,
+            &result,
+            std::time::Instant::now() - std::time::Duration::from_secs(1)
+        )
+        .is_empty());
         // An edited file is outlined again.
         std::fs::write(dir.join("src/a.rs"), "fn renamed_one() {}\n").unwrap();
-        assert_eq!(search_outlines(&root, &result, later)["src/a.rs"][0].name, "renamed_one");
+        assert_eq!(
+            search_outlines(&root, &result, later)["src/a.rs"][0].name,
+            "renamed_one"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_agent_is_told_how_search_results_read() {
         let schemas = file_tool_schemas();
-        let search = schemas.iter().find(|t| t["function"]["name"] == "search_code").unwrap();
+        let search = schemas
+            .iter()
+            .find(|t| t["function"]["name"] == "search_code")
+            .unwrap();
         let description = search["function"]["description"].as_str().unwrap();
         assert!(description.contains("grouped by file, and within a file by the declaration"));
         assert!(description.contains("works as read's symbol"));
         assert!(description.contains("(declaration)"));
-        let read = schemas.iter().find(|t| t["function"]["name"] == "read").unwrap();
-        assert!(read["function"]["parameters"]["properties"]["symbol"]["description"].as_str().unwrap().contains("Parser::parse"));
+        let read = schemas
+            .iter()
+            .find(|t| t["function"]["name"] == "read")
+            .unwrap();
+        assert!(
+            read["function"]["parameters"]["properties"]["symbol"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Parser::parse")
+        );
     }
 
     #[test]
@@ -1451,35 +1721,78 @@ a.rs (3 matches)
         assert_eq!(to_absolute_path("src/a.ts", "C:\\p"), "C:\\p\\src\\a.ts");
         assert_eq!(result_meta("read", "a\nb").unwrap()["count"], json!(2));
         assert!(result_meta("read", "a\nb").unwrap().get("range").is_none());
-        let symbol = result_meta("read", "[Symbol read: f, lines 7-9 of a.rs]\nfn f() {\n}").unwrap();
+        let symbol =
+            result_meta("read", "[Symbol read: f, lines 7-9 of a.rs]\nfn f() {\n}").unwrap();
         assert_eq!(symbol["range"], json!([7, 9]));
         assert_eq!(symbol["count"], json!(3));
         assert!(result_meta("read", "Error: nope").is_none());
-        assert_eq!(result_meta("browse_url", "# (untitled)\nURL: x").unwrap().len(), 0);
+        assert_eq!(
+            result_meta("browse_url", "# (untitled)\nURL: x")
+                .unwrap()
+                .len(),
+            0
+        );
         assert!(edit_args(&Map::new()).is_err());
     }
 
     #[test]
     fn tool_text_edge_cases() {
         // A command killed by a timeout, with no output.
-        let out = CommandOutput { exit_code: None, stdout: " ".into(), stderr: String::new(), timed_out: true, stopped: false, truncated: false, duration_ms: 120_000, waited: None };
+        let out = CommandOutput {
+            exit_code: None,
+            stdout: " ".into(),
+            stderr: String::new(),
+            timed_out: true,
+            stopped: false,
+            truncated: false,
+            duration_ms: 120_000,
+            waited: None,
+        };
         let text = format_command_output("sleep 999", &out);
-        assert_eq!(text, "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)");
+        assert_eq!(
+            text,
+            "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)"
+        );
         assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], Value::Null);
         // Truncated by the runner: said so.
-        let out = CommandOutput { exit_code: Some(0), stdout: "x".into(), stderr: String::new(), timed_out: false, stopped: false, truncated: true, duration_ms: 1, waited: None };
+        let out = CommandOutput {
+            exit_code: Some(0),
+            stdout: "x".into(),
+            stderr: String::new(),
+            timed_out: false,
+            stopped: false,
+            truncated: true,
+            duration_ms: 1,
+            waited: None,
+        };
         assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
-        assert_eq!(format_search_result(&SearchResult {
-                lines: vec![],
-                match_count: 0,
-                file_count: 0,
-                truncated: false,
-                total_matches: 0,
-                total_files: 0,
-                totals_complete: true,
-            }, &HashMap::new()), "No matches.");
-        assert_eq!(result_meta("web_search", "1. A\n   u\n\n2. B\n   v").unwrap()["count"], json!(2));
-        assert_eq!(result_meta("list_dir", "(empty, or everything under this path is ignored)").unwrap()["count"], json!(0));
+        assert_eq!(
+            format_search_result(
+                &SearchResult {
+                    lines: vec![],
+                    match_count: 0,
+                    file_count: 0,
+                    truncated: false,
+                    total_matches: 0,
+                    total_files: 0,
+                    totals_complete: true,
+                },
+                &HashMap::new()
+            ),
+            "No matches."
+        );
+        assert_eq!(
+            result_meta("web_search", "1. A\n   u\n\n2. B\n   v").unwrap()["count"],
+            json!(2)
+        );
+        assert_eq!(
+            result_meta(
+                "list_dir",
+                "(empty, or everything under this path is ignored)"
+            )
+            .unwrap()["count"],
+            json!(0)
+        );
         assert!(result_meta("todo", "x").is_none());
         // Line numbers as strings, floats, negatives.
         let args = json!({ "path": "a", "old_text": "x", "content": "y", "start_line": "12", "end_line": 14.7 });
@@ -1488,7 +1801,9 @@ a.rs (3 matches)
         let args = json!({ "path": "a", "old_text": "x", "content": "y", "start_line": -3, "end_line": "abc" });
         let edit = edit_args(args.as_object().unwrap()).ok().unwrap();
         assert_eq!((edit.start_line, edit.end_line), (None, None));
-        assert!(matches!(edit_args(json!({ "path": "", "old_text": "", "content": "" }).as_object().unwrap()), Err(e) if e.contains("path")));
+        assert!(
+            matches!(edit_args(json!({ "path": "", "old_text": "", "content": "" }).as_object().unwrap()), Err(e) if e.contains("path"))
+        );
         assert_eq!(to_absolute_path("C:\\abs\\x", "/p"), "C:\\abs\\x");
         assert_eq!(to_absolute_path("a/", "/p"), "/p/a");
     }
@@ -1507,7 +1822,12 @@ a.rs (3 matches)
             max_results: 100,
             context_lines: 0,
         };
-        let result = crate::code_search::search(std::path::Path::new(&root), &opts, crate::agent_tools::is_denylisted_name).unwrap();
+        let result = crate::code_search::search(
+            std::path::Path::new(&root),
+            &opts,
+            crate::agent_tools::is_denylisted_name,
+        )
+        .unwrap();
         let start = std::time::Instant::now();
         let outlines = search_outlines(&root, &result, start + SEARCH_OUTLINE_TIME);
         let cold = start.elapsed();

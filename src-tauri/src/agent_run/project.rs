@@ -46,34 +46,53 @@ fn saved_checks(settings: &serde_json::Value) -> Option<Vec<ProjectCheck>> {
 }
 
 /// The checks in effect: the user's list when they saved one, else what's detected.
-pub fn effective_checks(profile: &ProjectProfile, settings: &serde_json::Value) -> Vec<ProjectCheck> {
+pub fn effective_checks(
+    profile: &ProjectProfile,
+    settings: &serde_json::Value,
+) -> Vec<ProjectCheck> {
     if let Some(saved) = saved_checks(settings) {
         return saved;
     }
     profile
         .checks
         .iter()
-        .map(|c| ProjectCheck { kind: c.kind.clone(), command: c.command.clone(), enabled: c.default_enabled })
+        .map(|c| ProjectCheck {
+            kind: c.kind.clone(),
+            command: c.command.clone(),
+            enabled: c.default_enabled,
+        })
         .collect()
 }
 
 /// Checks in the order they run: cheap and broad first.
 pub fn ordered_checks(checks: &[ProjectCheck]) -> Vec<ProjectCheck> {
     let mut out = checks.to_vec();
-    out.sort_by_key(|c| CHECK_KINDS.iter().position(|k| *k == c.kind).unwrap_or(CHECK_KINDS.len()));
+    out.sort_by_key(|c| {
+        CHECK_KINDS
+            .iter()
+            .position(|k| *k == c.kind)
+            .unwrap_or(CHECK_KINDS.len())
+    });
     out
 }
 
 /// The "## Project" section of the system prompt: stack, the check commands
 /// (and that the IDE runs them when verification is on), and the project's
 /// own agent instructions.
-pub fn project_context(profile: &ProjectProfile, checks: &[ProjectCheck], verify_on: bool) -> String {
+pub fn project_context(
+    profile: &ProjectProfile,
+    checks: &[ProjectCheck],
+    verify_on: bool,
+) -> String {
     let mut parts = vec!["## Project".to_string()];
     if !profile.stack.is_empty() {
         parts.push(format!("Stack: {}.", profile.stack.join(", ")));
     }
 
-    let enabled: Vec<ProjectCheck> = ordered_checks(checks).into_iter().filter(|c| c.enabled).collect();
+    let enabled: Vec<ProjectCheck> = ordered_checks(checks)
+        .into_iter()
+        .filter(|c| c.enabled)
+        .collect();
     if !enabled.is_empty() {
         let mut list = vec![if verify_on {
             "Checks: when you finish and have changed files, the IDE runs these itself and sends you any failures to fix:"
@@ -81,7 +100,11 @@ pub fn project_context(profile: &ProjectProfile, checks: &[ProjectCheck], verify
             "Checks you can run with bash after changing code:"
         }
         .to_string()];
-        list.extend(enabled.iter().map(|c| format!("- {}: `{}`", check_label(&c.kind), c.command)));
+        list.extend(
+            enabled
+                .iter()
+                .map(|c| format!("- {}: `{}`", check_label(&c.kind), c.command)),
+        );
         parts.push(list.join("\n"));
         if verify_on && enabled.iter().any(|c| !c.command.trim().is_empty()) {
             parts.push(
@@ -101,9 +124,16 @@ pub fn project_context(profile: &ProjectProfile, checks: &[ProjectCheck], verify
         let label = if notes.file.to_lowercase().starts_with("readme") {
             format!("From the project's {} (beginning):", notes.file)
         } else {
-            format!("The project's instructions for agents ({}); follow them:", notes.file)
+            format!(
+                "The project's instructions for agents ({}); follow them:",
+                notes.file
+            )
         };
-        let more = if notes.truncated { "\n[…truncated]" } else { "" };
+        let more = if notes.truncated {
+            "\n[…truncated]"
+        } else {
+            ""
+        };
         parts.push(format!("{label}\n\n{}{more}", notes.text));
     }
     if parts.len() > 1 {
@@ -127,7 +157,8 @@ pub fn load<R: tauri::Runtime>(
         return (Vec::new(), String::new());
     }
     let profile = project_profile::detect(Path::new(root));
-    let settings = project_profile::load_project_settings(app.clone(), settings_root.to_string()).unwrap_or_default();
+    let settings = project_profile::load_project_settings(app.clone(), settings_root.to_string())
+        .unwrap_or_default();
     let checks = effective_checks(&profile, &settings);
     let context = project_context(&profile, &checks, verify_on);
     (checks, context)
@@ -135,7 +166,11 @@ pub fn load<R: tauri::Runtime>(
 
 /// The project section for estimates (the context meter), re-detected at
 /// most every few seconds: estimates follow every message of a run.
-pub fn cached_context<R: tauri::Runtime>(app: &tauri::AppHandle<R>, root: &str, verify_on: bool) -> String {
+pub fn cached_context<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    root: &str,
+    verify_on: bool,
+) -> String {
     use std::collections::HashMap;
     use std::sync::{LazyLock, Mutex};
     use std::time::{Duration, Instant};
@@ -167,11 +202,30 @@ mod tests {
         let profile = ProjectProfile {
             stack: vec!["Rust".into()],
             checks: vec![
-                DetectedCheck { kind: "test".into(), command: "cargo test".into(), source: "".into(), default_enabled: true },
-                DetectedCheck { kind: "typecheck".into(), command: "cargo check".into(), source: "".into(), default_enabled: true },
-                DetectedCheck { kind: "build".into(), command: "cargo build".into(), source: "".into(), default_enabled: false },
+                DetectedCheck {
+                    kind: "test".into(),
+                    command: "cargo test".into(),
+                    source: "".into(),
+                    default_enabled: true,
+                },
+                DetectedCheck {
+                    kind: "typecheck".into(),
+                    command: "cargo check".into(),
+                    source: "".into(),
+                    default_enabled: true,
+                },
+                DetectedCheck {
+                    kind: "build".into(),
+                    command: "cargo build".into(),
+                    source: "".into(),
+                    default_enabled: false,
+                },
             ],
-            instructions: Some(ProjectInstructions { file: "AGENTS.md".into(), text: "Be nice.".into(), truncated: false }),
+            instructions: Some(ProjectInstructions {
+                file: "AGENTS.md".into(),
+                text: "Be nice.".into(),
+                truncated: false,
+            }),
             ..Default::default()
         };
         let checks = effective_checks(&profile, &serde_json::Value::Null);
@@ -180,15 +234,30 @@ mod tests {
         assert!(text.contains("- Type check: `cargo check`\n- Tests: `cargo test`"));
         assert!(!text.contains("cargo build"));
         assert!(text.contains("Do not add a verification step"), "{text}");
-        assert!(text.contains("Keep the checklist to the work itself"), "{text}");
+        assert!(
+            text.contains("Keep the checklist to the work itself"),
+            "{text}"
+        );
         // Verification off: checks are offered as commands, no no-verify-step line.
         let off = project_context(&profile, &checks, false);
-        assert!(off.contains("Checks you can run with bash after changing code:"), "{off}");
+        assert!(
+            off.contains("Checks you can run with bash after changing code:"),
+            "{off}"
+        );
         assert!(!off.contains("Do not add a verification step"), "{off}");
-        assert!(text.ends_with("The project's instructions for agents (AGENTS.md); follow them:\n\nBe nice."));
+        assert!(text.ends_with(
+            "The project's instructions for agents (AGENTS.md); follow them:\n\nBe nice."
+        ));
 
         let saved = serde_json::json!({ "checks": [{ "kind": "lint", "command": "x", "enabled": false }, { "kind": "nope", "command": "y" }] });
-        assert_eq!(effective_checks(&profile, &saved), vec![ProjectCheck { kind: "lint".into(), command: "x".into(), enabled: false }]);
+        assert_eq!(
+            effective_checks(&profile, &saved),
+            vec![ProjectCheck {
+                kind: "lint".into(),
+                command: "x".into(),
+                enabled: false
+            }]
+        );
         assert_eq!(project_context(&ProjectProfile::default(), &[], true), "");
     }
 }

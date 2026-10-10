@@ -9,7 +9,8 @@
 // Used by the AI reviewer when "Use typed input" is on (agent_run/review.rs).
 
 use crate::chat_request::{
-    backoff, classify_body_error, classify_status, human_duration, ChatError, ErrorKind, MAX_ATTEMPTS, MAX_RETRY_WAIT,
+    backoff, classify_body_error, classify_status, human_duration, ChatError, ErrorKind,
+    MAX_ATTEMPTS, MAX_RETRY_WAIT,
 };
 use reqwest::Client;
 use std::time::Duration;
@@ -45,9 +46,15 @@ pub async fn request(
         }
     };
     let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL {url}: {e}"))?;
-    let local = matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1") | Some("::1"));
+    let local = matches!(
+        parsed.host_str(),
+        Some("localhost") | Some("127.0.0.1") | Some("::1")
+    );
     if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local) {
-        return Err(format!("Refusing to send the review over {}: use https", parsed.scheme()));
+        return Err(format!(
+            "Refusing to send the review over {}: use https",
+            parsed.scheme()
+        ));
     }
 
     // `/systemone` takes `state` and `questions` at the top level next to
@@ -65,7 +72,11 @@ pub async fn request(
     };
 
     let client = Client::builder()
-        .timeout(Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1_000, 60_000)))
+        .timeout(Duration::from_millis(
+            timeout_ms
+                .unwrap_or(DEFAULT_TIMEOUT_MS)
+                .clamp(1_000, 60_000),
+        ))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -83,7 +94,11 @@ pub async fn request(
         }
         let suggested = error.retry_after_ms.map(Duration::from_millis);
         if let Some(wait) = suggested.filter(|w| *w > MAX_RETRY_WAIT) {
-            return Err(format!("{} Try again in {}.", describe(&error, &parsed, attempt_number), human_duration(wait)));
+            return Err(format!(
+                "{} Try again in {}.",
+                describe(&error, &parsed, attempt_number),
+                human_duration(wait)
+            ));
         }
         tokio::time::sleep(backoff(attempt_number).max(suggested.unwrap_or_default())).await;
         attempt_number += 1;
@@ -97,14 +112,21 @@ async fn send_once(
     body: &serde_json::Value,
     chat_id: Option<&str>,
 ) -> Result<serde_json::Value, ChatError> {
-    let mut req = client.post(url.clone()).headers(crate::opencode::headers(url.as_str(), chat_id)).json(body);
+    let mut req = client
+        .post(url.clone())
+        .headers(crate::opencode::headers(url.as_str(), chat_id))
+        .json(body);
     let key = api_key.trim();
     if !key.is_empty() {
         req = req.bearer_auth(key);
     }
 
     let transport = |e: reqwest::Error| {
-        let kind = if e.is_timeout() { ErrorKind::Timeout } else { ErrorKind::Network };
+        let kind = if e.is_timeout() {
+            ErrorKind::Timeout
+        } else {
+            ErrorKind::Network
+        };
         ChatError::new(kind, format!("Could not reach {url}: {e}"))
     };
     let res = req.send().await.map_err(transport)?;
@@ -114,8 +136,10 @@ async fn send_once(
     if !status.is_success() {
         return Err(classify_status(status.as_u16(), &headers, &text));
     }
-    let value: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| ChatError::new(ErrorKind::BadRequest, format!("Response is not JSON: {e}")).with_details(&text))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        ChatError::new(ErrorKind::BadRequest, format!("Response is not JSON: {e}"))
+            .with_details(&text)
+    })?;
     // Some providers report failures inside a 200 response.
     match classify_body_error(&value) {
         Some(e) => Err(e),
@@ -125,11 +149,17 @@ async fn send_once(
 
 fn describe(error: &ChatError, url: &reqwest::Url, attempts: u32) -> String {
     let mut message = match error.kind {
-        ErrorKind::NotFound => format!("{}: this provider has no /systemone endpoint at {url}.", error.message),
+        ErrorKind::NotFound => format!(
+            "{}: this provider has no /systemone endpoint at {url}.",
+            error.message
+        ),
         _ => error.message.clone(),
     };
     // A JSON error body is already summed up in the message.
-    let raw = error.details.as_deref().filter(|d| serde_json::from_str::<serde_json::Value>(d).is_err());
+    let raw = error
+        .details
+        .as_deref()
+        .filter(|d| serde_json::from_str::<serde_json::Value>(d).is_err());
     if let Some(details) = raw {
         let snippet: String = details.chars().take(300).collect();
         message = format!("{message} {snippet}");
@@ -170,7 +200,15 @@ mod tests {
     const OK: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\r\nConnection: close\r\n\r\n{\"answers\":{\"safe\":{\"noul\":0.97}}}";
 
     async fn send(url: &str) -> Result<serde_json::Value, String> {
-        request(url, "", "typesafe/jev-1", serde_json::json!({ "state": {}, "questions": {} }), Some(2_000), None).await
+        request(
+            url,
+            "",
+            "typesafe/jev-1",
+            serde_json::json!({ "state": {}, "questions": {} }),
+            Some(2_000),
+            None,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -179,9 +217,15 @@ mod tests {
         let (url, served) = mock(vec![limited, OK]).await;
         let started = std::time::Instant::now();
         let value = send(&url).await.unwrap();
-        assert_eq!(value.pointer("/answers/safe/noul").and_then(|v| v.as_f64()), Some(0.97));
+        assert_eq!(
+            value.pointer("/answers/safe/noul").and_then(|v| v.as_f64()),
+            Some(0.97)
+        );
         assert_eq!(served.load(Ordering::SeqCst), 2);
-        assert!(started.elapsed() >= Duration::from_secs(1), "waits at least Retry-After");
+        assert!(
+            started.elapsed() >= Duration::from_secs(1),
+            "waits at least Retry-After"
+        );
     }
 
     #[tokio::test]
@@ -189,7 +233,10 @@ mod tests {
         let failing = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let (url, served) = mock(vec![failing; MAX_ATTEMPTS as usize]).await;
         let error = send(&url).await.unwrap_err();
-        assert!(error.contains(&format!("after {MAX_ATTEMPTS} attempts")), "{error}");
+        assert!(
+            error.contains(&format!("after {MAX_ATTEMPTS} attempts")),
+            "{error}"
+        );
         assert_eq!(served.load(Ordering::SeqCst), MAX_ATTEMPTS as usize);
     }
 

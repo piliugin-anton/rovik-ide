@@ -31,7 +31,8 @@ mod linux {
     use std::process::Command;
 
     fn cstring(p: &std::path::Path) -> io::Result<CString> {
-        CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+        CString::new(p.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
     }
 
     /// Writes a whole small file; for `/proc/self/*_map`.
@@ -70,7 +71,11 @@ mod linux {
             cmd.pre_exec(move || {
                 // A user namespace mapping the user to itself, so the mount
                 // namespace needs no privileges; root needs only the latter.
-                let flags = if uid == 0 { libc::CLONE_NEWNS } else { libc::CLONE_NEWUSER | libc::CLONE_NEWNS };
+                let flags = if uid == 0 {
+                    libc::CLONE_NEWNS
+                } else {
+                    libc::CLONE_NEWUSER | libc::CLONE_NEWNS
+                };
                 if libc::unshare(flags) != 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -80,10 +85,24 @@ mod linux {
                     write_proc(&gid_file, &gid_map)?;
                 }
                 // Mounts made here stay here.
-                if libc::mount(std::ptr::null(), root.as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()) != 0 {
+                if libc::mount(
+                    std::ptr::null(),
+                    root.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_REC | libc::MS_PRIVATE,
+                    std::ptr::null(),
+                ) != 0
+                {
                     return Err(io::Error::last_os_error());
                 }
-                if libc::mount(view.as_ptr(), project.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()) != 0 {
+                if libc::mount(
+                    view.as_ptr(),
+                    project.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND | libc::MS_REC,
+                    std::ptr::null(),
+                ) != 0
+                {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -114,7 +133,10 @@ pub fn available(c: &Confine) -> bool {
                 return false;
             }
             let mut cmd = Command::new("/bin/sh");
-            cmd.args(["-c", "true"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            cmd.args(["-c", "true"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             apply(&mut cmd, c);
             cmd.status().is_ok_and(|s| s.success())
         })
@@ -140,19 +162,38 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("a.txt"), "project\n").unwrap();
         std::fs::write(view.join("a.txt"), "view\n").unwrap();
-        let c = Confine { view: view.clone(), project: project.clone() };
+        let c = Confine {
+            view: view.clone(),
+            project: project.clone(),
+        };
         if !available(&c) {
             eprintln!("user namespaces aren't allowed here: skipped");
             return;
         }
         let mut cmd = Command::new("/bin/sh");
-        cmd.args(["-c", &format!("cat {0}/a.txt && echo written > {0}/b.txt", project.display())]);
+        cmd.args([
+            "-c",
+            &format!(
+                "cat {0}/a.txt && echo written > {0}/b.txt",
+                project.display()
+            ),
+        ]);
         apply(&mut cmd, &c);
         let out = cmd.output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(String::from_utf8_lossy(&out.stdout), "view\n");
-        assert_eq!(std::fs::read_to_string(view.join("b.txt")).unwrap(), "written\n");
-        assert!(!project.join("b.txt").exists(), "the project wasn't touched");
+        assert_eq!(
+            std::fs::read_to_string(view.join("b.txt")).unwrap(),
+            "written\n"
+        );
+        assert!(
+            !project.join("b.txt").exists(),
+            "the project wasn't touched"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

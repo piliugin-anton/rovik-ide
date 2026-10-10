@@ -39,7 +39,10 @@ fn chars(s: &str) -> usize {
 pub fn cap_output(text: &str, head_lines: usize, tail_lines: usize, max_chars: usize) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let out = if lines.len() > head_lines + tail_lines {
-        let omitted = format!("[… {} lines omitted …]", lines.len() - head_lines - tail_lines);
+        let omitted = format!(
+            "[… {} lines omitted …]",
+            lines.len() - head_lines - tail_lines
+        );
         let mut kept: Vec<&str> = lines[..head_lines].to_vec();
         kept.push(&omitted);
         kept.extend_from_slice(&lines[lines.len() - tail_lines..]);
@@ -64,11 +67,21 @@ pub fn cap_output(text: &str, head_lines: usize, tail_lines: usize, max_chars: u
         // The last line alone is over the limit (minified code, a JSON
         // blob): keep its end rather than nothing.
         let last = lines[lines.len() - 1];
-        let end: String = last.chars().skip(chars(last).saturating_sub(max_chars)).collect();
-        return format!("[… output shortened to the last {} characters of its last line …]\n{end}", chars(&end));
+        let end: String = last
+            .chars()
+            .skip(chars(last).saturating_sub(max_chars))
+            .collect();
+        return format!(
+            "[… output shortened to the last {} characters of its last line …]\n{end}",
+            chars(&end)
+        );
     }
     kept.reverse();
-    format!("[… output shortened to its last {} lines …]\n{}", kept.len(), kept.join("\n"))
+    format!(
+        "[… output shortened to its last {} lines …]\n{}",
+        kept.len(),
+        kept.join("\n")
+    )
 }
 
 /// A line that starts or marks a failure. Deliberately broad: a few extra
@@ -81,8 +94,9 @@ static FAILURE_LINE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Lines that say it worked, which FAILURE_LINE's words also match ("0 failed").
-static ALL_CLEAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b0 (failed|failures|errors?)\b|\bno (errors|failures)\b").unwrap());
+static ALL_CLEAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b0 (failed|failures|errors?)\b|\bno (errors|failures)\b").unwrap()
+});
 
 /// Lines from the end that are always kept: the run's summary.
 const SUMMARY_LINES: usize = 15;
@@ -143,7 +157,9 @@ pub fn focus_failures(text: &str, max_chars: usize) -> String {
     let mut omitted = 0;
     let mut gap_start: Option<usize> = None;
     let close_gap = |out: &mut Vec<String>, gap_start: &mut Option<usize>, at: usize| {
-        let Some(start) = gap_start.take() else { return };
+        let Some(start) = gap_start.take() else {
+            return;
+        };
         let gap = at - start;
         // A short gap costs less than its marker: keep its lines.
         if gap <= 2 {
@@ -184,8 +200,9 @@ static LOCATION: LazyLock<Regex> = LazyLock::new(|| {
 });
 static PY_LOCATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"File "([^"]+\.[A-Za-z0-9]{1,6})", line \d+"#).unwrap());
-static NOT_SOURCE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(https?|node|file):|^\d+(\.\d+)+$|(^|/)node_modules/|\.min\.js$").unwrap());
+static NOT_SOURCE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(https?|node|file):|^\d+(\.\d+)+$|(^|/)node_modules/|\.min\.js$").unwrap()
+});
 
 /// Source files the output points at: "src/a.ts:12:5", "src/a.ts(12,5)",
 /// "--> src/main.rs:3:1", 'File "app/x.py", line 9'. Returned as written
@@ -210,7 +227,10 @@ pub fn error_locations(text: &str) -> Vec<String> {
 /// and others. Paths are compared by their tail: tools print them relative
 /// to where they ran (cargo in src-tauri/ prints "src/x.rs" for
 /// "src-tauri/src/x.rs").
-pub fn split_by_changed(locations: &[String], changed_files: &[String]) -> (Vec<String>, Vec<String>) {
+pub fn split_by_changed(
+    locations: &[String],
+    changed_files: &[String],
+) -> (Vec<String>, Vec<String>) {
     let norm = |p: &str| {
         let p = p.replace('\\', "/");
         let p = p.strip_prefix("./").unwrap_or(&p);
@@ -219,7 +239,9 @@ pub fn split_by_changed(locations: &[String], changed_files: &[String]) -> (Vec<
     let changed: Vec<String> = changed_files.iter().map(|c| norm(c)).collect();
     let is_changed = |loc: &str| {
         let l = norm(loc);
-        changed.iter().any(|c| *c == l || c.ends_with(&format!("/{l}")) || l.ends_with(&format!("/{c}")))
+        changed
+            .iter()
+            .any(|c| *c == l || c.ends_with(&format!("/{l}")) || l.ends_with(&format!("/{c}")))
     };
     locations.iter().cloned().partition(|loc| is_changed(loc))
 }
@@ -230,16 +252,27 @@ mod tests {
 
     #[test]
     fn caps_to_start_and_end() {
-        let text: String = (1..=500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text: String = (1..=500)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let out = cap_output(&text, 2, 3, 100_000);
-        assert_eq!(out, "line 1\nline 2\n[… 495 lines omitted …]\nline 498\nline 499\nline 500");
+        assert_eq!(
+            out,
+            "line 1\nline 2\n[… 495 lines omitted …]\nline 498\nline 499\nline 500"
+        );
         let out = cap_output(&text, 200, 200, 50);
-        assert!(out.starts_with("[… output shortened to its last") && out.ends_with("line 500"), "{out}");
+        assert!(
+            out.starts_with("[… output shortened to its last") && out.ends_with("line 500"),
+            "{out}"
+        );
     }
 
     #[test]
     fn keeps_error_blocks_and_summary() {
-        let mut lines: Vec<String> = (0..300).map(|i| format!("test passing_{i} ... ok")).collect();
+        let mut lines: Vec<String> = (0..300)
+            .map(|i| format!("test passing_{i} ... ok"))
+            .collect();
         lines[100] = "error[E0308]: mismatched types".into();
         lines[101] = "  --> src/main.rs:3:5".into();
         lines.push("test result: FAILED. 299 passed; 1 failed".into());
@@ -253,9 +286,14 @@ mod tests {
     #[test]
     fn finds_error_locations() {
         let text = "src/a.ts(12,5): error TS1\n  --> src/main.rs:3:1\nFile \"app/x.py\", line 9\nsee https://x.io/a.js:1\n./src/a.ts:4:2";
-        assert_eq!(error_locations(text), vec!["src/a.ts", "src/main.rs", "app/x.py"]);
-        let (changed, other) =
-            split_by_changed(&["src/main.rs".into(), "lib/b.rs".into()], &["src-tauri/src/main.rs".into()]);
+        assert_eq!(
+            error_locations(text),
+            vec!["src/a.ts", "src/main.rs", "app/x.py"]
+        );
+        let (changed, other) = split_by_changed(
+            &["src/main.rs".into(), "lib/b.rs".into()],
+            &["src-tauri/src/main.rs".into()],
+        );
         assert_eq!(changed, vec!["src/main.rs"]);
         assert_eq!(other, vec!["lib/b.rs"]);
     }
@@ -271,16 +309,25 @@ mod tests {
         // One huge line over the limit: its end is kept, never nothing.
         let long = format!("{}end", "x".repeat(10_000));
         let out = cap_output(&long, 2, 2, 100);
-        assert!(out.starts_with("[… output shortened to the last 100 characters of its last line …]\n"), "{out}");
+        assert!(
+            out.starts_with("[… output shortened to the last 100 characters of its last line …]\n"),
+            "{out}"
+        );
         assert!(out.ends_with("xxend") && out.chars().count() < 200, "{out}");
         // Short lines before a huge last line: still its end.
         assert!(cap_output(&format!("a\nb\n{long}"), 2, 2, 100).ends_with("xxend"));
         // Multi-byte characters are cut whole.
         assert!(cap_output(&"é".repeat(500), 2, 2, 100).ends_with(&"é".repeat(100)));
         // Progress bars that redraw with "\r" become lines.
-        assert_eq!(clean_output("10%\r50%\r100%\r\ndone"), "10%\n50%\n100%\ndone");
+        assert_eq!(
+            clean_output("10%\r50%\r100%\r\ndone"),
+            "10%\n50%\n100%\ndone"
+        );
         // Short failing output is kept whole, CRLF normalized, colors gone.
-        assert_eq!(focus_failures("\x1b[31merror\x1b[0m: x\r\nnext\r\n", 8_000), "error: x\nnext");
+        assert_eq!(
+            focus_failures("\x1b[31merror\x1b[0m: x\r\nnext\r\n", 8_000),
+            "error: x\nnext"
+        );
         // Long output with no error words: start and end.
         let plain: String = (0..300).map(|i| format!("line {i}\n")).collect();
         assert!(focus_failures(&plain, 8_000).contains("lines omitted"));
@@ -289,7 +336,14 @@ mod tests {
         lines.insert(10, "test result: ok. 3 passed; 0 failed".into());
         assert!(!focus_failures(&lines.join("\n"), 8_000).contains("[… 9 lines …]"));
         // Libraries and versions aren't source the agent wrote.
-        assert!(error_locations("node_modules/a/b.js:3\n  at ./node_modules/x/y.ts:1:2\nv 1.2.3:4").is_empty());
-        assert_eq!(error_locations("src/a.ts:1:1\nsrc/a.ts:9:9"), ["src/a.ts"], "each once");
+        assert!(error_locations(
+            "node_modules/a/b.js:3\n  at ./node_modules/x/y.ts:1:2\nv 1.2.3:4"
+        )
+        .is_empty());
+        assert_eq!(
+            error_locations("src/a.ts:1:1\nsrc/a.ts:9:9"),
+            ["src/a.ts"],
+            "each once"
+        );
     }
 }

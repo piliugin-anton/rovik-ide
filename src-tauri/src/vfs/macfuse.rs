@@ -31,7 +31,10 @@ use super::fuse::FuseFs;
 use super::problem::{self, Backend, MountProblem};
 
 pub const BUNDLE: &str = "/Library/Filesystems/macfuse.fs";
-const LIBRARIES: [&str; 2] = ["/usr/local/lib/libfuse.2.dylib", "/usr/local/lib/libfuse.dylib"];
+const LIBRARIES: [&str; 2] = [
+    "/usr/local/lib/libfuse.2.dylib",
+    "/usr/local/lib/libfuse.dylib",
+];
 /// FSKit volumes must live under /Volumes; no spaces (macFUSE #1198).
 const FSKIT_MOUNTPOINT: &str = "/Volumes/RovikVirtualFiles";
 const VOLUME_NAME: &str = "RovikVirtualFiles";
@@ -75,9 +78,15 @@ fn library() -> Result<&'static Library, String> {
         let symbol = |name: &str| {
             let c_name = CString::new(name).expect("no NUL in a constant");
             let ptr = unsafe { libc::dlsym(handle, c_name.as_ptr()) };
-            (!ptr.is_null()).then_some(ptr).ok_or_else(|| format!("{path} has no {name}"))
+            (!ptr.is_null())
+                .then_some(ptr)
+                .ok_or_else(|| format!("{path} has no {name}"))
         };
-        match (symbol("fuse_mount"), symbol("fuse_chan_fd"), symbol("fuse_unmount")) {
+        match (
+            symbol("fuse_mount"),
+            symbol("fuse_chan_fd"),
+            symbol("fuse_unmount"),
+        ) {
             (Ok(mount), Ok(chan_fd), Ok(unmount)) => {
                 // SAFETY: these are the libfuse 2 functions with these signatures.
                 let lib = unsafe {
@@ -94,7 +103,10 @@ fn library() -> Result<&'static Library, String> {
             (a, b, c) => errors.extend([a.err(), b.err(), c.err()].into_iter().flatten()),
         }
     }
-    Err(format!("macFUSE's library couldn't be loaded ({})", errors.join("; ")))
+    Err(format!(
+        "macFUSE's library couldn't be loaded ({})",
+        errors.join("; ")
+    ))
 }
 
 fn dl_error() -> String {
@@ -102,7 +114,9 @@ fn dl_error() -> String {
     if err.is_null() {
         "unknown error".into()
     } else {
-        unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy().into_owned()
+        unsafe { std::ffi::CStr::from_ptr(err) }
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -110,12 +124,25 @@ fn sysctl_string(name: &str) -> Option<String> {
     let c_name = CString::new(name).ok()?;
     let mut buf = [0u8; 256];
     let mut len = buf.len();
-    let rc = unsafe { libc::sysctlbyname(c_name.as_ptr(), buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c_name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
     if rc != 0 {
         return None;
     }
     let text = &buf[..len.min(buf.len())];
-    Some(String::from_utf8_lossy(text).trim_end_matches('\0').trim().to_string())
+    Some(
+        String::from_utf8_lossy(text)
+            .trim_end_matches('\0')
+            .trim()
+            .to_string(),
+    )
 }
 
 pub fn macos_version() -> Option<(u32, u32, u32)> {
@@ -127,7 +154,15 @@ pub fn apple_silicon() -> bool {
     let c_name = CString::new("hw.optional.arm64").expect("constant");
     let mut value: c_int = 0;
     let mut len = std::mem::size_of::<c_int>();
-    let rc = unsafe { libc::sysctlbyname(c_name.as_ptr(), (&mut value as *mut c_int).cast(), &mut len, std::ptr::null_mut(), 0) };
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c_name.as_ptr(),
+            (&mut value as *mut c_int).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
     rc == 0 && value == 1
 }
 
@@ -138,18 +173,28 @@ pub struct Plan {
 }
 
 pub fn plan(requested: Option<&Path>) -> Plan {
-    let macfuse = super::driver::macfuse_version().as_deref().and_then(problem::parse_version);
+    let macfuse = super::driver::macfuse_version()
+        .as_deref()
+        .and_then(problem::parse_version);
     let backend = problem::choose_backend(macos_version(), macfuse);
-    let mountpoint = requested.map(Path::to_path_buf).unwrap_or_else(|| match backend {
-        Backend::FsKit => PathBuf::from(FSKIT_MOUNTPOINT),
-        Backend::Kext => std::env::temp_dir().join("rovik-ide-vfs"),
-    });
-    Plan { backend, mountpoint }
+    let mountpoint = requested
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| match backend {
+            Backend::FsKit => PathBuf::from(FSKIT_MOUNTPOINT),
+            Backend::Kext => std::env::temp_dir().join("rovik-ide-vfs"),
+        });
+    Plan {
+        backend,
+        mountpoint,
+    }
 }
 
 /// Whether macFUSE's FSKit module is switched on (None: can't tell).
 fn fskit_module_enabled() -> Option<bool> {
-    let out = Command::new("/usr/bin/pluginkit").args(["-m", "-A", "-p", "com.apple.fskit.fsmodule"]).output().ok()?;
+    let out = Command::new("/usr/bin/pluginkit")
+        .args(["-m", "-A", "-p", "com.apple.fskit.fsmodule"])
+        .output()
+        .ok()?;
     problem::fskit_module_enabled(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -185,7 +230,10 @@ unsafe impl Send for Channel {}
 /// written there: libfuse reports why a mount failed only on stderr. The
 /// pipe doesn't block writers (excess output is lost, not waited for), and
 /// stderr is restored after `timeout` even if `f` is still running.
-fn capturing_stderr<T: Send + 'static>(timeout: Duration, f: impl FnOnce() -> T + Send + 'static) -> (Option<T>, String) {
+fn capturing_stderr<T: Send + 'static>(
+    timeout: Duration,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> (Option<T>, String) {
     static STDERR: Mutex<()> = Mutex::new(());
     let _one_at_a_time = STDERR.lock().unwrap_or_else(|e| e.into_inner());
     let mut fds = [0 as c_int; 2];
@@ -231,18 +279,29 @@ impl MacMount {
         }
         // Whatever fuse_unmount left mounted.
         if unsafe { libc::unmount(self.mountpoint.as_ptr(), libc::MNT_FORCE) } != 0 {
-            let _ = Command::new("/usr/sbin/diskutil").args(["unmount", "force"]).arg(path).output();
+            let _ = Command::new("/usr/sbin/diskutil")
+                .args(["unmount", "force"])
+                .arg(path)
+                .output();
         }
         Ok(())
     }
 }
 
-pub fn mount(fs: FuseFs, requested: Option<&Path>, config: &Config) -> Result<(BackgroundSession, MacMount, PathBuf), MountProblem> {
-    let version = super::driver::macfuse_version().ok_or_else(|| MountProblem::not_installed("macFUSE", None))?;
+pub fn mount(
+    fs: FuseFs,
+    requested: Option<&Path>,
+    config: &Config,
+) -> Result<(BackgroundSession, MacMount, PathBuf), MountProblem> {
+    let version = super::driver::macfuse_version()
+        .ok_or_else(|| MountProblem::not_installed("macFUSE", None))?;
     if problem::parse_version(&version).is_some_and(problem::macfuse_version_unusable) {
         return Err(problem::update_macfuse(&version));
     }
-    let Plan { backend, mountpoint } = plan(requested);
+    let Plan {
+        backend,
+        mountpoint,
+    } = plan(requested);
     let mut options: Vec<String> = config.mount_options.iter().map(option_string).collect();
     options.push(format!("volname={VOLUME_NAME}"));
     match backend {
@@ -265,28 +324,46 @@ pub fn mount(fs: FuseFs, requested: Option<&Path>, config: &Config) -> Result<(B
         }
     }
     let lib = library().map_err(MountProblem::failed)?;
-    let c_mountpoint =
-        CString::new(mountpoint.as_os_str().as_bytes()).map_err(|_| MountProblem::failed("mount point contains a NUL"))?;
+    let c_mountpoint = CString::new(mountpoint.as_os_str().as_bytes())
+        .map_err(|_| MountProblem::failed("mount point contains a NUL"))?;
 
     let mount_path = c_mountpoint.clone();
     let opts = options.join(",");
     let (channel, stderr) = capturing_stderr(MOUNT_TIMEOUT, move || {
-        let mut argv_owned: Vec<CString> =
-            ["rovik-ide", "-o", &opts].iter().map(|a| CString::new(*a).unwrap_or_default()).collect();
-        let mut argv: Vec<*mut c_char> = argv_owned.iter_mut().map(|a| a.as_ptr() as *mut c_char).collect();
-        let mut args = FuseArgs { argc: argv.len() as c_int, argv: argv.as_mut_ptr(), allocated: 0 };
+        let mut argv_owned: Vec<CString> = ["rovik-ide", "-o", &opts]
+            .iter()
+            .map(|a| CString::new(*a).unwrap_or_default())
+            .collect();
+        let mut argv: Vec<*mut c_char> = argv_owned
+            .iter_mut()
+            .map(|a| a.as_ptr() as *mut c_char)
+            .collect();
+        let mut args = FuseArgs {
+            argc: argv.len() as c_int,
+            argv: argv.as_mut_ptr(),
+            allocated: 0,
+        };
         let ch = unsafe { (lib.mount)(mount_path.as_ptr(), &mut args) };
         drop(argv_owned);
         Channel(ch)
     });
     let channel = match channel {
         Some(ch) if !ch.0.is_null() => ch,
-        Some(_) => return Err(problem::classify_macos_failure(backend, apple_silicon(), &stderr)),
+        Some(_) => {
+            return Err(problem::classify_macos_failure(
+                backend,
+                apple_silicon(),
+                &stderr,
+            ))
+        }
         None => {
             return Err(problem::classify_macos_failure(
                 backend,
                 apple_silicon(),
-                &format!("macFUSE didn't finish mounting within {}s. {stderr}", MOUNT_TIMEOUT.as_secs()),
+                &format!(
+                    "macFUSE didn't finish mounting within {}s. {stderr}",
+                    MOUNT_TIMEOUT.as_secs()
+                ),
             ))
         }
     };
@@ -296,7 +373,11 @@ pub fn mount(fs: FuseFs, requested: Option<&Path>, config: &Config) -> Result<(B
 
     // fuse_chan_fd lends the descriptor; the session gets its own copy.
     let borrowed = unsafe { (lib.chan_fd)(channel.0) };
-    let fd = if borrowed >= 0 { unsafe { libc::dup(borrowed) } } else { -1 };
+    let fd = if borrowed >= 0 {
+        unsafe { libc::dup(borrowed) }
+    } else {
+        -1
+    };
     if fd < 0 {
         unmount_now(channel);
         return Err(problem::update_macfuse(&version));
@@ -313,10 +394,21 @@ pub fn mount(fs: FuseFs, requested: Option<&Path>, config: &Config) -> Result<(B
         })
         .map_err(|e| MountProblem::failed(e.to_string()))?;
     match rx.recv_timeout(MOUNT_TIMEOUT) {
-        Ok(Ok(session)) => Ok((session, MacMount { channel, mountpoint: c_mountpoint.clone() }, mountpoint)),
+        Ok(Ok(session)) => Ok((
+            session,
+            MacMount {
+                channel,
+                mountpoint: c_mountpoint.clone(),
+            },
+            mountpoint,
+        )),
         Ok(Err(e)) => {
             unmount_now(channel);
-            Err(problem::classify_macos_failure(backend, apple_silicon(), &e.to_string()))
+            Err(problem::classify_macos_failure(
+                backend,
+                apple_silicon(),
+                &e.to_string(),
+            ))
         }
         Err(_) => {
             unmount_now(channel);

@@ -994,11 +994,7 @@ mod tests {
         assert!(back
             .iter()
             .all(|m| m.role != "tool" && m.tool_calls.is_none()));
-        assert!(back
-            .last()
-            .unwrap()
-            .text
-            .starts_with("[result of read]"));
+        assert!(back.last().unwrap().text.starts_with("[result of read]"));
     }
 
     #[test]

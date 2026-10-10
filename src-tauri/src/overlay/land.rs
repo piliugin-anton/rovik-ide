@@ -103,9 +103,11 @@ enum Snapshot {
 fn snapshot(path: &Path) -> Snapshot {
     match fs::symlink_metadata(path) {
         Err(_) => Snapshot::Absent,
-        Ok(m) if m.file_type().is_symlink() => {
-            Snapshot::Symlink(fs::read_link(path).map(|t| t.to_string_lossy().into_owned()).unwrap_or_default())
-        }
+        Ok(m) if m.file_type().is_symlink() => Snapshot::Symlink(
+            fs::read_link(path)
+                .map(|t| t.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        ),
         Ok(m) if m.is_dir() => Snapshot::Dir,
         Ok(_) => Snapshot::File(fs::read(path).unwrap_or_default()),
     }
@@ -129,7 +131,12 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
     let carried: std::collections::HashSet<&str> = changes
         .iter()
         .filter_map(|c| match c {
-            OverlayChange::Write { kind: Kind::File, path, origin: Some(o), .. } if o != path => Some(o.as_str()),
+            OverlayChange::Write {
+                kind: Kind::File,
+                path,
+                origin: Some(o),
+                ..
+            } if o != path => Some(o.as_str()),
             _ => None,
         })
         .collect();
@@ -157,27 +164,62 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                     conflicts.push(Conflict { path, reason });
                     continue;
                 }
-                actions.push(Action { path, new: NewContent::Absent, expected: now, merged: false, source: Snapshot::Absent })
+                actions.push(Action {
+                    path,
+                    new: NewContent::Absent,
+                    expected: now,
+                    merged: false,
+                    source: Snapshot::Absent,
+                })
             }
-            OverlayChange::Write { kind: Kind::Dir, .. } => {
+            OverlayChange::Write {
+                kind: Kind::Dir, ..
+            } => {
                 if now != Snapshot::Dir {
-                    actions.push(Action { path, new: NewContent::Dir, expected: now, merged: false, source: Snapshot::Absent });
+                    actions.push(Action {
+                        path,
+                        new: NewContent::Dir,
+                        expected: now,
+                        merged: false,
+                        source: Snapshot::Absent,
+                    });
                 }
             }
-            OverlayChange::Write { kind: Kind::Symlink, target: link, .. } => {
+            OverlayChange::Write {
+                kind: Kind::Symlink,
+                target: link,
+                ..
+            } => {
                 let link = link.clone().unwrap_or_default();
                 if now != Snapshot::Symlink(link.clone()) {
-                    actions.push(Action { path, new: NewContent::Symlink(link), expected: now, merged: false, source: Snapshot::Absent });
+                    actions.push(Action {
+                        path,
+                        new: NewContent::Symlink(link),
+                        expected: now,
+                        merged: false,
+                        source: Snapshot::Absent,
+                    });
                 }
             }
-            OverlayChange::Write { kind: Kind::File, origin, upper, base_copy, perm, perm_changed, .. } => {
+            OverlayChange::Write {
+                kind: Kind::File,
+                origin,
+                upper,
+                base_copy,
+                perm,
+                perm_changed,
+                ..
+            } => {
                 let ours = match (upper, origin) {
                     (Some(file), _) => fs::read(file).ok(),
                     (None, Some(o)) => fs::read(abs(project, o)).ok(),
                     (None, None) => Some(Vec::new()),
                 };
                 let Some(ours) = ours else {
-                    conflicts.push(Conflict { path, reason: "the chat's version can't be read".into() });
+                    conflicts.push(Conflict {
+                        path,
+                        reason: "the chat's version can't be read".into(),
+                    });
                     continue;
                 };
                 let perm = perm_changed.then_some(*perm);
@@ -193,7 +235,10 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                     Snapshot::File(bytes) => Some(bytes.clone()),
                     Snapshot::Absent => None,
                     _ => {
-                        conflicts.push(Conflict { path, reason: "the project has a folder or link there now".into() });
+                        conflicts.push(Conflict {
+                            path,
+                            reason: "the project has a folder or link there now".into(),
+                        });
                         continue;
                     }
                 };
@@ -207,7 +252,11 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                     }
                     // The project already has it: nothing to write, unless it
                     // moved (the project has it at the old place only).
-                    Resolved::Same if moved_from.is_some() && now != Snapshot::File(ours.clone()) => ours,
+                    Resolved::Same
+                        if moved_from.is_some() && now != Snapshot::File(ours.clone()) =>
+                    {
+                        ours
+                    }
                     Resolved::Same => {
                         if perm.is_none() {
                             continue;
@@ -223,11 +272,21 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                         continue;
                     }
                 };
-                actions.push(Action { path, new: NewContent::File { bytes, perm }, expected: now, merged: was_merged, source });
+                actions.push(Action {
+                    path,
+                    new: NewContent::File { bytes, perm },
+                    expected: now,
+                    merged: was_merged,
+                    source,
+                });
             }
         }
     }
-    Plan { actions, conflicts, merged }
+    Plan {
+        actions,
+        conflicts,
+        merged,
+    }
 }
 
 enum Resolved {
@@ -246,12 +305,20 @@ fn resolve(base: Option<&[u8]>, ours: &[u8], theirs: Option<&[u8]>) -> Resolved 
         // Nobody else changed it (or it's new and still absent).
         (Some(b), Some(t)) if t == b => Resolved::Take(ours.to_vec()),
         (None, None) => Resolved::Take(ours.to_vec()),
-        (Some(_), None) => Resolved::Conflict("the chat changed it, and it was deleted in the project".into()),
-        (None, Some(_)) => Resolved::Conflict("the chat and the project both created it, differently".into()),
+        (Some(_), None) => {
+            Resolved::Conflict("the chat changed it, and it was deleted in the project".into())
+        }
+        (None, Some(_)) => {
+            Resolved::Conflict("the chat and the project both created it, differently".into())
+        }
         (Some(b), Some(t)) => match crate::merge::merge_bytes(b, ours, t) {
             Ok(Some(bytes)) => Resolved::Merged(bytes),
-            Ok(None) => Resolved::Conflict("the chat and the project changed the same lines".into()),
-            Err(_) => Resolved::Conflict("a binary file changed in the chat and in the project".into()),
+            Ok(None) => {
+                Resolved::Conflict("the chat and the project changed the same lines".into())
+            }
+            Err(_) => {
+                Resolved::Conflict("a binary file changed in the chat and in the project".into())
+            }
         },
     }
 }
@@ -273,17 +340,25 @@ impl Plan {
             .iter()
             .filter(|a| a.merged)
             .filter_map(|a| match (&a.new, &a.source) {
-                (NewContent::File { bytes, .. }, Snapshot::File(project)) => Some((a.path.clone(), bytes.clone(), project.clone())),
+                (NewContent::File { bytes, .. }, Snapshot::File(project)) => {
+                    Some((a.path.clone(), bytes.clone(), project.clone()))
+                }
                 _ => None,
             })
             .collect()
     }
 }
 
-static PROJECT_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static PROJECT_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn project_lock(project: &Path) -> Arc<Mutex<()>> {
-    PROJECT_LOCKS.lock().unwrap_or_else(|e| e.into_inner()).entry(project.to_path_buf()).or_default().clone()
+    PROJECT_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(project.to_path_buf())
+        .or_default()
+        .clone()
 }
 
 fn landings_dir(data_dir: &Path, dialog_id: &str) -> PathBuf {
@@ -291,7 +366,10 @@ fn landings_dir(data_dir: &Path, dialog_id: &str) -> PathBuf {
 }
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// What a landing did.
@@ -317,10 +395,21 @@ pub enum LandError {
 impl std::fmt::Display for LandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LandError::Conflicts(c) => write!(f, "{} file(s) changed in both the chat and the project", c.len()),
-            LandError::Busy => write!(f, "the project kept changing while the changes were landing"),
+            LandError::Conflicts(c) => write!(
+                f,
+                "{} file(s) changed in both the chat and the project",
+                c.len()
+            ),
+            LandError::Busy => write!(
+                f,
+                "the project kept changing while the changes were landing"
+            ),
             LandError::Unchecked(p) => {
-                write!(f, "the project changed {} again after the checks ran on the merged result", p.join(", "))
+                write!(
+                    f,
+                    "the project changed {} again after the checks ran on the merged result",
+                    p.join(", ")
+                )
             }
             LandError::Failed(e) => f.write_str(e),
         }
@@ -359,7 +448,9 @@ pub fn land_checked(
             return Err(LandError::Conflicts(plan.conflicts));
         }
         if !allow_merge && plan.merged {
-            return Err(LandError::Unchecked(plan.merged_files().into_iter().map(|(p, _, _)| p).collect()));
+            return Err(LandError::Unchecked(
+                plan.merged_files().into_iter().map(|(p, _, _)| p).collect(),
+            ));
         }
         if plan.is_empty() {
             return Ok(None);
@@ -369,11 +460,16 @@ pub fn land_checked(
         paths.sort();
         paths.dedup();
         let _locks: Vec<_> = paths.iter().map(|p| crate::file_guard::lock(p)).collect();
-        let unchanged = plan.actions.iter().all(|a| snapshot(&abs(project, &a.path)) == a.expected);
+        let unchanged = plan
+            .actions
+            .iter()
+            .all(|a| snapshot(&abs(project, &a.path)) == a.expected);
         if !unchanged {
             continue;
         }
-        return apply(data_dir, dialog_id, project, &plan).map(Some).map_err(LandError::Failed);
+        return apply(data_dir, dialog_id, project, &plan)
+            .map(Some)
+            .map_err(LandError::Failed);
     }
     Err(LandError::Busy)
 }
@@ -391,12 +487,18 @@ fn keep_old(dir: &Path, n: usize, path: &Path) -> Result<Content, String> {
             // A folder that goes: everything in it is kept.
             let copy = dir.join("old").join(n.to_string());
             copy_tree(path, &copy).map_err(|e| e.to_string())?;
-            Content::File { file: copy, perm: None }
+            Content::File {
+                file: copy,
+                perm: None,
+            }
         }
         Snapshot::File(bytes) => {
             let copy = dir.join("old").join(n.to_string());
             write_durable(&copy, &bytes)?;
-            Content::File { file: copy, perm: perm_of(path) }
+            Content::File {
+                file: copy,
+                perm: perm_of(path),
+            }
         }
         Snapshot::Symlink(t) => Content::Symlink { target: t },
     })
@@ -407,7 +509,9 @@ fn keep_old(dir: &Path, n: usize, path: &Path) -> Result<Content, String> {
 fn write_durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let mut f = fs::File::create(path).map_err(|e| e.to_string())?;
-    f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| e.to_string())
+    f.write_all(bytes)
+        .and_then(|_| f.sync_all())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(unix)]
@@ -450,7 +554,9 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 fn perm_of(path: &Path) -> Option<u16> {
     use std::os::unix::fs::PermissionsExt;
-    fs::metadata(path).ok().map(|m| (m.permissions().mode() & 0o7777) as u16)
+    fs::metadata(path)
+        .ok()
+        .map(|m| (m.permissions().mode() & 0o7777) as u16)
 }
 
 #[cfg(not(unix))]
@@ -472,7 +578,12 @@ fn set_perm(_path: &Path, _perm: u16) {}
 /// Fails once, for that project's path.
 pub(crate) static FAIL_WRITING: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
 
-fn write_content(project: &Path, rel: &str, content: &Content, dialog_id: &str) -> Result<(), String> {
+fn write_content(
+    project: &Path,
+    rel: &str,
+    content: &Content,
+    dialog_id: &str,
+) -> Result<(), String> {
     #[cfg(test)]
     {
         let mut fail = FAIL_WRITING.lock().unwrap();
@@ -487,7 +598,9 @@ fn write_content(project: &Path, rel: &str, content: &Content, dialog_id: &str) 
     // Whatever is there goes first, unless it's what comes.
     let replace = |path: &Path| -> Result<(), String> {
         match fs::symlink_metadata(path) {
-            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => fs::remove_dir_all(path).map_err(err),
+            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {
+                fs::remove_dir_all(path).map_err(err)
+            }
             Ok(_) => fs::remove_file(path).map_err(err),
             Err(_) => Ok(()),
         }
@@ -542,7 +655,12 @@ fn write_content(project: &Path, rel: &str, content: &Content, dialog_id: &str) 
 /// the same second don't share a folder.
 fn landing_id() -> String {
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    format!("{}-{}-{}", now_secs(), std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    format!(
+        "{}-{}-{}",
+        now_secs(),
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 /// Whether the project's entry at `rel` is what `content` says.
@@ -550,7 +668,9 @@ fn is_content(project: &Path, rel: &str, content: &Content) -> bool {
     let now = snapshot(&abs(project, rel));
     match (content, now) {
         (Content::Absent, Snapshot::Absent) | (Content::Dir, Snapshot::Dir) => true,
-        (Content::File { file, .. }, Snapshot::File(now)) if !file.is_dir() => fs::read(file).is_ok_and(|b| b == now),
+        (Content::File { file, .. }, Snapshot::File(now)) if !file.is_dir() => {
+            fs::read(file).is_ok_and(|b| b == now)
+        }
         // A folder kept whole (a deleted folder's journal copy).
         (Content::File { file, .. }, Snapshot::Dir) if file.is_dir() => true,
         (Content::Symlink { target }, Snapshot::Symlink(t)) => *target == t,
@@ -563,8 +683,11 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
     let dir = landings_dir(data_dir, dialog_id).join(&id);
     fs::create_dir_all(dir.join("old")).map_err(|e| e.to_string())?;
     // Which project, for recovery and undo after the overlay is gone.
-    fs::write(landings_dir(data_dir, dialog_id).join("project.txt"), project.to_string_lossy().as_bytes())
-        .map_err(|e| e.to_string())?;
+    fs::write(
+        landings_dir(data_dir, dialog_id).join("project.txt"),
+        project.to_string_lossy().as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("new")).map_err(|e| e.to_string())?;
     let mut entries = Vec::new();
     for (n, a) in plan.actions.iter().enumerate() {
@@ -579,11 +702,20 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
                 Content::File { file, perm: *perm }
             }
         };
-        entries.push(Entry { path: a.path.clone(), old, new });
+        entries.push(Entry {
+            path: a.path.clone(),
+            old,
+            new,
+        });
     }
     sync_dir(&dir.join("old"));
     sync_dir(&dir.join("new"));
-    let mut journal = Journal { version: 1, state: "applying".into(), at: now_secs(), entries };
+    let mut journal = Journal {
+        version: 1,
+        state: "applying".into(),
+        at: now_secs(),
+        entries,
+    };
     save_journal(&dir, &journal)?;
     for (i, e) in journal.entries.iter().enumerate() {
         if let Err(err) = write_content(project, &e.path, &e.new, dialog_id) {
@@ -606,27 +738,39 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
     }
     journal.state = "done".into();
     save_journal(&dir, &journal)?;
-    Ok(Landed { id, paths: plan.paths() })
+    Ok(Landed {
+        id,
+        paths: plan.paths(),
+    })
 }
 
 /// The project a chat's landings went to.
 pub fn project_of(data_dir: &Path, dialog_id: &str) -> Option<PathBuf> {
-    fs::read_to_string(landings_dir(data_dir, dialog_id).join("project.txt")).ok().map(|p| PathBuf::from(p.trim()))
+    fs::read_to_string(landings_dir(data_dir, dialog_id).join("project.txt"))
+        .ok()
+        .map(|p| PathBuf::from(p.trim()))
 }
 
 /// Finishes landings a crash interrupted: their journals say "applying".
 /// Returns the paths written.
 pub fn recover(data_dir: &Path) -> Vec<String> {
     let mut done = Vec::new();
-    let Ok(chats) = fs::read_dir(data_dir.join("landings")) else { return done };
+    let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
+        return done;
+    };
     for chat in chats.flatten() {
         let dialog_id = chat.file_name().to_string_lossy().into_owned();
-        let Some(project) = project_of(data_dir, &dialog_id) else { continue };
-        let Ok(landings) = fs::read_dir(chat.path()) else { continue };
+        let Some(project) = project_of(data_dir, &dialog_id) else {
+            continue;
+        };
+        let Ok(landings) = fs::read_dir(chat.path()) else {
+            continue;
+        };
         for landing in landings.flatten() {
             let dir = landing.path();
-            let Some(mut journal) =
-                fs::read(dir.join("journal.json")).ok().and_then(|b| serde_json::from_slice::<Journal>(&b).ok())
+            let Some(mut journal) = fs::read(dir.join("journal.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Journal>(&b).ok())
             else {
                 continue;
             };
@@ -649,7 +793,10 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
             let mut skipped = Vec::new();
             for path in order {
                 let group = &by_path[path];
-                if group.last().is_some_and(|e| is_content(&project, path, &e.new)) {
+                if group
+                    .last()
+                    .is_some_and(|e| is_content(&project, path, &e.new))
+                {
                     continue;
                 }
                 let mut ok = true;
@@ -658,7 +805,9 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
                         continue;
                     }
                     let before = if k == 0 { &e.old } else { &group[k - 1].new };
-                    if !is_content(&project, path, before) || write_content(&project, path, &e.new, &dialog_id).is_err() {
+                    if !is_content(&project, path, before)
+                        || write_content(&project, path, &e.new, &dialog_id).is_err()
+                    {
                         ok = false;
                         break;
                     }
@@ -669,7 +818,11 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
                     skipped.push(path.to_string());
                 }
             }
-            journal.state = if skipped.is_empty() { "done".into() } else { "partial".into() };
+            journal.state = if skipped.is_empty() {
+                "done".into()
+            } else {
+                "partial".into()
+            };
             let _ = save_journal(&dir, &journal);
             for p in skipped {
                 done.push(format!("{p} (not finished: it changed since)"));
@@ -686,8 +839,15 @@ pub fn latest(data_dir: &Path, dialog_id: &str) -> Option<(String, Vec<String>, 
         .ok()?
         .flatten()
         .filter_map(|e| {
-            let j: Journal = serde_json::from_slice(&fs::read(e.path().join("journal.json")).ok()?).ok()?;
-            (j.state == "done").then(|| (j.at, e.file_name().to_string_lossy().into_owned(), j.entries.iter().map(|x| x.path.clone()).collect()))
+            let j: Journal =
+                serde_json::from_slice(&fs::read(e.path().join("journal.json")).ok()?).ok()?;
+            (j.state == "done").then(|| {
+                (
+                    j.at,
+                    e.file_name().to_string_lossy().into_owned(),
+                    j.entries.iter().map(|x| x.path.clone()).collect(),
+                )
+            })
         })
         .collect();
     found.sort();
@@ -696,15 +856,21 @@ pub fn latest(data_dir: &Path, dialog_id: &str) -> Option<(String, Vec<String>, 
 
 /// Undoes a landing: each path goes back to what it was, unless it changed
 /// since (then it's left as it is and named in the result).
-pub fn undo(data_dir: &Path, dialog_id: &str, project: &Path, id: &str) -> Result<Vec<Conflict>, String> {
+pub fn undo(
+    data_dir: &Path,
+    dialog_id: &str,
+    project: &Path,
+    id: &str,
+) -> Result<Vec<Conflict>, String> {
     if id.contains(['/', '\\']) || id.contains("..") {
         return Err("bad landing id".into());
     }
     let lock = project_lock(project);
     let _landing = lock.lock().unwrap_or_else(|e| e.into_inner());
     let dir = landings_dir(data_dir, dialog_id).join(id);
-    let mut journal: Journal = serde_json::from_slice(&fs::read(dir.join("journal.json")).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let mut journal: Journal =
+        serde_json::from_slice(&fs::read(dir.join("journal.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
     if journal.state != "done" {
         return Err("that landing can't be undone".into());
     }
@@ -724,12 +890,17 @@ pub fn undo(data_dir: &Path, dialog_id: &str, project: &Path, id: &str) -> Resul
         }
         let still = match (&e.new, snapshot(&path)) {
             (Content::Absent, Snapshot::Absent) | (Content::Dir, Snapshot::Dir) => true,
-            (Content::File { file, .. }, Snapshot::File(now)) => fs::read(file).is_ok_and(|b| b == now),
+            (Content::File { file, .. }, Snapshot::File(now)) => {
+                fs::read(file).is_ok_and(|b| b == now)
+            }
             (Content::Symlink { target }, Snapshot::Symlink(t)) => *target == t,
             _ => false,
         };
         if !still {
-            kept.push(Conflict { path: e.path.clone(), reason: "changed since it landed".into() });
+            kept.push(Conflict {
+                path: e.path.clone(),
+                reason: "changed since it landed".into(),
+            });
             continue;
         }
         // A folder the landing made (where there was nothing, or a file or
@@ -737,7 +908,10 @@ pub fn undo(data_dir: &Path, dialog_id: &str, project: &Path, id: &str) -> Resul
         // or files kept above, stay with it.
         if matches!(e.new, Content::Dir) && !matches!(e.old, Content::Dir) {
             if fs::remove_dir(&path).is_err() {
-                kept.push(Conflict { path: e.path.clone(), reason: "files were added to this folder since it landed".into() });
+                kept.push(Conflict {
+                    path: e.path.clone(),
+                    reason: "files were added to this folder since it landed".into(),
+                });
                 continue;
             }
             if matches!(e.old, Content::Absent) {

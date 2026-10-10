@@ -28,7 +28,11 @@ use super::tool_path;
 
 const REPO: &str = "https://github.com/rust-lang/rust-analyzer";
 const MAX_DOWNLOAD_BYTES: u64 = 200 * 1024 * 1024;
-const EXE: &str = if cfg!(windows) { "rust-analyzer.exe" } else { "rust-analyzer" };
+const EXE: &str = if cfg!(windows) {
+    "rust-analyzer.exe"
+} else {
+    "rust-analyzer"
+};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -58,7 +62,12 @@ struct Current {
 }
 
 fn managed_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("language-servers").join("rust-analyzer"))
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("language-servers")
+        .join("rust-analyzer"))
 }
 
 /// `<binary> --version`, if it runs. rustup's proxy for a component that
@@ -89,10 +98,16 @@ fn version_of(path: &Path) -> Option<String> {
 
 fn managed_binary(app: &AppHandle) -> Option<RaBinary> {
     let dir = managed_dir(app).ok()?;
-    let current: Current = serde_json::from_str(&fs::read_to_string(dir.join("current.json")).ok()?).ok()?;
+    let current: Current =
+        serde_json::from_str(&fs::read_to_string(dir.join("current.json")).ok()?).ok()?;
     let path = dir.join(&current.tag).join(EXE);
     let version = version_of(&path)?;
-    Some(RaBinary { path: path.to_string_lossy().into_owned(), version, source: "managed".into(), tag: Some(current.tag) })
+    Some(RaBinary {
+        path: path.to_string_lossy().into_owned(),
+        version,
+        source: "managed".into(),
+        tag: Some(current.tag),
+    })
 }
 
 fn system_binary() -> Option<RaBinary> {
@@ -102,7 +117,12 @@ fn system_binary() -> Option<RaBinary> {
         .filter(|candidate| candidate.is_file())
         .find_map(|candidate| {
             let version = version_of(&candidate)?;
-            Some(RaBinary { path: candidate.to_string_lossy().into_owned(), version, source: "system".into(), tag: None })
+            Some(RaBinary {
+                path: candidate.to_string_lossy().into_owned(),
+                version,
+                source: "system".into(),
+                tag: None,
+            })
         })
 }
 
@@ -110,7 +130,9 @@ fn system_binary() -> Option<RaBinary> {
 /// can't be deleted yet; that's fine, the next look tries again.
 fn prune(app: &AppHandle, keep: &str) {
     let Ok(dir) = managed_dir(app) else { return };
-    let Ok(entries) = fs::read_dir(&dir) else { return };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if entry.path().is_dir() && name != keep && !name.starts_with('.') {
@@ -122,12 +144,21 @@ fn prune(app: &AppHandle, keep: &str) {
 /// The rust-analyzer to use: a custom path if set, else the app's copy or
 /// the system's (in the order `prefer_system` says). None: nothing usable.
 #[tauri::command]
-pub async fn ra_find(app: AppHandle, custom_path: Option<String>, prefer_system: bool) -> Result<Option<RaBinary>, String> {
+pub async fn ra_find(
+    app: AppHandle,
+    custom_path: Option<String>,
+    prefer_system: bool,
+) -> Result<Option<RaBinary>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(custom) = custom_path.filter(|p| !p.trim().is_empty()) {
             let path = PathBuf::from(custom.trim());
             return match version_of(&path) {
-                Some(version) => Ok(Some(RaBinary { path: path.to_string_lossy().into_owned(), version, source: "custom".into(), tag: None })),
+                Some(version) => Ok(Some(RaBinary {
+                    path: path.to_string_lossy().into_owned(),
+                    version,
+                    source: "custom".into(),
+                    tag: None,
+                })),
                 None => Err(format!("{}: doesn't run as rust-analyzer", path.display())),
             };
         }
@@ -135,7 +166,11 @@ pub async fn ra_find(app: AppHandle, custom_path: Option<String>, prefer_system:
         if let Some(tag) = managed.as_ref().and_then(|m| m.tag.clone()) {
             prune(&app, &tag);
         }
-        Ok(if prefer_system { system_binary().or(managed) } else { managed.or_else(system_binary) })
+        Ok(if prefer_system {
+            system_binary().or(managed)
+        } else {
+            managed.or_else(system_binary)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -179,7 +214,10 @@ pub fn parse_assets(html: &str, asset: &str) -> Option<(String, String)> {
         let href = format!("{}{}", &item[start..end], &link_end[..link_end.len() - 1]);
         let at = item.find("sha256:")? + 7;
         let digest = item.get(at..at + 64)?;
-        digest.chars().all(|c| c.is_ascii_hexdigit()).then(|| (href, digest.to_ascii_lowercase()))
+        digest
+            .chars()
+            .all(|c| c.is_ascii_hexdigit())
+            .then(|| (href, digest.to_ascii_lowercase()))
     })
 }
 
@@ -194,13 +232,22 @@ pub async fn ra_latest_release() -> Result<RaRelease, String> {
         .build()
         .map_err(|e| e.to_string())?;
     // /releases/latest redirects to /releases/tag/<tag>.
-    let response = no_redirect.get(format!("{REPO}/releases/latest")).send().await.map_err(|e| e.to_string())?;
+    let response = no_redirect
+        .get(format!("{REPO}/releases/latest"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     let location = response
         .headers()
         .get(reqwest::header::LOCATION)
         .and_then(|l| l.to_str().ok())
         .ok_or_else(|| format!("unexpected answer from GitHub ({})", response.status()))?;
-    let tag = location.rsplit("/tag/").next().filter(|t| !t.is_empty() && !t.contains('/')).ok_or("no release tag")?.to_string();
+    let tag = location
+        .rsplit("/tag/")
+        .next()
+        .filter(|t| !t.is_empty() && !t.contains('/'))
+        .ok_or("no release tag")?
+        .to_string();
 
     let html = http()?
         .get(format!("{REPO}/releases/expanded_assets/{tag}"))
@@ -211,11 +258,17 @@ pub async fn ra_latest_release() -> Result<RaRelease, String> {
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    let (href, sha256) = parse_assets(&html, &asset).ok_or_else(|| format!("{asset} or its checksum isn't in release {tag}"))?;
+    let (href, sha256) = parse_assets(&html, &asset)
+        .ok_or_else(|| format!("{asset} or its checksum isn't in release {tag}"))?;
     if !href.starts_with("/rust-lang/rust-analyzer/releases/download/") {
         return Err(format!("unexpected download link {href}"));
     }
-    Ok(RaRelease { tag, asset, url: format!("https://github.com{href}"), sha256 })
+    Ok(RaRelease {
+        tag,
+        asset,
+        url: format!("https://github.com{href}"),
+        sha256,
+    })
 }
 
 #[derive(Serialize, Clone)]
@@ -229,8 +282,15 @@ pub struct RaProgress {
 /// makes sure it runs, then makes it the current copy. A failure at any
 /// point leaves the previous copy in place.
 #[tauri::command]
-pub async fn ra_install(app: AppHandle, release: RaRelease, on_progress: Channel<RaProgress>) -> Result<RaBinary, String> {
-    if !release.url.starts_with("https://github.com/rust-lang/rust-analyzer/releases/download/") {
+pub async fn ra_install(
+    app: AppHandle,
+    release: RaRelease,
+    on_progress: Channel<RaProgress>,
+) -> Result<RaBinary, String> {
+    if !release
+        .url
+        .starts_with("https://github.com/rust-lang/rust-analyzer/releases/download/")
+    {
         return Err("not a rust-analyzer release download".into());
     }
     if release.tag.is_empty() || release.tag.contains(['/', '\\', '.']) {
@@ -240,7 +300,12 @@ pub async fn ra_install(app: AppHandle, release: RaRelease, on_progress: Channel
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     // Download, hashing as it arrives.
-    let response = http()?.get(&release.url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+    let response = http()?
+        .get(&release.url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| e.to_string())?;
     let total = response.content_length();
     if total.is_some_and(|t| t > MAX_DOWNLOAD_BYTES) {
         return Err("download too large".into());
@@ -258,13 +323,26 @@ pub async fn ra_install(app: AppHandle, release: RaRelease, on_progress: Channel
         }
         if data.len() as u64 - last_report >= 256 * 1024 {
             last_report = data.len() as u64;
-            let _ = on_progress.send(RaProgress { downloaded: last_report, total });
+            let _ = on_progress.send(RaProgress {
+                downloaded: last_report,
+                total,
+            });
         }
     }
-    let _ = on_progress.send(RaProgress { downloaded: data.len() as u64, total });
-    let digest: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let _ = on_progress.send(RaProgress {
+        downloaded: data.len() as u64,
+        total,
+    });
+    let digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if digest != release.sha256 {
-        return Err(format!("checksum mismatch: expected {}, got {digest}. Nothing was installed.", release.sha256));
+        return Err(format!(
+            "checksum mismatch: expected {}, got {digest}. Nothing was installed.",
+            release.sha256
+        ));
     }
 
     // Unpack into a staging folder, then move it into place.
@@ -283,18 +361,27 @@ pub async fn ra_install(app: AppHandle, release: RaRelease, on_progress: Channel
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&exe_path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+            fs::set_permissions(&exe_path, fs::Permissions::from_mode(0o755))
+                .map_err(|e| e.to_string())?;
         }
-        let version = version_of(&exe_path).ok_or("the downloaded rust-analyzer doesn't run on this system")?;
+        let version = version_of(&exe_path)
+            .ok_or("the downloaded rust-analyzer doesn't run on this system")?;
 
         let final_dir = dir.join(&tag);
         let _ = fs::remove_dir_all(&final_dir);
         fs::rename(&staging, &final_dir).map_err(|e| e.to_string())?;
-        let current = serde_json::to_string(&Current { tag: tag.clone() }).map_err(|e| e.to_string())?;
-        crate::atomic_file::write_atomic(&dir.join("current.json"), current.as_bytes()).map_err(|e| e.to_string())?;
+        let current =
+            serde_json::to_string(&Current { tag: tag.clone() }).map_err(|e| e.to_string())?;
+        crate::atomic_file::write_atomic(&dir.join("current.json"), current.as_bytes())
+            .map_err(|e| e.to_string())?;
         let path = final_dir.join(EXE);
         let _ = app2;
-        Ok(RaBinary { path: path.to_string_lossy().into_owned(), version, source: "managed".into(), tag: Some(tag) })
+        Ok(RaBinary {
+            path: path.to_string_lossy().into_owned(),
+            version,
+            source: "managed".into(),
+            tag: Some(tag),
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -305,14 +392,23 @@ pub async fn ra_install(app: AppHandle, release: RaRelease, on_progress: Channel
 pub fn unpack(asset: &str, data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     if asset.ends_with(".gz") {
-        flate2::read::GzDecoder::new(data).read_to_end(&mut out).map_err(|e| format!("unpacking: {e}"))?;
+        flate2::read::GzDecoder::new(data)
+            .read_to_end(&mut out)
+            .map_err(|e| format!("unpacking: {e}"))?;
     } else if asset.ends_with(".zip") {
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| format!("unpacking: {e}"))?;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data))
+            .map_err(|e| format!("unpacking: {e}"))?;
         let mut entry = (0..archive.len())
-            .find(|&i| archive.by_index(i).is_ok_and(|f| f.name().rsplit('/').next() == Some("rust-analyzer.exe")))
+            .find(|&i| {
+                archive
+                    .by_index(i)
+                    .is_ok_and(|f| f.name().rsplit('/').next() == Some("rust-analyzer.exe"))
+            })
             .ok_or("rust-analyzer.exe isn't in the archive")
             .and_then(|i| archive.by_index(i).map_err(|_| "unreadable archive entry"))?;
-        entry.read_to_end(&mut out).map_err(|e| format!("unpacking: {e}"))?;
+        entry
+            .read_to_end(&mut out)
+            .map_err(|e| format!("unpacking: {e}"))?;
     } else {
         return Err(format!("unknown file type: {asset}"));
     }
@@ -337,11 +433,21 @@ pub struct RustSrcStatus {
 pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let run = |cmd: &str, args: &[&str]| {
-            crate::process::no_window(&mut Command::new(cmd)).args(args).current_dir(&root).env("PATH", tool_path()).output().ok().filter(|o| o.status.success())
+            crate::process::no_window(&mut Command::new(cmd))
+                .args(args)
+                .current_dir(&root)
+                .env("PATH", tool_path())
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
         };
         let installed = run("rustc", &["--print", "sysroot"])
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .is_some_and(|sysroot| Path::new(&sysroot).join("lib/rustlib/src/rust/library").is_dir());
+            .is_some_and(|sysroot| {
+                Path::new(&sysroot)
+                    .join("lib/rustlib/src/rust/library")
+                    .is_dir()
+            });
         let rustup = run("rustup", &["--version"]).is_some();
         Ok(RustSrcStatus { installed, rustup })
     })
@@ -379,7 +485,8 @@ mod tests {
             <span>sha256:23F711D86B5F826E0000000000000000000000000000000000000000000000AB</span></li>
             <li class="Box-row"><a href="/rust-lang/rust-analyzer/releases/download/2026-09-28/rust-analyzer-x86_64-unknown-linux-musl.gz">y</a>
             <span>sha256:b9a0edbda7a7d9ef000000000000000000000000000000000000000000000000</span></li></ul>"#;
-        let (href, digest) = parse_assets(html, "rust-analyzer-x86_64-unknown-linux-musl.gz").unwrap();
+        let (href, digest) =
+            parse_assets(html, "rust-analyzer-x86_64-unknown-linux-musl.gz").unwrap();
         assert_eq!(href, "/rust-lang/rust-analyzer/releases/download/2026-09-28/rust-analyzer-x86_64-unknown-linux-musl.gz");
         assert!(digest.starts_with("b9a0edbda7a7d9ef"));
         let (_, gnu) = parse_assets(html, "rust-analyzer-x86_64-unknown-linux-gnu.gz").unwrap();

@@ -41,8 +41,12 @@ pub enum SettingsPane {
 impl SettingsPane {
     pub fn url(self) -> &'static str {
         match self {
-            SettingsPane::Extensions => "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
-            SettingsPane::PrivacySecurity => "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
+            SettingsPane::Extensions => {
+                "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+            }
+            SettingsPane::PrivacySecurity => {
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension"
+            }
         }
     }
 }
@@ -108,7 +112,11 @@ pub enum Backend {
 
 /// Parses "15.4.1" / "5.1.0" into (major, minor, patch).
 pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
-    let mut parts = text.trim().split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).map(|p| p.parse::<u32>());
+    let mut parts = text
+        .trim()
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .map(|p| p.parse::<u32>());
     let major = parts.next()?.ok()?;
     let minor = parts.next().and_then(|p| p.ok()).unwrap_or(0);
     let patch = parts.next().and_then(|p| p.ok()).unwrap_or(0);
@@ -137,7 +145,9 @@ pub fn choose_backend(macos: Option<(u32, u32, u32)>, macfuse: Option<(u32, u32,
 pub fn fskit_mountpoint_ok(path: &str) -> bool {
     path.starts_with("/Volumes/")
         && path.len() > "/Volumes/".len()
-        && path.chars().all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c))
 }
 
 /// Whether macFUSE's FSKit module is switched on, from
@@ -145,13 +155,14 @@ pub fn fskit_mountpoint_ok(path: &str) -> bool {
 /// enabled, `-` disabled). None: macFUSE's module isn't listed or the state
 /// can't be told — the mount attempt decides.
 pub fn fskit_module_enabled(pluginkit_output: &str) -> Option<bool> {
-    pluginkit_output.lines().find(|l| l.to_ascii_lowercase().contains("macfuse")).and_then(|line| {
-        match line.trim_start().chars().next() {
+    pluginkit_output
+        .lines()
+        .find(|l| l.to_ascii_lowercase().contains("macfuse"))
+        .and_then(|line| match line.trim_start().chars().next() {
             Some('+') => Some(true),
             Some('-') => Some(false),
             _ => None,
-        }
-    })
+        })
 }
 
 pub fn enable_extension(detail: Option<String>) -> MountProblem {
@@ -183,7 +194,10 @@ pub fn approve_kernel_extension(apple_silicon: bool, detail: Option<String>) -> 
     steps.push("Open System Settings → Privacy & Security and click Allow next to the message about macFUSE (Benjamin Fleischer).".into());
     steps.push("Restart the Mac if macOS asks. The virtual files are mounted once the extension is allowed.".into());
     if apple_silicon {
-        steps.push("Or update macOS to 15.4 or later: macFUSE then works without a kernel extension.".into());
+        steps.push(
+            "Or update macOS to 15.4 or later: macFUSE then works without a kernel extension."
+                .into(),
+        );
     }
     MountProblem {
         kind: ProblemKind::ApproveKernelExtension,
@@ -212,7 +226,11 @@ pub fn classify_macos_failure(backend: Backend, apple_silicon: bool, error: &str
     let lower = error.to_ascii_lowercase();
     match backend {
         // "File system named macfuse not found": the FSKit module is off.
-        Backend::FsKit if lower.contains("not found") || lower.contains("not enabled") || lower.contains("extension") => {
+        Backend::FsKit
+            if lower.contains("not found")
+                || lower.contains("not enabled")
+                || lower.contains("extension") =>
+        {
             enable_extension(detail)
         }
         Backend::FsKit => MountProblem::failed(error.trim()),
@@ -247,10 +265,22 @@ mod tests {
 
     #[test]
     fn backend_needs_both_versions() {
-        assert_eq!(choose_backend(Some((15, 4, 0)), Some((5, 1, 0))), Backend::FsKit);
-        assert_eq!(choose_backend(Some((26, 0, 0)), Some((5, 4, 0))), Backend::FsKit);
-        assert_eq!(choose_backend(Some((15, 3, 2)), Some((5, 4, 0))), Backend::Kext);
-        assert_eq!(choose_backend(Some((15, 4, 0)), Some((5, 0, 7))), Backend::Kext);
+        assert_eq!(
+            choose_backend(Some((15, 4, 0)), Some((5, 1, 0))),
+            Backend::FsKit
+        );
+        assert_eq!(
+            choose_backend(Some((26, 0, 0)), Some((5, 4, 0))),
+            Backend::FsKit
+        );
+        assert_eq!(
+            choose_backend(Some((15, 3, 2)), Some((5, 4, 0))),
+            Backend::Kext
+        );
+        assert_eq!(
+            choose_backend(Some((15, 4, 0)), Some((5, 0, 7))),
+            Backend::Kext
+        );
         assert_eq!(choose_backend(None, Some((5, 4, 0))), Backend::Kext);
     }
 
@@ -269,15 +299,32 @@ mod tests {
         let off = "-    io.macfuse.app.fsmodule.macfuse(5.4.0)\n";
         assert_eq!(fskit_module_enabled(on), Some(true));
         assert_eq!(fskit_module_enabled(off), Some(false));
-        assert_eq!(fskit_module_enabled("     io.macfuse.app.fsmodule.macfuse(5.4.0)"), None);
-        assert_eq!(fskit_module_enabled("+    com.apple.fskit.exfat(1.0)"), None);
+        assert_eq!(
+            fskit_module_enabled("     io.macfuse.app.fsmodule.macfuse(5.4.0)"),
+            None
+        );
+        assert_eq!(
+            fskit_module_enabled("+    com.apple.fskit.exfat(1.0)"),
+            None
+        );
     }
 
     #[test]
     fn classifies_failures() {
         let p = classify_macos_failure(Backend::FsKit, true, "File system named macfuse not found");
-        assert_eq!((p.kind, p.settings, p.retry), (ProblemKind::EnableExtension, Some(SettingsPane::Extensions), true));
-        let p = classify_macos_failure(Backend::Kext, true, "mount_macfuse: the file system is not available (1): extension not loaded");
+        assert_eq!(
+            (p.kind, p.settings, p.retry),
+            (
+                ProblemKind::EnableExtension,
+                Some(SettingsPane::Extensions),
+                true
+            )
+        );
+        let p = classify_macos_failure(
+            Backend::Kext,
+            true,
+            "mount_macfuse: the file system is not available (1): extension not loaded",
+        );
         assert_eq!(p.kind, ProblemKind::ApproveKernelExtension);
         assert!(p.steps[0].contains("Recovery"));
         let p = classify_macos_failure(Backend::Kext, false, "mount_macfuse: extension not loaded");
@@ -289,6 +336,8 @@ mod tests {
     #[test]
     fn messages() {
         assert_eq!(MountProblem::failed("boom").message(), "boom");
-        assert!(enable_extension(Some("x".into())).message().starts_with("Turn on macFUSE"));
+        assert!(enable_extension(Some("x".into()))
+            .message()
+            .starts_with("Turn on macFUSE"));
     }
 }

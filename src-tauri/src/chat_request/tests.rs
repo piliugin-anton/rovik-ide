@@ -28,12 +28,16 @@ fn names(events: &[ChatStreamEvent]) -> Vec<String> {
             ChatStreamEvent::Error { .. } => "error".into(),
             ChatStreamEvent::Retrying { attempt, .. } => format!("retrying:{attempt}"),
             ChatStreamEvent::FocusNote => "focus_note".into(),
-            ChatStreamEvent::ReasoningDetails { details } => format!("reasoning_details:{}", details.len()),
+            ChatStreamEvent::ReasoningDetails { details } => {
+                format!("reasoning_details:{}", details.len())
+            }
             ChatStreamEvent::ContextNotes { .. } => "context_notes".into(),
             ChatStreamEvent::ContextUpdated { .. } => "context_updated".into(),
             ChatStreamEvent::ToolCallStart { name, .. } => format!("tool_start:{name}"),
             ChatStreamEvent::ToolCallArgumentsDelta { .. } => "tool_args".into(),
-            ChatStreamEvent::ToolCallComplete { name, arguments, .. } => format!("tool_done:{name}:{arguments}"),
+            ChatStreamEvent::ToolCallComplete {
+                name, arguments, ..
+            } => format!("tool_done:{name}:{arguments}"),
         })
         .collect()
 }
@@ -110,13 +114,19 @@ fn errors_inside_a_200_stream_are_classified() {
     let mut parser = ReplyParser::default();
     let (_, mut emit) = collect();
     let err = parser
-        .feed(&json!({"error":{"code":429,"message":"Rate limit exceeded: free-models-per-min"}}), &mut emit)
+        .feed(
+            &json!({"error":{"code":429,"message":"Rate limit exceeded: free-models-per-min"}}),
+            &mut emit,
+        )
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::RateLimited);
     assert!(err.retryable);
 
     let err = ReplyParser::default()
-        .feed(&json!({"error":{"message":"Upstream model crashed"}}), &mut emit)
+        .feed(
+            &json!({"error":{"message":"Upstream model crashed"}}),
+            &mut emit,
+        )
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Provider);
 }
@@ -125,11 +135,22 @@ fn errors_inside_a_200_stream_are_classified() {
 fn empty_and_length_finishes() {
     let (_, mut emit) = collect();
     let mut p = ReplyParser::default();
-    p.feed(&json!({"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}), &mut emit).unwrap();
-    assert_eq!(p.finish(&mut emit).unwrap_err().kind, ErrorKind::EmptyResponse);
+    p.feed(
+        &json!({"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}),
+        &mut emit,
+    )
+    .unwrap();
+    assert_eq!(
+        p.finish(&mut emit).unwrap_err().kind,
+        ErrorKind::EmptyResponse
+    );
 
     let mut p = ReplyParser::default();
-    p.feed(&json!({"choices":[{"delta":{},"finish_reason":"length"}]}), &mut emit).unwrap();
+    p.feed(
+        &json!({"choices":[{"delta":{},"finish_reason":"length"}]}),
+        &mut emit,
+    )
+    .unwrap();
     assert_eq!(p.finish(&mut emit).unwrap_err().kind, ErrorKind::Length);
 }
 
@@ -138,11 +159,21 @@ fn status_classification_and_waits() {
     let mut h = HeaderMap::new();
     h.insert(RETRY_AFTER, HeaderValue::from_static("7"));
     let e = classify_status(429, &h, r#"{"error":{"message":"slow down"}}"#);
-    assert_eq!((e.kind, e.retry_after_ms, e.retryable), (ErrorKind::RateLimited, Some(7000), true));
+    assert_eq!(
+        (e.kind, e.retry_after_ms, e.retryable),
+        (ErrorKind::RateLimited, Some(7000), true)
+    );
 
-    let e = classify_status(400, &HeaderMap::new(), "This model's maximum context length is 8192 tokens");
+    let e = classify_status(
+        400,
+        &HeaderMap::new(),
+        "This model's maximum context length is 8192 tokens",
+    );
     assert_eq!((e.kind, e.retryable), (ErrorKind::ContextLength, false));
-    assert_eq!(classify_status(401, &HeaderMap::new(), "").kind, ErrorKind::Auth);
+    assert_eq!(
+        classify_status(401, &HeaderMap::new(), "").kind,
+        ErrorKind::Auth
+    );
     assert!(classify_status(503, &HeaderMap::new(), "").retryable);
 
     // OpenRouter: the reset time (epoch ms) is inside the error body.
@@ -152,10 +183,19 @@ fn status_classification_and_waits() {
     let ms = e.retry_after_ms.unwrap();
     assert!((88_000..=90_000).contains(&ms), "{ms}");
 
-    assert_eq!(parse_duration_text("2m59.5s"), Some(Duration::from_secs_f64(179.5)));
-    assert_eq!(parse_duration_text("750ms"), Some(Duration::from_millis(750)));
+    assert_eq!(
+        parse_duration_text("2m59.5s"),
+        Some(Duration::from_secs_f64(179.5))
+    );
+    assert_eq!(
+        parse_duration_text("750ms"),
+        Some(Duration::from_millis(750))
+    );
     assert_eq!(parse_duration_text("1h2m"), Some(Duration::from_secs(3720)));
-    assert_eq!(human_duration(Duration::from_secs(4 * 3600 + 12 * 60)), "4 h 12 min");
+    assert_eq!(
+        human_duration(Duration::from_secs(4 * 3600 + 12 * 60)),
+        "4 h 12 min"
+    );
 }
 
 /*
@@ -166,11 +206,17 @@ enum Reply {
     /// Full HTTP response, sent at once, then close.
     Raw(String),
     /// SSE headers, then events with a delay before each, then close or hang.
-    Sse { events: Vec<(u64, String)>, hang: bool },
+    Sse {
+        events: Vec<(u64, String)>,
+        hang: bool,
+    },
 }
 
 fn sse(events: &[&str]) -> Reply {
-    Reply::Sse { events: events.iter().map(|e| (0, e.to_string())).collect(), hang: false }
+    Reply::Sse {
+        events: events.iter().map(|e| (0, e.to_string())).collect(),
+        hang: false,
+    }
 }
 
 const TEXT: &str = r#"data: {"choices":[{"delta":{"content":"Hello"}}]}"#;
@@ -185,7 +231,9 @@ async fn mock(replies: Vec<Reply>) -> (String, Arc<std::sync::atomic::AtomicUsiz
     let counter = served.clone();
     tokio::spawn(async move {
         for reply in replies {
-            let Ok((mut socket, _)) = listener.accept().await else { return };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut buf = vec![0u8; 65536];
             let _ = socket.read(&mut buf).await;
@@ -215,13 +263,30 @@ async fn mock(replies: Vec<Reply>) -> (String, Arc<std::sync::atomic::AtomicUsiz
 }
 
 fn fast_limits() -> Limits {
-    Limits { first_byte: Duration::from_millis(300), idle: Duration::from_millis(300), overall: Duration::from_secs(5) }
+    Limits {
+        first_byte: Duration::from_millis(300),
+        idle: Duration::from_millis(300),
+        overall: Duration::from_secs(5),
+    }
 }
 
-async fn run_against(url: &str, limits: Limits, cancel_after: Option<u64>) -> (Result<(), ChatError>, Vec<ChatStreamEvent>) {
+async fn run_against(
+    url: &str,
+    limits: Limits,
+    cancel_after: Option<u64>,
+) -> (Result<(), ChatError>, Vec<ChatStreamEvent>) {
     let client = Client::new();
     let body = json!({"model":"m","messages":[]});
-    let spec = RequestSpec { client: &client, url, api_key: "k", body: &body, streaming: true, limits, api: Api::ChatCompletions, chat_id: None };
+    let spec = RequestSpec {
+        client: &client,
+        url,
+        api_key: "k",
+        body: &body,
+        streaming: true,
+        limits,
+        api: Api::ChatCompletions,
+        chat_id: None,
+    };
     let (tx, mut rx) = watch::channel(false);
     if let Some(ms) = cancel_after {
         tokio::spawn(async move {
@@ -241,7 +306,10 @@ async fn empty_responses_are_retried_until_one_succeeds() {
     let (url, served) = mock(vec![sse(&[EMPTY, DONE]), sse(&[DONE]), sse(&[TEXT, DONE])]).await;
     let (result, events) = run_against(&url, fast_limits(), None).await;
     assert!(result.is_ok());
-    assert_eq!(names(&events), ["retrying:2", "retrying:3", "delta:Hello", "done"]);
+    assert_eq!(
+        names(&events),
+        ["retrying:2", "retrying:3", "delta:Hello", "done"]
+    );
     assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 
@@ -250,8 +318,17 @@ async fn gives_up_after_max_attempts_with_typed_error() {
     let (url, _) = mock((0..MAX_ATTEMPTS).map(|_| sse(&[EMPTY, DONE])).collect()).await;
     let (result, events) = run_against(&url, fast_limits(), None).await;
     let error = result.unwrap_err();
-    assert_eq!((error.kind, error.attempts, error.partial), (ErrorKind::EmptyResponse, MAX_ATTEMPTS, false));
-    assert_eq!(events.iter().filter(|e| matches!(e, ChatStreamEvent::Retrying { .. })).count(), 3);
+    assert_eq!(
+        (error.kind, error.attempts, error.partial),
+        (ErrorKind::EmptyResponse, MAX_ATTEMPTS, false)
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, ChatStreamEvent::Retrying { .. }))
+            .count(),
+        3
+    );
 }
 
 #[tokio::test]
@@ -262,7 +339,11 @@ async fn long_rate_limit_waits_are_reported_not_retried() {
     let error = result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::RateLimited);
     assert_eq!(error.retry_after_ms, Some(3_600_000));
-    assert!(error.message.ends_with("Try again in 1 h."), "{}", error.message);
+    assert!(
+        error.message.ends_with("Try again in 1 h."),
+        "{}",
+        error.message
+    );
     assert!(events.is_empty());
     assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -275,7 +356,9 @@ async fn short_rate_limit_waits_are_honoured() {
     let (result, events) = run_against(&url, fast_limits(), None).await;
     assert!(result.is_ok());
     match &events[0] {
-        ChatStreamEvent::Retrying { delay_ms, reason, .. } => {
+        ChatStreamEvent::Retrying {
+            delay_ms, reason, ..
+        } => {
             assert!(*delay_ms >= 1000, "waits at least Retry-After");
             assert_eq!(reason.kind, ErrorKind::RateLimited);
         }
@@ -287,7 +370,13 @@ async fn short_rate_limit_waits_are_honoured() {
 #[tokio::test]
 async fn keepalive_comments_do_not_count_as_progress() {
     // Only ": PROCESSING" comments, then silence: a stall, then success.
-    let stalled = Reply::Sse { events: vec![(0, ": OPENROUTER PROCESSING".into()), (150, ": OPENROUTER PROCESSING".into())], hang: true };
+    let stalled = Reply::Sse {
+        events: vec![
+            (0, ": OPENROUTER PROCESSING".into()),
+            (150, ": OPENROUTER PROCESSING".into()),
+        ],
+        hang: true,
+    };
     let (url, _) = mock(vec![stalled, sse(&[TEXT, DONE])]).await;
     let (result, events) = run_against(&url, fast_limits(), None).await;
     assert!(result.is_ok());
@@ -299,20 +388,32 @@ async fn keepalive_comments_do_not_count_as_progress() {
 
 #[tokio::test]
 async fn partial_reply_then_stall_stops_without_retrying() {
-    let partial = Reply::Sse { events: vec![(0, TEXT.into())], hang: true };
+    let partial = Reply::Sse {
+        events: vec![(0, TEXT.into())],
+        hang: true,
+    };
     let (url, served) = mock(vec![partial, sse(&[TEXT, DONE])]).await;
     let (result, events) = run_against(&url, fast_limits(), None).await;
     let error = result.unwrap_err();
-    assert_eq!((error.kind, error.partial, error.retryable), (ErrorKind::Stalled, true, false));
+    assert_eq!(
+        (error.kind, error.partial, error.retryable),
+        (ErrorKind::Stalled, true, false)
+    );
     assert_eq!(names(&events), ["delta:Hello"]);
     assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
 async fn cancel_stops_a_hanging_request_and_a_retry_wait() {
-    let hanging = Reply::Sse { events: vec![], hang: true };
+    let hanging = Reply::Sse {
+        events: vec![],
+        hang: true,
+    };
     let (url, _) = mock(vec![hanging]).await;
-    let limits = Limits { first_byte: Duration::from_secs(10), ..fast_limits() };
+    let limits = Limits {
+        first_byte: Duration::from_secs(10),
+        ..fast_limits()
+    };
     let started = Instant::now();
     let (result, _) = run_against(&url, limits, Some(150)).await;
     assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
@@ -341,7 +442,10 @@ async fn auth_errors_are_not_retried() {
 
 #[tokio::test]
 async fn cancel_through_the_registry_stops_a_waiting_request() {
-    let hanging = Reply::Sse { events: vec![(0, ": OPENROUTER PROCESSING".into())], hang: true };
+    let hanging = Reply::Sse {
+        events: vec![(0, ": OPENROUTER PROCESSING".into())],
+        hang: true,
+    };
     let (url, _) = mock(vec![hanging]).await;
     let requests = Arc::new(ChatRequests::default());
 
@@ -350,8 +454,20 @@ async fn cancel_through_the_registry_stops_a_waiting_request() {
     let task = tokio::spawn(async move {
         let client = Client::new();
         let body = json!({"model":"m","messages":[]});
-        let limits = Limits { first_byte: Duration::from_secs(20), ..fast_limits() };
-        let spec = RequestSpec { client: &client, url: &url2, api_key: "k", body: &body, streaming: true, limits, api: Api::ChatCompletions, chat_id: None };
+        let limits = Limits {
+            first_byte: Duration::from_secs(20),
+            ..fast_limits()
+        };
+        let spec = RequestSpec {
+            client: &client,
+            url: &url2,
+            api_key: "k",
+            body: &body,
+            streaming: true,
+            limits,
+            api: Api::ChatCompletions,
+            chat_id: None,
+        };
         let mut registration = r2.register(Some("req-1".into()));
         let mut events = Vec::new();
         run(&spec, &mut registration.cancel, &mut |e| events.push(e)).await
@@ -359,8 +475,14 @@ async fn cancel_through_the_registry_stops_a_waiting_request() {
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     let started = Instant::now();
-    assert!(requests.cancel("req-1"), "the running request is registered");
-    let result = tokio::time::timeout(Duration::from_secs(3), task).await.expect("cancel must end the request").unwrap();
+    assert!(
+        requests.cancel("req-1"),
+        "the running request is registered"
+    );
+    let result = tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .expect("cancel must end the request")
+        .unwrap();
     assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
     assert!(started.elapsed() < Duration::from_secs(1));
     // Finished requests are unregistered; a late cancel is just remembered.
@@ -370,7 +492,10 @@ async fn cancel_through_the_registry_stops_a_waiting_request() {
 #[test]
 fn a_cancel_before_registration_is_not_lost() {
     let requests = ChatRequests::default();
-    assert!(requests.cancel("early"), "accepted even before the request exists");
+    assert!(
+        requests.cancel("early"),
+        "accepted even before the request exists"
+    );
     let registration = requests.register(Some("early".into()));
     assert!(*registration.cancel.borrow(), "starts out cancelled");
     let other = requests.register(Some("other".into()));
@@ -394,13 +519,18 @@ fn gemini_signatures_survive_and_unindexed_parallel_calls_stay_separate() {
     let done: Vec<(String, Option<serde_json::Value>)> = events
         .iter()
         .filter_map(|e| match e {
-            ChatStreamEvent::ToolCallComplete { id, extra_content, .. } => Some((id.clone(), extra_content.clone())),
+            ChatStreamEvent::ToolCallComplete {
+                id, extra_content, ..
+            } => Some((id.clone(), extra_content.clone())),
             _ => None,
         })
         .collect();
     assert_eq!(done.len(), 2, "two separate calls");
     assert_eq!(done[0].0, "function-call-1");
-    assert_eq!(done[0].1, Some(json!({"google":{"thought_signature":"SIG-A"}})));
+    assert_eq!(
+        done[0].1,
+        Some(json!({"google":{"thought_signature":"SIG-A"}}))
+    );
     assert_eq!(done[1], ("function-call-2".to_string(), None));
 }
 
@@ -410,9 +540,19 @@ fn split_think(pieces: &[&str]) -> (String, String, Vec<String>) {
     let mut events = Vec::new();
     let mut emit = |e| events.push(e);
     for piece in pieces {
-        parser.feed(&json!({"choices":[{"delta":{"content": piece}}]}), &mut emit).unwrap();
+        parser
+            .feed(
+                &json!({"choices":[{"delta":{"content": piece}}]}),
+                &mut emit,
+            )
+            .unwrap();
     }
-    parser.feed(&json!({"choices":[{"delta":{},"finish_reason":"stop"}]}), &mut emit).unwrap();
+    parser
+        .feed(
+            &json!({"choices":[{"delta":{},"finish_reason":"stop"}]}),
+            &mut emit,
+        )
+        .unwrap();
     let _ = parser.finish(&mut emit);
     let (mut text, mut reasoning, mut tags) = (String::new(), String::new(), Vec::new());
     for e in &events {

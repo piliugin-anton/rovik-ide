@@ -105,7 +105,8 @@ impl DbState {
             .map_err(store::err)?
             .send(job)
             .map_err(|_| "Chat database writer has stopped".to_string())?;
-        rx.await.map_err(|_| "Chat database writer dropped the request".to_string())?
+        rx.await
+            .map_err(|_| "Chat database writer dropped the request".to_string())?
     }
 
     /// Queues `f` on the writer thread without waiting for it: ordered with
@@ -177,14 +178,21 @@ fn backup_if_due(conn: &Connection, data_dir: &Path) -> Result<(), String> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            let stamp = name.strip_prefix("chats-")?.strip_suffix(".db")?.parse().ok()?;
+            let stamp = name
+                .strip_prefix("chats-")?
+                .strip_suffix(".db")?
+                .parse()
+                .ok()?;
             Some((stamp, e.path()))
         })
         .collect();
     backups.sort_by_key(|(stamp, _)| std::cmp::Reverse(*stamp));
 
     let now = store::now_ms();
-    if backups.first().map_or(true, |(stamp, _)| now - stamp >= BACKUP_EVERY_MS) {
+    if backups
+        .first()
+        .map_or(true, |(stamp, _)| now - stamp >= BACKUP_EVERY_MS)
+    {
         let target = dir.join(format!("chats-{now}.db"));
         conn.execute("VACUUM INTO ?1", [target.to_string_lossy().as_ref()])
             .map_err(store::err)?;

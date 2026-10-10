@@ -65,9 +65,13 @@ fn canonicalize_existing(path: &Path) -> Result<PathBuf, String> {
     let mut rest = Vec::new();
     let mut existing = path;
     while existing.symlink_metadata().is_err() {
-        let name = existing.file_name().ok_or_else(|| format!("{}: not a valid path", path.display()))?;
+        let name = existing
+            .file_name()
+            .ok_or_else(|| format!("{}: not a valid path", path.display()))?;
         rest.push(name);
-        existing = existing.parent().ok_or_else(|| format!("{}: not a valid path", path.display()))?;
+        existing = existing
+            .parent()
+            .ok_or_else(|| format!("{}: not a valid path", path.display()))?;
     }
     let mut out = canonicalize_or_err(existing)?;
     out.extend(rest.iter().rev());
@@ -153,7 +157,11 @@ pub async fn tool_list_dir(
         .map_err(|e| e.to_string())?
 }
 
-fn list_dir(root: String, path: Option<String>, max_depth: Option<usize>) -> Result<Vec<ToolDirEntry>, String> {
+fn list_dir(
+    root: String,
+    path: Option<String>,
+    max_depth: Option<usize>,
+) -> Result<Vec<ToolDirEntry>, String> {
     let target_rel = path.unwrap_or_default();
     let target = resolve_within_root(&root, &target_rel)?;
     if !target.is_dir() {
@@ -213,7 +221,6 @@ fn list_dir(root: String, path: Option<String>, max_depth: Option<usize>) -> Res
     Ok(out)
 }
 
-
 /// Text or regex search across the project on ripgrep's engine (see
 /// code_search.rs). Runs off the main thread.
 #[tauri::command]
@@ -272,7 +279,10 @@ pub async fn tool_neighbours(root: String, path: String) -> Result<String, Strin
                 .to_string_lossy()
                 .replace('\\', "/")
         } else {
-            if candidate.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            if candidate
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
                 return Err(format!("path must not contain '..': {path}"));
             }
             path.clone()
@@ -293,7 +303,11 @@ pub async fn tool_callers(root: String, symbol: String) -> Result<String, String
         return Err("symbol must not be empty".to_string());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        crate::repo_map::callers(Path::new(&root), &symbol, &crate::repo_map::Options::default())
+        crate::repo_map::callers(
+            Path::new(&root),
+            &symbol,
+            &crate::repo_map::Options::default(),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -311,7 +325,9 @@ pub fn tool_outline(root: String, path: String) -> Result<String, String> {
         None => {
             let meta = fs::metadata(&abs).map_err(|e| format!("{path}: {e}"))?;
             if meta.len() > 8 * 1024 * 1024 {
-                return Err(format!("{path}: too large to outline; read it by start_line/end_line instead."));
+                return Err(format!(
+                    "{path}: too large to outline; read it by start_line/end_line instead."
+                ));
             }
             let content = fs::read_to_string(&abs).map_err(|e| format!("{path}: {e}"))?;
             match crate::outline::outline(&rel, &content) {
@@ -330,14 +346,20 @@ pub fn tool_outline(root: String, path: String) -> Result<String, String> {
 
 fn render_outline(rel: &str, symbols: &[crate::outline::Symbol]) -> String {
     if symbols.is_empty() {
-        return format!("## Outline of {rel}\n(no declarations found; the file parses but declares nothing)");
+        return format!(
+            "## Outline of {rel}\n(no declarations found; the file parses but declares nothing)"
+        );
     }
     const MAX_CHARS: usize = 8_000;
     let mut out = vec![format!("## Outline of {rel}")];
     let mut len = out[0].len();
     let mut omitted = 0usize;
     for (i, s) in symbols.iter().enumerate() {
-        let lines = if s.end_line > s.start_line { format!("{}-{}", s.start_line, s.end_line) } else { s.start_line.to_string() };
+        let lines = if s.end_line > s.start_line {
+            format!("{}-{}", s.start_line, s.end_line)
+        } else {
+            s.start_line.to_string()
+        };
         let line = format!("{}{lines} {}", "  ".repeat(s.depth + 1), s.signature);
         // Stop at the cap: the rest is left out as a block, never with
         // holes where a long line didn't fit but a later short one did.
@@ -349,7 +371,9 @@ fn render_outline(rel: &str, symbols: &[crate::outline::Symbol]) -> String {
         out.push(line);
     }
     if omitted > 0 {
-        out.push(format!("[…{omitted} more declarations; read by symbol for the rest]"));
+        out.push(format!(
+            "[…{omitted} more declarations; read by symbol for the rest]"
+        ));
     }
     out.push("Read a declaration with read by symbol.".into());
     out.join("\n")
@@ -403,19 +427,27 @@ const DIAG_MAX_MARKERS: usize = 100;
 /// frontend's marker listener). Never fails the caller: bad input is an
 /// error string, never a panic.
 #[tauri::command]
-pub fn report_editor_diagnostics(root: String, path: String, markers: Vec<EditorMarker>) -> Result<(), String> {
+pub fn report_editor_diagnostics(
+    root: String,
+    path: String,
+    markers: Vec<EditorMarker>,
+) -> Result<(), String> {
     let root_canon = canonicalize_or_err(Path::new(&root))?;
     let rel = if Path::new(&path).is_absolute() {
         // Canonicalize when possible: the caller may hand us a symlinked
         // path (macOS /tmp → /private/tmp), while the root is canonical.
-        let canon = canonicalize_or_err(Path::new(&path)).unwrap_or_else(|_| Path::new(&path).to_path_buf());
+        let canon = canonicalize_or_err(Path::new(&path))
+            .unwrap_or_else(|_| Path::new(&path).to_path_buf());
         canon
             .strip_prefix(&root_canon)
             .map_err(|_| format!("path escapes project root: {path}"))?
             .to_string_lossy()
             .replace('\\', "/")
     } else {
-        if Path::new(&path).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        if Path::new(&path)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
             return Err(format!("path must not contain '..': {path}"));
         }
         path.trim().replace('\\', "/")
@@ -441,19 +473,36 @@ pub fn report_editor_diagnostics(root: String, path: String, markers: Vec<Editor
         }
     }
     // Errors first, then by line: the cap keeps what matters.
-    markers.sort_by_key(|m| (match m.severity.as_str() {
-        "error" => 0,
-        "warning" => 1,
-        _ => 2,
-    }, m.start_line, m.start_col));
+    markers.sort_by_key(|m| {
+        (
+            match m.severity.as_str() {
+                "error" => 0,
+                "warning" => 1,
+                _ => 2,
+            },
+            m.start_line,
+            m.start_col,
+        )
+    });
     markers.truncate(DIAG_MAX_MARKERS);
     let mut diags = EDITOR_DIAGS.lock().unwrap_or_else(|e| e.into_inner());
-    diags.insert((root_canon, rel), DiagReport { markers, reported_at: SystemTime::now() });
+    diags.insert(
+        (root_canon, rel),
+        DiagReport {
+            markers,
+            reported_at: SystemTime::now(),
+        },
+    );
     // Evict the oldest reports beyond the cap.
     while diags.len() > DIAG_MAX_FILES {
-        let oldest = diags.iter().min_by_key(|(_, r)| r.reported_at).map(|(k, _)| k.clone());
+        let oldest = diags
+            .iter()
+            .min_by_key(|(_, r)| r.reported_at)
+            .map(|(k, _)| k.clone());
         match oldest {
-            Some(k) => { diags.remove(&k); }
+            Some(k) => {
+                diags.remove(&k);
+            }
             None => break,
         }
     }
@@ -474,7 +523,11 @@ fn resolve_project_file(root: &str, path: &str, verb: &str) -> Result<(PathBuf, 
         return Err(format!("{path}: binary file, cannot {verb}"));
     }
     let root_canon = canonicalize_or_err(Path::new(root))?;
-    let rel = abs.strip_prefix(&root_canon).unwrap_or(&abs).to_string_lossy().replace('\\', "/");
+    let rel = abs
+        .strip_prefix(&root_canon)
+        .unwrap_or(&abs)
+        .to_string_lossy()
+        .replace('\\', "/");
     Ok((abs, rel))
 }
 
@@ -495,35 +548,68 @@ fn file_diagnostics(root: &str, root_canon: &Path, path: &str) -> Result<String,
     let mut out = vec![format!("## Diagnostics for {rel}")];
 
     // What the editor shows (possibly newer or older than the file on disk).
-    let editor = EDITOR_DIAGS.lock().unwrap_or_else(|e| e.into_inner()).get(&(root_canon.to_path_buf(), rel.clone())).map(|r| {
-        (r.markers.clone(), r.reported_at)
-    });
+    let editor = EDITOR_DIAGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(root_canon.to_path_buf(), rel.clone()))
+        .map(|r| (r.markers.clone(), r.reported_at));
     match editor {
         // Reported, and the editor shows nothing for it.
         Some((markers, at)) if markers.is_empty() => {
-            let stale = fs::metadata(&abs).ok().and_then(|m| m.modified().ok()).is_some_and(|m| m > at);
+            let stale = fs::metadata(&abs)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .is_some_and(|m| m > at);
             out.push(format!(
                 "Editor: no problems (reported {}{}).",
                 ago(at),
-                if stale { ", stale: the file changed since" } else { "" }
+                if stale {
+                    ", stale: the file changed since"
+                } else {
+                    ""
+                }
             ));
         }
         Some((markers, at)) => {
-            let stale = fs::metadata(&abs).ok().and_then(|m| m.modified().ok()).is_some_and(|m| m > at);
+            let stale = fs::metadata(&abs)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .is_some_and(|m| m > at);
             let when = ago(at);
-            let mut lines = vec![format!("Editor (reported {when}{}):", if stale { ", stale: the file changed since" } else { "" })];
+            let mut lines = vec![format!(
+                "Editor (reported {when}{}):",
+                if stale {
+                    ", stale: the file changed since"
+                } else {
+                    ""
+                }
+            )];
             for m in markers.iter().take(DIAG_MAX_MARKERS) {
                 let at_ = if m.start_line == m.end_line {
                     format!("{}:{}", m.start_line, m.start_col)
                 } else {
-                    format!("{}:{}-{}:{}", m.start_line, m.start_col, m.end_line, m.end_col)
+                    format!(
+                        "{}:{}-{}:{}",
+                        m.start_line, m.start_col, m.end_line, m.end_col
+                    )
                 };
                 let kind = match m.code.as_deref().filter(|c| !c.is_empty()) {
                     Some(code) => format!(" [{code}]"),
                     None => String::new(),
                 };
-                let from = m.source.as_deref().filter(|s| !s.is_empty()).map(|s| format!(" ({s})")).unwrap_or_default();
-                lines.push(format!("- {at_} {}: {}{}{}", m.severity, m.message.lines().next().unwrap_or(""), kind, from));
+                let from = m
+                    .source
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "- {at_} {}: {}{}{}",
+                    m.severity,
+                    m.message.lines().next().unwrap_or(""),
+                    kind,
+                    from
+                ));
             }
             out.push(lines.join("\n"));
         }
@@ -554,7 +640,10 @@ fn file_diagnostics(root: &str, root_canon: &Path, path: &str) -> Result<String,
 
 /// How long ago a report came in: seconds under a minute, else minutes.
 fn ago(at: SystemTime) -> String {
-    let secs = SystemTime::now().duration_since(at).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(at)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     if secs < 60 {
         format!("{secs}s ago")
     } else {
@@ -565,7 +654,11 @@ fn ago(at: SystemTime) -> String {
 /// The command for typed errors, from the detected project checks.
 fn typecheck_hint(root: &str) -> Option<String> {
     let profile = crate::project_profile::detect(Path::new(root));
-    let typed = profile.checks.iter().find(|c| c.kind == "typecheck").or_else(|| profile.checks.iter().find(|c| c.kind == "lint"))?;
+    let typed = profile
+        .checks
+        .iter()
+        .find(|c| c.kind == "typecheck")
+        .or_else(|| profile.checks.iter().find(|c| c.kind == "lint"))?;
     Some(format!(
         "Typed (cross-file) errors need the type checker: run `{}` with bash. The IDE also runs checks itself at the end when verification is on.",
         typed.command
@@ -579,13 +672,35 @@ fn diagnostics_summary(root: &str, root_canon: &Path) -> Result<String, String> 
         if r != root_canon {
             continue;
         }
-        let errors = report.markers.iter().filter(|m| m.severity == "error").count();
-        let warnings = report.markers.iter().filter(|m| m.severity == "warning").count();
+        let errors = report
+            .markers
+            .iter()
+            .filter(|m| m.severity == "error")
+            .count();
+        let warnings = report
+            .markers
+            .iter()
+            .filter(|m| m.severity == "warning")
+            .count();
         if errors == 0 && warnings == 0 {
             continue;
         }
-        let stale = Path::new(root).join(rel).metadata().ok().and_then(|m| m.modified().ok()).is_some_and(|m| m > report.reported_at);
-        files.push((rel.clone(), errors, warnings, format!("{}{}", ago(report.reported_at), if stale { ", stale" } else { "" })));
+        let stale = Path::new(root)
+            .join(rel)
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|m| m > report.reported_at);
+        files.push((
+            rel.clone(),
+            errors,
+            warnings,
+            format!(
+                "{}{}",
+                ago(report.reported_at),
+                if stale { ", stale" } else { "" }
+            ),
+        ));
     }
     drop(diags);
     if files.is_empty() {
@@ -598,17 +713,27 @@ fn diagnostics_summary(root: &str, root_canon: &Path) -> Result<String, String> 
     for (rel, errors, warnings, age) in files.into_iter().take(MAX_FILES) {
         let mut parts = Vec::new();
         if errors > 0 {
-            parts.push(format!("{} error{}", errors, if errors == 1 { "" } else { "s" }));
+            parts.push(format!(
+                "{} error{}",
+                errors,
+                if errors == 1 { "" } else { "s" }
+            ));
         }
         if warnings > 0 {
-            parts.push(format!("{} warning{}", warnings, if warnings == 1 { "" } else { "s" }));
+            parts.push(format!(
+                "{} warning{}",
+                warnings,
+                if warnings == 1 { "" } else { "s" }
+            ));
         }
         out.push(format!("- {rel}: {} ({age})", parts.join(", ")));
     }
     if total > MAX_FILES {
         out.push(format!("(…and {} more files)", total - MAX_FILES));
     }
-    out.push("Query one file with diagnostics for details; syntax is checked fresh per file.".into());
+    out.push(
+        "Query one file with diagnostics for details; syntax is checked fresh per file.".into(),
+    );
     Ok(out.join("\n"))
 }
 
@@ -683,7 +808,12 @@ pub fn tool_edit_file(
     end_line: Option<usize>,
     dry_run: Option<bool>,
 ) -> Result<EditOutcome, String> {
-    let edit = Edit { old_text: &old_text, new_text: &new_text, start_line, end_line };
+    let edit = Edit {
+        old_text: &old_text,
+        new_text: &new_text,
+        start_line,
+        end_line,
+    };
     edit_file(&root, &path, &edit, dry_run.unwrap_or(false), None)
 }
 
@@ -699,7 +829,13 @@ pub struct Edit<'a> {
 /// the file as it is when written, under its lock (file_guard.rs), so a
 /// change made meanwhile by someone else is kept. The edit's own text
 /// still having to be there once is its check.
-pub fn edit_file(root: &str, path: &str, edit: &Edit, dry_run: bool, seen: Option<&Seen>) -> Result<EditOutcome, String> {
+pub fn edit_file(
+    root: &str,
+    path: &str,
+    edit: &Edit,
+    dry_run: bool,
+    seen: Option<&Seen>,
+) -> Result<EditOutcome, String> {
     let target = resolve_within_root(root, path)?;
     if !target.is_file() {
         return Err(format!(
@@ -710,8 +846,14 @@ pub fn edit_file(root: &str, path: &str, edit: &Edit, dry_run: bool, seen: Optio
         return Err(format!("{path}: binary file, cannot edit"));
     }
     let apply = |current: &str| {
-        crate::edit_file::apply_edit(current, edit.old_text, edit.new_text, edit.start_line, edit.end_line)
-            .map_err(|e| format!("{path}: {e}"))
+        crate::edit_file::apply_edit(
+            current,
+            edit.old_text,
+            edit.new_text,
+            edit.start_line,
+            edit.end_line,
+        )
+        .map_err(|e| format!("{path}: {e}"))
     };
     let (content, span) = if dry_run {
         apply(&fs::read_to_string(&target).map_err(|e| format!("{path}: {e}"))?)?
@@ -744,7 +886,12 @@ pub fn tool_write_file(root: String, path: String, content: String) -> Result<St
 /// changed since the run last saw it, or is another writer's change it never
 /// saw (file_guard.rs). The refusal shows the file as it is now, so the
 /// model can redo its change on it.
-pub fn write_file(root: &str, path: &str, content: &str, seen: Option<&Seen>) -> Result<String, String> {
+pub fn write_file(
+    root: &str,
+    path: &str,
+    content: &str,
+    seen: Option<&Seen>,
+) -> Result<String, String> {
     // Reject '..' up front (same rule as resolve_within_root) before we
     // create any directories on disk.
     let target = resolve_within_root(root, path)?;
@@ -758,7 +905,9 @@ pub fn write_file(root: &str, path: &str, content: &str, seen: Option<&Seen>) ->
     match seen {
         Some(seen) => match crate::file_guard::write_for_chat(&target, content.as_bytes(), seen) {
             Ok(()) => {}
-            Err(WriteError::Changed(changed)) => return Err(changed_error(path, &target, &changed, seen)),
+            Err(WriteError::Changed(changed)) => {
+                return Err(changed_error(path, &target, &changed, seen))
+            }
             Err(WriteError::Io(e)) => return Err(format!("{path}: {e}")),
         },
         None => {
@@ -797,7 +946,12 @@ pub fn line_changes(before: &str, after: &str) -> (usize, usize) {
 /// The model's error for a whole-file write over a change it hasn't seen:
 /// who changed the file, and the file now. When that shows the whole file,
 /// it counts as seen, so a corrected write can follow at once.
-fn changed_error(path: &str, target: &Path, changed: &crate::file_guard::Changed, seen: &Seen) -> String {
+fn changed_error(
+    path: &str,
+    target: &Path,
+    changed: &crate::file_guard::Changed,
+    seen: &Seen,
+) -> String {
     let by = crate::file_guard::describe_changer(changed.by.as_ref(), Some(seen.owner()));
     let head = format!(
         "Error: {path} changed since you last read it ({by}); your write was not applied. \
@@ -887,7 +1041,10 @@ mod tests {
         fs::write(root.join("a.txt"), "keep\nme\n").unwrap();
         let err = tool_write_file(root_s.clone(), "a.txt".into(), "  \n".into()).unwrap_err();
         assert!(err.contains("refusing to replace a.txt (2 lines)"), "{err}");
-        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "keep\nme\n");
+        assert_eq!(
+            fs::read_to_string(root.join("a.txt")).unwrap(),
+            "keep\nme\n"
+        );
         // Empty files may still be created, or written empty again.
         tool_write_file(root_s.clone(), "pkg/__init__.py".into(), String::new()).unwrap();
         tool_write_file(root_s.clone(), "pkg/__init__.py".into(), String::new()).unwrap();
@@ -903,7 +1060,10 @@ mod tests {
         let (base, root) = linked_project("abs");
         let root_s = root.to_str().unwrap();
         let new_file = root.join("src").join("new.rs");
-        assert_eq!(resolve_within_root(root_s, new_file.to_str().unwrap()).unwrap(), new_file);
+        assert_eq!(
+            resolve_within_root(root_s, new_file.to_str().unwrap()).unwrap(),
+            new_file
+        );
         assert!(resolve_within_root(root_s, "src/new.rs").is_ok());
         assert!(resolve_within_root(root_s, base.join("elsewhere.rs").to_str().unwrap()).is_err());
         let _ = fs::remove_dir_all(&base);
@@ -932,7 +1092,10 @@ mod tests {
     fn outline_lists_declarations_without_content() {
         let (base, _root, root_s) = outline_project(
             "outline",
-            &[("src/a.ts", "export class Store {\n  append(text: string) {}\n}\n\nexport function load() {}\n")],
+            &[(
+                "src/a.ts",
+                "export class Store {\n  append(text: string) {}\n}\n\nexport function load() {}\n",
+            )],
         );
         let out = tool_outline(root_s, "src/a.ts".into()).unwrap();
         assert!(out.contains("## Outline of src/a.ts"), "{out}");
@@ -947,7 +1110,10 @@ mod tests {
     fn diagnostics_reports_syntax_errors_fresh() {
         let (base, _root, root_s) = outline_project(
             "diags",
-            &[("a.rs", "pub fn broken( {\n    1 +\n}\n"), ("ok.rs", "pub fn fine() {}\n")],
+            &[
+                ("a.rs", "pub fn broken( {\n    1 +\n}\n"),
+                ("ok.rs", "pub fn fine() {}\n"),
+            ],
         );
         let broken = tool_diagnostics(root_s.clone(), Some("a.rs".into())).unwrap();
         assert!(broken.contains("## Diagnostics for a.rs"), "{broken}");
@@ -981,12 +1147,24 @@ mod tests {
         assert!(out.contains("[2304]"), "{out}");
         assert!(out.contains("(typescript)"), "{out}");
         let summary = tool_diagnostics(root_s, None).unwrap();
-        assert!(summary.contains("a.ts") && summary.contains("1 error"), "{summary}");
+        assert!(
+            summary.contains("a.ts") && summary.contains("1 error"),
+            "{summary}"
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
     fn marker(severity: &str, message: String) -> EditorMarker {
-        EditorMarker { start_line: 1, start_col: 1, end_line: 1, end_col: 2, severity: severity.into(), message, source: None, code: None }
+        EditorMarker {
+            start_line: 1,
+            start_col: 1,
+            end_line: 1,
+            end_col: 2,
+            severity: severity.into(),
+            message,
+            source: None,
+            code: None,
+        }
     }
 
     #[test]
@@ -997,9 +1175,16 @@ mod tests {
         let message = format!("a{}", "ж".repeat(600));
         report_editor_diagnostics(root_s.clone(), abs, vec![marker("error", message)]).unwrap();
         let out = tool_diagnostics(root_s, Some("a.ts".into())).unwrap();
-        let line = out.lines().find(|l| l.contains("error: a")).expect("the marker");
+        let line = out
+            .lines()
+            .find(|l| l.contains("error: a"))
+            .expect("the marker");
         let shown = line.split("error: ").nth(1).unwrap();
-        assert!(shown.len() <= 1_000 && shown.starts_with("aжж"), "{} bytes", shown.len());
+        assert!(
+            shown.len() <= 1_000 && shown.starts_with("aжж"),
+            "{} bytes",
+            shown.len()
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -1009,7 +1194,10 @@ mod tests {
         let abs = root.join("a.ts").to_string_lossy().to_string();
         report_editor_diagnostics(root_s.clone(), abs, Vec::new()).unwrap();
         let out = tool_diagnostics(root_s.clone(), Some("a.ts".into())).unwrap();
-        assert!(out.contains("Editor: no problems (reported 0s ago)"), "{out}");
+        assert!(
+            out.contains("Editor: no problems (reported 0s ago)"),
+            "{out}"
+        );
         assert!(!out.contains("may not be open"), "{out}");
         // Never reported: that one may really not be open.
         fs::write(root.join("b.ts"), "const y = 2;\n").unwrap();
@@ -1022,7 +1210,12 @@ mod tests {
     fn the_summary_says_seconds_for_fresh_reports() {
         let (base, root, root_s) = outline_project("diagage", &[("a.ts", "const x = 1;\n")]);
         let abs = root.join("a.ts").to_string_lossy().to_string();
-        report_editor_diagnostics(root_s.clone(), abs, vec![marker("warning", "unused".into())]).unwrap();
+        report_editor_diagnostics(
+            root_s.clone(),
+            abs,
+            vec![marker("warning", "unused".into())],
+        )
+        .unwrap();
         let summary = tool_diagnostics(root_s, None).unwrap();
         assert!(summary.contains("a.ts: 1 warning (0s ago)"), "{summary}");
         let _ = fs::remove_dir_all(&base);
@@ -1030,19 +1223,30 @@ mod tests {
 
     #[test]
     fn graph_and_diagnostics_paths_stay_in_the_project() {
-        let (base, root, root_s) = outline_project("confine", &[("src/a.rs", "pub fn alpha_one() {}\n")]);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (base, root, root_s) =
+            outline_project("confine", &[("src/a.rs", "pub fn alpha_one() {}\n")]);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         // neighbours: no `..`, no absolute path outside the root.
-        let err = rt.block_on(tool_neighbours(root_s.clone(), "../outside.rs".into())).unwrap_err();
+        let err = rt
+            .block_on(tool_neighbours(root_s.clone(), "../outside.rs".into()))
+            .unwrap_err();
         assert!(err.contains("must not contain '..'"), "{err}");
-        let err = rt.block_on(tool_neighbours(root_s.clone(), "/etc/passwd".into())).unwrap_err();
+        let err = rt
+            .block_on(tool_neighbours(root_s.clone(), "/etc/passwd".into()))
+            .unwrap_err();
         assert!(err.contains("escapes project root"), "{err}");
         // An absolute path through the symlinked root still resolves.
         let inside = root.join("src/a.rs").to_string_lossy().to_string();
-        let n = rt.block_on(tool_neighbours(root_s.clone(), inside)).unwrap();
+        let n = rt
+            .block_on(tool_neighbours(root_s.clone(), inside))
+            .unwrap();
         assert!(n.contains("## Neighbours of src/a.rs"), "{n}");
         // Editor reports: the same confinement.
-        let err = report_editor_diagnostics(root_s.clone(), "../x.ts".into(), Vec::new()).unwrap_err();
+        let err =
+            report_editor_diagnostics(root_s.clone(), "../x.ts".into(), Vec::new()).unwrap_err();
         assert!(err.contains("must not contain '..'"), "{err}");
         let err = report_editor_diagnostics(root_s, "/etc/hosts".into(), Vec::new()).unwrap_err();
         assert!(err.contains("escapes project root"), "{err}");
@@ -1058,7 +1262,10 @@ mod tests {
             if i % 2 == 0 {
                 src.push_str(&format!("export function f{i}() {{}}\n"));
             } else {
-                src.push_str(&format!("export function f{i}_{}(a: string) {{}}\n", "x".repeat(60)));
+                src.push_str(&format!(
+                    "export function f{i}_{}(a: string) {{}}\n",
+                    "x".repeat(60)
+                ));
             }
         }
         let (base, _root, root_s) = outline_project("outlinecap", &[("big.ts", &src)]);
@@ -1066,11 +1273,28 @@ mod tests {
         let shown: Vec<usize> = out
             .lines()
             .filter_map(|l| l.split("function f").nth(1))
-            .map(|rest| rest.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap())
+            .map(|rest| {
+                rest.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .unwrap()
+            })
             .collect();
-        assert!(!shown.is_empty() && shown.len() < 400, "{} shown", shown.len());
-        assert_eq!(shown, (0..shown.len()).collect::<Vec<_>>(), "contiguous, no holes");
-        assert!(out.contains(&format!("[…{} more declarations", 400 - shown.len())), "{out}");
+        assert!(
+            !shown.is_empty() && shown.len() < 400,
+            "{} shown",
+            shown.len()
+        );
+        assert_eq!(
+            shown,
+            (0..shown.len()).collect::<Vec<_>>(),
+            "contiguous, no holes"
+        );
+        assert!(
+            out.contains(&format!("[…{} more declarations", 400 - shown.len())),
+            "{out}"
+        );
         assert!(out.len() <= 8_200, "{} chars", out.len());
         let _ = fs::remove_dir_all(&base);
     }

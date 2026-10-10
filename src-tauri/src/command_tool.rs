@@ -55,7 +55,10 @@ pub struct Queued {
 #[cfg(windows)]
 fn shell_command(command: &str) -> Command {
     use std::os::windows::process::CommandExt;
-    let shell = std::env::var("COMSPEC").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "cmd.exe".to_string());
+    let shell = std::env::var("COMSPEC")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "cmd.exe".to_string());
     let mut cmd = Command::new(shell);
     // Passed as is: `arg` would escape its quotes as `\"`, which cmd doesn't
     // understand, so `git commit -m "msg"` arrived mangled. With /S, cmd
@@ -90,7 +93,11 @@ struct HeadTail {
 
 impl HeadTail {
     fn new() -> Self {
-        HeadTail { head: Vec::new(), tail: Vec::new(), dropped: 0 }
+        HeadTail {
+            head: Vec::new(),
+            tail: Vec::new(),
+            dropped: 0,
+        }
     }
 
     fn push(&mut self, mut bytes: &[u8]) {
@@ -130,7 +137,9 @@ impl HeadTail {
             self.tail.drain(..=start);
         }
         let mut out = self.head;
-        out.extend_from_slice(format!("[… {} bytes of output omitted …]\n", self.dropped).as_bytes());
+        out.extend_from_slice(
+            format!("[… {} bytes of output omitted …]\n", self.dropped).as_bytes(),
+        );
         out.extend_from_slice(&self.tail);
         (out, true)
     }
@@ -204,7 +213,10 @@ fn run_blocking(
 ) -> Result<CommandOutput, String> {
     let root = Path::new(root);
     if !root.is_dir() {
-        return Err(format!("project root is not a directory: {}", root.display()));
+        return Err(format!(
+            "project root is not a directory: {}",
+            root.display()
+        ));
     }
 
     // A command predicted heavy waits for a slot; the wait isn't part of
@@ -278,7 +290,8 @@ fn run_blocking(
     let mut exited = false;
     loop {
         if !exited {
-            exited = shell_exited(&mut child).map_err(|e| format!("failed to wait for the command: {e}"))?;
+            exited = shell_exited(&mut child)
+                .map_err(|e| format!("failed to wait for the command: {e}"))?;
         }
         if exited && stdout.is_finished() && stderr.is_finished() {
             break;
@@ -347,10 +360,16 @@ pub async fn run_command(
     if command.trim().is_empty() {
         return Err("command is empty".into());
     }
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1_000, MAX_TIMEOUT_MS));
-    tauri::async_runtime::spawn_blocking(move || run_blocking(&root, &command, timeout, &stop, queued.as_ref()))
-        .await
-        .map_err(|e| e.to_string())?
+    let timeout = Duration::from_millis(
+        timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(1_000, MAX_TIMEOUT_MS),
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        run_blocking(&root, &command, timeout, &stop, queued.as_ref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -361,7 +380,14 @@ mod tests {
     #[test]
     fn captures_output_and_exit_code() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "echo hi; echo oops >&2; exit 3", Duration::from_secs(5), &|| false, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "echo hi; echo oops >&2; exit 3",
+            Duration::from_secs(5),
+            &|| false,
+            None,
+        )
+        .unwrap();
         assert_eq!(out.exit_code, Some(3));
         assert_eq!(out.stdout.trim(), "hi");
         assert_eq!(out.stderr.trim(), "oops");
@@ -387,7 +413,10 @@ mod tests {
         assert!(out.stdout.len() < HEAD_BYTES + TAIL_BYTES + 100);
         // Whole lines on both sides of the cut.
         for line in out.stdout.lines() {
-            assert!(line.starts_with("line ") || line.starts_with("[…"), "{line}");
+            assert!(
+                line.starts_with("line ") || line.starts_with("[…"),
+                "{line}"
+            );
         }
     }
 
@@ -395,7 +424,14 @@ mod tests {
     #[test]
     fn captures_output_and_exit_code_in_cmd() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "echo hi& echo oops 1>&2& exit /b 3", Duration::from_secs(20), &|| false, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "echo hi& echo oops 1>&2& exit /b 3",
+            Duration::from_secs(20),
+            &|| false,
+            None,
+        )
+        .unwrap();
         assert_eq!(out.exit_code, Some(3));
         assert_eq!(out.stdout.trim(), "hi");
         assert_eq!(out.stderr.trim(), "oops");
@@ -406,7 +442,14 @@ mod tests {
     #[test]
     fn quotes_reach_cmd_intact() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), r#"echo "a b" "c""#, Duration::from_secs(20), &|| false, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            r#"echo "a b" "c""#,
+            Duration::from_secs(20),
+            &|| false,
+            None,
+        )
+        .unwrap();
         assert_eq!(out.stdout.trim(), r#""a b" "c""#);
     }
 
@@ -414,7 +457,14 @@ mod tests {
     #[test]
     fn long_output_keeps_its_start_and_end_in_cmd() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (0,1,19999) do @echo line %i", Duration::from_secs(120), &|| false, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "for /L %i in (0,1,19999) do @echo line %i",
+            Duration::from_secs(120),
+            &|| false,
+            None,
+        )
+        .unwrap();
         assert!(out.truncated);
         assert!(out.stdout.starts_with("line 0\r\n"));
         assert!(out.stdout.trim_end().ends_with("line 19999"));
@@ -425,7 +475,14 @@ mod tests {
     #[test]
     fn times_out_in_cmd() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (1,1,2000000000) do @rem", Duration::from_millis(500), &|| false, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "for /L %i in (1,1,2000000000) do @rem",
+            Duration::from_millis(500),
+            &|| false,
+            None,
+        )
+        .unwrap();
         assert!(out.timed_out);
     }
 
@@ -444,12 +501,22 @@ mod tests {
         // A child of the shell that would outlive it, like a dev server.
         let command = format!("sh -c 'sleep 30; echo {marker}' & echo started; wait");
         let started = Instant::now();
-        let out = run_blocking(dir.to_str().unwrap(), &command, Duration::from_millis(500), &|| false, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            &command,
+            Duration::from_millis(500),
+            &|| false,
+            None,
+        )
+        .unwrap();
         assert!(out.timed_out);
         assert_eq!(out.stdout.trim(), "started");
         assert!(started.elapsed() < Duration::from_secs(5));
         let ps = Command::new("ps").args(["-eo", "args"]).output().unwrap();
-        assert!(!String::from_utf8_lossy(&ps.stdout).contains(&marker), "the shell's child survived");
+        assert!(
+            !String::from_utf8_lossy(&ps.stdout).contains(&marker),
+            "the shell's child survived"
+        );
     }
 
     #[cfg(not(windows))]
@@ -457,7 +524,14 @@ mod tests {
     fn background_process_holding_the_output_times_out() {
         let dir = std::env::temp_dir();
         // The shell exits at once, but its background child keeps stdout open.
-        let out = run_blocking(dir.to_str().unwrap(), "sleep 30 & echo up", Duration::from_millis(500), &|| false, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "sleep 30 & echo up",
+            Duration::from_millis(500),
+            &|| false,
+            None,
+        )
+        .unwrap();
         assert!(out.timed_out);
         assert_eq!(out.stdout.trim(), "up");
         assert_eq!(out.exit_code, Some(0));
@@ -469,7 +543,14 @@ mod tests {
         let dir = std::env::temp_dir();
         let started = Instant::now();
         let stop = move || started.elapsed() >= Duration::from_millis(300);
-        let out = run_blocking(dir.to_str().unwrap(), "sleep 30 & echo up; wait", Duration::from_secs(60), &stop, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "sleep 30 & echo up; wait",
+            Duration::from_secs(60),
+            &stop,
+            None,
+        )
+        .unwrap();
         assert!(out.stopped);
         assert!(!out.timed_out);
         assert_eq!(out.stdout.trim(), "up");
@@ -480,7 +561,14 @@ mod tests {
     #[test]
     fn times_out() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "sleep 5", Duration::from_millis(300), &|| false, None).unwrap();
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            "sleep 5",
+            Duration::from_millis(300),
+            &|| false,
+            None,
+        )
+        .unwrap();
         assert!(out.timed_out);
     }
 }

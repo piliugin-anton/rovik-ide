@@ -34,7 +34,10 @@ const MAX_LEADING_LINES: usize = 60;
 pub fn read(path: &str, content: &str, symbol: &str) -> Result<String, String> {
     let query = symbol.trim();
     if query.is_empty() {
-        return Err("\"symbol\" is empty: give a declaration's name, e.g. \"parse\" or \"Parser::parse\".".into());
+        return Err(
+            "\"symbol\" is empty: give a declaration's name, e.g. \"parse\" or \"Parser::parse\"."
+                .into(),
+        );
     }
     let Some(symbols) = outline::outline(path, content) else {
         return Err(match outline::language_for(path, content) {
@@ -81,11 +84,16 @@ fn normalize(name: &str) -> String {
 fn find(symbols: &[Symbol], query: &str) -> Vec<usize> {
     // The whole query as one name: a plain name, or one with separators in
     // it as written (`M.add`), never cut short (`Point<T>::new`).
-    let has_separator = query.contains("::") || query.contains(" > ") || query.contains(['.', '/', '#']);
+    let has_separator =
+        query.contains("::") || query.contains(" > ") || query.contains(['.', '/', '#']);
     let whole: Vec<usize> = (0..symbols.len())
         .filter(|&i| {
             let name = &symbols[i].name;
-            if has_separator { name.trim() == query } else { normalize(name) == normalize(query) }
+            if has_separator {
+                name.trim() == query
+            } else {
+                normalize(name) == normalize(query)
+            }
         })
         .collect();
     if !whole.is_empty() {
@@ -98,12 +106,18 @@ fn find(symbols: &[Symbol], query: &str) -> Vec<usize> {
         .map(normalize)
         .filter(|p| !p.is_empty())
         .collect();
-    let Some((last, outer)) = parts.split_last() else { return Vec::new() };
+    let Some((last, outer)) = parts.split_last() else {
+        return Vec::new();
+    };
     (0..symbols.len())
         .filter(|&i| normalize(&symbols[i].name) == *last)
         .filter(|&i| {
             // The outer parts, innermost last, among the ancestors (outermost first).
-            let chain: Vec<String> = ancestors(symbols, i).iter().rev().map(|&a| normalize(&symbols[a].name)).collect();
+            let chain: Vec<String> = ancestors(symbols, i)
+                .iter()
+                .rev()
+                .map(|&a| normalize(&symbols[a].name))
+                .collect();
             let mut want = outer.iter();
             let mut next = want.next();
             for name in &chain {
@@ -136,13 +150,19 @@ fn ancestors(symbols: &[Symbol], i: usize) -> Vec<usize> {
 pub fn enclosing(symbols: &[Symbol], line: usize) -> Option<usize> {
     // Parents come before their children: the last one containing it is
     // the innermost.
-    (0..symbols.len()).filter(|&i| symbols[i].start_line <= line && line <= symbols[i].end_line).max_by_key(|&i| symbols[i].depth)
+    (0..symbols.len())
+        .filter(|&i| symbols[i].start_line <= line && line <= symbols[i].end_line)
+        .max_by_key(|&i| symbols[i].depth)
 }
 
 /// `Parser > parse`: a symbol and what it's in (read takes it as a
 /// symbol).
 pub fn qualified(symbols: &[Symbol], i: usize) -> String {
-    let mut names: Vec<String> = ancestors(symbols, i).iter().rev().map(|&a| normalize(&symbols[a].name)).collect();
+    let mut names: Vec<String> = ancestors(symbols, i)
+        .iter()
+        .rev()
+        .map(|&a| normalize(&symbols[a].name))
+        .collect();
     names.push(normalize(&symbols[i].name));
     names.join(" > ")
 }
@@ -193,7 +213,10 @@ fn show(path: &str, content: &str, symbols: &[Symbol], i: usize) -> String {
     let name = qualified(symbols, i);
     let text = lines[start - 1..end].join("\n");
     if text.chars().count() <= MAX_CHARS {
-        return format!("{SYMBOL_PREFIX}{name}, lines {} of {path}]\n{text}", lines_label(start, end));
+        return format!(
+            "{SYMBOL_PREFIX}{name}, lines {} of {path}]\n{text}",
+            lines_label(start, end)
+        );
     }
 
     // Too long: as much as fits, and what's nested in it.
@@ -204,7 +227,13 @@ fn show(path: &str, content: &str, symbols: &[Symbol], i: usize) -> String {
         .take_while(|(_, n)| n.start_line <= s.end_line && n.depth > s.depth)
         .filter(|(_, n)| n.depth == s.depth + 1)
         .take(MAX_LISTED)
-        .map(|(_, n)| format!("  {} {}", lines_label(n.start_line, n.end_line), n.signature))
+        .map(|(_, n)| {
+            format!(
+                "  {} {}",
+                lines_label(n.start_line, n.end_line),
+                n.signature
+            )
+        })
         .collect();
     let budget = MAX_CHARS.saturating_sub(nested.iter().map(|l| l.len() + 1).sum::<usize>());
     let mut shown = 0;
@@ -219,7 +248,11 @@ fn show(path: &str, content: &str, symbols: &[Symbol], i: usize) -> String {
     }
     let last = start + shown - 1;
     let body: String = lines[start - 1..last].join("\n");
-    let body = if body.chars().count() > budget { body.chars().take(budget).collect() } else { body };
+    let body = if body.chars().count() > budget {
+        body.chars().take(budget).collect()
+    } else {
+        body
+    };
     let mut out = format!(
         "{PARTIAL_PREFIX}{name} is lines {} of {path}, more than one read holds: shown lines {}. \
          Continue with start_line={}, end_line={end}, or read one of its declarations by symbol.]\n",
@@ -238,10 +271,21 @@ fn ambiguous(path: &str, symbols: &[Symbol], query: &str, matches: &[usize]) -> 
     let listed: Vec<String> = matches
         .iter()
         .take(MAX_CANDIDATES)
-        .map(|&i| format!("- {} (lines {}): {}", qualified(symbols, i), lines_label(symbols[i].start_line, symbols[i].end_line), symbols[i].signature))
+        .map(|&i| {
+            format!(
+                "- {} (lines {}): {}",
+                qualified(symbols, i),
+                lines_label(symbols[i].start_line, symbols[i].end_line),
+                symbols[i].signature
+            )
+        })
         .collect();
     let more = matches.len().saturating_sub(MAX_CANDIDATES);
-    let more = if more > 0 { format!("\n…and {more} more") } else { String::new() };
+    let more = if more > 0 {
+        format!("\n…and {more} more")
+    } else {
+        String::new()
+    };
     format!(
         "{} declarations in {path} are called \"{query}\". Name the one you want with what it's in (e.g. \"Outer::name\"), or read its lines with start_line/end_line:\n{}{more}",
         matches.len(),
@@ -251,14 +295,20 @@ fn ambiguous(path: &str, symbols: &[Symbol], query: &str, matches: &[usize]) -> 
 
 fn not_found(path: &str, symbols: &[Symbol], query: &str) -> String {
     if symbols.is_empty() {
-        return format!("{path} has no declarations to read by symbol; read it by start_line/end_line instead.");
+        return format!(
+            "{path} has no declarations to read by symbol; read it by start_line/end_line instead."
+        );
     }
     // Close: the same name in another case, or containing / contained in it.
-    let wanted = normalize(query.rsplit(['.', '/', '#', ':']).next().unwrap_or(query)).to_lowercase();
+    let wanted =
+        normalize(query.rsplit(['.', '/', '#', ':']).next().unwrap_or(query)).to_lowercase();
     let mut close: Vec<String> = Vec::new();
     for (i, s) in symbols.iter().enumerate() {
         let name = normalize(&s.name).to_lowercase();
-        if !wanted.is_empty() && !name.is_empty() && (name == wanted || name.contains(&wanted) || wanted.contains(&name)) {
+        if !wanted.is_empty()
+            && !name.is_empty()
+            && (name == wanted || name.contains(&wanted) || wanted.contains(&name))
+        {
             let q = qualified(symbols, i);
             if !close.contains(&q) {
                 close.push(q);
@@ -276,10 +326,24 @@ fn not_found(path: &str, symbols: &[Symbol], query: &str) -> String {
         .iter()
         .filter(|s| s.depth == 0)
         .take(MAX_LISTED)
-        .map(|s| format!("- {} (lines {})", normalize(&s.name), lines_label(s.start_line, s.end_line)))
+        .map(|s| {
+            format!(
+                "- {} (lines {})",
+                normalize(&s.name),
+                lines_label(s.start_line, s.end_line)
+            )
+        })
         .collect();
     let count = symbols.iter().filter(|s| s.depth == 0).count();
-    out.push_str(&format!("\nIts top-level declarations{}:\n{}", if count > MAX_LISTED { format!(" (first {MAX_LISTED} of {count})") } else { String::new() }, top.join("\n")));
+    out.push_str(&format!(
+        "\nIts top-level declarations{}:\n{}",
+        if count > MAX_LISTED {
+            format!(" (first {MAX_LISTED} of {count})")
+        } else {
+            String::new()
+        },
+        top.join("\n")
+    ));
     out
 }
 
@@ -330,23 +394,51 @@ impl Circle {
     fn a_declaration_comes_with_its_docs_and_attributes() {
         let out = read("src/point.rs", RUST, "Point").unwrap_err();
         // Point is the struct and two impls: ambiguous.
-        assert!(out.starts_with("3 declarations in src/point.rs are called \"Point\""), "{out}");
+        assert!(
+            out.starts_with("3 declarations in src/point.rs are called \"Point\""),
+            "{out}"
+        );
 
         let out = read("src/point.rs", RUST, "get").unwrap();
-        assert_eq!(out.lines().next().unwrap(), "[Symbol read: Point > get, lines 15-18 of src/point.rs]");
-        assert_eq!(body(&out), "    // Plain comment.\n    pub fn get(&self) -> T {\n        self.x.clone()\n    }");
+        assert_eq!(
+            out.lines().next().unwrap(),
+            "[Symbol read: Point > get, lines 15-18 of src/point.rs]"
+        );
+        assert_eq!(
+            body(&out),
+            "    // Plain comment.\n    pub fn get(&self) -> T {\n        self.x.clone()\n    }"
+        );
     }
 
     #[test]
     fn a_name_inside_another_picks_one_of_several() {
         let err = read("src/point.rs", RUST, "new").unwrap_err();
-        assert!(err.starts_with("2 declarations in src/point.rs are called \"new\""), "{err}");
-        assert!(err.contains("- Point > new (lines 11-13): pub fn new(x: T) -> Self"), "{err}");
-        assert!(err.contains("- Circle > new (lines 30-32): pub fn new() -> Self"), "{err}");
+        assert!(
+            err.starts_with("2 declarations in src/point.rs are called \"new\""),
+            "{err}"
+        );
+        assert!(
+            err.contains("- Point > new (lines 11-13): pub fn new(x: T) -> Self"),
+            "{err}"
+        );
+        assert!(
+            err.contains("- Circle > new (lines 30-32): pub fn new() -> Self"),
+            "{err}"
+        );
 
-        for query in ["Point::new", "Point.new", "Point/new", "  Point :: new  ", "Point<T>::new", "Point > new"] {
+        for query in [
+            "Point::new",
+            "Point.new",
+            "Point/new",
+            "  Point :: new  ",
+            "Point<T>::new",
+            "Point > new",
+        ] {
             let out = read("src/point.rs", RUST, query).unwrap_or_else(|e| panic!("{query}: {e}"));
-            assert!(out.starts_with("[Symbol read: Point > new, lines 11-13 of src/point.rs]"), "{query}: {out}");
+            assert!(
+                out.starts_with("[Symbol read: Point > new, lines 11-13 of src/point.rs]"),
+                "{query}: {out}"
+            );
         }
         let out = read("src/point.rs", RUST, "Circle::new").unwrap();
         assert!(body(&out).contains("Circle\n"), "{out}");
@@ -382,11 +474,17 @@ impl Circle {
     fn python_decorators_and_comments_and_nested_classes() {
         let src = "class Outer:\n    class Inner:\n        # Explains it.\n        @staticmethod\n        def run():\n            pass\n\n    def run(self):\n        pass\n";
         let out = read("a.py", src, "Inner.run").unwrap();
-        assert!(out.starts_with("[Symbol read: Outer > Inner > run, lines 3-6 of a.py]"), "{out}");
+        assert!(
+            out.starts_with("[Symbol read: Outer > Inner > run, lines 3-6 of a.py]"),
+            "{out}"
+        );
         assert!(body(&out).starts_with("        # Explains it.\n        @staticmethod\n"));
         // The outer parts may skip levels: Outer.run is the method, not Inner's.
         let out = read("a.py", src, "Outer.run").unwrap_err();
-        assert!(out.starts_with("2 declarations"), "both are inside Outer: {out}");
+        assert!(
+            out.starts_with("2 declarations"),
+            "both are inside Outer: {out}"
+        );
         let out = read("a.py", src, "Outer::Inner::run").unwrap();
         assert!(out.contains("lines 3-6"));
     }
@@ -395,7 +493,10 @@ impl Circle {
     fn typescript_class_members_and_exports() {
         let src = "export class ChatStore {\n  append(text: string) {\n    return text;\n  }\n}\nexport const helper = () => 1;\n";
         let out = read("store.ts", src, "ChatStore.append").unwrap();
-        assert!(out.starts_with("[Symbol read: ChatStore > append, lines 2-4 of store.ts]"), "{out}");
+        assert!(
+            out.starts_with("[Symbol read: ChatStore > append, lines 2-4 of store.ts]"),
+            "{out}"
+        );
         let out = read("store.ts", src, "helper").unwrap();
         assert_eq!(body(&out), "export const helper = () => 1;");
     }
@@ -403,24 +504,42 @@ impl Circle {
     #[test]
     fn names_with_dots_and_quotes_and_headings() {
         let lua = "local M = {}\nfunction M.add(a, b) return a + b end\nreturn M\n";
-        assert!(read("m.lua", lua, "M.add").unwrap().contains("function M.add(a, b)"));
+        assert!(read("m.lua", lua, "M.add")
+            .unwrap()
+            .contains("function M.add(a, b)"));
         let json = "{\n  \"scripts\": {\n    \"build\": \"tsc\"\n  }\n}\n";
         let out = read("package.json", json, "scripts.build").unwrap();
         assert_eq!(body(&out), "    \"build\": \"tsc\"");
         let md = "# Guide\n\n## Install\n\nRun it.\n\n## Usage\n\nUse it.\n";
         let out = read("README.md", md, "Install").unwrap();
-        assert!(out.starts_with("[Symbol read: Guide > Install, lines 3-6 of README.md]"), "{out}");
-        assert!(read("README.md", md, "## Usage").unwrap().contains("Use it."));
+        assert!(
+            out.starts_with("[Symbol read: Guide > Install, lines 3-6 of README.md]"),
+            "{out}"
+        );
+        assert!(read("README.md", md, "## Usage")
+            .unwrap()
+            .contains("Use it."));
     }
 
     #[test]
     fn no_match_suggests_close_names_and_lists_the_top_level() {
         let err = read("src/point.rs", RUST, "Getter").unwrap_err();
-        assert!(err.starts_with("No declaration \"Getter\" in src/point.rs. Did you mean: Point > get?"), "{err}");
-        assert!(err.contains("Its top-level declarations:\n- Point (lines 6-8)\n- Point (lines 10-19)"), "{err}");
+        assert!(
+            err.starts_with(
+                "No declaration \"Getter\" in src/point.rs. Did you mean: Point > get?"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains("Its top-level declarations:\n- Point (lines 6-8)\n- Point (lines 10-19)"),
+            "{err}"
+        );
 
         let err = read("src/point.rs", RUST, "POINT::NEW").unwrap_err();
-        assert!(err.contains("Did you mean: Point > new, Circle > new?"), "a different case is suggested: {err}");
+        assert!(
+            err.contains("Did you mean: Point > new, Circle > new?"),
+            "a different case is suggested: {err}"
+        );
 
         let err = read("src/point.rs", RUST, "zzz").unwrap_err();
         assert!(!err.contains("Did you mean"), "{err}");
@@ -449,29 +568,60 @@ impl Circle {
         let (note, rest) = out.split_once("]\n").unwrap();
         assert!(note.starts_with(PARTIAL_PREFIX), "{note}");
         assert!(note.contains("Big is lines 1-1202 of big.rs"), "{note}");
-        let shown_to: usize = note.split("shown lines 1-").nth(1).unwrap().split('.').next().unwrap().parse().unwrap();
-        assert!(note.contains(&format!("Continue with start_line={}, end_line=1202", shown_to + 1)), "{note}");
-        assert!(rest.starts_with("[Declared in it]\n  2-4 pub fn method_number_0(&self) -> u64\n"), "{rest}");
+        let shown_to: usize = note
+            .split("shown lines 1-")
+            .nth(1)
+            .unwrap()
+            .split('.')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            note.contains(&format!(
+                "Continue with start_line={}, end_line=1202",
+                shown_to + 1
+            )),
+            "{note}"
+        );
+        assert!(
+            rest.starts_with("[Declared in it]\n  2-4 pub fn method_number_0(&self) -> u64\n"),
+            "{rest}"
+        );
         assert!(out.chars().count() <= MAX_CHARS + 500);
         // Its parts can be read one by one.
-        assert!(read("big.rs", &src, "Big::method_number_399").unwrap().contains("399 + 1"));
+        assert!(read("big.rs", &src, "Big::method_number_399")
+            .unwrap()
+            .contains("399 + 1"));
     }
 
     #[test]
     fn covered_lines_are_read_back_from_the_header() {
         let out = read("src/point.rs", RUST, "Point::get").unwrap();
         assert_eq!(covered_lines(&out), Some((15, 18)));
-        assert_eq!(covered_lines("[Symbol read: a > b, lines 3-9 of x/y.rs]\ncode"), Some((3, 9)));
-        assert_eq!(covered_lines("[Symbol read: odd, lines name, lines 3-9 of y.rs]\n"), None);
+        assert_eq!(
+            covered_lines("[Symbol read: a > b, lines 3-9 of x/y.rs]\ncode"),
+            Some((3, 9))
+        );
+        assert_eq!(
+            covered_lines("[Symbol read: odd, lines name, lines 3-9 of y.rs]\n"),
+            None
+        );
         assert_eq!(covered_lines("plain text"), None);
-        assert_eq!(covered_lines("[Partial read: Big is lines 1-1202 of big.rs …]"), None);
+        assert_eq!(
+            covered_lines("[Partial read: Big is lines 1-1202 of big.rs …]"),
+            None
+        );
     }
 
     #[test]
     fn crlf_files_read_by_symbol() {
         let src = RUST.replace('\n', "\r\n");
         let out = read("src/point.rs", &src, "Circle::new").unwrap();
-        assert!(out.starts_with("[Symbol read: Circle > new, lines 30-32 of src/point.rs]"), "{out}");
+        assert!(
+            out.starts_with("[Symbol read: Circle > new, lines 30-32 of src/point.rs]"),
+            "{out}"
+        );
         assert!(!body(&out).contains('\r'));
     }
 }

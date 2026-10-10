@@ -178,7 +178,13 @@ struct WatchIgnores {
 impl WatchIgnores {
     /// The root's .gitignore (and `.git/`): at once, while `all` looks for the rest.
     fn root_only(root: &Path) -> Self {
-        WatchIgnores { matchers: build_gitignore(root).ok().map(|m| (root.to_path_buf(), m)).into_iter().collect() }
+        WatchIgnores {
+            matchers: build_gitignore(root)
+                .ok()
+                .map(|m| (root.to_path_buf(), m))
+                .into_iter()
+                .collect(),
+        }
     }
 
     /// Every .gitignore in the project, found without entering what's ignored.
@@ -195,7 +201,10 @@ impl WatchIgnores {
             .build();
         for entry in walker.flatten() {
             let (path, depth) = (entry.path(), entry.depth());
-            if depth == 1 || entry.file_name() != ".gitignore" || !entry.file_type().is_some_and(|t| t.is_file()) {
+            if depth == 1
+                || entry.file_name() != ".gitignore"
+                || !entry.file_type().is_some_and(|t| t.is_file())
+            {
                 continue; // the root's is in already
             }
             let Some(dir) = path.parent() else { continue };
@@ -210,14 +219,16 @@ impl WatchIgnores {
     }
 
     fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
-        self.matchers
-            .iter()
-            .any(|(dir, m)| path.starts_with(dir) && m.matched_path_or_any_parents(path, is_dir).is_ignore())
+        self.matchers.iter().any(|(dir, m)| {
+            path.starts_with(dir) && m.matched_path_or_any_parents(path, is_dir).is_ignore()
+        })
     }
 }
 
 fn watch_path_kind(root: &Path, ignores: &WatchIgnores, path: &Path) -> WatchPath {
-    let Ok(rel) = path.strip_prefix(root) else { return WatchPath::Visible };
+    let Ok(rel) = path.strip_prefix(root) else {
+        return WatchPath::Visible;
+    };
     if rel.components().any(|c| c.as_os_str() == ".git") {
         return WatchPath::Git;
     }
@@ -284,7 +295,9 @@ impl WatchBatch {
     }
 
     fn take_due(&mut self, now: Instant) -> WatchFlush {
-        let (Some(started), Some(last)) = (self.started, self.last) else { return WatchFlush::Nothing };
+        let (Some(started), Some(last)) = (self.started, self.last) else {
+            return WatchFlush::Nothing;
+        };
         let overdue = now.duration_since(started) >= WATCH_MAX_WAIT;
         if self.overflowed {
             if !overdue && now.duration_since(last) < WATCH_DEBOUNCE {
@@ -304,7 +317,11 @@ impl WatchBatch {
         if self.events.is_empty() {
             *self = WatchBatch::default();
         }
-        if ready.is_empty() { WatchFlush::Nothing } else { WatchFlush::Events(ready) }
+        if ready.is_empty() {
+            WatchFlush::Nothing
+        } else {
+            WatchFlush::Events(ready)
+        }
     }
 }
 
@@ -375,15 +392,21 @@ fn watch_recursive_lenient(
 /// watcher is harmless. Only call for paths under the watched root.
 fn watch_new_dir(app_handle: &AppHandle, dir: &Path) {
     let state = app_handle.state::<WatcherState>();
-    let Ok(mut guard) = state.active_watcher.lock() else { return };
-    let Some(watcher) = guard.as_mut() else { return };
+    let Ok(mut guard) = state.active_watcher.lock() else {
+        return;
+    };
+    let Some(watcher) = guard.as_mut() else {
+        return;
+    };
     if watcher.watch(dir, RecursiveMode::NonRecursive).is_err() {
         return;
     }
     let mut stack = vec![dir.to_path_buf()];
     let mut count = 0;
     while let Some(d) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&d) else { continue };
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
         for entry in entries.flatten() {
             if count >= 500 {
                 return;
@@ -428,9 +451,9 @@ pub fn start_file_watch(
     // Lock and clean up any existing watcher first
     let mut current_watcher = state.active_watcher.lock().unwrap();
     *current_watcher = None; // Drops the old watcher, killing its channel thread automatically
-    // This watch's generation: the previous watch's task sees it change and
-    // ends (dropping the watcher alone only stops new events; its loop would
-    // keep waking every 50 ms forever, one more per project opened).
+                             // This watch's generation: the previous watch's task sees it change and
+                             // ends (dropping the watcher alone only stops new events; its loop would
+                             // keep waking every 50 ms forever, one more per project opened).
     let generation = WATCH_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
 
     // Set up the new cross-thread channel
@@ -519,7 +542,9 @@ pub fn start_file_watch(
                                 // A checkout, merge or rebase is rewriting the
                                 // working tree: isolated chats wait it out.
                                 if path.parent() == Some(watch_root.join(".git").as_path())
-                                    && path.file_name().is_some_and(|n| n == "HEAD" || n == "ORIG_HEAD")
+                                    && path
+                                        .file_name()
+                                        .is_some_and(|n| n == "HEAD" || n == "ORIG_HEAD")
                                 {
                                     crate::overlay::chats::project_busy(&watch_root);
                                 }
@@ -530,7 +555,9 @@ pub fn start_file_watch(
                         }
                         if path.file_name().is_some_and(|n| n == ".gitignore") {
                             find_ignores(watch_root.clone(), ignores_tx.clone());
-                            if let Ok(mut cached) = app_handle.state::<WatcherState>().gitignore.lock() {
+                            if let Ok(mut cached) =
+                                app_handle.state::<WatcherState>().gitignore.lock()
+                            {
                                 *cached = None; // the tree's listing re-reads it too
                             }
                         }
@@ -572,10 +599,13 @@ pub fn start_file_watch(
                     );
                 }
                 WatchFlush::Events(events) => {
-                    let paths: Vec<PathBuf> = events.iter().map(|p| PathBuf::from(&p.path)).collect();
+                    let paths: Vec<PathBuf> =
+                        events.iter().map(|p| PathBuf::from(&p.path)).collect();
                     // Isolated chats on this project: see it as it is now,
                     // and hear right away when their own change conflicts.
-                    for (_chat, path) in crate::overlay::chats::project_changed(&watch_root, &paths, false) {
+                    for (_chat, path) in
+                        crate::overlay::chats::project_changed(&watch_root, &paths, false)
+                    {
                         crate::agent_run::events::emit(
                             &app_handle,
                             crate::agent_run::events::AgentEvent::Notice {
@@ -703,7 +733,10 @@ pub fn read_file_content(path: String) -> Result<String, String> {
     // A huge log or dump would be copied whole into the webview and stall
     // (or kill) both sides; the editor can't usefully show it anyway.
     if fs::metadata(p).is_ok_and(|m| m.len() > MAX_EDITOR_FILE) {
-        return Err(format!("{path}: larger than {} MB, too large to open in the editor", MAX_EDITOR_FILE >> 20));
+        return Err(format!(
+            "{path}: larger than {} MB, too large to open in the editor",
+            MAX_EDITOR_FILE >> 20
+        ));
     }
     if looks_binary(p)? {
         return Err(format!("{path}: binary file, cannot open in editor"));
@@ -726,7 +759,11 @@ pub const CHANGED_ON_DISK: &str = "changed-on-disk:";
 /// silently erase that change (file_guard.rs). Without it, the file is
 /// written regardless (the user chose to overwrite).
 #[tauri::command]
-pub fn write_file_content(path: String, content: String, expected: Option<String>) -> Result<(), String> {
+pub fn write_file_content(
+    path: String,
+    content: String,
+    expected: Option<String>,
+) -> Result<(), String> {
     let p = Path::new(&path);
     let expected = expected.map(|e| crate::file_guard::hash(e.as_bytes()));
     match crate::file_guard::write_for_editor(p, content.as_bytes(), expected) {
@@ -864,7 +901,10 @@ fn validate_file_name_impl(raw: &str, windows_rules: bool) -> Result<String, Str
     if name == "." || name == ".." {
         return Err(format!("{INVALID_NAME_PREFIX}{raw:?} is reserved"));
     }
-    if name.chars().any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control()) {
+    if name
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control())
+    {
         return Err(format!(
             "{INVALID_NAME_PREFIX}{raw:?}: names can't contain slashes or control characters"
         ));
@@ -874,7 +914,10 @@ fn validate_file_name_impl(raw: &str, windows_rules: bool) -> Result<String, Str
         return Err(format!("{INVALID_NAME_PREFIX}{raw:?}: name is too long"));
     }
     if windows_rules {
-        if name.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')) {
+        if name
+            .chars()
+            .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+        {
             return Err(format!(
                 "{INVALID_NAME_PREFIX}{raw:?}: <>:\"|?* aren't allowed in names on Windows"
             ));
@@ -944,16 +987,10 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
         let c_from = CString::new(from.as_os_str().as_bytes()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "source path contains NUL",
-            )
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "source path contains NUL")
         })?;
         let c_to = CString::new(to.as_os_str().as_bytes()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "target path contains NUL",
-            )
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "target path contains NUL")
         })?;
         // SAFETY: plain C call with valid pointers; no locks held.
         let r = unsafe {
@@ -984,10 +1021,14 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
         use windows::core::PCWSTR;
-        let wide =
-            |p: &Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+        let wide = |p: &Path| {
+            p.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
         let (from_w, to_w) = (wide(from), wide(to));
         // No MOVEFILE_REPLACE_EXISTING: an existing destination fails with
         // ERROR_ALREADY_EXISTS instead of being destroyed. WRITE_THROUGH
@@ -1007,8 +1048,9 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
         let c = |p: &Path| {
-            CString::new(p.as_os_str().as_bytes())
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL"))
+            CString::new(p.as_os_str().as_bytes()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL")
+            })
         };
         let (c_from, c_to) = (c(from)?, c(to)?);
         // SAFETY: plain C call with valid pointers; no locks held.
@@ -1078,7 +1120,10 @@ fn rename_error(from: &Path, err: std::io::Error) -> String {
             format!("{}: can't move across drives: {err}", from.display())
         }
         std::io::ErrorKind::PermissionDenied => {
-            format!("{}: permission denied (locked by another app?): {err}", from.display())
+            format!(
+                "{}: permission denied (locked by another app?): {err}",
+                from.display()
+            )
         }
         _ => format!("{}: {err}", from.display()),
     }
@@ -1149,7 +1194,11 @@ const TRASH_UNAVAILABLE: &str = "trash-unavailable: ";
 /// or a Linux drive without a trash folder) this fails rather than delete
 /// for good; `permanent` then deletes outright, once the user has agreed.
 #[tauri::command]
-pub fn delete_path(state: State<'_, WatcherState>, id: String, permanent: Option<bool>) -> Result<(), String> {
+pub fn delete_path(
+    state: State<'_, WatcherState>,
+    id: String,
+    permanent: Option<bool>,
+) -> Result<(), String> {
     let p = resolve_id(&state, &id)?;
     let meta = fs::symlink_metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     if permanent.unwrap_or(false) {
@@ -1321,7 +1370,10 @@ fn move_cross_device(
         let dest_len = fs::metadata(to).map(|m| m.len()).unwrap_or(0);
         if meta.len() != dest_len {
             let _ = fs::remove_file(to);
-            return Err(format!("{}: copy was incomplete, source kept", from.display()));
+            return Err(format!(
+                "{}: copy was incomplete, source kept",
+                from.display()
+            ));
         }
     }
     let remove = if meta.is_dir() {
@@ -1329,7 +1381,12 @@ fn move_cross_device(
     } else {
         fs::remove_file(from)
     };
-    remove.map_err(|e| format!("{}: moved, but couldn't remove the source: {e}", from.display()))?;
+    remove.map_err(|e| {
+        format!(
+            "{}: moved, but couldn't remove the source: {e}",
+            from.display()
+        )
+    })?;
     remember_id(state, id, to);
     remember_id(state, &stable_file_id(to), to);
     Ok(to.to_string_lossy().to_string())
@@ -1465,9 +1522,8 @@ pub fn load_last_project(app: AppHandle) -> Result<String, String> {
             expanded_paths: None,
             terminal_collapsed: true,
         };
-        return Ok(
-            serde_json::to_string(&defaults).map_err(|e| format!("Failed to serialize project data defaults: {e}"))?
-        );
+        return Ok(serde_json::to_string(&defaults)
+            .map_err(|e| format!("Failed to serialize project data defaults: {e}"))?);
     }
     fs::read_to_string(&path).map_err(|e| format!("Failed to read last project: {e}"))
 }
@@ -1487,21 +1543,20 @@ pub fn save_last_project(
     path: String,
     opened_files: Option<Vec<OpenFile>>,
     expanded_paths: Option<Vec<String>>,
-    terminal_collapsed: bool
+    terminal_collapsed: bool,
 ) -> Result<(), String> {
     let project_path = last_project_path(&app)?;
     let data = LastProjectData {
         path: Some(path),
         opened_files,
         expanded_paths,
-        terminal_collapsed
+        terminal_collapsed,
     };
     let json = serde_json::to_string(&data)
         .map_err(|e| format!("Failed to serialize last project: {e}"))?;
     crate::atomic_file::write_atomic(&project_path, json.as_bytes())
         .map_err(|e| format!("Failed to save last project: {e}"))
 }
-
 
 #[cfg(test)]
 mod watch_tests {
@@ -1523,12 +1578,22 @@ mod watch_tests {
         assert_eq!(kind("src/main.rs"), WatchPath::Visible);
         assert_eq!(kind(".gitignore"), WatchPath::Visible);
         assert_eq!(kind(".github/workflows/ci.yml"), WatchPath::Visible);
-        assert_eq!(watch_path_kind(&dir, &m, Path::new("/elsewhere/x")), WatchPath::Visible);
-        assert_eq!(kind("packages/a/node_modules/.vite/deps/x.js"), WatchPath::Ignored);
+        assert_eq!(
+            watch_path_kind(&dir, &m, Path::new("/elsewhere/x")),
+            WatchPath::Visible
+        );
+        assert_eq!(
+            kind("packages/a/node_modules/.vite/deps/x.js"),
+            WatchPath::Ignored
+        );
     }
 
     fn change(path: &str) -> FileWatchPayload {
-        FileWatchPayload { path: path.into(), operation: WatchOp::Modify, is_dir: false }
+        FileWatchPayload {
+            path: path.into(),
+            operation: WatchOp::Modify,
+            is_dir: false,
+        }
     }
 
     #[test]
@@ -1548,9 +1613,15 @@ mod watch_tests {
         b.add(change("a"), t0);
         assert!(!b.is_empty());
         assert!(!watch_finished(true, &b, None), "a change still to report");
-        assert!(matches!(b.take_due(t0 + Duration::from_secs(5)), WatchFlush::Events(_)));
+        assert!(matches!(
+            b.take_due(t0 + Duration::from_secs(5)),
+            WatchFlush::Events(_)
+        ));
         assert!(b.is_empty(), "reported");
-        assert!(!watch_finished(true, &b, Some(t0)), "git activity still to report");
+        assert!(
+            !watch_finished(true, &b, Some(t0)),
+            "git activity still to report"
+        );
         assert!(watch_finished(true, &b, None));
     }
 
@@ -1563,7 +1634,11 @@ mod watch_tests {
         b.add(change("a"), t0);
         b.add(change("a"), ms(100));
         assert_eq!(b.take_due(ms(200)), WatchFlush::Nothing, "still changing");
-        assert_eq!(b.take_due(ms(400)), WatchFlush::Events(vec![change("a")]), "once, when quiet");
+        assert_eq!(
+            b.take_due(ms(400)),
+            WatchFlush::Events(vec![change("a")]),
+            "once, when quiet"
+        );
         assert_eq!(b.take_due(ms(500)), WatchFlush::Nothing);
 
         // A dev server writing every 200ms: reported anyway after WATCH_MAX_WAIT.
@@ -1577,7 +1652,10 @@ mod watch_tests {
             }
         }
         let (i, events) = reported.expect("reported while still changing");
-        assert_eq!((i * 200 + 50 >= 2_000, events), (true, vec![change("out.js")]));
+        assert_eq!(
+            (i * 200 + 50 >= 2_000, events),
+            (true, vec![change("out.js")])
+        );
     }
 
     #[test]
@@ -1589,9 +1667,19 @@ mod watch_tests {
         }
         assert!(b.events.is_empty(), "no longer collected one by one");
         b.add(change("more"), t0 + Duration::from_millis(250));
-        assert_eq!(b.take_due(t0 + Duration::from_millis(400)), WatchFlush::Nothing, "still flooding");
-        assert_eq!(b.take_due(t0 + Duration::from_millis(600)), WatchFlush::Everything);
-        assert_eq!(b.take_due(t0 + Duration::from_millis(700)), WatchFlush::Nothing);
+        assert_eq!(
+            b.take_due(t0 + Duration::from_millis(400)),
+            WatchFlush::Nothing,
+            "still flooding"
+        );
+        assert_eq!(
+            b.take_due(t0 + Duration::from_millis(600)),
+            WatchFlush::Everything
+        );
+        assert_eq!(
+            b.take_due(t0 + Duration::from_millis(700)),
+            WatchFlush::Nothing
+        );
     }
 
     #[test]
@@ -1627,12 +1715,21 @@ mod watch_tests {
     fn a_packages_own_gitignore_counts_under_that_package_only() {
         let dir = std::env::temp_dir().join(format!("watch-nested-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        for d in ["packages/web/src", "packages/web/.turbo", "packages/api/src", "node_modules/x"] {
+        for d in [
+            "packages/web/src",
+            "packages/web/.turbo",
+            "packages/api/src",
+            "node_modules/x",
+        ] {
             std::fs::create_dir_all(dir.join(d)).unwrap();
         }
         std::fs::write(dir.join(".gitignore"), "*.log\n").unwrap();
         // Anchored: packages/web/dist, not a dist anywhere else.
-        std::fs::write(dir.join("packages/web/.gitignore"), "/dist\n.turbo/\n*.timestamp-*.mjs\n").unwrap();
+        std::fs::write(
+            dir.join("packages/web/.gitignore"),
+            "/dist\n.turbo/\n*.timestamp-*.mjs\n",
+        )
+        .unwrap();
         // In node_modules: never looked at.
         std::fs::write(dir.join("node_modules/x/.gitignore"), "*\n").unwrap();
         let m = WatchIgnores::all(&dir);
@@ -1640,9 +1737,16 @@ mod watch_tests {
         let kind = |p: &str| watch_path_kind(&dir, &m, &dir.join(p));
         assert_eq!(kind("packages/web/dist/index.js"), WatchPath::Ignored);
         assert_eq!(kind("packages/web/.turbo/cache.json"), WatchPath::Ignored);
-        assert_eq!(kind("packages/web/vite.config.ts.timestamp-1700000000-ab12.mjs"), WatchPath::Ignored);
+        assert_eq!(
+            kind("packages/web/vite.config.ts.timestamp-1700000000-ab12.mjs"),
+            WatchPath::Ignored
+        );
         assert_eq!(kind("packages/web/src/app.ts"), WatchPath::Visible);
-        assert_eq!(kind("packages/api/dist/index.js"), WatchPath::Visible, "another package's dist");
+        assert_eq!(
+            kind("packages/api/dist/index.js"),
+            WatchPath::Visible,
+            "another package's dist"
+        );
         assert_eq!(kind("dist/index.js"), WatchPath::Visible);
         assert_eq!(kind("server.log"), WatchPath::Ignored);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1675,7 +1779,10 @@ mod rename_tests {
             assert!(validate_file_name_impl(bad, false).is_err(), "{bad:?}");
         }
         assert!(validate_file_name_impl(&"x".repeat(256), false).is_err());
-        assert_eq!(validate_file_name_impl("  ok.txt  ", false).unwrap(), "ok.txt");
+        assert_eq!(
+            validate_file_name_impl("  ok.txt  ", false).unwrap(),
+            "ok.txt"
+        );
         assert!(validate_file_name_impl("don't?.txt", false).is_ok());
         // Windows-only rules, testable anywhere via the flag.
         for bad in ["CON", "con.txt", "LPT1", "foo?", "a<b", "trail. ", "trail."] {
@@ -1805,8 +1912,12 @@ mod save_tests {
         write_file_content(p.clone(), "mine\n".into(), Some("loaded\n".into())).unwrap();
         // Changed on disk since the tab loaded it (a command, here).
         fs::write(&path, "theirs\n").unwrap();
-        let err = write_file_content(p.clone(), "mine again\n".into(), Some("mine\n".into())).unwrap_err();
-        assert_eq!(err, format!("{CHANGED_ON_DISK}outside the editor: by a command or another program"));
+        let err = write_file_content(p.clone(), "mine again\n".into(), Some("mine\n".into()))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            format!("{CHANGED_ON_DISK}outside the editor: by a command or another program")
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), "theirs\n");
         // Overwrite: no expectation.
         write_file_content(p, "mine again\n".into(), None).unwrap();
@@ -1820,18 +1931,39 @@ mod save_tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let name = |p: PathBuf| p.file_name().unwrap().to_string_lossy().into_owned();
-        assert_eq!(name(generate_unique_path(&dir, "notes.txt", false)), "notes.txt");
+        assert_eq!(
+            name(generate_unique_path(&dir, "notes.txt", false)),
+            "notes.txt"
+        );
         fs::write(dir.join("notes.txt"), "").unwrap();
-        assert_eq!(name(generate_unique_path(&dir, "notes.txt", false)), "notes copy.txt");
+        assert_eq!(
+            name(generate_unique_path(&dir, "notes.txt", false)),
+            "notes copy.txt"
+        );
         fs::write(dir.join("notes copy.txt"), "").unwrap();
-        assert_eq!(name(generate_unique_path(&dir, "notes.txt", false)), "notes copy 2.txt");
-        assert_eq!(name(generate_unique_path(&dir, "notes copy.txt", false)), "notes copy 2.txt");
+        assert_eq!(
+            name(generate_unique_path(&dir, "notes.txt", false)),
+            "notes copy 2.txt"
+        );
+        assert_eq!(
+            name(generate_unique_path(&dir, "notes copy.txt", false)),
+            "notes copy 2.txt"
+        );
         fs::write(dir.join("copycat.txt"), "").unwrap();
-        assert_eq!(name(generate_unique_path(&dir, "copycat.txt", false)), "copycat copy.txt");
+        assert_eq!(
+            name(generate_unique_path(&dir, "copycat.txt", false)),
+            "copycat copy.txt"
+        );
         fs::write(dir.join(".gitignore"), "").unwrap();
-        assert_eq!(name(generate_unique_path(&dir, ".gitignore", false)), ".gitignore copy");
+        assert_eq!(
+            name(generate_unique_path(&dir, ".gitignore", false)),
+            ".gitignore copy"
+        );
         fs::create_dir(dir.join("src.d")).unwrap();
-        assert_eq!(name(generate_unique_path(&dir, "src.d", true)), "src.d copy");
+        assert_eq!(
+            name(generate_unique_path(&dir, "src.d", true)),
+            "src.d copy"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1850,7 +1982,10 @@ mod save_tests {
             let meta = fs::symlink_metadata(dir.join("dest").join(link)).unwrap();
             assert!(meta.file_type().is_symlink(), "{link}");
         }
-        assert_eq!(fs::read_link(dir.join("dest/to-sub")).unwrap(), Path::new("sub"));
+        assert_eq!(
+            fs::read_link(dir.join("dest/to-sub")).unwrap(),
+            Path::new("sub")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

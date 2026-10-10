@@ -9,10 +9,10 @@
 use super::diff::{self, Hunk};
 use super::events::{emit, AgentEvent, ApprovalRequest, EditProposal, QuestionsRequest};
 use super::guard::{FinishedCall, GuardVerdict, Write};
+use super::parallel::{self, InOrder};
 use super::permissions::{self, Approver, ToolVerdict};
 use super::review::{self, Group, ReviewInput, ReviewResult};
 use super::run::{chat_plan_file, Run};
-use super::parallel::{self, InOrder};
 use super::{log, plan, tools, ApprovalDecision};
 use crate::chat_db::store::ToolCall;
 use serde_json::{json, Map, Value};
@@ -50,11 +50,17 @@ struct Reviewed {
 }
 
 fn refused(text: impl Into<String>) -> Authorized {
-    Authorized { refusal: Some(text.into()), ..Default::default() }
+    Authorized {
+        refusal: Some(text.into()),
+        ..Default::default()
+    }
 }
 
 fn rejected(text: impl Into<String>) -> Authorized {
-    Authorized { rejected: true, ..refused(text) }
+    Authorized {
+        rejected: true,
+        ..refused(text)
+    }
 }
 
 /// How a call ran: as which tool, with which arguments (an approval may
@@ -74,7 +80,10 @@ struct WriteTarget {
 }
 
 enum Prepared {
-    Diff { proposal: EditProposal, hunks: Vec<Hunk> },
+    Diff {
+        proposal: EditProposal,
+        hunks: Vec<Hunk>,
+    },
     New,
     Unchanged,
     Invalid(String),
@@ -141,11 +150,21 @@ fn describe_rejected_hunks(path: &str, rejected: &[Hunk], total: usize) -> Strin
     for h in rejected {
         let at = format!("around original line {}", h.orig_start);
         out.push(if h.added.is_empty() {
-            format!("- {at}: deleting these lines (kept):\n{}", preview(&h.deleted))
+            format!(
+                "- {at}: deleting these lines (kept):\n{}",
+                preview(&h.deleted)
+            )
         } else if h.deleted.is_empty() {
-            format!("- {at}: inserting these lines (not added):\n{}", preview(&h.added))
+            format!(
+                "- {at}: inserting these lines (not added):\n{}",
+                preview(&h.added)
+            )
         } else {
-            format!("- {at}: replacing\n{}\n  with (not applied):\n{}", preview(&h.deleted), preview(&h.added))
+            format!(
+                "- {at}: replacing\n{}\n  with (not applied):\n{}",
+                preview(&h.deleted),
+                preview(&h.added)
+            )
         });
     }
     out.push(format!(
@@ -155,22 +174,34 @@ fn describe_rejected_hunks(path: &str, rejected: &[Hunk], total: usize) -> Strin
 }
 
 impl<R: Runtime> Run<R> {
-    pub(super) async fn execute_tool_calls(&mut self, calls: &[ToolCall], resume_note: Option<&str>) -> Result<(), String> {
+    pub(super) async fn execute_tool_calls(
+        &mut self,
+        calls: &[ToolCall],
+        resume_note: Option<&str>,
+    ) -> Result<(), String> {
         // CLM mode: the agent's context folder.
         let vfs = self.app.state::<crate::vfs::VfsState>();
-        let clm = self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(&vfs).is_ok();
-        let context_dir = if clm { crate::clm::real_paths(&vfs, &self.dialog_id).map(|(_, dir)| dir) } else { None };
+        let clm =
+            self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(&vfs).is_ok();
+        let context_dir = if clm {
+            crate::clm::real_paths(&vfs, &self.dialog_id).map(|(_, dir)| dir)
+        } else {
+            None
+        };
 
         let mut rest = calls;
         while !rest.is_empty() {
             // Decided when it's this call's turn: an approval before it may
             // have taken a while, and Stop may have come.
-            let n = parallel::batch_len(rest, |tc| self.runs_in_parallel(tc, resume_note, clm, context_dir.as_deref()));
+            let n = parallel::batch_len(rest, |tc| {
+                self.runs_in_parallel(tc, resume_note, clm, context_dir.as_deref())
+            });
             if n > 0 {
                 self.execute_parallel(&rest[..n], clm).await?;
                 rest = &rest[n..];
             } else {
-                self.execute_one(&rest[0], resume_note, clm, context_dir.as_deref()).await?;
+                self.execute_one(&rest[0], resume_note, clm, context_dir.as_deref())
+                    .await?;
                 rest = &rest[1..];
             }
         }
@@ -179,8 +210,17 @@ impl<R: Runtime> Run<R> {
 
     /// Whether a call can run alongside its neighbours: a local read that
     /// is permitted without asking, outside the agent's context folder.
-    fn runs_in_parallel(&self, tc: &ToolCall, resume_note: Option<&str>, clm: bool, context_dir: Option<&str>) -> bool {
-        if resume_note.is_some() || self.stopped() || !parallel::PARALLEL_TOOLS.contains(&tc.name.as_str()) {
+    fn runs_in_parallel(
+        &self,
+        tc: &ToolCall,
+        resume_note: Option<&str>,
+        clm: bool,
+        context_dir: Option<&str>,
+    ) -> bool {
+        if resume_note.is_some()
+            || self.stopped()
+            || !parallel::PARALLEL_TOOLS.contains(&tc.name.as_str())
+        {
             return false;
         }
         // A restricted CLM turn: every call goes through execute_one, which
@@ -207,7 +247,10 @@ impl<R: Runtime> Run<R> {
     /// running when Stop comes is aborted and recorded as stopped.
     async fn execute_parallel(&mut self, calls: &[ToolCall], clm: bool) -> Result<(), String> {
         #[cfg(test)]
-        parallel::BATCHES.lock().unwrap().push((self.dialog_id.clone(), calls.iter().map(|c| c.id.clone()).collect()));
+        parallel::BATCHES.lock().unwrap().push((
+            self.dialog_id.clone(),
+            calls.iter().map(|c| c.id.clone()).collect(),
+        ));
         let started = std::time::Instant::now();
         let jobs: Vec<_> = calls
             .iter()
@@ -216,9 +259,14 @@ impl<R: Runtime> Run<R> {
                 let (name, args, stop) = (tc.name.clone(), tc.arguments.clone(), self.stop.clone());
                 let ctx = self.call_context(&tc.id);
                 async move {
-                    parallel::spawned(async move { tools::execute(&app, root.as_deref(), &name, &args, &stop, &ctx).await })
-                        .await
-                        .unwrap_or_else(|e| tools::ToolResult { content: format!("Error: {e}"), ..Default::default() })
+                    parallel::spawned(async move {
+                        tools::execute(&app, root.as_deref(), &name, &args, &stop, &ctx).await
+                    })
+                    .await
+                    .unwrap_or_else(|e| tools::ToolResult {
+                        content: format!("Error: {e}"),
+                        ..Default::default()
+                    })
                 }
             })
             .collect();
@@ -226,8 +274,13 @@ impl<R: Runtime> Run<R> {
         for tc in calls {
             match results.next().await.flatten() {
                 Some(result) => {
-                    let run = Ran { tool_name: tc.name.clone(), args_json: tc.arguments.clone(), write: None };
-                    self.record(tc, Authorized::default(), run, result, clm).await?;
+                    let run = Ran {
+                        tool_name: tc.name.clone(),
+                        args_json: tc.arguments.clone(),
+                        write: None,
+                    };
+                    self.record(tc, Authorized::default(), run, result, clm)
+                        .await?;
                 }
                 None => self.stopped_result(tc).await?,
             }
@@ -292,7 +345,9 @@ impl<R: Runtime> Run<R> {
                 content.push_str(note);
             }
             let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
-            return self.add_tool_result(&tc.id, content, meta, Vec::new()).await;
+            return self
+                .add_tool_result(&tc.id, content, meta, Vec::new())
+                .await;
         }
         // Phase E: a restricted turn offers only context tools (handled
         // above), `restore_context`, and the checklist / plan questions.
@@ -309,7 +364,9 @@ impl<R: Runtime> Run<R> {
                  this {} call.",
                 tc.name
             );
-            return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+            return self
+                .add_tool_result(&tc.id, content, None, Vec::new())
+                .await;
         }
         match tc.name.as_str() {
             // The plan (Plan mode): checked, then saved; problems go back to the model.
@@ -377,9 +434,10 @@ impl<R: Runtime> Run<R> {
                             let done_word = if newly.len() == 1 { "Step" } else { "Steps" };
                             if pct >= super::run::CLM_STEP_COMPACT_MIN {
                                 // Asked for: the pressure escalates if it's ignored.
-                                self.pending_step_compaction = Some(super::run::PendingStepCompaction {
-                                    tool_calls: self.guard.tool_calls,
-                                });
+                                self.pending_step_compaction =
+                                    Some(super::run::PendingStepCompaction {
+                                        tool_calls: self.guard.tool_calls,
+                                    });
                                 self.step_asked_turn = Some(self.clm_turns);
                                 match next {
                                     Some(n) => content.push_str(&format!(
@@ -396,10 +454,17 @@ impl<R: Runtime> Run<R> {
                         }
                     }
                 }
-                self.add_tool_result(&tc.id, content, None, Vec::new()).await?;
+                self.add_tool_result(&tc.id, content, None, Vec::new())
+                    .await?;
                 // The panel's live source while the run goes: every update,
                 // even an empty one (which clears a stale panel).
-                emit(&self.app, AgentEvent::Checklist { dialog_id: self.dialog_id.clone(), items });
+                emit(
+                    &self.app,
+                    AgentEvent::Checklist {
+                        dialog_id: self.dialog_id.clone(),
+                        items,
+                    },
+                );
                 return Ok(());
             }
             // Questions to the user: answered in the chat, no approval
@@ -412,7 +477,9 @@ impl<R: Runtime> Run<R> {
                     "Error: {name} isn't available in Plan mode, which doesn't change anything. \
                      Finish the plan; the user implements it in Agent mode."
                 );
-                return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+                return self
+                    .add_tool_result(&tc.id, content, None, Vec::new())
+                    .await;
             }
             _ => {}
         }
@@ -431,14 +498,19 @@ impl<R: Runtime> Run<R> {
             && self.state.config().permissions.checklist != permissions::ChecklistMode::Off
             && !(clm && is_context_path(path_arg, context_dir))
         {
-            if let Some(reason) =
-                plan::checklist_gate_reason(&tc.name, path_arg, &self.changed_files, self.guard.tool_calls)
-            {
+            if let Some(reason) = plan::checklist_gate_reason(
+                &tc.name,
+                path_arg,
+                &self.changed_files,
+                self.guard.tool_calls,
+            ) {
                 if let Ok(recent) = self.recent().await {
                     if plan::current_checklist(&recent).is_none() {
                         self.checklist_gate_refused = true;
                         let content = plan::checklist_gate_error(&reason, &tc.name);
-                        return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+                        return self
+                            .add_tool_result(&tc.id, content, None, Vec::new())
+                            .await;
                     }
                 }
             }
@@ -453,22 +525,42 @@ impl<R: Runtime> Run<R> {
         if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
             return self.stopped_result(tc).await;
         }
-        let args_json = auth.args_override.clone().unwrap_or_else(|| tc.arguments.clone());
+        let args_json = auth
+            .args_override
+            .clone()
+            .unwrap_or_else(|| tc.arguments.clone());
         let tool_name = tc.name.clone();
         let writes = auth.refusal.is_none() && permissions::modifies_files(&tool_name);
-        let write_path = if writes { permissions::str_arg(&args_json, "path") } else { None };
+        let write_path = if writes {
+            permissions::str_arg(&args_json, "path")
+        } else {
+            None
+        };
         let abs_write_path = match (&write_path, &self.root) {
             (Some(p), Some(root)) => Some(tools::to_absolute_path(p, root)),
             _ => None,
         };
         // The file before a write, so the guard can tell an edit undoing earlier ones.
-        let before = abs_write_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+        let before = abs_write_path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok());
 
         let result = match &auth.refusal {
-            Some(refusal) => tools::ToolResult { content: refusal.clone(), ..Default::default() },
+            Some(refusal) => tools::ToolResult {
+                content: refusal.clone(),
+                ..Default::default()
+            },
             None => {
                 let ctx = self.call_context(&tc.id);
-                tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json, &self.stop, &ctx).await
+                tools::execute(
+                    &self.app,
+                    self.root.as_deref(),
+                    &tool_name,
+                    &args_json,
+                    &self.stop,
+                    &ctx,
+                )
+                .await
             }
         };
         // An isolated chat's changes are saved as they happen (overlay/fs.rs).
@@ -491,10 +583,18 @@ impl<R: Runtime> Run<R> {
             result.content.push_str(&note);
         }
         let write = match (writes, write_path) {
-            (true, Some(path)) => Some(WriteTarget { path, abs_path: abs_write_path, before }),
+            (true, Some(path)) => Some(WriteTarget {
+                path,
+                abs_path: abs_write_path,
+                before,
+            }),
             _ => None,
         };
-        let run = Ran { tool_name, args_json, write };
+        let run = Ran {
+            tool_name,
+            args_json,
+            write,
+        };
         self.record(tc, auth, run, result, clm).await
     }
 
@@ -533,7 +633,11 @@ impl<R: Runtime> Run<R> {
         mut result: tools::ToolResult,
         clm: bool,
     ) -> Result<(), String> {
-        let Ran { tool_name, args_json, write } = run;
+        let Ran {
+            tool_name,
+            args_json,
+            write,
+        } = run;
         let writes = write.is_some();
         let (write_path, abs_write_path, before) = match write {
             Some(w) => (Some(w.path), w.abs_path, w.before),
@@ -547,8 +651,16 @@ impl<R: Runtime> Run<R> {
         // Redoing work it compacted away: offer the revision that still has it.
         // A hint that fires counts redone work (Phase E compliance).
         if clm && auth.refusal.is_none() && !tools::is_error(&result.content) {
-            let (d, id, name, a) = (self.dialog_id.clone(), tc.id.clone(), tool_name.clone(), args_json.clone());
-            let hint = self.db.read(move |c| crate::clm::recall_hint(c, &d, &id, &name, &a)).await;
+            let (d, id, name, a) = (
+                self.dialog_id.clone(),
+                tc.id.clone(),
+                tool_name.clone(),
+                args_json.clone(),
+            );
+            let hint = self
+                .db
+                .read(move |c| crate::clm::recall_hint(c, &d, &id, &name, &a))
+                .await;
             if let Ok(Some(hint)) = hint {
                 result.content.push_str(&hint);
                 self.clm_recall_hits += 1;
@@ -557,7 +669,9 @@ impl<R: Runtime> Run<R> {
 
         let failed = tools::is_error(&result.content);
         let after = result.written.as_ref().map(|(_, c)| c.clone()).or_else(|| {
-            (tool_name == "write").then(|| permissions::str_arg(&args_json, "content")).flatten()
+            (tool_name == "write")
+                .then(|| permissions::str_arg(&args_json, "content"))
+                .flatten()
         });
 
         let verdict = self.guard.record(FinishedCall {
@@ -565,9 +679,11 @@ impl<R: Runtime> Run<R> {
             args_json: &tc.arguments,
             result: &result.content,
             write: match (&write_path, &after) {
-                (Some(path), Some(after)) if writes && !failed => {
-                    Some(Write { path, before: before.as_deref(), after })
-                }
+                (Some(path), Some(after)) if writes && !failed => Some(Write {
+                    path,
+                    before: before.as_deref(),
+                    after,
+                }),
                 _ => None,
             },
             rejected: auth.rejected,
@@ -620,10 +736,20 @@ impl<R: Runtime> Run<R> {
         // didn't review is marked in the editor until they save.
         if writes && !failed {
             if let (Some(abs), Some(after)) = (&abs_write_path, &after) {
-                let reviewed = auth.approval.as_ref().and_then(|a| a.get("by")).and_then(|b| b.as_str()) == Some("user");
+                let reviewed = auth
+                    .approval
+                    .as_ref()
+                    .and_then(|a| a.get("by"))
+                    .and_then(|b| b.as_str())
+                    == Some("user");
                 emit(
                     &self.app,
-                    AgentEvent::FileWritten { abs_path: abs.clone(), before, content: after.clone(), reviewed },
+                    AgentEvent::FileWritten {
+                        abs_path: abs.clone(),
+                        before,
+                        content: after.clone(),
+                        reviewed,
+                    },
                 );
             }
         }
@@ -633,13 +759,26 @@ impl<R: Runtime> Run<R> {
             meta.get_or_insert_with(Map::new).extend(extra);
         }
         if let Some(approval) = auth.approval {
-            meta.get_or_insert_with(Map::new).insert("approval".into(), approval);
+            meta.get_or_insert_with(Map::new)
+                .insert("approval".into(), approval);
         }
-        self.add_tool_result(&tc.id, result.content, meta.map(Value::Object), result.attachments).await
+        self.add_tool_result(
+            &tc.id,
+            result.content,
+            meta.map(Value::Object),
+            result.attachments,
+        )
+        .await
     }
 
     async fn stopped_result(&self, tc: &ToolCall) -> Result<(), String> {
-        self.add_tool_result(&tc.id, "Error: stopped by the user before this ran.".into(), None, Vec::new()).await
+        self.add_tool_result(
+            &tc.id,
+            "Error: stopped by the user before this ran.".into(),
+            None,
+            Vec::new(),
+        )
+        .await
     }
 
     /// read / write / list_dir on the agent's context
@@ -651,28 +790,39 @@ impl<R: Runtime> Run<R> {
         let vfs = self.app.state::<crate::vfs::VfsState>();
         let result = match name {
             "read" => {
-                crate::clm::tool_read(&db, &vfs, &self.dialog_id, path, line(args.get("start_line")), line(args.get("end_line")))
-                    .await
-            }
-            "write" if tools::is_partial_write(name, args) => match (text("old_text"), text("content")) {
-                (None, _) => return "Error: \"old_text\" must be a string.".into(),
-                (_, None) => return "Error: \"content\" is required.".into(),
-                (Some(old), Some(new)) => crate::clm::tool_edit(
+                crate::clm::tool_read(
+                    &db,
                     &vfs,
                     &self.dialog_id,
                     path,
-                    old,
-                    new,
                     line(args.get("start_line")),
                     line(args.get("end_line")),
-                ),
-            },
+                )
+                .await
+            }
+            "write" if tools::is_partial_write(name, args) => {
+                match (text("old_text"), text("content")) {
+                    (None, _) => return "Error: \"old_text\" must be a string.".into(),
+                    (_, None) => return "Error: \"content\" is required.".into(),
+                    (Some(old), Some(new)) => crate::clm::tool_edit(
+                        &vfs,
+                        &self.dialog_id,
+                        path,
+                        old,
+                        new,
+                        line(args.get("start_line")),
+                        line(args.get("end_line")),
+                    ),
+                }
+            }
             "write" => match text("content") {
                 None => return "Error: \"content\" is required.".into(),
                 Some(content) => crate::clm::tool_write(&vfs, &self.dialog_id, path, content),
             },
             "list_dir" => crate::clm::tool_list(&db, &vfs, &self.dialog_id, path).await,
-            "restore_context" => crate::clm::tool_restore(&db, &vfs, &self.dialog_id, args.get("revision")).await,
+            "restore_context" => {
+                crate::clm::tool_restore(&db, &vfs, &self.dialog_id, args.get("revision")).await
+            }
             _ => return format!("Error: {name} can't be used on your context folder."),
         };
         result.unwrap_or_else(|e| format!("Error: {e}"))
@@ -691,7 +841,9 @@ impl<R: Runtime> Run<R> {
         let p = &config.permissions;
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
-                return rejected(format!("Error: blocked by the user's permission settings. {reason}"))
+                return rejected(format!(
+                    "Error: blocked by the user's permission settings. {reason}"
+                ))
             }
             // An interrupted call is always confirmed by the user.
             ToolVerdict::Permitted { approval } => match resume_note {
@@ -704,11 +856,17 @@ impl<R: Runtime> Run<R> {
         };
 
         let summary = permissions::describe_tool_call(&tc.name, &tc.arguments);
-        let command = (tc.name == "bash").then(|| permissions::str_arg(&tc.arguments, "command")).flatten();
+        let command = (tc.name == "bash")
+            .then(|| permissions::str_arg(&tc.arguments, "command"))
+            .flatten();
         // Edits are diffed once: the AI reviewer reads the diff, the user
         // reviews it in the editor.
         let is_file_edit = permissions::modifies_files(&tc.name);
-        let prepared = if is_file_edit { self.prepare_edit_review(&tc.name, &tc.arguments) } else { None };
+        let prepared = if is_file_edit {
+            self.prepare_edit_review(&tc.name, &tc.arguments)
+        } else {
+            None
+        };
         let mut is_new_file = false;
         let (proposal, hunks) = match prepared {
             // Writing the same content changes nothing: no need to ask.
@@ -732,18 +890,30 @@ impl<R: Runtime> Run<R> {
 
         if approver == Approver::Ai {
             let models = &config.approval_profiles;
-            let edit_path = if is_file_edit { permissions::str_arg(&tc.arguments, "path") } else { None };
+            let edit_path = if is_file_edit {
+                permissions::str_arg(&tc.arguments, "path")
+            } else {
+                None
+            };
 
             // Shapes no reviewer model may approve on its own.
-            if command.as_deref().is_some_and(permissions::is_risky_command) {
+            if command
+                .as_deref()
+                .is_some_and(permissions::is_risky_command)
+            {
                 manual_reason = Some(
                     "Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets always need your approval."
                         .into(),
                 );
-            } else if edit_path.as_deref().is_some_and(permissions::is_secret_path) {
-                manual_reason = Some("Edits to credential or secret files always need your approval.".into());
+            } else if edit_path
+                .as_deref()
+                .is_some_and(permissions::is_secret_path)
+            {
+                manual_reason =
+                    Some("Edits to credential or secret files always need your approval.".into());
             } else if models.is_empty() {
-                manual_reason = Some("No AI reviewer model is set, so this needs your approval.".into());
+                manual_reason =
+                    Some("No AI reviewer model is set, so this needs your approval.".into());
             } else {
                 self.tool_note(&tc.id, Some(format!("Reviewing with {}…", models[0].label)));
                 let input = ReviewInput {
@@ -778,11 +948,25 @@ impl<R: Runtime> Run<R> {
                 self.tool_note(&tc.id, None);
 
                 match review {
-                    ReviewResult::Decided { approved, reason, model, checks } => {
-                        let approval =
-                            approval_json(Approver::Ai, approved, Some(model.clone()), Some(reason.clone()), &checks);
+                    ReviewResult::Decided {
+                        approved,
+                        reason,
+                        model,
+                        checks,
+                    } => {
+                        let approval = approval_json(
+                            Approver::Ai,
+                            approved,
+                            Some(model.clone()),
+                            Some(reason.clone()),
+                            &checks,
+                        );
                         return if approved {
-                            Authorized { approval: Some(approval), reviewed, ..Default::default() }
+                            Authorized {
+                                approval: Some(approval),
+                                reviewed,
+                                ..Default::default()
+                            }
                         } else {
                             Authorized {
                                 refusal: Some(format!(
@@ -794,10 +978,14 @@ impl<R: Runtime> Run<R> {
                             }
                         };
                     }
-                    ReviewResult::Unsure { reason } => manual_reason = Some(format!("{reason} This needs your approval.")),
+                    ReviewResult::Unsure { reason } => {
+                        manual_reason = Some(format!("{reason} This needs your approval."))
+                    }
                     ReviewResult::Failed { errors } => {
                         eprintln!("agent: AI approval gave no decision: {errors:?}");
-                        manual_reason = Some("The AI reviewer couldn’t answer, so this needs your approval.".into());
+                        manual_reason = Some(
+                            "The AI reviewer couldn’t answer, so this needs your approval.".into(),
+                        );
                     }
                 }
             }
@@ -805,11 +993,14 @@ impl<R: Runtime> Run<R> {
 
         // Manual: the request shows in the chat (and, for an edit of an
         // existing file, in the editor as changes to accept or reject one by one).
-        let note = [manual_reason, is_new_file.then(|| "New file: expand to see its content.".to_string())]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let note = [
+            manual_reason,
+            is_new_file.then(|| "New file: expand to see its content.".to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
         let rel_path = proposal.as_ref().map(|p| p.rel_path.clone());
         let request = ApprovalRequest {
             tool_call_id: tc.id.clone(),
@@ -820,7 +1011,10 @@ impl<R: Runtime> Run<R> {
             note: (!note.is_empty()).then_some(note),
             edit: proposal,
         };
-        let decision = self.state.wait_for_approval(&self.app, request, &self.stop).await;
+        let decision = self
+            .state
+            .wait_for_approval(&self.app, request, &self.stop)
+            .await;
 
         match decision {
             ApprovalDecision::Allow => Authorized {
@@ -897,7 +1091,11 @@ impl<R: Runtime> Run<R> {
         match self.merge_into_current(tc, again) {
             Ok(auth) => auth,
             Err(auth) => {
-                let path = auth.reviewed.as_ref().map_or("the file", |r| r.rel_path.as_str()).to_string();
+                let path = auth
+                    .reviewed
+                    .as_ref()
+                    .map_or("the file", |r| r.rel_path.as_str())
+                    .to_string();
                 refused(format!(
                     "Error: {path} kept changing while this edit waited for approval, and the changes overlap; the file was not modified. Read it again and redo the edit."
                 ))
@@ -908,8 +1106,14 @@ impl<R: Runtime> Run<R> {
     /// `Ok`: the call can run as authorized (adjusted to the merge when the
     /// file changed). `Err`: the approved changes overlap the file's new
     /// changes; it needs another review.
-    fn merge_into_current(&self, tc: &ToolCall, mut auth: Authorized) -> Result<Authorized, Authorized> {
-        let Some(reviewed) = auth.reviewed.clone() else { return Ok(auth) };
+    fn merge_into_current(
+        &self,
+        tc: &ToolCall,
+        mut auth: Authorized,
+    ) -> Result<Authorized, Authorized> {
+        let Some(reviewed) = auth.reviewed.clone() else {
+            return Ok(auth);
+        };
         if auth.refusal.is_some() {
             return Ok(auth);
         }
@@ -919,7 +1123,11 @@ impl<R: Runtime> Run<R> {
         if tools::is_partial_write(&tc.name, &args) && auth.args_override.is_none() {
             return Ok(auth);
         }
-        let Some(approved) = args.get("content").and_then(|c| c.as_str()).map(str::to_string) else {
+        let Some(approved) = args
+            .get("content")
+            .and_then(|c| c.as_str())
+            .map(str::to_string)
+        else {
             return Ok(auth);
         };
         let abs = std::path::Path::new(&reviewed.abs_path);
@@ -930,7 +1138,9 @@ impl<R: Runtime> Run<R> {
         // It was text when reviewed and isn't UTF-8 now (re-encoded, or
         // made binary): nothing to merge into, and writing over it would
         // lose that change. Another review.
-        let Ok(now) = String::from_utf8(now) else { return Err(auth) };
+        let Ok(now) = String::from_utf8(now) else {
+            return Err(auth);
+        };
         if now == reviewed.current {
             self.seen.record(abs, now.as_bytes());
             return Ok(auth);
@@ -938,7 +1148,8 @@ impl<R: Runtime> Run<R> {
         match crate::merge::merge3(&reviewed.current, &approved, &now) {
             Ok(crate::merge::Merged::Clean(merged)) => {
                 self.seen.record(abs, now.as_bytes());
-                auth.args_override = Some(json!({ "path": reviewed.rel_path, "content": merged }).to_string());
+                auth.args_override =
+                    Some(json!({ "path": reviewed.rel_path, "content": merged }).to_string());
                 let note = format!(
                     "{} changed while this edit waited for approval; the approved changes were merged into the new version.",
                     reviewed.rel_path
@@ -974,11 +1185,15 @@ impl<R: Runtime> Run<R> {
             args.get("content").and_then(|c| c.as_str())?.to_string()
         };
         let abs_path = tools::to_absolute_path(&path, root);
-        let Ok(current) = std::fs::read_to_string(&abs_path) else { return Some(Prepared::New) };
+        let Ok(current) = std::fs::read_to_string(&abs_path) else {
+            return Some(Prepared::New);
+        };
         // Nothing to approve: the write itself refuses it. (An edit may
         // remove everything: its old_text says what it replaces.)
         if !partial {
-            if let Some(error) = crate::agent_tools::empty_overwrite_error(&path, &current, &proposed) {
+            if let Some(error) =
+                crate::agent_tools::empty_overwrite_error(&path, &current, &proposed)
+            {
                 return Some(Prepared::Invalid(format!("Error: {error}")));
             }
         }
@@ -986,18 +1201,37 @@ impl<R: Runtime> Run<R> {
         if hunks.is_empty() {
             return Some(Prepared::Unchanged);
         }
-        Some(Prepared::Diff { proposal: EditProposal { abs_path, rel_path: path, current, proposed }, hunks })
+        Some(Prepared::Diff {
+            proposal: EditProposal {
+                abs_path,
+                rel_path: path,
+                current,
+                proposed,
+            },
+            hunks,
+        })
     }
 
     /// What a call runs with: the run's record of files it has seen, and
     /// its note on the tool block (a wait for a CPU slot shows there).
     fn call_context(&self, tool_call_id: &str) -> tools::CallContext {
-        let (app, dialog_id, id) = (self.app.clone(), self.dialog_id.clone(), tool_call_id.to_string());
+        let (app, dialog_id, id) = (
+            self.app.clone(),
+            self.dialog_id.clone(),
+            tool_call_id.to_string(),
+        );
         tools::CallContext {
             seen: self.seen.clone(),
             owner: self.dialog_id.clone(),
             note: std::sync::Arc::new(move |note| {
-                emit(&app, AgentEvent::ToolNote { dialog_id: dialog_id.clone(), tool_call_id: id.clone(), note })
+                emit(
+                    &app,
+                    AgentEvent::ToolNote {
+                        dialog_id: dialog_id.clone(),
+                        tool_call_id: id.clone(),
+                        note,
+                    },
+                )
             }),
         }
     }
@@ -1005,7 +1239,11 @@ impl<R: Runtime> Run<R> {
     fn tool_note(&self, tool_call_id: &str, note: Option<String>) {
         emit(
             &self.app,
-            AgentEvent::ToolNote { dialog_id: self.dialog_id.clone(), tool_call_id: tool_call_id.to_string(), note },
+            AgentEvent::ToolNote {
+                dialog_id: self.dialog_id.clone(),
+                tool_call_id: tool_call_id.to_string(),
+                note,
+            },
         );
     }
 
@@ -1034,7 +1272,9 @@ impl<R: Runtime> Run<R> {
         if !self.plan_mode {
             let content =
                 "Error: asking the user is only available in Plan mode. Decide yourself and say what you assumed.";
-            return self.add_tool_result(&tc.id, content.into(), None, Vec::new()).await;
+            return self
+                .add_tool_result(&tc.id, content.into(), None, Vec::new())
+                .await;
         }
         if self.questions_asked >= plan::MAX_QUESTIONS_PER_RUN {
             log_question(self, 0, vec!["over-limit".into()]);
@@ -1042,25 +1282,37 @@ impl<R: Runtime> Run<R> {
                 "You've already asked {} times in this task. Decide the rest yourself and list your assumptions under \"Decisions\" in the plan.",
                 self.questions_asked
             );
-            return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+            return self
+                .add_tool_result(&tc.id, content, None, Vec::new())
+                .await;
         }
         let questions = plan::parse_questions(args);
         if questions.is_empty() {
-            let content = "Error: no question to ask. Pass questions: [{ question, options: [{ label }] }].";
-            return self.add_tool_result(&tc.id, content.into(), None, Vec::new()).await;
+            let content =
+                "Error: no question to ask. Pass questions: [{ question, options: [{ label }] }].";
+            return self
+                .add_tool_result(&tc.id, content.into(), None, Vec::new())
+                .await;
         }
         self.questions_asked += 1;
 
-        let request =
-            QuestionsRequest { tool_call_id: tc.id.clone(), dialog_id: self.dialog_id.clone(), questions: questions.clone() };
-        let outcome = self.state.wait_for_answers(&self.app, request, &self.stop).await;
+        let request = QuestionsRequest {
+            tool_call_id: tc.id.clone(),
+            dialog_id: self.dialog_id.clone(),
+            questions: questions.clone(),
+        };
+        let outcome = self
+            .state
+            .wait_for_answers(&self.app, request, &self.stop)
+            .await;
         log_question(self, questions.len(), plan::outcome_kinds(&outcome));
         if matches!(outcome, plan::QuestionsOutcome::Stopped { .. }) {
             self.state.stop(&self.app, &self.dialog_id);
         }
         let content = plan::describe_outcome(&questions, &outcome);
         let meta = json!({ "questions": { "questions": questions, "outcome": outcome } });
-        self.add_tool_result(&tc.id, content, Some(meta), Vec::new()).await
+        self.add_tool_result(&tc.id, content, Some(meta), Vec::new())
+            .await
     }
 
     /// submit_plan: the plan is checked and, if it holds up, saved to the
@@ -1074,12 +1326,19 @@ impl<R: Runtime> Run<R> {
                 "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- {}",
                 problems.join("\n- ")
             );
-            return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
+            return self
+                .add_tool_result(&tc.id, content, None, Vec::new())
+                .await;
         }
         // Plans are the project's, not a chat's change.
         let Some(root) = self.project_root.clone() else {
             return self
-                .add_tool_result(&tc.id, "Error: no project is open, so the plan can't be saved.".into(), None, Vec::new())
+                .add_tool_result(
+                    &tc.id,
+                    "Error: no project is open, so the plan can't be saved.".into(),
+                    None,
+                    Vec::new(),
+                )
                 .await;
         };
         let recent = self.recent().await?;
@@ -1090,20 +1349,46 @@ impl<R: Runtime> Run<R> {
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "plan".into());
         let existing = chat_plan_file(&recent);
-        match plan::save_plan_file(&root, &request, plan_text, existing.as_deref(), &self.local_date) {
+        match plan::save_plan_file(
+            &root,
+            &request,
+            plan_text,
+            existing.as_deref(),
+            &self.local_date,
+        ) {
             Ok(path) => {
-                let content = format!("Saved the plan to {}.", plan::relative_plan_path(&path, Some(&root)));
+                let content = format!(
+                    "Saved the plan to {}.",
+                    plan::relative_plan_path(&path, Some(&root))
+                );
                 // Open tabs of the plan show the new version.
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     emit(
                         &self.app,
-                        AgentEvent::FileWritten { abs_path: path.clone(), before: None, content: text, reviewed: true },
+                        AgentEvent::FileWritten {
+                            abs_path: path.clone(),
+                            before: None,
+                            content: text,
+                            reviewed: true,
+                        },
                     );
                 }
-                self.add_tool_result(&tc.id, content, Some(json!({ "planFile": path })), Vec::new()).await
+                self.add_tool_result(
+                    &tc.id,
+                    content,
+                    Some(json!({ "planFile": path })),
+                    Vec::new(),
+                )
+                .await
             }
             Err(e) => {
-                self.add_tool_result(&tc.id, format!("Error: the plan couldn't be saved: {e}"), None, Vec::new()).await
+                self.add_tool_result(
+                    &tc.id,
+                    format!("Error: the plan couldn't be saved: {e}"),
+                    None,
+                    Vec::new(),
+                )
+                .await
             }
         }
     }
@@ -1117,7 +1402,10 @@ mod tests {
     fn context_paths() {
         assert!(is_context_path(Some("@context/LIVE_CONTEXT.md"), None));
         assert!(is_context_path(Some(" @context "), None));
-        assert!(is_context_path(Some("/mnt/v/context/d/x.md"), Some("/mnt/v/context/d/")));
+        assert!(is_context_path(
+            Some("/mnt/v/context/d/x.md"),
+            Some("/mnt/v/context/d/")
+        ));
         assert!(!is_context_path(Some("src/a.ts"), Some("/mnt/v/context/d")));
         assert!(!is_context_path(None, None));
     }
@@ -1125,8 +1413,16 @@ mod tests {
     #[test]
     fn rejected_hunks_for_the_model() {
         let hunks = vec![
-            Hunk { orig_start: 3, deleted: vec!["a".into()], added: vec![] },
-            Hunk { orig_start: 9, deleted: vec!["b".into()], added: vec!["c".into(), "d".into()] },
+            Hunk {
+                orig_start: 3,
+                deleted: vec!["a".into()],
+                added: vec![],
+            },
+            Hunk {
+                orig_start: 9,
+                deleted: vec!["b".into()],
+                added: vec!["c".into(), "d".into()],
+            },
         ];
         let text = describe_rejected_hunks("x.ts", &hunks, 5);
         assert!(text.contains("accepted 3 of 5 changes"));

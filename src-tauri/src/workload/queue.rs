@@ -59,7 +59,9 @@ pub enum JobKind {
 impl JobKind {
     fn owner(&self) -> Option<&str> {
         match self {
-            JobKind::Agent { owner } | JobKind::Check { owner } | JobKind::Landing { owner } => Some(owner),
+            JobKind::Agent { owner } | JobKind::Check { owner } | JobKind::Landing { owner } => {
+                Some(owner)
+            }
             JobKind::Terminal => None,
         }
     }
@@ -94,7 +96,9 @@ impl JobState {
 
     /// The terminal counts as a used slot while its command is heavy.
     pub(super) fn terminal_busy(&self) -> bool {
-        self.kind == JobKind::Terminal && self.sampling.heavy && !self.sampling.idle_for(IDLE_RELEASE)
+        self.kind == JobKind::Terminal
+            && self.sampling.heavy
+            && !self.sampling.idle_for(IDLE_RELEASE)
     }
 
     pub(super) fn is_chat_work(&self) -> bool {
@@ -128,8 +132,10 @@ pub(super) struct Shared {
     pub(super) changed: Condvar,
 }
 
-pub(super) static SHARED: LazyLock<Shared> =
-    LazyLock::new(|| Shared { state: Mutex::new(State::default()), changed: Condvar::new() });
+pub(super) static SHARED: LazyLock<Shared> = LazyLock::new(|| Shared {
+    state: Mutex::new(State::default()),
+    changed: Condvar::new(),
+});
 
 pub(super) fn lock() -> MutexGuard<'static, State> {
     SHARED.state.lock().unwrap_or_else(|e| e.into_inner())
@@ -152,7 +158,11 @@ impl State {
 
     /// Free slots; negative when the terminal took one that was in use.
     pub(super) fn available(&self) -> isize {
-        let used = self.jobs.values().filter(|j| j.has_slot || j.terminal_busy()).count();
+        let used = self
+            .jobs
+            .values()
+            .filter(|j| j.has_slot || j.terminal_busy())
+            .count();
         self.capacity() as isize - used as isize
     }
 
@@ -163,7 +173,9 @@ impl State {
     /// Whether `id` is first in line: no waiting job comes before it.
     pub(super) fn first_in_line(&self, id: u64, seq: u64) -> bool {
         let mine = (self.priority(id), seq);
-        !self.jobs.iter().any(|(other, j)| *other != id && j.waiting.is_some_and(|s| (self.priority(*other), s) < mine))
+        !self.jobs.iter().any(|(other, j)| {
+            *other != id && j.waiting.is_some_and(|s| (self.priority(*other), s) < mine)
+        })
     }
 
     /// Whether a job that isn't waiting (it's running and turned heavy)
@@ -171,7 +183,9 @@ impl State {
     pub(super) fn may_take_slot(&self, id: u64) -> bool {
         let mine = self.priority(id);
         self.available() > 0
-            && !self.jobs.iter().any(|(other, j)| *other != id && j.waiting.is_some() && self.priority(*other) <= mine)
+            && !self.jobs.iter().any(|(other, j)| {
+                *other != id && j.waiting.is_some() && self.priority(*other) <= mine
+            })
     }
 
     /// Chat work holding slots, the one to give one up first first: the
@@ -193,7 +207,10 @@ impl State {
     fn memory_allows(&self, id: u64) -> bool {
         let need = self.jobs[&id].expected_peak;
         let free = self.machine.free_memory;
-        let others_heavy = self.jobs.iter().any(|(o, j)| *o != id && (j.has_slot || j.terminal_busy()));
+        let others_heavy = self
+            .jobs
+            .iter()
+            .any(|(o, j)| *o != id && (j.has_slot || j.terminal_busy()));
         need == 0 || free == 0 || !others_heavy || free >= need + MEMORY_SPARE
     }
 
@@ -210,9 +227,15 @@ impl State {
             let same = h.kind.owner().map(str::to_string) == me;
             let label = super::short_command(&h.label);
             return match (&h.kind, same) {
-                (JobKind::Check { .. }, true) => format!("this chat's checks are running `{label}`"),
-                (JobKind::Check { .. }, false) => format!("another chat's checks are running `{label}`"),
-                (JobKind::Landing { .. }, _) => format!("a chat's changes are being checked before landing (`{label}`)"),
+                (JobKind::Check { .. }, true) => {
+                    format!("this chat's checks are running `{label}`")
+                }
+                (JobKind::Check { .. }, false) => {
+                    format!("another chat's checks are running `{label}`")
+                }
+                (JobKind::Landing { .. }, _) => {
+                    format!("a chat's changes are being checked before landing (`{label}`)")
+                }
                 (_, true) => format!("this chat is running `{label}`"),
                 (_, false) => format!("another chat is running `{label}`"),
             };
@@ -241,8 +264,15 @@ impl Waited {
         if self.ms < 10_000 {
             return None;
         }
-        let what = self.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
-        Some(format!("Waited {} for a CPU slot{what}.", super::format_duration(self.ms)))
+        let what = self
+            .reason
+            .as_deref()
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
+        Some(format!(
+            "Waited {} for a CPU slot{what}.",
+            super::format_duration(self.ms)
+        ))
     }
 }
 
@@ -257,12 +287,19 @@ pub struct Job {
 pub fn begin(kind: JobKind, command: &str, project: Option<&Path>) -> Job {
     let fingerprint = history::fingerprint(command);
     // An isolated chat runs in its view: history belongs to the project.
-    let project_key = project.map(|p| crate::overlay::chats::project_for(p).to_string_lossy().into_owned());
+    let project_key = project.map(|p| {
+        crate::overlay::chats::project_for(p)
+            .to_string_lossy()
+            .into_owned()
+    });
     let mut class = classify(command, project);
     let mut expected_peak = 0;
     if kind == JobKind::Terminal {
         class = Class::LongRunning;
-    } else if let Some(p) = project_key.as_deref().and_then(|p| history::predict(p, &fingerprint)) {
+    } else if let Some(p) = project_key
+        .as_deref()
+        .and_then(|p| history::predict(p, &fingerprint))
+    {
         // Past runs know better than the rules; a server stays a server.
         if class != Class::LongRunning {
             class = p.class;
@@ -329,17 +366,29 @@ pub fn slots() -> Slots {
     drop(state);
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    slots_with(&lock(), (cores, sys.total_memory(), sys.available_memory(), 0.0))
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    slots_with(
+        &lock(),
+        (cores, sys.total_memory(), sys.available_memory(), 0.0),
+    )
 }
 
-fn slots_with(state: &State, (cores, total_memory, free_memory, untracked_load): (usize, u64, u64, f64)) -> Slots {
+fn slots_with(
+    state: &State,
+    (cores, total_memory, free_memory, untracked_load): (usize, u64, u64, f64),
+) -> Slots {
     let big = cores >= BIG_CORES && total_memory >= BIG_MEMORY;
     let room = free_memory > ROOM_FREE_MEMORY && untracked_load < ROOM_UNTRACKED_LOAD;
     Slots {
         manual: state.manual_slots,
         auto: if big && room { 2 } else { 1 },
-        busy: state.jobs.values().filter(|j| j.has_slot || j.terminal_busy()).count(),
+        busy: state
+            .jobs
+            .values()
+            .filter(|j| j.has_slot || j.terminal_busy())
+            .count(),
         waiting: state.jobs.values().filter(|j| j.waiting.is_some()).count(),
         cores,
         total_memory,
@@ -350,10 +399,18 @@ impl Job {
     /// Waits until a slot is free when the command is predicted heavy;
     /// returns at once otherwise. `note` gets what it waits for while it
     /// waits (and `None` when it's done); `stop` gives up (`None`).
-    pub fn wait_for_slot(&self, stop: &dyn Fn() -> bool, note: &dyn Fn(Option<String>)) -> Option<Waited> {
+    pub fn wait_for_slot(
+        &self,
+        stop: &dyn Fn() -> bool,
+        note: &dyn Fn(Option<String>),
+    ) -> Option<Waited> {
         let started = Instant::now();
         let mut state = lock();
-        if state.jobs.get(&self.id).is_none_or(|j| j.class != Class::Heavy) {
+        if state
+            .jobs
+            .get(&self.id)
+            .is_none_or(|j| j.class != Class::Heavy)
+        {
             return Some(Waited::default());
         }
         tracker::ensure_running();
@@ -377,7 +434,10 @@ impl Job {
                 note(None);
                 return None;
             }
-            if state.available() > 0 && state.first_in_line(self.id, seq) && state.memory_allows(self.id) {
+            if state.available() > 0
+                && state.first_in_line(self.id, seq)
+                && state.memory_allows(self.id)
+            {
                 let job = state.jobs.get_mut(&self.id).unwrap();
                 job.waiting = None;
                 job.has_slot = true;
@@ -386,25 +446,38 @@ impl Job {
                 if last_note.is_some() {
                     note(None);
                 }
-                return Some(Waited { ms: started.elapsed().as_millis() as u64, reason });
+                return Some(Waited {
+                    ms: started.elapsed().as_millis() as u64,
+                    reason,
+                });
             }
             // Brief waits go unmentioned.
             let waited = started.elapsed().as_millis() as u64;
             if waited >= 500 {
                 let why = state.blocker(self.id);
                 let secs = waited / 1000;
-                if last_note.as_ref().is_none_or(|(w, s)| *w != why || *s != secs) {
+                if last_note
+                    .as_ref()
+                    .is_none_or(|(w, s)| *w != why || *s != secs)
+                {
                     last_note = Some((why.clone(), secs));
                     reason = Some(why.clone());
                     // Told outside the lock: the note reaches the UI.
                     drop(state);
-                    note(Some(format!("Waiting for a CPU slot: {why} ({})", super::format_duration(waited))));
+                    note(Some(format!(
+                        "Waiting for a CPU slot: {why} ({})",
+                        super::format_duration(waited)
+                    )));
                     state = lock();
                     continue;
                 }
                 reason = Some(why);
             }
-            state = SHARED.changed.wait_timeout(state, Duration::from_millis(250)).unwrap_or_else(|e| e.into_inner()).0;
+            state = SHARED
+                .changed
+                .wait_timeout(state, Duration::from_millis(250))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
     }
 
@@ -430,7 +503,11 @@ impl Job {
     /// Time the command spent paused for lack of memory, which doesn't count
     /// toward its timeout.
     pub fn paused(&self) -> Duration {
-        lock().jobs.get(&self.id).map(|j| j.sampling.paused_total()).unwrap_or_default()
+        lock()
+            .jobs
+            .get(&self.id)
+            .map(|j| j.sampling.paused_total())
+            .unwrap_or_default()
     }
 
     /// Variables that split the cores between heavy jobs, when more than
@@ -441,9 +518,15 @@ impl Job {
         if state.capacity() < 2 || holders < 2 {
             return Vec::new();
         }
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
         let n = (cores / holders).max(1).to_string();
-        vec![("CARGO_BUILD_JOBS", n.clone()), ("MAKEFLAGS", format!("-j{n}")), ("GOMAXPROCS", n)]
+        vec![
+            ("CARGO_BUILD_JOBS", n.clone()),
+            ("MAKEFLAGS", format!("-j{n}")),
+            ("GOMAXPROCS", n),
+        ]
     }
 }
 
@@ -480,7 +563,12 @@ pub(crate) fn test_reset(cores: usize, total_memory: u64, free_memory: u64) {
     s.jobs.clear();
     s.focus = None;
     s.manual_slots = None;
-    s.machine = Machine { cores, total_memory, free_memory, untracked_load: 0.0 };
+    s.machine = Machine {
+        cores,
+        total_memory,
+        free_memory,
+        untracked_load: 0.0,
+    };
     s.fixed_machine = true;
 }
 

@@ -20,8 +20,24 @@ use std::sync::Mutex;
 const ALWAYS: &[&str] = &[".git"];
 /// By-products in a project that ignores nothing.
 const FALLBACK: &[&str] = &[
-    "node_modules", "target", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".next",
-    ".nuxt", ".svelte-kit", ".turbo", ".gradle", ".dart_tool", ".stack-work", "dist-newstyle", ".zig-cache", "zig-cache",
+    "node_modules",
+    "target",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".turbo",
+    ".gradle",
+    ".dart_tool",
+    ".stack-work",
+    "dist-newstyle",
+    ".zig-cache",
+    "zig-cache",
 ];
 
 pub struct Tiers {
@@ -33,7 +49,10 @@ pub struct Tiers {
 
 impl Tiers {
     pub fn new(root: &Path) -> Tiers {
-        Tiers { root: root.to_path_buf(), rules: Mutex::new(HashMap::new()) }
+        Tiers {
+            root: root.to_path_buf(),
+            rules: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Whether a project-relative path (with `/`) is build output,
@@ -51,7 +70,9 @@ impl Tiers {
             let path = self.root.join(parts[..end].join("/"));
             let as_dir = end < parts.len() || is_dir;
             for depth in (0..end).rev() {
-                let Some(rules) = self.rules_of(&parts[..depth].join("/")) else { continue };
+                let Some(rules) = self.rules_of(&parts[..depth].join("/")) else {
+                    continue;
+                };
                 any_rules = true;
                 let m = rules.matched(&path, as_dir);
                 if m.is_ignore() {
@@ -72,7 +93,11 @@ impl Tiers {
         if let Some(found) = cache.get(dir) {
             return found.clone();
         }
-        let at = if dir.is_empty() { self.root.clone() } else { self.root.join(dir) };
+        let at = if dir.is_empty() {
+            self.root.clone()
+        } else {
+            self.root.join(dir)
+        };
         let mut builder = GitignoreBuilder::new(&at);
         let mut any = false;
         for name in [".gitignore", ".ignore"] {
@@ -95,7 +120,11 @@ mod tests {
     fn project(files: &[(&str, &str)]) -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!("tiers-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!(
+            "tiers-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         for (path, content) in files {
@@ -108,7 +137,10 @@ mod tests {
 
     #[test]
     fn the_projects_ignore_files_decide() {
-        let dir = project(&[(".gitignore", "/target\n*.log\n"), ("web/.gitignore", "dist/\n")]);
+        let dir = project(&[
+            (".gitignore", "/target\n*.log\n"),
+            ("web/.gitignore", "dist/\n"),
+        ]);
         let t = Tiers::new(&dir);
         assert!(t.is_by_product("target/debug/app", false));
         assert!(t.is_by_product("target", true));
@@ -116,7 +148,10 @@ mod tests {
         assert!(t.is_by_product("web/dist/index.js", false));
         assert!(t.is_by_product(".git/index", false));
         assert!(!t.is_by_product("src/main.rs", false));
-        assert!(!t.is_by_product("dist/keep.js", false), "only web/ ignores dist/");
+        assert!(
+            !t.is_by_product("dist/keep.js", false),
+            "only web/ ignores dist/"
+        );
         // Not ignored here, so source.
         assert!(!t.is_by_product("node_modules/x.js", false));
         assert!(!t.is_by_product("bin/tool.sh", false));
@@ -124,9 +159,16 @@ mod tests {
 
     #[test]
     fn a_subfolders_rules_are_anchored_there_and_ignore_files_count() {
-        let dir = project(&[("web/.gitignore", "/build\nout/gen\n"), ("api/.ignore", "cache/\n"), (".gitignore", "*.tmp\n!keep.tmp\n")]);
+        let dir = project(&[
+            ("web/.gitignore", "/build\nout/gen\n"),
+            ("api/.ignore", "cache/\n"),
+            (".gitignore", "*.tmp\n!keep.tmp\n"),
+        ]);
         let t = Tiers::new(&dir);
-        assert!(t.is_by_product("web/build/app.js", false), "anchored at web/");
+        assert!(
+            t.is_by_product("web/build/app.js", false),
+            "anchored at web/"
+        );
         assert!(!t.is_by_product("build/app.js", false), "not at the root");
         assert!(t.is_by_product("web/out/gen/x.rs", false));
         assert!(t.is_by_product("api/cache/x", false), ".ignore files count");

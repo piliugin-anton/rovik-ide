@@ -54,7 +54,12 @@ pub fn is_deepseek(model: &str) -> bool {
 /// API's request for encrypted reasoning). True when there was any.
 pub fn strip(body: &mut Value) -> bool {
     let mut removed = false;
-    for message in body.get_mut("messages").and_then(|m| m.as_array_mut()).into_iter().flatten() {
+    for message in body
+        .get_mut("messages")
+        .and_then(|m| m.as_array_mut())
+        .into_iter()
+        .flatten()
+    {
         if let Some(message) = message.as_object_mut() {
             for field in FIELDS {
                 removed |= message.remove(field).is_some();
@@ -68,7 +73,11 @@ pub fn strip(body: &mut Value) -> bool {
 pub fn sends_any(body: &Value) -> bool {
     body.get("messages")
         .and_then(|m| m.as_array())
-        .is_some_and(|messages| messages.iter().any(|m| FIELDS.iter().any(|f| m.get(*f).is_some())))
+        .is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|m| FIELDS.iter().any(|f| m.get(*f).is_some()))
+        })
 }
 
 /// Adds one streamed `reasoning_details` fragment to the entries so far.
@@ -81,32 +90,47 @@ pub fn sends_any(body: &Value) -> bool {
 /// fields (`signature`, `data`, `id`) replace the entry's. Otherwise it
 /// starts a new entry. What's stored is the whole entry, never the fragments.
 pub fn merge(details: &mut Vec<Value>, fragment: &Value) {
-    let Some(fragment) = fragment.as_object() else { return };
-    let field = |v: &serde_json::Map<String, Value>, k: &str| v.get(k).cloned().unwrap_or(Value::Null);
-    let continues = details.last().and_then(|l| l.as_object()).is_some_and(|last| {
-        let same = ["type", "format", "index"].iter().all(|k| field(last, k) == field(fragment, k));
-        let ids = match (last.get("id"), fragment.get("id")) {
-            (Some(Value::String(a)), Some(Value::String(b))) if !a.is_empty() && !b.is_empty() => a == b,
-            _ => true,
-        };
-        let finished = match last.get("type").and_then(|t| t.as_str()) {
-            Some("reasoning.text") => {
-                has_text(last, "signature") && has_text(fragment, "text")
-            }
-            Some("reasoning.encrypted") => has_text(last, "data") && has_text(fragment, "data"),
-            _ => false,
-        };
-        same && ids && !finished
-    });
+    let Some(fragment) = fragment.as_object() else {
+        return;
+    };
+    let field =
+        |v: &serde_json::Map<String, Value>, k: &str| v.get(k).cloned().unwrap_or(Value::Null);
+    let continues = details
+        .last()
+        .and_then(|l| l.as_object())
+        .is_some_and(|last| {
+            let same = ["type", "format", "index"]
+                .iter()
+                .all(|k| field(last, k) == field(fragment, k));
+            let ids = match (last.get("id"), fragment.get("id")) {
+                (Some(Value::String(a)), Some(Value::String(b)))
+                    if !a.is_empty() && !b.is_empty() =>
+                {
+                    a == b
+                }
+                _ => true,
+            };
+            let finished = match last.get("type").and_then(|t| t.as_str()) {
+                Some("reasoning.text") => has_text(last, "signature") && has_text(fragment, "text"),
+                Some("reasoning.encrypted") => has_text(last, "data") && has_text(fragment, "data"),
+                _ => false,
+            };
+            same && ids && !finished
+        });
     if !continues {
         details.push(Value::Object(fragment.clone()));
         return;
     }
-    let Some(last) = details.last_mut().and_then(|l| l.as_object_mut()) else { return };
+    let Some(last) = details.last_mut().and_then(|l| l.as_object_mut()) else {
+        return;
+    };
     for (key, value) in fragment {
         match (key.as_str(), value) {
             ("text" | "summary", Value::String(more)) => {
-                let joined = format!("{}{more}", last.get(key).and_then(|v| v.as_str()).unwrap_or(""));
+                let joined = format!(
+                    "{}{more}",
+                    last.get(key).and_then(|v| v.as_str()).unwrap_or("")
+                );
                 last.insert(key.clone(), json!(joined));
             }
             (_, Value::Null) => {}
@@ -119,14 +143,22 @@ pub fn merge(details: &mut Vec<Value>, fragment: &Value) {
 }
 
 fn has_text(entry: &serde_json::Map<String, Value>, key: &str) -> bool {
-    entry.get(key).and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+    entry
+        .get(key)
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
 }
 
 /// A Responses API reasoning output item, as `reasoning_details` entries.
 pub fn from_responses_item(item: &Value) -> Vec<Value> {
     let id = item.get("id").cloned().unwrap_or(Value::Null);
     let mut out = Vec::new();
-    for part in item.get("summary").and_then(|s| s.as_array()).into_iter().flatten() {
+    for part in item
+        .get("summary")
+        .and_then(|s| s.as_array())
+        .into_iter()
+        .flatten()
+    {
         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
             out.push(json!({
                 "type": "reasoning.summary", "summary": text, "id": id,
@@ -134,7 +166,11 @@ pub fn from_responses_item(item: &Value) -> Vec<Value> {
             }));
         }
     }
-    if let Some(data) = item.get("encrypted_content").and_then(|d| d.as_str()).filter(|d| !d.is_empty()) {
+    if let Some(data) = item
+        .get("encrypted_content")
+        .and_then(|d| d.as_str())
+        .filter(|d| !d.is_empty())
+    {
         out.push(json!({
             "type": "reasoning.encrypted", "data": data, "id": id,
             "format": RESPONSES_FORMAT, "index": out.len(),
@@ -147,12 +183,17 @@ pub fn from_responses_item(item: &Value) -> Vec<Value> {
 /// other formats are for other APIs), in order, one per id.
 pub fn to_responses_items(details: &[Value]) -> Vec<Value> {
     let mut items: Vec<Value> = Vec::new();
-    for entry in details.iter().filter(|e| e.get("format").and_then(|f| f.as_str()) == Some(RESPONSES_FORMAT)) {
+    for entry in details
+        .iter()
+        .filter(|e| e.get("format").and_then(|f| f.as_str()) == Some(RESPONSES_FORMAT))
+    {
         let id = entry.get("id").cloned().unwrap_or(Value::Null);
         if items.last().is_none_or(|i| i["id"] != id) {
             items.push(json!({ "type": "reasoning", "id": id, "summary": [] }));
         }
-        let Some(item) = items.last_mut() else { continue };
+        let Some(item) = items.last_mut() else {
+            continue;
+        };
         match entry.get("type").and_then(|t| t.as_str()) {
             Some("reasoning.summary") => {
                 let text = entry.get("summary").cloned().unwrap_or(json!(""));
@@ -160,7 +201,9 @@ pub fn to_responses_items(details: &[Value]) -> Vec<Value> {
                     summary.push(json!({ "type": "summary_text", "text": text }));
                 }
             }
-            Some("reasoning.encrypted") => item["encrypted_content"] = entry.get("data").cloned().unwrap_or(Value::Null),
+            Some("reasoning.encrypted") => {
+                item["encrypted_content"] = entry.get("data").cloned().unwrap_or(Value::Null)
+            }
             _ => {}
         }
     }
@@ -185,13 +228,21 @@ mod tests {
     fn streamed_text_fragments_make_one_signed_entry() {
         let f = |v: Value| v;
         let details = merged(&[
-            f(json!({ "type": "reasoning.text", "text": "Let me ", "format": "anthropic-claude-v1", "index": 0 })),
-            f(json!({ "type": "reasoning.text", "text": "check.", "format": "anthropic-claude-v1", "index": 0 })),
-            f(json!({ "type": "reasoning.text", "text": "", "signature": "sig", "format": "anthropic-claude-v1", "index": 0 })),
+            f(
+                json!({ "type": "reasoning.text", "text": "Let me ", "format": "anthropic-claude-v1", "index": 0 }),
+            ),
+            f(
+                json!({ "type": "reasoning.text", "text": "check.", "format": "anthropic-claude-v1", "index": 0 }),
+            ),
+            f(
+                json!({ "type": "reasoning.text", "text": "", "signature": "sig", "format": "anthropic-claude-v1", "index": 0 }),
+            ),
         ]);
         assert_eq!(
             details,
-            [json!({ "type": "reasoning.text", "text": "Let me check.", "signature": "sig", "format": "anthropic-claude-v1", "index": 0 })]
+            [
+                json!({ "type": "reasoning.text", "text": "Let me check.", "signature": "sig", "format": "anthropic-claude-v1", "index": 0 })
+            ]
         );
     }
 
@@ -243,9 +294,13 @@ mod tests {
             })]
         );
         // Other formats aren't Responses items; an item without an id can't be resumed.
-        let other = json!({ "type": "reasoning.text", "text": "t", "format": "anthropic-claude-v1" });
+        let other =
+            json!({ "type": "reasoning.text", "text": "t", "format": "anthropic-claude-v1" });
         assert!(to_responses_items(&[other]).is_empty());
-        assert!(to_responses_items(&from_responses_item(&json!({ "type": "reasoning", "summary": [{ "text": "x" }] }))).is_empty());
+        assert!(to_responses_items(&from_responses_item(
+            &json!({ "type": "reasoning", "summary": [{ "text": "x" }] })
+        ))
+        .is_empty());
     }
 
     #[test]
@@ -259,7 +314,11 @@ mod tests {
         assert!(strip(&mut body));
         assert!(!sends_any(&body));
         assert!(!strip(&mut body));
-        assert!(is_deepseek("deepseek/deepseek-v4") && is_deepseek("DeepSeek-Reasoner") && !is_deepseek("gpt-5"));
+        assert!(
+            is_deepseek("deepseek/deepseek-v4")
+                && is_deepseek("DeepSeek-Reasoner")
+                && !is_deepseek("gpt-5")
+        );
         assert!(wanted("https://example.test/v1"));
         rejected("https://example.test/v1");
         assert!(!wanted("https://example.test/v1"));

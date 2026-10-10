@@ -15,7 +15,17 @@ use std::path::Path;
 
 const EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
 /// Folders never worth loading even when not gitignored.
-const SKIP_DIRS: &[&str] = &["node_modules", ".git", "dist", "build", "out", "target", ".next", ".svelte-kit", "coverage"];
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "out",
+    "target",
+    ".next",
+    ".svelte-kit",
+    "coverage",
+];
 const MAX_FILES: usize = 5_000;
 /// Bigger files are usually generated or bundled code.
 const MAX_FILE_BYTES: u64 = 512 * 1024;
@@ -53,7 +63,9 @@ pub fn collect(root: &Path) -> ProjectSources {
         .require_git(false)
         .filter_entry(|e| {
             !(e.file_type().is_some_and(|t| t.is_dir())
-                && e.file_name().to_str().is_some_and(|n| SKIP_DIRS.contains(&n)))
+                && e.file_name()
+                    .to_str()
+                    .is_some_and(|n| SKIP_DIRS.contains(&n)))
         })
         .build();
     for entry in walker.flatten() {
@@ -69,9 +81,14 @@ pub fn collect(root: &Path) -> ProjectSources {
             truncated = true;
             break;
         }
-        let Ok(content) = fs::read_to_string(path) else { continue };
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
         total += meta.len();
-        files.push(SourceFile { path: path.to_string_lossy().into_owned(), content });
+        files.push(SourceFile {
+            path: path.to_string_lossy().into_owned(),
+            content,
+        });
     }
     ProjectSources { files, truncated }
 }
@@ -124,7 +141,10 @@ pub fn list_files(root: &Path, limit: usize) -> ProjectFiles {
 }
 
 #[tauri::command]
-pub async fn list_project_files(root: String, limit: Option<usize>) -> Result<ProjectFiles, String> {
+pub async fn list_project_files(
+    root: String,
+    limit: Option<usize>,
+) -> Result<ProjectFiles, String> {
     let root = std::path::PathBuf::from(root);
     if !root.is_dir() {
         return Err(format!("{}: not a folder", root.display()));
@@ -159,7 +179,13 @@ mod tests {
         let mut got: Vec<String> = collect(&dir)
             .files
             .iter()
-            .map(|f| Path::new(&f.path).strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/"))
+            .map(|f| {
+                Path::new(&f.path)
+                    .strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
         got.sort();
         assert_eq!(got, ["src/a.ts", "src/b.jsx"]);
@@ -185,9 +211,24 @@ mod tests {
         let got: Vec<String> = list_files(&dir, 100)
             .files
             .iter()
-            .map(|f| Path::new(f).strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/"))
+            .map(|f| {
+                Path::new(f)
+                    .strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
-        assert_eq!(got, [".gitignore", ".rovik/plans/plan.md", "Cargo.toml", "src/deep/nested/mod.rs", "src/main.rs"]);
+        assert_eq!(
+            got,
+            [
+                ".gitignore",
+                ".rovik/plans/plan.md",
+                "Cargo.toml",
+                "src/deep/nested/mod.rs",
+                "src/main.rs"
+            ]
+        );
         assert!(list_files(&dir, 2).truncated);
     }
 }

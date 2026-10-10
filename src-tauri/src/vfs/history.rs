@@ -40,7 +40,11 @@ pub struct HistoryLimits {
 
 impl Default for HistoryLimits {
     fn default() -> Self {
-        HistoryLimits { max_bytes: 256 << 20, per_file: 64, max_file_size: 32 << 20 }
+        HistoryLimits {
+            max_bytes: 256 << 20,
+            per_file: 64,
+            max_file_size: 32 << 20,
+        }
     }
 }
 
@@ -70,7 +74,11 @@ impl Revision {
         RevisionInfo {
             number: self.number,
             size: self.data.len() as u64,
-            time: self.time.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+            time: self
+                .time
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
             source: self.source,
         }
     }
@@ -95,7 +103,13 @@ pub(crate) struct Histories {
 
 impl Histories {
     pub fn new(limits: HistoryLimits) -> Self {
-        Histories { files: HashMap::new(), order: BTreeMap::new(), bytes: 0, next_id: 1, limits }
+        Histories {
+            files: HashMap::new(),
+            order: BTreeMap::new(),
+            bytes: 0,
+            next_id: 1,
+            limits,
+        }
     }
 
     pub fn limits(&self) -> HistoryLimits {
@@ -114,7 +128,9 @@ impl Histories {
     /// Whether content of this size would be recorded (callers skip the
     /// copy otherwise).
     pub fn accepts(&self, size: usize) -> bool {
-        self.limits.max_bytes > 0 && self.limits.per_file > 0 && size as u64 <= self.limits.max_file_size
+        self.limits.max_bytes > 0
+            && self.limits.per_file > 0
+            && size as u64 <= self.limits.max_file_size
     }
 
     /// Records `data` as the file's newest revision, unless it's the same
@@ -131,13 +147,23 @@ impl Histories {
         });
         history.path = path.to_string();
         history.deleted = false;
-        if history.revisions.back().is_some_and(|last| &*last.data == data) {
+        if history
+            .revisions
+            .back()
+            .is_some_and(|last| &*last.data == data)
+        {
             return None;
         }
         let (id, number) = (self.next_id, history.next_number);
         self.next_id += 1;
         history.next_number += 1;
-        history.revisions.push_back(Revision { id, number, data: Arc::from(data), time: SystemTime::now(), source });
+        history.revisions.push_back(Revision {
+            id,
+            number,
+            data: Arc::from(data),
+            time: SystemTime::now(),
+            source,
+        });
         self.order.insert(id, ino);
         self.bytes += data.len() as u64;
         self.trim_file(ino);
@@ -147,7 +173,9 @@ impl Histories {
 
     fn remove_revision(&mut self, ino: Ino, id: u64) {
         self.order.remove(&id);
-        let Some(history) = self.files.get_mut(&ino) else { return };
+        let Some(history) = self.files.get_mut(&ino) else {
+            return;
+        };
         if let Some(at) = history.revisions.iter().position(|r| r.id == id) {
             if let Some(rev) = history.revisions.remove(at) {
                 self.bytes -= rev.data.len() as u64;
@@ -161,7 +189,9 @@ impl Histories {
     fn trim_file(&mut self, ino: Ino) {
         loop {
             let oldest = match self.files.get(&ino) {
-                Some(h) if h.revisions.len() > self.limits.per_file => h.revisions.front().map(|r| r.id),
+                Some(h) if h.revisions.len() > self.limits.per_file => {
+                    h.revisions.front().map(|r| r.id)
+                }
                 _ => None,
             };
             match oldest {
@@ -173,17 +203,27 @@ impl Histories {
 
     fn evict(&mut self) {
         while self.bytes > self.limits.max_bytes {
-            let Some((&id, &ino)) = self.order.iter().next() else { break };
+            let Some((&id, &ino)) = self.order.iter().next() else {
+                break;
+            };
             self.remove_revision(ino, id);
         }
     }
 
     pub fn list(&self, ino: Ino) -> Vec<RevisionInfo> {
-        self.files.get(&ino).map(|h| h.revisions.iter().map(Revision::info).collect()).unwrap_or_default()
+        self.files
+            .get(&ino)
+            .map(|h| h.revisions.iter().map(Revision::info).collect())
+            .unwrap_or_default()
     }
 
     pub fn get(&self, ino: Ino, number: u64) -> Option<Arc<[u8]>> {
-        self.files.get(&ino)?.revisions.iter().find(|r| r.number == number).map(|r| r.data.clone())
+        self.files
+            .get(&ino)?
+            .revisions
+            .iter()
+            .find(|r| r.number == number)
+            .map(|r| r.data.clone())
     }
 
     pub fn contains(&self, ino: Ino) -> bool {
@@ -203,7 +243,13 @@ impl Histories {
 
     /// The most recently changed deleted file that was at `path`.
     pub fn find_deleted(&self, path: &str, case_insensitive: bool) -> Option<Ino> {
-        let same = |p: &str| if case_insensitive { p.to_lowercase() == path.to_lowercase() } else { p == path };
+        let same = |p: &str| {
+            if case_insensitive {
+                p.to_lowercase() == path.to_lowercase()
+            } else {
+                p == path
+            }
+        };
         self.files
             .iter()
             .filter(|(_, h)| h.deleted && same(&h.path))
@@ -218,10 +264,16 @@ impl Histories {
         if replaced == into {
             return;
         }
-        let Some(mut base) = self.files.remove(&replaced) else { return };
+        let Some(mut base) = self.files.remove(&replaced) else {
+            return;
+        };
         if let Some(own) = self.files.remove(&into) {
             for mut rev in own.revisions {
-                if base.revisions.back().is_some_and(|last| last.data == rev.data) {
+                if base
+                    .revisions
+                    .back()
+                    .is_some_and(|last| last.data == rev.data)
+                {
                     // Nothing new: drop the duplicate.
                     self.order.remove(&rev.id);
                     self.bytes -= rev.data.len() as u64;
@@ -252,8 +304,12 @@ impl Histories {
                 self.bytes -= rev.data.len() as u64;
             }
         }
-        let mut history =
-            FileHistory { revisions: VecDeque::new(), next_number: 1, path: path.to_string(), deleted: false };
+        let mut history = FileHistory {
+            revisions: VecDeque::new(),
+            next_number: 1,
+            path: path.to_string(),
+            deleted: false,
+        };
         for (number, data, time, source) in revisions {
             if !self.accepts(data.len()) || number < history.next_number {
                 continue;
@@ -287,7 +343,11 @@ mod tests {
     use super::*;
 
     fn h(max_bytes: u64, per_file: usize) -> Histories {
-        Histories::new(HistoryLimits { max_bytes, per_file, max_file_size: 100 })
+        Histories::new(HistoryLimits {
+            max_bytes,
+            per_file,
+            max_file_size: 100,
+        })
     }
 
     fn numbers(h: &Histories, ino: Ino) -> Vec<u64> {
@@ -316,10 +376,22 @@ mod tests {
         assert_eq!(numbers(&h, 2), [2, 3, 4], "oldest dropped first");
         h.record(3, "b", b"eeeeee", Source::App);
         assert!(h.usage().1 <= 10);
-        assert_eq!(numbers(&h, 2), [3, 4], "global budget evicts the oldest, across files");
+        assert_eq!(
+            numbers(&h, 2),
+            [3, 4],
+            "global budget evicts the oldest, across files"
+        );
         assert_eq!(numbers(&h, 3), [1]);
-        assert_eq!(h.record(4, "big", &[0; 101], Source::App), None, "too large to version");
-        h.set_limits(HistoryLimits { max_bytes: 0, per_file: 3, max_file_size: 100 });
+        assert_eq!(
+            h.record(4, "big", &[0; 101], Source::App),
+            None,
+            "too large to version"
+        );
+        h.set_limits(HistoryLimits {
+            max_bytes: 0,
+            per_file: 3,
+            max_file_size: 100,
+        });
         assert_eq!(h.usage(), (0, 0));
         assert!(!h.accepts(1));
     }
@@ -342,7 +414,14 @@ mod tests {
     fn imported_history_keeps_its_numbers() {
         let mut h = h(1000, 10);
         h.record(2, "ctx", b"stale", Source::App);
-        h.import(2, "ctx", vec![(4, b"four".to_vec(), 1_000, Source::App), (7, b"seven".to_vec(), 2_000, Source::Process)]);
+        h.import(
+            2,
+            "ctx",
+            vec![
+                (4, b"four".to_vec(), 1_000, Source::App),
+                (7, b"seven".to_vec(), 2_000, Source::Process),
+            ],
+        );
         assert_eq!(numbers(&h, 2), [4, 7]);
         assert_eq!(&*h.get(2, 7).unwrap(), b"seven");
         assert_eq!(h.list(2)[0].time, 1_000);
@@ -366,7 +445,11 @@ mod tests {
                 (9, b"nine".to_vec(), 7, Source::App),
             ],
         );
-        assert_eq!(numbers(&h, 2), [7, 8, 9], "older first out, duplicates and oversize skipped");
+        assert_eq!(
+            numbers(&h, 2),
+            [7, 8, 9],
+            "older first out, duplicates and oversize skipped"
+        );
         assert_eq!(h.record(2, "ctx", b"ten", Source::App), Some(10));
         // Importing nothing clears the history.
         h.import(2, "ctx", Vec::new());
@@ -379,9 +462,20 @@ mod tests {
     fn import_respects_the_byte_budget_across_files() {
         let mut h = h(12, 10);
         h.record(3, "other", b"aaaaaa", Source::App);
-        h.import(2, "ctx", vec![(1, b"bbbbbb".to_vec(), 1, Source::App), (2, b"cccccc".to_vec(), 2, Source::App)]);
+        h.import(
+            2,
+            "ctx",
+            vec![
+                (1, b"bbbbbb".to_vec(), 1, Source::App),
+                (2, b"cccccc".to_vec(), 2, Source::App),
+            ],
+        );
         assert!(h.usage().1 <= 12);
-        assert_eq!(numbers(&h, 2), [1, 2], "the other file's older revision is evicted first");
+        assert_eq!(
+            numbers(&h, 2),
+            [1, 2],
+            "the other file's older revision is evicted first"
+        );
         assert!(h.list(3).is_empty());
     }
 
@@ -397,7 +491,11 @@ mod tests {
         assert!(h.list(2).is_empty());
         assert_eq!(h.record(7, "f", b"v4", Source::Process), Some(4));
         // Eviction still finds the moved revisions.
-        h.set_limits(HistoryLimits { max_bytes: 4, per_file: 10, max_file_size: 100 });
+        h.set_limits(HistoryLimits {
+            max_bytes: 4,
+            per_file: 10,
+            max_file_size: 100,
+        });
         assert_eq!(numbers(&h, 7), [3, 4]);
     }
 }

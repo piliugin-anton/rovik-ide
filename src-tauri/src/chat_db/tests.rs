@@ -16,9 +16,23 @@ const DAY: i64 = 86_400_000;
 
 fn dialog(conn: &mut Connection, id: &str, title: &str, age_days: i64) {
     let t = now_ms() - age_days * DAY;
-    create_dialog(conn, &NewDialog { id: id.into(), title: title.into(), created_at: t, updated_at: t, project_id: None }).unwrap();
+    create_dialog(
+        conn,
+        &NewDialog {
+            id: id.into(),
+            title: title.into(),
+            created_at: t,
+            updated_at: t,
+            project_id: None,
+        },
+    )
+    .unwrap();
     // Keep the intended age: appends move updated_at forward.
-    conn.execute("UPDATE dialogs SET updated_at = ?2 WHERE id = ?1", rusqlite::params![id, t]).unwrap();
+    conn.execute(
+        "UPDATE dialogs SET updated_at = ?2 WHERE id = ?1",
+        rusqlite::params![id, t],
+    )
+    .unwrap();
 }
 
 fn message(id: &str, role: &str, content: &str) -> NewMessage {
@@ -39,10 +53,18 @@ fn message(id: &str, role: &str, content: &str) -> NewMessage {
 
 fn add(conn: &mut Connection, dialog_id: &str, messages: Vec<NewMessage>) {
     let age: i64 = conn
-        .query_row("SELECT updated_at FROM dialogs WHERE id = ?1", [dialog_id], |r| r.get(0))
+        .query_row(
+            "SELECT updated_at FROM dialogs WHERE id = ?1",
+            [dialog_id],
+            |r| r.get(0),
+        )
         .unwrap();
     append_messages(conn, dialog_id, &messages).unwrap();
-    conn.execute("UPDATE dialogs SET updated_at = ?2 WHERE id = ?1", rusqlite::params![dialog_id, age]).unwrap();
+    conn.execute(
+        "UPDATE dialogs SET updated_at = ?2 WHERE id = ?1",
+        rusqlite::params![dialog_id, age],
+    )
+    .unwrap();
 }
 
 /// Renders highlights as [..] using UTF-16 ranges, like the frontend does.
@@ -68,9 +90,23 @@ fn paging_dialogs_by_cursor() {
         dialog(&mut conn, &format!("d{i}"), &format!("Chat {i}"), i);
     }
     let first = list_dialogs(&conn, None, None, 3).unwrap();
-    assert_eq!(first.items.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["d0", "d1", "d2"]);
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .map(|d| d.id.as_str())
+            .collect::<Vec<_>>(),
+        ["d0", "d1", "d2"]
+    );
     let second = list_dialogs(&conn, None, first.next_cursor.as_ref(), 3).unwrap();
-    assert_eq!(second.items.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["d3", "d4", "d5"]);
+    assert_eq!(
+        second
+            .items
+            .iter()
+            .map(|d| d.id.as_str())
+            .collect::<Vec<_>>(),
+        ["d3", "d4", "d5"]
+    );
     let third = list_dialogs(&conn, None, second.next_cursor.as_ref(), 3).unwrap();
     assert_eq!(third.items.len(), 1);
     assert!(third.next_cursor.is_none());
@@ -94,8 +130,16 @@ fn large_tool_output_moves_out_and_loads_on_demand() {
 
     // A long assistant reply is never cut: it is what the chat shows.
     let long_reply = "word ".repeat(2000);
-    add(&mut conn, "d", vec![message("a1", "assistant", &long_reply)]);
-    let reply = get_messages(&conn, "d", None, 50).unwrap().messages.pop().unwrap();
+    add(
+        &mut conn,
+        "d",
+        vec![message("a1", "assistant", &long_reply)],
+    );
+    let reply = get_messages(&conn, "d", None, 50)
+        .unwrap()
+        .messages
+        .pop()
+        .unwrap();
     assert!(!reply.body_external);
     assert_eq!(reply.content, long_reply);
 }
@@ -106,39 +150,107 @@ fn streaming_message_is_searchable_only_once_finalized() {
     dialog(&mut conn, "d", "Streaming", 0);
     let mut pending = message("a1", "assistant", "");
     pending.finalized = false;
-    add(&mut conn, "d", vec![message("u1", "user", "hello"), pending]);
+    add(
+        &mut conn,
+        "d",
+        vec![message("u1", "user", "hello"), pending],
+    );
 
-    update_message(&mut conn, "a1", &MessagePatch { content: Some("zebra crossing".into()), ..Default::default() }).unwrap();
-    assert!(search(&conn, "zebra", None, 10).unwrap().is_empty(), "checkpoints are not indexed");
+    update_message(
+        &mut conn,
+        "a1",
+        &MessagePatch {
+            content: Some("zebra crossing".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        search(&conn, "zebra", None, 10).unwrap().is_empty(),
+        "checkpoints are not indexed"
+    );
 
-    update_message(&mut conn, "a1", &MessagePatch { finalize: true, ..Default::default() }).unwrap();
+    update_message(
+        &mut conn,
+        "a1",
+        &MessagePatch {
+            finalize: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let hits = search(&conn, "zebra", None, 10).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].message_id.as_deref(), Some("a1"));
-    assert_eq!(get_dialog(&conn, "d").unwrap().unwrap().preview.as_deref(), Some("zebra crossing"));
+    assert_eq!(
+        get_dialog(&conn, "d").unwrap().unwrap().preview.as_deref(),
+        Some("zebra crossing")
+    );
 }
 
 #[test]
 fn search_matches_the_old_in_memory_behaviour() {
     let mut conn = db();
     dialog(&mut conn, "a", "Tauri window events", 1);
-    add(&mut conn, "a", vec![message("a1", "user", "How do I listen to window close in tauri?")]);
+    add(
+        &mut conn,
+        "a",
+        vec![message(
+            "a1",
+            "user",
+            "How do I listen to window close in tauri?",
+        )],
+    );
     dialog(&mut conn, "b", "Borsh layout question", 3);
-    add(&mut conn, "b", vec![message("b1", "user", "My IDL_ACCOUNT_LAYOUT fails with tauri plugin")]);
+    add(
+        &mut conn,
+        "b",
+        vec![message(
+            "b1",
+            "user",
+            "My IDL_ACCOUNT_LAYOUT fails with tauri plugin",
+        )],
+    );
     dialog(&mut conn, "c", "Настройка прокси", 2);
-    add(&mut conn, "c", vec![message("c1", "user", "Как настроить прокси в reqwest?")]);
+    add(
+        &mut conn,
+        "c",
+        vec![message("c1", "user", "Как настроить прокси в reqwest?")],
+    );
     dialog(&mut conn, "d", "Café menu", 5);
-    add(&mut conn, "d", vec![message("d1", "user", "résumé formatting help")]);
+    add(
+        &mut conn,
+        "d",
+        vec![message("d1", "user", "résumé formatting help")],
+    );
     dialog(&mut conn, "f", "Tool noise", 1);
     let mut noise = message("f1", "tool", "tauri tauri tauri tauri");
     noise.tool_call_id = Some("x".into());
-    add(&mut conn, "f", vec![message("f0", "user", "read the file"), noise]);
+    add(
+        &mut conn,
+        "f",
+        vec![message("f0", "user", "read the file"), noise],
+    );
 
-    let ids = |q: &str| search(&conn, q, None, 10).unwrap().into_iter().map(|h| h.dialog.id).collect::<Vec<_>>();
+    let ids = |q: &str| {
+        search(&conn, q, None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.dialog.id)
+            .collect::<Vec<_>>()
+    };
 
-    assert_eq!(ids("tauri"), ["a", "b"], "title hit first; tool output never matches");
+    assert_eq!(
+        ids("tauri"),
+        ["a", "b"],
+        "title hit first; tool output never matches"
+    );
     assert_eq!(ids("tauri window"), ["a"], "every word must match");
-    assert_eq!(ids("ПРОКСИ reqwest"), ["c"], "Cyrillic case-folding; words across title and message");
+    assert_eq!(
+        ids("ПРОКСИ reqwest"),
+        ["c"],
+        "Cyrillic case-folding; words across title and message"
+    );
     assert_eq!(ids("cafe"), ["d"], "accents folded");
     assert_eq!(ids("resume"), ["d"]);
     assert_eq!(ids("tauir"), ["a"], "typo fallback on titles");
@@ -147,7 +259,10 @@ fn search_matches_the_old_in_memory_behaviour() {
 
     let hit = search(&conn, "ПРОКСИ reqwest", None, 10).unwrap().remove(0);
     let snippet = hit.snippet.expect("message snippet");
-    assert_eq!(mark(&snippet.text, &snippet.ranges), "Как настроить [прокси] в [reqwest]?");
+    assert_eq!(
+        mark(&snippet.text, &snippet.ranges),
+        "Как настроить [прокси] в [reqwest]?"
+    );
 }
 
 #[test]
@@ -162,17 +277,33 @@ fn quoted_phrases_and_short_terms() {
 fn failed_messages_leave_the_index_and_deletes_clean_up() {
     let mut conn = db();
     dialog(&mut conn, "d", "Pancakes", 0);
-    add(&mut conn, "d", vec![message("u1", "user", "blueberry recipe")]);
+    add(
+        &mut conn,
+        "d",
+        vec![message("u1", "user", "blueberry recipe")],
+    );
     assert_eq!(search(&conn, "blueberry", None, 10).unwrap().len(), 1);
 
-    update_message(&mut conn, "u1", &MessagePatch { failed: Some(true), ..Default::default() }).unwrap();
+    update_message(
+        &mut conn,
+        "u1",
+        &MessagePatch {
+            failed: Some(true),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(search(&conn, "blueberry", None, 10).unwrap().is_empty());
 
     delete_dialog(&mut conn, "d").unwrap();
     assert!(search(&conn, "pancakes", None, 10).unwrap().is_empty());
-    let left: i64 = conn.query_row("SELECT COUNT(*) FROM search_rows", [], |r| r.get(0)).unwrap();
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM search_rows", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(left, 0);
-    let msgs: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+    let msgs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(msgs, 0, "messages cascade with the chat");
 }
 
@@ -191,15 +322,34 @@ fn answered_and_around() {
     dialog(&mut conn, "d", "Q&A", 0);
     let mut errored = message("a1", "assistant", "");
     errored.error = Some("network".into());
-    add(&mut conn, "d", vec![message("u1", "user", "first"), errored, message("u2", "user", "second"), message("a2", "assistant", "done")]);
-    assert_eq!(messages_answered(&conn, &["u1".into(), "u2".into()]).unwrap(), ["u1", "u2"]);
+    add(
+        &mut conn,
+        "d",
+        vec![
+            message("u1", "user", "first"),
+            errored,
+            message("u2", "user", "second"),
+            message("a2", "assistant", "done"),
+        ],
+    );
+    assert_eq!(
+        messages_answered(&conn, &["u1".into(), "u2".into()]).unwrap(),
+        ["u1", "u2"]
+    );
 
     dialog(&mut conn, "e", "Unanswered", 0);
     add(&mut conn, "e", vec![message("e1", "user", "hello?")]);
     assert!(messages_answered(&conn, &["e1".into()]).unwrap().is_empty());
 
     let around = get_messages_around(&conn, "u2", 1, 1).unwrap();
-    assert_eq!(around.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["a1", "u2", "a2"]);
+    assert_eq!(
+        around
+            .messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a1", "u2", "a2"]
+    );
     assert!(around.has_older);
     assert!(!around.has_newer);
 }
@@ -211,7 +361,11 @@ fn attachments_are_listed_in_order_and_collected_when_unreferenced() {
     std::fs::create_dir_all(dir.join(super::attachments::DIR)).unwrap();
     let (a, b) = ("a".repeat(64), "b".repeat(64));
     for id in [&a, &b] {
-        std::fs::write(dir.join(super::attachments::DIR).join(format!("{id}.jpg")), b"x").unwrap();
+        std::fs::write(
+            dir.join(super::attachments::DIR).join(format!("{id}.jpg")),
+            b"x",
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO attachments (id, mime, bytes, created_at) VALUES (?1, 'image/jpeg', 1, 0)",
             [id],
@@ -233,7 +387,11 @@ fn attachments_are_listed_in_order_and_collected_when_unreferenced() {
     assert!(super::attachments::file_for(&dir, &b).is_none());
 
     delete_dialog(&mut conn, "d").unwrap();
-    assert_eq!(super::attachments::collect_garbage(&conn, &dir).unwrap(), 1, "freed by the delete");
+    assert_eq!(
+        super::attachments::collect_garbage(&conn, &dir).unwrap(),
+        1,
+        "freed by the delete"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -244,12 +402,24 @@ fn composer_drafts_round_trip_and_clean_up() {
     dialog(&mut conn, "d", "Drafts", 0);
 
     save_composer_draft(&mut conn, "d", "half-typed message").unwrap();
-    assert_eq!(get_composer_draft(&conn, "d").unwrap().as_deref(), Some("half-typed message"));
+    assert_eq!(
+        get_composer_draft(&conn, "d").unwrap().as_deref(),
+        Some("half-typed message")
+    );
 
     // Overwrites, one row per chat.
     save_composer_draft(&mut conn, "d", "edited text").unwrap();
-    assert_eq!(get_composer_draft(&conn, "d").unwrap().as_deref(), Some("edited text"));
-    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM composer_drafts WHERE dialog_id = 'd'", [], |r| r.get(0)).unwrap();
+    assert_eq!(
+        get_composer_draft(&conn, "d").unwrap().as_deref(),
+        Some("edited text")
+    );
+    let rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM composer_drafts WHERE dialog_id = 'd'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(rows, 1);
 
     // Blank text deletes the row.
@@ -260,7 +430,10 @@ fn composer_drafts_round_trip_and_clean_up() {
     // segment list deletes the row like blank text does.
     let segments = r#"[{"type":"text","text":"hello "},{"type":"file","file":{"id":"f","path":"src/f.ts","relativePath":"src/f.ts","name":"f.ts"}},{"type":"pasted","text":"long paste"}]"#;
     save_composer_draft(&mut conn, "d", segments).unwrap();
-    assert_eq!(get_composer_draft(&conn, "d").unwrap().as_deref(), Some(segments));
+    assert_eq!(
+        get_composer_draft(&conn, "d").unwrap().as_deref(),
+        Some(segments)
+    );
     save_composer_draft(&mut conn, "d", "[]").unwrap();
     assert_eq!(get_composer_draft(&conn, "d").unwrap(), None);
 

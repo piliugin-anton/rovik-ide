@@ -83,7 +83,10 @@ pub fn uses_phases(phase_key: &str) -> bool {
 
 /// The route this model was found to work on since the app started.
 pub fn remembered(chat_url: &str, model: &str) -> Option<Api> {
-    ROUTES.lock().ok().and_then(|r| r.get(&key(chat_url, model)).copied())
+    ROUTES
+        .lock()
+        .ok()
+        .and_then(|r| r.get(&key(chat_url, model)).copied())
 }
 
 pub fn remember(chat_url: &str, model: &str, api: Api) {
@@ -95,7 +98,9 @@ pub fn remember(chat_url: &str, model: &str, api: Api) {
 /// `{base}/responses` for `{base}/chat/completions`; None for any other URL
 /// (it isn't known where that provider's Responses API would be).
 pub fn responses_url(chat_url: &str) -> Option<String> {
-    chat_url.strip_suffix("/chat/completions").map(|base| format!("{base}/responses"))
+    chat_url
+        .strip_suffix("/chat/completions")
+        .map(|base| format!("{base}/responses"))
 }
 
 /// Whether a request refused on `sent_to` may have gone to the wrong route,
@@ -117,7 +122,12 @@ pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
     if error.partial || !matches!(error.kind, ErrorKind::BadRequest | ErrorKind::NotFound) {
         return false;
     }
-    let text = format!("{} {}", error.message, error.details.as_deref().unwrap_or("")).to_lowercase();
+    let text = format!(
+        "{} {}",
+        error.message,
+        error.details.as_deref().unwrap_or("")
+    )
+    .to_lowercase();
     let (needles, path): (&[&str], &str) = match sent_to {
         Api::ChatCompletions => (
             &[
@@ -195,8 +205,15 @@ fn content_of(content: &Value, assistant: bool) -> Value {
                     }),
                     Some("image_url") => {
                         let image = part.get("image_url");
-                        let url = image.and_then(|i| i.get("url")).or(image).cloned().unwrap_or(Value::Null);
-                        let detail = image.and_then(|i| i.get("detail")).cloned().unwrap_or(json!("auto"));
+                        let url = image
+                            .and_then(|i| i.get("url"))
+                            .or(image)
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let detail = image
+                            .and_then(|i| i.get("detail"))
+                            .cloned()
+                            .unwrap_or(json!("auto"));
                         json!({ "type": "input_image", "image_url": url, "detail": detail })
                     }
                     _ => part.clone(),
@@ -231,8 +248,16 @@ fn is_empty(content: &Value) -> bool {
 pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
     let mut instructions: Vec<String> = Vec::new();
     let mut input: Vec<Value> = Vec::new();
-    for message in chat.get("messages").and_then(|m| m.as_array()).into_iter().flatten() {
-        let role = message.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+    for message in chat
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let role = message
+            .get("role")
+            .and_then(|r| r.as_str())
+            .unwrap_or("user");
         let content = message.get("content").unwrap_or(&Value::Null);
         match role {
             "system" | "developer" => instructions.push(text_of(content)),
@@ -253,15 +278,22 @@ pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
                 let calls = message.get("tool_calls").and_then(|c| c.as_array());
                 // The step's reasoning, before what it said and called.
                 if assistant {
-                    if let Some(details) = message.get("reasoning_details").and_then(|d| d.as_array()) {
+                    if let Some(details) =
+                        message.get("reasoning_details").and_then(|d| d.as_array())
+                    {
                         input.extend(crate::reasoning_echo::to_responses_items(details));
                     }
                 }
                 if !is_empty(content) {
-                    let mut item = json!({ "role": role, "content": content_of(content, assistant) });
+                    let mut item =
+                        json!({ "role": role, "content": content_of(content, assistant) });
                     if assistant && phases {
                         let with_calls = calls.is_some_and(|c| !c.is_empty());
-                        item["phase"] = json!(if with_calls { "commentary" } else { "final_answer" });
+                        item["phase"] = json!(if with_calls {
+                            "commentary"
+                        } else {
+                            "final_answer"
+                        });
                     }
                     input.push(item);
                 }
@@ -286,7 +318,10 @@ pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
     if !instructions.is_empty() {
         body["instructions"] = json!(instructions.join("\n\n"));
     }
-    if let Some(max) = chat.get("max_tokens").or_else(|| chat.get("max_completion_tokens")) {
+    if let Some(max) = chat
+        .get("max_tokens")
+        .or_else(|| chat.get("max_completion_tokens"))
+    {
         body["max_output_tokens"] = max.clone();
     }
     for field in ["temperature", "top_p", "parallel_tool_calls"] {
@@ -312,14 +347,16 @@ pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
     if let Some(tools) = chat.get("tools").and_then(|t| t.as_array()) {
         let tools: Vec<Value> = tools
             .iter()
-            .map(|tool| match tool.get("function").and_then(|f| f.as_object()) {
-                Some(function) => {
-                    let mut flat = function.clone();
-                    flat.insert("type".into(), json!("function"));
-                    Value::Object(flat)
-                }
-                None => tool.clone(),
-            })
+            .map(
+                |tool| match tool.get("function").and_then(|f| f.as_object()) {
+                    Some(function) => {
+                        let mut flat = function.clone();
+                        flat.insert("type".into(), json!("function"));
+                        Value::Object(flat)
+                    }
+                    None => tool.clone(),
+                },
+            )
             .collect();
         body["tools"] = json!(tools);
     }
@@ -381,11 +418,18 @@ impl ReplyParser {
                 }
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                self.feed(&delta(json!({ "reasoning_content": str_at(value, "delta") })), emit)?;
+                self.feed(
+                    &delta(json!({ "reasoning_content": str_at(value, "delta") })),
+                    emit,
+                )?;
             }
             // Separate summary parts read as paragraphs.
             "response.reasoning_summary_part.added" => {
-                if value.get("summary_index").and_then(|i| i.as_u64()).is_some_and(|i| i > 0) {
+                if value
+                    .get("summary_index")
+                    .and_then(|i| i.as_u64())
+                    .is_some_and(|i| i > 0)
+                {
                     self.feed(&delta(json!({ "reasoning_content": "\n\n" })), emit)?;
                 }
             }
@@ -396,7 +440,10 @@ impl ReplyParser {
                         if let Some(key) = &self.phase_key {
                             note_phases(key);
                         }
-                        let index = value.get("output_index").and_then(|i| i.as_u64()).unwrap_or(0);
+                        let index = value
+                            .get("output_index")
+                            .and_then(|i| i.as_u64())
+                            .unwrap_or(0);
                         if phase == "commentary" && !self.commentary.contains(&index) {
                             self.commentary.push(index);
                             // Apart from the reasoning before it.
@@ -414,9 +461,16 @@ impl ReplyParser {
                     }
                 }
                 if str_at(item, "type") == "function_call" {
-                    let index = value.get("output_index").and_then(|i| i.as_u64()).unwrap_or(0);
+                    let index = value
+                        .get("output_index")
+                        .and_then(|i| i.as_u64())
+                        .unwrap_or(0);
                     // `call_id` is what the result is sent back with.
-                    let id = item.get("call_id").or_else(|| item.get("id")).cloned().unwrap_or(json!(""));
+                    let id = item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .cloned()
+                        .unwrap_or(json!(""));
                     // Whole arguments: only what hasn't been streamed yet.
                     let streamed = self
                         .calls
@@ -424,7 +478,9 @@ impl ReplyParser {
                         .find(|(i, _)| *i == index)
                         .map(|(_, c)| c.arguments.clone())
                         .unwrap_or_default();
-                    let rest = str_at(item, "arguments").strip_prefix(streamed.as_str()).unwrap_or("");
+                    let rest = str_at(item, "arguments")
+                        .strip_prefix(streamed.as_str())
+                        .unwrap_or("");
                     self.feed(
                         &delta(json!({ "tool_calls": [{
                             "index": index,
@@ -436,7 +492,10 @@ impl ReplyParser {
                 }
             }
             "response.function_call_arguments.delta" => {
-                let index = value.get("output_index").and_then(|i| i.as_u64()).unwrap_or(0);
+                let index = value
+                    .get("output_index")
+                    .and_then(|i| i.as_u64())
+                    .unwrap_or(0);
                 self.feed(
                     &delta(json!({ "tool_calls": [{
                         "index": index,
@@ -451,7 +510,10 @@ impl ReplyParser {
                     self.usage = Some(usage.clone());
                 }
                 self.finish_reason = Some(if kind == "response.incomplete" {
-                    match response.pointer("/incomplete_details/reason").and_then(|r| r.as_str()) {
+                    match response
+                        .pointer("/incomplete_details/reason")
+                        .and_then(|r| r.as_str())
+                    {
                         Some("max_output_tokens") | None => "length".to_string(),
                         Some(other) => other.to_string(),
                     }
@@ -470,22 +532,27 @@ impl ReplyParser {
             "response.failed" => {
                 let response = value.get("response").unwrap_or(&Value::Null);
                 return Err(classify_body_error(response).unwrap_or_else(|| {
-                    ChatError::new(ErrorKind::Provider, "The provider ended the reply with an error.")
-                        .with_details(value.to_string())
+                    ChatError::new(
+                        ErrorKind::Provider,
+                        "The provider ended the reply with an error.",
+                    )
+                    .with_details(value.to_string())
                 }));
             }
             // `{"type":"error","error":{…}}`, or the fields at the top level.
             "error" if value.get("error").is_some_and(|e| e.is_object()) => {
-                return Err(classify_body_error(value)
-                    .unwrap_or_else(|| ChatError::new(ErrorKind::Provider, "The provider reported an error.")));
+                return Err(classify_body_error(value).unwrap_or_else(|| {
+                    ChatError::new(ErrorKind::Provider, "The provider reported an error.")
+                }));
             }
             "error" => {
                 let error = json!({ "error": {
                     "message": value.get("message").cloned().unwrap_or(Value::Null),
                     "code": value.get("code").cloned().unwrap_or(Value::Null),
                 } });
-                return Err(classify_body_error(&error)
-                    .unwrap_or_else(|| ChatError::new(ErrorKind::Provider, "The provider reported an error.")));
+                return Err(classify_body_error(&error).unwrap_or_else(|| {
+                    ChatError::new(ErrorKind::Provider, "The provider reported an error.")
+                }));
             }
             _ => {}
         }
@@ -501,15 +568,29 @@ impl ReplyParser {
         if let Some(e) = classify_body_error(body) {
             return Err(e);
         }
-        for (index, item) in body.get("output").and_then(|o| o.as_array()).into_iter().flatten().enumerate() {
+        for (index, item) in body
+            .get("output")
+            .and_then(|o| o.as_array())
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
             match str_at(item, "type") {
                 "message" => {
                     self.feed_responses(
                         &json!({ "type": "response.output_item.added", "output_index": index, "item": item }),
                         emit,
                     )?;
-                    for part in item.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
-                        let text = part.get("text").or_else(|| part.get("refusal")).and_then(|t| t.as_str());
+                    for part in item
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .into_iter()
+                        .flatten()
+                    {
+                        let text = part
+                            .get("text")
+                            .or_else(|| part.get("refusal"))
+                            .and_then(|t| t.as_str());
                         if let Some(text) = text {
                             self.feed_responses(
                                 &json!({ "type": "response.output_text.delta", "output_index": index, "delta": text }),
@@ -521,7 +602,12 @@ impl ReplyParser {
                 "reasoning" => {
                     let parts = ["summary", "content"]
                         .iter()
-                        .flat_map(|k| item.get(*k).and_then(|s| s.as_array()).into_iter().flatten())
+                        .flat_map(|k| {
+                            item.get(*k)
+                                .and_then(|s| s.as_array())
+                                .into_iter()
+                                .flatten()
+                        })
                         .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                         .collect::<Vec<_>>();
                     if !parts.is_empty() {
@@ -574,8 +660,19 @@ mod tests {
         });
         let body = request_body(&chat, false, true);
         let input = body["input"].as_array().unwrap();
-        let kinds: Vec<&str> = input.iter().map(|i| i["type"].as_str().unwrap_or("message")).collect();
-        assert_eq!(kinds, ["message", "reasoning", "function_call", "function_call_output"]);
+        let kinds: Vec<&str> = input
+            .iter()
+            .map(|i| i["type"].as_str().unwrap_or("message"))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "message",
+                "reasoning",
+                "function_call",
+                "function_call_output"
+            ]
+        );
         assert_eq!(input[1], item);
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
         // Refused by the server: not asked for (the items are stripped before).
@@ -602,7 +699,10 @@ mod tests {
             ChatStreamEvent::ReasoningDetails { details } => Some(details.clone()),
             _ => None,
         });
-        assert_eq!(details.map(|d| crate::reasoning_echo::to_responses_items(&d)), Some(vec![item]));
+        assert_eq!(
+            details.map(|d| crate::reasoning_echo::to_responses_items(&d)),
+            Some(vec![item])
+        );
     }
     use crate::chat_request::ErrorKind;
 
@@ -635,7 +735,13 @@ mod tests {
         assert_eq!(body["max_output_tokens"], 1000);
         assert_eq!(body["reasoning"], json!({ "effort": "high" }));
         assert_eq!(body["store"], false);
-        for gone in ["messages", "stream_options", "chat_template_kwargs", "reasoning_effort", "max_tokens"] {
+        for gone in [
+            "messages",
+            "stream_options",
+            "chat_template_kwargs",
+            "reasoning_effort",
+            "max_tokens",
+        ] {
             assert!(body.get(gone).is_none(), "{gone}");
         }
         assert_eq!(
@@ -644,20 +750,33 @@ mod tests {
         );
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 4, "{input:?}");
-        assert_eq!(input[0]["content"][0], json!({ "type": "input_text", "text": "Look" }));
+        assert_eq!(
+            input[0]["content"][0],
+            json!({ "type": "input_text", "text": "Look" })
+        );
         assert_eq!(input[0]["content"][1]["type"], "input_image");
-        assert_eq!(input[0]["content"][1]["image_url"], "data:image/png;base64,AA");
+        assert_eq!(
+            input[0]["content"][1]["image_url"],
+            "data:image/png;base64,AA"
+        );
         assert_eq!(
             input[1],
             json!({ "type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{\"path\":\"a\"}" })
         );
-        assert_eq!(input[2], json!({ "type": "function_call_output", "call_id": "call_1", "output": "file text" }));
+        assert_eq!(
+            input[2],
+            json!({ "type": "function_call_output", "call_id": "call_1", "output": "file text" })
+        );
         assert_eq!(input[3], json!({ "role": "assistant", "content": "Done." }));
     }
 
     #[test]
     fn reasoning_off_is_effort_none() {
-        let body = request_body(&json!({ "model": "m", "messages": [], "reasoning": { "enabled": false } }), false, true);
+        let body = request_body(
+            &json!({ "model": "m", "messages": [], "reasoning": { "enabled": false } }),
+            false,
+            true,
+        );
         assert_eq!(body["reasoning"], json!({ "effort": "none" }));
     }
 
@@ -691,12 +810,24 @@ mod tests {
         assert!(ended.unwrap());
         parser.finish(&mut |e| events.push(e)).unwrap();
         let complete = events.iter().find_map(|e| match e {
-            ChatStreamEvent::ToolCallComplete { id, name, arguments, .. } => Some((id.clone(), name.clone(), arguments.clone())),
+            ChatStreamEvent::ToolCallComplete {
+                id,
+                name,
+                arguments,
+                ..
+            } => Some((id.clone(), name.clone(), arguments.clone())),
             _ => None,
         });
-        assert_eq!(complete, Some(("call_9".into(), "read".into(), "{\"path\":\"a\"}".into())));
-        assert!(events.iter().any(|e| matches!(e, ChatStreamEvent::Delta { content } if content == "Reading it.")));
-        assert!(events.iter().any(|e| matches!(e, ChatStreamEvent::Reasoning { content } if content == "Thinking")));
+        assert_eq!(
+            complete,
+            Some(("call_9".into(), "read".into(), "{\"path\":\"a\"}".into()))
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, ChatStreamEvent::Delta { content } if content == "Reading it.")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, ChatStreamEvent::Reasoning { content } if content == "Thinking")));
         assert!(events.iter().any(|e| matches!(e,
             ChatStreamEvent::Finished { finish_reason: Some(r), usage: Some(_) } if r == "tool_calls")));
     }
@@ -717,7 +848,10 @@ mod tests {
     #[test]
     fn commentary_goes_with_the_reasoning_not_the_reply() {
         let key = phase_key("https://phases.test/v1/responses", "gpt-5.5");
-        let mut parser = ReplyParser { phase_key: Some(key.clone()), ..Default::default() };
+        let mut parser = ReplyParser {
+            phase_key: Some(key.clone()),
+            ..Default::default()
+        };
         let mut events = Vec::new();
         for event in [
             json!({ "type": "response.reasoning_summary_text.delta", "output_index": 0, "delta": "Plan" }),
@@ -728,7 +862,9 @@ mod tests {
                     "item": { "type": "function_call", "call_id": "c", "name": "search_code", "arguments": "{}" } }),
             json!({ "type": "response.completed", "response": {} }),
         ] {
-            parser.feed_responses(&event, &mut |e| events.push(e)).unwrap();
+            parser
+                .feed_responses(&event, &mut |e| events.push(e))
+                .unwrap();
         }
         parser.finish(&mut |e| events.push(e)).unwrap();
         let (reply, reasoning) = text_of_events(&events);
@@ -742,7 +878,10 @@ mod tests {
                     "item": { "type": "message", "role": "assistant", "phase": "final_answer", "content": [] } }),
             json!({ "type": "response.output_text.delta", "output_index": 0, "delta": "No: Trimming doesn't use TASK.md." }),
         ]);
-        assert_eq!(text_of_events(&events).0, "No: Trimming doesn't use TASK.md.");
+        assert_eq!(
+            text_of_events(&events).0,
+            "No: Trimming doesn't use TASK.md."
+        );
     }
 
     #[test]
@@ -766,8 +905,13 @@ mod tests {
         ] });
         let mut parser = ReplyParser::default();
         let mut events = Vec::new();
-        parser.feed_complete_responses(&body, &mut |e| events.push(e)).unwrap();
-        assert_eq!(text_of_events(&events), ("Answer.".to_string(), "Looking.".to_string()));
+        parser
+            .feed_complete_responses(&body, &mut |e| events.push(e))
+            .unwrap();
+        assert_eq!(
+            text_of_events(&events),
+            ("Answer.".to_string(), "Looking.".to_string())
+        );
     }
 
     #[test]
@@ -780,11 +924,17 @@ mod tests {
             { "role": "tool", "tool_call_id": "c", "content": "r" },
             { "role": "assistant", "content": "A." }
         ] });
-        let input = request_body(&chat, true, true)["input"].as_array().unwrap().clone();
+        let input = request_body(&chat, true, true)["input"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert_eq!(input[1]["phase"], "commentary");
         assert_eq!(input[4]["phase"], "final_answer");
         assert!(input[0].get("phase").is_none(), "never on user messages");
-        let plain = request_body(&chat, false, true)["input"].as_array().unwrap().clone();
+        let plain = request_body(&chat, false, true)["input"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert!(plain.iter().all(|i| i.get("phase").is_none()));
     }
 
@@ -804,17 +954,24 @@ mod tests {
         let (ended, _, _) = feed_all(&[json!({ "type": "response.failed",
             "response": { "status": "failed", "error": { "code": "server_error", "message": "boom" } } })]);
         assert_eq!(ended.unwrap_err().kind, ErrorKind::Provider);
-        let (ended, _, _) = feed_all(&[json!({ "type": "error", "code": "rate_limit_exceeded", "message": "slow down" })]);
+        let (ended, _, _) = feed_all(&[
+            json!({ "type": "error", "code": "rate_limit_exceeded", "message": "slow down" }),
+        ]);
         assert!(ended.unwrap_err().message.contains("slow down"));
         let (ended, _, _) = feed_all(&[json!({ "type": "error",
             "error": { "type": "ModelProtocolUnsupported", "message": "Model does not support this protocol." } })]);
         let error = ended.unwrap_err();
         assert_eq!(error.kind, ErrorKind::BadRequest);
-        assert!(error.message.contains("Model does not support this protocol."));
+        assert!(error
+            .message
+            .contains("Model does not support this protocol."));
         let (ended, _, mut parser) = feed_all(&[json!({ "type": "response.incomplete",
             "response": { "status": "incomplete", "incomplete_details": { "reason": "max_output_tokens" } } })]);
         assert!(ended.unwrap());
-        assert_eq!(parser.finish(&mut |_| {}).unwrap_err().kind, ErrorKind::Length);
+        assert_eq!(
+            parser.finish(&mut |_| {}).unwrap_err().kind,
+            ErrorKind::Length
+        );
     }
 
     #[test]
@@ -829,10 +986,16 @@ mod tests {
         });
         let mut parser = ReplyParser::default();
         let mut events = Vec::new();
-        parser.feed_complete_responses(&body, &mut |e| events.push(e)).unwrap();
+        parser
+            .feed_complete_responses(&body, &mut |e| events.push(e))
+            .unwrap();
         parser.finish(&mut |e| events.push(e)).unwrap();
-        assert!(events.iter().any(|e| matches!(e, ChatStreamEvent::Delta { content } if content == "A title")));
-        assert!(events.iter().any(|e| matches!(e, ChatStreamEvent::Finished { finish_reason: Some(r), .. } if r == "stop")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, ChatStreamEvent::Delta { content } if content == "A title")));
+        assert!(events.iter().any(
+            |e| matches!(e, ChatStreamEvent::Finished { finish_reason: Some(r), .. } if r == "stop")
+        ));
     }
 
     #[test]
@@ -850,7 +1013,8 @@ mod tests {
         assert!(wrong_route(&classify(405, ""), Api::Responses));
         let invalid = r#"{"error":{"message":"Invalid URL (POST /v1/responses)","type":"invalid_request_error"}}"#;
         assert!(wrong_route(&classify(404, invalid), Api::Responses));
-        let back = r#"{"error":{"message":"This model is only supported in v1/chat/completions."}}"#;
+        let back =
+            r#"{"error":{"message":"This model is only supported in v1/chat/completions."}}"#;
         assert!(wrong_route(&classify(400, back), Api::Responses));
         // A missing model, a bad field, an auth failure: not the route.
         let missing = r#"{"error":{"message":"The model `nope` does not exist or you do not have access to it."}}"#;
@@ -860,11 +1024,16 @@ mod tests {
         let protocol = r#"{"type":"error","error":{"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}}"#;
         assert!(wrong_route(&classify(400, protocol), chat));
         assert!(wrong_route(&classify(400, protocol), Api::Responses));
-        assert!(wrong_route(&classify(500, protocol), chat), "not a server error to retry");
+        assert!(
+            wrong_route(&classify(500, protocol), chat),
+            "not a server error to retry"
+        );
         let in_body = classify_body_error(&serde_json::from_str(protocol).unwrap()).unwrap();
         assert_eq!(in_body.kind, ErrorKind::BadRequest);
         assert!(!in_body.retryable);
-        assert!(in_body.message.contains("Model does not support this protocol."));
+        assert!(in_body
+            .message
+            .contains("Model does not support this protocol."));
         assert!(wrong_route(&in_body, Api::Responses));
         let field = r#"{"error":{"message":"Unrecognized request argument supplied: reasoning"}}"#;
         assert!(!wrong_route(&classify(400, field), chat));
@@ -873,7 +1042,10 @@ mod tests {
 
     #[test]
     fn urls_and_memory() {
-        assert_eq!(responses_url("https://api.openai.com/v1/chat/completions").as_deref(), Some("https://api.openai.com/v1/responses"));
+        assert_eq!(
+            responses_url("https://api.openai.com/v1/chat/completions").as_deref(),
+            Some("https://api.openai.com/v1/responses")
+        );
         assert_eq!(responses_url("https://example.test/custom"), None);
         let url = "https://memory.test/v1/chat/completions";
         assert_eq!(remembered(url, "m"), None);

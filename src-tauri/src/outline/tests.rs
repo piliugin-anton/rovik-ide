@@ -12,7 +12,17 @@ fn testdata() -> PathBuf {
 fn render(symbols: &[Symbol]) -> String {
     symbols
         .iter()
-        .map(|s| format!("{}-{} {}{} {} | {}\n", s.start_line, s.end_line, "  ".repeat(s.depth), s.kind, s.name, s.signature))
+        .map(|s| {
+            format!(
+                "{}-{} {}{} {} | {}\n",
+                s.start_line,
+                s.end_line,
+                "  ".repeat(s.depth),
+                s.kind,
+                s.name,
+                s.signature
+            )
+        })
         .collect()
 }
 
@@ -36,7 +46,11 @@ fn samples_match_their_expected_outlines() {
         let lang = language_for(&name, &content).unwrap_or_else(|| panic!("{name}: no language"));
         languages.insert(lang.name);
         let symbols = outline(&name, &content).unwrap_or_else(|| panic!("{name}: no outline"));
-        assert!(!symbols.is_empty(), "{name} ({}): no declarations found", lang.name);
+        assert!(
+            !symbols.is_empty(),
+            "{name} ({}): no declarations found",
+            lang.name
+        );
         let got = render(&symbols);
         let expected_path = sample.with_file_name(format!("{name}.outline"));
         if update {
@@ -45,13 +59,23 @@ fn samples_match_their_expected_outlines() {
         }
         let expected = std::fs::read_to_string(&expected_path).unwrap_or_default();
         if got != expected {
-            failures.push(format!("{name} ({}):\n--- expected\n{expected}--- got\n{got}", lang.name));
+            failures.push(format!(
+                "{name} ({}):\n--- expected\n{expected}--- got\n{got}",
+                lang.name
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     // Every language has a sample.
-    let missing: Vec<&str> = all().iter().map(|l| l.name).filter(|n| !languages.contains(n)).collect();
-    assert!(missing.is_empty(), "languages without a sample in testdata/: {missing:?}");
+    let missing: Vec<&str> = all()
+        .iter()
+        .map(|l| l.name)
+        .filter(|n| !languages.contains(n))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "languages without a sample in testdata/: {missing:?}"
+    );
 }
 
 #[test]
@@ -80,7 +104,10 @@ fn every_kind_and_query_exists_in_its_grammar() {
 fn dump() {
     let path = std::path::PathBuf::from(std::env::var("OUTLINE_FILE").unwrap());
     let mut paths: Vec<_> = if path.is_dir() {
-        std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()).collect()
+        std::fs::read_dir(&path)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect()
     } else {
         vec![path]
     };
@@ -94,7 +121,15 @@ fn dump() {
             None => println!("(no outline)"),
             Some(symbols) => {
                 for s in symbols {
-                    println!("{}-{} {}[{}] {} | {}", s.start_line, s.end_line, "  ".repeat(s.depth), s.kind, s.signature, s.name);
+                    println!(
+                        "{}-{} {}[{}] {} | {}",
+                        s.start_line,
+                        s.end_line,
+                        "  ".repeat(s.depth),
+                        s.kind,
+                        s.signature,
+                        s.name
+                    );
                 }
             }
         }
@@ -116,14 +151,34 @@ fn tree() {
     loop {
         let n = cursor.node();
         if n.is_named() {
-            let field = cursor.field_name().map(|f| format!("{f}: ")).unwrap_or_default();
-            let text: String = content[n.start_byte()..n.end_byte()].chars().take(40).collect::<String>().replace('\n', "⏎");
-            println!("{}{field}{} [{}-{}] {text}", "  ".repeat(depth), n.kind(), n.start_position().row + 1, n.end_position().row + 1);
+            let field = cursor
+                .field_name()
+                .map(|f| format!("{f}: "))
+                .unwrap_or_default();
+            let text: String = content[n.start_byte()..n.end_byte()]
+                .chars()
+                .take(40)
+                .collect::<String>()
+                .replace('\n', "⏎");
+            println!(
+                "{}{field}{} [{}-{}] {text}",
+                "  ".repeat(depth),
+                n.kind(),
+                n.start_position().row + 1,
+                n.end_position().row + 1
+            );
         }
-        if cursor.goto_first_child() { depth += 1; continue; }
+        if cursor.goto_first_child() {
+            depth += 1;
+            continue;
+        }
         loop {
-            if cursor.goto_next_sibling() { break; }
-            if !cursor.goto_parent() { return; }
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
             depth -= 1;
         }
     }
@@ -138,8 +193,16 @@ fn lang_name(path: &str, content: &str) -> Option<&'static str> {
 #[test]
 fn languages_are_found_by_extension_file_name_and_path_shape() {
     assert_eq!(lang_name("src/main.rs", ""), Some("Rust"));
-    assert_eq!(lang_name("SRC/MAIN.RS", ""), Some("Rust"), "extensions ignore case");
-    assert_eq!(lang_name("src\\lib\\mod.rs", ""), Some("Rust"), "Windows paths");
+    assert_eq!(
+        lang_name("SRC/MAIN.RS", ""),
+        Some("Rust"),
+        "extensions ignore case"
+    );
+    assert_eq!(
+        lang_name("src\\lib\\mod.rs", ""),
+        Some("Rust"),
+        "Windows paths"
+    );
     assert_eq!(lang_name("app.component.tsx", ""), Some("TSX"));
     assert_eq!(lang_name("types.d.ts", ""), Some("TypeScript"));
     assert_eq!(lang_name("Makefile", ""), Some("Make"));
@@ -150,7 +213,11 @@ fn languages_are_found_by_extension_file_name_and_path_shape() {
     assert_eq!(lang_name(".bashrc", ""), Some("Bash"));
     assert_eq!(lang_name("notes.txt", ""), None);
     assert_eq!(lang_name("README", ""), None);
-    assert_eq!(lang_name(".gitignore", ""), None, "a dotfile isn't an extension");
+    assert_eq!(
+        lang_name(".gitignore", ""),
+        None,
+        "a dotfile isn't an extension"
+    );
     assert_eq!(lang_name("archive.tar.gz", ""), None);
     assert_eq!(lang_name("makefile.bak", ""), None);
 }
@@ -158,17 +225,39 @@ fn languages_are_found_by_extension_file_name_and_path_shape() {
 #[test]
 fn shared_extensions_are_told_apart_by_content() {
     assert_eq!(lang_name("a.h", "int add(int a, int b);\n"), Some("C"));
-    assert_eq!(lang_name("a.h", "namespace app {\nclass Box {};\n}\n"), Some("C++"));
-    assert_eq!(lang_name("a.h", "#include <vector>\nstd::vector<int> v();\n"), Some("C++"));
-    assert_eq!(lang_name("a.h", "#import <Foundation/Foundation.h>\n@interface A : NSObject\n@end\n"), Some("Objective-C"));
-    assert_eq!(lang_name("a.m", "@implementation A\n@end\n"), Some("Objective-C"));
-    assert_eq!(lang_name("a.m", "function y = f(x)\n  y = x;\nend\n"), Some("MATLAB"));
+    assert_eq!(
+        lang_name("a.h", "namespace app {\nclass Box {};\n}\n"),
+        Some("C++")
+    );
+    assert_eq!(
+        lang_name("a.h", "#include <vector>\nstd::vector<int> v();\n"),
+        Some("C++")
+    );
+    assert_eq!(
+        lang_name(
+            "a.h",
+            "#import <Foundation/Foundation.h>\n@interface A : NSObject\n@end\n"
+        ),
+        Some("Objective-C")
+    );
+    assert_eq!(
+        lang_name("a.m", "@implementation A\n@end\n"),
+        Some("Objective-C")
+    );
+    assert_eq!(
+        lang_name("a.m", "function y = f(x)\n  y = x;\nend\n"),
+        Some("MATLAB")
+    );
 }
 
 // ---- edge cases of the outline itself ----
 
 fn names(path: &str, content: &str) -> Vec<String> {
-    outline(path, content).expect("an outline").into_iter().map(|s| s.name).collect()
+    outline(path, content)
+        .expect("an outline")
+        .into_iter()
+        .map(|s| s.name)
+        .collect()
 }
 
 #[test]
@@ -183,9 +272,16 @@ fn markdown_text_before_the_first_heading_isnt_a_section() {
 fn empty_and_declaration_free_files_have_empty_outlines() {
     assert_eq!(outline("a.rs", ""), Some(vec![]));
     assert_eq!(outline("a.rs", "\n\n   \n"), Some(vec![]));
-    assert_eq!(outline("a.rs", "// just a comment\n/* and another */\n"), Some(vec![]));
+    assert_eq!(
+        outline("a.rs", "// just a comment\n/* and another */\n"),
+        Some(vec![])
+    );
     assert_eq!(outline("a.py", "print('hi')\n"), Some(vec![]));
-    assert_eq!(outline("notes.txt", "fn not_code() {}"), None, "no grammar: no outline");
+    assert_eq!(
+        outline("notes.txt", "fn not_code() {}"),
+        None,
+        "no grammar: no outline"
+    );
 }
 
 #[test]
@@ -194,19 +290,44 @@ fn every_language_handles_empty_and_foreign_content_without_panicking() {
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_none_or(|e| e != "outline"))
-        .map(|p| (p.file_name().unwrap().to_string_lossy().to_string(), std::fs::read_to_string(&p).unwrap()))
+        .map(|p| {
+            (
+                p.file_name().unwrap().to_string_lossy().to_string(),
+                std::fs::read_to_string(&p).unwrap(),
+            )
+        })
         .collect();
-    let junk = ["", "\n", "{{{{", "}}}}", ")))(((", "\u{feff}", "\0\0\0", "é\u{1F600}\u{200B}", "/*", "\"unterminated"];
+    let junk = [
+        "",
+        "\n",
+        "{{{{",
+        "}}}}",
+        ")))(((",
+        "\u{feff}",
+        "\0\0\0",
+        "é\u{1F600}\u{200B}",
+        "/*",
+        "\"unterminated",
+    ];
     for lang in all() {
         let path = lang.sample_name();
         for text in junk {
-            assert!(outline(&path, text).is_some(), "{}: no outline for {text:?}", lang.name);
+            assert!(
+                outline(&path, text).is_some(),
+                "{}: no outline for {text:?}",
+                lang.name
+            );
         }
         // Every other language's sample, parsed as this one.
         for (name, content) in &samples {
-            let symbols = outline(&path, content).unwrap_or_else(|| panic!("{}: no outline for {name}", lang.name));
+            let symbols = outline(&path, content)
+                .unwrap_or_else(|| panic!("{}: no outline for {name}", lang.name));
             for s in symbols {
-                assert!(s.start_line >= 1 && s.start_line <= s.end_line, "{}: {name}: {s:?}", lang.name);
+                assert!(
+                    s.start_line >= 1 && s.start_line <= s.end_line,
+                    "{}: {name}: {s:?}",
+                    lang.name
+                );
             }
         }
     }
@@ -266,7 +387,10 @@ fn unicode_names_and_text_are_kept_whole() {
 fn multi_line_signatures_become_one_line() {
     let src = "pub fn tool_edit_file(\n    root: String,\n    path: String,\n) -> Result<String, String> {\n    todo!()\n}\n";
     let o = outline("a.rs", src).unwrap();
-    assert_eq!(o[0].signature, "pub fn tool_edit_file( root: String, path: String, ) -> Result<String, String>");
+    assert_eq!(
+        o[0].signature,
+        "pub fn tool_edit_file( root: String, path: String, ) -> Result<String, String>"
+    );
 }
 
 #[test]
@@ -284,16 +408,27 @@ fn a_long_declarative_part_isnt_a_signature() {
 fn wrappers_are_part_of_the_range_and_decorators_not_of_the_signature() {
     let py = "@app.route('/x')\n@login_required\ndef handler():\n    pass\n";
     let o = outline("a.py", py).unwrap();
-    assert_eq!((o[0].start_line, o[0].end_line), (1, 4), "decorators belong to it");
+    assert_eq!(
+        (o[0].start_line, o[0].end_line),
+        (1, 4),
+        "decorators belong to it"
+    );
     assert_eq!(o[0].signature, "def handler():");
 
     let ts = "export default async function load(): Promise<void> {\n}\n";
     let o = outline("a.ts", ts).unwrap();
-    assert_eq!(o[0].signature, "export default async function load(): Promise<void>");
+    assert_eq!(
+        o[0].signature,
+        "export default async function load(): Promise<void>"
+    );
 
     let cpp = "template <typename T>\nT max(T a, T b) { return a > b ? a : b; }\n";
     let o = outline("a.cpp", cpp).unwrap();
-    assert_eq!((o[0].start_line, o[0].end_line), (1, 2), "the template line belongs to it");
+    assert_eq!(
+        (o[0].start_line, o[0].end_line),
+        (1, 2),
+        "the template line belongs to it"
+    );
     assert_eq!(o[0].name, "max");
 }
 
@@ -313,7 +448,14 @@ fn nesting_follows_containment() {
     let src = "class A:\n    def m(self):\n        def inner():\n            pass\n    class B:\n        def n(self): pass\ndef top(): pass\n";
     let o = outline("a.py", src).unwrap();
     let shape: Vec<(String, usize)> = o.into_iter().map(|s| (s.name, s.depth)).collect();
-    let expected = [("A", 0), ("m", 1), ("inner", 2), ("B", 1), ("n", 2), ("top", 0)];
+    let expected = [
+        ("A", 0),
+        ("m", 1),
+        ("inner", 2),
+        ("B", 1),
+        ("n", 2),
+        ("top", 0),
+    ];
     assert_eq!(shape, expected.map(|(n, d)| (n.to_string(), d)));
 }
 
@@ -334,17 +476,23 @@ fn deep_nesting_doesnt_overflow() {
 
 #[test]
 fn broken_code_still_outlines_what_parses() {
-    let src = "fn before() {}\nfn broken( {\n    let x = ;\n\nstruct After { a: u8 }\nfn after() {}\n";
+    let src =
+        "fn before() {}\nfn broken( {\n    let x = ;\n\nstruct After { a: u8 }\nfn after() {}\n";
     let got = names("a.rs", src);
     assert_eq!(got.first().map(String::as_str), Some("before"), "{got:?}");
     let src = "def ok():\n    pass\n\ndef bad(:\n    pass\n\ndef also_ok():\n    pass\n";
     let got = names("a.py", src);
-    assert!(got.contains(&"ok".to_string()) && got.contains(&"also_ok".to_string()), "{got:?}");
+    assert!(
+        got.contains(&"ok".to_string()) && got.contains(&"also_ok".to_string()),
+        "{got:?}"
+    );
 }
 
 #[test]
 fn minified_code_on_one_line_is_outlined() {
-    let src: String = (0..500).map(|i| format!("function f{i}(a){{return a+{i}}}")).collect();
+    let src: String = (0..500)
+        .map(|i| format!("function f{i}(a){{return a+{i}}}"))
+        .collect();
     let o = outline("app.min.js", &src).unwrap();
     assert_eq!(o.len(), 500);
     assert!(o.iter().all(|s| s.start_line == 1 && s.end_line == 1));
@@ -371,7 +519,13 @@ fn the_number_of_declarations_is_capped() {
 
 #[test]
 fn outlines_are_deterministic() {
-    for name in ["sample.ts", "sample.rs", "sample.cpp", "sample.ex", "sample.md"] {
+    for name in [
+        "sample.ts",
+        "sample.rs",
+        "sample.cpp",
+        "sample.ex",
+        "sample.md",
+    ] {
         let content = std::fs::read_to_string(testdata().join(name)).unwrap();
         assert_eq!(outline(name, &content), outline(name, &content), "{name}");
     }
@@ -387,7 +541,11 @@ fn a_large_real_world_sized_file_is_quick() {
     let o = outline("big.ts", &src).unwrap();
     assert_eq!(o.len(), 15_000);
     // Generous: catches accidental quadratic work, not machine speed.
-    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
 }
 
 // ---- syntax errors ----
@@ -395,8 +553,14 @@ fn a_large_real_world_sized_file_is_quick() {
 #[test]
 fn clean_files_have_no_syntax_errors() {
     for (name, src) in [
-        ("a.rs", "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n"),
-        ("a.ts", "export function add(a: number, b: number): number {\n  return a + b;\n}\n"),
+        (
+            "a.rs",
+            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+        ),
+        (
+            "a.ts",
+            "export function add(a: number, b: number): number {\n  return a + b;\n}\n",
+        ),
         ("a.py", "def add(a, b):\n    return a + b\n"),
     ] {
         assert_eq!(syntax_errors(name, src), Some(Vec::new()), "{name}");
@@ -405,9 +569,13 @@ fn clean_files_have_no_syntax_errors() {
 
 #[test]
 fn broken_files_report_lines() {
-    let errors = syntax_errors("a.rs", "pub fn add(a: i32, b: i32) -> i32 {\n    a + \n}\n").unwrap();
+    let errors =
+        syntax_errors("a.rs", "pub fn add(a: i32, b: i32) -> i32 {\n    a + \n}\n").unwrap();
     assert!(!errors.is_empty(), "an unfinished expression is an error");
-    assert!(errors.iter().all(|e| e.start_line >= 1 && e.start_col >= 1), "{errors:?}");
+    assert!(
+        errors.iter().all(|e| e.start_line >= 1 && e.start_col >= 1),
+        "{errors:?}"
+    );
     assert!(errors.iter().all(|e| !e.message.is_empty()), "{errors:?}");
 
     let errors = syntax_errors("a.ts", "export function add( {\n  return 1;\n}\n").unwrap();

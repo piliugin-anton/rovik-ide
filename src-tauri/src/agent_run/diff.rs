@@ -37,11 +37,12 @@ fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Op>> {
         trace.push(v.clone());
         let mut k = -d;
         while k <= d {
-            let mut x = if k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize]) {
-                v[(off + k + 1) as usize]
-            } else {
-                v[(off + k - 1) as usize] + 1
-            };
+            let mut x =
+                if k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize]) {
+                    v[(off + k + 1) as usize]
+                } else {
+                    v[(off + k - 1) as usize] + 1
+                };
             let mut y = x - k;
             while x < n && y < m && a[x as usize] == b[y as usize] {
                 x += 1;
@@ -63,7 +64,8 @@ fn backtrack(trace: &[Vec<isize>], n: isize, m: isize, off: isize) -> Vec<Op> {
     for d in (0..trace.len() as isize).rev() {
         let v = &trace[d as usize];
         let k = x - y;
-        let prev_k = if k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize]) {
+        let prev_k = if k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize])
+        {
             k + 1
         } else {
             k - 1
@@ -103,7 +105,11 @@ pub fn diff_lines(a: &[&str], b: &[&str]) -> Vec<Hunk> {
         return Vec::new();
     }
     let Some(ops) = myers(mid_a, mid_b) else {
-        return vec![Hunk { orig_start: start + 1, deleted: owned(mid_a), added: owned(mid_b) }];
+        return vec![Hunk {
+            orig_start: start + 1,
+            deleted: owned(mid_a),
+            added: owned(mid_b),
+        }];
     };
 
     let mut hunks: Vec<Hunk> = Vec::new();
@@ -117,7 +123,11 @@ pub fn diff_lines(a: &[&str], b: &[&str]) -> Vec<Hunk> {
             continue;
         }
         if !open {
-            hunks.push(Hunk { orig_start: start + ai + 1, deleted: Vec::new(), added: Vec::new() });
+            hunks.push(Hunk {
+                orig_start: start + ai + 1,
+                deleted: Vec::new(),
+                added: Vec::new(),
+            });
             open = true;
         }
         let hunk = hunks.last_mut().unwrap();
@@ -134,7 +144,9 @@ pub fn diff_lines(a: &[&str], b: &[&str]) -> Vec<Hunk> {
 
 /// Lines without their \r.
 pub fn split_lines(text: &str) -> Vec<&str> {
-    text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect()
+    text.split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect()
 }
 
 /// The change as a compact diff for the reviewer: changed lines only, with positions.
@@ -163,11 +175,22 @@ mod tests {
         assert_eq!(
             hunks,
             vec![
-                Hunk { orig_start: 2, deleted: vec!["b".into()], added: vec!["B".into()] },
-                Hunk { orig_start: 5, deleted: vec![], added: vec!["x".into()] },
+                Hunk {
+                    orig_start: 2,
+                    deleted: vec!["b".into()],
+                    added: vec!["B".into()]
+                },
+                Hunk {
+                    orig_start: 5,
+                    deleted: vec![],
+                    added: vec!["x".into()]
+                },
             ]
         );
-        assert_eq!(compact_diff(&hunks), "@@ line 2 @@\n-b\n+B\n@@ line 5 @@\n+x");
+        assert_eq!(
+            compact_diff(&hunks),
+            "@@ line 2 @@\n-b\n+B\n@@ line 5 @@\n+x"
+        );
         assert!(diff_lines(&split_lines("a\r\nb"), &split_lines("a\nb")).is_empty());
     }
 
@@ -177,8 +200,22 @@ mod tests {
             split_lines(t)
         }
         // Insertion at the end, deletion of everything, an empty file.
-        assert_eq!(diff_lines(&lines("a"), &lines("a\nb")), vec![Hunk { orig_start: 2, deleted: vec![], added: vec!["b".into()] }]);
-        assert_eq!(diff_lines(&lines("a\nb"), &lines("")), vec![Hunk { orig_start: 1, deleted: vec!["a".into(), "b".into()], added: vec!["".into()] }]);
+        assert_eq!(
+            diff_lines(&lines("a"), &lines("a\nb")),
+            vec![Hunk {
+                orig_start: 2,
+                deleted: vec![],
+                added: vec!["b".into()]
+            }]
+        );
+        assert_eq!(
+            diff_lines(&lines("a\nb"), &lines("")),
+            vec![Hunk {
+                orig_start: 1,
+                deleted: vec!["a".into(), "b".into()],
+                added: vec!["".into()]
+            }]
+        );
         assert!(diff_lines(&lines(""), &lines("")).is_empty());
         // Repeated lines: the change lands on one of them only.
         let hunks = diff_lines(&lines("x\nx\nx"), &lines("x\nx"));
@@ -187,7 +224,10 @@ mod tests {
         // Past the edit-distance limit: one hunk for the whole middle.
         let a: Vec<String> = (0..2_100).map(|i| format!("a{i}")).collect();
         let b: Vec<String> = (0..2_100).map(|i| format!("b{i}")).collect();
-        let (a, b): (Vec<&str>, Vec<&str>) = (a.iter().map(|s| s.as_str()).collect(), b.iter().map(|s| s.as_str()).collect());
+        let (a, b): (Vec<&str>, Vec<&str>) = (
+            a.iter().map(|s| s.as_str()).collect(),
+            b.iter().map(|s| s.as_str()).collect(),
+        );
         let hunks = diff_lines(&a, &b);
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].deleted.len(), 2_100);

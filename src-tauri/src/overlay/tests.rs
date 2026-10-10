@@ -26,7 +26,11 @@ impl Dirs {
 fn setup(files: &[(&str, &str)]) -> Dirs {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
-    let root = std::env::temp_dir().join(format!("overlay-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let root = std::env::temp_dir().join(format!(
+        "overlay-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
     let _ = fs::remove_dir_all(&root);
     let d = Dirs { root };
     fs::create_dir_all(d.project()).unwrap();
@@ -52,7 +56,14 @@ fn read_all(o: &OverlayFs, path: &str) -> String {
 
 fn write_all(o: &OverlayFs, path: &str, content: &str) {
     let i = ino(o, path);
-    o.setattr(i, &SetAttr { size: Some(0), ..Default::default() }).unwrap();
+    o.setattr(
+        i,
+        &SetAttr {
+            size: Some(0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     o.write(i, 0, content.as_bytes()).unwrap();
 }
 
@@ -77,22 +88,46 @@ fn untouched_files_read_through_and_writes_stay_in_the_overlay() {
 
     write_all(&o, "src/a.txt", "changed\n");
     assert_eq!(read_all(&o, "src/a.txt"), "changed\n");
-    assert_eq!(fs::read_to_string(d.project().join("src/a.txt")).unwrap(), "one\n");
+    assert_eq!(
+        fs::read_to_string(d.project().join("src/a.txt")).unwrap(),
+        "one\n"
+    );
     let changes = o.changes();
     assert_eq!(paths(&changes), vec!["+src/a.txt"]);
-    let OverlayChange::Write { base_copy: Some(base), upper: Some(upper), .. } = &changes[0] else { panic!() };
+    let OverlayChange::Write {
+        base_copy: Some(base),
+        upper: Some(upper),
+        ..
+    } = &changes[0]
+    else {
+        panic!()
+    };
     assert_eq!(fs::read_to_string(base).unwrap(), "one\n");
     assert_eq!(fs::read_to_string(upper).unwrap(), "changed\n");
 }
 
 #[test]
 fn creates_deletes_and_renames_are_listed_for_landing() {
-    let d = setup(&[("a.txt", "a"), ("dir/b.txt", "b"), ("dir/c.txt", "c"), ("keep.txt", "k")]);
+    let d = setup(&[
+        ("a.txt", "a"),
+        ("dir/b.txt", "b"),
+        ("dir/c.txt", "c"),
+        ("keep.txt", "k"),
+    ]);
     let o = overlay(&d);
-    let f = o.create(ROOT, "new.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+    let f = o
+        .create(ROOT, "new.txt", Kind::File, 0o644, 0, 0, None)
+        .unwrap();
     o.write(f.ino, 0, b"new").unwrap();
     o.unlink(ROOT, "a.txt").unwrap();
-    o.rename(ino(&o, "dir"), "b.txt", ROOT, "b-moved.txt", RenameMode::Replace).unwrap();
+    o.rename(
+        ino(&o, "dir"),
+        "b.txt",
+        ROOT,
+        "b-moved.txt",
+        RenameMode::Replace,
+    )
+    .unwrap();
     assert_eq!(o.lookup(ROOT, "a.txt").unwrap_err(), VfsError::NotFound);
     assert_eq!(read_all(&o, "b-moved.txt"), "b");
     assert_eq!(
@@ -100,15 +135,27 @@ fn creates_deletes_and_renames_are_listed_for_landing() {
         vec!["-a.txt", "+b-moved.txt", "-dir/b.txt", "+new.txt"]
     );
     // Moved back: no change left there.
-    o.rename(ROOT, "b-moved.txt", ino(&o, "dir"), "b.txt", RenameMode::Replace).unwrap();
+    o.rename(
+        ROOT,
+        "b-moved.txt",
+        ino(&o, "dir"),
+        "b.txt",
+        RenameMode::Replace,
+    )
+    .unwrap();
     assert_eq!(paths(&o.changes()), vec!["-a.txt", "+new.txt"]);
 }
 
 #[test]
 fn a_moved_folder_keeps_its_files_and_a_replaced_one_is_deleted_first() {
-    let d = setup(&[("old/x.txt", "x"), ("old/sub/y.txt", "y"), ("src/z.txt", "z")]);
+    let d = setup(&[
+        ("old/x.txt", "x"),
+        ("old/sub/y.txt", "y"),
+        ("src/z.txt", "z"),
+    ]);
     let o = overlay(&d);
-    o.rename(ROOT, "old", ROOT, "new", RenameMode::Replace).unwrap();
+    o.rename(ROOT, "old", ROOT, "new", RenameMode::Replace)
+        .unwrap();
     assert_eq!(read_all(&o, "new/sub/y.txt"), "y");
     // `rm -rf src && mkdir src`: the project's src goes, the new one comes.
     let src = ino(&o, "src");
@@ -117,7 +164,15 @@ fn a_moved_folder_keeps_its_files_and_a_replaced_one_is_deleted_first() {
     o.create(ROOT, "src", Kind::Dir, 0o755, 0, 0, None).unwrap();
     assert_eq!(
         paths(&o.changes()),
-        vec!["-old", "-src", "+new", "+new/sub", "+new/sub/y.txt", "+new/x.txt", "+src"]
+        vec![
+            "-old",
+            "-src",
+            "+new",
+            "+new/sub",
+            "+new/sub/y.txt",
+            "+new/x.txt",
+            "+src"
+        ]
     );
 }
 
@@ -130,7 +185,12 @@ fn files_appearing_in_the_project_show_up_unless_the_chat_removed_them() {
     fs::write(d.project().join("later.txt"), "l").unwrap();
     // What the project's watcher (or a landing) tells the overlay.
     o.project_changed(&["later.txt".to_string()]);
-    let names: Vec<String> = o.readdir_plus(ROOT).unwrap().into_iter().map(|(e, _)| e.name).collect();
+    let names: Vec<String> = o
+        .readdir_plus(ROOT)
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.name)
+        .collect();
     assert_eq!(names, vec!["later.txt"]);
     // Untouched entries that leave the project leave the view too.
     fs::remove_file(d.project().join("later.txt")).unwrap();
@@ -144,19 +204,33 @@ fn the_limit_counts_changes_but_not_build_output() {
     let o = OverlayFs::open(&d.project(), &d.store(), 1000).unwrap();
     let warned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let w = warned.clone();
-    o.on_warn(Box::new(move |_, _| w.store(true, std::sync::atomic::Ordering::Relaxed)));
+    o.on_warn(Box::new(move |_, _| {
+        w.store(true, std::sync::atomic::Ordering::Relaxed)
+    }));
     let a = ino(&o, "src/a.txt");
     o.write(a, 0, &[b'x'; 700]).unwrap();
     assert!(!warned.load(std::sync::atomic::Ordering::Relaxed));
     o.write(a, 700, &[b'x'; 150]).unwrap();
     assert!(warned.load(std::sync::atomic::Ordering::Relaxed));
-    assert_eq!(o.write(a, 850, &[b'x'; 200]).unwrap_err(), VfsError::NoSpace);
+    assert_eq!(
+        o.write(a, 850, &[b'x'; 200]).unwrap_err(),
+        VfsError::NoSpace
+    );
     // Build output doesn't count.
-    let target = o.create(ROOT, "target", Kind::Dir, 0o755, 0, 0, None).unwrap();
-    let big = o.create(target.ino, "app", Kind::File, 0o755, 0, 0, None).unwrap();
+    let target = o
+        .create(ROOT, "target", Kind::Dir, 0o755, 0, 0, None)
+        .unwrap();
+    let big = o
+        .create(target.ino, "app", Kind::File, 0o755, 0, 0, None)
+        .unwrap();
     o.write(big.ino, 0, &[0; 5000]).unwrap();
     assert_eq!(o.used().0, 850);
-    let OverlayChange::Write { by_product, .. } = o.changes().into_iter().find(|c| c.path() == "target/app").unwrap() else {
+    let OverlayChange::Write { by_product, .. } = o
+        .changes()
+        .into_iter()
+        .find(|c| c.path() == "target/app")
+        .unwrap()
+    else {
         panic!()
     };
     assert!(by_product);
@@ -169,10 +243,20 @@ fn an_overlay_reopens_as_it_was() {
         let o = overlay(&d);
         write_all(&o, "a.txt", "A");
         o.unlink(ROOT, "gone.txt").unwrap();
-        o.rename(ROOT, "dir", ROOT, "dir2", RenameMode::Replace).unwrap();
-        let n = o.create(ROOT, "n.txt", Kind::File, 0o600, 0, 0, None).unwrap();
+        o.rename(ROOT, "dir", ROOT, "dir2", RenameMode::Replace)
+            .unwrap();
+        let n = o
+            .create(ROOT, "n.txt", Kind::File, 0o600, 0, 0, None)
+            .unwrap();
         o.write(n.ino, 0, b"N").unwrap();
-        o.setattr(ino(&o, "dir2/b.txt"), &SetAttr { perm: Some(0o755), ..Default::default() }).unwrap();
+        o.setattr(
+            ino(&o, "dir2/b.txt"),
+            &SetAttr {
+                perm: Some(0o755),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         o.flush();
     }
     let o = overlay(&d);
@@ -182,20 +266,52 @@ fn an_overlay_reopens_as_it_was() {
     assert_eq!(o.getattr(ino(&o, "dir2/b.txt")).unwrap().perm, 0o755);
     assert_eq!(o.lookup(ROOT, "gone.txt").unwrap_err(), VfsError::NotFound);
     assert_eq!(o.lookup(ROOT, "dir").unwrap_err(), VfsError::NotFound);
-    assert_eq!(paths(&o.changes()), vec!["-dir", "-gone.txt", "+a.txt", "+dir2", "+dir2/b.txt", "+n.txt"]);
+    assert_eq!(
+        paths(&o.changes()),
+        vec![
+            "-dir",
+            "-gone.txt",
+            "+a.txt",
+            "+dir2",
+            "+dir2/b.txt",
+            "+n.txt"
+        ]
+    );
 }
 
 #[test]
 fn renames_follow_posix_rules() {
-    let d = setup(&[("f.txt", "f"), ("g.txt", "g"), ("d/x", "x"), ("e/.keep", "")]);
+    let d = setup(&[
+        ("f.txt", "f"),
+        ("g.txt", "g"),
+        ("d/x", "x"),
+        ("e/.keep", ""),
+    ]);
     let o = overlay(&d);
-    assert_eq!(o.rename(ROOT, "f.txt", ROOT, "g.txt", RenameMode::NoReplace).unwrap_err(), VfsError::Exists);
-    o.rename(ROOT, "f.txt", ROOT, "g.txt", RenameMode::Exchange).unwrap();
+    assert_eq!(
+        o.rename(ROOT, "f.txt", ROOT, "g.txt", RenameMode::NoReplace)
+            .unwrap_err(),
+        VfsError::Exists
+    );
+    o.rename(ROOT, "f.txt", ROOT, "g.txt", RenameMode::Exchange)
+        .unwrap();
     assert_eq!(read_all(&o, "g.txt"), "f");
     assert_eq!(read_all(&o, "f.txt"), "g");
-    assert_eq!(o.rename(ROOT, "d", ino(&o, "d"), "inside", RenameMode::Replace).unwrap_err(), VfsError::Invalid);
-    assert_eq!(o.rename(ROOT, "f.txt", ROOT, "d", RenameMode::Replace).unwrap_err(), VfsError::IsDir);
-    assert_eq!(o.rename(ROOT, "e", ROOT, "d", RenameMode::Replace).unwrap_err(), VfsError::NotEmpty);
+    assert_eq!(
+        o.rename(ROOT, "d", ino(&o, "d"), "inside", RenameMode::Replace)
+            .unwrap_err(),
+        VfsError::Invalid
+    );
+    assert_eq!(
+        o.rename(ROOT, "f.txt", ROOT, "d", RenameMode::Replace)
+            .unwrap_err(),
+        VfsError::IsDir
+    );
+    assert_eq!(
+        o.rename(ROOT, "e", ROOT, "d", RenameMode::Replace)
+            .unwrap_err(),
+        VfsError::NotEmpty
+    );
     assert_eq!(o.rmdir(ROOT, "d").unwrap_err(), VfsError::NotEmpty);
     // A hard link shares the content; removing one name keeps the other.
     let f = ino(&o, "f.txt");
@@ -210,7 +326,9 @@ fn renames_follow_posix_rules() {
 fn a_file_unlinked_while_open_stays_readable_until_released() {
     let d = setup(&[]);
     let o = overlay(&d);
-    let f = o.create(ROOT, "tmp", Kind::File, 0o644, 0, 0, None).unwrap();
+    let f = o
+        .create(ROOT, "tmp", Kind::File, 0o644, 0, 0, None)
+        .unwrap();
     o.write(f.ino, 0, b"data").unwrap();
     o.open(f.ino, false).unwrap();
     o.unlink(ROOT, "tmp").unwrap();
@@ -240,30 +358,74 @@ mod mounted {
     }
 
     fn sh(dir: &Path, cmd: &str) {
-        let ok = std::process::Command::new("sh").args(["-c", cmd]).current_dir(dir).status().unwrap().success();
+        let ok = std::process::Command::new("sh")
+            .args(["-c", cmd])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success();
         assert!(ok, "{cmd}");
     }
 
     #[test]
     #[ignore] // needs FUSE: cargo test -- --ignored
     fn common_tools_change_only_the_overlay() {
-        let d = setup(&[("src/main.rs", "fn main() {}\n"), ("README.md", "hi\n"), ("old/x", "x\n")]);
-        let Some((m, view, o)) = mount(&d) else { return };
+        let d = setup(&[
+            ("src/main.rs", "fn main() {}\n"),
+            ("README.md", "hi\n"),
+            ("old/x", "x\n"),
+        ]);
+        let Some((m, view, o)) = mount(&d) else {
+            return;
+        };
         sh(&view, "sed -i 's/main/start/' src/main.rs");
-        sh(&view, "echo more >> README.md && mkdir -p docs/a && echo doc > docs/a/b.md");
-        sh(&view, "mv old renamed && rm README.md && chmod +x src/main.rs && ln -s src/main.rs link");
+        sh(
+            &view,
+            "echo more >> README.md && mkdir -p docs/a && echo doc > docs/a/b.md",
+        );
+        sh(
+            &view,
+            "mv old renamed && rm README.md && chmod +x src/main.rs && ln -s src/main.rs link",
+        );
         sh(&view, "test \"$(cat src/main.rs)\" = 'fn start() {}' && test -x src/main.rs && test \"$(cat link)\" = 'fn start() {}'");
         // The project is untouched.
-        assert_eq!(fs::read_to_string(d.project().join("src/main.rs")).unwrap(), "fn main() {}\n");
+        assert_eq!(
+            fs::read_to_string(d.project().join("src/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
         assert!(d.project().join("README.md").exists());
         assert!(d.project().join("old/x").exists());
         let mut p = paths(&o.changes());
         p.sort();
-        assert_eq!(p, vec!["+docs", "+docs/a", "+docs/a/b.md", "+link", "+renamed", "+renamed/x", "+src/main.rs", "-README.md", "-old"]);
+        assert_eq!(
+            p,
+            vec![
+                "+docs",
+                "+docs/a",
+                "+docs/a/b.md",
+                "+link",
+                "+renamed",
+                "+renamed/x",
+                "+src/main.rs",
+                "-README.md",
+                "-old"
+            ]
+        );
         // `sed -i` saved through a temporary file: still the same file, with
         // what it was before as the base to merge against.
-        let main = o.changes().into_iter().find(|c| c.path() == "src/main.rs").unwrap();
-        let OverlayChange::Write { origin, base_copy: Some(base), .. } = main else { panic!("{main:?}") };
+        let main = o
+            .changes()
+            .into_iter()
+            .find(|c| c.path() == "src/main.rs")
+            .unwrap();
+        let OverlayChange::Write {
+            origin,
+            base_copy: Some(base),
+            ..
+        } = main
+        else {
+            panic!("{main:?}")
+        };
         assert_eq!(origin.as_deref(), Some("src/main.rs"));
         assert_eq!(fs::read_to_string(base).unwrap(), "fn main() {}\n");
         m.unmount().unwrap();
@@ -272,13 +434,19 @@ mod mounted {
     #[test]
     #[ignore] // needs FUSE
     fn random_operations_match_a_plain_copy() {
-        let files: Vec<(String, String)> =
-            (0..6).map(|i| (format!("d{}/f{i}.txt", i % 3), format!("content {i}\n"))).collect();
-        let refs: Vec<(&str, &str)> = files.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let files: Vec<(String, String)> = (0..6)
+            .map(|i| (format!("d{}/f{i}.txt", i % 3), format!("content {i}\n")))
+            .collect();
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
         let d = setup(&refs);
         let copy = d.root.join("copy");
         sh(&d.root, "cp -r project copy");
-        let Some((m, view, _o)) = mount(&d) else { return };
+        let Some((m, view, _o)) = mount(&d) else {
+            return;
+        };
         let mut seed: u64 = 0x2545F4914F6CDD1D;
         let mut next = |n: u64| {
             seed ^= seed << 13;
@@ -294,7 +462,11 @@ mod mounted {
                 let (pa, pb) = (root.join(&a), root.join(&b));
                 match op {
                     0 => fs::write(&pa, format!("step {step}\n")).is_ok(),
-                    1 => fs::OpenOptions::new().append(true).open(&pa).and_then(|mut f| std::io::Write::write_all(&mut f, b"+")).is_ok(),
+                    1 => fs::OpenOptions::new()
+                        .append(true)
+                        .open(&pa)
+                        .and_then(|mut f| std::io::Write::write_all(&mut f, b"+"))
+                        .is_ok(),
                     2 => fs::remove_file(&pa).is_ok(),
                     3 => fs::rename(&pa, &pb).is_ok(),
                     4 => fs::create_dir_all(pa.parent().unwrap()).is_ok(),
@@ -314,7 +486,12 @@ mod mounted {
         while let Some(dir) = stack.pop() {
             for e in fs::read_dir(&dir).unwrap() {
                 let e = e.unwrap();
-                let rel = e.path().strip_prefix(root).unwrap().to_string_lossy().into_owned();
+                let rel = e
+                    .path()
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
                 if e.file_type().unwrap().is_dir() {
                     out.push((rel, None));
                     stack.push(e.path());
@@ -337,7 +514,10 @@ mod landing {
     }
 
     fn landable(o: &OverlayFs) -> Vec<OverlayChange> {
-        o.changes().into_iter().filter(|c| !c.by_product()).collect()
+        o.changes()
+            .into_iter()
+            .filter(|c| !c.by_product())
+            .collect()
     }
 
     fn project_file(d: &Dirs, rel: &str) -> Option<String> {
@@ -346,15 +526,24 @@ mod landing {
 
     #[test]
     fn changes_land_and_undo_puts_everything_back() {
-        let d = setup(&[("a.txt", "one\n"), ("old/x.txt", "x\n"), ("gone.txt", "g\n")]);
+        let d = setup(&[
+            ("a.txt", "one\n"),
+            ("old/x.txt", "x\n"),
+            ("gone.txt", "g\n"),
+        ]);
         let o = overlay(&d);
         write_all(&o, "a.txt", "ONE\n");
         o.unlink(ROOT, "gone.txt").unwrap();
-        o.rename(ROOT, "old", ROOT, "new", RenameMode::Replace).unwrap();
-        let n = o.create(ROOT, "n.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+        o.rename(ROOT, "old", ROOT, "new", RenameMode::Replace)
+            .unwrap();
+        let n = o
+            .create(ROOT, "n.txt", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
         o.write(n.ino, 0, b"N\n").unwrap();
 
-        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
         assert_eq!(project_file(&d, "a.txt").as_deref(), Some("ONE\n"));
         assert_eq!(project_file(&d, "n.txt").as_deref(), Some("N\n"));
         assert_eq!(project_file(&d, "new/x.txt").as_deref(), Some("x\n"));
@@ -370,7 +559,10 @@ mod landing {
         assert_eq!(project_file(&d, "gone.txt").as_deref(), Some("g\n"));
         assert!(project_file(&d, "n.txt").is_none());
         assert!(!d.project().join("new").exists());
-        assert!(land::latest(&data(&d), "chat").is_none(), "undone landings can't be undone again");
+        assert!(
+            land::latest(&data(&d), "chat").is_none(),
+            "undone landings can't be undone again"
+        );
     }
 
     #[test]
@@ -383,7 +575,10 @@ mod landing {
         let plan = land::plan(&d.project(), &landable(&o), false);
         assert!(plan.merged && plan.conflicts.is_empty());
         land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap();
-        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("ONE\n2\n3\n4\nFIVE\n"));
+        assert_eq!(
+            project_file(&d, "a.txt").as_deref(),
+            Some("ONE\n2\n3\n4\nFIVE\n")
+        );
     }
 
     #[test]
@@ -393,7 +588,9 @@ mod landing {
         write_all(&o, "a.txt", "chat\n2\n");
         write_all(&o, "b.txt", "B\n");
         fs::write(d.project().join("a.txt"), "project\n2\n").unwrap();
-        let Err(LandError::Conflicts(c)) = land::land(&data(&d), "chat", &d.project(), &landable(&o), false) else {
+        let Err(LandError::Conflicts(c)) =
+            land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+        else {
             panic!("expected a conflict")
         };
         assert_eq!(c.len(), 1);
@@ -422,7 +619,11 @@ mod landing {
         let o = overlay(&d);
         write_all(&o, "a.txt", "A\n");
         fs::write(d.project().join("a.txt"), "A\n").unwrap();
-        assert!(land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().is_none());
+        assert!(
+            land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -434,8 +635,14 @@ mod landing {
         // As if the app died after writing the journal, before the files.
         fs::write(d.project().join("a.txt"), "one\n").unwrap();
         let (id, _, _) = land::latest(&data(&d), "chat").unwrap();
-        let journal = data(&d).join("landings").join("chat").join(&id).join("journal.json");
-        let text = fs::read_to_string(&journal).unwrap().replace("\"done\"", "\"applying\"");
+        let journal = data(&d)
+            .join("landings")
+            .join("chat")
+            .join(&id)
+            .join("journal.json");
+        let text = fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
         fs::write(&journal, text).unwrap();
         let done = land::recover(&data(&d));
         assert_eq!(done, vec!["a.txt"]);
@@ -471,7 +678,8 @@ fn a_rebased_file_survives_reopening() {
         write_all(&o, "a.txt", "A\n2\n3\n");
         write_all(&o, "b.txt", "chat\n");
         fs::write(d.project().join("a.txt"), "P\n2\n3\n").unwrap();
-        o.rebase_file("a.txt", Some(b"PA\n2\n3\n"), Some(b"P\n2\n3\n")).unwrap();
+        o.rebase_file("a.txt", Some(b"PA\n2\n3\n"), Some(b"P\n2\n3\n"))
+            .unwrap();
         // Resolved by deleting it: gone from the view, and a delete lands.
         o.rebase_file("b.txt", None, Some(b"b\n")).unwrap();
         o.flush();
@@ -496,7 +704,10 @@ mod safety {
     }
 
     fn landable(o: &OverlayFs) -> Vec<OverlayChange> {
-        o.changes().into_iter().filter(|c| !c.by_product()).collect()
+        o.changes()
+            .into_iter()
+            .filter(|c| !c.by_product())
+            .collect()
     }
 
     fn project_file(d: &Dirs, rel: &str) -> Option<String> {
@@ -513,10 +724,15 @@ mod safety {
         let plan = land::plan(&d.project(), &landable(&o), false);
         assert_eq!(plan.conflicts.len(), 1, "{:?}", plan.conflicts);
         assert_eq!(plan.conflicts[0].path, "a.txt");
-        assert!(matches!(land::land(&data(&d), "chat", &d.project(), &landable(&o), false), Err(LandError::Conflicts(_))));
+        assert!(matches!(
+            land::land(&data(&d), "chat", &d.project(), &landable(&o), false),
+            Err(LandError::Conflicts(_))
+        ));
         assert_eq!(project_file(&d, "a.txt").as_deref(), Some("user's edit\n"));
         // Land anyway: the chat's delete wins.
-        land::land(&data(&d), "chat", &d.project(), &landable(&o), true).unwrap().unwrap();
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), true)
+            .unwrap()
+            .unwrap();
         assert!(project_file(&d, "a.txt").is_none());
     }
 
@@ -542,10 +758,18 @@ mod safety {
         o.rmdir(ROOT, "x").unwrap();
         fs::write(d.project().join("x/new.txt"), "user's\n").unwrap();
         let plan = land::plan(&d.project(), &landable(&o), false);
-        assert_eq!(plan.conflicts.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), vec!["x"]);
+        assert_eq!(
+            plan.conflicts
+                .iter()
+                .map(|c| c.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["x"]
+        );
         // Unchanged, it goes.
         fs::remove_file(d.project().join("x/new.txt")).unwrap();
-        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
         assert!(!d.project().join("x").exists());
     }
 
@@ -554,11 +778,17 @@ mod safety {
         let d = setup(&[("a.txt", "1\n2\n3\n4\n5\n")]);
         let o = overlay(&d);
         write_all(&o, "a.txt", "ONE\n2\n3\n4\n5\n");
-        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace).unwrap();
+        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace)
+            .unwrap();
         // The project changes another line of the original meanwhile.
         fs::write(d.project().join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
-        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
-        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("ONE\n2\n3\n4\nFIVE\n"));
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            project_file(&d, "b.txt").as_deref(),
+            Some("ONE\n2\n3\n4\nFIVE\n")
+        );
         assert!(project_file(&d, "a.txt").is_none());
     }
 
@@ -566,8 +796,11 @@ mod safety {
     fn a_moved_untouched_file_lands_at_its_new_place() {
         let d = setup(&[("a.txt", "same\n")]);
         let o = overlay(&d);
-        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace).unwrap();
-        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace)
+            .unwrap();
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
         assert_eq!(project_file(&d, "b.txt").as_deref(), Some("same\n"));
         assert!(project_file(&d, "a.txt").is_none());
     }
@@ -577,13 +810,20 @@ mod safety {
         let d = setup(&[("gen.txt", "1\n2\n3\n4\n5\n")]);
         let o = overlay(&d);
         o.unlink(ROOT, "gen.txt").unwrap();
-        let n = o.create(ROOT, "gen.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+        let n = o
+            .create(ROOT, "gen.txt", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
         o.write(n.ino, 0, b"GEN\n2\n3\n4\n5\n").unwrap();
         fs::write(d.project().join("gen.txt"), "1\n2\n3\n4\nUSER\n").unwrap();
         let plan = land::plan(&d.project(), &landable(&o), false);
         assert!(plan.conflicts.is_empty(), "{:?}", plan.conflicts);
-        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
-        assert_eq!(project_file(&d, "gen.txt").as_deref(), Some("GEN\n2\n3\n4\nUSER\n"));
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            project_file(&d, "gen.txt").as_deref(),
+            Some("GEN\n2\n3\n4\nUSER\n")
+        );
     }
 
     #[test]
@@ -596,11 +836,17 @@ mod safety {
         *land::FAIL_WRITING.lock().unwrap() = Some((d.project(), "b.txt".into()));
         let result = land::land(&data(&d), "chat-fail", &d.project(), &landable(&o), false);
         *land::FAIL_WRITING.lock().unwrap() = None;
-        assert!(matches!(result, Err(LandError::Failed(ref e)) if e.contains("nothing landed")), "{result:?}");
+        assert!(
+            matches!(result, Err(LandError::Failed(ref e)) if e.contains("nothing landed")),
+            "{result:?}"
+        );
         for (f, was) in [("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")] {
             assert_eq!(project_file(&d, f).as_deref(), Some(was), "{f}");
         }
-        assert!(land::latest(&data(&d), "chat-fail").is_none(), "nothing to undo");
+        assert!(
+            land::latest(&data(&d), "chat-fail").is_none(),
+            "nothing to undo"
+        );
         // Nothing for recovery to finish either.
         assert!(land::recover(&data(&d)).is_empty());
     }
@@ -611,18 +857,29 @@ mod safety {
         let o = overlay(&d);
         write_all(&o, "a.txt", "A\n");
         write_all(&o, "b.txt", "B\n");
-        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
         // As if the app crashed before writing anything: the project as it
         // was, the journal "applying"; then the user edits b.txt.
-        let journal = data(&d).join("landings").join("chat").join(&landed.id).join("journal.json");
-        let text = fs::read_to_string(&journal).unwrap().replace("\"done\"", "\"applying\"");
+        let journal = data(&d)
+            .join("landings")
+            .join("chat")
+            .join(&landed.id)
+            .join("journal.json");
+        let text = fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
         fs::write(&journal, text).unwrap();
         fs::write(d.project().join("a.txt"), "a\n").unwrap();
         fs::write(d.project().join("b.txt"), "user's\n").unwrap();
         let report = land::recover(&data(&d));
         assert_eq!(project_file(&d, "a.txt").as_deref(), Some("A\n"));
         assert_eq!(project_file(&d, "b.txt").as_deref(), Some("user's\n"));
-        assert!(report.iter().any(|r| r.starts_with("b.txt (not finished")), "{report:?}");
+        assert!(
+            report.iter().any(|r| r.starts_with("b.txt (not finished")),
+            "{report:?}"
+        );
     }
 
     #[test]
@@ -631,7 +888,9 @@ mod safety {
         let o = overlay(&d);
         write_all(&o, "a.txt", "ONE\n");
         write_all(&o, "b.txt", "TWO\n");
-        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
         // As if the first undo put a.txt back, then failed before b.txt.
         fs::write(d.project().join("a.txt"), "one\n").unwrap();
         let kept = land::undo(&data(&d), "chat", &d.project(), &landed.id).unwrap();
@@ -644,15 +903,31 @@ mod safety {
     fn undo_keeps_files_added_to_a_landed_folder() {
         let d = setup(&[]);
         let o = overlay(&d);
-        let dir = o.create(ROOT, "feat", Kind::Dir, 0o755, 0, 0, None).unwrap();
-        let f = o.create(dir.ino, "a.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+        let dir = o
+            .create(ROOT, "feat", Kind::Dir, 0o755, 0, 0, None)
+            .unwrap();
+        let f = o
+            .create(dir.ino, "a.txt", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
         o.write(f.ino, 0, b"a\n").unwrap();
-        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
         fs::write(d.project().join("feat/b.txt"), "user's\n").unwrap();
         let kept = land::undo(&data(&d), "chat", &d.project(), &landed.id).unwrap();
-        assert!(project_file(&d, "feat/a.txt").is_none(), "the landed file goes");
-        assert_eq!(project_file(&d, "feat/b.txt").as_deref(), Some("user's\n"), "the user's stays");
-        assert_eq!(kept.iter().map(|k| k.path.as_str()).collect::<Vec<_>>(), vec!["feat"]);
+        assert!(
+            project_file(&d, "feat/a.txt").is_none(),
+            "the landed file goes"
+        );
+        assert_eq!(
+            project_file(&d, "feat/b.txt").as_deref(),
+            Some("user's\n"),
+            "the user's stays"
+        );
+        assert_eq!(
+            kept.iter().map(|k| k.path.as_str()).collect::<Vec<_>>(),
+            vec!["feat"]
+        );
     }
 
     #[cfg(unix)]
@@ -665,10 +940,15 @@ mod safety {
         o.unlink(x, "a.txt").unwrap();
         o.unlink(x, "link").unwrap();
         o.rmdir(ROOT, "x").unwrap();
-        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
         assert!(!d.project().join("x").exists());
         land::undo(&data(&d), "chat", &d.project(), &landed.id).unwrap();
-        assert_eq!(fs::read_link(d.project().join("x/link")).unwrap(), PathBuf::from("a.txt"));
+        assert_eq!(
+            fs::read_link(d.project().join("x/link")).unwrap(),
+            PathBuf::from("a.txt")
+        );
     }
 
     #[test]
@@ -679,9 +959,12 @@ mod safety {
             write_all(&o, "a.txt", "first\n");
             o.flush();
             // `sed -i`: a new file renamed over it, and no save before the crash.
-            let t = o.create(ROOT, "tmp", Kind::File, 0o644, 0, 0, None).unwrap();
+            let t = o
+                .create(ROOT, "tmp", Kind::File, 0o644, 0, 0, None)
+                .unwrap();
             o.write(t.ino, 0, b"second\n").unwrap();
-            o.rename(ROOT, "tmp", ROOT, "a.txt", RenameMode::Replace).unwrap();
+            o.rename(ROOT, "tmp", ROOT, "a.txt", RenameMode::Replace)
+                .unwrap();
         }
         // The saved list still names the first version, whose file is still there.
         let o = overlay(&d);
@@ -713,7 +996,8 @@ mod safety {
         let o = overlay(&d);
         write_all(&o, "a.txt", "A\n2\n3\n");
         let (_, old_base) = o.versions("a.txt").unwrap();
-        o.rebase_file("a.txt", Some(b"merged\n"), Some(b"project\n")).unwrap();
+        o.rebase_file("a.txt", Some(b"merged\n"), Some(b"project\n"))
+            .unwrap();
         assert_eq!(read_all(&o, "a.txt"), "merged\n");
         let (upper, base) = o.versions("a.txt").unwrap();
         assert_eq!(fs::read(base).unwrap(), b"project\n");
@@ -729,7 +1013,10 @@ mod second_review {
     use crate::overlay::land;
 
     fn landable(o: &OverlayFs) -> Vec<OverlayChange> {
-        o.changes().into_iter().filter(|c| !c.by_product()).collect()
+        o.changes()
+            .into_iter()
+            .filter(|c| !c.by_product())
+            .collect()
     }
 
     #[test]
@@ -739,15 +1026,23 @@ mod second_review {
         let o = overlay(&d);
         o.unlink(ROOT, "a.txt").unwrap();
         fs::write(d.project().join("a.txt"), "user\n").unwrap();
-        assert_eq!(land::plan(&d.project(), &landable(&o), false).conflicts.len(), 1);
+        assert_eq!(
+            land::plan(&d.project(), &landable(&o), false)
+                .conflicts
+                .len(),
+            1
+        );
         o.rebase_file("a.txt", None, Some(b"user\n")).unwrap();
-        assert!(land::plan(&d.project(), &landable(&o), false).conflicts.is_empty());
+        assert!(land::plan(&d.project(), &landable(&o), false)
+            .conflicts
+            .is_empty());
         // Keeping the project's file.
         let d = setup(&[("a.txt", "one\n")]);
         let o = overlay(&d);
         o.unlink(ROOT, "a.txt").unwrap();
         fs::write(d.project().join("a.txt"), "user\n").unwrap();
-        o.rebase_file("a.txt", Some(b"user\n"), Some(b"user\n")).unwrap();
+        o.rebase_file("a.txt", Some(b"user\n"), Some(b"user\n"))
+            .unwrap();
         let plan = land::plan(&d.project(), &landable(&o), false);
         assert!(plan.conflicts.is_empty(), "{:?}", plan.conflicts);
         assert!(plan.is_empty(), "the project already has it");
@@ -765,7 +1060,13 @@ mod second_review {
         o.unlink(x, "b.txt").unwrap();
         o.rmdir(ROOT, "x").unwrap();
         let plan = land::plan(&d.project(), &landable(&o), false);
-        assert_eq!(plan.conflicts.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), vec!["x"]);
+        assert_eq!(
+            plan.conflicts
+                .iter()
+                .map(|c| c.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["x"]
+        );
     }
 
     #[test]
@@ -774,13 +1075,20 @@ mod second_review {
         let o = overlay(&d);
         o.unlink(ROOT, "x").unwrap();
         let dir = o.create(ROOT, "x", Kind::Dir, 0o755, 0, 0, None).unwrap();
-        let f = o.create(dir.ino, "a.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+        let f = o
+            .create(dir.ino, "a.txt", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
         o.write(f.ino, 0, b"a\n").unwrap();
         let data = d.root.join("data");
-        let landed = land::land(&data, "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        let landed = land::land(&data, "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
         fs::write(d.project().join("x/b.txt"), "user's\n").unwrap();
         let kept = land::undo(&data, "chat", &d.project(), &landed.id).unwrap();
-        assert_eq!(fs::read_to_string(d.project().join("x/b.txt")).unwrap(), "user's\n");
+        assert_eq!(
+            fs::read_to_string(d.project().join("x/b.txt")).unwrap(),
+            "user's\n"
+        );
         assert!(kept.iter().any(|k| k.path == "x"), "{kept:?}");
     }
 
@@ -788,11 +1096,15 @@ mod second_review {
     fn a_file_moved_away_and_back_isnt_remembered_as_deleted() {
         let d = setup(&[("a.txt", "one\n")]);
         let o = overlay(&d);
-        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace).unwrap();
-        o.rename(ROOT, "b.txt", ROOT, "a.txt", RenameMode::Replace).unwrap();
+        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace)
+            .unwrap();
+        o.rename(ROOT, "b.txt", ROOT, "a.txt", RenameMode::Replace)
+            .unwrap();
         fs::write(d.project().join("a.txt"), "changed\n").unwrap();
         // The chat sees the new content, then deletes it: that's what it deleted.
         o.unlink(ROOT, "a.txt").unwrap();
-        assert!(land::plan(&d.project(), &landable(&o), false).conflicts.is_empty());
+        assert!(land::plan(&d.project(), &landable(&o), false)
+            .conflicts
+            .is_empty());
     }
 }

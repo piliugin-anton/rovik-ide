@@ -120,7 +120,9 @@ fn paragraphs(chars: &[char]) -> Vec<(usize, &[char])> {
 }
 
 fn byte_offset(text: &str, char_index: usize) -> usize {
-    text.char_indices().nth(char_index).map_or(text.len(), |(b, _)| b)
+    text.char_indices()
+        .nth(char_index)
+        .map_or(text.len(), |(b, _)| b)
 }
 
 #[cfg(test)]
@@ -138,14 +140,23 @@ mod tests {
     #[test]
     fn a_paragraph_that_keeps_coming_back() {
         let para = "The plan is to refactor the module, move the helpers into their own file, and add tests for each.";
-        let text = format!("Intro line.\n\n{para}\n\nSomething else.\n\n{para}\n\nMore.\n\n{para}\n\nEnd.");
+        let text = format!(
+            "Intro line.\n\n{para}\n\nSomething else.\n\n{para}\n\nMore.\n\n{para}\n\nEnd."
+        );
         let cut = find_repetition(&text).unwrap();
-        assert!(text[..cut].ends_with("Something else.\n\n"), "{:?}", &text[..cut]);
+        assert!(
+            text[..cut].ends_with("Something else.\n\n"),
+            "{:?}",
+            &text[..cut]
+        );
     }
 
     #[test]
     fn repeated_code_and_tables_are_fine() {
-        let code = format!("Bytes:\n```\n{}\n```\nDone, that's the table you asked for, all of it.", "0x00, ".repeat(100));
+        let code = format!(
+            "Bytes:\n```\n{}\n```\nDone, that's the table you asked for, all of it.",
+            "0x00, ".repeat(100)
+        );
         assert_eq!(find_repetition(&code), None);
         let table = format!("| a | b |\n{}", "| --- | --- |\n".repeat(20));
         assert_eq!(find_repetition(&table), None);
@@ -155,18 +166,30 @@ mod tests {
     #[test]
     fn repetition_edge_cases() {
         // Five repeats aren't enough.
-        let five = format!("{}{}", "Intro that is long enough to look at, for sure, yes. ".repeat(3), "I will now do it. ".repeat(5));
+        let five = format!(
+            "{}{}",
+            "Intro that is long enough to look at, for sure, yes. ".repeat(3),
+            "I will now do it. ".repeat(5)
+        );
         assert_eq!(find_repetition(&five), None);
         // Non-ASCII text: the cut lands on a character boundary.
-        let text = format!("Начинаем работу над задачей прямо сейчас, без промедления. {}", "Повторяю ещё раз. ".repeat(10));
+        let text = format!(
+            "Начинаем работу над задачей прямо сейчас, без промедления. {}",
+            "Повторяю ещё раз. ".repeat(10)
+        );
         let cut = find_repetition(&text).unwrap();
         assert!(text.is_char_boundary(cut));
         assert!(text[..cut].ends_with("Повторяю ещё раз. "));
         // An unclosed code fence blanks to the end.
-        let code = format!("Here is the output of the program:\n```\n{}", "same line\n".repeat(50));
+        let code = format!(
+            "Here is the output of the program:\n```\n{}",
+            "same line\n".repeat(50)
+        );
         assert_eq!(find_repetition(&code), None);
         // A short line coming back with other text between is fine...
-        let varied: String = (0..10).map(|i| format!("Step {i} finished, moving on to the next one.\n\nDone.\n\n")).collect();
+        let varied: String = (0..10)
+            .map(|i| format!("Step {i} finished, moving on to the next one.\n\nDone.\n\n"))
+            .collect();
         assert_eq!(find_repetition(&varied), None);
         // ...but the same few words dozens of times in a row are a loop.
         assert!(find_repetition(&"Done.\n\n".repeat(30)).is_some());

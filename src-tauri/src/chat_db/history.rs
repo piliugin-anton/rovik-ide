@@ -28,7 +28,9 @@
 //! the model attends to them most.
 
 use super::attachments;
-use super::store::{char_prefix, get_message_body, get_messages, tool_call_extras, DbResult, ToolCall};
+use super::store::{
+    char_prefix, get_message_body, get_messages, tool_call_extras, DbResult, ToolCall,
+};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -41,7 +43,8 @@ const IMAGE_TOKENS: usize = 1000;
 const TOOL_KEEP_CHARS: usize = 1200;
 /// Screenshots re-sent on later turns; older ones become a note.
 const MAX_IMAGES: usize = 2;
-const OMITTED_NOTE: &str = "[Earlier messages in this chat were omitted to fit the context window.]";
+const OMITTED_NOTE: &str =
+    "[Earlier messages in this chat were omitted to fit the context window.]";
 /// Google's documented placeholder for function calls that have no real
 /// thought signature (made before signatures were stored, or by another
 /// model). `thought_signature` is a bytes field, base64 on the JSON wire, so
@@ -214,7 +217,9 @@ fn replace_text(m: &mut Msg, text: String) {
 
 /// Shortens a call's string argument in place; the arguments stay valid JSON.
 fn shorten_arg(args: &mut Value, key: &str, what: &str) -> bool {
-    let Some(text) = args.get(key).and_then(|v| v.as_str()) else { return false };
+    let Some(text) = args.get(key).and_then(|v| v.as_str()) else {
+        return false;
+    };
     if text.chars().count() <= ARGS_KEEP_CHARS {
         return false;
     }
@@ -246,24 +251,33 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
             // A read by symbol holds the lines its result names: not the
             // whole file. (One that names none, an error or a partial
             // read, covers nothing below.)
-            let by_symbol = args.get("symbol").and_then(|s| s.as_str()).is_some_and(|s| !s.trim().is_empty());
+            let by_symbol = args
+                .get("symbol")
+                .and_then(|s| s.as_str())
+                .is_some_and(|s| !s.trim().is_empty());
             Some(Event {
                 at,
                 name: name.clone(),
                 path: args.get("path").and_then(|p| p.as_str()).map(norm_path),
                 range: match (start, end) {
-                    _ if by_symbol => Some(crate::read_symbol::covered_lines(&m.text).unwrap_or((0, 0))),
+                    _ if by_symbol => {
+                        Some(crate::read_symbol::covered_lines(&m.text).unwrap_or((0, 0)))
+                    }
                     (None, None) => None,
                     (s, e) => Some((s.unwrap_or(1), e.unwrap_or(u64::MAX))),
                 },
-                command: args.get("command").and_then(|c| c.as_str()).map(|c| c.trim().to_string()),
+                command: args
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.trim().to_string()),
                 ok: !m.text.starts_with("Error:"),
                 partial: m.text.starts_with(crate::read_file::PARTIAL_PREFIX),
             })
         })
         .collect();
 
-    let replaceable = events.len().saturating_sub(KEEP_RECENT_RESULTS) / OUTDATED_BATCH * OUTDATED_BATCH;
+    let replaceable =
+        events.len().saturating_sub(KEEP_RECENT_RESULTS) / OUTDATED_BATCH * OUTDATED_BATCH;
     // Messages before this index are old enough to replace.
     let horizon = events.get(replaceable).map_or(messages.len(), |e| e.at);
     let mut changed = 0;
@@ -350,13 +364,20 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
     }
 
     // Earlier rounds of check failures: the latest round is what counts.
-    let reports: Vec<usize> = (0..messages.len()).filter(|&i| messages[i].harness).collect();
+    let reports: Vec<usize> = (0..messages.len())
+        .filter(|&i| messages[i].harness)
+        .collect();
     if let Some((_, earlier)) = reports.split_last() {
         for &i in earlier {
             if messages[i].text.starts_with("[Earlier") {
                 continue;
             }
-            let head = messages[i].text.lines().take(2).collect::<Vec<_>>().join("\n");
+            let head = messages[i]
+                .text
+                .lines()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join("\n");
             replace_text(
                 &mut messages[i],
                 format!("[Earlier round of checks, left out of this history; a later round follows.]\n{head}"),
@@ -392,10 +413,17 @@ const FOCUS_LOOP_WINDOW: usize = 5;
 const SHORT_REQUEST_CHARS: usize = 80;
 
 fn todo_in_msg(m: &Msg) -> Option<Vec<crate::agent_run::plan::TodoItem>> {
-    m.tool_calls.iter().flatten().rev().filter(|c| c.name == "todo").find_map(|c| match serde_json::from_str::<Value>(&c.arguments) {
-        Ok(Value::Object(args)) => Some(crate::agent_run::plan::parse_todo(&args)).filter(|i| !i.is_empty()),
-        _ => None,
-    })
+    m.tool_calls
+        .iter()
+        .flatten()
+        .rev()
+        .filter(|c| c.name == "todo")
+        .find_map(|c| match serde_json::from_str::<Value>(&c.arguments) {
+            Ok(Value::Object(args)) => {
+                Some(crate::agent_run::plan::parse_todo(&args)).filter(|i| !i.is_empty())
+            }
+            _ => None,
+        })
 }
 
 /// The current request and its checklist, restated for the end of the
@@ -422,7 +450,10 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     }
     // The latest todo call in this request; one the user dismissed (on its
     // own message) leaves no checklist, and nothing is carried past it.
-    let latest = run.iter().rev().find_map(|m| todo_in_msg(m).map(|items| (items, m.checklist_closed)));
+    let latest = run
+        .iter()
+        .rev()
+        .find_map(|m| todo_in_msg(m).map(|items| (items, m.checklist_closed)));
     let mut checklist = match &latest {
         Some((items, false)) => Some(items.clone()),
         _ => None,
@@ -440,12 +471,19 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
             }
         }
     }
-    if checklist.as_ref().is_some_and(|items| items.iter().all(crate::agent_run::plan::is_settled)) {
+    if checklist
+        .as_ref()
+        .is_some_and(|items| items.iter().all(crate::agent_run::plan::is_settled))
+    {
         return None;
     }
     let text = messages[start].text.trim();
     let request = char_prefix(text, FOCUS_REQUEST_CHARS);
-    let more = if request.len() < text.len() || messages[start].needs_body { " …" } else { "" };
+    let more = if request.len() < text.len() || messages[start].needs_body {
+        " …"
+    } else {
+        ""
+    };
     let mut note = "[Reminder from the IDE, not a new request: the request this run is for, quoted so it stays in view. \
                     Continue from where you are: don't start over or redo finished work, and when the request is done, \
                     stop and reply to the user.]"
@@ -461,7 +499,12 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
             let prev_text = messages[prev].text.trim();
             if !prev_text.is_empty() && prev_text != text {
                 let prev_request = char_prefix(prev_text, FOCUS_REQUEST_CHARS);
-                let prev_more = if prev_request.len() < prev_text.len() || messages[prev].needs_body { " …" } else { "" };
+                let prev_more = if prev_request.len() < prev_text.len() || messages[prev].needs_body
+                {
+                    " …"
+                } else {
+                    ""
+                };
                 note.push_str("\nThe earlier request it continues (quoted):");
                 for line in format!("{prev_request}{prev_more}").lines() {
                     note.push_str(&format!("\n> {line}"));
@@ -470,8 +513,14 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
         }
     }
     if let Some(items) = checklist {
-        let done = items.iter().filter(|i| crate::agent_run::plan::is_settled(i)).count();
-        note.push_str(&format!("\nYour checklist ({done} of {} done):", items.len()));
+        let done = items
+            .iter()
+            .filter(|i| crate::agent_run::plan::is_settled(i))
+            .count();
+        note.push_str(&format!(
+            "\nYour checklist ({done} of {} done):",
+            items.len()
+        ));
         for item in &items {
             note.push_str(&format!("\n- [{}] {}", item.status, item.title));
         }
@@ -486,7 +535,11 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
         .skip(1)
         .find_map(|(back, m)| crate::agent_run::guard::loop_warning(&m.text).map(|w| (back, w)));
     if let Some((back, reason)) = warning {
-        let ago = if back == 1 { "1 call".to_string() } else { format!("{back} calls") };
+        let ago = if back == 1 {
+            "1 call".to_string()
+        } else {
+            format!("{back} calls")
+        };
         note.push_str(&format!(
             "\nLoop warning {ago} ago: {reason}. Don't repeat it: change the approach, or stop and ask the user."
         ));
@@ -506,7 +559,14 @@ pub fn add_focus_note(messages: &mut [Msg], note: &str) {
 /// The budget rules with the default token estimate (tests).
 #[cfg(test)]
 pub fn fit(messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, FitInfo) {
-    fit_with(messages, budget, Cost { vision, chars_per_token: DEFAULT_CHARS_PER_TOKEN })
+    fit_with(
+        messages,
+        budget,
+        Cost {
+            vision,
+            chars_per_token: DEFAULT_CHARS_PER_TOKEN,
+        },
+    )
 }
 
 /// The budget rules on resolved-or-estimated messages (pure, unit-tested).
@@ -611,7 +671,10 @@ pub fn build_wire(
 ) -> DbResult<(Vec<Value>, FitInfo)> {
     let mut messages = load_messages(conn, dialog_id, None)?;
     attach_reasoning(conn, &mut messages, model)?;
-    let cost = Cost { vision, chars_per_token };
+    let cost = Cost {
+        vision,
+        chars_per_token,
+    };
     // The guard's loop warnings end long results too: the latest ones whole.
     let tail = messages.len().saturating_sub(2 * (FOCUS_LOOP_WINDOW + 1));
     load_bodies(conn, &mut messages[tail..])?;
@@ -620,7 +683,9 @@ pub fn build_wire(
     // the request as typed: the copy sent starts with the editor context.
     let focus = focus_note(&messages);
     use_sent_content(&mut messages, current_user_content);
-    let note_tokens = focus.as_ref().map_or(0, |n| cost.tokens(n.chars().count() + 2));
+    let note_tokens = focus
+        .as_ref()
+        .map_or(0, |n| cost.tokens(n.chars().count() + 2));
     let (mut fitted, mut info) = fit_with(messages, token_budget.saturating_sub(note_tokens), cost);
     load_bodies(conn, &mut fitted)?;
     if let Some(note) = focus {
@@ -647,7 +712,8 @@ pub fn attach_reasoning(conn: &Connection, messages: &mut [Msg], model: &str) ->
         .filter(|&i| {
             let m = &messages[i];
             m.role == "assistant"
-                && (i >= current || (deepseek && m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())))
+                && (i >= current
+                    || (deepseek && m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())))
         })
         .collect();
     if wanted.is_empty() {
@@ -656,12 +722,18 @@ pub fn attach_reasoning(conn: &Connection, messages: &mut [Msg], model: &str) ->
     let ids: Vec<&str> = wanted.iter().map(|&i| messages[i].id.as_str()).collect();
     let stored = super::store::reasoning_of(conn, &ids)?;
     for i in wanted {
-        let Some(r) = stored.get(&messages[i].id) else { continue };
+        let Some(r) = stored.get(&messages[i].id) else {
+            continue;
+        };
         if r.get("model").and_then(|m| m.as_str()) != Some(model) {
             continue;
         }
-        let details = r.get("details").filter(|d| d.as_array().is_some_and(|a| !a.is_empty()));
-        let text = r.get("text").filter(|t| t.as_str().is_some_and(|t| !t.is_empty()));
+        let details = r
+            .get("details")
+            .filter(|d| d.as_array().is_some_and(|a| !a.is_empty()));
+        let text = r
+            .get("text")
+            .filter(|t| t.as_str().is_some_and(|t| !t.is_empty()));
         let inline = r.get("inline").filter(|t| t.is_string());
         messages[i].reasoning = match (details, text, inline) {
             (Some(details), _, _) => Some(json!({ "details": details })),
@@ -688,7 +760,11 @@ pub fn load_bodies(conn: &Connection, messages: &mut [Msg]) -> DbResult<()> {
 /// sent is left out, unanswered tool calls get a result, and the current
 /// request carries `current_user_content`. Long bodies may still need
 /// `load_bodies`.
-pub fn load_messages(conn: &Connection, dialog_id: &str, current_user_content: Option<&str>) -> DbResult<Vec<Msg>> {
+pub fn load_messages(
+    conn: &Connection,
+    dialog_id: &str,
+    current_user_content: Option<&str>,
+) -> DbResult<Vec<Msg>> {
     // Newest pages first, until the cap.
     let mut rows = Vec::new();
     let mut before = None;
@@ -734,16 +810,27 @@ pub fn load_messages(conn: &Connection, dialog_id: &str, current_user_content: O
         .filter(|m| !m.failed && m.error.is_none())
         .filter(|m| m.role != "system")
         .filter(|m| {
-            !(m.role == "assistant" && m.content.trim().is_empty() && m.tool_calls.as_ref().map_or(true, |t| t.is_empty()))
+            !(m.role == "assistant"
+                && m.content.trim().is_empty()
+                && m.tool_calls.as_ref().map_or(true, |t| t.is_empty()))
         })
         .map(|m| Msg {
             // Added by the IDE (the frontend's verification gate): user-role,
             // but never the user's request.
-            harness: m.meta.as_ref().is_some_and(|meta| meta.get("harness").is_some()),
+            harness: m
+                .meta
+                .as_ref()
+                .is_some_and(|meta| meta.get("harness").is_some()),
             checklist_closed: m.meta.as_ref().is_some_and(|meta| {
-                meta.get("checklistClosed").or_else(|| meta.get("checklist_closed")).is_some_and(|v| *v == serde_json::Value::Bool(true))
+                meta.get("checklistClosed")
+                    .or_else(|| meta.get("checklist_closed"))
+                    .is_some_and(|v| *v == serde_json::Value::Bool(true))
             }),
-            full_chars: if m.body_external { m.body_bytes as usize } else { m.content.chars().count() },
+            full_chars: if m.body_external {
+                m.body_bytes as usize
+            } else {
+                m.content.chars().count()
+            },
             needs_body: m.body_external,
             id: m.id,
             role: m.role,
@@ -769,8 +856,7 @@ pub fn use_sent_content(messages: &mut [Msg], current_user_content: Option<&str>
     if let (Some(content), Some(last_user)) = (
         current_user_content,
         messages.iter_mut().rev().find(|m| starts_request(m)),
-    )
-    {
+    ) {
         last_user.text = content.to_string();
         last_user.full_chars = content.chars().count();
         last_user.needs_body = false;
@@ -812,7 +898,12 @@ pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
         } else {
             close(&mut out, &mut open);
             if m.role == "assistant" {
-                open = m.tool_calls.iter().flatten().map(|c| c.id.clone()).collect();
+                open = m
+                    .tool_calls
+                    .iter()
+                    .flatten()
+                    .map(|c| c.id.clone())
+                    .collect();
             }
         }
         out.push(m);
@@ -887,7 +978,10 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
                 "type": "text",
                 "text": format!("Screenshot from tool call {}:", call_id.unwrap_or_default()).trim().to_string()
             })];
-            parts.extend(urls.into_iter().map(|url| json!({ "type": "image_url", "image_url": { "url": url } })));
+            parts.extend(
+                urls.into_iter()
+                    .map(|url| json!({ "type": "image_url", "image_url": { "url": url } })),
+            );
             out.push(json!({ "role": "user", "content": parts }));
         }
     };
@@ -899,7 +993,10 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
         let mut content = m.text.clone();
         if !m.attachments.is_empty() {
             let urls: Vec<String> = if attach.contains(&i) {
-                m.attachments.iter().filter_map(|id| attachments::data_url(data_dir, id)).collect()
+                m.attachments
+                    .iter()
+                    .filter_map(|id| attachments::data_url(data_dir, id))
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -910,12 +1007,19 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
             }
         }
 
-        let inline = m.reasoning.as_ref().and_then(|r| Some((r.get("inline")?.as_str()?, r.get("text")?.as_str()?)));
+        let inline = m
+            .reasoning
+            .as_ref()
+            .and_then(|r| Some((r.get("inline")?.as_str()?, r.get("text")?.as_str()?)));
         if let Some((tag, text)) = inline {
             content = format!("<{tag}>{text}</{tag}>{content}");
         }
         let mut msg = json!({ "role": m.role, "content": content });
-        match m.reasoning.as_ref().map(|r| (r.get("details"), r.get("text"))) {
+        match m
+            .reasoning
+            .as_ref()
+            .map(|r| (r.get("details"), r.get("text")))
+        {
             _ if inline.is_some() => {}
             Some((Some(details), _)) => msg["reasoning_details"] = details.clone(),
             Some((None, Some(text))) => msg["reasoning_content"] = text.clone(),
@@ -992,7 +1096,16 @@ mod tests {
 
     fn call(ids: &[&str]) -> Msg {
         let mut m = msg("assistant", "");
-        m.tool_calls = Some(ids.iter().map(|id| ToolCall { id: id.to_string(), name: "read".into(), arguments: "{}".into(), extra_content: None }).collect());
+        m.tool_calls = Some(
+            ids.iter()
+                .map(|id| ToolCall {
+                    id: id.to_string(),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                    extra_content: None,
+                })
+                .collect(),
+        );
         m
     }
     fn tool(id: &str, size: usize) -> Msg {
@@ -1013,9 +1126,16 @@ mod tests {
     fn pairing_ok(ms: &[Msg]) -> bool {
         ms.iter().enumerate().all(|(i, m)| {
             m.role != "tool"
-                || ms[..i].iter().rev().take_while(|p| p.role != "user").any(|p| {
-                    p.tool_calls.iter().flatten().any(|c| Some(&c.id) == m.tool_call_id.as_ref())
-                })
+                || ms[..i]
+                    .iter()
+                    .rev()
+                    .take_while(|p| p.role != "user")
+                    .any(|p| {
+                        p.tool_calls
+                            .iter()
+                            .flatten()
+                            .any(|c| Some(&c.id) == m.tool_call_id.as_ref())
+                    })
         })
     }
     const BIG: usize = 30_000;
@@ -1025,11 +1145,23 @@ mod tests {
     #[test]
     fn unanswered_calls_get_a_result() {
         let history = vec![
-            msg("user", "q1"), call(&["c1", "c2"]), tool("c1", 3),
-            msg("user", "q2"), call(&["c3"]),
+            msg("user", "q1"),
+            call(&["c1", "c2"]),
+            tool("c1", 3),
+            msg("user", "q2"),
+            call(&["c3"]),
         ];
         let out = answer_unanswered_calls(history);
-        let ids: Vec<_> = out.iter().map(|m| format!("{}:{}", &m.role[..1], m.tool_call_id.clone().unwrap_or_default())).collect();
+        let ids: Vec<_> = out
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}:{}",
+                    &m.role[..1],
+                    m.tool_call_id.clone().unwrap_or_default()
+                )
+            })
+            .collect();
         assert_eq!(ids, ["u:", "a:", "t:c1", "t:c2", "u:", "a:", "t:c3"]);
         assert!(pairing_ok(&out));
         assert_eq!(out[3].text, UNANSWERED_NOTE);
@@ -1037,11 +1169,20 @@ mod tests {
 
     fn todo(items: &str) -> Msg {
         let mut m = msg("assistant", "");
-        m.tool_calls = Some(vec![ToolCall { id: "todo-1".into(), name: "todo".into(), arguments: items.into(), extra_content: None }]);
+        m.tool_calls = Some(vec![ToolCall {
+            id: "todo-1".into(),
+            name: "todo".into(),
+            arguments: items.into(),
+            extra_content: None,
+        }]);
         m
     }
     fn long_run(request: &str) -> Vec<Msg> {
-        let mut history = vec![msg("user", "an earlier request"), msg("assistant", "done"), msg("user", request)];
+        let mut history = vec![
+            msg("user", "an earlier request"),
+            msg("assistant", "done"),
+            msg("user", request),
+        ];
         for i in 0..FOCUS_AFTER_TOOL_RESULTS {
             let id = format!("c{i}");
             history.push(call(&[&id]));
@@ -1070,7 +1211,10 @@ mod tests {
         let mut short_history = long_run("fix the parser");
         short_history.insert(3, todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"in_progress"},"test"]}"#));
         let short_note = focus_note(&short_history).unwrap();
-        assert!(short_note.contains("The earlier request it continues (quoted):"), "{short_note}");
+        assert!(
+            short_note.contains("The earlier request it continues (quoted):"),
+            "{short_note}"
+        );
         assert!(short_note.contains("> an earlier request"), "{short_note}");
 
         // The latest checklist wins; once every step is settled the agent
@@ -1078,7 +1222,9 @@ mod tests {
         history.push(todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"in_progress"}]}"#));
         history.push(tool("todo-1", 10));
         assert!(focus_note(&history).unwrap().contains("(1 of 2 done)"));
-        history.push(todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"skipped"}]}"#));
+        history.push(todo(
+            r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"skipped"}]}"#,
+        ));
         history.push(tool("todo-1", 10));
         assert_eq!(focus_note(&history), None);
         // An open checklist from an earlier request is carried forward.
@@ -1088,14 +1234,21 @@ mod tests {
         // ...unless every step is settled: the new request's note stands
         // on its own, without the finished list.
         let mut settled_earlier = long_run("next");
-        settled_earlier.insert(1, todo(r#"{"items":[{"title":"old step","status":"done"}]}"#));
-        assert!(!focus_note(&settled_earlier).unwrap().contains("Your checklist"));
+        settled_earlier.insert(
+            1,
+            todo(r#"{"items":[{"title":"old step","status":"done"}]}"#),
+        );
+        assert!(!focus_note(&settled_earlier)
+            .unwrap()
+            .contains("Your checklist"));
         // A dismissed one (on its own message) isn't carried either.
         let mut dismissed_earlier = long_run("next");
         let mut closed = todo(r#"{"items":["old step"]}"#);
         closed.checklist_closed = true;
         dismissed_earlier.insert(1, closed);
-        assert!(!focus_note(&dismissed_earlier).unwrap().contains("Your checklist"));
+        assert!(!focus_note(&dismissed_earlier)
+            .unwrap()
+            .contains("Your checklist"));
     }
 
     #[test]
@@ -1105,10 +1258,16 @@ mod tests {
         let mut history = long_run("continue");
         history.insert(1, todo(r#"{"items":[{"title":"read","status":"done"},{"title":"fix","status":"pending"}]}"#));
         let note = focus_note(&history).expect("carried checklist with a short request");
-        assert!(note.contains("The earlier request it continues (quoted):"), "{note}");
+        assert!(
+            note.contains("The earlier request it continues (quoted):"),
+            "{note}"
+        );
         assert!(note.contains("> an earlier request"), "{note}");
         assert!(note.contains("Your checklist (1 of 2 done):"), "{note}");
-        assert!(note.contains("- [done] read") && note.contains("- [pending] fix"), "{note}");
+        assert!(
+            note.contains("- [done] read") && note.contains("- [pending] fix"),
+            "{note}"
+        );
 
         // Dismissed on the new message: not carried.
         let mut dismissed = long_run("continue");
@@ -1117,7 +1276,10 @@ mod tests {
         dismissed[at].checklist_closed = true;
         let note = focus_note(&dismissed).unwrap();
         assert!(!note.contains("Your checklist"), "{note}");
-        assert!(note.contains("The earlier request it continues (quoted):"), "{note}");
+        assert!(
+            note.contains("The earlier request it continues (quoted):"),
+            "{note}"
+        );
     }
 
     #[test]
@@ -1163,7 +1325,10 @@ mod tests {
         // a short one still quotes the previous real request.
         let empty_note = focus_note(&long_run("")).unwrap();
         assert!(!empty_note.contains("The request (quoted)"), "{empty_note}");
-        assert!(empty_note.contains("The earlier request it continues (quoted):"), "{empty_note}");
+        assert!(
+            empty_note.contains("The earlier request it continues (quoted):"),
+            "{empty_note}"
+        );
         // After the IDE's own check (a user-role harness message): no note.
         let mut checked = long_run("q");
         let mut check = msg("user", "tests failed");
@@ -1185,7 +1350,11 @@ mod tests {
 
     #[test]
     fn small_chat_untouched() {
-        let (out, info) = fit(vec![msg("user", "hi"), msg("assistant", "hello")], BUDGET_32K, true);
+        let (out, info) = fit(
+            vec![msg("user", "hi"), msg("assistant", "hello")],
+            BUDGET_32K,
+            true,
+        );
         assert!(!info.trimmed);
         assert_eq!(shape(&out), "u a");
     }
@@ -1193,16 +1362,30 @@ mod tests {
     #[test]
     fn old_tool_results_shrink_current_kept() {
         let history = vec![
-            msg("user", "q1"), call(&["c1"]), tool("c1", BIG), msg("assistant", "a1"),
-            msg("user", "q2"), call(&["c2"]), tool("c2", BIG), msg("assistant", "a2"),
-            msg("user", "q3"), call(&["c3"]), tool("c3", BIG), msg("assistant", "a3"),
-            msg("user", "q4"), call(&["c4"]), tool("c4", 6000),
+            msg("user", "q1"),
+            call(&["c1"]),
+            tool("c1", BIG),
+            msg("assistant", "a1"),
+            msg("user", "q2"),
+            call(&["c2"]),
+            tool("c2", BIG),
+            msg("assistant", "a2"),
+            msg("user", "q3"),
+            call(&["c3"]),
+            tool("c3", BIG),
+            msg("assistant", "a3"),
+            msg("user", "q4"),
+            call(&["c4"]),
+            tool("c4", 6000),
         ];
         let (out, info) = fit(history, BUDGET_32K, true);
         assert!(info.trimmed);
         assert_eq!(info.dropped_turns, 0);
         assert!(pairing_ok(&out));
-        assert!(out.last().unwrap().text.chars().count() == 6000, "current request's result stays whole");
+        assert!(
+            out.last().unwrap().text.chars().count() == 6000,
+            "current request's result stays whole"
+        );
         assert!(out[2].text.contains("[Truncated"));
     }
 
@@ -1211,7 +1394,10 @@ mod tests {
         let mut history = Vec::new();
         for i in 1..=12 {
             history.push(msg("user", &format!("question {i} {}", "y".repeat(3000))));
-            history.push(msg("assistant", &format!("answer {i} {}", "z".repeat(3000))));
+            history.push(msg(
+                "assistant",
+                &format!("answer {i} {}", "z".repeat(3000)),
+            ));
         }
         history.push(msg("user", "current question"));
         let (out, info) = fit(history, BUDGET_8K, true);
@@ -1224,11 +1410,25 @@ mod tests {
 
     #[test]
     fn huge_current_run_spares_latest_result() {
-        let history = vec![msg("user", "q"), call(&["x1", "x2"]), tool("x1", BIG), tool("x2", BIG), call(&["x3"]), tool("x3", BIG)];
+        let history = vec![
+            msg("user", "q"),
+            call(&["x1", "x2"]),
+            tool("x1", BIG),
+            tool("x2", BIG),
+            call(&["x3"]),
+            tool("x3", BIG),
+        ];
         let (out, _) = fit(history, BUDGET_32K, true);
         assert!(pairing_ok(&out));
-        assert!(out[2].text.contains("[Truncated"), "oldest result in the run is cut first");
-        assert_eq!(out.last().unwrap().text.chars().count(), BIG, "latest result stays whole");
+        assert!(
+            out[2].text.contains("[Truncated"),
+            "oldest result in the run is cut first"
+        );
+        assert_eq!(
+            out.last().unwrap().text.chars().count(),
+            BIG,
+            "latest result stays whole"
+        );
     }
 
     #[test]
@@ -1242,14 +1442,24 @@ mod tests {
         shot.attachments = vec![id.clone()];
         let ms = vec![msg("user", "check"), call(&["a", "b"]), shot, tool("b", 10)];
 
-        let roles = |w: &[Value]| w.iter().map(|m| m["role"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let roles = |w: &[Value]| {
+            w.iter()
+                .map(|m| m["role"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
         let vision = to_wire(&ms, &dir, true, false);
-        assert_eq!(roles(&vision), ["user", "assistant", "tool", "tool", "user"]);
+        assert_eq!(
+            roles(&vision),
+            ["user", "assistant", "tool", "tool", "user"]
+        );
         assert_eq!(vision[4]["content"][1]["type"], "image_url");
 
         let text_only = to_wire(&ms, &dir, false, false);
         assert_eq!(roles(&text_only), ["user", "assistant", "tool", "tool"]);
-        assert!(text_only[2]["content"].as_str().unwrap().contains("no longer attached"));
+        assert!(text_only[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("no longer attached"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1258,14 +1468,17 @@ mod tests {
         let dir = std::env::temp_dir();
         let signed = json!({ "google": { "thought_signature": "SIG-A" } });
         let sig = |w: &[Value], m: usize, c: usize| {
-            w[m]["tool_calls"][c].pointer("/extra_content/google/thought_signature").cloned()
+            w[m]["tool_calls"][c]
+                .pointer("/extra_content/google/thought_signature")
+                .cloned()
         };
 
         let mut first_signed = call(&["a", "b"]);
         first_signed.tool_calls.as_mut().unwrap()[0].extra_content = Some(signed.clone());
         // extra_content present but no signature in it (seen from some gateways/models).
         let mut empty_extra = call(&["c"]);
-        empty_extra.tool_calls.as_mut().unwrap()[0].extra_content = Some(json!({ "google": {}, "other": 1 }));
+        empty_extra.tool_calls.as_mut().unwrap()[0].extra_content =
+            Some(json!({ "google": {}, "other": 1 }));
         // The signature landed on a sibling, not the first call.
         let mut sibling_signed = call(&["d", "e"]);
         sibling_signed.tool_calls.as_mut().unwrap()[1].extra_content = Some(signed.clone());
@@ -1273,25 +1486,52 @@ mod tests {
 
         let ms = vec![
             msg("user", "q"),
-            first_signed, tool("a", 1), tool("b", 1),
-            empty_extra, tool("c", 1),
-            sibling_signed, tool("d", 1), tool("e", 1),
-            unsigned, tool("f", 1),
+            first_signed,
+            tool("a", 1),
+            tool("b", 1),
+            empty_extra,
+            tool("c", 1),
+            sibling_signed,
+            tool("d", 1),
+            tool("e", 1),
+            unsigned,
+            tool("f", 1),
         ];
         let w = to_wire(&ms, &dir, false, true);
         let placeholder = Some(json!(GEMINI_SKIP_SIGNATURE));
         {
             use base64::Engine;
-            let decoded = base64::engine::general_purpose::STANDARD.decode(GEMINI_SKIP_SIGNATURE).unwrap();
-            assert_eq!(decoded, b"skip_thought_signature_validator", "placeholder is the base64 of the documented value");
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(GEMINI_SKIP_SIGNATURE)
+                .unwrap();
+            assert_eq!(
+                decoded, b"skip_thought_signature_validator",
+                "placeholder is the base64 of the documented value"
+            );
         }
 
-        assert_eq!(sig(&w, 1, 0), Some(json!("SIG-A")), "real signature echoed unchanged");
+        assert_eq!(
+            sig(&w, 1, 0),
+            Some(json!("SIG-A")),
+            "real signature echoed unchanged"
+        );
         assert_eq!(sig(&w, 1, 1), None, "parallel sibling stays unsigned");
-        assert_eq!(sig(&w, 4, 0), placeholder, "extra_content without a signature gets one");
-        assert_eq!(w[4]["tool_calls"][0]["extra_content"]["other"], json!(1), "other data kept");
+        assert_eq!(
+            sig(&w, 4, 0),
+            placeholder,
+            "extra_content without a signature gets one"
+        );
+        assert_eq!(
+            w[4]["tool_calls"][0]["extra_content"]["other"],
+            json!(1),
+            "other data kept"
+        );
         assert_eq!(sig(&w, 6, 0), placeholder, "first call always needs one");
-        assert_eq!(sig(&w, 6, 1), Some(json!("SIG-A")), "sibling's data untouched");
+        assert_eq!(
+            sig(&w, 6, 1),
+            Some(json!("SIG-A")),
+            "sibling's data untouched"
+        );
         assert_eq!(sig(&w, 9, 0), placeholder);
 
         // Other providers: real data echoed, never a placeholder.
@@ -1306,12 +1546,25 @@ mod tests {
         let dir = std::env::temp_dir();
         let with_args = |args: &str| {
             let mut m = msg("assistant", "");
-            m.tool_calls = Some(vec![ToolCall { id: "c".into(), name: "write".into(), arguments: args.into(), extra_content: None }]);
+            m.tool_calls = Some(vec![ToolCall {
+                id: "c".into(),
+                name: "write".into(),
+                arguments: args.into(),
+                extra_content: None,
+            }]);
             m
         };
         let sent = |args: &str| {
-            let w = to_wire(&[msg("user", "q"), with_args(args), result("c", "Error: x")], &dir, false, false);
-            w[1]["tool_calls"][0]["function"]["arguments"].as_str().unwrap().to_string()
+            let w = to_wire(
+                &[msg("user", "q"), with_args(args), result("c", "Error: x")],
+                &dir,
+                false,
+                false,
+            );
+            w[1]["tool_calls"][0]["function"]["arguments"]
+                .as_str()
+                .unwrap()
+                .to_string()
         };
 
         let valid = r#"{"path":"a.rs","old_text":"x","content":"y"}"#;
@@ -1321,7 +1574,10 @@ mod tests {
 
         let cut_off = r#"{"old_text":"fn main() {"#;
         let back: Value = serde_json::from_str(&sent(cut_off)).expect("valid JSON");
-        assert_eq!(back["invalid_arguments"], cut_off, "the model still sees what it sent");
+        assert_eq!(
+            back["invalid_arguments"], cut_off,
+            "the model still sees what it sent"
+        );
 
         let array: Value = serde_json::from_str(&sent("[1,2]")).unwrap();
         assert!(array.is_object(), "not an object: wrapped too");
@@ -1329,7 +1585,11 @@ mod tests {
         let long = format!("{{\"old_text\":\"{}", "é".repeat(ARGS_KEEP_CHARS * 2));
         let back: Value = serde_json::from_str(&sent(&long)).unwrap();
         let kept = back["invalid_arguments"].as_str().unwrap();
-        assert_eq!(kept.chars().count(), ARGS_KEEP_CHARS + 1, "capped, with an ellipsis");
+        assert_eq!(
+            kept.chars().count(),
+            ARGS_KEEP_CHARS + 1,
+            "capped, with an ellipsis"
+        );
         assert!(kept.ends_with('…'));
     }
 
@@ -1337,7 +1597,12 @@ mod tests {
 
     fn call_with(id: &str, name: &str, args: Value) -> Msg {
         let mut m = msg("assistant", "");
-        m.tool_calls = Some(vec![ToolCall { id: id.into(), name: name.into(), arguments: args.to_string(), extra_content: None }]);
+        m.tool_calls = Some(vec![ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: args.to_string(),
+            extra_content: None,
+        }]);
         m
     }
     fn result(id: &str, text: &str) -> Msg {
@@ -1351,7 +1616,10 @@ mod tests {
         m
     }
     fn generous(vision: bool) -> Cost {
-        Cost { vision, chars_per_token: DEFAULT_CHARS_PER_TOKEN }
+        Cost {
+            vision,
+            chars_per_token: DEFAULT_CHARS_PER_TOKEN,
+        }
     }
 
     #[test]
@@ -1368,9 +1636,15 @@ mod tests {
         ];
         let (out, info) = fit(history, 12_000, false);
         assert!(info.dropped_turns >= 1, "the old turn goes first");
-        assert!(out.iter().any(|m| m.text.contains("fix the bug")), "the request is kept");
+        assert!(
+            out.iter().any(|m| m.text.contains("fix the bug")),
+            "the request is kept"
+        );
         assert!(out.last().unwrap().harness, "the report is kept");
-        assert!(!out.iter().any(|m| m.harness && m.text.contains("omitted")), "no note glued onto the report");
+        assert!(
+            !out.iter().any(|m| m.harness && m.text.contains("omitted")),
+            "no note glued onto the report"
+        );
     }
 
     /// `n` reads of `path`, each with its own result.
@@ -1378,7 +1652,10 @@ mod tests {
         (0..n)
             .flat_map(|i| {
                 let id = format!("r{i}");
-                vec![call_with(&id, "read", json!({ "path": path })), result(&id, &"x".repeat(size))]
+                vec![
+                    call_with(&id, "read", json!({ "path": path })),
+                    result(&id, &"x".repeat(size)),
+                ]
             })
             .collect()
     }
@@ -1406,7 +1683,11 @@ mod tests {
             .collect();
         assert_eq!(stubs.len(), 8, "one batch of 8");
         assert!(info.outdated >= 8);
-        assert_eq!(out.last().unwrap().text.len(), 3_000, "the latest read is whole");
+        assert_eq!(
+            out.last().unwrap().text.len(),
+            3_000,
+            "the latest read is whole"
+        );
         assert!(pairing_ok(&out));
     }
 
@@ -1416,28 +1697,52 @@ mod tests {
         history.extend(reads(1, "src/only.ts", 3_000));
         for i in 0..16 {
             let id = format!("o{i}");
-            history.push(call_with(&id, "read", json!({ "path": format!("src/f{i}.ts") })));
+            history.push(call_with(
+                &id,
+                "read",
+                json!({ "path": format!("src/f{i}.ts") }),
+            ));
             history.push(result(&id, &"y".repeat(3_000)));
         }
         let (out, _) = fit_with(history, 20_000, generous(false));
-        assert_eq!(out[2].text.len(), 3_000, "still the model's only copy of that file");
+        assert_eq!(
+            out[2].text.len(),
+            3_000,
+            "still the model's only copy of that file"
+        );
     }
 
     #[test]
     fn a_partial_read_doesnt_replace_what_it_didnt_show() {
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("ra", "read", json!({ "path": "src/big.ts", "start_line": 900, "end_line": 960 })));
+        history.push(call_with(
+            "ra",
+            "read",
+            json!({ "path": "src/big.ts", "start_line": 900, "end_line": 960 }),
+        ));
         history.push(result("ra", &"a".repeat(3_000)));
-        let overview = format!("{}src/big.ts has 4000 lines…]\n{}", crate::read_file::PARTIAL_PREFIX, "m".repeat(3_000));
+        let overview = format!(
+            "{}src/big.ts has 4000 lines…]\n{}",
+            crate::read_file::PARTIAL_PREFIX,
+            "m".repeat(3_000)
+        );
         history.push(call_with("rb", "read", json!({ "path": "src/big.ts" })));
         history.push(result("rb", &overview));
         for i in 0..16 {
             let id = format!("o{i}");
-            history.push(call_with(&id, "read", json!({ "path": format!("src/f{i}.ts") })));
+            history.push(call_with(
+                &id,
+                "read",
+                json!({ "path": format!("src/f{i}.ts") }),
+            ));
             history.push(result(&id, &"y".repeat(3_000)));
         }
         let (out, _) = fit_with(history, 20_000, generous(false));
-        assert_eq!(out[2].text.len(), 3_000, "lines 900-960 are still the model's only copy");
+        assert_eq!(
+            out[2].text.len(),
+            3_000,
+            "lines 900-960 are still the model's only copy"
+        );
     }
 
     #[test]
@@ -1445,33 +1750,77 @@ mod tests {
         // Lines 1-50 read, then one function (lines 120-160) by symbol: the
         // first read isn't replaced, the symbol read didn't cover it.
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("ra", "read", json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 })));
+        history.push(call_with(
+            "ra",
+            "read",
+            json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 }),
+        ));
         history.push(result("ra", &"a".repeat(3_000)));
-        history.push(call_with("rs", "read", json!({ "path": "src/a.rs", "symbol": "Parser::parse" })));
-        history.push(result("rs", &format!("[Symbol read: Parser > parse, lines 120-160 of src/a.rs]\n{}", "s".repeat(3_000))));
+        history.push(call_with(
+            "rs",
+            "read",
+            json!({ "path": "src/a.rs", "symbol": "Parser::parse" }),
+        ));
+        history.push(result(
+            "rs",
+            &format!(
+                "[Symbol read: Parser > parse, lines 120-160 of src/a.rs]\n{}",
+                "s".repeat(3_000)
+            ),
+        ));
         history.extend(reads(16, "src/other.rs", 3_000));
         let (out, _) = fit_with(history, 20_000, generous(false));
-        assert_eq!(out[2].text.len(), 3_000, "lines 1-50 are still the model's only copy");
+        assert_eq!(
+            out[2].text.len(),
+            3_000,
+            "lines 1-50 are still the model's only copy"
+        );
     }
 
     #[test]
     fn a_later_read_covering_a_symbol_read_replaces_it() {
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("rs", "read", json!({ "path": "src/a.rs", "symbol": "parse" })));
-        history.push(result("rs", &format!("[Symbol read: parse, lines 120-160 of src/a.rs]\n{}", "s".repeat(3_000))));
-        history.push(call_with("rr", "read", json!({ "path": "src/a.rs", "start_line": 100, "end_line": 200 })));
+        history.push(call_with(
+            "rs",
+            "read",
+            json!({ "path": "src/a.rs", "symbol": "parse" }),
+        ));
+        history.push(result(
+            "rs",
+            &format!(
+                "[Symbol read: parse, lines 120-160 of src/a.rs]\n{}",
+                "s".repeat(3_000)
+            ),
+        ));
+        history.push(call_with(
+            "rr",
+            "read",
+            json!({ "path": "src/a.rs", "start_line": 100, "end_line": 200 }),
+        ));
         history.push(result("rr", &"r".repeat(3_000)));
         history.extend(reads(16, "src/other.rs", 3_000));
         let (out, _) = fit_with(history, 20_000, generous(false));
-        assert!(out[2].text.starts_with("[Read src/a.rs lines 120-160 here"), "{}", out[2].text);
+        assert!(
+            out[2].text.starts_with("[Read src/a.rs lines 120-160 here"),
+            "{}",
+            out[2].text
+        );
     }
 
     #[test]
     fn a_symbol_read_that_found_nothing_covers_nothing() {
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("ra", "read", json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 })));
+        history.push(call_with(
+            "ra",
+            "read",
+            json!({ "path": "src/a.rs", "start_line": 1, "end_line": 50 }),
+        ));
         history.push(result("ra", &"a".repeat(3_000)));
-        history.push(call_with("rs", "read", json!({ "path": "src/a.rs", "symbol": "nope" })));
+        history.push(call_with(
+            "rs",
+            "read",
+            json!({ "path": "src/a.rs", "symbol": "nope" }),
+        ));
         history.push(result("rs", "No declaration \"nope\" in src/a.rs."));
         history.extend(reads(16, "src/other.rs", 3_000));
         let (out, _) = fit_with(history, 20_000, generous(false));
@@ -1481,20 +1830,43 @@ mod tests {
     #[test]
     fn edits_supersede_reads_and_old_write_arguments_shrink() {
         let mut history = vec![msg("user", "q")];
-        history.push(call_with("w0", "write", json!({ "path": "src/new.ts", "content": "line\n".repeat(400) })));
+        history.push(call_with(
+            "w0",
+            "write",
+            json!({ "path": "src/new.ts", "content": "line\n".repeat(400) }),
+        ));
         history.push(result("w0", "wrote 2000 bytes to src/new.ts"));
-        history.push(call_with("ra", "read", json!({ "path": "src/a.ts", "start_line": 1, "end_line": 50 })));
+        history.push(call_with(
+            "ra",
+            "read",
+            json!({ "path": "src/a.ts", "start_line": 1, "end_line": 50 }),
+        ));
         history.push(result("ra", &"a".repeat(3_000)));
-        history.push(call_with("e0", "write", json!({ "path": "src/a.ts", "old_text": "o".repeat(500), "content": "n" })));
+        history.push(call_with(
+            "e0",
+            "write",
+            json!({ "path": "src/a.ts", "old_text": "o".repeat(500), "content": "n" }),
+        ));
         history.push(result("e0", "Edited src/a.ts: replaced line 3"));
         history.extend(reads(14, "src/other.ts", 2_000));
         let (out, _) = fit_with(history, 12_000, generous(false));
 
-        let write_args: Value = serde_json::from_str(&out[1].tool_calls.as_ref().unwrap()[0].arguments).unwrap();
-        assert_eq!(write_args["path"], "src/new.ts", "arguments stay valid JSON with the path");
-        assert_eq!(write_args["content"], "[400 lines written; left out of this history]");
-        assert!(out[4].text.contains("Read src/a.ts lines 1-50 here") && out[4].text.contains("changed later"));
-        let edit_args: Value = serde_json::from_str(&out[5].tool_calls.as_ref().unwrap()[0].arguments).unwrap();
+        let write_args: Value =
+            serde_json::from_str(&out[1].tool_calls.as_ref().unwrap()[0].arguments).unwrap();
+        assert_eq!(
+            write_args["path"], "src/new.ts",
+            "arguments stay valid JSON with the path"
+        );
+        assert_eq!(
+            write_args["content"],
+            "[400 lines written; left out of this history]"
+        );
+        assert!(
+            out[4].text.contains("Read src/a.ts lines 1-50 here")
+                && out[4].text.contains("changed later")
+        );
+        let edit_args: Value =
+            serde_json::from_str(&out[5].tool_calls.as_ref().unwrap()[0].arguments).unwrap();
         assert_eq!(edit_args["content"], "n", "short arguments are kept");
         assert!(edit_args["old_text"].as_str().unwrap().contains("left out"));
     }
@@ -1505,13 +1877,21 @@ mod tests {
         let out_text = format!("$ npm test\nexit code 1, 3.0 s\n{}", "fail\n".repeat(800));
         history.push(call_with("c0", "bash", json!({ "command": "npm test" })));
         history.push(result("c0", &out_text));
-        history.push(harness(&format!("[Automatic check by the IDE, not written by the user]\nround 1\n{}", "e".repeat(3_000))));
+        history.push(harness(&format!(
+            "[Automatic check by the IDE, not written by the user]\nround 1\n{}",
+            "e".repeat(3_000)
+        )));
         history.push(call_with("c1", "bash", json!({ "command": "npm test" })));
         history.push(result("c1", &out_text));
-        history.push(harness("[Automatic check by the IDE, not written by the user]\nround 2"));
+        history.push(harness(
+            "[Automatic check by the IDE, not written by the user]\nround 2",
+        ));
         history.extend(reads(14, "src/x.ts", 1_500));
         let (out, _) = fit_with(history, 9_000, generous(false));
-        assert!(out[2].text.starts_with("$ npm test\nexit code 1") && out[2].text.contains("ran again later"));
+        assert!(
+            out[2].text.starts_with("$ npm test\nexit code 1")
+                && out[2].text.contains("ran again later")
+        );
         assert!(out[3].text.starts_with("[Earlier round of checks"));
         assert!(out[6].text.contains("round 2"), "the latest round is whole");
     }

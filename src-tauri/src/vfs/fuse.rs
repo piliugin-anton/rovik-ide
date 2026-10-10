@@ -19,14 +19,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use fuser::{
-    AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags, Generation, INodeNo,
-    InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty,
-    ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, SessionACL, TimeOrNow, WriteFlags,
+    AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags,
+    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags,
+    ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry,
+    ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, SessionACL, TimeOrNow, WriteFlags,
 };
 
-use super::problem::MountProblem;
 use super::backend::Backend;
+use super::problem::MountProblem;
 use super::store::{Attr, Change, Kind, RenameMode, SetAttr, VfsError};
 
 const TTL: Duration = Duration::from_secs(1);
@@ -130,7 +130,11 @@ pub struct FuseFs {
 
 impl FuseFs {
     pub fn new(vfs: Arc<dyn Backend>) -> Self {
-        FuseFs { vfs, next_fh: AtomicU64::new(1), dirs: Mutex::new(HashMap::new()) }
+        FuseFs {
+            vfs,
+            next_fh: AtomicU64::new(1),
+            dirs: Mutex::new(HashMap::new()),
+        }
     }
 
     fn fh(&self) -> FileHandle {
@@ -225,7 +229,16 @@ impl fuser::Filesystem for FuseFs {
         }
     }
 
-    fn mknod(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, _rdev: u32, reply: ReplyEntry) {
+    fn mknod(
+        &self,
+        req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        mode: u32,
+        umask: u32,
+        _rdev: u32,
+        reply: ReplyEntry,
+    ) {
         // Regular files only: no devices, FIFOs or sockets in memory.
         if mode & libc::S_IFMT as u32 != libc::S_IFREG as u32 && mode & libc::S_IFMT as u32 != 0 {
             return reply.error(Errno::EPERM);
@@ -235,16 +248,46 @@ impl fuser::Filesystem for FuseFs {
             Err(e) => return reply.error(e),
         };
         let perm = (mode & !umask & 0o7777) as u16;
-        self.entry(reply, self.vfs.create(parent.0, name, Kind::File, perm, owner(req).0, owner(req).1, None));
+        self.entry(
+            reply,
+            self.vfs.create(
+                parent.0,
+                name,
+                Kind::File,
+                perm,
+                owner(req).0,
+                owner(req).1,
+                None,
+            ),
+        );
     }
 
-    fn mkdir(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
+    fn mkdir(
+        &self,
+        req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        mode: u32,
+        umask: u32,
+        reply: ReplyEntry,
+    ) {
         let name = match name_str(name) {
             Ok(n) => n,
             Err(e) => return reply.error(e),
         };
         let perm = (mode & !umask & 0o7777) as u16;
-        self.entry(reply, self.vfs.create(parent.0, name, Kind::Dir, perm, owner(req).0, owner(req).1, None));
+        self.entry(
+            reply,
+            self.vfs.create(
+                parent.0,
+                name,
+                Kind::Dir,
+                perm,
+                owner(req).0,
+                owner(req).1,
+                None,
+            ),
+        );
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
@@ -261,11 +304,29 @@ impl fuser::Filesystem for FuseFs {
         }
     }
 
-    fn symlink(&self, req: &Request, parent: INodeNo, link_name: &OsStr, target: &Path, reply: ReplyEntry) {
+    fn symlink(
+        &self,
+        req: &Request,
+        parent: INodeNo,
+        link_name: &OsStr,
+        target: &Path,
+        reply: ReplyEntry,
+    ) {
         let (Ok(name), Some(target)) = (name_str(link_name), target.to_str()) else {
             return reply.error(Errno::EINVAL);
         };
-        self.entry(reply, self.vfs.create(parent.0, name, Kind::Symlink, 0o777, owner(req).0, owner(req).1, Some(target)));
+        self.entry(
+            reply,
+            self.vfs.create(
+                parent.0,
+                name,
+                Kind::Symlink,
+                0o777,
+                owner(req).0,
+                owner(req).1,
+                Some(target),
+            ),
+        );
     }
 
     fn rename(
@@ -291,10 +352,20 @@ impl fuser::Filesystem for FuseFs {
         } else {
             return reply.error(Errno::EINVAL);
         };
-        Self::empty(reply, self.vfs.rename(parent.0, name, newparent.0, newname, mode));
+        Self::empty(
+            reply,
+            self.vfs.rename(parent.0, name, newparent.0, newname, mode),
+        );
     }
 
-    fn link(&self, _req: &Request, ino: INodeNo, newparent: INodeNo, newname: &OsStr, reply: ReplyEntry) {
+    fn link(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        newparent: INodeNo,
+        newname: &OsStr,
+        reply: ReplyEntry,
+    ) {
         match name_str(newname) {
             Ok(name) => self.entry(reply, self.vfs.link(ino.0, newparent.0, name)),
             Err(e) => reply.error(e),
@@ -313,7 +384,13 @@ impl fuser::Filesystem for FuseFs {
         }
         // With atomic O_TRUNC the kernel leaves truncating to us.
         if writable && flags.0 & libc::O_TRUNC != 0 && attr.size > 0 {
-            if let Err(e) = self.vfs.setattr(ino.0, &SetAttr { size: Some(0), ..Default::default() }) {
+            if let Err(e) = self.vfs.setattr(
+                ino.0,
+                &SetAttr {
+                    size: Some(0),
+                    ..Default::default()
+                },
+            ) {
                 self.vfs.release(ino.0);
                 return reply.error(errno(e));
             }
@@ -356,7 +433,14 @@ impl fuser::Filesystem for FuseFs {
         }
     }
 
-    fn flush(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
+    fn flush(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _lock_owner: LockOwner,
+        reply: ReplyEmpty,
+    ) {
         // Nothing to flush in memory. ENOSYS makes the kernel stop sending
         // flushes (one round trip less per close); close() still succeeds.
         reply.error(Errno::ENOSYS);
@@ -376,7 +460,14 @@ impl fuser::Filesystem for FuseFs {
         reply.ok();
     }
 
-    fn fsync(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+    fn fsync(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
         // As for flush: the kernel then answers fsync() itself, with success.
         reply.error(Errno::ENOSYS);
     }
@@ -395,11 +486,21 @@ impl fuser::Filesystem for FuseFs {
         listing.push(("..".into(), up));
         listing.extend(entries.into_iter().map(|(e, attr)| (e.name, attr)));
         let fh = self.fh();
-        self.dirs.lock().unwrap_or_else(|e| e.into_inner()).insert(fh.0, listing);
+        self.dirs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(fh.0, listing);
         reply.opened(fh, FopenFlags::empty());
     }
 
-    fn readdir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
+    fn readdir(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectory,
+    ) {
         let dirs = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
         let Some(listing) = dirs.get(&fh.0) else {
             return reply.error(Errno::EBADF);
@@ -413,25 +514,56 @@ impl fuser::Filesystem for FuseFs {
         reply.ok();
     }
 
-    fn readdirplus(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
+    fn readdirplus(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectoryPlus,
+    ) {
         let dirs = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
         let Some(listing) = dirs.get(&fh.0) else {
             return reply.error(Errno::EBADF);
         };
         for (i, (name, attr)) in listing.iter().enumerate().skip(offset as usize) {
-            if reply.add(INodeNo(attr.ino), i as u64 + 1, name, &TTL, &file_attr(attr), Generation(0)) {
+            if reply.add(
+                INodeNo(attr.ino),
+                i as u64 + 1,
+                name,
+                &TTL,
+                &file_attr(attr),
+                Generation(0),
+            ) {
                 break;
             }
         }
         reply.ok();
     }
 
-    fn releasedir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {
-        self.dirs.lock().unwrap_or_else(|e| e.into_inner()).remove(&fh.0);
+    fn releasedir(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        fh: FileHandle,
+        _flags: OpenFlags,
+        reply: ReplyEmpty,
+    ) {
+        self.dirs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&fh.0);
         reply.ok();
     }
 
-    fn fsyncdir(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+    fn fsyncdir(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
         reply.error(Errno::ENOSYS);
     }
 
@@ -439,16 +571,37 @@ impl fuser::Filesystem for FuseFs {
         let (capacity, used, nodes) = self.vfs.usage();
         let blocks = capacity / BLOCK;
         let free = capacity.saturating_sub(used) / BLOCK;
-        reply.statfs(blocks, free, free, nodes + 1_000_000, 1_000_000, BLOCK as u32, super::store::MAX_NAME as u32, BLOCK as u32);
+        reply.statfs(
+            blocks,
+            free,
+            free,
+            nodes + 1_000_000,
+            1_000_000,
+            BLOCK as u32,
+            super::store::MAX_NAME as u32,
+            BLOCK as u32,
+        );
     }
 
-    fn setxattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, value: &[u8], flags: i32, _position: u32, reply: ReplyEmpty) {
+    fn setxattr(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        name: &OsStr,
+        value: &[u8],
+        flags: i32,
+        _position: u32,
+        reply: ReplyEmpty,
+    ) {
         let Ok(name) = name_str(name) else {
             return reply.error(Errno::EINVAL);
         };
         let create = flags & libc::XATTR_CREATE != 0;
         let replace = flags & libc::XATTR_REPLACE != 0;
-        Self::empty(reply, self.vfs.setxattr(ino.0, name, value, create, replace));
+        Self::empty(
+            reply,
+            self.vfs.setxattr(ino.0, name, value, create, replace),
+        );
     }
 
     fn getxattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, size: u32, reply: ReplyXattr) {
@@ -494,23 +647,55 @@ impl fuser::Filesystem for FuseFs {
         Self::empty(reply, self.vfs.getattr(ino.0).map(|_| ()));
     }
 
-    fn create(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, _flags: i32, reply: ReplyCreate) {
+    fn create(
+        &self,
+        req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        mode: u32,
+        umask: u32,
+        _flags: i32,
+        reply: ReplyCreate,
+    ) {
         let name = match name_str(name) {
             Ok(n) => n,
             Err(e) => return reply.error(e),
         };
         let perm = (mode & !umask & 0o7777) as u16;
-        let attr = match self.vfs.create(parent.0, name, Kind::File, perm, owner(req).0, owner(req).1, None) {
+        let attr = match self.vfs.create(
+            parent.0,
+            name,
+            Kind::File,
+            perm,
+            owner(req).0,
+            owner(req).1,
+            None,
+        ) {
             Ok(attr) => attr,
             Err(e) => return reply.error(errno(e)),
         };
         if let Err(e) = self.vfs.open(attr.ino, true) {
             return reply.error(errno(e));
         }
-        reply.created(&TTL, &file_attr(&attr), Generation(0), self.fh(), OPEN_FLAGS);
+        reply.created(
+            &TTL,
+            &file_attr(&attr),
+            Generation(0),
+            self.fh(),
+            OPEN_FLAGS,
+        );
     }
 
-    fn fallocate(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, length: u64, mode: i32, reply: ReplyEmpty) {
+    fn fallocate(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
+        length: u64,
+        mode: i32,
+        reply: ReplyEmpty,
+    ) {
         // Plain preallocation only (extends the size); no hole punching.
         if mode != 0 {
             return reply.error(Errno::EOPNOTSUPP);
@@ -518,7 +703,13 @@ impl fuser::Filesystem for FuseFs {
         let result = self.vfs.getattr(ino.0).and_then(|attr| {
             let end = offset.saturating_add(length);
             if end > attr.size {
-                self.vfs.setattr(ino.0, &SetAttr { size: Some(end), ..Default::default() })?;
+                self.vfs.setattr(
+                    ino.0,
+                    &SetAttr {
+                        size: Some(end),
+                        ..Default::default()
+                    },
+                )?;
             }
             Ok(())
         });
@@ -536,7 +727,9 @@ fn mount_options() -> Config {
         MountOption::NoAtime,
     ];
     #[cfg(target_os = "linux")]
-    config.mount_options.push(MountOption::Subtype("rovik".into()));
+    config
+        .mount_options
+        .push(MountOption::Subtype("rovik".into()));
     #[cfg(target_os = "macos")]
     config.mount_options.extend([
         // No ._* AppleDouble files: xattrs are stored natively.
@@ -548,7 +741,11 @@ fn mount_options() -> Config {
     // read lock lets reads overlap). fuser supports this only on Linux.
     #[cfg(target_os = "linux")]
     {
-        config.n_threads = Some(std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 4));
+        config.n_threads = Some(
+            std::thread::available_parallelism()
+                .map_or(2, |n| n.get())
+                .clamp(2, 4),
+        );
         config.clone_fd = true;
     }
     config
@@ -575,7 +772,9 @@ impl FuseMount {
                 // old macFUSE, doesn't support notifications).
                 let _ = match change {
                     Change::Data(ino) => notifier.inval_inode(INodeNo(*ino), 0, 0),
-                    Change::Entry { parent, name } => notifier.inval_entry(INodeNo(*parent), OsStr::new(name)),
+                    Change::Entry { parent, name } => {
+                        notifier.inval_entry(INodeNo(*parent), OsStr::new(name))
+                    }
                 };
             }
         })));
@@ -587,10 +786,14 @@ impl FuseMount {
 
     fn unmount_inner(&mut self) -> Result<(), String> {
         self.vfs.set_listener(None);
-        let Some(session) = self.session.take() else { return Ok(()) };
+        let Some(session) = self.session.take() else {
+            return Ok(());
+        };
         #[cfg(target_os = "linux")]
         {
-            session.umount_and_join().map_err(|e| format!("unmounting: {e}"))
+            session
+                .umount_and_join()
+                .map_err(|e| format!("unmounting: {e}"))
         }
         #[cfg(target_os = "macos")]
         {
@@ -612,7 +815,8 @@ impl Drop for FuseMount {
 /// connected"), which would make the folder unusable.
 #[cfg(target_os = "linux")]
 fn clear_stale_mount(mountpoint: &Path) {
-    let stale = matches!(std::fs::metadata(mountpoint), Err(e) if e.raw_os_error() == Some(libc::ENOTCONN));
+    let stale =
+        matches!(std::fs::metadata(mountpoint), Err(e) if e.raw_os_error() == Some(libc::ENOTCONN));
     if stale {
         for helper in ["fusermount3", "fusermount"] {
             let ok = std::process::Command::new(helper)
@@ -629,24 +833,46 @@ fn clear_stale_mount(mountpoint: &Path) {
 
 /// Mounts at `requested`, or where the platform mounts by default; returns
 /// where it mounted.
-pub fn mount(vfs: Arc<dyn Backend>, requested: Option<&Path>) -> Result<(FuseMount, std::path::PathBuf), MountProblem> {
+pub fn mount(
+    vfs: Arc<dyn Backend>,
+    requested: Option<&Path>,
+) -> Result<(FuseMount, std::path::PathBuf), MountProblem> {
     #[cfg(target_os = "linux")]
     {
-        let mountpoint = requested.map(Path::to_path_buf).unwrap_or_else(super::default_mountpoint);
+        let mountpoint = requested
+            .map(Path::to_path_buf)
+            .unwrap_or_else(super::default_mountpoint);
         clear_stale_mount(&mountpoint);
-        std::fs::create_dir_all(&mountpoint).map_err(|e| MountProblem::failed(format!("{}: {e}", mountpoint.display())))?;
+        std::fs::create_dir_all(&mountpoint)
+            .map_err(|e| MountProblem::failed(format!("{}: {e}", mountpoint.display())))?;
         let fs = FuseFs::new(vfs.clone());
         let session = fuser::Session::new(fs, &mountpoint, &mount_options())
             .map_err(|e| MountProblem::failed(format!("mounting {}: {e}", mountpoint.display())))?
             .spawn()
             .map_err(|e| MountProblem::failed(e.to_string()))?;
         FuseMount::watch(&session, &vfs);
-        Ok((FuseMount { session: Some(session), vfs, mountpoint: mountpoint.clone() }, mountpoint))
+        Ok((
+            FuseMount {
+                session: Some(session),
+                vfs,
+                mountpoint: mountpoint.clone(),
+            },
+            mountpoint,
+        ))
     }
     #[cfg(target_os = "macos")]
     {
-        let (session, mac, mountpoint) = super::macfuse::mount(FuseFs::new(vfs.clone()), requested, &mount_options())?;
+        let (session, mac, mountpoint) =
+            super::macfuse::mount(FuseFs::new(vfs.clone()), requested, &mount_options())?;
         FuseMount::watch(&session, &vfs);
-        Ok((FuseMount { session: Some(session), vfs, mountpoint: mountpoint.clone(), mac: Some(mac) }, mountpoint))
+        Ok((
+            FuseMount {
+                session: Some(session),
+                vfs,
+                mountpoint: mountpoint.clone(),
+                mac: Some(mac),
+            },
+            mountpoint,
+        ))
     }
 }

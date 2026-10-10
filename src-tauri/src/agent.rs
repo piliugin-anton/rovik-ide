@@ -130,7 +130,6 @@ pub struct WireChatMessage {
     other: serde_json::Map<String, serde_json::Value>,
 }
 
-
 impl WireChatMessage {
     /// A plain text message, for one-off requests.
     pub fn text(role: &str, content: impl Into<String>) -> Self {
@@ -143,7 +142,6 @@ impl WireChatMessage {
         }
     }
 }
-
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -174,7 +172,12 @@ pub struct OpenAIChatOptions {
 /// - `chat_template_kwargs`: Qwen-style models on vLLM / SGLang (`enable_thinking`);
 /// - `thinking`: `{ "type": "enabled" | "disabled" }`, DeepSeek, Kimi, GLM,
 ///   Doubao, Fireworks: on by default there, and only this turns it off.
-pub const REASONING_FIELDS: [&str; 4] = ["reasoning_effort", "reasoning", "chat_template_kwargs", "thinking"];
+pub const REASONING_FIELDS: [&str; 4] = [
+    "reasoning_effort",
+    "reasoning",
+    "chat_template_kwargs",
+    "thinking",
+];
 
 /// Effort levels providers name, lowest first. Which a model takes varies:
 /// GPT-5 has `minimal` but not `none`, DeepSeek `low`/`high`/`max`, Mistral
@@ -200,7 +203,12 @@ pub fn apply_reasoning(body: &mut serde_json::Value, effort: ReasoningEffort, fo
 
 /// `apply_reasoning` with the level named as `level`: the one the provider
 /// takes in place of `effort`'s own (`effort_value`).
-fn apply_reasoning_level(body: &mut serde_json::Value, effort: ReasoningEffort, level: &str, formats: &[String]) {
+fn apply_reasoning_level(
+    body: &mut serde_json::Value,
+    effort: ReasoningEffort,
+    level: &str,
+    formats: &[String],
+) {
     let thinking = !matches!(effort, ReasoningEffort::None);
     for format in formats {
         match format.as_str() {
@@ -216,7 +224,8 @@ fn apply_reasoning_level(body: &mut serde_json::Value, effort: ReasoningEffort, 
                 body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": thinking })
             }
             "thinking" => {
-                body["thinking"] = serde_json::json!({ "type": if thinking { "enabled" } else { "disabled" } })
+                body["thinking"] =
+                    serde_json::json!({ "type": if thinking { "enabled" } else { "disabled" } })
             }
             _ => {}
         }
@@ -258,7 +267,10 @@ pub async fn run_with_reasoning(
     chat_id: Option<&str>,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
-) -> (Result<(), crate::chat_request::ChatError>, Option<ReasoningSupport>) {
+) -> (
+    Result<(), crate::chat_request::ChatError>,
+    Option<ReasoningSupport>,
+) {
     let requested = !formats.is_empty();
     let mut rejected: Vec<String> = Vec::new();
     let mut stripped_blindly: Vec<String> = Vec::new();
@@ -271,7 +283,9 @@ pub async fn run_with_reasoning(
     let responses_url = responses::responses_url(url);
     // Without a known `/responses` URL, chat completions is all there is.
     let mut api = match responses_url {
-        Some(_) => responses::remembered(url, model).or(saved_route).unwrap_or_default(),
+        Some(_) => responses::remembered(url, model)
+            .or(saved_route)
+            .unwrap_or_default(),
         None => Api::ChatCompletions,
     };
     // The refusal that moved the request to the other route: reported
@@ -306,7 +320,10 @@ pub async fn run_with_reasoning(
         let (target, attempt_body) = match (api, responses_url.as_deref()) {
             (Api::Responses, Some(responses_url)) => {
                 let phases = responses::uses_phases(&responses::phase_key(responses_url, model));
-                (responses_url, responses::request_body(&attempt_body, phases, echo))
+                (
+                    responses_url,
+                    responses::request_body(&attempt_body, phases, echo),
+                )
             }
             _ => (url, attempt_body),
         };
@@ -323,13 +340,21 @@ pub async fn run_with_reasoning(
         let result = crate::chat_request::run(&spec, cancel, emit).await;
         match &result {
             Err(e) if !moved && responses_url.is_some() && responses::wrong_route(e, api) => {
-                eprintln!("chat: {model} refused on {}; trying {}", api.as_str(), api.other().as_str());
+                eprintln!(
+                    "chat: {model} refused on {}; trying {}",
+                    api.as_str(),
+                    api.other().as_str()
+                );
                 api = api.other();
                 moved = true;
                 moved_from = Some(e.clone());
                 continue;
             }
-            Err(e) if e.kind == crate::chat_request::ErrorKind::NotFound && !e.partial && moved_from.is_some() => {
+            Err(e)
+                if e.kind == crate::chat_request::ErrorKind::NotFound
+                    && !e.partial
+                    && moved_from.is_some() =>
+            {
                 break Err(moved_from.take().expect("checked above"));
             }
             Err(e) if e.kind == crate::chat_request::ErrorKind::BadRequest && !e.partial => {
@@ -337,7 +362,8 @@ pub async fn run_with_reasoning(
                 // A named `tool_choice` (forced tool) the provider rejects:
                 // fall back to `auto` once. The execute gate stays the
                 // fallback for every provider.
-                if forced_tool.is_some() && !force_fell_back && mentions_field(&text, "tool_choice") {
+                if forced_tool.is_some() && !force_fell_back && mentions_field(&text, "tool_choice")
+                {
                     eprintln!("chat: {url} refuses a named tool_choice; falling back to auto");
                     force_fell_back = true;
                     continue;
@@ -345,14 +371,18 @@ pub async fn run_with_reasoning(
                 // Reasoning sent back, or the request for it: not for this server.
                 let echo_named = echo_refused(&text);
                 let echoes = crate::reasoning_echo::sends_any(&attempt_body)
-                    || (api == Api::Responses && effort.is_some_and(|e| !matches!(e, ReasoningEffort::None)));
+                    || (api == Api::Responses
+                        && effort.is_some_and(|e| !matches!(e, ReasoningEffort::None)));
                 if echo && echoes && echo_named {
                     eprintln!("chat: {url} refuses reasoning sent back; sending none from now on");
                     echo = false;
                     crate::reasoning_echo::rejected(url);
                     continue;
                 }
-                if sends_usage && (mentions_field(&text, "stream_options") || mentions_field(&text, "include_usage")) {
+                if sends_usage
+                    && (mentions_field(&text, "stream_options")
+                        || mentions_field(&text, "include_usage"))
+                {
                     ask_usage = false;
                     stream_usage::rejected(url);
                     continue;
@@ -360,11 +390,17 @@ pub async fn run_with_reasoning(
                 // The field is taken, the level isn't ("does not support
                 // 'none' with this model. Supported values are: 'minimal',
                 // …"): the nearest level it does take, not the field dropped.
-                let sends_level = formats.iter().any(|f| f == "reasoning_effort" || f == "reasoning");
+                let sends_level = formats
+                    .iter()
+                    .any(|f| f == "reasoning_effort" || f == "reasoning");
                 if let (true, Some(sent)) = (sends_level, level.clone()) {
                     if refused_levels.len() < 3 && effort_value::refused(&text, &sent) {
                         refused_levels.push(sent.clone());
-                        if let Some(next) = effort_value::nearest(&sent, &effort_value::offered(&text, &sent), &refused_levels) {
+                        if let Some(next) = effort_value::nearest(
+                            &sent,
+                            &effort_value::offered(&text, &sent),
+                            &refused_levels,
+                        ) {
                             eprintln!("chat: {model} refuses effort {sent:?}; trying {next:?}");
                             level = Some(next.to_string());
                             continue;
@@ -402,11 +438,16 @@ pub async fn run_with_reasoning(
     };
     if result.is_ok() && responses_url.is_some() {
         if moved {
-            eprintln!("chat: {model} works on {}; using it from now on", api.as_str());
+            eprintln!(
+                "chat: {model} works on {}; using it from now on",
+                api.as_str()
+            );
             responses::remember(url, model, api);
         }
         if api != saved_route.unwrap_or_default() {
-            emit(ChatStreamEvent::ApiRoute { route: api.as_str().to_string() });
+            emit(ChatStreamEvent::ApiRoute {
+                route: api.as_str().to_string(),
+            });
         }
     }
     if let (Some(effort), Some(level), true) = (effort, level.as_deref(), result.is_ok()) {
@@ -425,9 +466,15 @@ pub async fn run_with_reasoning(
     // not necessarily all of them, so they're reported as unresolved.
     let unresolved = if worked { stripped_blindly } else { Vec::new() };
     let accepted = if worked { formats } else { Vec::new() };
-    let support = ReasoningSupport { accepted, rejected, unresolved };
-    let learned = (!support.accepted.is_empty() || !support.rejected.is_empty() || !support.unresolved.is_empty())
-        .then_some(support);
+    let support = ReasoningSupport {
+        accepted,
+        rejected,
+        unresolved,
+    };
+    let learned = (!support.accepted.is_empty()
+        || !support.rejected.is_empty()
+        || !support.unresolved.is_empty())
+    .then_some(support);
     (result, learned)
 }
 
@@ -464,7 +511,8 @@ pub mod effort_value {
     use std::collections::HashMap;
     use std::sync::{LazyLock, Mutex};
 
-    static TAKEN: LazyLock<Mutex<HashMap<(String, String, String), String>>> = LazyLock::new(Default::default);
+    static TAKEN: LazyLock<Mutex<HashMap<(String, String, String), String>>> =
+        LazyLock::new(Default::default);
 
     /// The level to send for `level` to this model: one found to work in its
     /// place, or `level` itself.
@@ -472,27 +520,39 @@ pub mod effort_value {
         TAKEN
             .lock()
             .ok()
-            .and_then(|m| m.get(&(url.to_string(), model.to_string(), level.to_string())).cloned())
+            .and_then(|m| {
+                m.get(&(url.to_string(), model.to_string(), level.to_string()))
+                    .cloned()
+            })
             .unwrap_or_else(|| level.to_string())
     }
 
     pub fn remember(url: &str, model: &str, level: &str, taken: &str) {
         if let Ok(mut m) = TAKEN.lock() {
-            m.insert((url.to_string(), model.to_string(), level.to_string()), taken.to_string());
+            m.insert(
+                (url.to_string(), model.to_string(), level.to_string()),
+                taken.to_string(),
+            );
         }
     }
 
     fn quoted(text: &str, value: &str) -> bool {
-        [format!("'{value}'"), format!("\"{value}\""), format!("`{value}`"), format!("\\\"{value}\\\"")]
-            .iter()
-            .any(|q| text.contains(q.as_str()))
+        [
+            format!("'{value}'"),
+            format!("\"{value}\""),
+            format!("`{value}`"),
+            format!("\\\"{value}\\\""),
+        ]
+        .iter()
+        .any(|q| text.contains(q.as_str()))
     }
 
     /// Whether a 400 refuses the effort's value `sent`, not the field: it is
     /// about the effort and says the value is wrong, or quotes it.
     pub fn refused(text: &str, sent: &str) -> bool {
         let lower = text.to_lowercase();
-        let about_effort = mentions_field(&lower, "reasoning_effort") || mentions_field(&lower, "effort");
+        let about_effort =
+            mentions_field(&lower, "reasoning_effort") || mentions_field(&lower, "effort");
         let wrong_value = [
             "unsupported value",
             "invalid value",
@@ -513,16 +573,28 @@ pub mod effort_value {
     /// The levels the error lists as taken (quoted), other than `sent`.
     pub fn offered(text: &str, sent: &str) -> Vec<&'static str> {
         let lower = text.to_lowercase();
-        LEVELS.iter().copied().filter(|l| *l != sent && quoted(&lower, l)).collect()
+        LEVELS
+            .iter()
+            .copied()
+            .filter(|l| *l != sent && quoted(&lower, l))
+            .collect()
     }
 
     /// The level nearest `sent` among those offered (any known level if the
     /// error lists none), not yet refused; on a tie the higher. For `none`,
     /// the lowest: as little thinking as the model allows.
-    pub fn nearest(sent: &str, offered: &[&'static str], refused: &[String]) -> Option<&'static str> {
+    pub fn nearest(
+        sent: &str,
+        offered: &[&'static str],
+        refused: &[String],
+    ) -> Option<&'static str> {
         let at = |l: &str| LEVELS.iter().position(|x| *x == l);
         let from = at(sent)?;
-        let pool: Vec<&'static str> = if offered.is_empty() { LEVELS.to_vec() } else { offered.to_vec() };
+        let pool: Vec<&'static str> = if offered.is_empty() {
+            LEVELS.to_vec()
+        } else {
+            offered.to_vec()
+        };
         pool.into_iter()
             .filter(|l| *l != sent && !refused.iter().any(|r| r == l))
             .filter_map(|l| at(l).map(|i| (l, i)))
@@ -548,7 +620,13 @@ pub struct ReasoningSupport {
 /// (quoted, as in "Unknown parameter: 'include'"; the plain word is too
 /// common in errors to count).
 fn echo_refused(text: &str) -> bool {
-    ["reasoning_details", "reasoning_content", "encrypted_content"].iter().any(|f| mentions_field(text, f))
+    [
+        "reasoning_details",
+        "reasoning_content",
+        "encrypted_content",
+    ]
+    .iter()
+    .any(|f| mentions_field(text, f))
         || text.contains("'include'")
         || text.contains("\"include\"")
 }
@@ -786,7 +864,11 @@ pub async fn run_chat(
         } else {
             without_tool_rules(CODING_AGENT_SYSTEM_PROMPT)
         };
-        match project_context.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        match project_context
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
             Some(context) => format!("{base}\n\n{context}"),
             None => base,
         }
@@ -795,14 +877,24 @@ pub async fn run_chat(
     // Room kept for the reply (its reasoning included): learned per model
     // and effort from what providers report, see `reply_reserve`.
     let reply_key = reply_reserve::key(&calibration_key, reasoning_effort);
-    let window = context_tokens.filter(|t| *t > 0).unwrap_or(DEFAULT_CONTEXT_TOKENS);
+    let window = context_tokens
+        .filter(|t| *t > 0)
+        .unwrap_or(DEFAULT_CONTEXT_TOKENS);
     let max_tokens = options.as_ref().and_then(|o| o.max_tokens);
     let reserve = reply_reserve::reserve(&reply_key, reasoning_effort, window, max_tokens);
     // opencode.ai requires some tools in every request; a request that had
     // none (`has_tools` above) still may not call them (opencode.rs).
-    let (tools, no_tool_calls) = crate::opencode::with_required_tools(&base_url, tools, no_tool_calls);
-    let tool_chars = tools.as_ref().map_or(0, |t| serde_json::to_string(t).map_or(0, |j| j.chars().count()));
-    let budget = history_budget(window, system_prompt.chars().count() + tool_chars, chars_per_token, reserve);
+    let (tools, no_tool_calls) =
+        crate::opencode::with_required_tools(&base_url, tools, no_tool_calls);
+    let tool_chars = tools.as_ref().map_or(0, |t| {
+        serde_json::to_string(t).map_or(0, |j| j.chars().count())
+    });
+    let budget = history_budget(
+        window,
+        system_prompt.chars().count() + tool_chars,
+        chars_per_token,
+        reserve,
+    );
 
     // Context Language Models need the virtual volume (the agent's shell
     // edits the file there); without it the chat falls back to trimming.
@@ -825,9 +917,14 @@ pub async fn run_chat(
             .map(|section| format!("{system_prompt}\n\n{section}")),
         false => None,
     };
-    let clm_budget = clm_prompt
-        .as_ref()
-        .map(|p| history_budget(window, p.chars().count() + tool_chars, chars_per_token, reserve));
+    let clm_budget = clm_prompt.as_ref().map(|p| {
+        history_budget(
+            window,
+            p.chars().count() + tool_chars,
+            chars_per_token,
+            reserve,
+        )
+    });
     // Set when the history below was built by CLM.
     let mut clm_used = false;
 
@@ -838,20 +935,34 @@ pub async fn run_chat(
             // Gemini 3 needs a thought signature on tool calls it didn't sign.
             let gemini = is_gemini_target(&base_url, &model);
             let vision = vision.unwrap_or(false);
-            let cost = crate::chat_db::history::Cost { vision, chars_per_token };
+            let cost = crate::chat_db::history::Cost {
+                vision,
+                chars_per_token,
+            };
             let build = async {
                 let Some(clm_budget) = clm_budget else {
                     return Err(String::new());
                 };
-                let prepared =
-                    crate::clm::prepare(db, vfs, dialog_id.clone(), clm_budget, cost, current_user_content.clone(), checklist_note.clone())
-                        .await?;
+                let prepared = crate::clm::prepare(
+                    db,
+                    vfs,
+                    dialog_id.clone(),
+                    clm_budget,
+                    cost,
+                    current_user_content.clone(),
+                    checklist_note.clone(),
+                )
+                .await?;
                 // The reasoning the model sent with this request's steps (reasoning_echo.rs).
                 let echo_model = model.clone();
                 let mut messages = db
                     .read(move |conn| {
                         let mut messages = prepared.messages;
-                        crate::chat_db::history::attach_reasoning(conn, &mut messages, &echo_model)?;
+                        crate::chat_db::history::attach_reasoning(
+                            conn,
+                            &mut messages,
+                            &echo_model,
+                        )?;
                         Ok(messages)
                     })
                     .await?;
@@ -862,7 +973,11 @@ pub async fn run_chat(
                     last.text = format!("{}\n\n{}", last.text.trim_end(), notes.join("\n"));
                     last.full_chars = last.text.chars().count();
                 }
-                Ok((crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini), prepared.info, fresh))
+                Ok((
+                    crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini),
+                    prepared.info,
+                    fresh,
+                ))
             };
             let clm_built = tokio::select! {
                 _ = crate::chat_request::cancelled(cancel) => {
@@ -957,7 +1072,11 @@ pub async fn run_chat(
         0,
         WireChatMessage {
             role: "system".to_string(),
-            content: serde_json::Value::String(request_system_prompt(system_prompt, clm_prompt, clm_used)),
+            content: serde_json::Value::String(request_system_prompt(
+                system_prompt,
+                clm_prompt,
+                clm_used,
+            )),
             tool_calls: None,
             tool_call_id: None,
             other: Default::default(),
@@ -1013,7 +1132,9 @@ pub async fn run_chat(
             .filter(|name| !name.trim().is_empty() && !no_tool_calls);
         body["tool_choice"] = match (no_tool_calls, forced) {
             (true, _) => serde_json::json!("none"),
-            (false, Some(name)) => serde_json::json!({ "type": "function", "function": { "name": name } }),
+            (false, Some(name)) => {
+                serde_json::json!({ "type": "function", "function": { "name": name } })
+            }
             (false, None) => serde_json::json!("auto"),
         };
     }
@@ -1032,16 +1153,30 @@ pub async fn run_chat(
     // Provider data of each completed tool call, saved to the database below.
     let mut call_extras: Vec<(String, serde_json::Value)> = Vec::new();
     let mut emit = |event: ChatStreamEvent| {
-        if let ChatStreamEvent::ToolCallComplete { id, extra_content: Some(extra), .. } = &event {
+        if let ChatStreamEvent::ToolCallComplete {
+            id,
+            extra_content: Some(extra),
+            ..
+        } = &event
+        {
             call_extras.push((id.clone(), extra.clone()));
         }
-        if let ChatStreamEvent::Finished { usage: Some(usage), .. } = &event {
+        if let ChatStreamEvent::Finished {
+            usage: Some(usage), ..
+        } = &event
+        {
             reported_prompt_tokens = calibration::prompt_tokens(usage);
             reported_output_tokens = reply_reserve::output_tokens(usage);
         }
         // Diagnostics: Gemini 3 must sign its tool calls; show whether it did.
         if log_signatures {
-            if let ChatStreamEvent::ToolCallComplete { id, name, extra_content, .. } = &event {
+            if let ChatStreamEvent::ToolCallComplete {
+                id,
+                name,
+                extra_content,
+                ..
+            } = &event
+            {
                 let signed = extra_content
                     .as_ref()
                     .and_then(|e| e.pointer("/google/thought_signature"))
@@ -1054,7 +1189,10 @@ pub async fn run_chat(
                 if !signed {
                     eprintln!(
                         "gemini:   extra_content: {}",
-                        extra_content.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "none".into())
+                        extra_content
+                            .as_ref()
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "none".into())
                     );
                 }
             }
@@ -1098,7 +1236,9 @@ pub async fn run_chat(
     // frontend waits for this command before starting the next request.
     if let (Some(message_id), false) = (assistant_message_id, call_extras.is_empty()) {
         let saved = db
-            .write(move |conn| crate::chat_db::store::save_tool_call_extras(conn, &message_id, &call_extras))
+            .write(move |conn| {
+                crate::chat_db::store::save_tool_call_extras(conn, &message_id, &call_extras)
+            })
             .await;
         if let Err(e) = saved {
             eprintln!("could not save tool call data: {e}");
@@ -1167,7 +1307,12 @@ pub mod calibration {
     pub fn prompt_size(body: &serde_json::Value) -> (usize, usize) {
         let mut chars = 0;
         let mut images = 0;
-        for m in body.get("messages").and_then(|m| m.as_array()).into_iter().flatten() {
+        for m in body
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .into_iter()
+            .flatten()
+        {
             match m.get("content") {
                 Some(serde_json::Value::String(s)) => chars += s.chars().count(),
                 Some(serde_json::Value::Array(parts)) => {
@@ -1181,10 +1326,21 @@ pub mod calibration {
                 }
                 _ => {}
             }
-            for call in m.get("tool_calls").and_then(|c| c.as_array()).into_iter().flatten() {
+            for call in m
+                .get("tool_calls")
+                .and_then(|c| c.as_array())
+                .into_iter()
+                .flatten()
+            {
                 if let Some(f) = call.get("function") {
-                    chars += f.get("name").and_then(|n| n.as_str()).map_or(0, |n| n.chars().count());
-                    chars += f.get("arguments").and_then(|a| a.as_str()).map_or(0, |a| a.chars().count());
+                    chars += f
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .map_or(0, |n| n.chars().count());
+                    chars += f
+                        .get("arguments")
+                        .and_then(|a| a.as_str())
+                        .map_or(0, |a| a.chars().count());
                 }
             }
         }
@@ -1328,13 +1484,22 @@ pub mod reply_reserve {
     }
 
     /// Tokens to keep free for the reply.
-    pub fn reserve(key: &str, effort: Option<ReasoningEffort>, window: usize, max_tokens: Option<u32>) -> usize {
+    pub fn reserve(
+        key: &str,
+        effort: Option<ReasoningEffort>,
+        window: usize,
+        max_tokens: Option<u32>,
+    ) -> usize {
         let default = default_for(effort);
         let learned = LEARNED.lock().ok().and_then(|m| m.get(key).copied());
         let mut wanted = match learned {
             Some(l) => {
                 let seen = (l.peak * MARGIN).ceil() as usize;
-                if l.samples >= TRUST_AFTER { seen.max(MIN_RESERVE) } else { seen.max(default) }
+                if l.samples >= TRUST_AFTER {
+                    seen.max(MIN_RESERVE)
+                } else {
+                    seen.max(default)
+                }
             }
             None => default,
         };
@@ -1358,14 +1523,19 @@ pub mod reply_reserve {
                     peak: (old.peak * 0.9 + observed * 0.1).max(observed),
                     samples: old.samples.saturating_add(1),
                 },
-                None => Learned { peak: observed, samples: 1 },
+                None => Learned {
+                    peak: observed,
+                    samples: 1,
+                },
             };
             learned.insert(key.to_string(), next);
         }
     }
 
     fn count(usage: &serde_json::Value, pointers: &[&str]) -> Option<u64> {
-        pointers.iter().find_map(|p| usage.pointer(p).and_then(|v| v.as_u64()))
+        pointers
+            .iter()
+            .find_map(|p| usage.pointer(p).and_then(|v| v.as_u64()))
     }
 
     /// The reasoning tokens a provider reported, and whether its output count
@@ -1373,21 +1543,48 @@ pub mod reply_reserve {
     pub fn reasoning_tokens(usage: &serde_json::Value) -> Option<(u64, bool)> {
         if let Some(n) = count(
             usage,
-            &["/completion_tokens_details/reasoning_tokens", "/output_tokens_details/reasoning_tokens"],
+            &[
+                "/completion_tokens_details/reasoning_tokens",
+                "/output_tokens_details/reasoning_tokens",
+            ],
         ) {
             return Some((n, true));
         }
-        count(usage, &["/reasoning_tokens", "/thoughts_token_count", "/thoughtsTokenCount"]).map(|n| (n, false))
+        count(
+            usage,
+            &[
+                "/reasoning_tokens",
+                "/thoughts_token_count",
+                "/thoughtsTokenCount",
+            ],
+        )
+        .map(|n| (n, false))
     }
 
     /// Everything the model generated for the reply, reasoning included.
     pub fn output_tokens(usage: &serde_json::Value) -> Option<u64> {
         let completion = count(
             usage,
-            &["/completion_tokens", "/output_tokens", "/candidates_token_count", "/candidatesTokenCount"],
+            &[
+                "/completion_tokens",
+                "/output_tokens",
+                "/candidates_token_count",
+                "/candidatesTokenCount",
+            ],
         );
-        let prompt = count(usage, &["/prompt_tokens", "/input_tokens", "/prompt_token_count", "/promptTokenCount"]);
-        let total = count(usage, &["/total_tokens", "/total_token_count", "/totalTokenCount"]);
+        let prompt = count(
+            usage,
+            &[
+                "/prompt_tokens",
+                "/input_tokens",
+                "/prompt_token_count",
+                "/promptTokenCount",
+            ],
+        );
+        let total = count(
+            usage,
+            &["/total_tokens", "/total_token_count", "/totalTokenCount"],
+        );
         // Reasoning left out of the output count still shows in the total.
         let beyond_prompt = total.zip(prompt).map(|(t, p)| t.saturating_sub(p));
         let mut output = completion.max(beyond_prompt)?;
@@ -1417,7 +1614,8 @@ pub mod reply_reserve {
             assert_eq!(reasoning_tokens(&responses), Some((300, true)));
             assert_eq!(output_tokens(&responses), Some(500));
             // Gemini's OpenAI-compatible API: reasoning only in the total.
-            let gemini = json!({ "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 1150 });
+            let gemini =
+                json!({ "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 1150 });
             assert_eq!(reasoning_tokens(&gemini), None);
             assert_eq!(output_tokens(&gemini), Some(1050));
             // Gemini's native counts, without a total: thoughts added.
@@ -1433,13 +1631,25 @@ pub mod reply_reserve {
         #[test]
         fn reserve_defaults_learns_and_caps() {
             let key = key("https://example.test/v1|m", Some(ReasoningEffort::High));
-            assert_eq!(reserve(&key, Some(ReasoningEffort::High), 200_000, None), 16_000);
+            assert_eq!(
+                reserve(&key, Some(ReasoningEffort::High), 200_000, None),
+                16_000
+            );
             // Capped at 40% of a small window, and by max_tokens.
-            assert_eq!(reserve(&key, Some(ReasoningEffort::High), 32_000, None), 12_800);
-            assert_eq!(reserve(&key, Some(ReasoningEffort::High), 200_000, Some(4_000)), 4_000);
+            assert_eq!(
+                reserve(&key, Some(ReasoningEffort::High), 32_000, None),
+                12_800
+            );
+            assert_eq!(
+                reserve(&key, Some(ReasoningEffort::High), 200_000, Some(4_000)),
+                4_000
+            );
             // A long reply raises it at once.
             learn(&key, 20_000);
-            assert_eq!(reserve(&key, Some(ReasoningEffort::High), 200_000, None), 25_000);
+            assert_eq!(
+                reserve(&key, Some(ReasoningEffort::High), 200_000, None),
+                25_000
+            );
             // Short replies only lower it once enough were seen.
             for _ in 0..30 {
                 learn(&key, 1_000);
@@ -1509,12 +1719,16 @@ pub async fn chat_context_estimate(
     // As sent: with the tools opencode.ai requires (opencode.rs).
     let sent_chars = |tools: Vec<serde_json::Value>| {
         let (sent, _) = crate::opencode::with_required_tools(&base_url, Some(tools), false);
-        sent.filter(|t| !t.is_empty()).map_or(0, |t| serde_json::to_string(&t).map_or(0, |j| j.chars().count()))
+        sent.filter(|t| !t.is_empty()).map_or(0, |t| {
+            serde_json::to_string(&t).map_or(0, |j| j.chars().count())
+        })
     };
     let tool_chars = sent_chars(tools.clone());
     // CLM requests offer its tools too (chat_request decides the same way).
     let d = dialog_id.clone();
-    let clm_mode = db.read(move |conn| crate::clm::store::context_mode(conn, &d)).await?;
+    let clm_mode = db
+        .read(move |conn| crate::clm::store::context_mode(conn, &d))
+        .await?;
     let clm_tools = (clm_mode.as_deref() == Some(crate::clm::MODE_CLM)
         && !tools.is_empty()
         && crate::clm::availability(&vfs).is_ok())
@@ -1533,11 +1747,13 @@ pub async fn chat_context_estimate(
     let project_chars = match root {
         Some(root) => {
             let verify = permissions.verify_changes;
-            tauri::async_runtime::spawn_blocking(move || crate::agent_run::project::cached_context(&app, &root, verify))
-                .await
-                .unwrap_or_default()
-                .chars()
-                .count()
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::agent_run::project::cached_context(&app, &root, verify)
+            })
+            .await
+            .unwrap_or_default()
+            .chars()
+            .count()
         }
         None => 0,
     };
@@ -1546,7 +1762,9 @@ pub async fn chat_context_estimate(
     let gemini = is_gemini_target(&base_url, &model);
     let calibration_key = calibration::key(&base_url, &model);
     let chars_per_token = calibration::chars_per_token(&calibration_key);
-    let window = context_tokens.filter(|t| *t > 0).unwrap_or(DEFAULT_CONTEXT_TOKENS);
+    let window = context_tokens
+        .filter(|t| *t > 0)
+        .unwrap_or(DEFAULT_CONTEXT_TOKENS);
     let reply = reply_reserve::reserve(
         &reply_reserve::key(&calibration_key, reasoning_effort),
         reasoning_effort,
@@ -1559,7 +1777,12 @@ pub async fn chat_context_estimate(
     // As chat_request works it out: what is left with the CLM section in the prompt.
     let clm_budget = match clm_tools {
         Some(clm_tool_chars) => crate::clm::system_section(&vfs, &dialog_id).map(|section| {
-            history_budget(window, prompt_chars + 2 + section.chars().count() + clm_tool_chars, chars_per_token, reply)
+            history_budget(
+                window,
+                prompt_chars + 2 + section.chars().count() + clm_tool_chars,
+                chars_per_token,
+                reply,
+            )
         }),
         None => None,
     };
@@ -1612,8 +1835,13 @@ fn without_tool_rules(prompt: &str) -> String {
         return prompt.to_string();
     };
     let rest = &prompt[start + 2..];
-    let end = rest.find("\n## ").map(|i| start + 2 + i + 1).unwrap_or(prompt.len());
-    format!("{}{}", &prompt[..start], &prompt[end..]).trim_end().to_string()
+    let end = rest
+        .find("\n## ")
+        .map(|i| start + 2 + i + 1)
+        .unwrap_or(prompt.len());
+    format!("{}{}", &prompt[..start], &prompt[end..])
+        .trim_end()
+        .to_string()
 }
 
 /*
@@ -1638,7 +1866,10 @@ pub struct RemoteModel {
 /// since a few self-hosted servers skip the envelope. Runs on the Rust side so
 /// local servers (Ollama, LM Studio, llama.cpp) aren't blocked by CORS.
 #[tauri::command]
-pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Vec<RemoteModel>, String> {
+pub async fn list_models(
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<Vec<RemoteModel>, String> {
     let url = format!("{}/models", base_url.trim().trim_end_matches('/'));
 
     let client = Client::builder()
@@ -1646,12 +1877,17 @@ pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Ve
         .build()
         .map_err(|e| e.to_string())?;
 
-    let mut req = client.get(&url).headers(crate::opencode::headers(&url, None));
+    let mut req = client
+        .get(&url)
+        .headers(crate::opencode::headers(&url, None));
     if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         req = req.bearer_auth(key);
     }
 
-    let res = req.send().await.map_err(|e| format!("Could not reach {url}: {e}"))?;
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach {url}: {e}"))?;
     let status = res.status();
     let body = res.text().await.map_err(|e| e.to_string())?;
 
@@ -1659,7 +1895,9 @@ pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Ve
         let snippet: String = body.chars().take(200).collect();
         return Err(match status.as_u16() {
             401 | 403 => format!("{status}: API key rejected. {snippet}"),
-            404 => format!("{status}: this server doesn't provide a model list. Add models manually."),
+            404 => {
+                format!("{status}: this server doesn't provide a model list. Add models manually.")
+            }
             _ => format!("{status}: {snippet}"),
         });
     }
@@ -1677,7 +1915,10 @@ pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Ve
         .iter()
         .filter_map(|m| {
             let id = m.get("id")?.as_str()?.to_string();
-            let owned_by = m.get("owned_by").and_then(|o| o.as_str()).map(str::to_string);
+            let owned_by = m
+                .get("owned_by")
+                .and_then(|o| o.as_str())
+                .map(str::to_string);
             let context_length = ["context_length", "max_model_len", "context_window"]
                 .iter()
                 .find_map(|key| m.get(*key).and_then(|v| v.as_u64()))
@@ -1687,7 +1928,11 @@ pub async fn list_models(base_url: String, api_key: Option<String>) -> Result<Ve
                         .and_then(|v| v.as_u64())
                 })
                 .filter(|&n| n > 0);
-            Some(RemoteModel { id, owned_by, context_length })
+            Some(RemoteModel {
+                id,
+                owned_by,
+                context_length,
+            })
         })
         .collect();
 
@@ -1722,7 +1967,10 @@ mod tests {
             body.pointer("/messages/0/tool_calls/0/extra_content/google/thought_signature"),
             Some(&json!("SIG-A"))
         );
-        assert_eq!(body["messages"][0], history, "the message reaches the body unchanged");
+        assert_eq!(
+            body["messages"][0], history,
+            "the message reaches the body unchanged"
+        );
     }
 
     #[test]
@@ -1755,7 +2003,15 @@ mod reasoning_tests {
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
         assert_eq!(body["thinking"]["type"], "enabled");
         let mut off = serde_json::json!({});
-        apply_reasoning(&mut off, ReasoningEffort::None, &["reasoning".into(), "chat_template_kwargs".into(), "thinking".into()]);
+        apply_reasoning(
+            &mut off,
+            ReasoningEffort::None,
+            &[
+                "reasoning".into(),
+                "chat_template_kwargs".into(),
+                "thinking".into(),
+            ],
+        );
         assert_eq!(off["thinking"]["type"], "disabled");
         assert_eq!(off["reasoning"]["enabled"], false);
         assert_eq!(off["chat_template_kwargs"]["enable_thinking"], false);
@@ -1764,13 +2020,23 @@ mod reasoning_tests {
 
     #[test]
     fn refusals_of_reasoning_sent_back_are_recognised() {
-        assert!(echo_refused("Extra inputs are not permitted: messages[2].reasoning_details"));
-        assert!(echo_refused(r#"{"detail":[{"loc":["body","messages",1,"reasoning_content"]}]}"#));
+        assert!(echo_refused(
+            "Extra inputs are not permitted: messages[2].reasoning_details"
+        ));
+        assert!(echo_refused(
+            r#"{"detail":[{"loc":["body","messages",1,"reasoning_content"]}]}"#
+        ));
         assert!(echo_refused("Unknown parameter: 'include'."));
-        assert!(echo_refused(r#"{"loc":["body","include"],"msg":"Extra inputs are not permitted"}"#));
-        assert!(echo_refused("Encrypted content could not be verified (encrypted_content)."));
+        assert!(echo_refused(
+            r#"{"loc":["body","include"],"msg":"Extra inputs are not permitted"}"#
+        ));
+        assert!(echo_refused(
+            "Encrypted content could not be verified (encrypted_content)."
+        ));
         // Ordinary 400s that only use the words.
-        assert!(!echo_refused("messages must include at least one user message"));
+        assert!(!echo_refused(
+            "messages must include at least one user message"
+        ));
         assert!(!echo_refused("Unsupported parameter: 'reasoning_effort'"));
     }
 
@@ -1780,9 +2046,13 @@ mod reasoning_tests {
         let openai = r#"{"error":{"message":"Unrecognized request argument supplied: chat_template_kwargs","type":"invalid_request_error"}}"#;
         assert!(mentions_field(openai, "chat_template_kwargs"));
         assert!(!mentions_field(openai, "reasoning"));
-        let unsupported = "Unsupported parameter: 'reasoning_effort' is not supported with this model.";
+        let unsupported =
+            "Unsupported parameter: 'reasoning_effort' is not supported with this model.";
         assert!(mentions_field(unsupported, "reasoning_effort"));
-        assert!(!mentions_field(unsupported, "reasoning"), "not inside reasoning_effort");
+        assert!(
+            !mentions_field(unsupported, "reasoning"),
+            "not inside reasoning_effort"
+        );
         // pydantic-style servers (Mistral, some gateways)
         let pydantic = r#"{"detail":[{"type":"extra_forbidden","loc":["body","reasoning"],"msg":"Extra inputs are not permitted"}]}"#;
         assert!(mentions_field(pydantic, "reasoning"));
@@ -1796,7 +2066,10 @@ mod reasoning_tests {
     async fn strict_provider(
         refused: &'static [&'static str],
         name_it: bool,
-    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
@@ -1836,7 +2109,11 @@ mod reasoning_tests {
         send_effort(url, formats, ReasoningEffort::High).await
     }
 
-    async fn send_effort(url: &str, formats: &[&str], effort: ReasoningEffort) -> (bool, Option<ReasoningSupport>) {
+    async fn send_effort(
+        url: &str,
+        formats: &[&str],
+        effort: ReasoningEffort,
+    ) -> (bool, Option<ReasoningSupport>) {
         let client = Client::new();
         let body = serde_json::json!({ "model": "m", "messages": [] });
         let (tx, mut rx) = tokio::sync::watch::channel(false);
@@ -1867,7 +2144,12 @@ mod reasoning_tests {
 
     /// Takes `reasoning_effort` but only the levels in `taken`, refusing
     /// others as OpenAI does for GPT-5's missing `none`.
-    async fn level_provider(taken: &'static [&'static str]) -> (String, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+    async fn level_provider(
+        taken: &'static [&'static str],
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
@@ -1878,12 +2160,19 @@ mod reasoning_tests {
                 let mut buf = vec![0u8; 65536];
                 let n = socket.read(&mut buf).await.unwrap_or(0);
                 let raw = String::from_utf8_lossy(&buf[..n]).to_string();
-                let body: serde_json::Value =
-                    raw.split("\r\n\r\n").nth(1).and_then(|b| serde_json::from_str(b).ok()).unwrap_or_default();
+                let body: serde_json::Value = raw
+                    .split("\r\n\r\n")
+                    .nth(1)
+                    .and_then(|b| serde_json::from_str(b).ok())
+                    .unwrap_or_default();
                 let level = body["reasoning_effort"].as_str().unwrap_or("").to_string();
                 log.lock().unwrap().push(body);
                 let reply = if !level.is_empty() && !taken.contains(&level.as_str()) {
-                    let list = taken.iter().map(|l| format!("'{l}'")).collect::<Vec<_>>().join(", ");
+                    let list = taken
+                        .iter()
+                        .map(|l| format!("'{l}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     let msg = format!(
                         r#"{{"error":{{"message":"Unsupported value: 'reasoning_effort' does not support '{level}' with this model. Supported values are: {list}.","type":"invalid_request_error","param":"reasoning_effort","code":"unsupported_value"}}}}"#
                     );
@@ -1902,17 +2191,29 @@ mod reasoning_tests {
     async fn a_refused_level_gets_the_nearest_taken_one_and_the_field_stays() {
         // GPT-5: no `none`; its lowest is `minimal`.
         let (url, seen) = level_provider(&["minimal", "low", "medium", "high"]).await;
-        let (ok, learned) = send_effort(&url, &["reasoning_effort", "thinking"], ReasoningEffort::None).await;
+        let (ok, learned) = send_effort(
+            &url,
+            &["reasoning_effort", "thinking"],
+            ReasoningEffort::None,
+        )
+        .await;
         assert!(ok);
         let s = learned.unwrap();
-        assert_eq!(s.accepted, ["reasoning_effort", "thinking"], "the field isn't dropped");
+        assert_eq!(
+            s.accepted,
+            ["reasoning_effort", "thinking"],
+            "the field isn't dropped"
+        );
         assert!(s.rejected.is_empty());
         {
             let bodies = seen.lock().unwrap();
             assert_eq!(bodies.len(), 2);
             assert_eq!(bodies[0]["reasoning_effort"], "none");
             assert_eq!(bodies[1]["reasoning_effort"], "minimal");
-            assert_eq!(bodies[1]["thinking"]["type"], "disabled", "thinking stays off");
+            assert_eq!(
+                bodies[1]["thinking"]["type"], "disabled",
+                "thinking stays off"
+            );
         }
         // Remembered: the next request sends `minimal` straight away.
         let (ok, _) = send_effort(&url, &["reasoning_effort"], ReasoningEffort::None).await;
@@ -1937,16 +2238,31 @@ mod reasoning_tests {
         use effort_value::{nearest, offered, refused};
         let openai = "Unsupported value: 'reasoning_effort' does not support 'none' with this model. Supported values are: 'minimal', 'low', 'medium', and 'high'.";
         assert!(refused(openai, "none"));
-        assert_eq!(offered(openai, "none"), ["minimal", "low", "medium", "high"]);
-        assert_eq!(nearest("none", &offered(openai, "none"), &[]), Some("minimal"));
+        assert_eq!(
+            offered(openai, "none"),
+            ["minimal", "low", "medium", "high"]
+        );
+        assert_eq!(
+            nearest("none", &offered(openai, "none"), &[]),
+            Some("minimal")
+        );
 
         let field = "Unsupported parameter: 'reasoning_effort' is not supported with this model.";
-        assert!(!refused(field, "high"), "the field itself: dropped as before");
-        assert!(!refused(r#"{"error":{"message":"Unrecognized request argument supplied: reasoning_effort"}}"#, "high"));
+        assert!(
+            !refused(field, "high"),
+            "the field itself: dropped as before"
+        );
+        assert!(!refused(
+            r#"{"error":{"message":"Unrecognized request argument supplied: reasoning_effort"}}"#,
+            "high"
+        ));
 
         let pydantic = r#"{"detail":[{"type":"literal_error","loc":["body","reasoning_effort"],"msg":"Input should be 'none' or 'high'"}]}"#;
         assert!(refused(pydantic, "medium"));
-        assert_eq!(nearest("medium", &offered(pydantic, "medium"), &[]), Some("high"));
+        assert_eq!(
+            nearest("medium", &offered(pydantic, "medium"), &[]),
+            Some("high")
+        );
 
         // A list that isn't quoted: any known level, the nearest, ties going up.
         let bare = "reasoning_effort must be one of: none, low, high, max";
@@ -1957,14 +2273,21 @@ mod reasoning_tests {
         assert_eq!(nearest("none", &[], &["minimal".into()]), Some("low"));
 
         // About something else entirely.
-        assert!(!refused("Invalid value for 'temperature': must be 1.", "high"));
+        assert!(!refused(
+            "Invalid value for 'temperature': must be 1.",
+            "high"
+        ));
     }
 
     #[tokio::test]
     async fn a_rejected_field_is_dropped_and_the_rest_kept() {
         // Like OpenAI: refuses chat_template_kwargs by name.
         let (url, seen) = strict_provider(&["chat_template_kwargs"], true).await;
-        let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
+        let (ok, learned) = send(
+            &url,
+            &["reasoning_effort", "reasoning", "chat_template_kwargs"],
+        )
+        .await;
         assert!(ok);
         let s = learned.unwrap();
         assert_eq!(s.accepted, ["reasoning_effort", "reasoning"]);
@@ -1972,13 +2295,20 @@ mod reasoning_tests {
         assert!(s.unresolved.is_empty());
         let bodies = seen.lock().unwrap();
         assert_eq!(bodies.len(), 2, "one refusal, one retry");
-        assert!(bodies[1].get("chat_template_kwargs").is_none() && bodies[1]["reasoning_effort"] == "high");
+        assert!(
+            bodies[1].get("chat_template_kwargs").is_none()
+                && bodies[1]["reasoning_effort"] == "high"
+        );
     }
 
     #[tokio::test]
     async fn several_rejections_one_at_a_time() {
         let (url, seen) = strict_provider(&["reasoning", "chat_template_kwargs"], true).await;
-        let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
+        let (ok, learned) = send(
+            &url,
+            &["reasoning_effort", "reasoning", "chat_template_kwargs"],
+        )
+        .await;
         assert!(ok);
         let mut s = learned.unwrap();
         s.rejected.sort();
@@ -1995,16 +2325,26 @@ mod reasoning_tests {
         assert!(ok);
         let s = learned.unwrap();
         assert!(s.accepted.is_empty() && s.rejected.is_empty());
-        assert_eq!(s.unresolved, ["reasoning_effort", "reasoning"], "one of them, not known which");
+        assert_eq!(
+            s.unresolved,
+            ["reasoning_effort", "reasoning"],
+            "one of them, not known which"
+        );
         let bodies = seen.lock().unwrap();
         assert_eq!(bodies.len(), 2);
-        assert!(bodies[1].get("reasoning_effort").is_none() && bodies[1].get("reasoning").is_none());
+        assert!(
+            bodies[1].get("reasoning_effort").is_none() && bodies[1].get("reasoning").is_none()
+        );
     }
 
     #[tokio::test]
     async fn everything_accepted_means_one_request() {
         let (url, seen) = strict_provider(&[], true).await;
-        let (ok, learned) = send(&url, &["reasoning_effort", "reasoning", "chat_template_kwargs"]).await;
+        let (ok, learned) = send(
+            &url,
+            &["reasoning_effort", "reasoning", "chat_template_kwargs"],
+        )
+        .await;
         assert!(ok);
         assert_eq!(learned.unwrap().accepted.len(), 3);
         assert_eq!(seen.lock().unwrap().len(), 1);
@@ -2016,7 +2356,10 @@ mod reasoning_tests {
         let (url, seen) = strict_provider(&[], true).await;
         let (ok, _) = send(&url, &["reasoning_effort"]).await;
         assert!(ok);
-        assert_eq!(seen.lock().unwrap()[0]["stream_options"]["include_usage"], true);
+        assert_eq!(
+            seen.lock().unwrap()[0]["stream_options"]["include_usage"],
+            true
+        );
 
         // Refused by name: dropped, reasoning kept, not sent again.
         let (url, seen) = strict_provider(&["stream_options"], true).await;
@@ -2027,7 +2370,9 @@ mod reasoning_tests {
         assert!(ok);
         let bodies = seen.lock().unwrap();
         assert_eq!(bodies.len(), 3, "one refusal, then never sent again");
-        assert!(bodies[1].get("stream_options").is_none() && bodies[2].get("stream_options").is_none());
+        assert!(
+            bodies[1].get("stream_options").is_none() && bodies[2].get("stream_options").is_none()
+        );
     }
 
     #[tokio::test]
@@ -2059,11 +2404,17 @@ mod reasoning_tests {
         // reasoning_effort is known good; probe "chat_template_kwargs": accepted.
         let (ok, learned) = send(&url, &["reasoning_effort", "chat_template_kwargs"]).await;
         assert!(ok);
-        assert_eq!(learned.unwrap().accepted, ["reasoning_effort", "chat_template_kwargs"]);
+        assert_eq!(
+            learned.unwrap().accepted,
+            ["reasoning_effort", "chat_template_kwargs"]
+        );
         // Then probe "reasoning": the bare 400 again, stripped, works.
         let (ok, learned) = send(&url, &["reasoning_effort", "reasoning"]).await;
         assert!(ok);
-        assert_eq!(learned.unwrap().unresolved, ["reasoning_effort", "reasoning"]);
+        assert_eq!(
+            learned.unwrap().unresolved,
+            ["reasoning_effort", "reasoning"]
+        );
     }
 
     /// A provider that serves the given routes. Like OpenAI, an unserved
@@ -2079,7 +2430,10 @@ mod reasoning_tests {
     ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = seen.clone();
         tokio::spawn(async move {
@@ -2101,7 +2455,10 @@ mod reasoning_tests {
                         r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}"#,
                     ])
                 } else if !on_responses && chat {
-                    sse(&[r#"{"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}"#, "[DONE]"])
+                    sse(&[
+                        r#"{"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}"#,
+                        "[DONE]",
+                    ])
                 } else if let (false, Some(error)) = (on_responses, in_stream) {
                     sse(&[error])
                 } else {
@@ -2121,7 +2478,10 @@ mod reasoning_tests {
 
     /// A request with the route saved for the model: its result and the
     /// routes reported to be saved.
-    async fn send_routed(url: &str, saved: Option<Api>) -> (Result<(), crate::chat_request::ChatError>, Vec<String>) {
+    async fn send_routed(
+        url: &str,
+        saved: Option<Api>,
+    ) -> (Result<(), crate::chat_request::ChatError>, Vec<String>) {
         let client = Client::new();
         let body = serde_json::json!({ "model": "m", "messages": [] });
         let (tx, mut rx) = tokio::sync::watch::channel(false);
@@ -2157,7 +2517,10 @@ mod reasoning_tests {
         assert_eq!(learned.unwrap().accepted, ["reasoning_effort"]);
         let (ok, _) = send(&url, &[]).await;
         assert!(ok);
-        assert_eq!(*seen.lock().unwrap(), ["/v1/chat/completions", "/v1/responses", "/v1/responses"]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["/v1/chat/completions", "/v1/responses", "/v1/responses"]
+        );
     }
 
     #[tokio::test]
@@ -2178,7 +2541,10 @@ mod reasoning_tests {
         let (result, routes) = send_routed(&url, Some(Api::Responses)).await;
         assert!(result.is_ok());
         assert_eq!(routes, ["chat_completions"]);
-        assert_eq!(*seen.lock().unwrap(), ["/v1/responses", "/v1/chat/completions"]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["/v1/responses", "/v1/chat/completions"]
+        );
         // Remembered: the stale saved route isn't tried again.
         let (result, _) = send_routed(&url, Some(Api::Responses)).await;
         assert!(result.is_ok());
@@ -2192,14 +2558,20 @@ mod reasoning_tests {
         let (result, routes) = send_routed(&url, None).await;
         assert!(result.is_ok());
         assert_eq!(routes, ["responses"]);
-        assert_eq!(*seen.lock().unwrap(), ["/v1/chat/completions", "/v1/responses"]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["/v1/chat/completions", "/v1/responses"]
+        );
     }
 
     #[tokio::test]
     async fn without_either_route_the_first_refusal_is_reported() {
         let (url, seen) = routed_provider(false, false, None).await;
         let (result, routes) = send_routed(&url, None).await;
-        assert!(result.unwrap_err().message.contains("only supported in v1/responses"));
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("only supported in v1/responses"));
         assert!(routes.is_empty());
         assert_eq!(seen.lock().unwrap().len(), 2, "each route tried once");
         assert_eq!(responses::remembered(&url, "m"), None);
@@ -2213,7 +2585,10 @@ mod context_mode_tests {
     #[test]
     fn the_clm_prompt_only_goes_with_a_clm_history() {
         let clm = || Some("plain\n\n## Your context is a file".to_string());
-        assert_eq!(request_system_prompt("plain".into(), clm(), true), "plain\n\n## Your context is a file");
+        assert_eq!(
+            request_system_prompt("plain".into(), clm(), true),
+            "plain\n\n## Your context is a file"
+        );
         // CLM failed partway: the request is a plain trimming request.
         assert_eq!(request_system_prompt("plain".into(), clm(), false), "plain");
         assert_eq!(request_system_prompt("plain".into(), None, false), "plain");

@@ -28,7 +28,10 @@ pub fn is_yarn_berry(root: &Path, pkg: Option<&serde_json::Value>) -> bool {
     if root.join(".yarnrc.yml").exists() || root.join(".yarnrc.yaml").exists() {
         return true;
     }
-    if let Some(pm) = pkg.and_then(|p| p.get("packageManager")).and_then(|v| v.as_str()) {
+    if let Some(pm) = pkg
+        .and_then(|p| p.get("packageManager"))
+        .and_then(|v| v.as_str())
+    {
         // Yarn Berry is 2+. Classic "yarn@1.x" keeps the v1 syntax.
         if pm.starts_with("yarn@") && !pm.starts_with("yarn@1.") && !pm.starts_with("yarn@0.") {
             return true;
@@ -103,9 +106,9 @@ fn expand_parts(
                 .flatten()
                 .filter(|e| e.path().is_dir())
                 .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|n| !n.starts_with('.') && n != "node_modules" && n != "target")
+                    e.file_name().to_str().is_some_and(|n| {
+                        !n.starts_with('.') && n != "node_modules" && n != "target"
+                    })
                 })
                 .collect();
             dirs.sort_by_key(|e| e.file_name());
@@ -123,7 +126,9 @@ fn expand_parts(
             let mut names: Vec<_> = entries.flatten().collect();
             names.sort_by_key(|e| e.file_name());
             for e in names {
-                let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
+                let Some(name) = e.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
                 if !segment_matches(head, &name) || !e.path().is_dir() || name.starts_with('.') {
                     continue;
                 }
@@ -149,7 +154,11 @@ fn expand_parts(
 pub fn expand_member_dirs(root: &Path, patterns: &[String], manifest: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for pattern in patterns.iter().take(MAX_WORKSPACE_PATTERNS) {
-        let clean = pattern.trim().trim_start_matches("./").trim_matches('/').replace('\\', "/");
+        let clean = pattern
+            .trim()
+            .trim_start_matches("./")
+            .trim_matches('/')
+            .replace('\\', "/");
         if clean.is_empty() || clean == "." || clean.starts_with("..") || clean.starts_with('/') {
             continue;
         }
@@ -372,7 +381,9 @@ fn toml_string_value(content: &str, section: &str, key: &str) -> Option<String> 
         }
         // key = "value" (whitespace tolerated).
         let mut parts = line.splitn(2, '=');
-        let (Some(k), Some(v)) = (parts.next(), parts.next()) else { continue };
+        let (Some(k), Some(v)) = (parts.next(), parts.next()) else {
+            continue;
+        };
         if k.trim() != key {
             continue;
         }

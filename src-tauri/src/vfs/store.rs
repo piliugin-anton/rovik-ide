@@ -151,7 +151,12 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { capacity: 1 << 30, case_insensitive: cfg!(any(windows, target_os = "macos")), uid: 0, gid: 0 }
+        Options {
+            capacity: 1 << 30,
+            case_insensitive: cfg!(any(windows, target_os = "macos")),
+            uid: 0,
+            gid: 0,
+        }
     }
 }
 
@@ -291,7 +296,11 @@ impl Tree {
         if name == ".." {
             return self.dir(parent).map(|d| d.parent);
         }
-        self.dir(parent)?.children.get(&self.key(name)).map(|c| c.ino).ok_or(VfsError::NotFound)
+        self.dir(parent)?
+            .children
+            .get(&self.key(name))
+            .map(|c| c.ino)
+            .ok_or(VfsError::NotFound)
     }
 
     /// A node's path, walking up its first link: O(depth). `strict`: only
@@ -354,7 +363,10 @@ impl Tree {
 
     /// Frees a node nothing refers to any more.
     fn collect(&mut self, ino: Ino) {
-        let dead = self.nodes.get(&ino).is_some_and(|n| n.nlink == 0 && n.open == 0);
+        let dead = self
+            .nodes
+            .get(&ino)
+            .is_some_and(|n| n.nlink == 0 && n.open == 0);
         if dead {
             if self.history.contains(ino) {
                 let path = self.event_path(ino);
@@ -385,7 +397,13 @@ impl Tree {
         let key = self.key(name);
         let is_dir = self.node(ino)?.kind == Kind::Dir;
         let dir = self.node_mut(parent)?;
-        dir.children.insert(key, Child { name: name.to_string(), ino });
+        dir.children.insert(
+            key,
+            Child {
+                name: name.to_string(),
+                ino,
+            },
+        );
         if is_dir {
             dir.nlink += 1;
         }
@@ -408,7 +426,12 @@ impl Tree {
         let case_insensitive = self.opts.case_insensitive;
         let node = self.node_mut(child.ino)?;
         let at = node.links.iter().position(|(p, n)| {
-            *p == parent && if case_insensitive { n.to_lowercase() == key } else { *n == key }
+            *p == parent
+                && if case_insensitive {
+                    n.to_lowercase() == key
+                } else {
+                    *n == key
+                }
         });
         if let Some(at) = at {
             let link = node.links.swap_remove(at);
@@ -471,7 +494,8 @@ fn check_name(name: &str) -> VfsResult<()> {
 /// A path's components, accepting `/` and `\` and ignoring empty and `.`
 /// parts. `..` is kept: it's resolved against the tree.
 fn components(path: &str) -> impl Iterator<Item = &str> {
-    path.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".")
+    path.split(['/', '\\'])
+        .filter(|c| !c.is_empty() && *c != ".")
 }
 
 impl VirtualFs {
@@ -481,7 +505,13 @@ impl VirtualFs {
         let mut nodes = HashMap::new();
         nodes.insert(ROOT, root);
         Arc::new(VirtualFs {
-            tree: RwLock::new(Tree { nodes, next_ino: ROOT + 1, used: 0, opts, history: Histories::new(HistoryLimits::default()) }),
+            tree: RwLock::new(Tree {
+                nodes,
+                next_ino: ROOT + 1,
+                used: 0,
+                opts,
+                history: Histories::new(HistoryLimits::default()),
+            }),
             listener: RwLock::new(None),
             hub: Hub::default(),
         })
@@ -505,7 +535,12 @@ impl VirtualFs {
         if changes.is_empty() {
             return;
         }
-        if let Some(listener) = self.listener.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if let Some(listener) = self
+            .listener
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             listener(changes);
         }
     }
@@ -514,7 +549,11 @@ impl VirtualFs {
 
     /// Calls `callback` for every event whose kind is in `mask` (see
     /// `events.rs` for what to keep out of a callback).
-    pub fn subscribe(&self, mask: EventMask, callback: impl Fn(&FsEvent) + Send + Sync + 'static) -> SubscriptionId {
+    pub fn subscribe(
+        &self,
+        mask: EventMask,
+        callback: impl Fn(&FsEvent) + Send + Sync + 'static,
+    ) -> SubscriptionId {
         self.hub.subscribe(mask, Arc::new(callback))
     }
 
@@ -559,8 +598,19 @@ impl VirtualFs {
     }
 
     /// Creates a file, directory or symlink (`target` for symlinks).
-    pub fn create(&self, parent: Ino, name: &str, kind: Kind, perm: u16, uid: u32, gid: u32, target: Option<&str>) -> VfsResult<Attr> {
-        self.with_events(Source::Process, |ev| self.create_in(ev, parent, name, kind, perm, uid, gid, target))
+    pub fn create(
+        &self,
+        parent: Ino,
+        name: &str,
+        kind: Kind,
+        perm: u16,
+        uid: u32,
+        gid: u32,
+        target: Option<&str>,
+    ) -> VfsResult<Attr> {
+        self.with_events(Source::Process, |ev| {
+            self.create_in(ev, parent, name, kind, perm, uid, gid, target)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -634,15 +684,26 @@ impl VirtualFs {
             if !node.children.is_empty() {
                 return Err(VfsError::NotEmpty);
             }
-            ev.add(ino, Op::Removed { kind: Kind::Dir }, || tree.join(parent, name));
+            ev.add(ino, Op::Removed { kind: Kind::Dir }, || {
+                tree.join(parent, name)
+            });
             tree.detach(parent, name)?;
             tree.unlink_node(ino);
             Ok(())
         })
     }
 
-    pub fn rename(&self, parent: Ino, name: &str, new_parent: Ino, new_name: &str, mode: RenameMode) -> VfsResult<()> {
-        self.with_events(Source::Process, |ev| self.rename_in(ev, parent, name, new_parent, new_name, mode))
+    pub fn rename(
+        &self,
+        parent: Ino,
+        name: &str,
+        new_parent: Ino,
+        new_name: &str,
+        mode: RenameMode,
+    ) -> VfsResult<()> {
+        self.with_events(Source::Process, |ev| {
+            self.rename_in(ev, parent, name, new_parent, new_name, mode)
+        })
     }
 
     fn rename_in(
@@ -678,7 +739,9 @@ impl VirtualFs {
                 return Err(VfsError::Invalid);
             }
             let to = wants.then(|| tree.join(new_parent, new_name));
-            let dst_name = tree.node(new_parent)?.children[&tree.key(new_name)].name.clone();
+            let dst_name = tree.node(new_parent)?.children[&tree.key(new_name)]
+                .name
+                .clone();
             let src_name = tree.node(parent)?.children[&tree.key(name)].name.clone();
             tree.detach(parent, &src_name)?;
             tree.detach(new_parent, &dst_name)?;
@@ -705,13 +768,19 @@ impl VirtualFs {
                     }
                     let case_insensitive = tree.opts.case_insensitive;
                     for link in tree.node_mut(src)?.links.iter_mut() {
-                        let same = if case_insensitive { link.1.to_lowercase() == key } else { link.1 == key };
+                        let same = if case_insensitive {
+                            link.1.to_lowercase() == key
+                        } else {
+                            link.1 == key
+                        };
                         if link.0 == parent && same {
                             link.1 = new_name.to_string();
                         }
                     }
                     if let Some(from) = from {
-                        ev.add(src, Op::Renamed { from }, || tree.join(new_parent, new_name));
+                        ev.add(src, Op::Renamed { from }, || {
+                            tree.join(new_parent, new_name)
+                        });
                     }
                 }
                 return Ok(());
@@ -739,7 +808,9 @@ impl VirtualFs {
         tree.insert_child(new_parent, new_name, src)?;
         tree.node_mut(src)?.ctime = SystemTime::now();
         if let Some(from) = from {
-            ev.add(src, Op::Renamed { from }, || tree.join(new_parent, new_name));
+            ev.add(src, Op::Renamed { from }, || {
+                tree.join(new_parent, new_name)
+            });
         }
         Ok(())
     }
@@ -762,7 +833,9 @@ impl VirtualFs {
                 return Err(VfsError::Exists);
             }
             tree.insert_child(new_parent, new_name, ino)?;
-            ev.add(ino, Op::Created { kind }, || tree.join(new_parent, new_name));
+            ev.add(ino, Op::Created { kind }, || {
+                tree.join(new_parent, new_name)
+            });
             let node = tree.node_mut(ino)?;
             node.nlink += 1;
             node.ctime = SystemTime::now();
@@ -783,7 +856,13 @@ impl VirtualFs {
         self.with_events(Source::Process, |ev| self.read_in(ev, ino, offset, size))
     }
 
-    fn read_in(&self, ev: &mut Pending<'_>, ino: Ino, offset: u64, size: usize) -> VfsResult<Vec<u8>> {
+    fn read_in(
+        &self,
+        ev: &mut Pending<'_>,
+        ino: Ino,
+        offset: u64,
+        size: usize,
+    ) -> VfsResult<Vec<u8>> {
         let tree = self.tree();
         let node = tree.node(ino)?;
         match node.kind {
@@ -798,7 +877,14 @@ impl VirtualFs {
             let end = len.min(offset.saturating_add(size as u64));
             node.data[offset as usize..end as usize].to_vec()
         };
-        ev.add(ino, Op::Read { offset, len: data.len() as u64 }, || tree.event_path(ino));
+        ev.add(
+            ino,
+            Op::Read {
+                offset,
+                len: data.len() as u64,
+            },
+            || tree.event_path(ino),
+        );
         Ok(data)
     }
 
@@ -813,7 +899,10 @@ impl VirtualFs {
                 Kind::File => {}
             }
             let old_len = node.data.len();
-            let end = usize::try_from(offset).ok().and_then(|o| o.checked_add(data.len())).ok_or(VfsError::NoSpace)?;
+            let end = usize::try_from(offset)
+                .ok()
+                .and_then(|o| o.checked_add(data.len()))
+                .ok_or(VfsError::NoSpace)?;
             let new_len = old_len.max(end);
             tree.reserve(old_len, new_len)?;
             let node = tree.node_mut(ino)?;
@@ -824,7 +913,14 @@ impl VirtualFs {
             node.touch_modified();
             node.attributes |= 0x20;
             node.dirty = true;
-            ev.add(ino, Op::Written { offset, len: data.len() as u64 }, || tree.event_path(ino));
+            ev.add(
+                ino,
+                Op::Written {
+                    offset,
+                    len: data.len() as u64,
+                },
+                || tree.event_path(ino),
+            );
             Ok(data.len())
         })
     }
@@ -903,7 +999,14 @@ impl VirtualFs {
             .values()
             .filter_map(|c| {
                 let node = tree.nodes.get(&c.ino)?;
-                Some((DirEntry { name: c.name.clone(), ino: c.ino, kind: node.kind }, node.attr(c.ino)))
+                Some((
+                    DirEntry {
+                        name: c.name.clone(),
+                        ino: c.ino,
+                        kind: node.kind,
+                    },
+                    node.attr(c.ino),
+                ))
             })
             .collect())
     }
@@ -926,7 +1029,9 @@ impl VirtualFs {
     pub fn release(&self, ino: Ino) {
         self.with_events(Source::Process, |ev| {
             let mut tree = self.tree_mut();
-            let Some(node) = tree.nodes.get_mut(&ino) else { return };
+            let Some(node) = tree.nodes.get_mut(&ino) else {
+                return;
+            };
             node.open = node.open.saturating_sub(1);
             if node.kind == Kind::File {
                 let modified = std::mem::take(&mut node.dirty);
@@ -940,10 +1045,22 @@ impl VirtualFs {
     }
 
     pub fn getxattr(&self, ino: Ino, name: &str) -> VfsResult<Vec<u8>> {
-        self.tree().node(ino)?.xattrs.get(name).cloned().ok_or(VfsError::NoAttr)
+        self.tree()
+            .node(ino)?
+            .xattrs
+            .get(name)
+            .cloned()
+            .ok_or(VfsError::NoAttr)
     }
 
-    pub fn setxattr(&self, ino: Ino, name: &str, value: &[u8], create_only: bool, replace_only: bool) -> VfsResult<()> {
+    pub fn setxattr(
+        &self,
+        ino: Ino,
+        name: &str,
+        value: &[u8],
+        create_only: bool,
+        replace_only: bool,
+    ) -> VfsResult<()> {
         if name.is_empty() || name.len() > MAX_NAME {
             return Err(VfsError::Invalid);
         }
@@ -1055,11 +1172,17 @@ impl VirtualFs {
             for part in components(path) {
                 match self.lookup(ino, part) {
                     Ok(attr) if attr.kind == Kind::Dir => ino = attr.ino,
-                    Ok(attr) if attr.kind == Kind::Symlink => ino = self.resolve(&format!("{}/{part}", self.path_of(ino)?))?,
+                    Ok(attr) if attr.kind == Kind::Symlink => {
+                        ino = self.resolve(&format!("{}/{part}", self.path_of(ino)?))?
+                    }
                     Ok(_) => return Err(VfsError::NotDir),
                     Err(VfsError::NotFound) => {
-                        let attr = self.create_in(ev, ino, part, Kind::Dir, 0o755, uid, gid, None)?;
-                        changes.push(Change::Entry { parent: ino, name: part.to_string() });
+                        let attr =
+                            self.create_in(ev, ino, part, Kind::Dir, 0o755, uid, gid, None)?;
+                        changes.push(Change::Entry {
+                            parent: ino,
+                            name: part.to_string(),
+                        });
                         ino = attr.ino;
                     }
                     Err(e) => return Err(e),
@@ -1082,7 +1205,13 @@ impl VirtualFs {
         self.with_events(Source::App, |ev| self.write_file_in(ev, path, data, perm))
     }
 
-    fn write_file_in(&self, ev: &mut Pending<'_>, path: &str, data: &[u8], perm: Option<u16>) -> VfsResult<Attr> {
+    fn write_file_in(
+        &self,
+        ev: &mut Pending<'_>,
+        path: &str,
+        data: &[u8],
+        perm: Option<u16>,
+    ) -> VfsResult<Attr> {
         let (dir_path, name) = {
             let trimmed = path.trim_end_matches(['/', '\\']);
             match trimmed.rfind(['/', '\\']) {
@@ -1114,7 +1243,10 @@ impl VirtualFs {
                     node.attributes = 0x20;
                     let ino = tree.alloc(node);
                     tree.insert_child(parent, name, ino)?;
-                    changes.push(Change::Entry { parent, name: name.to_string() });
+                    changes.push(Change::Entry {
+                        parent,
+                        name: name.to_string(),
+                    });
                     ino
                 }
                 Err(e) => return Err(e),
@@ -1129,7 +1261,9 @@ impl VirtualFs {
                 return Err(e);
             }
             if !changes.is_empty() {
-                ev.add(ino, Op::Created { kind: Kind::File }, || tree.join(parent, name));
+                ev.add(ino, Op::Created { kind: Kind::File }, || {
+                    tree.join(parent, name)
+                });
             }
             let node = tree.node_mut(ino)?;
             node.data = data.to_vec();
@@ -1141,7 +1275,14 @@ impl VirtualFs {
             tree.record_revision(ino, Source::App);
             if ev.wants(EventMask::WRITTEN | EventMask::CLOSED) {
                 let path = tree.event_path(ino);
-                ev.add(ino, Op::Written { offset: 0, len: data.len() as u64 }, || path.clone());
+                ev.add(
+                    ino,
+                    Op::Written {
+                        offset: 0,
+                        len: data.len() as u64,
+                    },
+                    || path.clone(),
+                );
                 ev.add(ino, Op::Closed { modified: true }, || path);
             }
             changes.push(Change::Data(ino));
@@ -1181,13 +1322,22 @@ impl VirtualFs {
                 while let Some(dir) = stack.pop() {
                     order.push(dir);
                     for child in tree.dir(dir)?.children.values() {
-                        if tree.nodes.get(&child.ino).is_some_and(|n| n.kind == Kind::Dir) {
+                        if tree
+                            .nodes
+                            .get(&child.ino)
+                            .is_some_and(|n| n.kind == Kind::Dir)
+                        {
                             stack.push(child.ino);
                         }
                     }
                 }
                 for dir in order.into_iter().rev() {
-                    let names: Vec<String> = tree.dir(dir)?.children.values().map(|c| c.name.clone()).collect();
+                    let names: Vec<String> = tree
+                        .dir(dir)?
+                        .children
+                        .values()
+                        .map(|c| c.name.clone())
+                        .collect();
                     for child_name in names {
                         let child = tree.detach(dir, &child_name)?;
                         tree.unlink_node(child);
@@ -1210,10 +1360,18 @@ impl VirtualFs {
     pub fn rename_path(&self, from: &str, to: &str) -> VfsResult<()> {
         let (parent, name) = self.resolve_parent(from)?;
         let (new_parent, new_name) = self.resolve_parent(to)?;
-        self.with_events(Source::App, |ev| self.rename_in(ev, parent, name, new_parent, new_name, RenameMode::Replace))?;
+        self.with_events(Source::App, |ev| {
+            self.rename_in(ev, parent, name, new_parent, new_name, RenameMode::Replace)
+        })?;
         self.notify(&[
-            Change::Entry { parent, name: name.to_string() },
-            Change::Entry { parent: new_parent, name: new_name.to_string() },
+            Change::Entry {
+                parent,
+                name: name.to_string(),
+            },
+            Change::Entry {
+                parent: new_parent,
+                name: new_name.to_string(),
+            },
         ]);
         Ok(())
     }
@@ -1226,19 +1384,40 @@ impl VirtualFs {
             let tree = self.tree();
             (tree.opts.uid, tree.opts.gid)
         };
-        let attr =
-            self.with_events(Source::App, |ev| self.create_in(ev, parent, name, Kind::Symlink, 0o777, uid, gid, Some(target)))?;
-        self.notify(&[Change::Entry { parent, name: name.to_string() }]);
+        let attr = self.with_events(Source::App, |ev| {
+            self.create_in(
+                ev,
+                parent,
+                name,
+                Kind::Symlink,
+                0o777,
+                uid,
+                gid,
+                Some(target),
+            )
+        })?;
+        self.notify(&[Change::Entry {
+            parent,
+            name: name.to_string(),
+        }]);
         Ok(attr)
     }
 
     #[allow(dead_code)] // app-side API, not used by the app yet
     pub fn set_permissions(&self, path: &str, perm: u16) -> VfsResult<Attr> {
         let ino = self.resolve(path)?;
-        self.with_events(Source::App, |ev| self.setattr_in(ev, ino, &SetAttr { perm: Some(perm), ..Default::default() }))
+        self.with_events(Source::App, |ev| {
+            self.setattr_in(
+                ev,
+                ino,
+                &SetAttr {
+                    perm: Some(perm),
+                    ..Default::default()
+                },
+            )
+        })
     }
 }
-
 
 // --- Revisions (see `history.rs`) ---------------------------------------------
 
@@ -1251,7 +1430,9 @@ impl VirtualFs {
             Err(VfsError::NotFound) => {
                 let tree = self.tree();
                 let normalized = components(path).collect::<Vec<_>>().join("/");
-                tree.history.find_deleted(&normalized, tree.opts.case_insensitive).ok_or(VfsError::NotFound)
+                tree.history
+                    .find_deleted(&normalized, tree.opts.case_insensitive)
+                    .ok_or(VfsError::NotFound)
             }
             Err(e) => Err(e),
         }
@@ -1267,14 +1448,21 @@ impl VirtualFs {
     /// The content of revision `number` of the file at `path`.
     pub fn read_revision(&self, path: &str, number: u64) -> VfsResult<Arc<[u8]>> {
         let ino = self.history_ino(path)?;
-        self.tree().history.get(ino, number).ok_or(VfsError::NotFound)
+        self.tree()
+            .history
+            .get(ino, number)
+            .ok_or(VfsError::NotFound)
     }
 
     /// Writes revision `number` back as the file's content (a new revision
     /// itself). A deleted file is recreated at `path`, keeping its history.
     pub fn restore_revision(&self, path: &str, number: u64) -> VfsResult<Attr> {
         let old = self.history_ino(path)?;
-        let data = self.tree().history.get(old, number).ok_or(VfsError::NotFound)?;
+        let data = self
+            .tree()
+            .history
+            .get(old, number)
+            .ok_or(VfsError::NotFound)?;
         let attr = self.write_file(path, &data, None)?;
         if attr.ino != old {
             let mut tree = self.tree_mut();
@@ -1285,7 +1473,11 @@ impl VirtualFs {
 
     /// Replaces the history of the file at `path` with saved revisions
     /// (see `Histories::import`).
-    pub fn import_history(&self, path: &str, revisions: Vec<(u64, Vec<u8>, u64, Source)>) -> VfsResult<()> {
+    pub fn import_history(
+        &self,
+        path: &str,
+        revisions: Vec<(u64, Vec<u8>, u64, Source)>,
+    ) -> VfsResult<()> {
         let ino = self.resolve(path)?;
         let normalized = components(path).collect::<Vec<_>>().join("/");
         self.tree_mut().history.import(ino, &normalized, revisions);
@@ -1313,15 +1505,22 @@ mod tests {
     use super::*;
 
     fn fs() -> Arc<VirtualFs> {
-        VirtualFs::new(Options { capacity: 1024, case_insensitive: false, uid: 1000, gid: 1000 })
+        VirtualFs::new(Options {
+            capacity: 1024,
+            case_insensitive: false,
+            uid: 1000,
+            gid: 1000,
+        })
     }
 
     fn file(fs: &VirtualFs, parent: Ino, name: &str) -> Attr {
-        fs.create(parent, name, Kind::File, 0o644, 1000, 1000, None).unwrap()
+        fs.create(parent, name, Kind::File, 0o644, 1000, 1000, None)
+            .unwrap()
     }
 
     fn dir(fs: &VirtualFs, parent: Ino, name: &str) -> Attr {
-        fs.create(parent, name, Kind::Dir, 0o755, 1000, 1000, None).unwrap()
+        fs.create(parent, name, Kind::Dir, 0o755, 1000, 1000, None)
+            .unwrap()
     }
 
     #[test]
@@ -1342,7 +1541,14 @@ mod tests {
         let f = file(&fs, ROOT, "a");
         fs.write(f.ino, 0, &[1; 1000]).unwrap();
         assert_eq!(fs.write(f.ino, 1000, &[1; 100]), Err(VfsError::NoSpace));
-        fs.setattr(f.ino, &SetAttr { size: Some(10), ..Default::default() }).unwrap();
+        fs.setattr(
+            f.ino,
+            &SetAttr {
+                size: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(fs.usage().1, 10);
         fs.write(f.ino, 10, &[2; 500]).unwrap();
         fs.unlink(ROOT, "a").unwrap();
@@ -1353,10 +1559,22 @@ mod tests {
     fn create_rejects_duplicates_and_bad_names() {
         let fs = fs();
         file(&fs, ROOT, "a");
-        assert_eq!(fs.create(ROOT, "a", Kind::File, 0o644, 0, 0, None), Err(VfsError::Exists));
-        assert_eq!(fs.create(ROOT, "a/b", Kind::File, 0o644, 0, 0, None), Err(VfsError::Invalid));
-        assert_eq!(fs.create(ROOT, "..", Kind::Dir, 0o755, 0, 0, None), Err(VfsError::Invalid));
-        assert_eq!(fs.create(ROOT, &"x".repeat(256), Kind::File, 0o644, 0, 0, None), Err(VfsError::NameTooLong));
+        assert_eq!(
+            fs.create(ROOT, "a", Kind::File, 0o644, 0, 0, None),
+            Err(VfsError::Exists)
+        );
+        assert_eq!(
+            fs.create(ROOT, "a/b", Kind::File, 0o644, 0, 0, None),
+            Err(VfsError::Invalid)
+        );
+        assert_eq!(
+            fs.create(ROOT, "..", Kind::Dir, 0o755, 0, 0, None),
+            Err(VfsError::Invalid)
+        );
+        assert_eq!(
+            fs.create(ROOT, &"x".repeat(256), Kind::File, 0o644, 0, 0, None),
+            Err(VfsError::NameTooLong)
+        );
     }
 
     #[test]
@@ -1379,10 +1597,15 @@ mod tests {
         fs.write(a.ino, 0, b"new").unwrap();
         let b = file(&fs, ROOT, "b");
         fs.write(b.ino, 0, b"old").unwrap();
-        fs.rename(ROOT, "a", ROOT, "b", RenameMode::Replace).unwrap();
+        fs.rename(ROOT, "a", ROOT, "b", RenameMode::Replace)
+            .unwrap();
         assert_eq!(fs.read_file("b").unwrap(), b"new");
         assert_eq!(fs.lookup(ROOT, "a"), Err(VfsError::NotFound));
-        assert_eq!(fs.getattr(b.ino), Err(VfsError::NotFound), "replaced file is freed");
+        assert_eq!(
+            fs.getattr(b.ino),
+            Err(VfsError::NotFound),
+            "replaced file is freed"
+        );
         assert_eq!(fs.usage().1, 3);
     }
 
@@ -1394,14 +1617,30 @@ mod tests {
         file(&fs, ROOT, "f");
         dir(&fs, ROOT, "full");
         file(&fs, fs.lookup(ROOT, "full").unwrap().ino, "x");
-        assert_eq!(fs.rename(ROOT, "d", sub.ino, "d2", RenameMode::Replace), Err(VfsError::Invalid));
-        assert_eq!(fs.rename(ROOT, "d", ROOT, "f", RenameMode::Replace), Err(VfsError::NotDir));
-        assert_eq!(fs.rename(ROOT, "f", ROOT, "d", RenameMode::Replace), Err(VfsError::IsDir));
-        assert_eq!(fs.rename(ROOT, "d", ROOT, "full", RenameMode::Replace), Err(VfsError::NotEmpty));
-        assert_eq!(fs.rename(ROOT, "f", ROOT, "full", RenameMode::NoReplace), Err(VfsError::Exists));
+        assert_eq!(
+            fs.rename(ROOT, "d", sub.ino, "d2", RenameMode::Replace),
+            Err(VfsError::Invalid)
+        );
+        assert_eq!(
+            fs.rename(ROOT, "d", ROOT, "f", RenameMode::Replace),
+            Err(VfsError::NotDir)
+        );
+        assert_eq!(
+            fs.rename(ROOT, "f", ROOT, "d", RenameMode::Replace),
+            Err(VfsError::IsDir)
+        );
+        assert_eq!(
+            fs.rename(ROOT, "d", ROOT, "full", RenameMode::Replace),
+            Err(VfsError::NotEmpty)
+        );
+        assert_eq!(
+            fs.rename(ROOT, "f", ROOT, "full", RenameMode::NoReplace),
+            Err(VfsError::Exists)
+        );
         // A directory moves with its contents, and `..` follows.
         let other = dir(&fs, ROOT, "other");
-        fs.rename(ROOT, "d", other.ino, "moved", RenameMode::Replace).unwrap();
+        fs.rename(ROOT, "d", other.ino, "moved", RenameMode::Replace)
+            .unwrap();
         assert_eq!(fs.resolve("other/moved/sub").unwrap(), sub.ino);
         assert_eq!(fs.parent_of(d.ino).unwrap(), other.ino);
         assert_eq!(fs.getattr(other.ino).unwrap().nlink, 3);
@@ -1413,7 +1652,8 @@ mod tests {
         let fs = fs();
         let a = file(&fs, ROOT, "a");
         let d = dir(&fs, ROOT, "d");
-        fs.rename(ROOT, "a", ROOT, "d", RenameMode::Exchange).unwrap();
+        fs.rename(ROOT, "a", ROOT, "d", RenameMode::Exchange)
+            .unwrap();
         assert_eq!(fs.lookup(ROOT, "a").unwrap().ino, d.ino);
         assert_eq!(fs.lookup(ROOT, "d").unwrap().ino, a.ino);
     }
@@ -1455,7 +1695,11 @@ mod tests {
         assert_eq!(fs.read_file("dir/link").unwrap(), b"hi");
         assert_eq!(fs.read_file("up/link").unwrap(), b"hi");
         assert_eq!(fs.metadata("dir/link").unwrap().kind, Kind::Symlink);
-        assert_eq!(fs.readlink(fs.resolve_nofollow("dir/link").unwrap()).unwrap(), "target.txt");
+        assert_eq!(
+            fs.readlink(fs.resolve_nofollow("dir/link").unwrap())
+                .unwrap(),
+            "target.txt"
+        );
         fs.symlink("loop", "loop").unwrap();
         assert_eq!(fs.read_file("loop"), Err(VfsError::Loop));
     }
@@ -1468,17 +1712,28 @@ mod tests {
         assert_eq!(first.ino, second.ino);
         assert_eq!(second.perm, 0o755);
         assert_eq!(fs.read_file("a\\b\\c.txt").unwrap(), b"two!");
-        let names: Vec<String> = fs.list("a").unwrap().into_iter().map(|(e, _)| e.name).collect();
+        let names: Vec<String> = fs
+            .list("a")
+            .unwrap()
+            .into_iter()
+            .map(|(e, _)| e.name)
+            .collect();
         assert_eq!(names, ["b"]);
         assert_eq!(fs.path_of(second.ino).unwrap(), "a/b/c.txt");
         assert_eq!(fs.write_file("a/b", b"x", None), Err(VfsError::IsDir));
-        assert_eq!(fs.write_file("a/b/c.txt/d", b"x", None), Err(VfsError::NotDir));
+        assert_eq!(
+            fs.write_file("a/b/c.txt/d", b"x", None),
+            Err(VfsError::NotDir)
+        );
     }
 
     #[test]
     fn failed_write_file_leaves_nothing_behind() {
         let fs = fs();
-        assert_eq!(fs.write_file("big", &[0; 2000], None), Err(VfsError::NoSpace));
+        assert_eq!(
+            fs.write_file("big", &[0; 2000], None),
+            Err(VfsError::NoSpace)
+        );
         assert_eq!(fs.metadata("big"), Err(VfsError::NotFound));
     }
 
@@ -1498,7 +1753,9 @@ mod tests {
         let fs = fs();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
-        fs.set_listener(Some(Box::new(move |changes| sink.lock().unwrap().extend_from_slice(changes))));
+        fs.set_listener(Some(Box::new(move |changes| {
+            sink.lock().unwrap().extend_from_slice(changes)
+        })));
         let attr = fs.write_file("d/f", b"x", None).unwrap();
         fs.write_file("d/f", b"y", None).unwrap();
         let d = fs.resolve("d").unwrap();
@@ -1506,8 +1763,14 @@ mod tests {
         assert_eq!(
             seen,
             [
-                Change::Entry { parent: ROOT, name: "d".into() },
-                Change::Entry { parent: d, name: "f".into() },
+                Change::Entry {
+                    parent: ROOT,
+                    name: "d".into()
+                },
+                Change::Entry {
+                    parent: d,
+                    name: "f".into()
+                },
                 Change::Data(attr.ino),
                 Change::Data(attr.ino),
             ]
@@ -1516,11 +1779,22 @@ mod tests {
 
     #[test]
     fn case_insensitive_lookup_keeps_spelling() {
-        let fs = VirtualFs::new(Options { capacity: 1024, case_insensitive: true, uid: 0, gid: 0 });
-        let f = fs.create(ROOT, "ReadMe.md", Kind::File, 0o644, 0, 0, None).unwrap();
+        let fs = VirtualFs::new(Options {
+            capacity: 1024,
+            case_insensitive: true,
+            uid: 0,
+            gid: 0,
+        });
+        let f = fs
+            .create(ROOT, "ReadMe.md", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
         assert_eq!(fs.lookup(ROOT, "README.MD").unwrap().ino, f.ino);
-        assert_eq!(fs.create(ROOT, "readme.md", Kind::File, 0o644, 0, 0, None), Err(VfsError::Exists));
-        fs.rename(ROOT, "readme.md", ROOT, "README.md", RenameMode::Replace).unwrap();
+        assert_eq!(
+            fs.create(ROOT, "readme.md", Kind::File, 0o644, 0, 0, None),
+            Err(VfsError::Exists)
+        );
+        fs.rename(ROOT, "readme.md", ROOT, "README.md", RenameMode::Replace)
+            .unwrap();
         assert_eq!(fs.readdir_plus(ROOT).unwrap()[0].0.name, "README.md");
         assert_eq!(fs.getattr(f.ino).unwrap().nlink, 1);
     }
@@ -1530,8 +1804,14 @@ mod tests {
         let fs = fs();
         let f = file(&fs, ROOT, "a");
         fs.setxattr(f.ino, "user.k", b"v", true, false).unwrap();
-        assert_eq!(fs.setxattr(f.ino, "user.k", b"v", true, false), Err(VfsError::Exists));
-        assert_eq!(fs.setxattr(f.ino, "user.x", b"v", false, true), Err(VfsError::NoAttr));
+        assert_eq!(
+            fs.setxattr(f.ino, "user.k", b"v", true, false),
+            Err(VfsError::Exists)
+        );
+        assert_eq!(
+            fs.setxattr(f.ino, "user.x", b"v", false, true),
+            Err(VfsError::NoAttr)
+        );
         assert_eq!(fs.getxattr(f.ino, "user.k").unwrap(), b"v");
         assert_eq!(fs.listxattr(f.ino).unwrap(), ["user.k"]);
         fs.removexattr(f.ino, "user.k").unwrap();
@@ -1549,7 +1829,11 @@ mod tests {
     }
 
     fn ops(seen: &Mutex<Vec<FsEvent>>) -> Vec<(String, Op)> {
-        seen.lock().unwrap().drain(..).map(|e| (e.path, e.op)).collect()
+        seen.lock()
+            .unwrap()
+            .drain(..)
+            .map(|e| (e.path, e.op))
+            .collect()
     }
 
     #[test]
@@ -1561,11 +1845,19 @@ mod tests {
         fs.open(f.ino, true).unwrap();
         fs.write(f.ino, 0, b"hi").unwrap();
         fs.read(f.ino, 0, 10).unwrap();
-        fs.setattr(f.ino, &SetAttr { size: Some(1), ..Default::default() }).unwrap();
+        fs.setattr(
+            f.ino,
+            &SetAttr {
+                size: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         fs.release(f.ino);
         fs.open(f.ino, false).unwrap();
         fs.release(f.ino);
-        fs.rename(d.ino, "a.txt", ROOT, "b.txt", RenameMode::Replace).unwrap();
+        fs.rename(d.ino, "a.txt", ROOT, "b.txt", RenameMode::Replace)
+            .unwrap();
         fs.unlink(ROOT, "b.txt").unwrap();
         assert_eq!(
             ops(&seen),
@@ -1579,7 +1871,12 @@ mod tests {
                 ("d/a.txt".into(), Op::Closed { modified: true }),
                 ("d/a.txt".into(), Op::Opened { write: false }),
                 ("d/a.txt".into(), Op::Closed { modified: false }),
-                ("b.txt".into(), Op::Renamed { from: "d/a.txt".into() }),
+                (
+                    "b.txt".into(),
+                    Op::Renamed {
+                        from: "d/a.txt".into()
+                    }
+                ),
                 ("b.txt".into(), Op::Removed { kind: Kind::File }),
             ]
         );
@@ -1649,7 +1946,12 @@ mod tests {
         let f = fs.write_file("a/b/c/f.txt", b"", None).unwrap();
         fs.rename_path("a/b", "z").unwrap();
         assert_eq!(fs.path_of(f.ino).unwrap(), "z/c/f.txt");
-        let ci = VirtualFs::new(Options { capacity: 1024, case_insensitive: true, uid: 0, gid: 0 });
+        let ci = VirtualFs::new(Options {
+            capacity: 1024,
+            case_insensitive: true,
+            uid: 0,
+            gid: 0,
+        });
         let g = ci.write_file("Dir/file.TXT", b"", None).unwrap();
         ci.rename_path("dir/FILE.txt", "dir/File.txt").unwrap();
         assert_eq!(ci.path_of(g.ino).unwrap(), "Dir/File.txt");
@@ -1659,12 +1961,20 @@ mod tests {
     /// tree. Generous bounds, so it only fails on a real regression.
     #[test]
     fn scales_to_many_files() {
-        let fs = VirtualFs::new(Options { capacity: 1 << 30, case_insensitive: false, uid: 0, gid: 0 });
+        let fs = VirtualFs::new(Options {
+            capacity: 1 << 30,
+            case_insensitive: false,
+            uid: 0,
+            gid: 0,
+        });
         let n = 100_000;
         for i in 0..n {
-            fs.write_file(&format!("d{}/f{i}.txt", i % 100), b"x", None).unwrap();
+            fs.write_file(&format!("d{}/f{i}.txt", i % 100), b"x", None)
+                .unwrap();
         }
-        let deep = fs.write_file("a/b/c/d/e/f/g/h/deep.txt", b"y", None).unwrap();
+        let deep = fs
+            .write_file("a/b/c/d/e/f/g/h/deep.txt", b"y", None)
+            .unwrap();
         let started = std::time::Instant::now();
         for _ in 0..10_000 {
             assert_eq!(fs.path_of(deep.ino).unwrap().len(), 24);
@@ -1693,7 +2003,14 @@ mod tests {
     /// What a program does: open, write, close.
     fn program_writes(fs: &VirtualFs, ino: Ino, data: &[u8]) {
         fs.open(ino, true).unwrap();
-        fs.setattr(ino, &SetAttr { size: Some(0), ..Default::default() }).unwrap();
+        fs.setattr(
+            ino,
+            &SetAttr {
+                size: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         fs.write(ino, 0, data).unwrap();
         fs.release(ino);
     }
@@ -1702,7 +2019,13 @@ mod tests {
         fs.revisions(path)
             .unwrap()
             .into_iter()
-            .map(|r| (r.number, String::from_utf8_lossy(&fs.read_revision(path, r.number).unwrap()).into_owned()))
+            .map(|r| {
+                (
+                    r.number,
+                    String::from_utf8_lossy(&fs.read_revision(path, r.number).unwrap())
+                        .into_owned(),
+                )
+            })
             .collect()
     }
 
@@ -1716,8 +2039,16 @@ mod tests {
         program_writes(&fs, f.ino, b"one"); // same content: no revision
         program_writes(&fs, f.ino, b"two");
         fs.write_file("notes.md", b"three", None).unwrap();
-        assert_eq!(contents(&fs, "notes.md"), [(1, "one".into()), (2, "two".into()), (3, "three".into())]);
-        let sources: Vec<Source> = fs.revisions("notes.md").unwrap().into_iter().map(|r| r.source).collect();
+        assert_eq!(
+            contents(&fs, "notes.md"),
+            [(1, "one".into()), (2, "two".into()), (3, "three".into())]
+        );
+        let sources: Vec<Source> = fs
+            .revisions("notes.md")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.source)
+            .collect();
         assert_eq!(sources, [Source::Process, Source::Process, Source::App]);
         assert_eq!(fs.read_revision("notes.md", 9), Err(VfsError::NotFound));
     }
@@ -1729,7 +2060,8 @@ mod tests {
         // An editor: write a temporary file, rename it over the original.
         let tmp = file(&fs, ROOT, ".f.txt.swp");
         program_writes(&fs, tmp.ino, b"v2");
-        fs.rename(ROOT, ".f.txt.swp", ROOT, "f.txt", RenameMode::Replace).unwrap();
+        fs.rename(ROOT, ".f.txt.swp", ROOT, "f.txt", RenameMode::Replace)
+            .unwrap();
         assert_eq!(contents(&fs, "f.txt"), [(1, "v1".into()), (2, "v2".into())]);
         fs.rename_path("f.txt", "g.txt").unwrap();
         assert_eq!(fs.revisions("g.txt").unwrap().len(), 2);
@@ -1742,13 +2074,20 @@ mod tests {
         fs.write_file("d/a", b"first", None).unwrap();
         fs.write_file("d/a", b"second", None).unwrap();
         fs.remove("d/a").unwrap();
-        assert_eq!(contents(&fs, "d/a"), [(1, "first".into()), (2, "second".into())]);
+        assert_eq!(
+            contents(&fs, "d/a"),
+            [(1, "first".into()), (2, "second".into())]
+        );
         let restored = fs.restore_revision("d/a", 1).unwrap();
         assert_eq!(fs.read_file("d/a").unwrap(), b"first");
         assert_eq!(fs.resolve("d/a").unwrap(), restored.ino);
         assert_eq!(
             contents(&fs, "d/a"),
-            [(1, "first".into()), (2, "second".into()), (3, "first".into())],
+            [
+                (1, "first".into()),
+                (2, "second".into()),
+                (3, "first".into())
+            ],
             "the restore is a revision too"
         );
     }
@@ -1756,15 +2095,25 @@ mod tests {
     #[test]
     fn history_has_limits() {
         let fs = fs();
-        fs.set_history_limits(HistoryLimits { max_bytes: 10, per_file: 2, max_file_size: 8 });
+        fs.set_history_limits(HistoryLimits {
+            max_bytes: 10,
+            per_file: 2,
+            max_file_size: 8,
+        });
         for v in ["a1", "a2", "a3"] {
             fs.write_file("a", v.as_bytes(), None).unwrap();
         }
         assert_eq!(contents(&fs, "a"), [(2, "a2".into()), (3, "a3".into())]);
         fs.write_file("big", b"123456789", None).unwrap();
-        assert!(fs.revisions("big").unwrap().is_empty(), "over max_file_size");
+        assert!(
+            fs.revisions("big").unwrap().is_empty(),
+            "over max_file_size"
+        );
         assert!(fs.history_usage().1 <= 10);
-        fs.set_history_limits(HistoryLimits { max_bytes: 0, ..fs.history_limits() });
+        fs.set_history_limits(HistoryLimits {
+            max_bytes: 0,
+            ..fs.history_limits()
+        });
         fs.write_file("a", b"a4", None).unwrap();
         assert_eq!(fs.history_usage(), (0, 0));
     }

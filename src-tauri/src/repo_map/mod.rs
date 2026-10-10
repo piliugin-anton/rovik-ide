@@ -56,7 +56,9 @@ const PLAIN_WORD: f64 = 0.05;
 /// Projects tracked in the cache at once.
 const CACHED_ROOTS: usize = 2;
 /// Outlined languages left out of the map: data and markup.
-const NOT_CODE: &[&str] = &["JSON", "YAML", "TOML", "XML", "HTML", "CSS", "Markdown", "KDL"];
+const NOT_CODE: &[&str] = &[
+    "JSON", "YAML", "TOML", "XML", "HTML", "CSS", "Markdown", "KDL",
+];
 
 /// What the request is about.
 #[derive(Debug, Default, Clone)]
@@ -79,7 +81,11 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { max_chars: 6_000, time_limit: Duration::from_secs(4), max_files: 20_000 }
+        Options {
+            max_chars: 6_000,
+            time_limit: Duration::from_secs(4),
+            max_files: 20_000,
+        }
     }
 }
 
@@ -122,7 +128,11 @@ pub fn invalidate_path(root: &Path, abs: &Path) {
 /// files with declarations).
 pub fn repo_map(root: &Path, focus: &Focus, options: &Options) -> Option<String> {
     let files = collect(root, options);
-    let body = render_map(&files, focus, options.max_chars.saturating_sub(HEADER.len() + 1))?;
+    let body = render_map(
+        &files,
+        focus,
+        options.max_chars.saturating_sub(HEADER.len() + 1),
+    )?;
     Some(format!("{HEADER}\n{body}"))
 }
 
@@ -137,7 +147,11 @@ fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
     let deadline = Instant::now() + options.time_limit;
     let cached: Cache = {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        cache.iter().find(|(r, _)| r == root).map(|(_, c)| c.clone()).unwrap_or_default()
+        cache
+            .iter()
+            .find(|(r, _)| r == root)
+            .map(|(_, c)| c.clone())
+            .unwrap_or_default()
     };
     let cached = &cached;
     let found: Mutex<Vec<Found>> = Mutex::new(Vec::new());
@@ -158,12 +172,18 @@ fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
                 if Instant::now() > deadline {
                     return WalkState::Quit;
                 }
-                let Ok(entry) = entry else { return WalkState::Continue };
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
                 if !entry.file_type().is_some_and(|t| t.is_file()) {
                     return WalkState::Continue;
                 }
                 let path = entry.path();
-                let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 // Cheap first: a file no grammar knows isn't read, nor data
                 // and markup (their keys and headings aren't used by name).
                 match outline::language_for(&rel, "") {
@@ -174,15 +194,22 @@ fn collect(root: &Path, options: &Options) -> BTreeMap<String, Arc<FileTags>> {
                 if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= options.max_files {
                     return WalkState::Quit;
                 }
-                let Ok(meta) = entry.metadata() else { return WalkState::Continue };
+                let Ok(meta) = entry.metadata() else {
+                    return WalkState::Continue;
+                };
                 let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 let size = meta.len();
                 let tags = match cached.get(path) {
                     Some((m, s, tags)) if *m == modified && *s == size => tags.clone(),
                     _ => {
-                        let Ok(content) = std::fs::read_to_string(path) else { return WalkState::Continue };
+                        let Ok(content) = std::fs::read_to_string(path) else {
+                            return WalkState::Continue;
+                        };
                         match outline::tags(&rel, &content) {
-                            Some(t) => Arc::new(FileTags { symbols: t.symbols, identifiers: t.identifiers }),
+                            Some(t) => Arc::new(FileTags {
+                                symbols: t.symbols,
+                                identifiers: t.identifiers,
+                            }),
                             None => return WalkState::Continue,
                         }
                     }
@@ -234,7 +261,8 @@ fn rarity(used_in: usize, files: usize) -> f64 {
 /// one.)
 fn is_specific(name: &str) -> bool {
     let bare = name.trim_start_matches('_');
-    let mixed_case = bare.chars().any(|c| c.is_uppercase()) && bare.chars().any(|c| c.is_lowercase());
+    let mixed_case =
+        bare.chars().any(|c| c.is_uppercase()) && bare.chars().any(|c| c.is_lowercase());
     bare.chars().count() >= 8 && (bare.contains('_') || mixed_case)
 }
 
@@ -258,9 +286,17 @@ fn name_weight(name: &str, declared_in: usize, mentioned: &HashSet<&str>) -> f64
 
 /// Ranks the declarations and renders the best that fit in `max_chars`.
 /// None when no file declares anything.
-fn render_map(files: &BTreeMap<String, Arc<FileTags>>, focus: &Focus, max_chars: usize) -> Option<String> {
+fn render_map(
+    files: &BTreeMap<String, Arc<FileTags>>,
+    focus: &Focus,
+    max_chars: usize,
+) -> Option<String> {
     let paths: Vec<&String> = files.keys().collect();
-    let index: HashMap<&str, usize> = paths.iter().enumerate().map(|(i, p)| (p.as_str(), i)).collect();
+    let index: HashMap<&str, usize> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.as_str(), i))
+        .collect();
     let n = paths.len();
     if n == 0 {
         return None;
@@ -307,7 +343,9 @@ fn render_map(files: &BTreeMap<String, Arc<FileTags>>, focus: &Focus, max_chars:
         let mut used: Vec<(&String, &u32)> = tags.identifiers.iter().collect();
         used.sort();
         for (name, &count) in used {
-            let Some(declarers) = declared_by.get(name.as_str()) else { continue };
+            let Some(declarers) = declared_by.get(name.as_str()) else {
+                continue;
+            };
             // A name the file declares itself is, there, its own.
             if tags.symbols.iter().any(|s| &s.name == name) {
                 continue;
@@ -335,7 +373,10 @@ fn render_map(files: &BTreeMap<String, Arc<FileTags>>, focus: &Focus, max_chars:
     }
     // A file whose name a focus word is (`chatStore` → chatStore.ts) counts too.
     for (i, path) in paths.iter().enumerate() {
-        let stem = Path::new(path.as_str()).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let stem = Path::new(path.as_str())
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
         if !stem.is_empty() && mentioned.contains(stem) {
             start[i] += 0.5;
         }
@@ -344,7 +385,9 @@ fn render_map(files: &BTreeMap<String, Arc<FileTags>>, focus: &Focus, max_chars:
     // for `execute_tool_calls` than for a plain word like `stop`.
     let mut mentioned_decls: HashSet<(usize, &str)> = HashSet::new();
     for word in &focus.words {
-        let Some(declarers) = declared_by.get(word.as_str()) else { continue };
+        let Some(declarers) = declared_by.get(word.as_str()) else {
+            continue;
+        };
         if declarers.len() > COMMON_NAME_FILES {
             continue;
         }
@@ -368,10 +411,17 @@ fn render_map(files: &BTreeMap<String, Arc<FileTags>>, focus: &Focus, max_chars:
     for (&(from, _, _), &w) in &links {
         out_weight[from] += w;
     }
-    let self_share = |i: usize| if focused[i] { FOCUS_SELF_SHARE } else { SELF_SHARE };
+    let self_share = |i: usize| {
+        if focused[i] {
+            FOCUS_SELF_SHARE
+        } else {
+            SELF_SHARE
+        }
+    };
     let mut def_rank: HashMap<(usize, &str), f64> = HashMap::new();
     for (&(from, to, name), &w) in &links {
-        *def_rank.entry((to, name)).or_default() += rank[from] * (1.0 - self_share(from)) * w / out_weight[from];
+        *def_rank.entry((to, name)).or_default() +=
+            rank[from] * (1.0 - self_share(from)) * w / out_weight[from];
     }
     // A file's own share: outer declarations first (a quarter less per
     // level), locals hardly.
@@ -381,12 +431,29 @@ fn render_map(files: &BTreeMap<String, Arc<FileTags>>, focus: &Focus, max_chars:
             .symbols
             .iter()
             .zip(&scopes[i])
-            .map(|(s, scope)| 0.25f64.powi(s.depth as i32) * if scope.local { LOCAL_WEIGHT } else { 1.0 })
+            .map(|(s, scope)| {
+                0.25f64.powi(s.depth as i32) * if scope.local { LOCAL_WEIGHT } else { 1.0 }
+            })
             .collect();
         let total: f64 = weights.iter().sum();
         // Without outgoing links, all of its rank.
-        let share = if out_weight[i] > 0.0 { self_share(i) } else { 1.0 };
-        own.push(weights.iter().map(|w| if total > 0.0 { rank[i] * share * w / total } else { 0.0 }).collect());
+        let share = if out_weight[i] > 0.0 {
+            self_share(i)
+        } else {
+            1.0
+        };
+        own.push(
+            weights
+                .iter()
+                .map(|w| {
+                    if total > 0.0 {
+                        rank[i] * share * w / total
+                    } else {
+                        0.0
+                    }
+                })
+                .collect(),
+        );
     }
 
     // Declarations, best first (ties: path, line). A name declared twice in
@@ -396,10 +463,18 @@ fn render_map(files: &BTreeMap<String, Arc<FileTags>>, focus: &Focus, max_chars:
         let test_file = !focused[i] && is_test_path(path);
         for (j, s) in files[*path].symbols.iter().enumerate() {
             let scope = &scopes[i][j];
-            let linked = if scope.local { 0.0 } else { def_rank.get(&(i, s.name.as_str())).copied().unwrap_or(0.0) };
+            let linked = if scope.local {
+                0.0
+            } else {
+                def_rank.get(&(i, s.name.as_str())).copied().unwrap_or(0.0)
+            };
             let mut r = linked + own[i][j];
             if !scope.local && mentioned_decls.contains(&(i, s.name.as_str())) {
-                r *= if is_specific(&s.name) { MENTIONED_BOOST } else { MENTIONED_BOOST.sqrt() };
+                r *= if is_specific(&s.name) {
+                    MENTIONED_BOOST
+                } else {
+                    MENTIONED_BOOST.sqrt()
+                };
             }
             if test_file || (scope.test && !focused[i]) {
                 r *= TEST_WEIGHT;
@@ -530,7 +605,9 @@ fn build_graph(files: &BTreeMap<String, Arc<FileTags>>) -> Graph {
         let mut used: Vec<(&String, &u32)> = tags.identifiers.iter().collect();
         used.sort();
         for (name, &count) in used {
-            let Some(declarers) = declared_by.get(name.as_str()) else { continue };
+            let Some(declarers) = declared_by.get(name.as_str()) else {
+                continue;
+            };
             if tags.symbols.iter().any(|s| &s.name == name) {
                 continue;
             }
@@ -544,7 +621,11 @@ fn build_graph(files: &BTreeMap<String, Arc<FileTags>>) -> Graph {
             }
         }
     }
-    Graph { paths, declared_by, links }
+    Graph {
+        paths,
+        declared_by,
+        links,
+    }
 }
 
 /// A query path as the walk stores it: forward slashes, no leading `./`.
@@ -569,14 +650,21 @@ fn normalize_query_path(input: &str) -> String {
 fn resolve_graph_file(paths: &[String], input: &str) -> Result<usize, String> {
     let norm = normalize_query_path(input);
     if norm.is_empty() {
-        return Err("Error: \"path\" is empty: give a file path from the project, e.g. \"src/lib/foo.ts\".".into());
+        return Err(
+            "Error: \"path\" is empty: give a file path from the project, e.g. \"src/lib/foo.ts\"."
+                .into(),
+        );
     }
     if let Some(i) = paths.iter().position(|p| p == &norm) {
         return Ok(i);
     }
     // `chatStore.ts` for `src/lib/chatStore.ts`: a unique suffix still finds it.
-    let suffixes: Vec<usize> =
-        paths.iter().enumerate().filter(|(_, p)| *p == &norm || p.ends_with(&format!("/{norm}"))).map(|(i, _)| i).collect();
+    let suffixes: Vec<usize> = paths
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| *p == &norm || p.ends_with(&format!("/{norm}")))
+        .map(|(i, _)| i)
+        .collect();
     match suffixes.as_slice() {
         [one] => return Ok(*one),
         [_, _, ..] => {
@@ -589,11 +677,15 @@ fn resolve_graph_file(paths: &[String], input: &str) -> Result<usize, String> {
         [] => {}
     }
     // Last resort: files containing it, to point the model at search instead.
-    let mut near: Vec<&String> =
-        paths.iter().filter(|p| p.contains(&norm) || norm.split('/').last().is_some_and(|f| p.ends_with(f))).collect();
+    let mut near: Vec<&String> = paths
+        .iter()
+        .filter(|p| p.contains(&norm) || norm.split('/').last().is_some_and(|f| p.ends_with(f)))
+        .collect();
     near.sort();
     near.truncate(GRAPH_MAX_CANDIDATES);
-    let mut out = vec![format!("Error: \"{input}\" is not a source file in the project graph.")];
+    let mut out = vec![format!(
+        "Error: \"{input}\" is not a source file in the project graph."
+    )];
     if !near.is_empty() {
         out.push("Did you mean:".into());
         for p in near {
@@ -632,9 +724,22 @@ pub fn neighbours(root: &Path, path: &str, options: &Options) -> Result<String, 
         names.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(b.0)));
         names.truncate(GRAPH_MAX_NAMES_PER_FILE);
     }
-    let total = |names: &[Vec<(&str, f64)>]| names.iter().flat_map(|v| v.iter().map(|(_, w)| w)).sum::<f64>();
-    uses.sort_by(|a, b| total(&[b.1.clone()]).total_cmp(&total(&[a.1.clone()])).then(graph.paths[a.0].cmp(&graph.paths[b.0])));
-    used_by.sort_by(|a, b| total(&[b.1.clone()]).total_cmp(&total(&[a.1.clone()])).then(graph.paths[a.0].cmp(&graph.paths[b.0])));
+    let total = |names: &[Vec<(&str, f64)>]| {
+        names
+            .iter()
+            .flat_map(|v| v.iter().map(|(_, w)| w))
+            .sum::<f64>()
+    };
+    uses.sort_by(|a, b| {
+        total(&[b.1.clone()])
+            .total_cmp(&total(&[a.1.clone()]))
+            .then(graph.paths[a.0].cmp(&graph.paths[b.0]))
+    });
+    used_by.sort_by(|a, b| {
+        total(&[b.1.clone()])
+            .total_cmp(&total(&[a.1.clone()]))
+            .then(graph.paths[a.0].cmp(&graph.paths[b.0]))
+    });
     uses.truncate(GRAPH_MAX_FILES);
     used_by.truncate(GRAPH_MAX_FILES);
 
@@ -646,7 +751,11 @@ pub fn neighbours(root: &Path, path: &str, options: &Options) -> Result<String, 
         .filter(|s| s.depth == 0)
         .take(GRAPH_MAX_FILES)
         .map(|s| {
-            let lines = if s.end_line > s.start_line { format!("{}-{}", s.start_line, s.end_line) } else { s.start_line.to_string() };
+            let lines = if s.end_line > s.start_line {
+                format!("{}-{}", s.start_line, s.end_line)
+            } else {
+                s.start_line.to_string()
+            };
             format!("- {lines} {}", s.signature)
         })
         .collect();
@@ -659,16 +768,32 @@ pub fn neighbours(root: &Path, path: &str, options: &Options) -> Result<String, 
         }
         let mut lines = vec![title.to_string()];
         for (other, names) in side {
-            let via = names.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>().join(", ");
+            let via = names
+                .iter()
+                .map(|(n, _)| n.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             lines.push(format!("- {} (via {via})", graph.paths[*other]));
         }
         lines.join("\n")
     };
     let uses_total: usize = graph.links.keys().filter(|(f, _, _)| *f == me).count();
     let used_total: usize = graph.links.keys().filter(|(_, t, _)| *t == me).count();
-    out.push(render_side(&format!("{mine} uses ({} file{})", uses.len(), if uses.len() == 1 { "" } else { "s" }), &uses, ""));
     out.push(render_side(
-        &format!("Used by ({} file{})", used_by.len(), if used_by.len() == 1 { "" } else { "s" }),
+        &format!(
+            "{mine} uses ({} file{})",
+            uses.len(),
+            if uses.len() == 1 { "" } else { "s" }
+        ),
+        &uses,
+        "",
+    ));
+    out.push(render_side(
+        &format!(
+            "Used by ({} file{})",
+            used_by.len(),
+            if used_by.len() == 1 { "" } else { "s" }
+        ),
         &used_by,
         "; it may be an entry point or used dynamically",
     ));
@@ -710,25 +835,38 @@ fn split_symbol_query(query: &str) -> Vec<String> {
 /// `read` by symbol resolves them: whole name first, else the last part
 /// with its outers among the ancestors).
 fn match_in_file(symbols: &[Symbol], query: &str) -> Vec<usize> {
-    let has_separator = query.contains("::") || query.contains(" > ") || query.contains(['.', '/', '#']);
+    let has_separator =
+        query.contains("::") || query.contains(" > ") || query.contains(['.', '/', '#']);
     if has_separator {
-        let whole: Vec<usize> = (0..symbols.len()).filter(|&i| symbols[i].name.trim() == query.trim()).collect();
+        let whole: Vec<usize> = (0..symbols.len())
+            .filter(|&i| symbols[i].name.trim() == query.trim())
+            .collect();
         if !whole.is_empty() {
             return whole;
         }
     } else {
-        let want = query.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
-        let hit: Vec<usize> = (0..symbols.len()).filter(|&i| symbols[i].name.trim() == want).collect();
+        let want = query
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'' || c == '`');
+        let hit: Vec<usize> = (0..symbols.len())
+            .filter(|&i| symbols[i].name.trim() == want)
+            .collect();
         if !hit.is_empty() {
             return hit;
         }
     }
     let parts = split_symbol_query(query);
-    let Some((last, outer)) = parts.split_last() else { return Vec::new() };
+    let Some((last, outer)) = parts.split_last() else {
+        return Vec::new();
+    };
     (0..symbols.len())
         .filter(|&i| symbols[i].name.trim() == *last)
         .filter(|&i| {
-            let chain: Vec<String> = ancestors(symbols, i).iter().rev().map(|&a| symbols[a].name.trim().to_string()).collect();
+            let chain: Vec<String> = ancestors(symbols, i)
+                .iter()
+                .rev()
+                .map(|&a| symbols[a].name.trim().to_string())
+                .collect();
             let mut want = outer.iter();
             let mut next = want.next();
             for name in &chain {
@@ -745,7 +883,9 @@ fn match_in_file(symbols: &[Symbol], query: &str) -> Vec<usize> {
 /// callers/dependents the graph sees. For exact use sites (lines), follow
 /// up with search_code.
 pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, String> {
-    let query = symbol.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    let query = symbol
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`');
     if query.is_empty() {
         return Err("Error: \"symbol\" is empty: give a declaration's name, e.g. \"parse\" or \"Parser::parse\".".into());
     }
@@ -760,18 +900,26 @@ pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, S
     };
     let Some(declarers) = graph.declared_by.get(bare.as_str()) else {
         // Suggest names containing it, most-declared first for stability.
-        let mut near: Vec<(&String, usize)> =
-            graph.declared_by.iter().filter(|(n, _)| n.contains(bare.as_str())).map(|(n, d)| (n, d.len())).collect();
+        let mut near: Vec<(&String, usize)> = graph
+            .declared_by
+            .iter()
+            .filter(|(n, _)| n.contains(bare.as_str()))
+            .map(|(n, d)| (n, d.len()))
+            .collect();
         near.sort_by(|a, b| a.0.cmp(b.0));
         near.truncate(GRAPH_MAX_CANDIDATES);
-        let mut out = vec![format!("Error: no declaration named \"{query}\" in the project graph.")];
+        let mut out = vec![format!(
+            "Error: no declaration named \"{query}\" in the project graph."
+        )];
         if !near.is_empty() {
             out.push("Similar names:".into());
             for (n, _) in near {
                 out.push(format!("- {n}"));
             }
         }
-        out.push("Search for it with search_code (it may be dynamic or outside parsed sources).".into());
+        out.push(
+            "Search for it with search_code (it may be dynamic or outside parsed sources).".into(),
+        );
         return Err(out.join("\n"));
     };
     // The declarations themselves, with lines and signatures.
@@ -795,7 +943,8 @@ pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, S
     // Files with a matching declaration, before and after the cap: the ones
     // cut by the cap are "not shown"; declaring files that didn't match a
     // qualified query (`Parser::parse` vs another `parse`) are another thing.
-    let distinct = |v: &[(usize, usize)]| v.iter().map(|(i, _)| *i).collect::<HashSet<usize>>().len();
+    let distinct =
+        |v: &[(usize, usize)]| v.iter().map(|(i, _)| *i).collect::<HashSet<usize>>().len();
     let matched_files = distinct(&shown);
     shown.truncate(GRAPH_MAX_DECLARERS * 2);
     let shown_files = distinct(&shown);
@@ -805,27 +954,46 @@ pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, S
         if name == bare && declarers.contains(to) {
             let e = users.entry(*from).or_insert((0.0, 0));
             e.0 += w;
-            e.1 += files[&graph.paths[*from]].identifiers.get(bare.as_str()).copied().unwrap_or(1);
+            e.1 += files[&graph.paths[*from]]
+                .identifiers
+                .get(bare.as_str())
+                .copied()
+                .unwrap_or(1);
         }
     }
-    let mut users: Vec<(usize, f64, u32)> = users.into_iter().map(|(f, (w, c))| (f, w, c)).collect();
-    users.sort_by(|a, b| b.1.total_cmp(&a.1).then(graph.paths[a.0].cmp(&graph.paths[b.0])));
+    let mut users: Vec<(usize, f64, u32)> =
+        users.into_iter().map(|(f, (w, c))| (f, w, c)).collect();
+    users.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
+            .then(graph.paths[a.0].cmp(&graph.paths[b.0]))
+    });
     let users_total = users.len();
     users.truncate(GRAPH_MAX_USERS);
 
     let mut out = vec![format!("## Callers of `{query}`")];
     if shown.is_empty() {
-        out.push(format!("Declared in:\n(declared as `{bare}` in {} file{}; no outline entry matched)", declarers.len(), if declarers.len() == 1 { "" } else { "s" }));
+        out.push(format!(
+            "Declared in:\n(declared as `{bare}` in {} file{}; no outline entry matched)",
+            declarers.len(),
+            if declarers.len() == 1 { "" } else { "s" }
+        ));
     } else {
         let mut lines = vec!["Declared in:".to_string()];
         for (i, j) in &shown {
             let s = &files[&graph.paths[*i]].symbols[*j];
-            let range = if s.end_line > s.start_line { format!("{}-{}", s.start_line, s.end_line) } else { s.start_line.to_string() };
+            let range = if s.end_line > s.start_line {
+                format!("{}-{}", s.start_line, s.end_line)
+            } else {
+                s.start_line.to_string()
+            };
             lines.push(format!("- {} [{range}]: {}", graph.paths[*i], s.signature));
         }
         let hidden = matched_files - shown_files;
         if hidden > 0 {
-            lines.push(format!("(…and {hidden} more declaring file{} not shown)", if hidden == 1 { "" } else { "s" }));
+            lines.push(format!(
+                "(…and {hidden} more declaring file{} not shown)",
+                if hidden == 1 { "" } else { "s" }
+            ));
         }
         let other = declarers.len().saturating_sub(matched_files);
         if other > 0 {
@@ -839,13 +1007,24 @@ pub fn callers(root: &Path, symbol: &str, options: &Options) -> Result<String, S
     if users.is_empty() {
         out.push(format!("Used by:\n(no other file uses `{bare}` by name; it may be an entry point or used dynamically)"));
     } else {
-        let mut lines = vec![format!("Used by ({} file{}):", users_total, if users_total == 1 { "" } else { "s" })];
+        let mut lines = vec![format!(
+            "Used by ({} file{}):",
+            users_total,
+            if users_total == 1 { "" } else { "s" }
+        )];
         for (f, _, count) in &users {
-            let times = if *count == 1 { "1 use".to_string() } else { format!("{count} uses") };
+            let times = if *count == 1 {
+                "1 use".to_string()
+            } else {
+                format!("{count} uses")
+            };
             lines.push(format!("- {} ({times} via `{bare}`)", graph.paths[*f]));
         }
         if users_total > users.len() {
-            lines.push(format!("(…and {} more not shown)", users_total - users.len()));
+            lines.push(format!(
+                "(…and {} more not shown)",
+                users_total - users.len()
+            ));
         }
         out.push(lines.join("\n"));
     }
@@ -898,7 +1077,11 @@ fn render(
             } else {
                 s.start_line.to_string()
             };
-            out.push_str(&format!("{}{lines} {}\n", "  ".repeat(s.depth + 1), s.signature));
+            out.push_str(&format!(
+                "{}{lines} {}\n",
+                "  ".repeat(s.depth + 1),
+                s.signature
+            ));
         }
     }
     out.trim_end().to_string()
@@ -915,11 +1098,28 @@ struct Scope {
 
 /// Node kinds whose insides are local.
 fn is_callable_kind(kind: &str) -> bool {
-    ["function", "method", "lambda", "closure", "subroutine", "procedure"].iter().any(|k| kind.contains(k))
+    [
+        "function",
+        "method",
+        "lambda",
+        "closure",
+        "subroutine",
+        "procedure",
+    ]
+    .iter()
+    .any(|k| kind.contains(k))
         || matches!(
             kind,
-            "function_item" | "lexical_declaration" | "variable_declaration" | "let_binding" | "value_definition"
-                | "value_declaration" | "fun_decl" | "defun" | "proc_declaration" | "func_declaration"
+            "function_item"
+                | "lexical_declaration"
+                | "variable_declaration"
+                | "let_binding"
+                | "value_definition"
+                | "value_declaration"
+                | "fun_decl"
+                | "defun"
+                | "proc_declaration"
+                | "func_declaration"
         )
 }
 
@@ -935,7 +1135,10 @@ fn scopes(symbols: &[Symbol]) -> Vec<Scope> {
             }
             for a in ancestors(symbols, j) {
                 scope.local |= is_callable_kind(&symbols[a].kind);
-                scope.test |= matches!(symbols[a].name.as_str(), "tests" | "test" | "spec" | "specs");
+                scope.test |= matches!(
+                    symbols[a].name.as_str(),
+                    "tests" | "test" | "spec" | "specs"
+                );
             }
             scope
         })
@@ -950,7 +1153,19 @@ fn is_test_path(path: &str) -> bool {
     let mut parts: Vec<&str> = lower.split('/').collect();
     let file = parts.pop().unwrap_or("");
     if parts.iter().any(|d| {
-        matches!(*d, "test" | "tests" | "__tests__" | "testdata" | "test_data" | "fixtures" | "__fixtures__" | "spec" | "specs" | "e2e")
+        matches!(
+            *d,
+            "test"
+                | "tests"
+                | "__tests__"
+                | "testdata"
+                | "test_data"
+                | "fixtures"
+                | "__fixtures__"
+                | "spec"
+                | "specs"
+                | "e2e"
+        )
     }) {
         return true;
     }
@@ -1013,7 +1228,10 @@ pub fn focus_from(root: &Path, request: &str, touched: &[String]) -> Focus {
         }
         for word in token.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
             if word.chars().count() >= MIN_NAME_CHARS
-                && word.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                && word
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
                 && !words.iter().any(|w| w == word)
             {
                 words.push(word.to_string());
@@ -1027,8 +1245,12 @@ pub fn focus_from(root: &Path, request: &str, touched: &[String]) -> Focus {
 fn relative(root: &Path, path: &str) -> String {
     let p = path.trim().replace('\\', "/");
     let root_str = root.to_string_lossy().replace('\\', "/");
-    let rel = p.strip_prefix(&format!("{}/", root_str.trim_end_matches('/'))).unwrap_or(&p);
-    rel.trim_start_matches("./").trim_start_matches('/').to_string()
+    let rel = p
+        .strip_prefix(&format!("{}/", root_str.trim_end_matches('/')))
+        .unwrap_or(&p);
+    rel.trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
 }
 
 /// Forgets the cached tags (tests).

@@ -377,7 +377,10 @@ async fn solve_cloudflare_challenge(page: &Page) -> EokaResult<()> {
 
     info!("CAPTCHA_FRAME_LOADED");
 
-    let header_el = match page.find("div.main-wrapper > div.main-content > h2[id]").await {
+    let header_el = match page
+        .find("div.main-wrapper > div.main-content > h2[id]")
+        .await
+    {
         Ok(el) => el,
         Err(e) => {
             info!("CAPTCHA_HEADER_ELEMENT_NOT_FOUND: {e}");
@@ -766,10 +769,7 @@ mod tests {
         stop.set();
         let state = BrowserState::default();
         let err = state
-            .with_page(
-                |_| async { Ok::<(), String>(()) },
-                Some(&stop),
-            )
+            .with_page(|_| async { Ok::<(), String>(()) }, Some(&stop))
             .await
             .unwrap_err();
         assert_eq!(err, "Stopped by the user.");

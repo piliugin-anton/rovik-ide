@@ -105,8 +105,9 @@ impl EventMask {
     pub const ALL: EventMask = EventMask((1 << 8) - 1);
     /// Everything except the per-request `read`/`written` and `opened`:
     /// what changed, at a rate that doesn't depend on I/O sizes.
-    pub const CHANGES: EventMask =
-        EventMask(Self::CREATED.0 | Self::TRUNCATED.0 | Self::CLOSED.0 | Self::REMOVED.0 | Self::RENAMED.0);
+    pub const CHANGES: EventMask = EventMask(
+        Self::CREATED.0 | Self::TRUNCATED.0 | Self::CLOSED.0 | Self::REMOVED.0 | Self::RENAMED.0,
+    );
 
     pub fn contains(self, other: EventMask) -> bool {
         self.0 & other.0 != 0
@@ -172,7 +173,14 @@ impl Hub {
     pub fn subscribe(&self, mask: EventMask, callback: Callback) -> SubscriptionId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut subs = self.subscribers.write().unwrap_or_else(|e| e.into_inner());
-        let mut next: Vec<Subscriber> = subs.iter().map(|s| Subscriber { id: s.id, mask: s.mask, callback: s.callback.clone() }).collect();
+        let mut next: Vec<Subscriber> = subs
+            .iter()
+            .map(|s| Subscriber {
+                id: s.id,
+                mask: s.mask,
+                callback: s.callback.clone(),
+            })
+            .collect();
         next.push(Subscriber { id, mask, callback });
         self.publish(&mut subs, next);
         SubscriptionId(id)
@@ -186,7 +194,11 @@ impl Hub {
         let next = subs
             .iter()
             .filter(|s| s.id != id.0)
-            .map(|s| Subscriber { id: s.id, mask: s.mask, callback: s.callback.clone() })
+            .map(|s| Subscriber {
+                id: s.id,
+                mask: s.mask,
+                callback: s.callback.clone(),
+            })
             .collect();
         self.publish(&mut subs, next);
         true
@@ -202,7 +214,11 @@ impl Hub {
         if events.is_empty() {
             return;
         }
-        let subs = self.subscribers.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let subs = self
+            .subscribers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for event in events {
             let bit = event.op.mask();
             for sub in subs.iter() {
@@ -225,7 +241,11 @@ pub(crate) struct Pending<'a> {
 
 impl<'a> Pending<'a> {
     pub fn new(hub: &'a Hub, source: Source) -> Self {
-        Pending { hub, source, events: Vec::new() }
+        Pending {
+            hub,
+            source,
+            events: Vec::new(),
+        }
     }
 
     #[inline]
@@ -237,7 +257,12 @@ impl<'a> Pending<'a> {
     #[inline]
     pub fn add(&mut self, ino: Ino, op: Op, path: impl FnOnce() -> String) {
         if self.hub.wants(op.mask()) {
-            self.events.push(FsEvent { ino, path: path(), source: self.source, op });
+            self.events.push(FsEvent {
+                ino,
+                path: path(),
+                source: self.source,
+                op,
+            });
         }
     }
 
@@ -287,7 +312,14 @@ pub fn batched(
         }
     }
 
-    let shared: Shared = Arc::new((Mutex::new(Buffer { events: Vec::new(), dropped: 0, closed: false }), Condvar::new()));
+    let shared: Shared = Arc::new((
+        Mutex::new(Buffer {
+            events: Vec::new(),
+            dropped: 0,
+            closed: false,
+        }),
+        Condvar::new(),
+    ));
     let consumer = shared.clone();
     std::thread::Builder::new()
         .name("vfs-events".into())
@@ -311,13 +343,19 @@ pub fn batched(
                 }
                 let (events, dropped) = {
                     let mut b = buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    (std::mem::take(&mut b.events), std::mem::take(&mut b.dropped))
+                    (
+                        std::mem::take(&mut b.events),
+                        std::mem::take(&mut b.dropped),
+                    )
                 };
                 let mut events = events.into_iter().peekable();
                 let mut dropped = Some(dropped);
                 while events.peek().is_some() || dropped.is_some_and(|d| d > 0) {
                     let batch: Vec<FsEvent> = events.by_ref().take(max_batch.max(1)).collect();
-                    sink(EventBatch { events: batch, dropped: dropped.take().unwrap_or(0) });
+                    sink(EventBatch {
+                        events: batch,
+                        dropped: dropped.take().unwrap_or(0),
+                    });
                 }
             }
         })
@@ -346,7 +384,12 @@ mod tests {
     use std::sync::mpsc;
 
     fn event(op: Op) -> FsEvent {
-        FsEvent { ino: 2, path: "a".into(), source: Source::App, op }
+        FsEvent {
+            ino: 2,
+            path: "a".into(),
+            source: Source::App,
+            op,
+        }
     }
 
     #[test]
@@ -355,7 +398,9 @@ mod tests {
         assert!(mask.contains(EventMask::CREATED) && mask.contains(EventMask::CLOSED));
         assert!(!mask.contains(EventMask::READ));
         assert!(EventMask::from_names(&["nope"]).is_err());
-        assert!(!EventMask::CHANGES.contains(EventMask::READ | EventMask::WRITTEN | EventMask::OPENED));
+        assert!(
+            !EventMask::CHANGES.contains(EventMask::READ | EventMask::WRITTEN | EventMask::OPENED)
+        );
     }
 
     #[test]
@@ -364,9 +409,15 @@ mod tests {
         assert!(!hub.wants(EventMask::ALL));
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let id = hub.subscribe(EventMask::CREATED, Arc::new(move |e| sink.lock().unwrap().push(e.op.clone())));
+        let id = hub.subscribe(
+            EventMask::CREATED,
+            Arc::new(move |e| sink.lock().unwrap().push(e.op.clone())),
+        );
         assert!(hub.wants(EventMask::CREATED) && !hub.wants(EventMask::READ));
-        hub.emit(&[event(Op::Created { kind: Kind::File }), event(Op::Read { offset: 0, len: 1 })]);
+        hub.emit(&[
+            event(Op::Created { kind: Kind::File }),
+            event(Op::Read { offset: 0, len: 1 }),
+        ]);
         assert_eq!(*seen.lock().unwrap(), [Op::Created { kind: Kind::File }]);
         assert!(hub.unsubscribe(id));
         assert!(!hub.wants(EventMask::CREATED));
@@ -402,7 +453,10 @@ mod tests {
             tx.send(batch).unwrap();
         });
         for i in 0..50 {
-            callback(&FsEvent { ino: i, ..event(Op::Closed { modified: true }) });
+            callback(&FsEvent {
+                ino: i,
+                ..event(Op::Closed { modified: true })
+            });
         }
         drop(callback); // Unsubscribed: what's buffered is still delivered.
         let mut got = Vec::new();
@@ -424,15 +478,23 @@ mod tests {
     #[test]
     fn batched_groups_events() {
         let (tx, rx) = mpsc::channel();
-        let callback = batched(10_000, 1000, Duration::from_millis(30), move |batch| tx.send(batch.events.len()).unwrap());
+        let callback = batched(10_000, 1000, Duration::from_millis(30), move |batch| {
+            tx.send(batch.events.len()).unwrap()
+        });
         for i in 0..2500 {
-            callback(&FsEvent { ino: i, ..event(Op::Closed { modified: false }) });
+            callback(&FsEvent {
+                ino: i,
+                ..event(Op::Closed { modified: false })
+            });
         }
         let mut sizes = Vec::new();
         while let Ok(n) = rx.recv_timeout(Duration::from_millis(300)) {
             sizes.push(n);
         }
         assert_eq!(sizes.iter().sum::<usize>(), 2500);
-        assert!(sizes.len() <= 4 && sizes.iter().all(|&n| n <= 1000), "{sizes:?}");
+        assert!(
+            sizes.len() <= 4 && sizes.iter().all(|&n| n <= 1000),
+            "{sizes:?}"
+        );
     }
 }

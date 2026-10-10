@@ -41,7 +41,10 @@ pub enum ShellKind {
 
 #[cfg(unix)]
 pub fn shell_kind(shell: &str) -> ShellKind {
-    let name = std::path::Path::new(shell).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = std::path::Path::new(shell)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     match name.as_str() {
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "mksh" | "ash" => ShellKind::Posix,
         "fish" => ShellKind::Fish,
@@ -90,12 +93,23 @@ fn login_shell_path() -> Option<String> {
     let shell = user_shell()?;
     let posix = format!("printf '{MARKER}%s{MARKER}' \"$PATH\"");
     let (program, args) = match shell_kind(&shell) {
-        ShellKind::Posix => (shell, vec!["-l".to_string(), "-i".into(), "-c".into(), posix]),
+        ShellKind::Posix => (
+            shell,
+            vec!["-l".to_string(), "-i".into(), "-c".into(), posix],
+        ),
         ShellKind::Fish => (
             shell,
-            vec!["-l".to_string(), "-i".into(), "-c".into(), format!("printf '{MARKER}%s{MARKER}' (string join : $PATH)")],
+            vec![
+                "-l".to_string(),
+                "-i".into(),
+                "-c".into(),
+                format!("printf '{MARKER}%s{MARKER}' (string join : $PATH)"),
+            ],
         ),
-        ShellKind::OtherLogin | ShellKind::Other => ("/bin/sh".to_string(), vec!["-l".to_string(), "-c".into(), posix]),
+        ShellKind::OtherLogin | ShellKind::Other => (
+            "/bin/sh".to_string(),
+            vec!["-l".to_string(), "-c".into(), posix],
+        ),
     };
     let mut child = Command::new(&program)
         .args(&args)
@@ -114,7 +128,9 @@ fn login_shell_path() -> Option<String> {
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < Duration::from_secs(3) => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) if started.elapsed() < Duration::from_secs(3) => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -156,16 +172,23 @@ mod tests {
     #[test]
     fn finds_path_between_markers_despite_banners() {
         let out = format!("Welcome!\n{MARKER}/opt/homebrew/bin:/usr/bin{MARKER}bye\n");
-        assert_eq!(parse_marked(&out).as_deref(), Some("/opt/homebrew/bin:/usr/bin"));
+        assert_eq!(
+            parse_marked(&out).as_deref(),
+            Some("/opt/homebrew/bin:/usr/bin")
+        );
         assert_eq!(parse_marked("no markers"), None);
         assert_eq!(parse_marked(&format!("{MARKER}{MARKER}")), None);
     }
 
     #[test]
     fn login_entries_come_first_and_ours_are_kept() {
-        let merged = merge_paths("/opt/homebrew/bin:/usr/bin", OsStr::new("/usr/bin:/bin")).unwrap();
+        let merged =
+            merge_paths("/opt/homebrew/bin:/usr/bin", OsStr::new("/usr/bin:/bin")).unwrap();
         assert_eq!(merged, "/opt/homebrew/bin:/usr/bin:/bin");
-        assert_eq!(merge_paths("/usr/bin:/bin", OsStr::new("/usr/bin:/bin")), None);
+        assert_eq!(
+            merge_paths("/usr/bin:/bin", OsStr::new("/usr/bin:/bin")),
+            None
+        );
     }
 
     #[test]
@@ -183,6 +206,9 @@ mod tests {
             return;
         }
         let path = login_shell_path().expect("the login shell's PATH");
-        assert!(std::env::split_paths(&path).any(|d| d.is_absolute()), "{path}");
+        assert!(
+            std::env::split_paths(&path).any(|d| d.is_absolute()),
+            "{path}"
+        );
     }
 }

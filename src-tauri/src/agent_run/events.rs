@@ -73,7 +73,11 @@ pub struct Status {
 
 impl Status {
     pub fn text(text: impl Into<String>) -> Self {
-        Status { text: text.into(), until: None, since: None }
+        Status {
+            text: text.into(),
+            until: None,
+            since: None,
+        }
     }
 }
 
@@ -142,7 +146,11 @@ pub struct QuestionsRequest {
 }
 
 #[derive(Serialize, Clone, Debug)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AgentEvent {
     RunStarted {
         dialog_id: String,

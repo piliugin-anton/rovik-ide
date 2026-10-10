@@ -10,10 +10,15 @@
 
 use super::events::{emit, AgentEvent, OutMessage, Patch, Status};
 use super::guard::Guard;
-use super::project::{self, ProjectCheck};
 use super::permissions::ChecklistMode;
-use super::{failure, log, plan, repetition, tools, AgentState, Controls, EffortPick, ModelProfile, StartKind, StartRequest, StopSignal};
-use crate::agent::{ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS};
+use super::project::{self, ProjectCheck};
+use super::{
+    failure, log, plan, repetition, tools, AgentState, Controls, EffortPick, ModelProfile,
+    StartKind, StartRequest, StopSignal,
+};
+use crate::agent::{
+    ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS,
+};
 use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage, ToolCall};
 use crate::chat_db::DbState;
 use crate::chat_request::{ChatError, ErrorKind};
@@ -269,7 +274,9 @@ impl<R: Runtime> Run<R> {
         let dialog_id = request.dialog_id.clone();
         let mut recent = recent_messages(db, &dialog_id).await?;
         let config = state.config();
-        let mode = run_mode_for(&recent).or(request.mode.clone()).unwrap_or_else(|| "agent".into());
+        let mode = run_mode_for(&recent)
+            .or(request.mode.clone())
+            .unwrap_or_else(|| "agent".into());
         let plan_mode = mode == "plan";
         let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
         // An isolated chat works in its overlay: the project with its own
@@ -277,7 +284,9 @@ impl<R: Runtime> Run<R> {
         // changes nothing, so it reads the project itself, unless the chat
         // has changes that haven't landed: then it plans against those.
         let mut isolation_problem = None;
-        let isolate = request.isolate.unwrap_or_else(crate::overlay::chats::enabled);
+        let isolate = request
+            .isolate
+            .unwrap_or_else(crate::overlay::chats::enabled);
         let root = match &project_root {
             Some(r) if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) => {
                 let app_ = app.clone();
@@ -305,7 +314,9 @@ impl<R: Runtime> Run<R> {
             }
             _ => project_root.clone(),
         };
-        if let Some(problem) = isolation_problem.filter(|_| crate::overlay::chats::tell_not_isolated(&dialog_id)) {
+        if let Some(problem) =
+            isolation_problem.filter(|_| crate::overlay::chats::tell_not_isolated(&dialog_id))
+        {
             emit(
                 app,
                 AgentEvent::Notice {
@@ -367,7 +378,9 @@ impl<R: Runtime> Run<R> {
             }
             StartKind::RunChecks { record_id } => {
                 let record = recent.iter().find(|m| m.id == record_id);
-                let Some(pending) = record.and_then(|m| m.meta.as_ref()?.get("verification").cloned()) else {
+                let Some(pending) =
+                    record.and_then(|m| m.meta.as_ref()?.get("verification").cloned())
+                else {
                     return Ok(None);
                 };
                 if pending.get("status").and_then(|s| s.as_str()) != Some("needs-approval") {
@@ -376,7 +389,11 @@ impl<R: Runtime> Run<R> {
                 changed_files = pending
                     .get("changedFiles")
                     .and_then(|f| f.as_array())
-                    .map(|f| f.iter().filter_map(|p| p.as_str().map(str::to_string)).collect())
+                    .map(|f| {
+                        f.iter()
+                            .filter_map(|p| p.as_str().map(str::to_string))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 verify_rounds = pending.get("round").and_then(|r| r.as_u64()).unwrap_or(0) as u32;
                 Entry::Verify { record_id }
@@ -414,7 +431,10 @@ impl<R: Runtime> Run<R> {
             m.meta = Some(json!({ "harness": kind, "fromMessageId": from_message_id }));
             let stored = vec![m.clone()];
             let id = dialog_id.to_string();
-            if let Ok(seqs) = db.write(move |c| store::append_messages(c, &id, &stored)).await {
+            if let Ok(seqs) = db
+                .write(move |c| store::append_messages(c, &id, &stored))
+                .await
+            {
                 let seq = seqs.into_iter().next().unwrap_or(0);
                 emit(
                     app,
@@ -445,7 +465,13 @@ impl<R: Runtime> Run<R> {
                     created_at: mcreated,
                 });
             }
-            emit(app, AgentEvent::Checklist { dialog_id: dialog_id.to_string(), items });
+            emit(
+                app,
+                AgentEvent::Checklist {
+                    dialog_id: dialog_id.to_string(),
+                    items,
+                },
+            );
         }
 
         // Agent mode only: Plan mode has no `todo` tool, so a note asking
@@ -490,9 +516,11 @@ impl<R: Runtime> Run<R> {
                 // Settings are kept by the project's folder, not the view's.
                 let settings_root = project_root.clone().unwrap_or_else(|| r.clone());
                 let (app, r, verify) = (app.clone(), r.clone(), config.permissions.verify_changes);
-                tauri::async_runtime::spawn_blocking(move || project::load(&app, &r, &settings_root, verify))
-                    .await
-                    .unwrap_or_default()
+                tauri::async_runtime::spawn_blocking(move || {
+                    project::load(&app, &r, &settings_root, verify)
+                })
+                .await
+                .unwrap_or_default()
             }
             None => Default::default(),
         };
@@ -501,7 +529,9 @@ impl<R: Runtime> Run<R> {
         } else {
             String::new()
         };
-        let current_user_content = request.current_user_content.or_else(|| last_user_wire_content(&recent));
+        let current_user_content = request
+            .current_user_content
+            .or_else(|| last_user_wire_content(&recent));
         // A short typed request ("continue") says nothing about the task:
         // the map is built from the previous real request's text as well,
         // so it still points at the work being continued.
@@ -575,7 +605,9 @@ impl<R: Runtime> Run<R> {
             profile: request.profile,
             options: request.options,
             plan_mode,
-            context_mode: request.context_mode.unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
+            context_mode: request
+                .context_mode
+                .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
             project_root,
             merged_from_project: None,
@@ -730,7 +762,14 @@ impl<R: Runtime> Run<R> {
                     "{}\n\n_[Stopped here: the reply kept repeating itself.]_",
                     turn.text[..cut.min(turn.text.len())].trim_end()
                 );
-                self.finalize(&turn.message_id, kept, Vec::new(), turn.reasoning.clone(), None).await?;
+                self.finalize(
+                    &turn.message_id,
+                    kept,
+                    Vec::new(),
+                    turn.reasoning.clone(),
+                    None,
+                )
+                .await?;
                 self.settle(true).await;
                 if self.repetition_stops >= 2 || self.stopped() {
                     emit(
@@ -765,21 +804,44 @@ impl<R: Runtime> Run<R> {
                     // Part of the reply arrived: keep it (it stays in the
                     // history) and let the user continue. Incomplete tool
                     // calls are dropped.
-                    let mut meta = turn.reasoning.map(|r| json!({ "reasoning": r })).unwrap_or_else(|| json!({}));
+                    let mut meta = turn
+                        .reasoning
+                        .map(|r| json!({ "reasoning": r }))
+                        .unwrap_or_else(|| json!({}));
                     meta["interrupted"] = stored;
-                    self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None).await?;
+                    self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
+                        .await?;
                     self.settle(true).await;
                 } else {
                     let meta = json!({ "failure": stored });
                     let text = failure::describe(&error);
-                    self.finalize(&turn.message_id, String::new(), Vec::new(), Some(meta), Some(text)).await?;
+                    self.finalize(
+                        &turn.message_id,
+                        String::new(),
+                        Vec::new(),
+                        Some(meta),
+                        Some(text),
+                    )
+                    .await?;
                     self.settle(false).await;
                 }
-                return Ok(if error.kind == ErrorKind::Cancelled { "stopped" } else { "error" }.into());
+                return Ok(if error.kind == ErrorKind::Cancelled {
+                    "stopped"
+                } else {
+                    "error"
+                }
+                .into());
             }
 
             let meta = turn.reasoning.map(|r| json!({ "reasoning": r }));
-            self.finalize(&turn.message_id, turn.text.clone(), turn.tool_calls.clone(), meta, None).await?;
+            self.finalize(
+                &turn.message_id,
+                turn.text.clone(),
+                turn.tool_calls.clone(),
+                meta,
+                None,
+            )
+            .await?;
             self.settle(true).await;
             if self.stopped() {
                 return Ok("stopped".into());
@@ -883,10 +945,14 @@ impl<R: Runtime> Run<R> {
         .await?;
         self.words_only = true;
         let turn = self.model_turn().await?;
-        let mut meta = turn.reasoning.map(|r| json!({ "reasoning": r })).unwrap_or_else(|| json!({}));
+        let mut meta = turn
+            .reasoning
+            .map(|r| json!({ "reasoning": r }))
+            .unwrap_or_else(|| json!({}));
         let Some(error) = turn.failure else {
             // Calls the provider sent anyway aren't run: the run is pausing.
-            self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None).await?;
+            self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
+                .await?;
             self.settle(true).await;
             return Ok(self.stopped());
         };
@@ -894,12 +960,19 @@ impl<R: Runtime> Run<R> {
         let stored = failure::stored(&error);
         if !turn.text.trim().is_empty() {
             meta["interrupted"] = stored;
-            self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None).await?;
+            self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
+                .await?;
             self.settle(true).await;
         } else {
             let text = failure::describe(&error);
-            self.finalize(&turn.message_id, String::new(), Vec::new(), Some(json!({ "failure": stored })), Some(text))
-                .await?;
+            self.finalize(
+                &turn.message_id,
+                String::new(),
+                Vec::new(),
+                Some(json!({ "failure": stored })),
+                Some(text),
+            )
+            .await?;
             self.settle(false).await;
         }
         Ok(error.kind == ErrorKind::Cancelled || self.stopped())
@@ -942,12 +1015,16 @@ impl<R: Runtime> Run<R> {
             context_only,
         );
         let project_context = if self.plan_mode {
-            [self.project_context.as_str(), plan::PLAN_MODE_INSTRUCTIONS, self.plan_context.as_str()]
-                .iter()
-                .filter(|s| !s.is_empty())
-                .copied()
-                .collect::<Vec<_>>()
-                .join("\n\n")
+            [
+                self.project_context.as_str(),
+                plan::PLAN_MODE_INSTRUCTIONS,
+                self.plan_context.as_str(),
+            ]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n\n")
         } else {
             self.project_context.clone()
         };
@@ -1021,7 +1098,11 @@ impl<R: Runtime> Run<R> {
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
             let cancel_tx = Arc::new(cancel_tx);
-            let stream = Arc::new(Mutex::new(Stream::new(self, &message_id, cancel_tx.clone())));
+            let stream = Arc::new(Mutex::new(Stream::new(
+                self,
+                &message_id,
+                cancel_tx.clone(),
+            )));
             if let Some(status) = opening_status.take() {
                 lock(&stream).set_status(Some(status));
             }
@@ -1035,7 +1116,8 @@ impl<R: Runtime> Run<R> {
             let mut ask_again = false;
             let vfs = self.app.state::<crate::vfs::VfsState>();
             let result = {
-                let request = crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event);
+                let request =
+                    crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event);
                 tokio::pin!(request);
                 let mut stop_rx = self.stop.subscribe();
                 let mut ticker = tokio::time::interval(Duration::from_millis(100));
@@ -1102,7 +1184,9 @@ impl<R: Runtime> Run<R> {
             // Cancelled to ask again (not Stop, and it didn't finish first).
             let asked_again = ask_again
                 && !self.stop.is_set()
-                && failure.as_ref().is_some_and(|e| e.kind == ErrorKind::Cancelled);
+                && failure
+                    .as_ref()
+                    .is_some_and(|e| e.kind == ErrorKind::Cancelled);
             if asked_again {
                 let shown = s.shown_anything();
                 for note in std::mem::take(&mut s.notes) {
@@ -1142,9 +1226,13 @@ impl<R: Runtime> Run<R> {
                         tool_calls: Some(Vec::new()),
                         ..Default::default()
                     };
-                    self.db.write_detached(move |c| store::update_message(c, &id, &patch));
+                    self.db
+                        .write_detached(move |c| store::update_message(c, &id, &patch));
                 }
-                opening_status = Some(Status::text(format!("Asking again with {}…", effort_label(&self.options))));
+                opening_status = Some(Status::text(format!(
+                    "Asking again with {}…",
+                    effort_label(&self.options)
+                )));
                 started = Instant::now();
                 continue;
             }
@@ -1228,7 +1316,12 @@ impl<R: Runtime> Run<R> {
                 break;
             }
             if m.role == "tool" {
-                if let Some(file) = m.meta.as_ref().and_then(|meta| meta.get("planFile")).and_then(|f| f.as_str()) {
+                if let Some(file) = m
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("planFile"))
+                    .and_then(|f| f.as_str())
+                {
                     submitted = Some(file.to_string());
                     break;
                 }
@@ -1285,7 +1378,11 @@ impl<R: Runtime> Run<R> {
             return Ok(false);
         }
         self.checklist_nudges += 1;
-        let steps = open.iter().map(|i| format!("\"{}\"", i.title)).collect::<Vec<_>>().join(", ");
+        let steps = open
+            .iter()
+            .map(|i| format!("\"{}\"", i.title))
+            .collect::<Vec<_>>()
+            .join(", ");
         if self.checklist_nudges >= MAX_CHECKLIST_NUDGES {
             // Last reminder: stronger, and the next turn must update the
             // checklist first.
@@ -1344,7 +1441,12 @@ impl<R: Runtime> Run<R> {
             .unwrap_or_default();
         let pct = crate::clm::prompt::percent(state.tokens, state.budget);
         self.clm_peak_pct = self.clm_peak_pct.max(pct);
-        for t in state.nudged.iter().copied().chain((pct >= crate::clm::prompt::URGENT).then_some(90)) {
+        for t in state
+            .nudged
+            .iter()
+            .copied()
+            .chain((pct >= crate::clm::prompt::URGENT).then_some(90))
+        {
             if !self.clm_reminders_fired.contains(&t) {
                 self.clm_reminders_fired.push(t);
             }
@@ -1372,14 +1474,17 @@ impl<R: Runtime> Run<R> {
             self.edit_delta_pending = Some(state.tokens);
             if self.pending_step_compaction.take().is_some() {
                 if let Some(asked) = self.step_asked_turn.take() {
-                    self.step_turns_to_edit.get_or_insert(self.clm_turns.saturating_sub(asked));
+                    self.step_turns_to_edit
+                        .get_or_insert(self.clm_turns.saturating_sub(asked));
                 }
             }
             if let Some(w) = self.urgent_since.take() {
-                self.urgent_turns_to_edit.get_or_insert(self.clm_turns.saturating_sub(w.turn));
+                self.urgent_turns_to_edit
+                    .get_or_insert(self.clm_turns.saturating_sub(w.turn));
             }
             if let Some(w) = self.tier75_since.take() {
-                self.tier75_turns_to_edit.get_or_insert(self.clm_turns.saturating_sub(w.turn));
+                self.tier75_turns_to_edit
+                    .get_or_insert(self.clm_turns.saturating_sub(w.turn));
             }
             self.clm_restricted = false;
             self.restricted_stall = 0;
@@ -1413,10 +1518,16 @@ impl<R: Runtime> Run<R> {
         // Remember when each pressure started waiting for its edit; an edit
         // clears it, and it re-arms if the pressure is still there.
         if state.nudged.contains(&75) && self.tier75_since.is_none() {
-            self.tier75_since = Some(ClmWait { tool_calls: self.guard.tool_calls, turn: self.clm_turns });
+            self.tier75_since = Some(ClmWait {
+                tool_calls: self.guard.tool_calls,
+                turn: self.clm_turns,
+            });
         }
         if pct >= crate::clm::prompt::URGENT && self.urgent_since.is_none() {
-            self.urgent_since = Some(ClmWait { tool_calls: self.guard.tool_calls, turn: self.clm_turns });
+            self.urgent_since = Some(ClmWait {
+                tool_calls: self.guard.tool_calls,
+                turn: self.clm_turns,
+            });
         }
 
         if self.clm_non_compliant || self.clm_restricted {
@@ -1518,7 +1629,9 @@ impl<R: Runtime> Run<R> {
     /// - Identical output keeps the old string (no context churn, no log spam).
     /// Returns true when the map text changed.
     async fn refresh_repo_map_if_needed(&mut self) -> Result<bool, String> {
-        let Some(root) = self.root.clone() else { return Ok(false) };
+        let Some(root) = self.root.clone() else {
+            return Ok(false);
+        };
         if self.stopped() {
             return Ok(false);
         }
@@ -1537,7 +1650,10 @@ impl<R: Runtime> Run<R> {
         let rebuilt = tauri::async_runtime::spawn_blocking(move || {
             let root_path = std::path::Path::new(&root);
             let focus = crate::repo_map::focus_from(root_path, &request_text, &touched);
-            let options = crate::repo_map::Options { max_chars, ..Default::default() };
+            let options = crate::repo_map::Options {
+                max_chars,
+                ..Default::default()
+            };
             crate::repo_map::repo_map(root_path, &focus, &options)
         })
         .await;
@@ -1587,13 +1703,22 @@ impl<R: Runtime> Run<R> {
     async fn append_marked(&self, messages: Vec<NewMessage>, pending: bool) -> Result<(), String> {
         let id = self.dialog_id.clone();
         let stored = messages.clone();
-        let seqs = self.db.write(move |c| store::append_messages(c, &id, &stored)).await?;
+        let seqs = self
+            .db
+            .write(move |c| store::append_messages(c, &id, &stored))
+            .await?;
         let out = messages
             .iter()
             .zip(seqs)
             .map(|(m, seq)| OutMessage::from_new(&self.dialog_id, seq, m, pending))
             .collect();
-        emit(&self.app, AgentEvent::MessagesAdded { dialog_id: self.dialog_id.clone(), messages: out });
+        emit(
+            &self.app,
+            AgentEvent::MessagesAdded {
+                dialog_id: self.dialog_id.clone(),
+                messages: out,
+            },
+        );
         Ok(())
     }
 
@@ -1648,7 +1773,9 @@ impl<R: Runtime> Run<R> {
             failed: None,
             finalize: true,
         };
-        self.db.write(move |c| store::update_message(c, &id, &patch)).await?;
+        self.db
+            .write(move |c| store::update_message(c, &id, &patch))
+            .await?;
         self.patch_ui(
             message_id,
             Patch {
@@ -1668,9 +1795,20 @@ impl<R: Runtime> Run<R> {
     /// after they're added, like the verification gate's rounds).
     pub(super) async fn update_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
         let id = message_id.to_string();
-        let patch = MessagePatch { meta: Some(meta.clone()), ..Default::default() };
-        self.db.write(move |c| store::update_message(c, &id, &patch)).await?;
-        self.patch_ui(message_id, Patch { meta: Some(meta), ..Default::default() });
+        let patch = MessagePatch {
+            meta: Some(meta.clone()),
+            ..Default::default()
+        };
+        self.db
+            .write(move |c| store::update_message(c, &id, &patch))
+            .await?;
+        self.patch_ui(
+            message_id,
+            Patch {
+                meta: Some(meta),
+                ..Default::default()
+            },
+        );
         Ok(())
     }
 
@@ -1688,18 +1826,37 @@ impl<R: Runtime> Run<R> {
     /// The first answer to a sent message: on none, the message is marked
     /// failed (its draft comes back in the composer).
     async fn settle(&mut self, ok: bool) {
-        let Some(message_id) = self.settle_message.take() else { return };
+        let Some(message_id) = self.settle_message.take() else {
+            return;
+        };
         if !ok {
             let id = message_id.clone();
-            let patch = MessagePatch { failed: Some(true), ..Default::default() };
-            match self.db.write(move |c| store::update_message(c, &id, &patch)).await {
-                Ok(()) => self.patch_ui(&message_id, Patch { failed: Some(true), ..Default::default() }),
+            let patch = MessagePatch {
+                failed: Some(true),
+                ..Default::default()
+            };
+            match self
+                .db
+                .write(move |c| store::update_message(c, &id, &patch))
+                .await
+            {
+                Ok(()) => self.patch_ui(
+                    &message_id,
+                    Patch {
+                        failed: Some(true),
+                        ..Default::default()
+                    },
+                ),
                 Err(e) => eprintln!("agent: could not mark a message failed: {e}"),
             }
         }
         emit(
             &self.app,
-            AgentEvent::UserMessageSettled { dialog_id: self.dialog_id.clone(), message_id, ok },
+            AgentEvent::UserMessageSettled {
+                dialog_id: self.dialog_id.clone(),
+                message_id,
+                ok,
+            },
         );
     }
 
@@ -1846,7 +2003,10 @@ impl<R: Runtime> Stream<R> {
             return;
         }
         self.status = status.clone();
-        self.patch(Patch { status: Some(status), ..Default::default() });
+        self.patch(Patch {
+            status: Some(status),
+            ..Default::default()
+        });
     }
 
     /// Output arrived: the first time, the wait is over.
@@ -1902,7 +2062,11 @@ impl<R: Runtime> Stream<R> {
                 }
                 self.dirty_reasoning = true;
             }
-            ChatStreamEvent::ReasoningSupport { accepted, rejected, unresolved } => {
+            ChatStreamEvent::ReasoningSupport {
+                accepted,
+                rejected,
+                unresolved,
+            } => {
                 emit(
                     &self.app,
                     AgentEvent::ReasoningLearned {
@@ -1924,7 +2088,9 @@ impl<R: Runtime> Stream<R> {
                 self.text.push_str(&content);
                 self.dirty_text = true;
                 // Every couple of kilobytes: is it stuck repeating itself?
-                if self.repetition_cut.is_none() && self.text.len() - self.repetition_checked_at > 1500 {
+                if self.repetition_cut.is_none()
+                    && self.text.len() - self.repetition_checked_at > 1500
+                {
                     self.repetition_checked_at = self.text.len();
                     if let Some(cut) = repetition::find_repetition(&self.text) {
                         self.repetition_cut = Some(cut);
@@ -1932,15 +2098,29 @@ impl<R: Runtime> Stream<R> {
                     }
                 }
             }
-            ChatStreamEvent::Finished { finish_reason, usage } => {
+            ChatStreamEvent::Finished {
+                finish_reason,
+                usage,
+            } => {
                 self.finish_reason = finish_reason;
                 self.usage = usage;
             }
             ChatStreamEvent::ApiRoute { route } => {
-                emit(&self.app, AgentEvent::ApiRouteLearned { profile_id: self.profile_id.clone(), route });
+                emit(
+                    &self.app,
+                    AgentEvent::ApiRouteLearned {
+                        profile_id: self.profile_id.clone(),
+                        route,
+                    },
+                );
             }
             ChatStreamEvent::Done => {}
-            ChatStreamEvent::Retrying { attempt, max_attempts, delay_ms, reason } => {
+            ChatStreamEvent::Retrying {
+                attempt,
+                max_attempts,
+                delay_ms,
+                reason,
+            } => {
                 self.waiting_done = true;
                 self.retrying = true;
                 if !self.stop.is_set() {
@@ -1967,26 +2147,50 @@ impl<R: Runtime> Stream<R> {
                 self.notes = notes;
             }
             ChatStreamEvent::ContextUpdated { status } => {
-                emit(&self.app, AgentEvent::ContextUpdated { dialog_id: self.dialog_id.clone(), status });
+                emit(
+                    &self.app,
+                    AgentEvent::ContextUpdated {
+                        dialog_id: self.dialog_id.clone(),
+                        status,
+                    },
+                );
             }
             ChatStreamEvent::ToolCallStart { id, name } => {
                 self.mark_output();
-                let call = ToolCall { id: id.clone(), name, arguments: String::new(), extra_content: None };
+                let call = ToolCall {
+                    id: id.clone(),
+                    name,
+                    arguments: String::new(),
+                    extra_content: None,
+                };
                 match self.tool_calls.iter_mut().find(|c| c.id == id) {
                     Some(existing) => *existing = call,
                     None => self.tool_calls.push(call),
                 }
                 self.dirty_tools = true;
             }
-            ChatStreamEvent::ToolCallArgumentsDelta { id, arguments_delta } => {
+            ChatStreamEvent::ToolCallArgumentsDelta {
+                id,
+                arguments_delta,
+            } => {
                 if let Some(call) = self.tool_calls.iter_mut().find(|c| c.id == id) {
                     call.arguments.push_str(&arguments_delta);
                     self.dirty_tools = true;
                 }
             }
-            ChatStreamEvent::ToolCallComplete { id, name, arguments, extra_content } => {
+            ChatStreamEvent::ToolCallComplete {
+                id,
+                name,
+                arguments,
+                extra_content,
+            } => {
                 // Sent back unchanged in the next request (Gemini 3 requires it).
-                let call = ToolCall { id: id.clone(), name, arguments, extra_content };
+                let call = ToolCall {
+                    id: id.clone(),
+                    name,
+                    arguments,
+                    extra_content,
+                };
                 match self.tool_calls.iter_mut().find(|c| c.id == id) {
                     Some(existing) => *existing = call,
                     None => self.tool_calls.push(call),
@@ -2062,7 +2266,9 @@ impl<R: Runtime> Stream<R> {
             patch.tool_calls = Some(self.tool_calls.clone());
         }
         if std::mem::take(&mut self.dirty_reasoning) {
-            patch.meta = self.reasoning_meta(false).map(|r| json!({ "reasoning": r }));
+            patch.meta = self
+                .reasoning_meta(false)
+                .map(|r| json!({ "reasoning": r }));
         }
         self.patch(patch);
         self.last_shown = Instant::now();
@@ -2099,7 +2305,8 @@ impl<R: Runtime> Stream<R> {
                 tool_calls: (!self.tool_calls.is_empty()).then(|| self.tool_calls.clone()),
                 ..Default::default()
             };
-            self.db.write_detached(move |c| store::update_message(c, &id, &patch));
+            self.db
+                .write_detached(move |c| store::update_message(c, &id, &patch));
         }
     }
 }
@@ -2115,16 +2322,23 @@ fn without_refused(options: &mut Option<OpenAIChatOptions>, refused: &[String]) 
     if refused.is_empty() {
         return;
     }
-    let Some(options) = options.as_mut().filter(|o| o.reasoning_effort.is_some()) else { return };
-    let formats = options
-        .reasoning_formats
-        .get_or_insert_with(|| vec!["reasoning_effort".to_string(), "chat_template_kwargs".to_string()]);
+    let Some(options) = options.as_mut().filter(|o| o.reasoning_effort.is_some()) else {
+        return;
+    };
+    let formats = options.reasoning_formats.get_or_insert_with(|| {
+        vec![
+            "reasoning_effort".to_string(),
+            "chat_template_kwargs".to_string(),
+        ]
+    });
     formats.retain(|f| !refused.contains(f) && REASONING_FIELDS.contains(&f.as_str()));
 }
 
 /// The same effort level (the forms it's sent in follow what's learned).
 fn same_effort(a: &Option<OpenAIChatOptions>, b: &Option<OpenAIChatOptions>) -> bool {
-    let level = |o: &Option<OpenAIChatOptions>| serde_json::to_value(o.as_ref().and_then(|o| o.reasoning_effort)).ok();
+    let level = |o: &Option<OpenAIChatOptions>| {
+        serde_json::to_value(o.as_ref().and_then(|o| o.reasoning_effort)).ok()
+    };
     level(a) == level(b)
 }
 
@@ -2157,25 +2371,37 @@ pub(super) fn new_message(role: &str, content: &str) -> NewMessage {
 
 async fn recent_messages(db: &DbState, dialog_id: &str) -> Result<Vec<MessageRow>, String> {
     let id = dialog_id.to_string();
-    db.read(move |c| store::get_messages(c, &id, None, RECENT_MESSAGES)).await.map(|page| page.messages)
+    db.read(move |c| store::get_messages(c, &id, None, RECENT_MESSAGES))
+        .await
+        .map(|page| page.messages)
 }
 
 fn sent_content(m: &MessageRow) -> Option<String> {
-    m.meta.as_ref()?.get("sentContent")?.as_str().map(str::to_string)
+    m.meta
+        .as_ref()?
+        .get("sentContent")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// The mode of the request a run belongs to: its starting message's.
 fn run_mode_for(messages: &[MessageRow]) -> Option<String> {
-    let m = messages.iter().rev().find(|m| m.role == "user" && !plan::is_harness(m))?;
+    let m = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user" && !plan::is_harness(m))?;
     m.meta.as_ref()?.get("mode")?.as_str().map(str::to_string)
 }
 
 /// The chat's plan file: the latest one a plan was saved to.
 pub(super) fn chat_plan_file(messages: &[MessageRow]) -> Option<String> {
-    messages
-        .iter()
-        .rev()
-        .find_map(|m| m.meta.as_ref()?.get("planFile")?.as_str().map(str::to_string))
+    messages.iter().rev().find_map(|m| {
+        m.meta
+            .as_ref()?
+            .get("planFile")?
+            .as_str()
+            .map(str::to_string)
+    })
 }
 
 /// The repository map's size: about 2% of the model's context window,
@@ -2204,7 +2430,11 @@ fn join_project_context(base: &str, map: &Option<String>) -> String {
 /// Files the chat read or changed, latest last.
 fn touched_paths(messages: &[MessageRow]) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
-    for call in messages.iter().filter_map(|m| m.tool_calls.as_ref()).flatten() {
+    for call in messages
+        .iter()
+        .filter_map(|m| m.tool_calls.as_ref())
+        .flatten()
+    {
         if !matches!(call.name.as_str(), "read" | "write") {
             continue;
         }
@@ -2223,7 +2453,10 @@ const MAX_TOUCHED_PATHS: usize = 20;
 /// The latest delivered user message as it was sent to the model (with its
 /// editor context and file references).
 fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
-    let m = messages.iter().rev().find(|m| m.role == "user" && !m.failed && !plan::is_harness(m))?;
+    let m = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user" && !m.failed && !plan::is_harness(m))?;
     sent_content(m).or_else(|| Some(m.content.clone()))
 }
 
@@ -2254,7 +2487,10 @@ fn restriction_reason(
 /// The real user message before the latest one, as sent: what a short
 /// "continue" is continuing. None when there is no earlier request.
 fn previous_user_wire_content(messages: &[MessageRow]) -> Option<String> {
-    let mut real = messages.iter().filter(|m| m.role == "user" && !m.failed && !plan::is_harness(m)).rev();
+    let mut real = messages
+        .iter()
+        .filter(|m| m.role == "user" && !m.failed && !plan::is_harness(m))
+        .rev();
     real.next()?;
     let m = real.next()?;
     sent_content(m).or_else(|| Some(m.content.clone()))
@@ -2268,12 +2504,26 @@ pub(super) fn unanswered_tool_calls(messages: &[MessageRow]) -> Vec<ToolCall> {
             continue;
         }
         let calls = match &m.tool_calls {
-            Some(calls) if m.role == "assistant" && m.finalized && m.error.is_none() && !calls.is_empty() => calls,
+            Some(calls)
+                if m.role == "assistant"
+                    && m.finalized
+                    && m.error.is_none()
+                    && !calls.is_empty() =>
+            {
+                calls
+            }
             _ => return Vec::new(),
         };
-        let answered: Vec<&str> =
-            messages[i + 1..].iter().filter(|x| x.role == "tool").filter_map(|x| x.tool_call_id.as_deref()).collect();
-        return calls.iter().filter(|c| !answered.contains(&c.id.as_str())).cloned().collect();
+        let answered: Vec<&str> = messages[i + 1..]
+            .iter()
+            .filter(|x| x.role == "tool")
+            .filter_map(|x| x.tool_call_id.as_deref())
+            .collect();
+        return calls
+            .iter()
+            .filter(|c| !answered.contains(&c.id.as_str()))
+            .cloned()
+            .collect();
     }
     Vec::new()
 }
@@ -2303,7 +2553,12 @@ mod tests {
     }
 
     fn call(id: &str) -> ToolCall {
-        ToolCall { id: id.into(), name: "read".into(), arguments: "{}".into(), extra_content: None }
+        ToolCall {
+            id: id.into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+            extra_content: None,
+        }
     }
 
     #[test]
@@ -2318,33 +2573,58 @@ mod tests {
         done.push(row("assistant", None));
         assert!(unanswered_tool_calls(&done).is_empty());
         step.finalized = false;
-        assert!(unanswered_tool_calls(&[step]).is_empty(), "a reply cut off mid-stream isn't resumed");
+        assert!(
+            unanswered_tool_calls(&[step]).is_empty(),
+            "a reply cut off mid-stream isn't resumed"
+        );
     }
 
     #[test]
     fn efforts_compare_by_level_and_keep_refused_forms_out() {
         let options = |v: Value| serde_json::from_value::<Option<OpenAIChatOptions>>(v).unwrap();
-        let high = options(json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort"] }));
-        let high_more = options(json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort", "reasoning"] }));
+        let high = options(
+            json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort"] }),
+        );
+        let high_more = options(
+            json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort", "reasoning"] }),
+        );
         assert!(same_effort(&high, &high_more));
-        assert!(!same_effort(&high, &options(json!({ "reasoning_effort": "low" }))));
+        assert!(!same_effort(
+            &high,
+            &options(json!({ "reasoning_effort": "low" }))
+        ));
         assert!(!same_effort(&high, &None));
 
         // A new pick still listing a form refused earlier in the run.
-        let mut picked = options(json!({ "reasoning_effort": "low", "reasoning_formats": ["reasoning_effort", "chat_template_kwargs"] }));
+        let mut picked = options(
+            json!({ "reasoning_effort": "low", "reasoning_formats": ["reasoning_effort", "chat_template_kwargs"] }),
+        );
         without_refused(&mut picked, &["chat_template_kwargs".to_string()]);
-        assert_eq!(picked.unwrap().reasoning_formats.unwrap(), ["reasoning_effort"]);
+        assert_eq!(
+            picked.unwrap().reasoning_formats.unwrap(),
+            ["reasoning_effort"]
+        );
         // No forms given: the default ones, minus the refused.
         let mut default_forms = options(json!({ "reasoning_effort": "low" }));
         without_refused(&mut default_forms, &["reasoning_effort".to_string()]);
-        assert_eq!(default_forms.unwrap().reasoning_formats.unwrap(), ["chat_template_kwargs"]);
+        assert_eq!(
+            default_forms.unwrap().reasoning_formats.unwrap(),
+            ["chat_template_kwargs"]
+        );
     }
 
     #[test]
     fn reads_mode_and_request_from_the_chat() {
-        let user = row("user", Some(json!({ "mode": "plan", "sentContent": "wire" })));
+        let user = row(
+            "user",
+            Some(json!({ "mode": "plan", "sentContent": "wire" })),
+        );
         let harness = row("user", Some(json!({ "harness": "verification" })));
-        let messages = vec![user, row("assistant", Some(json!({ "planFile": "/p/a.md" }))), harness];
+        let messages = vec![
+            user,
+            row("assistant", Some(json!({ "planFile": "/p/a.md" }))),
+            harness,
+        ];
         assert_eq!(run_mode_for(&messages).as_deref(), Some("plan"));
         assert_eq!(last_user_wire_content(&messages).as_deref(), Some("wire"));
         assert_eq!(chat_plan_file(&messages).as_deref(), Some("/p/a.md"));
@@ -2353,9 +2633,15 @@ mod tests {
     #[test]
     fn the_project_section_recombines_with_the_current_map() {
         let map = Some("## Repository map\nbody".to_string());
-        assert_eq!(join_project_context("## Project\nbase", &map), "## Project\nbase\n\n## Repository map\nbody");
+        assert_eq!(
+            join_project_context("## Project\nbase", &map),
+            "## Project\nbase\n\n## Repository map\nbody"
+        );
         assert_eq!(join_project_context("", &map), "## Repository map\nbody");
-        assert_eq!(join_project_context("## Project\nbase", &None), "## Project\nbase");
+        assert_eq!(
+            join_project_context("## Project\nbase", &None),
+            "## Project\nbase"
+        );
         assert_eq!(join_project_context("", &None), "");
     }
 }
@@ -2370,7 +2656,11 @@ mod repo_map_tests {
         assert_eq!(repo_map_chars(Some(100_000)), 6_000, "at most");
         assert_eq!(repo_map_chars(Some(50_000)), 4_000);
         assert_eq!(repo_map_chars(Some(8_000)), 1_500, "at least");
-        assert_eq!(repo_map_chars(None), 2_560, "an unknown window counts as 32k");
+        assert_eq!(
+            repo_map_chars(None),
+            2_560,
+            "an unknown window counts as 32k"
+        );
         assert_eq!(repo_map_chars(Some(0)), 2_560);
     }
 
@@ -2386,7 +2676,12 @@ mod repo_map_tests {
             tool_calls: Some(
                 calls
                     .iter()
-                    .map(|(name, args)| ToolCall { id: String::new(), name: name.to_string(), arguments: args.to_string(), extra_content: None })
+                    .map(|(name, args)| ToolCall {
+                        id: String::new(),
+                        name: name.to_string(),
+                        arguments: args.to_string(),
+                        extra_content: None,
+                    })
                     .collect(),
             ),
             tool_call_id: None,
@@ -2402,16 +2697,28 @@ mod repo_map_tests {
     #[test]
     fn touched_paths_are_reads_and_writes_latest_last_each_once() {
         let messages = vec![
-            with_calls(&[("read", r#"{"path":"a.rs"}"#), ("search_code", r#"{"query":"x"}"#)]),
-            with_calls(&[("write", r#"{"path":"b.rs","old_text":"x","content":"y"}"#), ("bash", r#"{"command":"ls"}"#)]),
-            with_calls(&[("read", r#"{"path":"a.rs"}"#), ("write", "not json"), ("list_dir", r#"{"path":"src"}"#)]),
+            with_calls(&[
+                ("read", r#"{"path":"a.rs"}"#),
+                ("search_code", r#"{"query":"x"}"#),
+            ]),
+            with_calls(&[
+                ("write", r#"{"path":"b.rs","old_text":"x","content":"y"}"#),
+                ("bash", r#"{"command":"ls"}"#),
+            ]),
+            with_calls(&[
+                ("read", r#"{"path":"a.rs"}"#),
+                ("write", "not json"),
+                ("list_dir", r#"{"path":"src"}"#),
+            ]),
         ];
         assert_eq!(touched_paths(&messages), ["b.rs", "a.rs"]);
     }
 
     #[test]
     fn only_the_latest_touched_paths_are_kept() {
-        let calls: Vec<String> = (0..30).map(|i| format!(r#"{{"path":"f{i}.rs"}}"#)).collect();
+        let calls: Vec<String> = (0..30)
+            .map(|i| format!(r#"{{"path":"f{i}.rs"}}"#))
+            .collect();
         let pairs: Vec<(&str, &str)> = calls.iter().map(|c| ("read", c.as_str())).collect();
         let paths = touched_paths(&[with_calls(&pairs)]);
         assert_eq!(paths.len(), MAX_TOUCHED_PATHS);
@@ -2428,13 +2735,27 @@ mod clm_pressure_tests {
     fn restriction_needs_an_unanswered_pressure() {
         // Urgent: restricted at once while it waits for an edit.
         assert_eq!(restriction_reason(92, true, None, None, 0), Some("urgent"));
-        assert_eq!(restriction_reason(92, false, None, None, 0), None, "an edit cleared the wait");
+        assert_eq!(
+            restriction_reason(92, false, None, None, 0),
+            None,
+            "an edit cleared the wait"
+        );
         // A step-compaction request escalates after 4 calls with no edit, at 50%+.
         assert_eq!(restriction_reason(60, false, Some(10), None, 13), None);
-        assert_eq!(restriction_reason(60, false, Some(10), None, 14), Some("step"));
-        assert_eq!(restriction_reason(40, false, Some(10), None, 30), None, "below 50%");
+        assert_eq!(
+            restriction_reason(60, false, Some(10), None, 14),
+            Some("step")
+        );
+        assert_eq!(
+            restriction_reason(40, false, Some(10), None, 30),
+            None,
+            "below 50%"
+        );
         // The 75% reminder, likewise.
-        assert_eq!(restriction_reason(78, false, None, Some(5), 9), Some("tier75"));
+        assert_eq!(
+            restriction_reason(78, false, None, Some(5), 9),
+            Some("tier75")
+        );
         assert_eq!(restriction_reason(78, false, None, Some(5), 8), None);
         // Nothing waiting: never restricted, whatever the size.
         assert_eq!(restriction_reason(85, false, None, None, 100), None);

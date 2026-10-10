@@ -40,7 +40,11 @@ pub fn classify(command: &str, dir: Option<&Path>) -> Class {
 fn classify_at(command: &str, dir: Option<PathBuf>, depth: usize) -> Class {
     let parsed = parse_command(command);
     let mut cwd = dir;
-    let mut class = if parsed.opaque { Class::Unknown } else { Class::Light };
+    let mut class = if parsed.opaque {
+        Class::Unknown
+    } else {
+        Class::Light
+    };
     for segment in &parsed.segments {
         // `cd sub && npm test`: later parts run in `sub`.
         if segment.first().map(String::as_str) == Some("cd") {
@@ -59,7 +63,11 @@ fn classify_at(command: &str, dir: Option<PathBuf>, depth: usize) -> Class {
 
 /// The program's name: its file name without a Windows extension.
 fn program(word: &str) -> String {
-    let name = word.rsplit(['/', '\\']).next().unwrap_or(word).to_ascii_lowercase();
+    let name = word
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(word)
+        .to_ascii_lowercase();
     for ext in [".exe", ".cmd", ".bat", ".ps1"] {
         if let Some(stem) = name.strip_suffix(ext) {
             return stem.to_string();
@@ -72,10 +80,15 @@ fn program(word: &str) -> String {
 fn skip_wrappers(words: &[String]) -> &[String] {
     let mut rest = words;
     loop {
-        let Some(first) = rest.first() else { return rest };
+        let Some(first) = rest.first() else {
+            return rest;
+        };
         match program(first).as_str() {
             "env" => {
-                let skip = 1 + rest[1..].iter().take_while(|w| w.contains('=') || w.starts_with('-')).count();
+                let skip = 1 + rest[1..]
+                    .iter()
+                    .take_while(|w| w.contains('=') || w.starts_with('-'))
+                    .count();
                 rest = &rest[skip..];
             }
             "time" | "nice" | "nohup" | "exec" | "command" | "sudo" | "caffeinate" => {
@@ -93,33 +106,93 @@ fn has_flag(words: &[String], flags: &[&str]) -> bool {
 
 /// The first word that isn't a flag, after the program.
 fn subcommand(words: &[String]) -> Option<&str> {
-    words.iter().skip(1).map(String::as_str).find(|w| !w.starts_with('-'))
+    words
+        .iter()
+        .skip(1)
+        .map(String::as_str)
+        .find(|w| !w.starts_with('-'))
 }
 
 const LIGHT: &[&str] = &[
-    "ls", "cat", "head", "tail", "grep", "rg", "fd", "find", "sed", "awk", "echo", "printf", "pwd", "wc", "sort",
-    "uniq", "cut", "tr", "diff", "which", "where", "true", "false", "test", "[", "mkdir", "rm", "rmdir", "cp", "mv",
-    "touch", "chmod", "ln", "stat", "file", "du", "df", "tree", "jq", "yq", "curl", "wget", "type", "dir", "rustfmt",
-    "basename", "dirname", "realpath", "date", "sleep", "whoami", "uname", "xargs", "tee", "less", "more", "open", "set",
-    "export", "source", ".", "exit", "cd",
+    "ls", "cat", "head", "tail", "grep", "rg", "fd", "find", "sed", "awk", "echo", "printf", "pwd",
+    "wc", "sort", "uniq", "cut", "tr", "diff", "which", "where", "true", "false", "test", "[",
+    "mkdir", "rm", "rmdir", "cp", "mv", "touch", "chmod", "ln", "stat", "file", "du", "df", "tree",
+    "jq", "yq", "curl", "wget", "type", "dir", "rustfmt", "basename", "dirname", "realpath",
+    "date", "sleep", "whoami", "uname", "xargs", "tee", "less", "more", "open", "set", "export",
+    "source", ".", "exit", "cd",
 ];
 
 /// Programs whose own processes do the heavy work (also used by the tracker).
 pub const HEAVY_PROGRAMS: &[&str] = &[
-    "rustc", "rustdoc", "gcc", "g++", "cc", "c++", "clang", "clang++", "cl", "ld", "lld", "ld.lld", "ld64", "javac",
-    "kotlinc", "swiftc", "scalac", "ghc", "zig", "nvcc", "msbuild", "xcodebuild", "ninja", "make", "gmake", "nmake",
-    "bazel", "buck", "buck2", "gradle", "gradlew", "mvn", "mvnw", "sbt", "ant", "pytest", "py.test", "tox", "nox",
-    "jest", "mocha", "ava", "karma", "webpack", "rollup", "esbuild", "parcel", "tsc", "vue-tsc", "svelte-check",
+    "rustc",
+    "rustdoc",
+    "gcc",
+    "g++",
+    "cc",
+    "c++",
+    "clang",
+    "clang++",
+    "cl",
+    "ld",
+    "lld",
+    "ld.lld",
+    "ld64",
+    "javac",
+    "kotlinc",
+    "swiftc",
+    "scalac",
+    "ghc",
+    "zig",
+    "nvcc",
+    "msbuild",
+    "xcodebuild",
+    "ninja",
+    "make",
+    "gmake",
+    "nmake",
+    "bazel",
+    "buck",
+    "buck2",
+    "gradle",
+    "gradlew",
+    "mvn",
+    "mvnw",
+    "sbt",
+    "ant",
+    "pytest",
+    "py.test",
+    "tox",
+    "nox",
+    "jest",
+    "mocha",
+    "ava",
+    "karma",
+    "webpack",
+    "rollup",
+    "esbuild",
+    "parcel",
+    "tsc",
+    "vue-tsc",
+    "svelte-check",
 ];
 
-const LONG_RUNNING: &[&str] = &["nodemon", "serve", "http-server", "live-server", "browser-sync", "watchexec"];
+const LONG_RUNNING: &[&str] = &[
+    "nodemon",
+    "serve",
+    "http-server",
+    "live-server",
+    "browser-sync",
+    "watchexec",
+];
 
 /// Script names that start something that keeps running.
 const LONG_SCRIPTS: &[&str] = &["dev", "start", "serve", "watch", "preview"];
 
 fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
     let words = skip_wrappers(words);
-    let Some(first) = words.first() else { return Class::Light };
+    let Some(first) = words.first() else {
+        return Class::Light;
+    };
     let prog = program(first);
     let sub = subcommand(words);
     let watch = has_flag(words, &["--watch", "watch"]);
@@ -132,15 +205,24 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
     }
     match prog.as_str() {
         "git" => {
-            return if matches!(sub, Some("gc" | "repack" | "fsck")) { Class::Heavy } else { Class::Light };
+            return if matches!(sub, Some("gc" | "repack" | "fsck")) {
+                Class::Heavy
+            } else {
+                Class::Light
+            };
         }
         "cargo" => {
             return match sub {
-                Some("build" | "b" | "check" | "c" | "test" | "t" | "clippy" | "run" | "r" | "bench" | "doc" | "install"
-                | "nextest" | "miri" | "llvm-cov" | "tarpaulin" | "rustc" | "xtask") => Class::Heavy,
+                Some(
+                    "build" | "b" | "check" | "c" | "test" | "t" | "clippy" | "run" | "r" | "bench"
+                    | "doc" | "install" | "nextest" | "miri" | "llvm-cov" | "tarpaulin" | "rustc"
+                    | "xtask",
+                ) => Class::Heavy,
                 Some("watch") => Class::LongRunning,
-                Some("fmt" | "metadata" | "tree" | "add" | "remove" | "rm" | "update" | "search" | "pkgid" | "locate-project"
-                | "version" | "help" | "new" | "init" | "clean") => Class::Light,
+                Some(
+                    "fmt" | "metadata" | "tree" | "add" | "remove" | "rm" | "update" | "search"
+                    | "pkgid" | "locate-project" | "version" | "help" | "new" | "init" | "clean",
+                ) => Class::Light,
                 _ => Class::Unknown,
             };
         }
@@ -152,10 +234,18 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
             };
         }
         "tsc" | "vue-tsc" | "jest" | "webpack" => {
-            return if watch || has_flag(words, &["-w"]) || sub == Some("serve") { Class::LongRunning } else { Class::Heavy };
+            return if watch || has_flag(words, &["-w"]) || sub == Some("serve") {
+                Class::LongRunning
+            } else {
+                Class::Heavy
+            };
         }
         "vitest" => {
-            return if watch || has_flag(words, &["-w", "dev"]) { Class::LongRunning } else { Class::Heavy };
+            return if watch || has_flag(words, &["-w", "dev"]) {
+                Class::LongRunning
+            } else {
+                Class::Heavy
+            };
         }
         "vite" | "next" | "nuxt" | "nuxi" | "astro" | "remix" | "svelte-kit" | "ng" => {
             return match sub {
@@ -172,7 +262,11 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
             };
         }
         "python" | "python3" | "py" => {
-            let module = words.iter().position(|w| w == "-m").and_then(|i| words.get(i + 1)).map(String::as_str);
+            let module = words
+                .iter()
+                .position(|w| w == "-m")
+                .and_then(|i| words.get(i + 1))
+                .map(String::as_str);
             return match module {
                 Some("pytest" | "unittest" | "tox" | "nox" | "mypy" | "pyright") => Class::Heavy,
                 Some("http.server") => Class::LongRunning,
@@ -181,21 +275,46 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
         }
         "dotnet" | "swift" | "flutter" | "dart" | "mix" | "stack" | "cabal" | "deno" => {
             return match sub {
-                Some("build" | "test" | "run" | "publish" | "compile" | "check" | "bench") => Class::Heavy,
+                Some("build" | "test" | "run" | "publish" | "compile" | "check" | "bench") => {
+                    Class::Heavy
+                }
                 _ => Class::Unknown,
             };
         }
         "docker" | "podman" => {
-            let builds = sub == Some("build") || (sub == Some("compose") && has_flag(words, &["build"]));
+            let builds =
+                sub == Some("build") || (sub == Some("compose") && has_flag(words, &["build"]));
             return if builds { Class::Heavy } else { Class::Unknown };
         }
-        "cmake" => return if has_flag(words, &["--build"]) { Class::Heavy } else { Class::Unknown },
-        "meson" => return if matches!(sub, Some("compile" | "test")) { Class::Heavy } else { Class::Unknown },
-        "playwright" | "cypress" => return if matches!(sub, Some("test" | "run")) { Class::Heavy } else { Class::Unknown },
+        "cmake" => {
+            return if has_flag(words, &["--build"]) {
+                Class::Heavy
+            } else {
+                Class::Unknown
+            }
+        }
+        "meson" => {
+            return if matches!(sub, Some("compile" | "test")) {
+                Class::Heavy
+            } else {
+                Class::Unknown
+            }
+        }
+        "playwright" | "cypress" => {
+            return if matches!(sub, Some("test" | "run")) {
+                Class::Heavy
+            } else {
+                Class::Unknown
+            }
+        }
         _ => {}
     }
     if HEAVY_PROGRAMS.contains(&prog.as_str()) {
-        return if watch { Class::LongRunning } else { Class::Heavy };
+        return if watch {
+            Class::LongRunning
+        } else {
+            Class::Heavy
+        };
     }
     if depth >= MAX_DEPTH {
         return Class::Unknown;
@@ -216,7 +335,12 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
 
 /// `npm run build`, `pnpm test`, `yarn dev`, `npm exec tsc`, …
 fn package_script(prog: &str, words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
-    let args: Vec<&str> = words.iter().skip(1).map(String::as_str).filter(|w| !w.starts_with('-')).collect();
+    let args: Vec<&str> = words
+        .iter()
+        .skip(1)
+        .map(String::as_str)
+        .filter(|w| !w.starts_with('-'))
+        .collect();
     // `bun test` is bun's own test runner, whatever package.json's "test"
     // script says (`bun run test` runs the script).
     if prog == "bun" && args.first() == Some(&"test") {
@@ -239,14 +363,27 @@ fn package_script(prog: &str, words: &[String], cwd: Option<&Path>, depth: usize
         // to look at: tests are heavy.
         None if name == "test" => Class::Heavy,
         // `pnpm tsc`, `yarn vitest`: a binary, not a script.
-        None if prog != "npm" => classify_words(&words[1..].iter().filter(|w| *w != "run").cloned().collect::<Vec<_>>(), cwd, depth + 1),
+        None if prog != "npm" => classify_words(
+            &words[1..]
+                .iter()
+                .filter(|w| *w != "run")
+                .cloned()
+                .collect::<Vec<_>>(),
+            cwd,
+            depth + 1,
+        ),
         None => Class::Unknown,
     }
 }
 
 /// `npx tsc --noEmit`: the words from `skip` on.
 fn tool_after(words: &[String], skip: usize, cwd: Option<&Path>, depth: usize) -> Class {
-    let rest: Vec<String> = words.iter().skip(skip).skip_while(|w| w.starts_with('-')).cloned().collect();
+    let rest: Vec<String> = words
+        .iter()
+        .skip(skip)
+        .skip_while(|w| w.starts_with('-'))
+        .cloned()
+        .collect();
     if rest.is_empty() {
         return Class::Unknown;
     }
@@ -267,8 +404,15 @@ fn package_json_script(dir: &Path, name: &str) -> Option<String> {
     json.get("scripts")?.get(name)?.as_str().map(str::to_string)
 }
 
-fn recipe(cwd: Option<&Path>, name: Option<&str>, depth: usize, find: fn(&Path, Option<&str>) -> Option<Vec<String>>) -> Class {
-    let Some(dir) = cwd else { return Class::Unknown };
+fn recipe(
+    cwd: Option<&Path>,
+    name: Option<&str>,
+    depth: usize,
+    find: fn(&Path, Option<&str>) -> Option<Vec<String>>,
+) -> Class {
+    let Some(dir) = cwd else {
+        return Class::Unknown;
+    };
     match find(dir, name) {
         Some(lines) => lines
             .iter()
@@ -282,7 +426,9 @@ fn recipe(cwd: Option<&Path>, name: Option<&str>, depth: usize, find: fn(&Path, 
 /// A justfile recipe's lines: the indented lines under `name:` (or the
 /// first recipe when no name is given).
 fn just_recipe(dir: &Path, name: Option<&str>) -> Option<Vec<String>> {
-    let text = ["justfile", "Justfile", ".justfile"].iter().find_map(|f| read_small(&dir.join(f)))?;
+    let text = ["justfile", "Justfile", ".justfile"]
+        .iter()
+        .find_map(|f| read_small(&dir.join(f)))?;
     let mut lines = Vec::new();
     let mut inside = false;
     for line in text.lines() {
@@ -290,8 +436,17 @@ fn just_recipe(dir: &Path, name: Option<&str>) -> Option<Vec<String>> {
             if inside {
                 break;
             }
-            let head = line.split(':').next().unwrap_or("").split_whitespace().next().unwrap_or("");
-            let is_recipe = line.contains(':') && !line.contains(":=") && !head.is_empty() && !line.starts_with(['#', '@']);
+            let head = line
+                .split(':')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            let is_recipe = line.contains(':')
+                && !line.contains(":=")
+                && !head.is_empty()
+                && !line.starts_with(['#', '@']);
             inside = is_recipe && name.is_none_or(|n| n == head);
             continue;
         }
@@ -308,7 +463,9 @@ fn just_recipe(dir: &Path, name: Option<&str>) -> Option<Vec<String>> {
 /// A Taskfile task's `cmds`, read loosely: the `- ` items under `cmds:`
 /// inside `name:`.
 fn taskfile_recipe(dir: &Path, name: Option<&str>) -> Option<Vec<String>> {
-    let text = ["Taskfile.yml", "Taskfile.yaml", "taskfile.yml"].iter().find_map(|f| read_small(&dir.join(f)))?;
+    let text = ["Taskfile.yml", "Taskfile.yaml", "taskfile.yml"]
+        .iter()
+        .find_map(|f| read_small(&dir.join(f)))?;
     let name = name.unwrap_or("default");
     let mut lines = Vec::new();
     let mut task_indent = None;
@@ -330,7 +487,10 @@ fn taskfile_recipe(dir: &Path, name: Option<&str>) -> Option<Vec<String>> {
                     in_cmds = true;
                 } else if in_cmds {
                     if let Some(item) = trimmed.strip_prefix("- ") {
-                        let item = item.trim_start_matches("cmd:").trim().trim_matches(['"', '\'']);
+                        let item = item
+                            .trim_start_matches("cmd:")
+                            .trim()
+                            .trim_matches(['"', '\'']);
                         lines.push(item.to_string());
                     } else if trimmed.ends_with(':') {
                         in_cmds = false;
@@ -344,8 +504,12 @@ fn taskfile_recipe(dir: &Path, name: Option<&str>) -> Option<Vec<String>> {
 
 /// A shell script inside the project: its lines, comments skipped.
 fn shell_script(cwd: Option<&Path>, script: &str, depth: usize) -> Class {
-    let Some(dir) = cwd else { return Class::Unknown };
-    let Some(text) = read_small(&dir.join(script)) else { return Class::Unknown };
+    let Some(dir) = cwd else {
+        return Class::Unknown;
+    };
+    let Some(text) = read_small(&dir.join(script)) else {
+        return Class::Unknown;
+    };
     text.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -362,7 +526,11 @@ mod tests {
     fn project(files: &[(&str, &str)]) -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!("classify-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!(
+            "classify-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         for (path, content) in files {
@@ -426,8 +594,14 @@ mod tests {
 
     #[test]
     fn scripts_in_a_subfolder_after_cd() {
-        let dir = project(&[("web/package.json", r#"{ "scripts": { "check": "tsc -p ." } }"#)]);
-        assert_eq!(classify("cd web && npm run check", Some(&dir)), Class::Heavy);
+        let dir = project(&[(
+            "web/package.json",
+            r#"{ "scripts": { "check": "tsc -p ." } }"#,
+        )]);
+        assert_eq!(
+            classify("cd web && npm run check", Some(&dir)),
+            Class::Heavy
+        );
         assert_eq!(classify("npm run check", Some(&dir)), Class::Unknown);
     }
 

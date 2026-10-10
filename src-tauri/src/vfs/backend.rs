@@ -8,7 +8,9 @@
 //!
 //! The methods mean what [`VirtualFs`]'s methods of the same names mean.
 
-use super::store::{Attr, DirEntry, Ino, Kind, Listener, RenameMode, SetAttr, VfsResult, VirtualFs};
+use super::store::{
+    Attr, DirEntry, Ino, Kind, Listener, RenameMode, SetAttr, VfsResult, VirtualFs,
+};
 
 // `dir_is_empty`, `resolve`, `resolve_parent` and `path_of`: only the
 // path-based WinFsp driver uses them.
@@ -18,10 +20,26 @@ pub trait Backend: Send + Sync {
     fn lookup(&self, parent: Ino, name: &str) -> VfsResult<Attr>;
     fn parent_of(&self, dir: Ino) -> VfsResult<Ino>;
     #[allow(clippy::too_many_arguments)]
-    fn create(&self, parent: Ino, name: &str, kind: Kind, perm: u16, uid: u32, gid: u32, target: Option<&str>) -> VfsResult<Attr>;
+    fn create(
+        &self,
+        parent: Ino,
+        name: &str,
+        kind: Kind,
+        perm: u16,
+        uid: u32,
+        gid: u32,
+        target: Option<&str>,
+    ) -> VfsResult<Attr>;
     fn unlink(&self, parent: Ino, name: &str) -> VfsResult<()>;
     fn rmdir(&self, parent: Ino, name: &str) -> VfsResult<()>;
-    fn rename(&self, parent: Ino, name: &str, new_parent: Ino, new_name: &str, mode: RenameMode) -> VfsResult<()>;
+    fn rename(
+        &self,
+        parent: Ino,
+        name: &str,
+        new_parent: Ino,
+        new_name: &str,
+        mode: RenameMode,
+    ) -> VfsResult<()>;
     fn link(&self, ino: Ino, new_parent: Ino, new_name: &str) -> VfsResult<Attr>;
     fn readlink(&self, ino: Ino) -> VfsResult<String>;
     fn read(&self, ino: Ino, offset: u64, size: usize) -> VfsResult<Vec<u8>>;
@@ -32,7 +50,14 @@ pub trait Backend: Send + Sync {
     fn open(&self, ino: Ino, write: bool) -> VfsResult<Attr>;
     fn release(&self, ino: Ino);
     fn getxattr(&self, ino: Ino, name: &str) -> VfsResult<Vec<u8>>;
-    fn setxattr(&self, ino: Ino, name: &str, value: &[u8], create_only: bool, replace_only: bool) -> VfsResult<()>;
+    fn setxattr(
+        &self,
+        ino: Ino,
+        name: &str,
+        value: &[u8],
+        create_only: bool,
+        replace_only: bool,
+    ) -> VfsResult<()>;
     fn listxattr(&self, ino: Ino) -> VfsResult<Vec<String>>;
     fn removexattr(&self, ino: Ino, name: &str) -> VfsResult<()>;
     /// (capacity, used, nodes), for `statfs`.
@@ -54,7 +79,16 @@ impl Backend for VirtualFs {
     fn parent_of(&self, dir: Ino) -> VfsResult<Ino> {
         VirtualFs::parent_of(self, dir)
     }
-    fn create(&self, parent: Ino, name: &str, kind: Kind, perm: u16, uid: u32, gid: u32, target: Option<&str>) -> VfsResult<Attr> {
+    fn create(
+        &self,
+        parent: Ino,
+        name: &str,
+        kind: Kind,
+        perm: u16,
+        uid: u32,
+        gid: u32,
+        target: Option<&str>,
+    ) -> VfsResult<Attr> {
         VirtualFs::create(self, parent, name, kind, perm, uid, gid, target)
     }
     fn unlink(&self, parent: Ino, name: &str) -> VfsResult<()> {
@@ -63,7 +97,14 @@ impl Backend for VirtualFs {
     fn rmdir(&self, parent: Ino, name: &str) -> VfsResult<()> {
         VirtualFs::rmdir(self, parent, name)
     }
-    fn rename(&self, parent: Ino, name: &str, new_parent: Ino, new_name: &str, mode: RenameMode) -> VfsResult<()> {
+    fn rename(
+        &self,
+        parent: Ino,
+        name: &str,
+        new_parent: Ino,
+        new_name: &str,
+        mode: RenameMode,
+    ) -> VfsResult<()> {
         VirtualFs::rename(self, parent, name, new_parent, new_name, mode)
     }
     fn link(&self, ino: Ino, new_parent: Ino, new_name: &str) -> VfsResult<Attr> {
@@ -96,7 +137,14 @@ impl Backend for VirtualFs {
     fn getxattr(&self, ino: Ino, name: &str) -> VfsResult<Vec<u8>> {
         VirtualFs::getxattr(self, ino, name)
     }
-    fn setxattr(&self, ino: Ino, name: &str, value: &[u8], create_only: bool, replace_only: bool) -> VfsResult<()> {
+    fn setxattr(
+        &self,
+        ino: Ino,
+        name: &str,
+        value: &[u8],
+        create_only: bool,
+        replace_only: bool,
+    ) -> VfsResult<()> {
         VirtualFs::setxattr(self, ino, name, value, create_only, replace_only)
     }
     fn listxattr(&self, ino: Ino) -> VfsResult<Vec<String>> {

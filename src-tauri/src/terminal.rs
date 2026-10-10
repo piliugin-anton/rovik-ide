@@ -71,9 +71,13 @@ impl TerminalState {
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TerminalEvent {
-    Output { data: String },
+    Output {
+        data: String,
+    },
     /// `code` is None when the exit status couldn't be read.
-    Exit { code: Option<u32> },
+    Exit {
+        code: Option<u32>,
+    },
 }
 
 #[derive(Serialize)]
@@ -268,7 +272,9 @@ pub fn write_to_terminal(
         .writer
         .lock()
         .map_err(|_| "terminal writer poisoned".to_string())?;
-    writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    writer
+        .write_all(data.as_bytes())
+        .map_err(|e| e.to_string())?;
     writer.flush().map_err(|e| e.to_string())
 }
 

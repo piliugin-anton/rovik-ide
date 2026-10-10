@@ -6,8 +6,8 @@
 // identically on Windows/macOS/Linux.
 
 use git2::{
-    BranchType, Cred, CredentialHelper, CredentialType, FetchOptions, PushOptions,
-    RemoteCallbacks, Repository, ResetType, StashFlags, Status, StatusOptions,
+    BranchType, Cred, CredentialHelper, CredentialType, FetchOptions, PushOptions, RemoteCallbacks,
+    Repository, ResetType, StashFlags, Status, StatusOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -18,7 +18,9 @@ use std::path::PathBuf;
 pub(crate) async fn off_main_thread<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -142,13 +144,12 @@ fn default_remote_name(repo: &Repository) -> Result<String, String> {
     if remotes.iter().flatten().any(|r| r == Some("origin")) {
         return Ok("origin".to_string());
     }
-        remotes
+    remotes
         .iter()
         .filter_map(|r| r.ok().flatten())
         .map(|s| s.to_string())
         .next()
         .ok_or_else(|| "No remotes configured".to_string())
-
 }
 
 /// Per-file added/removed line counts for one diff, keyed by the
@@ -360,7 +361,11 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
             // libgit2 writes `C:/p/` on Windows; the app names files `C:\p\…`.
             .map(|w| {
                 let w = w.to_string_lossy();
-                let w = if cfg!(windows) { w.replace('/', "\\") } else { w.into_owned() };
+                let w = if cfg!(windows) {
+                    w.replace('/', "\\")
+                } else {
+                    w.into_owned()
+                };
                 w.trim_end_matches(['/', '\\']).to_string()
             })
             .unwrap_or_default(),
@@ -410,7 +415,10 @@ pub fn git_checkout_blocking(path: String, branch: String) -> Result<(), String>
         .map_err(|e| format!("Checkout failed: {e}"))?;
 
     match reference {
-        Some(r) => repo.set_head(r.name().map_err(|e| format!("Invalid reference name: {e}"))?),
+        Some(r) => repo.set_head(
+            r.name()
+                .map_err(|e| format!("Invalid reference name: {e}"))?,
+        ),
         None => repo.set_head_detached(object.id()),
     }
     .map_err(|e| e.to_string())
@@ -542,14 +550,20 @@ pub fn git_push_blocking(path: String) -> Result<PushOutcome, String> {
     drop(push_opts);
     match pushed {
         Err(e) if e.code() == git2::ErrorCode::NotFastForward || is_behind_remote(e.message()) => {
-            return Ok(PushOutcome { result: "rejected", message: Some(e.message().to_string()) });
+            return Ok(PushOutcome {
+                result: "rejected",
+                message: Some(e.message().to_string()),
+            });
         }
         Err(e) => return Err(format!("Push failed: {e}")),
         Ok(()) => {}
     }
     if let Some(reason) = refused.into_inner() {
         if is_behind_remote(&reason) {
-            return Ok(PushOutcome { result: "rejected", message: Some(reason) });
+            return Ok(PushOutcome {
+                result: "rejected",
+                message: Some(reason),
+            });
         }
         return Err(format!("Push rejected by the remote: {reason}"));
     }
@@ -572,7 +586,10 @@ pub fn git_push_blocking(path: String) -> Result<PushOutcome, String> {
         }
     }
 
-    Ok(PushOutcome { result: "pushed", message: None })
+    Ok(PushOutcome {
+        result: "pushed",
+        message: None,
+    })
 }
 
 #[tauri::command]
@@ -623,7 +640,11 @@ pub async fn git_create_branch(path: String, name: String, checkout: bool) -> Re
     off_main_thread(move || git_create_branch_blocking(path, name, checkout)).await
 }
 
-pub fn git_create_branch_blocking(path: String, name: String, checkout: bool) -> Result<(), String> {
+pub fn git_create_branch_blocking(
+    path: String,
+    name: String,
+    checkout: bool,
+) -> Result<(), String> {
     let name = validate_branch_name(&name)?;
     let repo = open_repo(&path)?;
     let head = repo
@@ -699,14 +720,18 @@ pub fn git_stash_push_blocking(path: String, message: Option<String>) -> Result<
         Some(m) if !m.trim().is_empty() => Some(m.trim().to_string()),
         _ => None,
     };
-    repo.stash_save2(&signature, message.as_deref(), Some(StashFlags::INCLUDE_UNTRACKED))
-        .map_err(|e| {
-            if e.message().contains("no changes") || e.message().contains("No changes") {
-                "Nothing to stash: there are no changes".to_string()
-            } else {
-                format!("Couldn't stash the changes: {e}")
-            }
-        })?;
+    repo.stash_save2(
+        &signature,
+        message.as_deref(),
+        Some(StashFlags::INCLUDE_UNTRACKED),
+    )
+    .map_err(|e| {
+        if e.message().contains("no changes") || e.message().contains("No changes") {
+            "Nothing to stash: there are no changes".to_string()
+        } else {
+            format!("Couldn't stash the changes: {e}")
+        }
+    })?;
     Ok(())
 }
 
@@ -800,7 +825,14 @@ fn delta_status(s: git2::Delta) -> &'static str {
 fn stash_trees(
     repo: &Repository,
     index: usize,
-) -> Result<(git2::Tree<'_>, Option<git2::Tree<'_>>, Option<git2::Tree<'_>>), String> {
+) -> Result<
+    (
+        git2::Tree<'_>,
+        Option<git2::Tree<'_>>,
+        Option<git2::Tree<'_>>,
+    ),
+    String,
+> {
     let obj = repo
         .revparse_single(&format!("stash@{{{index}}}"))
         .map_err(|_| format!("Stash entry {index} not found"))?;
@@ -909,10 +941,13 @@ fn read_tree_blob(
     rel: &std::path::Path,
 ) -> Result<Option<git2::Oid>, String> {
     let Some(tree) = tree else { return Ok(None) };
-    Ok(tree
-        .get_path(rel)
-        .ok()
-        .and_then(|e| if e.kind() == Some(git2::ObjectType::Blob) { Some(e.id()) } else { None }))
+    Ok(tree.get_path(rel).ok().and_then(|e| {
+        if e.kind() == Some(git2::ObjectType::Blob) {
+            Some(e.id())
+        } else {
+            None
+        }
+    }))
 }
 
 fn read_blob_text(repo: &Repository, id: git2::Oid, file: &str) -> Result<String, String> {
@@ -933,7 +968,11 @@ pub fn git_stash_file_preview_blocking(
 ) -> Result<GitStashFilePreview, String> {
     let repo = open_repo(&path)?;
     let rel = std::path::Path::new(&file);
-    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(format!("{file}: not a path inside the repository"));
     }
     let (stash, base_tree, untracked) = stash_trees(&repo, index)?;
@@ -941,7 +980,9 @@ pub fn git_stash_file_preview_blocking(
     if content_id.is_none() {
         content_id = read_tree_blob(&repo, untracked.as_ref(), rel)?;
     }
-    let content = content_id.map(|id| read_blob_text(&repo, id, &file)).transpose()?;
+    let content = content_id
+        .map(|id| read_blob_text(&repo, id, &file))
+        .transpose()?;
     let base = read_tree_blob(&repo, base_tree.as_ref(), rel)?
         .map(|id| read_blob_text(&repo, id, &file))
         .transpose()?;
@@ -960,7 +1001,10 @@ pub async fn git_discard_all(path: String) -> Result<(), String> {
 
 pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
-    let workdir = repo.workdir().ok_or("the repository has no working folder")?.to_path_buf();
+    let workdir = repo
+        .workdir()
+        .ok_or("the repository has no working folder")?
+        .to_path_buf();
 
     // Files git doesn't know go to the trash; a hard reset leaves them (and
     // previously staged-new files) on disk, so collect them first.
@@ -1286,14 +1330,20 @@ fn file_match_flags(diff: &git2::Diff, terms: &[SearchTerm]) -> Vec<(bool, bool)
             .map(|rel| file_haystack(&rel))
             .is_some_and(|h| terms.iter().any(|t| term_matches_file(t, &h)));
         let binary = diff.get_delta(i).is_some_and(|d| delta_is_binary(&d));
-        let content_hit = scannable_count > 0 && !binary && file_content_matches(diff, i, terms, &scannable);
+        let content_hit =
+            scannable_count > 0 && !binary && file_content_matches(diff, i, terms, &scannable);
         out.push((file_hit, content_hit));
     }
     out
 }
 
 /// Whether file `i`'s added/removed lines match any scannable term.
-fn file_content_matches(diff: &git2::Diff, i: usize, terms: &[SearchTerm], scannable: &[bool]) -> bool {
+fn file_content_matches(
+    diff: &git2::Diff,
+    i: usize,
+    terms: &[SearchTerm],
+    scannable: &[bool],
+) -> bool {
     let patch = match git2::Patch::from_diff(diff, i) {
         Ok(Some(p)) => p,
         Ok(None) | Err(_) => return false,
@@ -1320,7 +1370,11 @@ fn file_content_matches(diff: &git2::Diff, i: usize, terms: &[SearchTerm], scann
             if text.trim().is_empty() {
                 continue;
             }
-            if terms.iter().zip(scannable).any(|(t, ok)| *ok && term_matches_line(t, &text)) {
+            if terms
+                .iter()
+                .zip(scannable)
+                .any(|(t, ok)| *ok && term_matches_line(t, &text))
+            {
                 return true;
             }
         }
@@ -1342,12 +1396,16 @@ pub fn git_log_blocking(
 /// A history walk, newest first, from `tip` when it's still a commit in
 /// the repository, else from HEAD. Returns the walk and the commit it
 /// starts from; None when the repository has no commits yet.
-fn history_walk<'r>(repo: &'r Repository, tip: Option<&str>) -> Result<Option<(git2::Revwalk<'r>, git2::Oid)>, String> {
+fn history_walk<'r>(
+    repo: &'r Repository,
+    tip: Option<&str>,
+) -> Result<Option<(git2::Revwalk<'r>, git2::Oid)>, String> {
     let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
     // Newest first, but never a parent before its child (git's
     // --date-order): commits made in the same second (rebases, scripts,
     // quick amends) otherwise come out in any order.
-    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME).map_err(|e| e.to_string())?;
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| e.to_string())?;
     let pinned = tip
         .and_then(|t| t.parse::<git2::Oid>().ok())
         .filter(|oid| repo.find_commit(*oid).is_ok());
@@ -1392,7 +1450,11 @@ fn git_log_scan(
     };
     // A tip that no longer resolves fell back to HEAD: the offset counted
     // from the old tip means nothing here, so this page starts over.
-    let skip = if tip.is_some_and(|t| t != start.to_string()) { 0 } else { skip };
+    let skip = if tip.is_some_and(|t| t != start.to_string()) {
+        0
+    } else {
+        skip
+    };
     let scan_cap = if terms.is_some() {
         GIT_LOG_SCAN_CAP
     } else {
@@ -1520,17 +1582,29 @@ fn commit_match_details(
 
     let diff = match commit_diff(repo, commit, diff_opts) {
         Ok(d) => d,
-        Err(_) => return if pending.is_empty() { Some((0, 0)) } else { None },
+        Err(_) => {
+            return if pending.is_empty() {
+                Some((0, 0))
+            } else {
+                None
+            }
+        }
     };
     let n = diff.deltas().len();
     if n == 0 {
-        return if pending.is_empty() { Some((0, 0)) } else { None };
+        return if pending.is_empty() {
+            Some((0, 0))
+        } else {
+            None
+        };
     }
 
     // Which pending terms are satisfied by a filename somewhere?
     let mut file_satisfied = vec![false; pending.len()];
     for i in 0..n {
-        let Some(rel) = delta_path(&diff, i) else { continue };
+        let Some(rel) = delta_path(&diff, i) else {
+            continue;
+        };
         let h = file_haystack(&rel);
         for (pi, term) in pending.iter().enumerate() {
             if term_matches_file(term, &h) {
@@ -1621,7 +1695,10 @@ fn commit_match_details(
     // full scan) as the expanded file list in `git_commit_show`. The scan
     // above stops early to decide the match; this one runs only for
     // commits that matched, at most a page's worth.
-    let matched_files = file_match_flags(&diff, terms).iter().filter(|(f, c)| *f || *c).count();
+    let matched_files = file_match_flags(&diff, terms)
+        .iter()
+        .filter(|(f, c)| *f || *c)
+        .count();
     Some((n, matched_files))
 }
 
@@ -1672,13 +1749,18 @@ pub fn git_commit_show_blocking(
     show_opts.interhunk_lines(0);
     let diff = commit_diff(&repo, &commit, &mut show_opts).map_err(|e| e.to_string())?;
     let stats = diff_line_stats(&diff);
-    let terms = query.as_deref().map(normalize_query).filter(|t| !t.is_empty());
+    let terms = query
+        .as_deref()
+        .map(normalize_query)
+        .filter(|t| !t.is_empty());
     let n = diff.deltas().len();
     // Per file: (filename hit, content hit), the same rule as the badge.
     let flags = terms.as_ref().map(|terms| file_match_flags(&diff, terms));
     let mut out = Vec::new();
     for i in 0..n {
-        let Some(rel) = delta_path(&diff, i) else { continue };
+        let Some(rel) = delta_path(&diff, i) else {
+            continue;
+        };
         let delta = match diff.get_delta(i) {
             Some(d) => d,
             None => continue,
@@ -1708,9 +1790,7 @@ pub fn git_commit_show_blocking(
     }
     // Matched files first (when filtering), then by path — so the answer
     // to "which file contains it" is at the top even with 100 files.
-    out.sort_by(|a, b| {
-        (b.matched.cmp(&a.matched)).then_with(|| a.path.cmp(&b.path))
-    });
+    out.sort_by(|a, b| (b.matched.cmp(&a.matched)).then_with(|| a.path.cmp(&b.path)));
     Ok(out)
 }
 
@@ -1735,7 +1815,11 @@ pub fn git_commit_file_preview_blocking(
 ) -> Result<GitStashFilePreview, String> {
     let repo = open_repo(&path)?;
     let rel = std::path::Path::new(&file);
-    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(format!("{file}: not a path inside the repository"));
     }
     let oid = oid
@@ -1761,15 +1845,25 @@ pub fn git_commit_file_preview_blocking(
 /// unstaged changes (what `git restore` restores), else the last commit's.
 /// None: the file is new (untracked, or added and never committed).
 fn base_blob<'r>(repo: &'r Repository, file: &str) -> Result<Option<git2::Blob<'r>>, String> {
-    let status = repo.status_file(std::path::Path::new(file)).map_err(|e| e.to_string())?;
+    let status = repo
+        .status_file(std::path::Path::new(file))
+        .map_err(|e| e.to_string())?;
     let index = repo.index().map_err(|e| e.to_string())?;
-    let from_index = || -> Option<git2::Oid> { index.get_path(std::path::Path::new(file), 0).map(|e| e.id) };
+    let from_index =
+        || -> Option<git2::Oid> { index.get_path(std::path::Path::new(file), 0).map(|e| e.id) };
     let from_head = || -> Option<git2::Oid> {
         let tree = repo.head().ok()?.peel_to_tree().ok()?;
-        tree.get_path(std::path::Path::new(file)).ok().map(|e| e.id())
+        tree.get_path(std::path::Path::new(file))
+            .ok()
+            .map(|e| e.id())
     };
-    let unstaged = status.intersects(Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE);
-    let oid = if unstaged { from_index().or_else(from_head) } else { from_head() };
+    let unstaged =
+        status.intersects(Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE);
+    let oid = if unstaged {
+        from_index().or_else(from_head)
+    } else {
+        from_head()
+    };
     Ok(match oid {
         Some(oid) => Some(repo.find_blob(oid).map_err(|e| e.to_string())?),
         None => None,
@@ -1806,7 +1900,10 @@ pub struct RevertOutcome {
 /// "name (before revert).ext", next to the file (so it's trashed on the
 /// same drive, and restoring it from the trash can't overwrite anything).
 fn backup_name(path: &std::path::Path) -> PathBuf {
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let name = match path.extension() {
         Some(ext) => format!("{stem} (before revert).{}", ext.to_string_lossy()),
         None => format!("{stem} (before revert)"),
@@ -1824,9 +1921,16 @@ pub async fn git_revert_file(path: String, file: String) -> Result<RevertOutcome
 
 pub fn git_revert_file_blocking(path: String, file: String) -> Result<RevertOutcome, String> {
     let repo = open_repo(&path)?;
-    let workdir = repo.workdir().ok_or("the repository has no working folder")?.to_path_buf();
+    let workdir = repo
+        .workdir()
+        .ok_or("the repository has no working folder")?
+        .to_path_buf();
     let rel = std::path::Path::new(&file);
-    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(format!("{file}: not a path inside the repository"));
     }
     let abs = workdir.join(rel);
@@ -1843,9 +1947,13 @@ pub fn git_revert_file_blocking(path: String, file: String) -> Result<RevertOutc
             index.write().map_err(|e| e.to_string())?;
         }
         if abs.exists() {
-            trash::delete(&abs).map_err(|e| format!("{file}: couldn't move it to the trash: {e}"))?;
+            trash::delete(&abs)
+                .map_err(|e| format!("{file}: couldn't move it to the trash: {e}"))?;
         }
-        return Ok(RevertOutcome { backed_up: false, removed: true });
+        return Ok(RevertOutcome {
+            backed_up: false,
+            removed: true,
+        });
     }
 
     // The current version to the trash, under a name of its own.
@@ -1864,19 +1972,29 @@ pub fn git_revert_file_blocking(path: String, file: String) -> Result<RevertOutc
         }
     }
 
-    let unstaged = status.intersects(Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE);
+    let unstaged =
+        status.intersects(Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE);
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout.force().path(rel);
     if unstaged {
         // Back to the staged version.
-        repo.checkout_index(None, Some(&mut checkout)).map_err(|e| e.to_string())?;
+        repo.checkout_index(None, Some(&mut checkout))
+            .map_err(|e| e.to_string())?;
     } else {
         // Only staged changes: back to the last commit, index included.
-        let head = repo.head().and_then(|h| h.peel_to_commit()).map_err(|e| e.to_string())?;
-        repo.reset_default(Some(head.as_object()), [rel]).map_err(|e| e.to_string())?;
-        repo.checkout_head(Some(&mut checkout)).map_err(|e| e.to_string())?;
+        let head = repo
+            .head()
+            .and_then(|h| h.peel_to_commit())
+            .map_err(|e| e.to_string())?;
+        repo.reset_default(Some(head.as_object()), [rel])
+            .map_err(|e| e.to_string())?;
+        repo.checkout_head(Some(&mut checkout))
+            .map_err(|e| e.to_string())?;
     }
-    Ok(RevertOutcome { backed_up, removed: false })
+    Ok(RevertOutcome {
+        backed_up,
+        removed: false,
+    })
 }
 
 #[cfg(test)]
@@ -1887,7 +2005,11 @@ mod revert_tests {
     fn repo_with_commit() -> (PathBuf, Repository) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!("git-revert-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!(
+            "git-revert-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
@@ -1895,11 +2017,14 @@ mod revert_tests {
         let repo = Repository::init(&dir).unwrap();
         {
             let mut index = repo.index().unwrap();
-            index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None).unwrap();
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
             index.write().unwrap();
             let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
             let sig = git2::Signature::now("t", "t@t").unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
         }
         (dir, repo)
     }
@@ -1912,11 +2037,22 @@ mod revert_tests {
     fn unstaged_change_goes_back_to_the_staged_version() {
         let (dir, _repo) = repo_with_commit();
         fs::write(dir.join("src/a.rs"), "fn a() { changed }\n").unwrap();
-        assert_eq!(git_base_content_blocking(path(&dir), "src/a.rs".into()).unwrap().as_deref(), Some("fn a() {}\n"));
+        assert_eq!(
+            git_base_content_blocking(path(&dir), "src/a.rs".into())
+                .unwrap()
+                .as_deref(),
+            Some("fn a() {}\n")
+        );
         let out = git_revert_file_blocking(path(&dir), "src/a.rs".into()).unwrap();
-        assert_eq!(fs::read_to_string(dir.join("src/a.rs")).unwrap(), "fn a() {}\n");
+        assert_eq!(
+            fs::read_to_string(dir.join("src/a.rs")).unwrap(),
+            "fn a() {}\n"
+        );
         assert!(out.backed_up && !out.removed);
-        assert!(!dir.join("src/a (before revert).rs").exists(), "the copy went to the trash");
+        assert!(
+            !dir.join("src/a (before revert).rs").exists(),
+            "the copy went to the trash"
+        );
     }
 
     #[test]
@@ -1935,11 +2071,20 @@ mod revert_tests {
         let mut index = repo.index().unwrap();
         index.add_path(std::path::Path::new("b.txt")).unwrap();
         index.write().unwrap();
-        assert_eq!(git_base_content_blocking(path(&dir), "b.txt".into()).unwrap().as_deref(), Some("b\n"));
+        assert_eq!(
+            git_base_content_blocking(path(&dir), "b.txt".into())
+                .unwrap()
+                .as_deref(),
+            Some("b\n")
+        );
         git_revert_file_blocking(path(&dir), "b.txt".into()).unwrap();
         assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
         let st = git_status_blocking(path(&dir)).unwrap();
-        assert!(st.files.iter().all(|f| f.path != "b.txt"), "clean again: {:?}", st.files);
+        assert!(
+            st.files.iter().all(|f| f.path != "b.txt"),
+            "clean again: {:?}",
+            st.files
+        );
     }
 
     #[test]
@@ -1958,7 +2103,10 @@ mod revert_tests {
     fn new_files_go_to_the_trash() {
         let (dir, repo) = repo_with_commit();
         fs::write(dir.join("new.txt"), "x").unwrap();
-        assert_eq!(git_base_content_blocking(path(&dir), "new.txt".into()).unwrap(), None);
+        assert_eq!(
+            git_base_content_blocking(path(&dir), "new.txt".into()).unwrap(),
+            None
+        );
         let out = git_revert_file_blocking(path(&dir), "new.txt".into()).unwrap();
         assert!(out.removed && !dir.join("new.txt").exists());
         // Added to the index but never committed: same, and out of the index.
@@ -2006,23 +2154,32 @@ mod revert_tests {
         assert_eq!(a.status, "M");
         let n = files.iter().find(|f| f.path == "new.txt").unwrap();
         assert_eq!(n.status, "A");
-        assert!(git_status_blocking(path(&dir)).unwrap().files.is_empty(), "tree is clean after stash");
+        assert!(
+            git_status_blocking(path(&dir)).unwrap().files.is_empty(),
+            "tree is clean after stash"
+        );
     }
 
     #[test]
     fn stash_file_content_returns_stashed_versions() {
         let dir = stash_repo();
         assert_eq!(
-            git_stash_file_content_blocking(path(&dir), 0, "src/a.rs".into()).unwrap().as_deref(),
+            git_stash_file_content_blocking(path(&dir), 0, "src/a.rs".into())
+                .unwrap()
+                .as_deref(),
             Some("fn a() { stashed }\n")
         );
         assert_eq!(
-            git_stash_file_content_blocking(path(&dir), 0, "new.txt".into()).unwrap().as_deref(),
+            git_stash_file_content_blocking(path(&dir), 0, "new.txt".into())
+                .unwrap()
+                .as_deref(),
             Some("untracked stash me\n")
         );
         // A file untouched by the stash still resolves from the stash commit.
         assert_eq!(
-            git_stash_file_content_blocking(path(&dir), 0, "b.txt".into()).unwrap().as_deref(),
+            git_stash_file_content_blocking(path(&dir), 0, "b.txt".into())
+                .unwrap()
+                .as_deref(),
             Some("b\n")
         );
     }
@@ -2036,8 +2193,14 @@ mod revert_tests {
         fs::remove_file(dir.join("b.txt")).unwrap();
         git_stash_push_blocking(path(&dir), None).unwrap();
         let files = git_stash_show_blocking(path(&dir), 0).unwrap();
-        assert!(files.iter().any(|f| f.path == "b.txt" && f.status == "D"), "{files:?}");
-        assert_eq!(git_stash_file_content_blocking(path(&dir), 0, "b.txt".into()).unwrap(), None);
+        assert!(
+            files.iter().any(|f| f.path == "b.txt" && f.status == "D"),
+            "{files:?}"
+        );
+        assert_eq!(
+            git_stash_file_content_blocking(path(&dir), 0, "b.txt".into()).unwrap(),
+            None
+        );
         assert!(git_stash_show_blocking(path(&dir), 42).is_err());
         assert!(git_stash_file_content_blocking(path(&dir), 0, "../etc/passwd".into()).is_err());
     }
@@ -2065,8 +2228,12 @@ mod revert_tests {
         fs::remove_file(dir.join("b.txt")).unwrap();
         fs::write(dir.join("c.txt"), "c\n").unwrap();
         let mut index = repo.index().unwrap();
-        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.remove_path(std::path::Path::new("b.txt")).unwrap_or(());
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index
+            .remove_path(std::path::Path::new("b.txt"))
+            .unwrap_or(());
         index.write().unwrap();
         let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
         let sig = git2::Signature::now("t", "t@t").unwrap();
@@ -2158,8 +2325,7 @@ mod revert_tests {
         assert_eq!(all.commits[0].oid, oid2);
         assert!(!all.has_more);
         // Message match.
-        let by_msg =
-            git_log_blocking(path(&dir), Some(20), Some("widget".into()), None).unwrap();
+        let by_msg = git_log_blocking(path(&dir), Some(20), Some("widget".into()), None).unwrap();
         assert_eq!(by_msg.commits.len(), 1);
         assert_eq!(by_msg.commits[0].oid, oid2);
         // Filename match: partial basename.
@@ -2169,8 +2335,7 @@ mod revert_tests {
         assert_eq!(by_file.commits[0].oid, oid2);
         // Content match: identifier and its partial form.
         let by_symbol =
-            git_log_blocking(path(&dir), Some(20), Some("unique_foobar_xyz".into()), None)
-                .unwrap();
+            git_log_blocking(path(&dir), Some(20), Some("unique_foobar_xyz".into()), None).unwrap();
         assert_eq!(by_symbol.commits.len(), 1);
         assert_eq!(by_symbol.commits[0].oid, oid2);
         let by_partial =
@@ -2209,8 +2374,7 @@ mod revert_tests {
         assert_eq!(newest.file_count, 3);
         assert_eq!(newest.matched_file_count, None);
         // Query matching one filename: matched count narrows to that file.
-        let filtered =
-            git_log_blocking(path(&dir), Some(20), Some("c.txt".into()), None).unwrap();
+        let filtered = git_log_blocking(path(&dir), Some(20), Some("c.txt".into()), None).unwrap();
         let entry = filtered.commits.iter().find(|e| e.oid == oid2).unwrap();
         assert_eq!(entry.file_count, 3);
         assert_eq!(entry.matched_file_count, Some(1));
@@ -2287,7 +2451,8 @@ mod revert_tests {
         let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
         let sig = git2::Signature::now("t", "t@t").unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "add zz", &tree, &[&head]).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add zz", &tree, &[&head])
+            .unwrap();
         // "q" appears only in content: single-char terms match
         // metadata/filenames, so this must NOT match.
         let page = git_log_blocking(path(&dir), Some(20), Some("q".into()), None).unwrap();
@@ -2308,13 +2473,17 @@ mod revert_tests {
     /// Stage everything (deletions included) and commit it on HEAD.
     fn commit_all(repo: &Repository, message: &str) -> String {
         let mut index = repo.index().unwrap();
-        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None).unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
         index.update_all(["*"].iter(), None).unwrap();
         index.write().unwrap();
         let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
         let sig = git2::Signature::now("t", "t@t").unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head]).unwrap().to_string()
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head])
+            .unwrap()
+            .to_string()
     }
 
     fn found(dir: &std::path::Path, query: &str) -> Vec<String> {
@@ -2365,7 +2534,11 @@ mod revert_tests {
     fn the_badge_counts_files_like_the_expanded_list() {
         let (dir, repo) = repo_with_commit();
         for n in ["one", "two", "three"] {
-            fs::write(dir.join(format!("w_{n}.rs")), format!("fn widget_{n}() {{}}\n")).unwrap();
+            fs::write(
+                dir.join(format!("w_{n}.rs")),
+                format!("fn widget_{n}() {{}}\n"),
+            )
+            .unwrap();
         }
         // The message alone satisfies the query; the files match by content.
         let oid = commit_all(&repo, "widget update");
@@ -2374,13 +2547,21 @@ mod revert_tests {
         let shown = git_commit_show_blocking(path(&dir), oid, Some("widget".into())).unwrap();
         let matched = shown.iter().filter(|f| f.matched).count();
         assert_eq!(matched, 3);
-        assert_eq!(entry.matched_file_count, Some(matched), "badge and expanded list agree");
+        assert_eq!(
+            entry.matched_file_count,
+            Some(matched),
+            "badge and expanded list agree"
+        );
     }
 
     #[test]
     fn a_renamed_file_isnt_all_new_content() {
         let (dir, repo) = repo_with_commit();
-        fs::write(dir.join("old_name.rs"), "fn renamed_marker_xyz() {}\nfn other() {}\nfn third() {}\n").unwrap();
+        fs::write(
+            dir.join("old_name.rs"),
+            "fn renamed_marker_xyz() {}\nfn other() {}\nfn third() {}\n",
+        )
+        .unwrap();
         commit_all(&repo, "add file");
         fs::rename(dir.join("old_name.rs"), dir.join("new_name.rs")).unwrap();
         let moved = commit_all(&repo, "move file");
@@ -2388,16 +2569,35 @@ mod revert_tests {
         assert_eq!(found(&dir, "renamed_marker_xyz"), ["add file"]);
         let files = git_commit_show_blocking(path(&dir), moved, None).unwrap();
         assert_eq!(files.len(), 1, "{files:?}");
-        assert_eq!((files[0].path.as_str(), files[0].status.as_str()), ("new_name.rs", "R"));
+        assert_eq!(
+            (files[0].path.as_str(), files[0].status.as_str()),
+            ("new_name.rs", "R")
+        );
     }
 
     #[test]
     fn a_superseded_search_stops_scanning() {
         let (dir, _repo) = repo_with_commit();
-        let page = git_log_scan(path(&dir), Some(20), Some("init".into()), None, None, &|| true).unwrap();
+        let page = git_log_scan(
+            path(&dir),
+            Some(20),
+            Some("init".into()),
+            None,
+            None,
+            &|| true,
+        )
+        .unwrap();
         assert!(page.commits.is_empty() && page.scanned == 0);
         assert!(page.has_more, "stopped, not exhausted");
-        let page = git_log_scan(path(&dir), Some(20), Some("init".into()), None, None, &|| false).unwrap();
+        let page = git_log_scan(
+            path(&dir),
+            Some(20),
+            Some("init".into()),
+            None,
+            None,
+            &|| false,
+        )
+        .unwrap();
         assert_eq!(page.commits.len(), 1);
     }
 
@@ -2415,22 +2615,44 @@ mod revert_tests {
         // 4 commits: page 2 of 2 each.
         let first = page_from(&dir, None, None);
         let tip = first.tip.clone().expect("the walk's start");
-        assert_eq!(tip, repo.head().unwrap().peel_to_commit().unwrap().id().to_string());
+        assert_eq!(
+            tip,
+            repo.head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .id()
+                .to_string()
+        );
         // Someone commits from a terminal before "load more".
         fs::write(dir.join("late.txt"), "late\n").unwrap();
         commit_all(&repo, "made meanwhile");
         let second = page_from(&dir, Some(first.next_offset), Some(&tip));
-        assert_eq!(second.tip.as_deref(), Some(tip.as_str()), "still the same session");
-        let summaries: Vec<&str> =
-            first.commits.iter().chain(&second.commits).map(|c| c.summary.as_str()).collect();
+        assert_eq!(
+            second.tip.as_deref(),
+            Some(tip.as_str()),
+            "still the same session"
+        );
+        let summaries: Vec<&str> = first
+            .commits
+            .iter()
+            .chain(&second.commits)
+            .map(|c| c.summary.as_str())
+            .collect();
         // Every commit of the session once, in order; the new one isn't in it.
         assert_eq!(summaries, ["page 2", "page 1", "page 0", "init"]);
         assert!(!second.has_more);
         // Counting from HEAD instead (what paging did before) repeats one.
         let shifted = page_from(&dir, Some(first.next_offset), None);
-        assert_eq!(shifted.commits[0].summary, "page 1", "the old behaviour: page 1 again");
+        assert_eq!(
+            shifted.commits[0].summary, "page 1",
+            "the old behaviour: page 1 again"
+        );
         // A fresh session sees the new commit.
-        assert_eq!(page_from(&dir, None, None).commits[0].summary, "made meanwhile");
+        assert_eq!(
+            page_from(&dir, None, None).commits[0].summary,
+            "made meanwhile"
+        );
     }
 
     #[test]

@@ -4,43 +4,44 @@ use tauri::Manager;
 
 mod agent;
 mod agent_run;
+mod agent_tools;
+mod api_log;
 mod atomic_file;
-mod file_guard;
-mod merge;
-mod edit_file;
-mod read_file;
-mod read_symbol;
-mod outline;
-mod repo_map;
-mod lsp;
-mod project_profile;
+mod browser_tools;
 mod chat_db;
 mod chat_request;
-mod api_log;
+mod clm;
 mod code_search;
-mod browser_tools;
-mod agent_tools;
 mod command_tool;
-mod system_one;
-mod opencode;
-mod reasoning_echo;
+mod edit_file;
+mod file_guard;
 mod filesystem;
+mod git;
+mod git_sync;
+mod lsp;
+mod merge;
+mod open_url;
+mod opencode;
+mod outline;
+mod overlay;
+mod process;
+mod project_profile;
+mod read_file;
+mod read_symbol;
+mod reasoning_echo;
+mod repo_map;
+mod system_one;
 mod terminal;
 mod typings;
 mod vfs;
 mod workload;
-mod overlay;
-mod clm;
-mod git;
-mod git_sync;
-mod process;
-mod open_url;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // First, while the process is still single-threaded.
     process::adopt_login_shell_path();
     tauri::Builder::default()
+        .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(TerminalState::default())
         .manage(lsp::LspState::default())
         .manage(BrowserState::default())

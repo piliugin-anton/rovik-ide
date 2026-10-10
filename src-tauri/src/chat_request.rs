@@ -175,13 +175,19 @@ impl ChatRequests {
             }
             map.running.insert(id.clone(), tx);
         }
-        Registration { requests: self, id, cancel: rx }
+        Registration {
+            requests: self,
+            id,
+            cancel: rx,
+        }
     }
 
     /// Cancels a running request, or remembers the cancel for a request that
     /// hasn't registered yet.
     pub fn cancel(&self, id: &str) -> bool {
-        let Ok(mut map) = self.0.lock() else { return false };
+        let Ok(mut map) = self.0.lock() else {
+            return false;
+        };
         match map.running.get(id) {
             Some(tx) => {
                 let _ = tx.send(true);
@@ -207,7 +213,10 @@ impl Drop for Registration<'_> {
 /// Async so it runs off the main thread: Stop must work even if the main
 /// thread is busy.
 #[tauri::command]
-pub async fn cancel_chat_request(requests: tauri::State<'_, ChatRequests>, request_id: String) -> Result<bool, String> {
+pub async fn cancel_chat_request(
+    requests: tauri::State<'_, ChatRequests>,
+    request_id: String,
+) -> Result<bool, String> {
     Ok(requests.cancel(&request_id))
 }
 
@@ -277,7 +286,9 @@ fn parse_reset(value: &str, now_epoch: Duration) -> Option<Duration> {
 }
 
 fn now_epoch() -> Duration {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
 }
 
 /// The longest wait any rate-limit header or error metadata asks for.
@@ -294,16 +305,28 @@ pub fn retry_after(headers: &HeaderMap, body: Option<&serde_json::Value>) -> Opt
     }
     // A reset header alone doesn't mean "blocked": only consulted when the
     // response says we are rate limited (the caller decides).
-    for name in ["x-ratelimit-reset", "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"] {
+    for name in [
+        "x-ratelimit-reset",
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+    ] {
         if let Some(d) = header(name).and_then(|v| parse_reset(v, now)) {
             waits.push(d);
         }
     }
     // OpenRouter puts the upstream headers into the error body.
     if let Some(meta) = body.and_then(|b| b.pointer("/error/metadata/headers")) {
-        for key in ["X-RateLimit-Reset", "x-ratelimit-reset", "Retry-After", "retry-after"] {
+        for key in [
+            "X-RateLimit-Reset",
+            "x-ratelimit-reset",
+            "Retry-After",
+            "retry-after",
+        ] {
             if let Some(v) = meta.get(key) {
-                let text = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+                let text = v
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string());
                 if let Some(d) = parse_reset(&text, now) {
                     waits.push(d);
                 }
@@ -315,9 +338,17 @@ pub fn retry_after(headers: &HeaderMap, body: Option<&serde_json::Value>) -> Opt
 
 fn looks_like_context_overflow(text: &str) -> bool {
     let t = text.to_lowercase();
-    ["context length", "context_length", "maximum context", "context window", "too many tokens", "prompt is too long", "reduce the length"]
-        .iter()
-        .any(|needle| t.contains(needle))
+    [
+        "context length",
+        "context_length",
+        "maximum context",
+        "context window",
+        "too many tokens",
+        "prompt is too long",
+        "reduce the length",
+    ]
+    .iter()
+    .any(|needle| t.contains(needle))
 }
 
 /// The provider doesn't serve this model on the API the request used
@@ -326,9 +357,15 @@ fn looks_like_context_overflow(text: &str) -> bool {
 /// but the other route may work (`responses::wrong_route`).
 pub fn looks_like_unsupported_protocol(text: &str) -> bool {
     let t = text.to_lowercase();
-    ["modelprotocolunsupported", "protocol_unsupported", "not support this protocol", "protocol is not supported", "unsupported protocol"]
-        .iter()
-        .any(|needle| t.contains(needle))
+    [
+        "modelprotocolunsupported",
+        "protocol_unsupported",
+        "not support this protocol",
+        "protocol is not supported",
+        "unsupported protocol",
+    ]
+    .iter()
+    .any(|needle| t.contains(needle))
 }
 
 fn error_message_from(body: &serde_json::Value) -> Option<String> {
@@ -342,7 +379,9 @@ fn error_message_from(body: &serde_json::Value) -> Option<String> {
 pub fn classify_status(status: u16, headers: &HeaderMap, body: &str) -> ChatError {
     let json: Option<serde_json::Value> = serde_json::from_str(body).ok();
     let provider_message = json.as_ref().and_then(error_message_from);
-    let shown = provider_message.clone().unwrap_or_else(|| format!("HTTP {status}"));
+    let shown = provider_message
+        .clone()
+        .unwrap_or_else(|| format!("HTTP {status}"));
 
     let kind = match status {
         _ if looks_like_unsupported_protocol(body) => ErrorKind::BadRequest,
@@ -367,7 +406,10 @@ pub fn classify_status(status: u16, headers: &HeaderMap, body: &str) -> ChatErro
     } else {
         None
     };
-    ChatError::new(kind, message).with_status(status).with_retry_after(wait).with_details(body)
+    ChatError::new(kind, message)
+        .with_status(status)
+        .with_retry_after(wait)
+        .with_details(body)
 }
 
 /// An `{"error": …}` object inside a 200 response or a stream chunk.
@@ -378,25 +420,37 @@ pub fn classify_body_error(value: &serde_json::Value) -> Option<ChatError> {
     }
     let code = error
         .get("code")
-        .and_then(|c| c.as_u64().or_else(|| c.as_str().and_then(|s| s.parse().ok())))
+        .and_then(|c| {
+            c.as_u64()
+                .or_else(|| c.as_str().and_then(|s| s.parse().ok()))
+        })
         .map(|c| c as u16);
     let message = error_message_from(value).unwrap_or_else(|| error.to_string());
     // In a 200 response or a stream: the request, not the provider, is at fault.
     if looks_like_unsupported_protocol(&value.to_string()) {
         return Some(
-            ChatError::new(ErrorKind::BadRequest, format!("The request was rejected: {message}"))
-                .with_details(value.to_string()),
+            ChatError::new(
+                ErrorKind::BadRequest,
+                format!("The request was rejected: {message}"),
+            )
+            .with_details(value.to_string()),
         );
     }
     let mut e = match code {
         Some(c) => classify_status(c, &HeaderMap::new(), &value.to_string()),
-        None => ChatError::new(ErrorKind::Provider, format!("The provider reported an error: {message}"))
-            .with_details(value.to_string()),
+        None => ChatError::new(
+            ErrorKind::Provider,
+            format!("The provider reported an error: {message}"),
+        )
+        .with_details(value.to_string()),
     };
     if code.is_some() && e.kind == ErrorKind::BadRequest {
         // In-stream errors with a 4xx code are usually upstream failures.
-        e = ChatError::new(ErrorKind::Provider, format!("The provider reported an error: {message}"))
-            .with_details(value.to_string());
+        e = ChatError::new(
+            ErrorKind::Provider,
+            format!("The provider reported an error: {message}"),
+        )
+        .with_details(value.to_string());
     }
     Some(e)
 }
@@ -445,7 +499,10 @@ enum InlineThink {
     Undecided(String),
     /// Inside the tag (`think` or `thinking`); `carry` may be the start of
     /// the closing tag.
-    Inside { tag: &'static str, carry: String },
+    Inside {
+        tag: &'static str,
+        carry: String,
+    },
     Done,
 }
 
@@ -475,7 +532,11 @@ impl ReplyParser {
     }
 
     /// One `data:` payload (already JSON-parsed).
-    pub fn feed(&mut self, value: &serde_json::Value, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) -> Result<(), ChatError> {
+    pub fn feed(
+        &mut self,
+        value: &serde_json::Value,
+        emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+    ) -> Result<(), ChatError> {
         if let Some(e) = classify_body_error(value) {
             return Err(e);
         }
@@ -497,14 +558,31 @@ impl ReplyParser {
                 .and_then(|v| v.as_str());
             if let Some(reasoning) = reasoning.filter(|r| !r.is_empty()) {
                 self.reasoning_len += reasoning.len();
-                emit(ChatStreamEvent::Reasoning { content: reasoning.to_string() });
+                emit(ChatStreamEvent::Reasoning {
+                    content: reasoning.to_string(),
+                });
             }
             // The structured form, to send back (OpenRouter and gateways like it).
-            for fragment in delta.get("reasoning_details").and_then(|v| v.as_array()).into_iter().flatten() {
+            for fragment in delta
+                .get("reasoning_details")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
                 crate::reasoning_echo::merge(&mut self.reasoning_details, fragment);
             }
-            for (pos, tc) in delta.get("tool_calls").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
-                let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            for (pos, tc) in delta
+                .get("tool_calls")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                let id = tc
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 // Gemini omits `index`: tell calls apart by id instead, so
                 // parallel calls streamed in separate chunks don't merge.
                 let index = match tc.get("index").and_then(|i| i.as_u64()) {
@@ -514,11 +592,21 @@ impl ReplyParser {
                         .iter()
                         .find(|(_, c)| c.id == id)
                         .map(|(i, _)| *i)
-                        .unwrap_or_else(|| self.calls.iter().map(|(i, _)| i + 1).max().unwrap_or(0)),
+                        .unwrap_or_else(|| {
+                            self.calls.iter().map(|(i, _)| i + 1).max().unwrap_or(0)
+                        }),
                     None => pos as u64,
                 };
-                let name = tc.pointer("/function/name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let args = tc.pointer("/function/arguments").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = tc
+                    .pointer("/function/name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let args = tc
+                    .pointer("/function/arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
                 let mut started_now = false;
                 let call = self.call(index);
@@ -539,7 +627,10 @@ impl ReplyParser {
                     }
                     call.started = true;
                     started_now = true;
-                    emit(ChatStreamEvent::ToolCallStart { id: call.id.clone(), name: call.name.clone() });
+                    emit(ChatStreamEvent::ToolCallStart {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                    });
                     if !call.arguments.is_empty() {
                         emit(ChatStreamEvent::ToolCallArgumentsDelta {
                             id: call.id.clone(),
@@ -547,12 +638,18 @@ impl ReplyParser {
                         });
                     }
                 } else if call.started && !args.is_empty() {
-                    emit(ChatStreamEvent::ToolCallArgumentsDelta { id: call.id.clone(), arguments_delta: args });
+                    emit(ChatStreamEvent::ToolCallArgumentsDelta {
+                        id: call.id.clone(),
+                        arguments_delta: args,
+                    });
                 }
                 self.emitted_call |= started_now;
             }
         }
-        if let Some(reason) = choice.and_then(|c| c.get("finish_reason")).and_then(|v| v.as_str()) {
+        if let Some(reason) = choice
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(|v| v.as_str())
+        {
             self.finish_reason = Some(reason.to_string());
         }
         Ok(())
@@ -561,14 +658,18 @@ impl ReplyParser {
     fn text(&mut self, text: &str, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) {
         if !text.is_empty() {
             self.text_len += text.len();
-            emit(ChatStreamEvent::Delta { content: text.to_string() });
+            emit(ChatStreamEvent::Delta {
+                content: text.to_string(),
+            });
         }
     }
 
     fn reasoning_text(&mut self, text: &str, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) {
         if !text.is_empty() {
             self.reasoning_len += text.len();
-            emit(ChatStreamEvent::Reasoning { content: text.to_string() });
+            emit(ChatStreamEvent::Reasoning {
+                content: text.to_string(),
+            });
         }
     }
 
@@ -585,16 +686,26 @@ impl ReplyParser {
                 InlineThink::Undecided(mut seen) => {
                     seen.push_str(&piece);
                     let start = seen.trim_start();
-                    let opened = THINK_TAGS.iter().find(|t| start.starts_with(&format!("<{t}>")));
+                    let opened = THINK_TAGS
+                        .iter()
+                        .find(|t| start.starts_with(&format!("<{t}>")));
                     if let Some(tag) = opened {
                         let rest = start[tag.len() + 2..].to_string();
-                        emit(ChatStreamEvent::ReasoningInline { tag: tag.to_string() });
-                        self.think = InlineThink::Inside { tag, carry: String::new() };
+                        emit(ChatStreamEvent::ReasoningInline {
+                            tag: tag.to_string(),
+                        });
+                        self.think = InlineThink::Inside {
+                            tag,
+                            carry: String::new(),
+                        };
                         piece = rest;
                         continue;
                     }
                     // Whitespace, or "<thi": wait for more.
-                    let may_open = start.is_empty() || THINK_TAGS.iter().any(|t| format!("<{t}>").starts_with(start));
+                    let may_open = start.is_empty()
+                        || THINK_TAGS
+                            .iter()
+                            .any(|t| format!("<{t}>").starts_with(start));
                     if may_open {
                         self.think = InlineThink::Undecided(seen);
                         return;
@@ -619,7 +730,10 @@ impl ReplyParser {
                     }
                     let thought = carry[..keep].to_string();
                     self.reasoning_text(&thought, emit);
-                    self.think = InlineThink::Inside { tag, carry: carry[keep..].to_string() };
+                    self.think = InlineThink::Inside {
+                        tag,
+                        carry: carry[keep..].to_string(),
+                    };
                     return;
                 }
             }
@@ -627,7 +741,10 @@ impl ReplyParser {
     }
 
     /// End of the reply: completes tool calls and checks it said something.
-    pub fn finish(&mut self, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) -> Result<(), ChatError> {
+    pub fn finish(
+        &mut self,
+        emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+    ) -> Result<(), ChatError> {
         // Text held back while it might have opened or closed a tag.
         match std::mem::replace(&mut self.think, InlineThink::Done) {
             InlineThink::Undecided(seen) => self.text(&seen, emit),
@@ -648,16 +765,27 @@ impl ReplyParser {
             }
         }
         if self.finish_reason.as_deref() == Some("error") {
-            return Err(ChatError::new(ErrorKind::Provider, "The provider ended the reply with an error."));
+            return Err(ChatError::new(
+                ErrorKind::Provider,
+                "The provider ended the reply with an error.",
+            ));
         }
         if !self.reasoning_details.is_empty() {
-            emit(ChatStreamEvent::ReasoningDetails { details: std::mem::take(&mut self.reasoning_details) });
+            emit(ChatStreamEvent::ReasoningDetails {
+                details: std::mem::take(&mut self.reasoning_details),
+            });
         }
         if !said_something {
             if self.finish_reason.as_deref() == Some("length") {
-                return Err(ChatError::new(ErrorKind::Length, "The model reached its output limit before writing anything."));
+                return Err(ChatError::new(
+                    ErrorKind::Length,
+                    "The model reached its output limit before writing anything.",
+                ));
             }
-            return Err(ChatError::new(ErrorKind::EmptyResponse, "The model returned an empty response."));
+            return Err(ChatError::new(
+                ErrorKind::EmptyResponse,
+                "The model returned an empty response.",
+            ));
         }
         emit(ChatStreamEvent::Finished {
             finish_reason: self.finish_reason.clone(),
@@ -667,7 +795,11 @@ impl ReplyParser {
     }
 
     /// A complete non-streaming response body.
-    pub fn feed_complete(&mut self, body: &serde_json::Value, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) -> Result<(), ChatError> {
+    pub fn feed_complete(
+        &mut self,
+        body: &serde_json::Value,
+        emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
+    ) -> Result<(), ChatError> {
         if let Some(e) = classify_body_error(body) {
             return Err(e);
         }
@@ -705,7 +837,10 @@ impl ReplyParser {
 }
 
 fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    let crlf = buffer.windows(4).position(|w| w == b"\r\n\r\n").map(|p| (p, 4));
+    let crlf = buffer
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| (p, 4));
     let lf = buffer.windows(2).position(|w| w == b"\n\n").map(|p| (p, 2));
     match (crlf, lf) {
         (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
@@ -752,13 +887,20 @@ async fn attempt(
     let overall_error = || {
         ChatError::new(
             ErrorKind::Timeout,
-            format!("The reply took longer than {} minutes.", spec.limits.overall.as_secs() / 60),
+            format!(
+                "The reply took longer than {} minutes.",
+                spec.limits.overall.as_secs() / 60
+            ),
         )
     };
 
     // Waiting for response headers. Non-streaming replies only arrive when
     // complete, so only the overall deadline applies to them.
-    let header_deadline = if spec.streaming { (started + spec.limits.first_byte).min(deadline) } else { deadline };
+    let header_deadline = if spec.streaming {
+        (started + spec.limits.first_byte).min(deadline)
+    } else {
+        deadline
+    };
     let request = spec
         .client
         .post(spec.url)
@@ -798,13 +940,22 @@ async fn attempt(
             log.raw = body.clone();
             log.outcome = "error status";
         }
-        return Err(fail(classify_status(status.as_u16(), &headers, &body), false));
+        return Err(fail(
+            classify_status(status.as_u16(), &headers, &body),
+            false,
+        ));
     }
     let headers = response.headers().clone();
 
     let mut parser = ReplyParser {
         phase_key: (spec.api == Api::Responses).then(|| {
-            responses::phase_key(spec.url, spec.body.get("model").and_then(|m| m.as_str()).unwrap_or(""))
+            responses::phase_key(
+                spec.url,
+                spec.body
+                    .get("model")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or(""),
+            )
         }),
         ..Default::default()
     };
@@ -823,7 +974,14 @@ async fn attempt(
             log.outcome = "complete";
         }
         let body: serde_json::Value = serde_json::from_str(&text).map_err(|_| {
-            fail(ChatError::new(ErrorKind::Provider, "The provider sent a response that isn't JSON.").with_details(&text), false)
+            fail(
+                ChatError::new(
+                    ErrorKind::Provider,
+                    "The provider sent a response that isn't JSON.",
+                )
+                .with_details(&text),
+                false,
+            )
         })?;
         let fed = match spec.api {
             Api::ChatCompletions => parser.feed_complete(&body, emit),
@@ -832,7 +990,9 @@ async fn attempt(
         let mut e = fed.and_then(|_| parser.finish(emit));
         if let Err(err) = &mut e {
             if err.kind == ErrorKind::RateLimited && err.retry_after_ms.is_none() {
-                *err = err.clone().with_retry_after(retry_after(&headers, Some(&body)));
+                *err = err
+                    .clone()
+                    .with_retry_after(retry_after(&headers, Some(&body)));
             }
         }
         return e.map_err(|error| fail(error, parser.visible()));
@@ -856,15 +1016,25 @@ async fn attempt(
             r = tokio::time::timeout_at(wait_until.into(), stream.next()) => r,
         };
         let chunk = match chunk {
-            Err(_) if Instant::now() >= deadline => return Err(fail(overall_error(), parser.visible())),
+            Err(_) if Instant::now() >= deadline => {
+                return Err(fail(overall_error(), parser.visible()))
+            }
             Err(_) => {
-                let secs = if last_data.is_none() { spec.limits.first_byte } else { spec.limits.idle }.as_secs();
+                let secs = if last_data.is_none() {
+                    spec.limits.first_byte
+                } else {
+                    spec.limits.idle
+                }
+                .as_secs();
                 let message = if last_data.is_none() {
                     format!("No response within {secs} s.")
                 } else {
                     format!("The reply stopped arriving for {secs} s.")
                 };
-                return Err(fail(ChatError::new(ErrorKind::Stalled, message), parser.visible()));
+                return Err(fail(
+                    ChatError::new(ErrorKind::Stalled, message),
+                    parser.visible(),
+                ));
             }
             Ok(None) => {
                 // Connection closed without [DONE].
@@ -875,7 +1045,8 @@ async fn attempt(
             }
             Ok(Some(Err(e))) => {
                 return Err(fail(
-                    ChatError::new(ErrorKind::Network, "The connection dropped.").with_details(e.to_string()),
+                    ChatError::new(ErrorKind::Network, "The connection dropped.")
+                        .with_details(e.to_string()),
                     parser.visible(),
                 ));
             }
@@ -891,7 +1062,9 @@ async fn attempt(
             buffer.advance(sep);
             let event = String::from_utf8_lossy(&event);
             for line in event.lines() {
-                let Some(data) = line.strip_prefix("data:") else { continue }; // ":" comments are keep-alives
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                }; // ":" comments are keep-alives
                 let data = data.trim();
                 if data.is_empty() {
                     continue;
@@ -903,7 +1076,9 @@ async fn attempt(
                     }
                     return parser.finish(emit).map_err(|e| fail(e, parser.visible()));
                 }
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else { continue };
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+                    continue;
+                };
                 let fed = match spec.api {
                     Api::ChatCompletions => parser.feed(&value, emit).map(|_| false),
                     // Ends with an event, not [DONE].
@@ -931,7 +1106,9 @@ async fn attempt(
 }
 
 pub fn backoff(attempt_number: u32) -> Duration {
-    let base = BACKOFF_MS[(attempt_number as usize).saturating_sub(1).min(BACKOFF_MS.len() - 1)];
+    let base = BACKOFF_MS[(attempt_number as usize)
+        .saturating_sub(1)
+        .min(BACKOFF_MS.len() - 1)];
     // ±20% jitter so many clients don't retry in lockstep.
     let nanos = now_epoch().subsec_nanos() as u64;
     let jitter = 0.8 + (nanos % 400) as f64 / 1000.0;
@@ -1000,7 +1177,11 @@ pub fn human_duration(d: Duration) -> String {
         60..=3599 => format!("{} min", secs.div_ceil(60)),
         _ => {
             let (h, m) = (secs / 3600, (secs % 3600) / 60);
-            if m == 0 { format!("{h} h") } else { format!("{h} h {m} min") }
+            if m == 0 {
+                format!("{h} h")
+            } else {
+                format!("{h} h {m} min")
+            }
         }
     }
 }

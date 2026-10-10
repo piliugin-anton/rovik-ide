@@ -9,13 +9,13 @@
 //! reads the same after a restart.
 
 use super::command_output::{error_locations, focus_failures, split_by_changed};
+use super::log;
 use super::permissions::{check_command, Permissions, Verdict};
 use super::project::{check_label, ordered_checks, ProjectCheck};
 use super::run::{new_message, Run};
-use super::log;
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 use tauri::Runtime;
 
 /// Fix-and-recheck rounds before the gate gives up and reports.
@@ -82,7 +82,13 @@ impl CheckResult {
 }
 
 /// The record's meta: `{ verification: … }`.
-fn record(status: &str, round: u32, checks: &[CheckResult], changed_files: &[String], reason: Option<&str>) -> Value {
+fn record(
+    status: &str,
+    round: u32,
+    checks: &[CheckResult],
+    changed_files: &[String],
+    reason: Option<&str>,
+) -> Value {
     let mut v = json!({
         "status": status,
         "round": round,
@@ -107,7 +113,10 @@ fn describe_error_files(files: &ErrorFiles) -> Option<String> {
     };
     let mut parts = Vec::new();
     if !files.changed.is_empty() {
-        parts.push(format!("Errors point at files you changed: {}.", list(&files.changed)));
+        parts.push(format!(
+            "Errors point at files you changed: {}.",
+            list(&files.changed)
+        ));
     }
     if !files.other.is_empty() {
         parts.push(if files.changed.is_empty() {
@@ -126,18 +135,29 @@ fn describe_error_files(files: &ErrorFiles) -> Option<String> {
 pub fn failure_report(results: &[CheckResult], changed_files: &[String], round: u32) -> String {
     let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
     let passed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "passed").collect();
-    let fail = if failed.len() == 1 { "a check fails".to_string() } else { format!("{} checks fail", failed.len()) };
+    let fail = if failed.len() == 1 {
+        "a check fails".to_string()
+    } else {
+        format!("{} checks fail", failed.len())
+    };
     let mut lines = vec![
         "[Automatic check by the IDE, not written by the user]".to_string(),
         format!("Your changes are not done yet: {fail} (attempt {round} of {MAX_VERIFY_ROUNDS})."),
         String::new(),
         format!(
             "Files you changed in this task: {}",
-            if changed_files.is_empty() { "(none recorded)".to_string() } else { changed_files.join(", ") }
+            if changed_files.is_empty() {
+                "(none recorded)".to_string()
+            } else {
+                changed_files.join(", ")
+            }
         ),
     ];
     if !passed.is_empty() {
-        let list: Vec<String> = passed.iter().map(|r| format!("{} (`{}`)", check_label(&r.kind), r.command)).collect();
+        let list: Vec<String> = passed
+            .iter()
+            .map(|r| format!("{} (`{}`)", check_label(&r.kind), r.command))
+            .collect();
         lines.push(format!("Passed: {}", list.join(", ")));
     }
     for r in &failed {
@@ -150,7 +170,11 @@ pub fn failure_report(results: &[CheckResult], changed_files: &[String], round: 
             }
         };
         lines.push(String::new());
-        lines.push(format!("## {} failed: `{}` ({how})", check_label(&r.kind), r.command));
+        lines.push(format!(
+            "## {} failed: `{}` ({how})",
+            check_label(&r.kind),
+            r.command
+        ));
         if let Some(where_) = r.error_files.as_ref().and_then(describe_error_files) {
             lines.push(where_);
         }
@@ -190,9 +214,15 @@ impl<R: Runtime> Run<R> {
     /// sent to the model and the run goes on; anything else is the outcome.
     /// `approved`: the user started the checks (`record_id` is the record
     /// that waited for that, updated in place).
-    pub(super) async fn verify_at_end(&mut self, approved: bool, record_id: Option<String>) -> Result<String, String> {
+    pub(super) async fn verify_at_end(
+        &mut self,
+        approved: bool,
+        record_id: Option<String>,
+    ) -> Result<String, String> {
         let p = self.state.config().permissions;
-        let Some(root) = self.root.clone() else { return Ok("done".into()) };
+        let Some(root) = self.root.clone() else {
+            return Ok("done".into());
+        };
         if !p.verify_changes {
             return Ok("done".into());
         }
@@ -202,14 +232,25 @@ impl<R: Runtime> Run<R> {
             // Failures were sent back, and the model finished without touching
             // anything: it decided not to (or couldn't). Say so; don't loop.
             if self.last_verify_failed {
-                self.add_record(record("unresolved", self.verify_rounds, &[], &changed, None)).await?;
+                self.add_record(record(
+                    "unresolved",
+                    self.verify_rounds,
+                    &[],
+                    &changed,
+                    None,
+                ))
+                .await?;
                 return Ok("verify-unresolved".into());
             }
             return Ok("done".into());
         }
 
-        let checks: Vec<ProjectCheck> =
-            self.checks.iter().filter(|c| c.enabled && !c.command.trim().is_empty()).cloned().collect();
+        let checks: Vec<ProjectCheck> = self
+            .checks
+            .iter()
+            .filter(|c| c.enabled && !c.command.trim().is_empty())
+            .cloned()
+            .collect();
         if checks.is_empty() {
             self.add_record(record(
                 "unverified",
@@ -226,7 +267,14 @@ impl<R: Runtime> Run<R> {
         // Command approval is on: the gate's commands need the user's go too.
         if p.command_approval.required && !approved {
             let pending: Vec<CheckResult> = checks.iter().map(CheckResult::pending).collect();
-            self.add_record(record("needs-approval", self.verify_rounds, &pending, &changed, None)).await?;
+            self.add_record(record(
+                "needs-approval",
+                self.verify_rounds,
+                &pending,
+                &changed,
+                None,
+            ))
+            .await?;
             return Ok("verify-needs-approval".into());
         }
 
@@ -235,16 +283,24 @@ impl<R: Runtime> Run<R> {
         let round = self.verify_rounds;
         let record_id = match record_id {
             Some(id) => {
-                self.update_meta(&id, record("running", round, &[], &changed, None)).await?;
+                self.update_meta(&id, record("running", round, &[], &changed, None))
+                    .await?;
                 id
             }
-            None => self.add_record(record("running", round, &[], &changed, None)).await?,
+            None => {
+                self.add_record(record("running", round, &[], &changed, None))
+                    .await?
+            }
         };
 
-        let results = self.run_checks(&root, &checks, &p, &changed, &record_id, round).await?;
+        let results = self
+            .run_checks(&root, &checks, &p, &changed, &record_id, round)
+            .await?;
 
         let failed = results.iter().any(|r| r.status == "failed");
-        let ran = results.iter().any(|r| r.status == "passed" || r.status == "failed");
+        let ran = results
+            .iter()
+            .any(|r| r.status == "passed" || r.status == "failed");
         let status = if self.stopped() {
             "stopped"
         } else if !ran {
@@ -257,7 +313,11 @@ impl<R: Runtime> Run<R> {
             "failed"
         };
         let reason = (status == "unverified").then_some("none of the checks were allowed to run");
-        self.update_meta(&record_id, record(status, round, &results, &changed, reason)).await?;
+        self.update_meta(
+            &record_id,
+            record(status, round, &results, &changed, reason),
+        )
+        .await?;
         log::write(
             &self.app,
             json!({
@@ -277,7 +337,11 @@ impl<R: Runtime> Run<R> {
 
         self.last_verify_failed = failed;
         if status != "failed" {
-            return Ok(if status == "passed" { "verified".into() } else { format!("verify-{status}") });
+            return Ok(if status == "passed" {
+                "verified".into()
+            } else {
+                format!("verify-{status}")
+            });
         }
 
         // Back to the model. User-role, so every provider accepts it after an
@@ -318,7 +382,10 @@ impl<R: Runtime> Run<R> {
         record_id: &str,
         round: u32,
     ) -> Result<Vec<CheckResult>, String> {
-        let mut results: Vec<CheckResult> = ordered_checks(checks).iter().map(CheckResult::pending).collect();
+        let mut results: Vec<CheckResult> = ordered_checks(checks)
+            .iter()
+            .map(CheckResult::pending)
+            .collect();
         let progress = |results: &[CheckResult]| record("running", round, results, changed, None);
         self.update_meta(record_id, progress(&results)).await?;
 
@@ -332,7 +399,11 @@ impl<R: Runtime> Run<R> {
                 self.update_meta(record_id, progress(&results)).await?;
                 continue;
             }
-            if results[i].kind == "test" && results.iter().any(|r| r.kind == "typecheck" && r.status == "failed") {
+            if results[i].kind == "test"
+                && results
+                    .iter()
+                    .any(|r| r.kind == "typecheck" && r.status == "failed")
+            {
                 results[i].skip("the type check failed");
                 self.update_meta(record_id, progress(&results)).await?;
                 continue;
@@ -345,12 +416,18 @@ impl<R: Runtime> Run<R> {
             // record says what for while they do.
             let waiting: Arc<Mutex<Option<Option<String>>>> = Arc::default();
             let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Check { owner: self.dialog_id.clone() },
+                kind: crate::workload::JobKind::Check {
+                    owner: self.dialog_id.clone(),
+                },
                 note: {
                     let waiting = waiting.clone();
-                    Box::new(move |note| *waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(note))
+                    Box::new(move |note| {
+                        *waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(note)
+                    })
                 },
-                env: crate::overlay::chats::get(&self.dialog_id).map(|o| o.command_env()).unwrap_or_default(),
+                env: crate::overlay::chats::get(&self.dialog_id)
+                    .map(|o| o.command_env())
+                    .unwrap_or_default(),
                 confine: crate::overlay::chats::get(&self.dialog_id).and_then(|o| o.confine()),
             };
             let run = crate::command_tool::run_command(
@@ -374,7 +451,11 @@ impl<R: Runtime> Run<R> {
                 }
             };
             let r = &mut results[i];
-            r.note = outcome.as_ref().ok().and_then(|o| o.waited.as_ref()).and_then(|w| w.describe());
+            r.note = outcome
+                .as_ref()
+                .ok()
+                .and_then(|o| o.waited.as_ref())
+                .and_then(|w| w.describe());
             match outcome {
                 Ok(out) if out.stopped => r.skip("stopped"),
                 Ok(out) => {
@@ -392,11 +473,19 @@ impl<R: Runtime> Run<R> {
                             .collect::<Vec<_>>()
                             .join("\n");
                         let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
-                        let output = if focused.is_empty() { "(no output)".to_string() } else { focused };
+                        let output = if focused.is_empty() {
+                            "(no output)".to_string()
+                        } else {
+                            focused
+                        };
                         // From the focused output: the error blocks, not passing tests' paths.
-                        let (changed_hits, other) = split_by_changed(&error_locations(&output), changed);
+                        let (changed_hits, other) =
+                            split_by_changed(&error_locations(&output), changed);
                         if !changed_hits.is_empty() || !other.is_empty() {
-                            r.error_files = Some(ErrorFiles { changed: changed_hits, other });
+                            r.error_files = Some(ErrorFiles {
+                                changed: changed_hits,
+                                other,
+                            });
                         }
                         r.output = Some(output);
                     }
@@ -420,12 +509,19 @@ mod tests {
     fn the_report_the_agent_gets() {
         let check = |kind: &str, command: &str, status| CheckResult {
             status,
-            ..CheckResult::pending(&ProjectCheck { kind: kind.into(), command: command.into(), enabled: true })
+            ..CheckResult::pending(&ProjectCheck {
+                kind: kind.into(),
+                command: command.into(),
+                enabled: true,
+            })
         };
         let mut failed = check("typecheck", "tsc", "failed");
         failed.exit_code = Some(Some(2));
         failed.output = Some("src/a.ts(1,1): error".into());
-        failed.error_files = Some(ErrorFiles { changed: vec!["src/a.ts".into()], other: vec![] });
+        failed.error_files = Some(ErrorFiles {
+            changed: vec!["src/a.ts".into()],
+            other: vec![],
+        });
         let mut skipped = check("test", "npm test", "pending");
         skipped.skip("the type check failed");
         let results = vec![check("lint", "eslint .", "passed"), failed, skipped];
@@ -436,7 +532,10 @@ mod tests {
         assert!(text.contains("Not run: `npm test` (the type check failed)"));
 
         let meta = record("running", 1, &results[..1], &[], None);
-        assert_eq!(meta["verification"]["checks"][0], json!({ "kind": "lint", "command": "eslint .", "status": "passed" }));
+        assert_eq!(
+            meta["verification"]["checks"][0],
+            json!({ "kind": "lint", "command": "eslint .", "status": "passed" })
+        );
         assert_eq!(meta["verification"]["maxRounds"], 3);
     }
 }

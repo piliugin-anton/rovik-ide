@@ -237,11 +237,7 @@ fn repeated_calls() {
         r#"{"path":"a"}"#,
         r#"{"path":"a","start_line":3}"#
     ));
-    assert!(!same_call(
-        "read",
-        r#"{"path":"a"}"#,
-        r#"{"path":"b"}"#
-    ));
+    assert!(!same_call("read", r#"{"path":"a"}"#, r#"{"path":"b"}"#));
     assert!(same_call(
         "bash",
         r#"{"command":"ls"}"#,
@@ -372,9 +368,15 @@ fn missing_task_card_reads_as_guidance() {
         let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
             .await
             .unwrap();
-        assert!(p.notes.join("\n").contains("not written yet"), "{:?}", p.notes);
+        assert!(
+            p.notes.join("\n").contains("not written yet"),
+            "{:?}",
+            p.notes
+        );
         for path in ["@context/TASK.md", "@context/TASK"] {
-            let text = tool_read(&db, &vfs, "chat", path, None, None).await.unwrap();
+            let text = tool_read(&db, &vfs, "chat", path, None, None)
+                .await
+                .unwrap();
             assert!(
                 text.contains("no task card yet") && text.contains("write @context/TASK.md"),
                 "{path}: {text}"
@@ -384,12 +386,18 @@ fn missing_task_card_reads_as_guidance() {
         // After the card is written, the bare name resolves to it and the
         // "not written yet" line disappears.
         tool_write(&vfs, "chat", "@context/TASK.md", "Goal\nNEXT: x").unwrap();
-        let text = tool_read(&db, &vfs, "chat", "@context/TASK", None, None).await.unwrap();
+        let text = tool_read(&db, &vfs, "chat", "@context/TASK", None, None)
+            .await
+            .unwrap();
         assert!(text.contains("Goal"), "{text}");
         let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
             .await
             .unwrap();
-        assert!(!p.notes.join("\n").contains("not written yet"), "{:?}", p.notes);
+        assert!(
+            !p.notes.join("\n").contains("not written yet"),
+            "{:?}",
+            p.notes
+        );
         assert!(p.notes.join("\n").contains("Goal"), "{:?}", p.notes);
 
         // An unknown file lists what the folder actually has.
@@ -397,7 +405,10 @@ fn missing_task_card_reads_as_guidance() {
             .await
             .unwrap_err();
         assert!(err.contains("not found"), "{err}");
-        assert!(err.contains("Your context folder has:") && err.contains("TASK.md"), "{err}");
+        assert!(
+            err.contains("Your context folder has:") && err.contains("TASK.md"),
+            "{err}"
+        );
 
         // Deleting the card after it existed reports the deletion once
         // (card_gone), then points out the missing card again.
@@ -410,7 +421,11 @@ fn missing_task_card_reads_as_guidance() {
             .await
             .unwrap();
         assert!(!p.notes.join("\n").contains("was deleted"), "{:?}", p.notes);
-        assert!(p.notes.join("\n").contains("not written yet"), "{:?}", p.notes);
+        assert!(
+            p.notes.join("\n").contains("not written yet"),
+            "{:?}",
+            p.notes
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     });

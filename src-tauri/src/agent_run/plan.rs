@@ -55,7 +55,8 @@ Keep it concrete enough that it can be implemented step by step without re-inves
  * ---------------------------------------------------------------------------
  */
 
-static STEPS_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b.*$").unwrap());
+static STEPS_HEADING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b.*$").unwrap());
 static VALIDATION_HEADING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)^##\s+.*\b(verif\w*|validat\w*|test\w*|check\w*|acceptance)\b.*$").unwrap()
 });
@@ -69,8 +70,10 @@ static PATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?:^|[\s`'"(\[*])(\.?[\w@~-][\w.@~-]*(?:/[\w.@~\[\]-]+)+/?|\.?[\w-]*[A-Za-z_][\w-]*\.[A-Za-z][\w]{0,9})"#).unwrap()
 });
 /// File names without an extension that are still clearly files.
-static BARE_FILE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(Makefile|Dockerfile|Justfile|Procfile|Gemfile|Rakefile|Containerfile)\b").unwrap());
+static BARE_FILE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(Makefile|Dockerfile|Justfile|Procfile|Gemfile|Rakefile|Containerfile)\b")
+        .unwrap()
+});
 /// Words that say what a step does to its files.
 static CHANGE_WORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -100,7 +103,10 @@ fn names_a_file(step: &str) -> bool {
             return !token.contains("://")
                 && token.split('/').filter(|s| !s.is_empty()).count() >= 2
                 && token.chars().any(|ch| ch.is_ascii_alphabetic())
-                && !matches!(token.to_ascii_lowercase().as_str(), "and/or" | "either/or" | "i/o" | "n/a");
+                && !matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "and/or" | "either/or" | "i/o" | "n/a"
+                );
         }
         // "e.g", "i.e", "vs.x": abbreviations, not file names.
         let (name, ext) = token.rsplit_once('.').unwrap_or((token, ""));
@@ -143,16 +149,21 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
     }
     let steps_heading = STEPS_HEADING.find(text);
     match steps_heading {
-        None => problems.push("Add a \"## Steps\" section with the steps as a numbered list.".into()),
+        None => {
+            problems.push("Add a \"## Steps\" section with the steps as a numbered list.".into())
+        }
         Some(heading) => {
             // Code fences can hold numbered lines and paths that aren't steps.
             let section = CODE_BLOCK.replace_all(section_after(text, heading.end()), "");
             let steps = split_steps(&section);
             if steps.len() < 2 {
-                problems.push("List the steps under \"## Steps\" as a numbered list (1., 2., ...).".into());
+                problems.push(
+                    "List the steps under \"## Steps\" as a numbered list (1., 2., ...).".into(),
+                );
             } else {
-                let no_file: Vec<usize> =
-                    (1..=steps.len()).filter(|&n| !names_a_file(steps[n - 1])).collect();
+                let no_file: Vec<usize> = (1..=steps.len())
+                    .filter(|&n| !names_a_file(steps[n - 1]))
+                    .collect();
                 if !no_file.is_empty() {
                     problems.push(format!(
                         "Step{} {} name{} no file: give the repo-relative path of each file a step changes, in backticks \
@@ -240,7 +251,13 @@ fn join(root: &str, rel: &str) -> String {
 
 /// Saves a plan and returns its path. `existing`: the chat's earlier plan
 /// file, which a revision replaces; otherwise a new name that's free.
-pub fn save_plan_file(root: &str, request: &str, plan: &str, existing: Option<&str>, date: &str) -> Result<String, String> {
+pub fn save_plan_file(
+    root: &str,
+    request: &str,
+    plan: &str,
+    existing: Option<&str>,
+    date: &str,
+) -> Result<String, String> {
     let path = match existing {
         Some(p) => p.to_string(),
         None => {
@@ -259,7 +276,13 @@ pub fn save_plan_file(root: &str, request: &str, plan: &str, existing: Option<&s
     let titled = if body.starts_with("# ") || body.starts_with("#\t") {
         body.to_string()
     } else {
-        let first: String = request.split('\n').next().unwrap_or("").chars().take(100).collect();
+        let first: String = request
+            .split('\n')
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(100)
+            .collect();
         format!("# Plan: {first}\n\n{body}")
     };
     crate::filesystem::write_app_file(&path, &format!("{titled}\n"))?;
@@ -268,7 +291,9 @@ pub fn save_plan_file(root: &str, request: &str, plan: &str, existing: Option<&s
 
 /// The plan's path for display: relative to the project.
 pub fn relative_plan_path(path: &str, root: Option<&str>) -> String {
-    let Some(root) = root else { return path.to_string() };
+    let Some(root) = root else {
+        return path.to_string();
+    };
     let r = root.trim_end_matches(['/', '\\']);
     match path.strip_prefix(r) {
         Some(rest) if !rest.is_empty() => rest[1..].to_string(),
@@ -278,8 +303,12 @@ pub fn relative_plan_path(path: &str, root: Option<&str>) -> String {
 
 /// Plan mode: the current plan (as the file is now), for the model to revise.
 pub fn current_plan_context(plan_file: Option<&str>, root: Option<&str>) -> String {
-    let Some(file) = plan_file else { return String::new() };
-    let Ok(text) = std::fs::read_to_string(file) else { return String::new() };
+    let Some(file) = plan_file else {
+        return String::new();
+    };
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return String::new();
+    };
     if text.trim().is_empty() {
         return String::new();
     }
@@ -297,7 +326,8 @@ pub fn current_plan_context(plan_file: Option<&str>, root: Option<&str>) -> Stri
     .join("\n")
 }
 
-static LOOKS_LIKE_STEPS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b").unwrap());
+static LOOKS_LIKE_STEPS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b").unwrap());
 static NUMBERED_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d+[.)]\s").unwrap());
 
 /// A reply that reads like a plan (written out instead of submitted).
@@ -336,8 +366,12 @@ pub struct Question {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum QuestionAnswer {
-    Option { label: String },
-    Custom { text: String },
+    Option {
+        label: String,
+    },
+    Custom {
+        text: String,
+    },
     /// "You decide".
     Agent,
 }
@@ -345,17 +379,26 @@ pub enum QuestionAnswer {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum QuestionsOutcome {
-    Answers { answers: Vec<QuestionAnswer> },
+    Answers {
+        answers: Vec<QuestionAnswer>,
+    },
     /// Typed in the composer instead of answering in the card.
-    Reply { reply: String },
-    Stopped { stopped: bool },
+    Reply {
+        reply: String,
+    },
+    Stopped {
+        stopped: bool,
+    },
 }
 
 const MAX_QUESTIONS: usize = 3;
 const MAX_OPTIONS: usize = 6;
 
 fn trimmed(v: Option<&Value>) -> Option<String> {
-    v.and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    v.and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// The questions from the tool's arguments, tolerating the shapes models
@@ -370,7 +413,9 @@ pub fn parse_questions(args: &Map<String, Value>) -> Vec<Question> {
     let mut out = Vec::new();
     for q in raw.into_iter().take(MAX_QUESTIONS) {
         let Some(r) = q.as_object() else { continue };
-        let Some(question) = trimmed(r.get("question")) else { continue };
+        let Some(question) = trimmed(r.get("question")) else {
+            continue;
+        };
         let options: Vec<QuestionOption> = r
             .get("options")
             .and_then(|o| o.as_array())
@@ -379,11 +424,18 @@ pub fn parse_questions(args: &Map<String, Value>) -> Vec<Question> {
             .filter_map(|o| match o {
                 Value::String(s) => {
                     let label = s.trim();
-                    (!label.is_empty()).then(|| QuestionOption { label: label.into(), description: None, recommended: false })
+                    (!label.is_empty()).then(|| QuestionOption {
+                        label: label.into(),
+                        description: None,
+                        recommended: false,
+                    })
                 }
                 Value::Object(opt) => trimmed(opt.get("label")).map(|label| QuestionOption {
                     label,
-                    description: opt.get("description").and_then(|d| d.as_str()).map(str::to_string),
+                    description: opt
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .map(str::to_string),
                     recommended: opt.get("recommended") == Some(&Value::Bool(true)),
                 }),
                 _ => None,
@@ -392,7 +444,12 @@ pub fn parse_questions(args: &Map<String, Value>) -> Vec<Question> {
             .collect();
         // Without options the only way to answer is in words.
         let allow_custom = r.get("allow_custom") != Some(&Value::Bool(false)) || options.is_empty();
-        out.push(Question { question, reason: trimmed(r.get("reason")), options, allow_custom });
+        out.push(Question {
+            question,
+            reason: trimmed(r.get("reason")),
+            options,
+            allow_custom,
+        });
     }
     out
 }
@@ -465,7 +522,10 @@ pub fn parse_todo(args: &Map<String, Value>) -> Vec<TodoItem> {
         .filter_map(|r| match r {
             Value::String(s) => {
                 let title = s.trim();
-                (!title.is_empty()).then(|| TodoItem { title: title.into(), status: "pending".into() })
+                (!title.is_empty()).then(|| TodoItem {
+                    title: title.into(),
+                    status: "pending".into(),
+                })
             }
             Value::Object(o) => trimmed(o.get("title")).map(|title| {
                 let status = o
@@ -473,7 +533,10 @@ pub fn parse_todo(args: &Map<String, Value>) -> Vec<TodoItem> {
                     .and_then(|s| s.as_str())
                     .filter(|s| TODO_STATUSES.contains(s))
                     .unwrap_or("pending");
-                TodoItem { title, status: status.into() }
+                TodoItem {
+                    title,
+                    status: status.into(),
+                }
             }),
             _ => None,
         })
@@ -492,7 +555,11 @@ pub fn is_settled(item: &TodoItem) -> bool {
 pub fn todo_problems(items: &[TodoItem]) -> Option<String> {
     let active: Vec<&TodoItem> = items.iter().filter(|i| i.status == "in_progress").collect();
     if active.len() > 1 {
-        let names = active.iter().map(|i| format!("\"{}\"", i.title)).collect::<Vec<_>>().join(", ");
+        let names = active
+            .iter()
+            .map(|i| format!("\"{}\"", i.title))
+            .collect::<Vec<_>>()
+            .join(", ");
         return Some(format!(
             "Error: only one step can be in_progress at a time (you marked {names}). \
              Keep the step you're on in_progress and the rest pending, then call todo again."
@@ -514,13 +581,18 @@ pub fn describe_todo(items: &[TodoItem]) -> String {
     format!(
         "Checklist updated: {done} of {} done{}.",
         items.len(),
-        current.map(|c| format!("; now: {}", c.title)).unwrap_or_default()
+        current
+            .map(|c| format!("; now: {}", c.title))
+            .unwrap_or_default()
     )
 }
 
 /// Whether a stored message is one the IDE wrote (check failures, nudges).
 pub fn is_harness(m: &MessageRow) -> bool {
-    m.meta.as_ref().and_then(|meta| meta.get("harness")).is_some_and(|h| !h.is_null())
+    m.meta
+        .as_ref()
+        .and_then(|meta| meta.get("harness"))
+        .is_some_and(|h| !h.is_null())
 }
 
 /// Whether the user dismissed a checklist here (`meta.checklistClosed`):
@@ -529,13 +601,21 @@ pub fn is_harness(m: &MessageRow) -> bool {
 pub fn is_checklist_dismissed(m: &MessageRow) -> bool {
     m.meta
         .as_ref()
-        .and_then(|meta| meta.get("checklistClosed").or_else(|| meta.get("checklist_closed")))
+        .and_then(|meta| {
+            meta.get("checklistClosed")
+                .or_else(|| meta.get("checklist_closed"))
+        })
         .is_some_and(|v| v == &Value::Bool(true))
 }
 
 /// The latest `todo` call in one message, if it parses to a non-empty list.
 fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
-    let call = m.tool_calls.iter().flatten().rev().find(|c| c.name == "todo")?;
+    let call = m
+        .tool_calls
+        .iter()
+        .flatten()
+        .rev()
+        .find(|c| c.name == "todo")?;
     if let Ok(Value::Object(args)) = serde_json::from_str::<Value>(&call.arguments) {
         let items = parse_todo(&args);
         if !items.is_empty() {
@@ -573,7 +653,9 @@ pub struct CurrentChecklist {
 }
 
 pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
-    let last_user = messages.iter().rposition(|m| m.role == "user" && !is_harness(m));
+    let last_user = messages
+        .iter()
+        .rposition(|m| m.role == "user" && !is_harness(m));
     let Some(last) = last_user else {
         // No user message yet: whatever the latest todo call says.
         for m in messages.iter().rev() {
@@ -581,7 +663,11 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
                 if is_checklist_dismissed(m) {
                     return None;
                 }
-                return Some(CurrentChecklist { items, carried: false, from_message_id: Some(m.id.clone()) });
+                return Some(CurrentChecklist {
+                    items,
+                    carried: false,
+                    from_message_id: Some(m.id.clone()),
+                });
             }
         }
         return None;
@@ -592,7 +678,11 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
             if is_checklist_dismissed(m) {
                 return None;
             }
-            return Some(CurrentChecklist { items, carried: false, from_message_id: Some(m.id.clone()) });
+            return Some(CurrentChecklist {
+                items,
+                carried: false,
+                from_message_id: Some(m.id.clone()),
+            });
         }
     }
     // No checklist in the current request: a dismissal closes it.
@@ -602,14 +692,20 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
     // The previous request only: past the last user message, up to the one
     // before it. A second user message stops the search, so an old
     // checklist doesn't linger across unrelated work.
-    let prev_user = messages[..last].iter().rposition(|m| m.role == "user" && !is_harness(m));
+    let prev_user = messages[..last]
+        .iter()
+        .rposition(|m| m.role == "user" && !is_harness(m));
     let from = prev_user.map(|p| p + 1).unwrap_or(0);
     for m in messages[from..last].iter().rev() {
         if let Some(items) = todo_in_message(m) {
             if items.iter().all(is_settled) || is_checklist_dismissed(m) {
                 return None;
             }
-            return Some(CurrentChecklist { items, carried: true, from_message_id: Some(m.id.clone()) });
+            return Some(CurrentChecklist {
+                items,
+                carried: true,
+                from_message_id: Some(m.id.clone()),
+            });
         }
     }
     None
@@ -635,7 +731,9 @@ pub fn checklist_gate_reason(
     let norm = |p: &str| p.trim().trim_start_matches("./").to_string();
     match tool {
         "write" => {
-            let new_file = path.map(norm).is_some_and(|p| !changed_files.iter().any(|f| norm(f) == p));
+            let new_file = path
+                .map(norm)
+                .is_some_and(|p| !changed_files.iter().any(|f| norm(f) == p));
             let files = changed_files.len() + usize::from(new_file);
             if files >= GATE_FILES {
                 return Some(format!("{files} files changed"));
@@ -643,7 +741,10 @@ pub fn checklist_gate_reason(
         }
         "bash" => {
             if changed_files.len() >= GATE_FILES_BEFORE_COMMAND {
-                return Some(format!("{} files changed, now a command", changed_files.len()));
+                return Some(format!(
+                    "{} files changed, now a command",
+                    changed_files.len()
+                ));
             }
         }
         _ => return None,
@@ -735,7 +836,11 @@ mod tests {
 
     #[test]
     fn plan_checks() {
-        assert!(plan_problems(GOOD_PLAN).is_empty(), "{:?}", plan_problems(GOOD_PLAN));
+        assert!(
+            plan_problems(GOOD_PLAN).is_empty(),
+            "{:?}",
+            plan_problems(GOOD_PLAN)
+        );
         let bad = "Some plan\n## Steps\n1. Only one";
         let problems = plan_problems(bad);
         assert_eq!(problems.len(), 3, "title, steps, validation: {problems:?}");
@@ -744,8 +849,15 @@ mod tests {
         assert_eq!(plan_problems(&code).len(), 1);
         assert!(plan_problems(&code)[0].starts_with("Leave the code out"));
         // One-line signatures don't count as code.
-        let sigs = format!("{GOOD_PLAN}\n{}", "```rust\nfn a() -> u8;\n```\n".repeat(30));
-        assert!(plan_problems(&sigs).is_empty(), "{:?}", plan_problems(&sigs));
+        let sigs = format!(
+            "{GOOD_PLAN}\n{}",
+            "```rust\nfn a() -> u8;\n```\n".repeat(30)
+        );
+        assert!(
+            plan_problems(&sigs).is_empty(),
+            "{:?}",
+            plan_problems(&sigs)
+        );
         assert!(looks_like_plan("## Steps\n1. do it"));
         assert!(!looks_like_plan("Done. 1. thing"));
     }
@@ -756,8 +868,14 @@ mod tests {
         let terse = "# T\n## Steps\n1. Table\n2. API\n## Validation\n- run the tests";
         let problems = plan_problems(terse);
         assert_eq!(problems.len(), 2, "{problems:?}");
-        assert!(problems[0].starts_with("Steps 1 and 2 name no file"), "{problems:?}");
-        assert!(problems[1].starts_with("Steps 1 and 2 are too vague"), "{problems:?}");
+        assert!(
+            problems[0].starts_with("Steps 1 and 2 name no file"),
+            "{problems:?}"
+        );
+        assert!(
+            problems[1].starts_with("Steps 1 and 2 are too vague"),
+            "{problems:?}"
+        );
         // Only the step without a file is reported.
         let one = "# T\n## Steps\n1. Add the `load` function to `src/a.rs` for reading users.\n\
                    2. Update the docs so they explain the new loading, e.g. in the readme.\n## Testing\n- cargo test";
@@ -768,7 +886,9 @@ mod tests {
         assert!(names_a_file("move it under src/components/"));
         assert!(names_a_file("set the flag in Cargo.toml (new section)"));
         assert!(names_a_file("**package.json**: add a script"));
-        assert!(!names_a_file("see https://example.com and/or ask, i.e. later"));
+        assert!(!names_a_file(
+            "see https://example.com and/or ask, i.e. later"
+        ));
         assert!(!names_a_file("bump to 1.2 and update the API."));
     }
 
@@ -779,16 +899,28 @@ mod tests {
         assert_eq!(problems.len(), 1);
         assert!(problems[0].starts_with("Add a \"## Validation\""));
         // An empty section doesn't count; other names do.
-        assert_eq!(plan_problems(&GOOD_PLAN.replace("- `cargo test`\n- open /users by hand", "")).len(), 1);
+        assert_eq!(
+            plan_problems(&GOOD_PLAN.replace("- `cargo test`\n- open /users by hand", "")).len(),
+            1
+        );
         assert!(plan_problems(&GOOD_PLAN.replace("## Validation", "## How to verify")).is_empty());
-        assert!(plan_problems(&GOOD_PLAN.replace("## Validation", "## Testing and validation")).is_empty());
+        assert!(
+            plan_problems(&GOOD_PLAN.replace("## Validation", "## Testing and validation"))
+                .is_empty()
+        );
     }
 
     #[test]
     fn stems_and_relative_paths() {
-        assert_eq!(file_stem("Add a users table, please!", "2026-10-04"), "2026-10-04-add-a-users-table-please");
+        assert_eq!(
+            file_stem("Add a users table, please!", "2026-10-04"),
+            "2026-10-04-add-a-users-table-please"
+        );
         assert_eq!(file_stem("???", "2026-10-04"), "2026-10-04-plan");
-        assert_eq!(relative_plan_path("/p/.rovik/plans/a.md", Some("/p/")), ".rovik/plans/a.md");
+        assert_eq!(
+            relative_plan_path("/p/.rovik/plans/a.md", Some("/p/")),
+            ".rovik/plans/a.md"
+        );
         assert_eq!(relative_plan_path("/q/a.md", Some("/p")), "/q/a.md");
     }
 
@@ -808,12 +940,19 @@ mod tests {
         assert_eq!(parse_questions(single.as_object().unwrap()).len(), 1);
 
         let outcome: QuestionsOutcome =
-            serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] })).unwrap();
+            serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
+                .unwrap();
         let text = describe_outcome(&qs, &outcome);
-        assert!(text.contains("1. Which DB?\n   → SQLite") && text.contains("2. Name?\n   → left it to you"));
+        assert!(
+            text.contains("1. Which DB?\n   → SQLite")
+                && text.contains("2. Name?\n   → left it to you")
+        );
         let stopped: QuestionsOutcome = serde_json::from_value(json!({ "stopped": true })).unwrap();
         assert!(describe_outcome(&qs, &stopped).starts_with("Error:"));
-        assert_eq!(serde_json::to_value(&stopped).unwrap(), json!({ "stopped": true }));
+        assert_eq!(
+            serde_json::to_value(&stopped).unwrap(),
+            json!({ "stopped": true })
+        );
     }
 
     #[test]
@@ -821,20 +960,32 @@ mod tests {
         let args = json!({ "items": ["a", { "title": "b", "status": "in_progress" }, { "title": "c", "status": "bogus" }] });
         let items = parse_todo(args.as_object().unwrap());
         assert_eq!(items[2].status, "pending");
-        assert_eq!(describe_todo(&items), "Checklist updated: 0 of 3 done; now: b.");
+        assert_eq!(
+            describe_todo(&items),
+            "Checklist updated: 0 of 3 done; now: b."
+        );
     }
 
     #[test]
     fn plan_and_question_edge_cases() {
         // A steps heading with more words, steps with ")".
-        let parens = GOOD_PLAN.replace("## Steps", "## Implementation steps").replace("1. ", "1) ").replace("2. ", "2) ");
-        assert!(plan_problems(&parens).is_empty(), "{:?}", plan_problems(&parens));
+        let parens = GOOD_PLAN
+            .replace("## Steps", "## Implementation steps")
+            .replace("1. ", "1) ")
+            .replace("2. ", "2) ");
+        assert!(
+            plan_problems(&parens).is_empty(),
+            "{:?}",
+            plan_problems(&parens)
+        );
         // Steps belong under the steps heading, not a later section.
         let misplaced = GOOD_PLAN.replace("## Steps\n", "## Steps\nnone\n## Other\n");
         assert_eq!(plan_problems(&misplaced).len(), 1);
-        assert!(plan_problems(&format!("{GOOD_PLAN}\n{}", "x".repeat(40_001)))
-            .iter()
-            .any(|p| p.contains("over 40,000")));
+        assert!(
+            plan_problems(&format!("{GOOD_PLAN}\n{}", "x".repeat(40_001)))
+                .iter()
+                .any(|p| p.contains("over 40,000"))
+        );
         // Leading blank lines before the title are fine.
         assert!(plan_problems(&format!("\n\n{GOOD_PLAN}")).is_empty());
 
@@ -849,28 +1000,55 @@ mod tests {
         let qs = parse_questions(many.as_object().unwrap());
         assert_eq!(qs.len(), 2, "the string and the 4th are out");
         assert_eq!(qs[0].options.len(), 6);
-        assert_eq!(qs[1].options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["ok"]);
+        assert_eq!(
+            qs[1]
+                .options
+                .iter()
+                .map(|o| o.label.as_str())
+                .collect::<Vec<_>>(),
+            ["ok"]
+        );
         assert!(parse_questions(json!({}).as_object().unwrap()).is_empty());
         // Fewer answers than questions: the rest are left to the agent.
-        let qs = parse_questions(json!({ "questions": [{ "question": "A?" }, { "question": "B?" }] }).as_object().unwrap());
-        let outcome = QuestionsOutcome::Answers { answers: vec![QuestionAnswer::Custom { text: "mine".into() }] };
+        let qs = parse_questions(
+            json!({ "questions": [{ "question": "A?" }, { "question": "B?" }] })
+                .as_object()
+                .unwrap(),
+        );
+        let outcome = QuestionsOutcome::Answers {
+            answers: vec![QuestionAnswer::Custom {
+                text: "mine".into(),
+            }],
+        };
         let text = describe_outcome(&qs, &outcome);
-        assert!(text.contains("\"mine\" (in their own words)") && text.contains("B?\n   → left it to you"));
+        assert!(
+            text.contains("\"mine\" (in their own words)")
+                && text.contains("B?\n   → left it to you")
+        );
         assert_eq!(outcome_kinds(&outcome), ["custom"]);
     }
 
     #[test]
     fn checklist_edge_cases() {
-        assert_eq!(describe_todo(&[]), "Error: the checklist is empty. Pass items: [{ title, status }].");
+        assert_eq!(
+            describe_todo(&[]),
+            "Error: the checklist is empty. Pass items: [{ title, status }]."
+        );
         let many: Vec<Value> = (0..40).map(|i| json!(format!("step {i}"))).collect();
-        assert_eq!(parse_todo(json!({ "items": many }).as_object().unwrap()).len(), MAX_TODO_ITEMS);
+        assert_eq!(
+            parse_todo(json!({ "items": many }).as_object().unwrap()).len(),
+            MAX_TODO_ITEMS
+        );
         let all_settled = parse_todo(
             json!({ "items": [{ "title": "a", "status": "done" }, { "title": "b", "status": "skipped" }, { "title": "c", "status": "changed" }] })
                 .as_object()
                 .unwrap(),
         );
         assert!(all_settled.iter().all(is_settled));
-        assert_eq!(describe_todo(&all_settled), "Checklist updated: 3 of 3 done.");
+        assert_eq!(
+            describe_todo(&all_settled),
+            "Checklist updated: 3 of 3 done."
+        );
         // Two steps in_progress: rejected, naming both, so the model narrows to one.
         let two_active = parse_todo(
             json!({ "items": [{ "title": "a", "status": "in_progress" }, { "title": "b", "status": "in_progress" }, { "title": "c", "status": "pending" }] })
@@ -898,9 +1076,15 @@ mod tests {
         );
         let note = checklist_note(&items, false);
         assert!(note.contains("1 of 2 done"), "{note}");
-        assert!(note.contains("- [done] a") && note.contains("- [pending] b"), "{note}");
+        assert!(
+            note.contains("- [done] a") && note.contains("- [pending] b"),
+            "{note}"
+        );
         assert!(note.contains("don't copy it into the task card"), "{note}");
-        assert!(checklist_note(&items, true).contains("carried from earlier work"), "{note}");
+        assert!(
+            checklist_note(&items, true).contains("carried from earlier work"),
+            "{note}"
+        );
     }
 
     fn row(id: &str, role: &str, meta: Option<Value>) -> MessageRow {
@@ -939,7 +1123,10 @@ mod tests {
     fn unfinished_checklist_is_carried_across_one_user_message() {
         let messages = vec![
             row("u1", "user", None),
-            todo_row("a1", json!({ "items": [{ "title": "a", "status": "done" }, { "title": "b", "status": "pending" }] })),
+            todo_row(
+                "a1",
+                json!({ "items": [{ "title": "a", "status": "done" }, { "title": "b", "status": "pending" }] }),
+            ),
             row("u2", "user", None),
         ];
         let carried = current_checklist(&messages).expect("carried");
@@ -954,7 +1141,10 @@ mod tests {
     fn settled_checklist_is_not_carried() {
         let messages = vec![
             row("u1", "user", None),
-            todo_row("a1", json!({ "items": [{ "title": "a", "status": "done" }] })),
+            todo_row(
+                "a1",
+                json!({ "items": [{ "title": "a", "status": "done" }] }),
+            ),
             row("u2", "user", None),
         ];
         assert_eq!(current_checklist(&messages), None);
@@ -994,17 +1184,35 @@ mod tests {
     fn checklist_gate_thresholds() {
         let files = |n: usize| (0..n).map(|i| format!("f{i}.rs")).collect::<Vec<_>>();
         // Writes: the 3rd distinct file trips it; rewriting a known one doesn't.
-        assert_eq!(checklist_gate_reason("write", Some("new.rs"), &files(1), 2), None);
-        assert_eq!(checklist_gate_reason("write", Some("new.rs"), &files(2), 3).as_deref(), Some("3 files changed"));
-        assert_eq!(checklist_gate_reason("write", Some("./f1.rs"), &files(2), 3), None);
+        assert_eq!(
+            checklist_gate_reason("write", Some("new.rs"), &files(1), 2),
+            None
+        );
+        assert_eq!(
+            checklist_gate_reason("write", Some("new.rs"), &files(2), 3).as_deref(),
+            Some("3 files changed")
+        );
+        assert_eq!(
+            checklist_gate_reason("write", Some("./f1.rs"), &files(2), 3),
+            None
+        );
         // Commands: after 2 changed files, not after 1 (edit, then test).
         assert_eq!(checklist_gate_reason("bash", None, &files(1), 2), None);
         assert!(checklist_gate_reason("bash", None, &files(2), 3).is_some());
         // Many calls without a checklist trip it for work, not for reads.
-        assert_eq!(checklist_gate_reason("bash", None, &[], GATE_TOOL_CALLS).as_deref(), Some("12 tool calls made"));
-        assert_eq!(checklist_gate_reason("read", Some("a.rs"), &files(5), 40), None);
+        assert_eq!(
+            checklist_gate_reason("bash", None, &[], GATE_TOOL_CALLS).as_deref(),
+            Some("12 tool calls made")
+        );
+        assert_eq!(
+            checklist_gate_reason("read", Some("a.rs"), &files(5), 40),
+            None
+        );
         let error = checklist_gate_error("3 files changed", "write");
-        assert!(error.starts_with("Error:") && error.contains("already finished as done"), "{error}");
+        assert!(
+            error.starts_with("Error:") && error.contains("already finished as done"),
+            "{error}"
+        );
     }
 
     /// Dismissed on the message holding the `todo` call (the panel's ✕):

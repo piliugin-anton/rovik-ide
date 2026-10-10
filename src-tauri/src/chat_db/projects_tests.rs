@@ -19,13 +19,24 @@ fn temp(name: &str) -> std::path::PathBuf {
 fn chat(conn: &mut Connection, id: &str, project: Option<&str>) {
     create_dialog(
         conn,
-        &NewDialog { id: id.into(), title: id.into(), created_at: 1, updated_at: 1, project_id: project.map(Into::into) },
+        &NewDialog {
+            id: id.into(),
+            title: id.into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: project.map(Into::into),
+        },
     )
     .unwrap();
 }
 
 fn chats(conn: &Connection, project: Option<&str>) -> Vec<String> {
-    list_dialogs(conn, project, None, 50).unwrap().items.into_iter().map(|d| d.id).collect()
+    list_dialogs(conn, project, None, 50)
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|d| d.id)
+        .collect()
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -52,9 +63,14 @@ fn git_repo(dir: &Path) -> String {
         index.add_path(Path::new("f.txt")).unwrap();
         index.write().unwrap();
         let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-        let parents: Vec<git2::Commit> = parent.iter().map(|p| repo.find_commit(*p).unwrap()).collect();
+        let parents: Vec<git2::Commit> = parent
+            .iter()
+            .map(|p| repo.find_commit(*p).unwrap())
+            .collect();
         let refs: Vec<&git2::Commit> = parents.iter().collect();
-        let oid = repo.commit(Some("HEAD"), &sig, &sig, "c", &tree, &refs).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "c", &tree, &refs)
+            .unwrap();
         first.get_or_insert(oid);
         parent = Some(oid);
     }
@@ -68,7 +84,9 @@ fn a_new_folder_gets_an_id_file_and_keeps_it() {
     let dir = temp("new");
     let p = open_project(&mut conn, &dir).unwrap().project;
     assert!(p.id_file && dir.join(ID_FILE).is_file());
-    assert!(fs::read_to_string(dir.join(".rovik/.gitignore")).unwrap().contains("project.json"));
+    assert!(fs::read_to_string(dir.join(".rovik/.gitignore"))
+        .unwrap()
+        .contains("project.json"));
     let again = open_project(&mut conn, &dir).unwrap();
     assert_eq!(again.project.id, p.id, "same folder, same project");
     assert_eq!(again.suggestion, None);
@@ -86,7 +104,10 @@ fn rename_and_move_keep_the_chats_silently() {
     fs::rename(&dir, &moved).unwrap();
     let q = open_project(&mut conn, &moved).unwrap();
     assert_eq!(q.project.id, p.id);
-    assert_eq!(q.suggestion, None, "the old folder is gone: a move, not a copy");
+    assert_eq!(
+        q.suggestion, None,
+        "the old folder is gone: a move, not a copy"
+    );
     assert_eq!(q.project.name, "after");
     assert_eq!(chats(&conn, Some(&p.id)), ["c1"]);
 }
@@ -133,9 +154,35 @@ fn search_stays_in_the_project() {
     let mut conn = db();
     let a = open_project(&mut conn, &temp("search-a")).unwrap().project;
     let b = open_project(&mut conn, &temp("search-b")).unwrap().project;
-    create_dialog(&mut conn, &NewDialog { id: "a1".into(), title: "Deploy pipeline fix".into(), created_at: 1, updated_at: 1, project_id: Some(a.id.clone()) }).unwrap();
-    create_dialog(&mut conn, &NewDialog { id: "b1".into(), title: "Deploy pipeline fix".into(), created_at: 2, updated_at: 2, project_id: Some(b.id.clone()) }).unwrap();
-    let ids = |q: &str, p: &str| search(&conn, q, Some(p), 10).unwrap().into_iter().map(|h| h.dialog.id).collect::<Vec<_>>();
+    create_dialog(
+        &mut conn,
+        &NewDialog {
+            id: "a1".into(),
+            title: "Deploy pipeline fix".into(),
+            created_at: 1,
+            updated_at: 1,
+            project_id: Some(a.id.clone()),
+        },
+    )
+    .unwrap();
+    create_dialog(
+        &mut conn,
+        &NewDialog {
+            id: "b1".into(),
+            title: "Deploy pipeline fix".into(),
+            created_at: 2,
+            updated_at: 2,
+            project_id: Some(b.id.clone()),
+        },
+    )
+    .unwrap();
+    let ids = |q: &str, p: &str| {
+        search(&conn, q, Some(p), 10)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.dialog.id)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(ids("deploy", &a.id), ["a1"]);
     assert_eq!(ids("deploy", &b.id), ["b1"]);
     assert_eq!(ids("pipelnie", &a.id), ["a1"]);
@@ -152,7 +199,10 @@ fn a_copy_is_detected_and_can_share_the_chats() {
     let copy = temp("copy");
     copy_dir(&original, &copy);
     let opened = open_project(&mut conn, &copy).unwrap();
-    assert_eq!(opened.project.id, p.id, "until answered, the folder's ID decides");
+    assert_eq!(
+        opened.project.id, p.id,
+        "until answered, the folder's ID decides"
+    );
     match &opened.suggestion {
         Some(Suggestion::Copy { original: o }) => assert_eq!(o.id, p.id),
         other => panic!("expected a copy suggestion, got {other:?}"),
@@ -175,9 +225,17 @@ fn a_copy_can_start_a_separate_history() {
     assert!(matches!(opened.suggestion, Some(Suggestion::Copy { .. })));
     let separate = answer_copy(&mut conn, &copy, &p.id, false).unwrap();
     assert_ne!(separate.id, p.id);
-    assert_eq!(read_id(&copy).as_deref(), Some(separate.id.as_str()), "the copy has its own ID now");
+    assert_eq!(
+        read_id(&copy).as_deref(),
+        Some(separate.id.as_str()),
+        "the copy has its own ID now"
+    );
     assert!(chats(&conn, Some(&separate.id)).is_empty());
-    assert_eq!(chats(&conn, Some(&p.id)), ["c1"], "the original keeps its chats");
+    assert_eq!(
+        chats(&conn, Some(&p.id)),
+        ["c1"],
+        "the original keeps its chats"
+    );
     let again = open_project(&mut conn, &copy).unwrap();
     assert_eq!((again.project.id, again.suggestion), (separate.id, None));
 }
@@ -202,7 +260,10 @@ fn a_moved_repo_without_its_id_file_is_recognised() {
         Some(Suggestion::Moved { candidates }) => candidates,
         other => panic!("expected a moved suggestion, got {other:?}"),
     };
-    assert_eq!(candidates.iter().map(|c| c.id.clone()).collect::<Vec<_>>(), [p.id.clone()]);
+    assert_eq!(
+        candidates.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+        [p.id.clone()]
+    );
     assert!(candidates[0].missing && candidates[0].chat_count == 1);
     // "Use those chats": the new project made meanwhile is merged in.
     chat(&mut conn, "meanwhile", Some(&opened.project.id));
@@ -212,7 +273,10 @@ fn a_moved_repo_without_its_id_file_is_recognised() {
     all.sort();
     assert_eq!(all, ["c1", "meanwhile"]);
     assert_eq!(read_id(&new_place).as_deref(), Some(p.id.as_str()));
-    assert_eq!(open_project(&mut conn, &new_place).unwrap().project.id, p.id);
+    assert_eq!(
+        open_project(&mut conn, &new_place).unwrap().project.id,
+        p.id
+    );
 }
 
 #[test]
@@ -227,7 +291,10 @@ fn a_live_clone_is_not_suggested_and_a_decline_is_remembered() {
     fs::remove_file(b.join(ID_FILE)).unwrap();
     let opened = open_project(&mut conn, &b).unwrap();
     assert_ne!(opened.project.id, pa.id);
-    assert_eq!(opened.suggestion, None, "a live clone is a different project");
+    assert_eq!(
+        opened.suggestion, None,
+        "a live clone is a different project"
+    );
 
     // Now the first one's folder disappears, and a third copy turns up.
     fs::remove_dir_all(&a).unwrap();
@@ -239,10 +306,18 @@ fn a_live_clone_is_not_suggested_and_a_decline_is_remembered() {
         Some(Suggestion::Moved { candidates }) => candidates.into_iter().map(|c| c.id).collect(),
         other => panic!("expected a moved suggestion, got {other:?}"),
     };
-    assert_eq!(ids, [pa.id.clone()], "only the project whose folder is gone");
+    assert_eq!(
+        ids,
+        [pa.id.clone()],
+        "only the project whose folder is gone"
+    );
     decline(&mut conn, &c, &ids).unwrap();
     fs::remove_file(c.join(ID_FILE)).unwrap();
-    assert_eq!(open_project(&mut conn, &c).unwrap().suggestion, None, "declined: not asked again");
+    assert_eq!(
+        open_project(&mut conn, &c).unwrap().suggestion,
+        None,
+        "declined: not asked again"
+    );
 }
 
 #[test]
@@ -256,12 +331,20 @@ fn subfolders_of_one_repo_are_not_confused() {
     fs::remove_dir_all(repo.join("web")).unwrap(); // web's folder is gone
     let api = open_project(&mut conn, &repo.join("api")).unwrap();
     assert_ne!(api.project.id, web.id);
-    assert_eq!(api.suggestion, None, "same root commit, different place in the repo");
+    assert_eq!(
+        api.suggestion, None,
+        "same root commit, different place in the repo"
+    );
 }
 
 #[test]
 fn remotes_are_normalized() {
-    for url in ["git@github.com:me/app.git", "https://github.com/me/app", "https://user@github.com/me/app.git/", "ssh://git@github.com/me/app"] {
+    for url in [
+        "git@github.com:me/app.git",
+        "https://github.com/me/app",
+        "https://user@github.com/me/app.git/",
+        "ssh://git@github.com/me/app",
+    ] {
         assert_eq!(normalize_remote(url), "github.com/me/app", "{url}");
     }
 }
@@ -301,9 +384,14 @@ fn relinking_onto_another_project_asks_then_merges() {
     let other_dir = temp("other");
     let other = open_project(&mut conn, &other_dir).unwrap().project;
     chat(&mut conn, "theirs", Some(&other.id));
-    assert!(matches!(relink(&mut conn, &p.id, &other_dir, false).unwrap(), Relinked::IsOtherProject { .. }));
+    assert!(matches!(
+        relink(&mut conn, &p.id, &other_dir, false).unwrap(),
+        Relinked::IsOtherProject { .. }
+    ));
     match relink(&mut conn, &p.id, &other_dir, true).unwrap() {
-        Relinked::Done { project } => assert_eq!(project.id, other.id, "the folder keeps its project"),
+        Relinked::Done { project } => {
+            assert_eq!(project.id, other.id, "the folder keeps its project")
+        }
         other => panic!("{other:?}"),
     }
     let mut all = chats(&conn, Some(&other.id));
@@ -332,7 +420,16 @@ fn a_chat_works_only_in_its_own_projects_folders() {
     let a = open_project(&mut conn, &a_dir).unwrap().project;
     open_project(&mut conn, &b_dir).unwrap();
     assert!(chat_may_use(&conn, Some(&a.id), &a_dir).unwrap());
-    assert!(!chat_may_use(&conn, Some(&a.id), &b_dir).unwrap(), "another project's folder");
-    assert!(!chat_may_use(&conn, Some(&a.id), &temp("may-use-unknown")).unwrap(), "a folder no project has");
-    assert!(chat_may_use(&conn, None, &b_dir).unwrap(), "a chat with no project isn't tied to one");
+    assert!(
+        !chat_may_use(&conn, Some(&a.id), &b_dir).unwrap(),
+        "another project's folder"
+    );
+    assert!(
+        !chat_may_use(&conn, Some(&a.id), &temp("may-use-unknown")).unwrap(),
+        "a folder no project has"
+    );
+    assert!(
+        chat_may_use(&conn, None, &b_dir).unwrap(),
+        "a chat with no project isn't tied to one"
+    );
 }

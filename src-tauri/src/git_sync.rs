@@ -13,8 +13,8 @@
 use crate::git::{git_fetch_blocking, off_main_thread, open_repo};
 use crate::merge::{is_binary, parse_merged, MergeSegment};
 use git2::{
-    build::CheckoutBuilder, BranchType, ErrorCode, Oid,
-    RebaseOptions, Reference, Repository, RepositoryState, ResetType, Status, StatusOptions,
+    build::CheckoutBuilder, BranchType, ErrorCode, Oid, RebaseOptions, Reference, Repository,
+    RepositoryState, ResetType, Status, StatusOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};

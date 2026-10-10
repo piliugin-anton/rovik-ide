@@ -43,7 +43,11 @@ impl Lang {
                 .filter(|&id| id != 0)
                 .collect();
             let source = self.query_source();
-            let query = if source.trim().is_empty() { None } else { Query::new(&grammar, &source).ok() };
+            let query = if source.trim().is_empty() {
+                None
+            } else {
+                Query::new(&grammar, &source).ok()
+            };
             Cache { kind_ids, query }
         })
     }
@@ -96,7 +100,9 @@ pub fn language_for(path: &str, content: &str) -> Option<&'static Lang> {
     };
     match name {
         Some(name) => LANGUAGES.iter().find(|l| l.name == name),
-        None => LANGUAGES.iter().find(|l| l.extensions.contains(&ext.as_str())),
+        None => LANGUAGES
+            .iter()
+            .find(|l| l.extensions.contains(&ext.as_str())),
     }
 }
 
@@ -109,12 +115,33 @@ fn has_line_starting(content: &str, marks: &[&str]) -> bool {
 }
 
 fn looks_objc(content: &str) -> bool {
-    has_line_starting(content, &["@interface", "@implementation", "@protocol", "#import", "@property", "@end"])
+    has_line_starting(
+        content,
+        &[
+            "@interface",
+            "@implementation",
+            "@protocol",
+            "#import",
+            "@property",
+            "@end",
+        ],
+    )
 }
 
 fn looks_cpp(content: &str) -> bool {
-    has_line_starting(content, &["class ", "namespace ", "template<", "template <", "public:", "private:", "protected:", "using namespace"])
-        || content.contains("std::")
+    has_line_starting(
+        content,
+        &[
+            "class ",
+            "namespace ",
+            "template<",
+            "template <",
+            "public:",
+            "private:",
+            "protected:",
+            "using namespace",
+        ],
+    ) || content.contains("std::")
 }
 
 #[cfg(test)]

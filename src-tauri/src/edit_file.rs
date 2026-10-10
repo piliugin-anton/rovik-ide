@@ -47,7 +47,10 @@ fn numbered(content: &str, start: usize, end: usize) -> String {
         .map(|n| format!("{n:>5} | {}", lines[n - 1].trim_end_matches('\r')))
         .collect();
     if last < end.min(lines.len()) {
-        out.push(format!("      … ({} more lines)", end.min(lines.len()) - last));
+        out.push(format!(
+            "      … ({} more lines)",
+            end.min(lines.len()) - last
+        ));
     }
     out.join("\n")
 }
@@ -62,9 +65,11 @@ pub fn apply_edit(
     end_line: Option<usize>,
 ) -> Result<(String, EditSpan), String> {
     if old_text.is_empty() {
-        return Err("old_text must not be empty. To insert text, put an existing line next to \
+        return Err(
+            "old_text must not be empty. To insert text, put an existing line next to \
                     the insertion point in old_text and repeat it in new_text with the new lines."
-            .into());
+                .into(),
+        );
     }
     if old_text == new_text {
         return Err("old_text and new_text are the same: nothing would change.".into());
@@ -110,10 +115,15 @@ pub fn apply_edit(
             Some((s, e, from, to))
         }
     };
-    let (from, to) = range.map(|(_, _, f, t)| (f, t)).unwrap_or((0, content.len()));
+    let (from, to) = range
+        .map(|(_, _, f, t)| (f, t))
+        .unwrap_or((0, content.len()));
     let region = &content[from..to];
 
-    let found: Vec<usize> = region.match_indices(old.as_str()).map(|(i, _)| i + from).collect();
+    let found: Vec<usize> = region
+        .match_indices(old.as_str())
+        .map(|(i, _)| i + from)
+        .collect();
 
     let at = match found.as_slice() {
         [one] => *one,
@@ -197,9 +207,7 @@ pub fn describe_edit(path: &str, span: &EditSpan) -> String {
     let after = if shift == 0 {
         String::new()
     } else {
-        format!(
-            " Lines after it moved by {shift:+}; use the new line numbers for further edits."
-        )
+        format!(" Lines after it moved by {shift:+}; use the new line numbers for further edits.")
     };
     format!("Edited {path}: replaced {old} ({old_lines} → {new_lines} lines), now {now}.{after}")
 }
@@ -214,13 +222,23 @@ mod tests {
     fn replaces_a_unique_match() {
         let (out, span) = apply_edit(FILE, "fn a() {", "fn alpha() {", None, None).unwrap();
         assert!(out.starts_with("fn alpha() {\n"));
-        assert_eq!(span, EditSpan { start_line: 1, old_lines: 1, new_lines: 1 });
+        assert_eq!(
+            span,
+            EditSpan {
+                start_line: 1,
+                old_lines: 1,
+                new_lines: 1
+            }
+        );
     }
 
     #[test]
     fn ambiguous_match_is_refused_and_says_where() {
         let err = apply_edit(FILE, "    one();", "    two();", None, None).unwrap_err();
-        assert!(err.contains("2 places") && err.contains("lines 2, 6"), "{err}");
+        assert!(
+            err.contains("2 places") && err.contains("lines 2, 6"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -246,10 +264,23 @@ mod tests {
 
     #[test]
     fn whole_range_with_trailing_newline_matches() {
-        let (out, span) =
-            apply_edit(FILE, "fn b() {\n    one();\n}\n", "fn b() {}\n", Some(5), Some(7)).unwrap();
+        let (out, span) = apply_edit(
+            FILE,
+            "fn b() {\n    one();\n}\n",
+            "fn b() {}\n",
+            Some(5),
+            Some(7),
+        )
+        .unwrap();
         assert_eq!(out, "fn a() {\n    one();\n}\n\nfn b() {}\n");
-        assert_eq!(span, EditSpan { start_line: 5, old_lines: 3, new_lines: 1 });
+        assert_eq!(
+            span,
+            EditSpan {
+                start_line: 5,
+                old_lines: 3,
+                new_lines: 1
+            }
+        );
     }
 
     #[test]
@@ -272,8 +303,18 @@ mod tests {
     fn deleting_and_describing() {
         let (out, span) = apply_edit(FILE, "\nfn b() {\n    one();\n}\n", "", None, None).unwrap();
         assert_eq!(out, "fn a() {\n    one();\n}\n");
-        assert_eq!(describe_edit("x.rs", &span), "Edited x.rs: removed lines 4-7.");
-        let (_, span) = apply_edit(FILE, "    one();\n}\n\n", "    one();\n    one();\n}\n\n", Some(1), Some(4)).unwrap();
+        assert_eq!(
+            describe_edit("x.rs", &span),
+            "Edited x.rs: removed lines 4-7."
+        );
+        let (_, span) = apply_edit(
+            FILE,
+            "    one();\n}\n\n",
+            "    one();\n    one();\n}\n\n",
+            Some(1),
+            Some(4),
+        )
+        .unwrap();
         assert!(describe_edit("x.rs", &span).contains("moved by +1"));
     }
 

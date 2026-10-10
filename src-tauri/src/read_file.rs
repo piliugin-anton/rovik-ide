@@ -39,29 +39,67 @@ const MAP_MAX_INDENT: usize = 16;
 /// Extensions the declaration keywords make sense for: languages without a
 /// grammar, and the rest for when parsing fails (too large, too slow).
 const CODE_EXTENSIONS: &[&str] = &[
-    "vue", "svelte", "astro", "coffee", "fish", "pony", "hack", "hx", "mojo", "v", "sql",
-    "rs", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "pyi", "go", "java", "kt", "kts", "swift", "rb",
-    "php", "cs", "scala", "c", "h", "cc", "cpp", "hpp", "m", "mm", "lua", "ex", "exs", "dart", "vue", "svelte",
+    "vue", "svelte", "astro", "coffee", "fish", "pony", "hack", "hx", "mojo", "v", "sql", "rs",
+    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "pyi", "go", "java", "kt", "kts",
+    "swift", "rb", "php", "cs", "scala", "c", "h", "cc", "cpp", "hpp", "m", "mm", "lua", "ex",
+    "exs", "dart", "vue", "svelte",
 ];
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdx"];
 
 /// Words that start a declaration.
 const KEYWORDS: &[&str] = &[
-    "fn", "function", "class", "struct", "enum", "trait", "impl", "interface", "type", "mod", "module",
-    "namespace", "def", "func", "fun", "union", "macro_rules",
+    "fn",
+    "function",
+    "class",
+    "struct",
+    "enum",
+    "trait",
+    "impl",
+    "interface",
+    "type",
+    "mod",
+    "module",
+    "namespace",
+    "def",
+    "func",
+    "fun",
+    "union",
+    "macro_rules",
 ];
 /// Words that declare a variable: a declaration only at the top level,
 /// otherwise a modifier (`const fn`, `static async foo()`).
 const VARIABLES: &[&str] = &["const", "let", "var", "static"];
 /// Words that may come before a keyword.
 const MODIFIERS: &[&str] = &[
-    "pub", "export", "default", "async", "public", "private", "protected", "internal", "abstract", "final",
-    "sealed", "unsafe", "extern", "declare", "override", "readonly", "open", "inline", "virtual",
+    "pub",
+    "export",
+    "default",
+    "async",
+    "public",
+    "private",
+    "protected",
+    "internal",
+    "abstract",
+    "final",
+    "sealed",
+    "unsafe",
+    "extern",
+    "declare",
+    "override",
+    "readonly",
+    "open",
+    "inline",
+    "virtual",
 ];
 
 /// The text `read` returns for `content`, the file at `path`: all of
 /// it, or lines `start_line..=end_line` (1-based) when either is given.
-pub fn read(path: &str, content: &str, start_line: Option<usize>, end_line: Option<usize>) -> Result<String, String> {
+pub fn read(
+    path: &str,
+    content: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> Result<String, String> {
     let lines: Vec<&str> = content.lines().collect();
     if start_line.is_none() && end_line.is_none() {
         let chars = content.chars().count();
@@ -75,7 +113,10 @@ pub fn read(path: &str, content: &str, start_line: Option<usize>, end_line: Opti
     }
     let start = start_line.unwrap_or(1).max(1);
     if start > lines.len() {
-        return Err(format!("{path} has {} lines; start_line {start} is past the end", lines.len()));
+        return Err(format!(
+            "{path} has {} lines; start_line {start} is past the end",
+            lines.len()
+        ));
     }
     let end = end_line.unwrap_or(lines.len());
     if end < start {
@@ -94,7 +135,11 @@ fn range(lines: &[&str], start: usize, end: usize) -> String {
         if used + len > MAX_CHARS {
             if shown.is_empty() {
                 // One line longer than a whole read: its start is all there is.
-                let more = if n < end { format!(" Continue with start_line={}.", n + 1) } else { String::new() };
+                let more = if n < end {
+                    format!(" Continue with start_line={}.", n + 1)
+                } else {
+                    String::new()
+                };
                 return format!(
                     "{PARTIAL_PREFIX}line {n} is {} characters long; shown: its first {MAX_CHARS}.{more}]\n{}",
                     len - 1,
@@ -201,12 +246,22 @@ fn keyword_decls(path: &str, lines: &[&str]) -> Option<Vec<Decl>> {
                 in_fence = !in_fence;
             } else if let Some(level) = heading_level(text).filter(|_| !in_fence) {
                 let depth = (level - 1) * 2;
-                decls.push(Decl { lines: (i + 1).to_string(), depth, indent: depth, text: text.trim_end().to_string() });
+                decls.push(Decl {
+                    lines: (i + 1).to_string(),
+                    depth,
+                    indent: depth,
+                    text: text.trim_end().to_string(),
+                });
             }
         } else {
             let indent = width(&line[..line.len() - text.len()]);
             if is_declaration(text, indent) {
-                decls.push(Decl { lines: (i + 1).to_string(), depth: indent, indent, text: text.trim_end().to_string() });
+                decls.push(Decl {
+                    lines: (i + 1).to_string(),
+                    depth: indent,
+                    indent,
+                    text: text.trim_end().to_string(),
+                });
             }
         }
     }
@@ -220,17 +275,34 @@ fn render(decls: Vec<Decl>) -> Option<String> {
     }
     let rendered: Vec<String> = decls
         .iter()
-        .map(|d| format!("{}: {}{}", d.lines, " ".repeat(d.indent.min(MAP_MAX_INDENT)), shorten(&d.text)))
+        .map(|d| {
+            format!(
+                "{}: {}{}",
+                d.lines,
+                " ".repeat(d.indent.min(MAP_MAX_INDENT)),
+                shorten(&d.text)
+            )
+        })
         .collect();
     let size = |max_depth: usize| -> usize {
-        decls.iter().zip(&rendered).filter(|(d, _)| d.depth <= max_depth).map(|(_, r)| r.chars().count() + 1).sum()
+        decls
+            .iter()
+            .zip(&rendered)
+            .filter(|(d, _)| d.depth <= max_depth)
+            .map(|(_, r)| r.chars().count() + 1)
+            .sum()
     };
     let mut depths: Vec<usize> = decls.iter().map(|d| d.depth).collect();
     depths.sort_unstable();
     depths.dedup();
     // The deepest nesting that fits; if not even the top level fits, the
     // top level up to the limit.
-    let max_depth = depths.iter().rev().copied().find(|&d| size(d) <= MAP_CHARS).unwrap_or(depths[0]);
+    let max_depth = depths
+        .iter()
+        .rev()
+        .copied()
+        .find(|&d| size(d) <= MAP_CHARS)
+        .unwrap_or(depths[0]);
 
     // The room left takes the next level down, in order, as far as it goes.
     let next_depth = depths.iter().copied().find(|&d| d > max_depth);
@@ -270,13 +342,17 @@ fn is_declaration(text: &str, indent: usize) -> bool {
         if token.starts_with("pub(") {
             continue; // pub(crate), pub(super)
         }
-        let word: &str = &token[..token.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(token.len())];
+        let word: &str = &token[..token
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(token.len())];
         // `impl<T>`, `function*` and `macro_rules!` are keywords; `type:`
         // (an object key) and `module.exports` aren't. A keyword names
         // something next: `const mod = …` declares a variable called mod.
         let rest = &token[word.len()..];
         let named = if rest.is_empty() {
-            tokens.get(i + 1).is_some_and(|next| !next.starts_with(['=', ':']))
+            tokens
+                .get(i + 1)
+                .is_some_and(|next| !next.starts_with(['=', ':']))
         } else {
             rest.starts_with(['<', '(', '!', '*'])
         };
@@ -305,7 +381,10 @@ fn heading_level(text: &str) -> Option<usize> {
 }
 
 fn width(indent: &str) -> usize {
-    indent.chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum()
+    indent
+        .chars()
+        .map(|c| if c == '\t' { TAB_WIDTH } else { 1 })
+        .sum()
 }
 
 fn extension(path: &str) -> String {
@@ -345,7 +424,12 @@ mod tests {
         let start = std::time::Instant::now();
         let out = read(&path, &content, None, None).unwrap();
         println!("{out}");
-        eprintln!("{} characters from {} in {:?}", out.chars().count(), content.chars().count(), start.elapsed());
+        eprintln!(
+            "{} characters from {} in {:?}",
+            out.chars().count(),
+            content.chars().count(),
+            start.elapsed()
+        );
     }
 
     /// A Rust file of `n` functions, each 30 lines long.
@@ -369,7 +453,9 @@ mod tests {
 
     /// The map part of a large file's overview.
     fn map_of(out: &str) -> &str {
-        out.split("(lines: declaration)]\n").nth(1).unwrap_or_else(|| panic!("no map in {out}"))
+        out.split("(lines: declaration)]\n")
+            .nth(1)
+            .unwrap_or_else(|| panic!("no map in {out}"))
     }
 
     #[test]
@@ -386,7 +472,10 @@ mod tests {
         // Line ranges and signatures, from the syntax tree.
         assert!(map.starts_with("3-32: pub fn f0(x: u32) -> u32\n"), "{map}");
         // The last function, far past the first 20,000 characters.
-        assert!(map.contains("\n1173-1202: pub fn f39(x: u32) -> u32"), "{map}");
+        assert!(
+            map.contains("\n1173-1202: pub fn f39(x: u32) -> u32"),
+            "{map}"
+        );
         assert!(out.chars().count() < MAX_CHARS);
     }
 
@@ -394,13 +483,25 @@ mod tests {
     fn the_map_leaves_out_the_deepest_nesting_first() {
         let mut content = String::new();
         for i in 0..300 {
-            content.push_str(&format!("impl Thing{i} {{\n    pub fn method_with_a_long_name_{i}(&self) {{}}\n{}}}\n", "    // filler line\n".repeat(5)));
+            content.push_str(&format!(
+                "impl Thing{i} {{\n    pub fn method_with_a_long_name_{i}(&self) {{}}\n{}}}\n",
+                "    // filler line\n".repeat(5)
+            ));
         }
         let out = read("src/t.rs", &content, None, None).unwrap();
         let map = map_of(&out);
-        assert!(map.starts_with("1-8: impl Thing0\n2:   pub fn method_with_a_long_name_0(&self)\n"), "{map}");
-        assert!(map.contains("2393-2400: impl Thing299"), "every top-level block fits");
-        assert!(!map.contains("method_with_a_long_name_299"), "the methods that don't fit are left out");
+        assert!(
+            map.starts_with("1-8: impl Thing0\n2:   pub fn method_with_a_long_name_0(&self)\n"),
+            "{map}"
+        );
+        assert!(
+            map.contains("2393-2400: impl Thing299"),
+            "every top-level block fits"
+        );
+        assert!(
+            !map.contains("method_with_a_long_name_299"),
+            "the methods that don't fit are left out"
+        );
         assert!(map.contains("more declarations, nested deeper"));
         assert!(map.chars().count() < MAP_CHARS + 200);
     }
@@ -409,20 +510,35 @@ mod tests {
     fn nested_declarations_are_indented_under_their_parent() {
         let mut content = String::from("pub struct S;\nimpl S {\n");
         for i in 0..400 {
-            content.push_str(&format!("    pub fn method_{i}(&self) -> u32 {{\n        {i}\n    }}\n"));
+            content.push_str(&format!(
+                "    pub fn method_{i}(&self) -> u32 {{\n        {i}\n    }}\n"
+            ));
         }
         content.push_str("}\n");
         let out = read("src/s.rs", &content, None, None).unwrap();
         let map = map_of(&out);
-        assert!(map.starts_with("1: pub struct S;\n2-1203: impl S\n3-5:   pub fn method_0(&self) -> u32\n"), "{map}");
-        assert!(map.contains("pub fn method_100(&self)"), "the room left goes to the methods: {map}");
-        assert!(!map.contains("pub fn method_399("), "not all 400 fit: {map}");
+        assert!(
+            map.starts_with(
+                "1: pub struct S;\n2-1203: impl S\n3-5:   pub fn method_0(&self) -> u32\n"
+            ),
+            "{map}"
+        );
+        assert!(
+            map.contains("pub fn method_100(&self)"),
+            "the room left goes to the methods: {map}"
+        );
+        assert!(
+            !map.contains("pub fn method_399("),
+            "not all 400 fit: {map}"
+        );
         assert!(map.contains("more declarations"));
     }
 
     #[test]
     fn a_map_too_big_even_at_the_top_level_stops_at_its_limit() {
-        let content: String = (0..2_000).map(|i| format!("fn function_number_{i}() {{}}\n")).collect();
+        let content: String = (0..2_000)
+            .map(|i| format!("fn function_number_{i}() {{}}\n"))
+            .collect();
         let out = read("src/many.rs", &content, None, None).unwrap();
         let map = map_of(&out);
         assert!(map.chars().count() < MAP_CHARS + 200);
@@ -437,7 +553,10 @@ mod tests {
         content.push_str("### Deep\n");
         let out = read("docs/guide.md", &content, None, None).unwrap();
         let map = map_of(&out);
-        assert_eq!(map, "1-1008: # Title\n7-1008:   ## Part\n1008:     ### Deep");
+        assert_eq!(
+            map,
+            "1-1008: # Title\n7-1008:   ## Part\n1008:     ### Deep"
+        );
     }
 
     #[test]
@@ -495,7 +614,10 @@ mod tests {
         assert_eq!(read("f.txt", content, Some(2), Some(3)).unwrap(), "b\nc");
         assert_eq!(read("f.txt", content, Some(3), None).unwrap(), "c\nd");
         assert_eq!(read("f.txt", content, None, Some(2)).unwrap(), "a\nb");
-        assert_eq!(read("f.txt", content, Some(2), Some(99)).unwrap(), "b\nc\nd");
+        assert_eq!(
+            read("f.txt", content, Some(2), Some(99)).unwrap(),
+            "b\nc\nd"
+        );
     }
 
     #[test]
@@ -506,7 +628,10 @@ mod tests {
         assert!(note.starts_with(PARTIAL_PREFIX));
         let shown = body.lines().count();
         assert!(note.contains(&format!("lines 1-{shown} of ")), "{note}");
-        assert!(note.contains(&format!("Continue with start_line={}.", shown + 1)), "{note}");
+        assert!(
+            note.contains(&format!("Continue with start_line={}.", shown + 1)),
+            "{note}"
+        );
         assert!(body.chars().count() <= MAX_CHARS);
     }
 
@@ -521,8 +646,14 @@ mod tests {
     #[test]
     fn impossible_ranges_are_errors_not_panics() {
         let content = "a\nb\nc\n";
-        assert_eq!(read("f.txt", content, Some(3), Some(2)).unwrap_err(), "start_line (3) is after end_line (2)");
-        assert_eq!(read("f.txt", content, Some(9), None).unwrap_err(), "f.txt has 3 lines; start_line 9 is past the end");
+        assert_eq!(
+            read("f.txt", content, Some(3), Some(2)).unwrap_err(),
+            "start_line (3) is after end_line (2)"
+        );
+        assert_eq!(
+            read("f.txt", content, Some(9), None).unwrap_err(),
+            "f.txt has 3 lines; start_line 9 is past the end"
+        );
     }
 
     #[test]

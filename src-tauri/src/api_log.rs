@@ -34,7 +34,10 @@ static TARGET: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
     } else {
         PathBuf::from(value)
     };
-    eprintln!("api_log: writing requests and replies to {}", path.display());
+    eprintln!(
+        "api_log: writing requests and replies to {}",
+        path.display()
+    );
     Some(path)
 });
 /// One writer at a time, so lines from parallel requests don't interleave.
@@ -88,7 +91,13 @@ impl Exchange {
             "streaming": streaming,
             "body": body,
         }));
-        Some(Exchange { id, started: Instant::now(), status: None, raw: String::new(), outcome: "unfinished" })
+        Some(Exchange {
+            id,
+            started: Instant::now(),
+            status: None,
+            raw: String::new(),
+            outcome: "unfinished",
+        })
     }
 }
 

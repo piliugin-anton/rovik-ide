@@ -98,9 +98,17 @@ impl Chat {
     }
 
     async fn prepare(&self, budget: usize) -> Prepared {
-        prepare(&self.db, &self.vfs, self.id.clone(), budget, COST, None, None)
-            .await
-            .unwrap()
+        prepare(
+            &self.db,
+            &self.vfs,
+            self.id.clone(),
+            budget,
+            COST,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
     }
 
     fn path(&self) -> String {
@@ -681,10 +689,17 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
         let p = chat.prepare(1_000).await;
         // ~30%: the heads-up, which asks for no edit yet.
         assert!(notes(&p).contains("No edit is needed now"), "{}", notes(&p));
-        assert!(!notes(&p).contains("tidy your context file"), "{}", notes(&p));
-        assert!(notes(&p).contains("[context: ~"), "the readout stays: {}", notes(&p));
-        chat.add(tool_pair(2, "read", "{}", &"w".repeat(900)))
-            .await; // ~60%
+        assert!(
+            !notes(&p).contains("tidy your context file"),
+            "{}",
+            notes(&p)
+        );
+        assert!(
+            notes(&p).contains("[context: ~"),
+            "the readout stays: {}",
+            notes(&p)
+        );
+        chat.add(tool_pair(2, "read", "{}", &"w".repeat(900))).await; // ~60%
         let p = chat.prepare(1_000).await;
         assert!(
             notes(&p).contains("tidy your context file ONCE"),
@@ -694,7 +709,11 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
         assert_eq!(chat.state().await.nudged, [25, 50]);
         chat.add(vec![message("a2-reply", "assistant", "ok")]).await;
         let p = chat.prepare(1_000).await;
-        assert!(!notes(&p).contains("CONTEXT BUDGET"), "same tier, no reminder: {}", notes(&p));
+        assert!(
+            !notes(&p).contains("CONTEXT BUDGET"),
+            "same tier, no reminder: {}",
+            notes(&p)
+        );
         // An accepted edit re-arms them.
         chat.write(&with_block(&chat.file(), 4, "short"));
         chat.add(vec![message("a3", "assistant", "done")]).await;
@@ -703,9 +722,17 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
         // Cleared by the edit, then fired again for the size the context
         // still has: only tiers it has reached, and a reminder in the notes.
         let pct = crate::clm::prompt::percent(state.tokens, state.budget);
-        assert!(state.nudged.iter().all(|t| *t <= pct), "re-armed: {:?} at {pct}%", state.nudged);
+        assert!(
+            state.nudged.iter().all(|t| *t <= pct),
+            "re-armed: {:?} at {pct}%",
+            state.nudged
+        );
         if !state.nudged.is_empty() {
-            assert!(notes(&p).contains("CONTEXT BUDGET"), "fired again after the edit: {}", notes(&p));
+            assert!(
+                notes(&p).contains("CONTEXT BUDGET"),
+                "fired again after the edit: {}",
+                notes(&p)
+            );
         }
     });
 }
@@ -802,7 +829,10 @@ fn the_agent_restores_a_revision_or_the_stored_chat() {
         let said = tool_restore(&chat.db, &chat.vfs, "chat", Some(&arg("1")))
             .await
             .unwrap();
-        assert!(said.starts_with("Revision 1 is your context file again as revision"), "{said}");
+        assert!(
+            said.starts_with("Revision 1 is your context file again as revision"),
+            "{said}"
+        );
         let p = chat.prepare(ROOMY).await;
         assert_eq!(ids(&p), ["u1", "a1", "t1", "u2"]);
         assert_eq!(p.messages[2].text, "full content");
@@ -816,7 +846,10 @@ fn the_agent_restores_a_revision_or_the_stored_chat() {
         let said = tool_restore(&chat.db, &chat.vfs, "chat", Some(&arg("stored")))
             .await
             .unwrap();
-        assert!(said.contains("as stored") && said.contains("revision"), "{said}");
+        assert!(
+            said.contains("as stored") && said.contains("revision"),
+            "{said}"
+        );
         assert!(chat.state().await.projection.is_none());
         let p = chat.prepare(ROOMY).await;
         assert!(!notes(&p).contains("edit applied"), "{}", notes(&p));
@@ -867,22 +900,44 @@ fn listing_the_context_folder() {
         tool_write(&chat.vfs, "chat", "@context/notes.md", "plan").unwrap();
         tool_write(&chat.vfs, "chat", "@context/data/big.txt", "x").unwrap();
 
-        let list = tool_list(&chat.db, &chat.vfs, "chat", "@context").await.unwrap();
+        let list = tool_list(&chat.db, &chat.vfs, "chat", "@context")
+            .await
+            .unwrap();
         let lines: Vec<&str> = list.lines().collect();
-        assert!(lines[0].starts_with("@context/LIVE_CONTEXT.md (your context: ~"), "{list}");
+        assert!(
+            lines[0].starts_with("@context/LIVE_CONTEXT.md (your context: ~"),
+            "{list}"
+        );
         assert!(lines[0].contains("revision 1"), "{list}");
-        assert!(lines[1].starts_with("@context/revisions/ (1 revisions"), "{list}");
-        assert!(list.contains("@context/data/\n") || list.ends_with("@context/data/"), "{list}");
+        assert!(
+            lines[1].starts_with("@context/revisions/ (1 revisions"),
+            "{list}"
+        );
+        assert!(
+            list.contains("@context/data/\n") || list.ends_with("@context/data/"),
+            "{list}"
+        );
         assert!(list.contains("@context/notes.md (4 bytes)"), "{list}");
         assert_eq!(list.matches("LIVE_CONTEXT.md").count(), 1, "{list}");
 
-        let sub = tool_list(&chat.db, &chat.vfs, "chat", "@context/data").await.unwrap();
+        let sub = tool_list(&chat.db, &chat.vfs, "chat", "@context/data")
+            .await
+            .unwrap();
         assert_eq!(sub, "@context/data/big.txt (1 bytes)");
-        let revisions = tool_list(&chat.db, &chat.vfs, "chat", "@context/revisions").await.unwrap();
-        assert!(revisions.starts_with("Revisions of your context file"), "{revisions}");
-        let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/revisions/1.md").await.unwrap_err();
+        let revisions = tool_list(&chat.db, &chat.vfs, "chat", "@context/revisions")
+            .await
+            .unwrap();
+        assert!(
+            revisions.starts_with("Revisions of your context file"),
+            "{revisions}"
+        );
+        let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/revisions/1.md")
+            .await
+            .unwrap_err();
         assert!(err.contains("read"), "{err}");
-        let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/missing").await.unwrap_err();
+        let err = tool_list(&chat.db, &chat.vfs, "chat", "@context/missing")
+            .await
+            .unwrap_err();
         assert!(err.contains("not found"), "{err}");
     });
 }
@@ -1152,7 +1207,10 @@ fn editing_and_writing_the_context_folder() {
         chat.add(vec![message("u3", "user", "go")]).await;
         let p = chat.prepare(ROOMY).await;
         assert_eq!(p.messages[0].text, "same", "the user's messages are kept");
-        assert!(p.messages.iter().any(|m| m.text == "[notes]\nJust the plan."));
+        assert!(p
+            .messages
+            .iter()
+            .any(|m| m.text == "[notes]\nJust the plan."));
         assert!(!p.messages.iter().any(|m| m.role == "assistant"));
     });
 }
@@ -1206,21 +1264,13 @@ fn recall_hints_only_when_the_result_is_gone() {
         )
         .await;
         chat.prepare(ROOMY).await;
-        assert_eq!(
-            chat.hint("c9", "bash", args).await,
-            None,
-            "no edits yet"
-        );
+        assert_eq!(chat.hint("c9", "bash", args).await, None, "no edits yet");
 
         // The agent edits something else and keeps the output.
         chat.write(&with_block(&chat.file(), 1, "task: make tests pass"));
         chat.add(vec![message("a5", "assistant", "next")]).await;
         chat.prepare(ROOMY).await;
-        assert_eq!(
-            chat.hint("c9", "bash", args).await,
-            None,
-            "still visible"
-        );
+        assert_eq!(chat.hint("c9", "bash", args).await, None, "still visible");
 
         // Now it removes the output and runs the command again.
         chat.write(&with_block(&chat.file(), 3, "[tests: 2 failed in parser]"));
@@ -1625,7 +1675,12 @@ fn a_missing_task_card_reads_as_guidance_not_an_error() {
         );
         // Any spelling of the card path is guidance, not an error, so it
         // doesn't count as a failed call in the loop checks.
-        for path in ["@context/TASK.md", "@context/TASK", "@context/task.md", "@context/task"] {
+        for path in [
+            "@context/TASK.md",
+            "@context/TASK",
+            "@context/task.md",
+            "@context/task",
+        ] {
             let text = tool_read(&chat.db, &chat.vfs, "chat", path, None, None)
                 .await
                 .unwrap();

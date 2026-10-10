@@ -214,7 +214,10 @@ pub fn list_dialogs(
 
     let next_cursor = if items.len() > limit {
         items.truncate(limit);
-        items.last().map(|d| Cursor { updated_at: d.updated_at, id: d.id.clone() })
+        items.last().map(|d| Cursor {
+            updated_at: d.updated_at,
+            id: d.id.clone(),
+        })
     } else {
         None
     };
@@ -222,11 +225,16 @@ pub fn list_dialogs(
 }
 
 /// The ids of a project's chats (`project` None: the chats with no project).
-pub fn dialogs_in_project(conn: &Connection, project: Option<&str>) -> DbResult<std::collections::HashSet<String>> {
+pub fn dialogs_in_project(
+    conn: &Connection,
+    project: Option<&str>,
+) -> DbResult<std::collections::HashSet<String>> {
     let mut stmt = conn
         .prepare_cached("SELECT id FROM dialogs WHERE project_id IS ?1")
         .map_err(err)?;
-    let rows = stmt.query_map(params![project], |r| r.get::<_, String>(0)).map_err(err)?;
+    let rows = stmt
+        .query_map(params![project], |r| r.get::<_, String>(0))
+        .map_err(err)?;
     rows.collect::<Result<_, _>>().map_err(err)
 }
 
@@ -242,10 +250,14 @@ pub fn get_dialog(conn: &Connection, id: &str) -> DbResult<Option<DialogSummary>
 
 /// The chat's project; None for a chat with no project, or no such chat.
 pub fn dialog_project(conn: &Connection, id: &str) -> DbResult<Option<String>> {
-    conn.query_row("SELECT project_id FROM dialogs WHERE id = ?1", params![id], |r| r.get(0))
-        .optional()
-        .map(Option::flatten)
-        .map_err(err)
+    conn.query_row(
+        "SELECT project_id FROM dialogs WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(err)
 }
 
 pub fn create_dialog(conn: &mut Connection, d: &NewDialog) -> DbResult<()> {
@@ -261,8 +273,11 @@ pub fn create_dialog(conn: &mut Connection, d: &NewDialog) -> DbResult<()> {
 
 pub fn rename_dialog(conn: &mut Connection, id: &str, title: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
-    tx.execute("UPDATE dialogs SET title = ?2 WHERE id = ?1", params![id, title])
-        .map_err(err)?;
+    tx.execute(
+        "UPDATE dialogs SET title = ?2 WHERE id = ?1",
+        params![id, title],
+    )
+    .map_err(err)?;
     index_title(&tx, id, title)?;
     tx.commit().map_err(err)
 }
@@ -281,11 +296,18 @@ pub fn delete_dialog(conn: &mut Connection, id: &str) -> DbResult<()> {
         ids
     };
     for rowid in rowids {
-        tx.execute("DELETE FROM search_index WHERE rowid = ?1", params![rowid]).map_err(err)?;
-        tx.execute("DELETE FROM title_trigrams WHERE rowid = ?1", params![rowid]).map_err(err)?;
+        tx.execute("DELETE FROM search_index WHERE rowid = ?1", params![rowid])
+            .map_err(err)?;
+        tx.execute(
+            "DELETE FROM title_trigrams WHERE rowid = ?1",
+            params![rowid],
+        )
+        .map_err(err)?;
     }
-    tx.execute("DELETE FROM search_rows WHERE dialog_id = ?1", params![id]).map_err(err)?;
-    tx.execute("DELETE FROM dialogs WHERE id = ?1", params![id]).map_err(err)?;
+    tx.execute("DELETE FROM search_rows WHERE dialog_id = ?1", params![id])
+        .map_err(err)?;
+    tx.execute("DELETE FROM dialogs WHERE id = ?1", params![id])
+        .map_err(err)?;
     tx.commit().map_err(err)
 }
 
@@ -298,7 +320,11 @@ pub fn delete_dialog(conn: &mut Connection, id: &str) -> DbResult<()> {
 fn remove_search_row(conn: &Connection, dialog_id: &str, message_id: Option<&str>) -> DbResult<()> {
     let rowid: Option<i64> = match message_id {
         Some(m) => conn
-            .query_row("SELECT rowid FROM search_rows WHERE message_id = ?1", params![m], |r| r.get(0))
+            .query_row(
+                "SELECT rowid FROM search_rows WHERE message_id = ?1",
+                params![m],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(err)?,
         None => conn
@@ -311,17 +337,26 @@ fn remove_search_row(conn: &Connection, dialog_id: &str, message_id: Option<&str
             .map_err(err)?,
     };
     if let Some(rowid) = rowid {
-        conn.execute("DELETE FROM search_index WHERE rowid = ?1", params![rowid]).map_err(err)?;
-        conn.execute("DELETE FROM title_trigrams WHERE rowid = ?1", params![rowid]).map_err(err)?;
-        conn.execute("DELETE FROM search_rows WHERE rowid = ?1", params![rowid]).map_err(err)?;
+        conn.execute("DELETE FROM search_index WHERE rowid = ?1", params![rowid])
+            .map_err(err)?;
+        conn.execute(
+            "DELETE FROM title_trigrams WHERE rowid = ?1",
+            params![rowid],
+        )
+        .map_err(err)?;
+        conn.execute("DELETE FROM search_rows WHERE rowid = ?1", params![rowid])
+            .map_err(err)?;
     }
     Ok(())
 }
 
 fn index_title(conn: &Connection, dialog_id: &str, title: &str) -> DbResult<()> {
     remove_search_row(conn, dialog_id, None)?;
-    conn.execute("INSERT INTO search_rows (dialog_id, message_id) VALUES (?1, NULL)", params![dialog_id])
-        .map_err(err)?;
+    conn.execute(
+        "INSERT INTO search_rows (dialog_id, message_id) VALUES (?1, NULL)",
+        params![dialog_id],
+    )
+    .map_err(err)?;
     let rowid = conn.last_insert_rowid();
     conn.execute(
         "INSERT INTO search_index (rowid, title, body, dialog_id, message_id) VALUES (?1, ?2, '', ?3, NULL)",
@@ -397,13 +432,17 @@ fn attach_attachments(conn: &Connection, messages: &mut [MessageRow]) -> DbResul
         .map_err(err)?;
     let mut by_message: HashMap<String, Vec<String>> = HashMap::new();
     let rows = stmt
-        .query_map(params_from_iter(messages.iter().map(|m| m.id.as_str())), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
+        .query_map(
+            params_from_iter(messages.iter().map(|m| m.id.as_str())),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
         .map_err(err)?;
     for row in rows {
         let (message_id, attachment_id) = row.map_err(err)?;
-        by_message.entry(message_id).or_default().push(attachment_id);
+        by_message
+            .entry(message_id)
+            .or_default()
+            .push(attachment_id);
     }
     for m in messages.iter_mut() {
         if let Some(list) = by_message.remove(&m.id) {
@@ -422,7 +461,11 @@ fn collapse_whitespace(text: &str) -> String {
 }
 
 /// Appends messages in order; returns the `seq` assigned to each.
-pub fn append_messages(conn: &mut Connection, dialog_id: &str, messages: &[NewMessage]) -> DbResult<Vec<i64>> {
+pub fn append_messages(
+    conn: &mut Connection,
+    dialog_id: &str,
+    messages: &[NewMessage],
+) -> DbResult<Vec<i64>> {
     let tx = conn.transaction().map_err(err)?;
     let mut next: i64 = tx
         .query_row(
@@ -481,11 +524,19 @@ pub fn append_messages(conn: &mut Connection, dialog_id: &str, messages: &[NewMe
 /// Makes a message final: large tool output moves to `message_bodies`,
 /// searchable text is indexed, and the chat's preview is refreshed.
 fn finalize(conn: &Connection, message_id: &str) -> DbResult<()> {
-    let (dialog_id, role, content, error, failed): (String, String, String, Option<String>, bool) = conn
-        .query_row(
+    let (dialog_id, role, content, error, failed): (String, String, String, Option<String>, bool) =
+        conn.query_row(
             "SELECT dialog_id, role, content, error, failed FROM messages WHERE id = ?1",
             params![message_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get::<_, i64>(4)? != 0,
+                ))
+            },
         )
         .map_err(err)?;
 
@@ -514,7 +565,11 @@ fn finalize(conn: &Connection, message_id: &str) -> DbResult<()> {
         let preview = collapse_whitespace(char_prefix(&content, DIALOG_PREVIEW_CHARS * 2));
         conn.execute(
             "UPDATE dialogs SET preview = ?2, updated_at = MAX(updated_at, ?3) WHERE id = ?1",
-            params![dialog_id, char_prefix(&preview, DIALOG_PREVIEW_CHARS), now_ms()],
+            params![
+                dialog_id,
+                char_prefix(&preview, DIALOG_PREVIEW_CHARS),
+                now_ms()
+            ],
         )
         .map_err(err)?;
     } else {
@@ -523,7 +578,11 @@ fn finalize(conn: &Connection, message_id: &str) -> DbResult<()> {
     Ok(())
 }
 
-pub fn update_message(conn: &mut Connection, message_id: &str, patch: &MessagePatch) -> DbResult<()> {
+pub fn update_message(
+    conn: &mut Connection,
+    message_id: &str,
+    patch: &MessagePatch,
+) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     if let Some(content) = &patch.content {
         tx.execute(
@@ -547,19 +606,27 @@ pub fn update_message(conn: &mut Connection, message_id: &str, patch: &MessagePa
         .map_err(err)?;
     }
     if let Some(error) = &patch.error {
-        tx.execute("UPDATE messages SET error = ?2 WHERE id = ?1", params![message_id, error])
-            .map_err(err)?;
+        tx.execute(
+            "UPDATE messages SET error = ?2 WHERE id = ?1",
+            params![message_id, error],
+        )
+        .map_err(err)?;
     }
     if let Some(failed) = patch.failed {
-        tx.execute("UPDATE messages SET failed = ?2 WHERE id = ?1", params![message_id, failed as i64])
-            .map_err(err)?;
+        tx.execute(
+            "UPDATE messages SET failed = ?2 WHERE id = ?1",
+            params![message_id, failed as i64],
+        )
+        .map_err(err)?;
     }
 
     // A message that becomes failed or errored must leave the search index.
     let finalized: bool = tx
-        .query_row("SELECT finalized FROM messages WHERE id = ?1", params![message_id], |r| {
-            Ok(r.get::<_, i64>(0)? != 0)
-        })
+        .query_row(
+            "SELECT finalized FROM messages WHERE id = ?1",
+            params![message_id],
+            |r| Ok(r.get::<_, i64>(0)? != 0),
+        )
         .optional()
         .map_err(err)?
         .ok_or_else(|| format!("No message {message_id}"))?;
@@ -571,7 +638,12 @@ pub fn update_message(conn: &mut Connection, message_id: &str, patch: &MessagePa
 
 /// The newest `limit` messages before `before_seq` (or the newest overall),
 /// returned oldest first.
-pub fn get_messages(conn: &Connection, dialog_id: &str, before_seq: Option<i64>, limit: usize) -> DbResult<MessagePage> {
+pub fn get_messages(
+    conn: &Connection,
+    dialog_id: &str,
+    before_seq: Option<i64>,
+    limit: usize,
+) -> DbResult<MessagePage> {
     let limit = limit.clamp(1, 500);
     let mut stmt = conn
         .prepare_cached(&format!(
@@ -580,7 +652,14 @@ pub fn get_messages(conn: &Connection, dialog_id: &str, before_seq: Option<i64>,
         ))
         .map_err(err)?;
     let mut messages: Vec<MessageRow> = stmt
-        .query_map(params![dialog_id, before_seq.unwrap_or(i64::MAX), (limit + 1) as i64], message_from_row)
+        .query_map(
+            params![
+                dialog_id,
+                before_seq.unwrap_or(i64::MAX),
+                (limit + 1) as i64
+            ],
+            message_from_row,
+        )
         .map_err(err)?
         .collect::<Result<_, _>>()
         .map_err(err)?;
@@ -588,16 +667,27 @@ pub fn get_messages(conn: &Connection, dialog_id: &str, before_seq: Option<i64>,
     messages.truncate(limit);
     messages.reverse();
     attach_attachments(conn, &mut messages)?;
-    Ok(MessagePage { messages, has_older, has_newer: before_seq.is_some() })
+    Ok(MessagePage {
+        messages,
+        has_older,
+        has_newer: before_seq.is_some(),
+    })
 }
 
 /// Up to `before` messages before `message_id`, the message itself, and up
 /// to `after` after it: for opening a chat at a search hit.
-pub fn get_messages_around(conn: &Connection, message_id: &str, before: usize, after: usize) -> DbResult<MessagePage> {
+pub fn get_messages_around(
+    conn: &Connection,
+    message_id: &str,
+    before: usize,
+    after: usize,
+) -> DbResult<MessagePage> {
     let (dialog_id, seq): (String, i64) = conn
-        .query_row("SELECT dialog_id, seq FROM messages WHERE id = ?1", params![message_id], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT dialog_id, seq FROM messages WHERE id = ?1",
+            params![message_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .map_err(err)?;
 
     let mut older = get_messages(conn, &dialog_id, Some(seq + 1), before + 1)?;
@@ -608,7 +698,10 @@ pub fn get_messages_around(conn: &Connection, message_id: &str, before: usize, a
         ))
         .map_err(err)?;
     let mut newer: Vec<MessageRow> = stmt
-        .query_map(params![dialog_id, seq, (after + 1) as i64], message_from_row)
+        .query_map(
+            params![dialog_id, seq, (after + 1) as i64],
+            message_from_row,
+        )
         .map_err(err)?
         .collect::<Result<_, _>>()
         .map_err(err)?;
@@ -617,18 +710,30 @@ pub fn get_messages_around(conn: &Connection, message_id: &str, before: usize, a
     attach_attachments(conn, &mut newer)?;
 
     older.messages.extend(newer);
-    Ok(MessagePage { messages: older.messages, has_older: older.has_older, has_newer })
+    Ok(MessagePage {
+        messages: older.messages,
+        has_older: older.has_older,
+        has_newer,
+    })
 }
 
 pub fn get_message_body(conn: &Connection, message_id: &str) -> DbResult<String> {
     let external: Option<String> = conn
-        .query_row("SELECT content FROM message_bodies WHERE message_id = ?1", params![message_id], |r| r.get(0))
+        .query_row(
+            "SELECT content FROM message_bodies WHERE message_id = ?1",
+            params![message_id],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(err)?;
     match external {
         Some(body) => Ok(body),
         None => conn
-            .query_row("SELECT content FROM messages WHERE id = ?1", params![message_id], |r| r.get(0))
+            .query_row(
+                "SELECT content FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| r.get(0),
+            )
             .map_err(err),
     }
 }
@@ -661,7 +766,11 @@ pub fn messages_answered(conn: &Connection, ids: &[String]) -> DbResult<Vec<Stri
 
 /// Saves provider data for tool calls of an assistant message, as parsed
 /// from the response. Skipped if the message doesn't exist (e.g. deleted).
-pub fn save_tool_call_extras(conn: &mut Connection, message_id: &str, extras: &[(String, Value)]) -> DbResult<()> {
+pub fn save_tool_call_extras(
+    conn: &mut Connection,
+    message_id: &str,
+    extras: &[(String, Value)],
+) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     for (call_id, extra) in extras {
         tx.execute(
@@ -686,11 +795,15 @@ pub fn reasoning_of(conn: &Connection, message_ids: &[&str]) -> DbResult<HashMap
             ))
             .map_err(err)?;
         let rows = stmt
-            .query_map(params_from_iter(chunk.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .query_map(params_from_iter(chunk.iter()), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
             .map_err(err)?;
         for row in rows {
             let (id, meta) = row.map_err(err)?;
-            let reasoning = serde_json::from_str::<Value>(&meta).ok().and_then(|m| m.get("reasoning").cloned());
+            let reasoning = serde_json::from_str::<Value>(&meta)
+                .ok()
+                .and_then(|m| m.get("reasoning").cloned());
             if let Some(reasoning) = reasoning {
                 out.insert(id, reasoning);
             }
@@ -699,7 +812,10 @@ pub fn reasoning_of(conn: &Connection, message_ids: &[&str]) -> DbResult<HashMap
     Ok(out)
 }
 
-pub fn tool_call_extras(conn: &Connection, message_ids: &[&str]) -> DbResult<HashMap<(String, String), Value>> {
+pub fn tool_call_extras(
+    conn: &Connection,
+    message_ids: &[&str],
+) -> DbResult<HashMap<(String, String), Value>> {
     let mut out = HashMap::new();
     for chunk in message_ids.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
@@ -710,7 +826,11 @@ pub fn tool_call_extras(conn: &Connection, message_ids: &[&str]) -> DbResult<Has
             .map_err(err)?;
         let rows = stmt
             .query_map(params_from_iter(chunk.iter()), |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
             })
             .map_err(err)?;
         for row in rows {
@@ -736,8 +856,11 @@ pub fn tool_call_extras(conn: &Connection, message_ids: &[&str]) -> DbResult<Has
 pub fn save_composer_draft(conn: &mut Connection, dialog_id: &str, content: &str) -> DbResult<()> {
     let trimmed = content.trim();
     if trimmed.is_empty() || trimmed == "[]" {
-        conn.execute("DELETE FROM composer_drafts WHERE dialog_id = ?1", params![dialog_id])
-            .map_err(err)?;
+        conn.execute(
+            "DELETE FROM composer_drafts WHERE dialog_id = ?1",
+            params![dialog_id],
+        )
+        .map_err(err)?;
         return Ok(());
     }
     conn.execute(
