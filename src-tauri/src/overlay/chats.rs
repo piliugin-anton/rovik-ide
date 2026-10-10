@@ -302,8 +302,12 @@ pub fn discard(dialog_id: &str) -> Result<(), String> {
         refresh_project_peers(&project);
     }
     match store_dir(dialog_id) {
-        Some(store) if store.exists() => std::fs::remove_dir_all(&store).map_err(|e| e.to_string()),
-        _ => Ok(()),
+        // Gone already (discarded twice at once): nothing to do.
+        Some(store) => match std::fs::remove_dir_all(&store) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        },
+        None => Ok(()),
     }
 }
 
