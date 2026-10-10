@@ -23,6 +23,7 @@ import {
   overlayLand,
   overlayStatus,
   overlayUndo,
+  overlayUndoMerge,
   type ChangedFile,
   type OverlayStatus,
 } from '../lib/overlay';
@@ -117,10 +118,19 @@ export default function IsolationBar(props: Props) {
 
   async function land(keepChat: boolean) {
     if (keepChat) {
+      const s = status();
+      const conflicted = s?.pending?.conflicts.map((c) => c.path) ?? [];
+      const deleted = s?.files.filter((f) => f.change === 'deleted').map((f) => f.path) ?? [];
+      const list = (paths: string[]) =>
+        paths.length > 8
+          ? `${paths.slice(0, 8).join(', ')} and ${paths.length - 8} more`
+          : paths.join(', ');
       const ok = await confirmDialog({
         title: 'Land anyway?',
         message:
-          'Where this chat and the project changed the same lines, this chat’s version replaces the project’s. Undo takes the landing back.',
+          `This chat’s version replaces the project’s in ${plural(conflicted.length, 'file')}: ${list(conflicted)}.` +
+          (deleted.length ? ` These are deleted from the project: ${list(deleted)}.` : '') +
+          ' Undo takes the landing back.',
         confirmLabel: 'Land anyway',
         danger: true,
       });
@@ -177,6 +187,23 @@ export default function IsolationBar(props: Props) {
   }
 
   const disabled = () => props.running || busy();
+
+  async function undoMerge() {
+    setBusy(true);
+    try {
+      const files = await overlayUndoMerge(props.dialogId);
+      notify({
+        kind: 'success',
+        title: 'Merge taken back',
+        message: `${plural(files.length, 'file')} are this chat’s own version again.`,
+      });
+    } catch (e) {
+      notify({ kind: 'error', title: 'Couldn’t take the merge back', message: String(e) });
+    } finally {
+      setBusy(false);
+      void refetch();
+    }
+  }
 
   return (
     <>
@@ -235,6 +262,20 @@ export default function IsolationBar(props: Props) {
             </div>
             <Show when={s().pending}>
               {(p) => <div class="isolation-bar-reason">{p().reason}</div>}
+            </Show>
+            <Show when={s().mergedIn.length > 0}>
+              <div class="isolation-bar-merged">
+                The project’s newer changes were merged into {plural(s().mergedIn.length, 'file')}{' '}
+                here.
+                <button
+                  class="isolation-bar-action"
+                  disabled={disabled()}
+                  title="Put back this chat’s own version of those files"
+                  onClick={() => void undoMerge()}
+                >
+                  Undo the merge
+                </button>
+              </div>
             </Show>
             <Show when={open() || !!s().pending?.conflicts.length}>
               <ul class="isolation-bar-files">

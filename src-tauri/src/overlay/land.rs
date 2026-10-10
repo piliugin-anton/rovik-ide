@@ -15,7 +15,7 @@
 //!
 //! Only one landing per project at a time.
 
-use super::fs::OverlayChange;
+use super::fs::{DeletedBase, OverlayChange};
 use crate::merge::{is_binary, merge3, Merged};
 use crate::vfs::store::Kind;
 use serde::{Deserialize, Serialize};
@@ -89,7 +89,7 @@ enum NewContent {
     Symlink(String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Snapshot {
     Absent,
     Dir,
@@ -120,12 +120,42 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
     let mut actions = Vec::new();
     let mut conflicts = Vec::new();
     let mut merged = false;
+    // Where moved files came from: their content is merged at the new place
+    // against the project's file here, so the delete here isn't checked
+    // twice.
+    let carried: std::collections::HashSet<&str> = changes
+        .iter()
+        .filter_map(|c| match c {
+            OverlayChange::Write { kind: Kind::File, path, origin: Some(o), .. } if o != path => Some(o.as_str()),
+            _ => None,
+        })
+        .collect();
     for change in changes.iter().filter(|c| !c.by_product()) {
         let path = change.path().to_string();
         let target = abs(project, &path);
         let now = snapshot(&target);
         match change {
-            OverlayChange::Delete { .. } => actions.push(Action { path, new: NewContent::Absent, expected: now, merged: false }),
+            OverlayChange::Delete { base, .. } => {
+                // Already gone: nothing to do.
+                if now == Snapshot::Absent {
+                    continue;
+                }
+                // Changed in the project since the chat deleted it: deleting
+                // would lose that change.
+                let changed = base.as_ref().is_some_and(|b| !b.still(&target));
+                if changed && !keep_chat && !carried.contains(path.as_str()) {
+                    let reason = match base {
+                        Some(DeletedBase::Dir { complete: false, .. }) => {
+                            "the chat deleted this folder, and it's too large to check for changes in the project".to_string()
+                        }
+                        Some(DeletedBase::Dir { .. }) => "the chat deleted this folder, and its contents changed in the project".into(),
+                        _ => "the chat deleted it, and it changed in the project".into(),
+                    };
+                    conflicts.push(Conflict { path, reason });
+                    continue;
+                }
+                actions.push(Action { path, new: NewContent::Absent, expected: now, merged: false })
+            }
             OverlayChange::Write { kind: Kind::Dir, .. } => {
                 if now != Snapshot::Dir {
                     actions.push(Action { path, new: NewContent::Dir, expected: now, merged: false });
@@ -149,7 +179,14 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 };
                 let perm = perm_changed.then_some(*perm);
                 let base = base_copy.as_ref().and_then(|b| fs::read(b).ok());
-                let theirs = match &now {
+                // Moved: the project's side is its file where the chat's
+                // came from (the new place is checked by its own delete).
+                let moved_from = origin.as_ref().filter(|o| **o != path && base.is_some());
+                let source = match moved_from {
+                    Some(o) => snapshot(&abs(project, o)),
+                    None => now.clone(),
+                };
+                let theirs = match &source {
                     Snapshot::File(bytes) => Some(bytes.clone()),
                     Snapshot::Absent => None,
                     _ => {
@@ -165,6 +202,9 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                         merged = true;
                         bytes
                     }
+                    // The project already has it: nothing to write, unless it
+                    // moved (the project has it at the old place only).
+                    Resolved::Same if moved_from.is_some() && now != Snapshot::File(ours.clone()) => ours,
                     Resolved::Same => {
                         if perm.is_none() {
                             continue;
@@ -337,22 +377,52 @@ fn keep_old(dir: &Path, n: usize, path: &Path) -> Result<Content, String> {
         }
         Snapshot::File(bytes) => {
             let copy = dir.join("old").join(n.to_string());
-            fs::write(&copy, bytes).map_err(|e| e.to_string())?;
+            write_durable(&copy, &bytes)?;
             Content::File { file: copy, perm: perm_of(path) }
         }
         Snapshot::Symlink(t) => Content::Symlink { target: t },
     })
 }
 
+/// Writes a journal copy and flushes it to disk: after a power cut the
+/// journal must not say "applying" over empty copies.
+fn write_durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut f = fs::File::create(path).map_err(|e| e.to_string())?;
+    f.write_all(bytes).and_then(|_| f.sync_all()).map_err(|e| e.to_string())
+}
+
+#[cfg(unix)]
+fn sync_dir(dir: &Path) {
+    if let Ok(f) = fs::File::open(dir) {
+        let _ = f.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) {}
+
+/// A folder copied with what's in it: files (with their permissions),
+/// symlinks and subfolders.
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
+    if let Some(perm) = perm_of(from) {
+        set_perm(to, perm);
+    }
     for e in fs::read_dir(from)? {
         let e = e?;
         let ft = e.file_type()?;
         let dest = to.join(e.file_name());
-        if ft.is_dir() {
+        if ft.is_symlink() {
+            let target = fs::read_link(e.path())?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &dest)?;
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(&target, &dest)?;
+        } else if ft.is_dir() {
             copy_tree(&e.path(), &dest)?;
         } else if ft.is_file() {
+            // fs::copy keeps the permission bits.
             fs::copy(e.path(), dest)?;
         }
     }
@@ -379,7 +449,21 @@ fn set_perm(path: &Path, perm: u16) {
 #[cfg(not(unix))]
 fn set_perm(_path: &Path, _perm: u16) {}
 
+/// Tests: the path whose write fails, to check what a failed landing does.
+#[cfg(test)]
+/// Fails once, for that project's path.
+pub(crate) static FAIL_WRITING: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+
 fn write_content(project: &Path, rel: &str, content: &Content, dialog_id: &str) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let mut fail = FAIL_WRITING.lock().unwrap();
+        if fail.as_ref().is_some_and(|(p, r)| p == project && r == rel) {
+            *fail = None;
+            return Err(format!("{rel}: injected failure"));
+        }
+        let _ = content;
+    }
     let path = abs(project, rel);
     let err = |e: std::io::Error| format!("{rel}: {e}");
     // Whatever is there goes first, unless it's what comes.
@@ -436,8 +520,28 @@ fn write_content(project: &Path, rel: &str, content: &Content, dialog_id: &str) 
     }
 }
 
+/// Landing ids: time, process and a counter, so two landings of one chat in
+/// the same second don't share a folder.
+fn landing_id() -> String {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    format!("{}-{}-{}", now_secs(), std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Whether the project's entry at `rel` is what `content` says.
+fn is_content(project: &Path, rel: &str, content: &Content) -> bool {
+    let now = snapshot(&abs(project, rel));
+    match (content, now) {
+        (Content::Absent, Snapshot::Absent) | (Content::Dir, Snapshot::Dir) => true,
+        (Content::File { file, .. }, Snapshot::File(now)) if !file.is_dir() => fs::read(file).is_ok_and(|b| b == now),
+        // A folder kept whole (a deleted folder's journal copy).
+        (Content::File { file, .. }, Snapshot::Dir) if file.is_dir() => true,
+        (Content::Symlink { target }, Snapshot::Symlink(t)) => *target == t,
+        _ => false,
+    }
+}
+
 fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Result<Landed, String> {
-    let id = format!("{}-{}", now_secs(), std::process::id());
+    let id = landing_id();
     let dir = landings_dir(data_dir, dialog_id).join(&id);
     fs::create_dir_all(dir.join("old")).map_err(|e| e.to_string())?;
     // Which project, for recovery and undo after the overlay is gone.
@@ -453,16 +557,34 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
             NewContent::Symlink(t) => Content::Symlink { target: t.clone() },
             NewContent::File { bytes, perm } => {
                 let file = dir.join("new").join(n.to_string());
-                fs::write(&file, bytes).map_err(|e| e.to_string())?;
+                write_durable(&file, bytes)?;
                 Content::File { file, perm: *perm }
             }
         };
         entries.push(Entry { path: a.path.clone(), old, new });
     }
+    sync_dir(&dir.join("old"));
+    sync_dir(&dir.join("new"));
     let mut journal = Journal { version: 1, state: "applying".into(), at: now_secs(), entries };
     save_journal(&dir, &journal)?;
-    for e in &journal.entries {
-        write_content(project, &e.path, &e.new, dialog_id)?;
+    for (i, e) in journal.entries.iter().enumerate() {
+        if let Err(err) = write_content(project, &e.path, &e.new, dialog_id) {
+            // Back to how the project was: what was written goes back, in
+            // reverse, and the journal says the landing failed.
+            let mut left = Vec::new();
+            for done in journal.entries[..=i].iter().rev() {
+                if write_content(project, &done.path, &done.old, dialog_id).is_err() {
+                    left.push(done.path.clone());
+                }
+            }
+            journal.state = "failed".into();
+            let _ = save_journal(&dir, &journal);
+            return Err(if left.is_empty() {
+                format!("{err} (nothing landed)")
+            } else {
+                format!("{err}; these couldn't be put back: {}", left.join(", "))
+            });
+        }
     }
     journal.state = "done".into();
     save_journal(&dir, &journal)?;
@@ -493,13 +615,27 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
             if journal.state != "applying" {
                 continue;
             }
+            // Only paths still as the landing found them, or already as it
+            // left them: anything else changed after the crash and stays.
+            let mut skipped = Vec::new();
             for e in &journal.entries {
-                if write_content(&project, &e.path, &e.new, &dialog_id).is_ok() {
-                    done.push(e.path.clone());
+                if is_content(&project, &e.path, &e.new) {
+                    continue;
+                }
+                if !is_content(&project, &e.path, &e.old) {
+                    skipped.push(e.path.clone());
+                    continue;
+                }
+                match write_content(&project, &e.path, &e.new, &dialog_id) {
+                    Ok(()) => done.push(e.path.clone()),
+                    Err(_) => skipped.push(e.path.clone()),
                 }
             }
-            journal.state = "done".into();
+            journal.state = if skipped.is_empty() { "done".into() } else { "partial".into() };
             let _ = save_journal(&dir, &journal);
+            for p in skipped {
+                done.push(format!("{p} (not finished: it changed since)"));
+            }
         }
     }
     done
@@ -551,6 +687,14 @@ pub fn undo(data_dir: &Path, dialog_id: &str, project: &Path, id: &str) -> Resul
         };
         if !still {
             kept.push(Conflict { path: e.path.clone(), reason: "changed since it landed".into() });
+            continue;
+        }
+        // A folder the landing created goes only if nothing else is in it
+        // now (files added since, or files kept above).
+        if matches!((&e.new, &e.old), (Content::Dir, Content::Absent)) {
+            if fs::remove_dir(&path).is_err() {
+                kept.push(Conflict { path: e.path.clone(), reason: "files were added to this folder since it landed".into() });
+            }
             continue;
         }
         write_content(project, &e.path, &e.old, dialog_id)?;

@@ -7441,6 +7441,14 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   cursor: default;
 }
 
+.isolation-bar-merged {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--fg-dim);
+}
+
 .isolation-bar-reason {
   color: var(--warning);
 }

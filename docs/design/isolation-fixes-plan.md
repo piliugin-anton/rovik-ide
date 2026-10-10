@@ -509,3 +509,20 @@ This finds it when the second chat's change is written.
 1 → 2 → 3 → 4 → 5 → 6, with 6's workflow added early (after phase 1) so
 each later phase is checked by it. Phase 7 only if wanted after using 3
 and 4 for a while.
+
+## Progress
+
+- **Phase 1 (done).** As planned, with these choices:
+  - A deleted entry's base is recorded when the overlay removes it
+    (`DeletedBase` in the change list): a file's hash (size and time above
+    50 MB), a link's target, a folder's list of paths with size and time
+    (more than 5,000 entries: can't be checked, so it conflicts unless
+    landed anyway).
+  - A hard link copies the file into the overlay first, so the link keeps
+    its content whatever happens to the project's original.
+  - Crash recovery finishes a path only if it's still as the landing
+    found it; the rest are reported and the journal is marked "partial".
+  - "Undo the merge" sits in the bar while merged files are kept; the
+    chat's report shows a diff of what the project changed.
+  - Without the driver, the first non-isolated chat to run a command that
+    writes holds that right for the project until its run ends.

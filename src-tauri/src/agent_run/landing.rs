@@ -198,7 +198,7 @@ impl<R: Runtime> Run<R> {
         }
         super::log::write(
             &self.app,
-            serde_json::json!({ "event": "merged-project-changes", "dialogId": self.dialog_id, "files": files }),
+            serde_json::json!({ "event": "merged-project-changes", "dialogId": self.dialog_id, "files": files.iter().map(|(p, _)| p).collect::<Vec<_>>() }),
         );
         self.merged_from_project = Some(files);
         self.writes_since_verify = true;

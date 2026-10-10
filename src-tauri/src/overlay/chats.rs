@@ -12,7 +12,7 @@
 //! isolation, and the run says so.
 
 use super::fs::{OverlayChange, OverlayFs, DEFAULT_LIMIT};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -137,8 +137,17 @@ fn data_dir() -> Option<PathBuf> {
     DATA_DIR.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// A chat id from the frontend names one folder of ours, nothing else.
+pub fn valid_id(dialog_id: &str) -> bool {
+    !dialog_id.is_empty()
+        && dialog_id.len() <= 200
+        && dialog_id != "."
+        && dialog_id != ".."
+        && !dialog_id.contains(['/', '\\', '\0', ':'])
+}
+
 fn store_dir(dialog_id: &str) -> Option<PathBuf> {
-    Some(data_dir()?.join("overlays").join(dialog_id))
+    valid_id(dialog_id).then(|| Some(data_dir()?.join("overlays").join(dialog_id))).flatten()
 }
 
 fn mountpoint(dialog_id: &str) -> PathBuf {
@@ -222,6 +231,9 @@ pub fn discard(dialog_id: &str) -> Result<(), String> {
 
 /// A deleted chat: its overlay and its landings' journals go.
 pub fn forget(dialog_id: &str) {
+    if !valid_id(dialog_id) {
+        return;
+    }
     let _ = discard(dialog_id);
     if let Some(data) = data_dir() {
         let _ = std::fs::remove_dir_all(data.join("landings").join(dialog_id));
@@ -309,6 +321,35 @@ pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec
         }
     }
     conflicts_found
+}
+
+// ---------------------------------------------------------------------------
+// Chats that aren't isolated
+// ---------------------------------------------------------------------------
+
+/// Without the virtual-files driver, chats work in the project itself. Their
+/// file tools are guarded (file_guard.rs), but commands write unchecked, so
+/// only one such chat per project at a time runs commands that write: the
+/// first, until its run ends.
+static DIRECT: LazyLock<Mutex<HashMap<PathBuf, String>>> = LazyLock::new(Default::default);
+
+/// Lets a chat working in the project directly run a command that writes,
+/// or says which chat already does.
+pub fn claim_direct_writes(project: &Path, dialog_id: &str) -> Result<(), String> {
+    let mut direct = DIRECT.lock().unwrap_or_else(|e| e.into_inner());
+    let holder = direct.entry(busy_key(project)).or_insert_with(|| dialog_id.to_string());
+    if holder == dialog_id {
+        return Ok(());
+    }
+    Err(format!(
+        "Error: another chat that isn't isolated (chat {}) is running commands that change files in this project, and this chat isn't isolated either, so the two could overwrite each other. Read-only commands work; use the write and edit tools for changes, or wait until that chat's run ends.",
+        &holder[..holder.len().min(8)]
+    ))
+}
+
+/// The chat's run ended: another chat may run commands that write.
+pub fn release_direct_writes(dialog_id: &str) {
+    DIRECT.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, holder| holder != dialog_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +505,8 @@ pub struct OverlayStatus {
     pub last_landing: Option<LastLanding>,
     /// Its view, while it's mounted.
     pub view: Option<String>,
+    /// Files the project's newer changes were merged into (Undo the merge).
+    pub merged_in: Vec<String>,
     pub files: Vec<ChangedFile>,
     pub used: u64,
     pub limit: u64,
@@ -507,6 +550,7 @@ pub fn overlay_status(dialog_id: String) -> OverlayStatus {
         pending: if isolated { pending(&dialog_id) } else { None },
         last_landing: last_landing(&dialog_id),
         view: open.map(|o| o.view.to_string_lossy().into_owned()),
+        merged_in: if isolated { merged_in(&dialog_id) } else { Vec::new() },
         files: if isolated { summarize(&changes(&dialog_id)) } else { Vec::new() },
         used,
         limit,
@@ -525,10 +569,12 @@ pub struct FileVersions {
 /// A changed file as the project has it and as the chat has it, for a diff.
 #[tauri::command]
 pub fn overlay_file(dialog_id: String, path: String) -> Result<FileVersions, String> {
-    if path.split(['/', '\\']).any(|p| p == "..") {
-        return Err("path must not contain '..'".into());
-    }
+    check_rel(&path)?;
     let changes = changes(&dialog_id);
+    // Only the chat's own changes: not a way to read any file.
+    if !changes.iter().any(|c| c.path() == path) {
+        return Err(format!("{path}: this chat didn't change it"));
+    }
     let store_project = store_dir(&dialog_id).and_then(|s| std::fs::read_to_string(s.join("project.txt")).ok());
     let project_dir = get(&dialog_id).map(|o| o.project.clone()).or(store_project.map(|p| PathBuf::from(p.trim())));
     let project_dir = project_dir.ok_or("this chat has no isolated changes")?;
@@ -663,9 +709,17 @@ pub async fn overlay_land(dialog_id: String, keep_chat: bool) -> LandResult {
 #[tauri::command]
 pub async fn overlay_undo(dialog_id: String, id: String) -> Result<Vec<super::land::Conflict>, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if !valid_id(&dialog_id) {
+            return Err("bad chat id".to_string());
+        }
         let data = data_dir().ok_or("the app's data folder isn't known yet")?;
         let project = super::land::project_of(&data, &dialog_id).ok_or("no landing to undo")?;
-        super::land::undo(&data, &dialog_id, &project, &id)
+        let paths = super::land::latest(&data, &dialog_id).filter(|(l, _, _)| *l == id).map(|(_, p, _)| p).unwrap_or_default();
+        let kept = super::land::undo(&data, &dialog_id, &project, &id)?;
+        // Other chats on the project see the files as they are again.
+        let abs: Vec<PathBuf> = paths.iter().map(|p| project.join(p)).collect();
+        project_changed(&project, &abs, false);
+        Ok(kept)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -875,19 +929,107 @@ pub fn resolve_request(files: &[String]) -> String {
     )
 }
 
+/// The chat's own versions from before the project's changes were merged
+/// in, kept until its changes land (or the user takes them back).
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct PreMerge {
+    /// path → (the chat's version, what it was merged against), as files
+    /// in the pre-merge folder; None: not there.
+    files: BTreeMap<String, (Option<String>, Option<String>)>,
+}
+
+fn pre_merge_dir(dialog_id: &str) -> Option<PathBuf> {
+    Some(store_dir(dialog_id)?.join("pre-merge"))
+}
+
+fn load_pre_merge(dialog_id: &str) -> PreMerge {
+    pre_merge_dir(dialog_id)
+        .and_then(|d| std::fs::read(d.join("list.json")).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// What changed from `old` to `new`, as a unified diff of a few dozen lines
+/// at most, for the chat's model.
+fn short_diff(old: &[u8], new: &[u8]) -> String {
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(1);
+    let Ok(mut patch) = git2::Patch::from_buffers(old, None, new, None, Some(&mut opts)) else { return String::new() };
+    let Ok(buf) = patch.to_buf() else { return String::new() };
+    let text = String::from_utf8_lossy(&buf);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.starts_with("diff --git") && !l.starts_with("--- ") && !l.starts_with("+++ ")).collect();
+    let mut out = lines.iter().take(60).copied().collect::<Vec<_>>().join("\n");
+    if lines.len() > 60 {
+        out.push_str(&format!("\n… {} more lines", lines.len() - 60));
+    }
+    out
+}
+
 /// The project's newer changes merged into the chat's files: each file
 /// both changed (cleanly, in `plan`) takes the merged result in the chat's
-/// view, and is merged against the project's file as it is now. Returns
-/// the files.
-pub fn take_merged(dialog_id: &str, plan: &super::land::Plan) -> Result<Vec<String>, String> {
+/// view, and is merged against the project's file as it is now. The chat's
+/// own version is kept first (see [`undo_merge`]). Returns each file with
+/// what the project changed in it.
+pub fn take_merged(dialog_id: &str, plan: &super::land::Plan) -> Result<Vec<(String, String)>, String> {
     let files = plan.merged_files();
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dir = pre_merge_dir(dialog_id).ok_or("the app's data folder isn't known yet")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut kept = load_pre_merge(dialog_id);
+    let mut out = Vec::new();
+    for (path, _, project) in &files {
+        let s = sides(dialog_id, path)?;
+        // The earliest version wins: undoing goes back to the chat's own.
+        if !kept.files.contains_key(path) {
+            let n = kept.files.len();
+            let save = |what: &str, bytes: &Option<Vec<u8>>| -> Result<Option<String>, String> {
+                let Some(b) = bytes else { return Ok(None) };
+                let name = format!("{n}-{what}");
+                std::fs::write(dir.join(&name), b).map_err(|e| e.to_string())?;
+                Ok(Some(name))
+            };
+            let entry = (save("chat", &s.chat)?, save("base", &s.base)?);
+            kept.files.insert(path.clone(), entry);
+        }
+        out.push((path.clone(), short_diff(s.base.as_deref().unwrap_or(&[]), project)));
+    }
+    let list = serde_json::to_vec(&kept).map_err(|e| e.to_string())?;
+    crate::atomic_file::write_atomic(&dir.join("list.json"), &list).map_err(|e| e.to_string())?;
     with_fs(dialog_id, |fs| {
         for (path, merged, project) in &files {
             fs.rebase_file(path, Some(merged), Some(project)).map_err(|e| format!("{path}: {e:?}"))?;
         }
         Ok::<_, String>(())
     })??;
-    Ok(files.into_iter().map(|(p, _, _)| p).collect())
+    Ok(out)
+}
+
+/// Files the project's changes were merged into, which can be taken back.
+pub fn merged_in(dialog_id: &str) -> Vec<String> {
+    load_pre_merge(dialog_id).files.into_keys().collect()
+}
+
+/// Takes the project's merged changes back out: each file is the chat's own
+/// version again, merged against what it was before.
+pub fn undo_merge(dialog_id: &str) -> Result<Vec<String>, String> {
+    let kept = load_pre_merge(dialog_id);
+    let dir = pre_merge_dir(dialog_id).ok_or("this chat has no isolated changes")?;
+    let read = |name: &Option<String>| name.as_ref().and_then(|n| std::fs::read(dir.join(n)).ok());
+    with_fs(dialog_id, |fs| {
+        for (path, (chat, base)) in &kept.files {
+            fs.rebase_file(path, read(chat).as_deref(), read(base).as_deref()).map_err(|e| format!("{path}: {e:?}"))?;
+        }
+        Ok::<_, String>(())
+    })??;
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(kept.files.into_keys().collect())
+}
+
+#[tauri::command]
+pub async fn overlay_undo_merge(dialog_id: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || undo_merge(&dialog_id)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -997,6 +1139,52 @@ mod conflict_tests {
         land_now(&id, false).unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(project.join("a.txt")).unwrap(), "PROJECT\nCHAT\n2\n3\n4\n5\n");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn merging_the_project_in_can_be_taken_back() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (root, project, id) = conflicted("undo-merge");
+        // Not a conflict this time: the project changed another line.
+        std::fs::write(project.join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
+        set_pending(&id, None);
+        let plan = super::super::land::plan(&project, &changes(&id), false);
+        assert!(plan.merged && plan.conflicts.is_empty());
+        let taken = take_merged(&id, &plan).unwrap();
+        assert_eq!(taken.len(), 1);
+        assert!(taken[0].1.contains("+FIVE"), "the note shows what the project changed: {}", taken[0].1);
+        assert_eq!(String::from_utf8(sides(&id, "a.txt").unwrap().chat.unwrap()).unwrap(), "CHAT\n2\n3\n4\nFIVE\n");
+        assert_eq!(merged_in(&id), vec!["a.txt"]);
+        undo_merge(&id).unwrap();
+        let s = sides(&id, "a.txt").unwrap();
+        assert_eq!(String::from_utf8(s.chat.unwrap()).unwrap(), "CHAT\n2\n3\n4\n5\n");
+        assert_eq!(String::from_utf8(s.base.unwrap()).unwrap(), "1\n2\n3\n4\n5\n");
+        assert!(merged_in(&id).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn chat_ids_name_one_folder() {
+        assert!(valid_id("8f1c2d3e-aaaa"));
+        for bad in ["", ".", "..", "../x", "a/b", "a\\b", "c:x"] {
+            assert!(!valid_id(bad), "{bad}");
+        }
+        assert!(overlay_file("../..".into(), "a".into()).is_err());
+        assert!(overlay_file("chat".into(), "/etc/passwd".into()).is_err());
+    }
+
+    #[test]
+    fn one_chat_without_isolation_writes_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("direct-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        claim_direct_writes(&dir, "chat-one").unwrap();
+        claim_direct_writes(&dir, "chat-one").unwrap();
+        let refused = claim_direct_writes(&dir, "chat-two").unwrap_err();
+        assert!(refused.contains("chat-one"), "{refused}");
+        release_direct_writes("chat-one");
+        claim_direct_writes(&dir, "chat-two").unwrap();
+        release_direct_writes("chat-two");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

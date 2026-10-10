@@ -713,8 +713,21 @@ async fn run<R: Runtime>(
             };
             let timeout = num(args, "timeout_seconds").filter(|s| *s > 0.0).map(|s| (s * 1000.0) as u64);
             let stop = stop.clone();
-            if let Some(problem) = crate::overlay::chats::get(&ctx.owner).and_then(|o| o.command_problem(command)) {
-                return Ok(ToolResult::text(problem));
+            match crate::overlay::chats::get(&ctx.owner) {
+                Some(o) => {
+                    if let Some(problem) = o.command_problem(command) {
+                        return Ok(ToolResult::text(problem));
+                    }
+                }
+                // Working in the project itself: one such chat at a time
+                // runs commands that write.
+                None => {
+                    if super::permissions::command_modifies_files(command) {
+                        if let Err(problem) = crate::overlay::chats::claim_direct_writes(std::path::Path::new(root_owned.as_str()), &ctx.owner) {
+                            return Ok(ToolResult::text(problem));
+                        }
+                    }
+                }
             }
             let note = ctx.note.clone();
             let queued = crate::command_tool::Queued {

@@ -98,7 +98,7 @@ pub struct Run<R: Runtime> {
     pub(super) landed: bool,
     /// Files the project's newer changes were just merged into, for the
     /// failure report of the checks that follow (landing.rs).
-    pub(super) merged_from_project: Option<Vec<String>>,
+    pub(super) merged_from_project: Option<Vec<(String, String)>>,
     /// What this run has read and written of each file, so a whole-file
     /// write over a change it hasn't seen is refused (file_guard.rs).
     pub(super) seen: Arc<crate::file_guard::Seen>,
@@ -286,9 +286,15 @@ impl<R: Runtime> Run<R> {
                 AgentEvent::Notice {
                     kind: "warning".into(),
                     title: "This chat isn't isolated".into(),
-                    message: format!(
-                        "{problem}. It works in the project folder directly. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
-                    ),
+                    message: if problem.contains("couldn't mount") {
+                        format!(
+                            "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
+                        )
+                    } else {
+                        format!(
+                            "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files."
+                        )
+                    },
                 },
             );
         }
@@ -624,6 +630,7 @@ impl<R: Runtime> Run<R> {
         };
         // An isolated chat's changes land now, or say why they don't.
         self.land_at_end(&outcome).await;
+        crate::overlay::chats::release_direct_writes(&self.dialog_id);
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;

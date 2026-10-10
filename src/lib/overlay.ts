@@ -33,6 +33,8 @@ export interface OverlayStatus {
   pending?: { reason: string; conflicts: Conflict[] } | null;
   /** Its latest landing, for Undo. */
   lastLanding?: LastLanding | null;
+  /** Files the project's newer changes were merged into (can be undone). */
+  mergedIn: string[];
   /** Where the chat sees the project, while it's mounted. */
   view?: string | null;
   files: ChangedFile[];
@@ -101,4 +103,9 @@ export function overlayConflictsToChat(
   dialogId: string
 ): Promise<{ files: string[]; request: string }> {
   return invoke('overlay_conflicts_to_chat', { dialogId });
+}
+
+/** Takes the project's merged-in changes back out of the chat's files. */
+export function overlayUndoMerge(dialogId: string): Promise<string[]> {
+  return invoke<string[]>('overlay_undo_merge', { dialogId });
 }

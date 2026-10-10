@@ -482,3 +482,224 @@ fn a_rebased_file_survives_reopening() {
     p.sort();
     assert_eq!(p, vec!["a.txt", "b.txt"]);
 }
+
+/// Nothing is lost: deletes, moves, failed landings, crashes, undo.
+mod safety {
+    use super::*;
+    use crate::overlay::land::{self, LandError};
+
+    fn data(d: &Dirs) -> PathBuf {
+        d.root.join("data")
+    }
+
+    fn landable(o: &OverlayFs) -> Vec<OverlayChange> {
+        o.changes().into_iter().filter(|c| !c.by_product()).collect()
+    }
+
+    fn project_file(d: &Dirs, rel: &str) -> Option<String> {
+        fs::read_to_string(d.project().join(rel)).ok()
+    }
+
+    #[test]
+    fn a_delete_of_a_file_changed_in_the_project_conflicts() {
+        let d = setup(&[("a.txt", "one\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        o.unlink(ROOT, "a.txt").unwrap();
+        o.unlink(ROOT, "b.txt").unwrap();
+        fs::write(d.project().join("a.txt"), "user's edit\n").unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert_eq!(plan.conflicts.len(), 1, "{:?}", plan.conflicts);
+        assert_eq!(plan.conflicts[0].path, "a.txt");
+        assert!(matches!(land::land(&data(&d), "chat", &d.project(), &landable(&o), false), Err(LandError::Conflicts(_))));
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("user's edit\n"));
+        // Land anyway: the chat's delete wins.
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), true).unwrap().unwrap();
+        assert!(project_file(&d, "a.txt").is_none());
+    }
+
+    #[test]
+    fn a_delete_already_done_in_the_project_is_nothing_to_land() {
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        o.unlink(ROOT, "a.txt").unwrap();
+        // The change list names it while the project has it…
+        assert_eq!(landable(&o).len(), 1);
+        fs::remove_file(d.project().join("a.txt")).unwrap();
+        // …and once it's gone, there's nothing to do.
+        assert!(land::plan(&d.project(), &landable(&o), false).is_empty());
+    }
+
+    #[test]
+    fn a_deleted_folder_that_gained_files_in_the_project_conflicts() {
+        let d = setup(&[("x/a.txt", "a\n"), ("x/b.txt", "b\n")]);
+        let o = overlay(&d);
+        let x = ino(&o, "x");
+        o.unlink(x, "a.txt").unwrap();
+        o.unlink(x, "b.txt").unwrap();
+        o.rmdir(ROOT, "x").unwrap();
+        fs::write(d.project().join("x/new.txt"), "user's\n").unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert_eq!(plan.conflicts.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), vec!["x"]);
+        // Unchanged, it goes.
+        fs::remove_file(d.project().join("x/new.txt")).unwrap();
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        assert!(!d.project().join("x").exists());
+    }
+
+    #[test]
+    fn a_moved_and_edited_file_merges_with_the_projects_change() {
+        let d = setup(&[("a.txt", "1\n2\n3\n4\n5\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "ONE\n2\n3\n4\n5\n");
+        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace).unwrap();
+        // The project changes another line of the original meanwhile.
+        fs::write(d.project().join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("ONE\n2\n3\n4\nFIVE\n"));
+        assert!(project_file(&d, "a.txt").is_none());
+    }
+
+    #[test]
+    fn a_moved_untouched_file_lands_at_its_new_place() {
+        let d = setup(&[("a.txt", "same\n")]);
+        let o = overlay(&d);
+        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace).unwrap();
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("same\n"));
+        assert!(project_file(&d, "a.txt").is_none());
+    }
+
+    #[test]
+    fn a_file_deleted_and_written_anew_merges_like_an_edit() {
+        let d = setup(&[("gen.txt", "1\n2\n3\n4\n5\n")]);
+        let o = overlay(&d);
+        o.unlink(ROOT, "gen.txt").unwrap();
+        let n = o.create(ROOT, "gen.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+        o.write(n.ino, 0, b"GEN\n2\n3\n4\n5\n").unwrap();
+        fs::write(d.project().join("gen.txt"), "1\n2\n3\n4\nUSER\n").unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert!(plan.conflicts.is_empty(), "{:?}", plan.conflicts);
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        assert_eq!(project_file(&d, "gen.txt").as_deref(), Some("GEN\n2\n3\n4\nUSER\n"));
+    }
+
+    #[test]
+    fn a_landing_that_fails_partway_puts_everything_back() {
+        let d = setup(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
+        let o = overlay(&d);
+        for f in ["a.txt", "b.txt", "c.txt"] {
+            write_all(&o, f, "CHAT\n");
+        }
+        *land::FAIL_WRITING.lock().unwrap() = Some((d.project(), "b.txt".into()));
+        let result = land::land(&data(&d), "chat-fail", &d.project(), &landable(&o), false);
+        *land::FAIL_WRITING.lock().unwrap() = None;
+        assert!(matches!(result, Err(LandError::Failed(ref e)) if e.contains("nothing landed")), "{result:?}");
+        for (f, was) in [("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")] {
+            assert_eq!(project_file(&d, f).as_deref(), Some(was), "{f}");
+        }
+        assert!(land::latest(&data(&d), "chat-fail").is_none(), "nothing to undo");
+        // Nothing for recovery to finish either.
+        assert!(land::recover(&data(&d)).is_empty());
+    }
+
+    #[test]
+    fn recovery_finishes_only_paths_nobody_changed_since() {
+        let d = setup(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "A\n");
+        write_all(&o, "b.txt", "B\n");
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        // As if the app crashed before writing anything: the project as it
+        // was, the journal "applying"; then the user edits b.txt.
+        let journal = data(&d).join("landings").join("chat").join(&landed.id).join("journal.json");
+        let text = fs::read_to_string(&journal).unwrap().replace("\"done\"", "\"applying\"");
+        fs::write(&journal, text).unwrap();
+        fs::write(d.project().join("a.txt"), "a\n").unwrap();
+        fs::write(d.project().join("b.txt"), "user's\n").unwrap();
+        let report = land::recover(&data(&d));
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("A\n"));
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("user's\n"));
+        assert!(report.iter().any(|r| r.starts_with("b.txt (not finished")), "{report:?}");
+    }
+
+    #[test]
+    fn undo_keeps_files_added_to_a_landed_folder() {
+        let d = setup(&[]);
+        let o = overlay(&d);
+        let dir = o.create(ROOT, "feat", Kind::Dir, 0o755, 0, 0, None).unwrap();
+        let f = o.create(dir.ino, "a.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+        o.write(f.ino, 0, b"a\n").unwrap();
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        fs::write(d.project().join("feat/b.txt"), "user's\n").unwrap();
+        let kept = land::undo(&data(&d), "chat", &d.project(), &landed.id).unwrap();
+        assert!(project_file(&d, "feat/a.txt").is_none(), "the landed file goes");
+        assert_eq!(project_file(&d, "feat/b.txt").as_deref(), Some("user's\n"), "the user's stays");
+        assert_eq!(kept.iter().map(|k| k.path.as_str()).collect::<Vec<_>>(), vec!["feat"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undoing_a_deleted_folder_brings_back_its_links() {
+        let d = setup(&[("x/a.txt", "a\n")]);
+        std::os::unix::fs::symlink("a.txt", d.project().join("x/link")).unwrap();
+        let o = overlay(&d);
+        let x = ino(&o, "x");
+        o.unlink(x, "a.txt").unwrap();
+        o.unlink(x, "link").unwrap();
+        o.rmdir(ROOT, "x").unwrap();
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        assert!(!d.project().join("x").exists());
+        land::undo(&data(&d), "chat", &d.project(), &landed.id).unwrap();
+        assert_eq!(fs::read_link(d.project().join("x/link")).unwrap(), PathBuf::from("a.txt"));
+    }
+
+    #[test]
+    fn a_crash_after_a_replace_keeps_the_chats_file_readable() {
+        let d = setup(&[("a.txt", "one\n")]);
+        {
+            let o = overlay(&d);
+            write_all(&o, "a.txt", "first\n");
+            o.flush();
+            // `sed -i`: a new file renamed over it, and no save before the crash.
+            let t = o.create(ROOT, "tmp", Kind::File, 0o644, 0, 0, None).unwrap();
+            o.write(t.ino, 0, b"second\n").unwrap();
+            o.rename(ROOT, "tmp", ROOT, "a.txt", RenameMode::Replace).unwrap();
+        }
+        // The saved list still names the first version, whose file is still there.
+        let o = overlay(&d);
+        assert_eq!(read_all(&o, "a.txt"), "first\n");
+        // Once saved, files nothing names are cleaned up when reopening.
+        o.flush();
+        drop(o);
+        let _ = overlay(&d);
+        let files = fs::read_dir(d.store().join("upper")).unwrap().count();
+        assert_eq!(files, 1, "only the file the list names stays");
+    }
+
+    #[test]
+    fn a_hard_link_survives_its_original_leaving_the_project() {
+        let d = setup(&[("a.txt", "linked\n")]);
+        let o = overlay(&d);
+        let a = ino(&o, "a.txt");
+        o.link(a, ROOT, "keep.txt").unwrap();
+        fs::remove_file(d.project().join("a.txt")).unwrap();
+        // The folder is listed again (as after the project changed).
+        let _ = o.readdir_plus(ROOT);
+        assert_eq!(read_all(&o, "keep.txt"), "linked\n");
+    }
+
+    #[test]
+    fn rebasing_swaps_content_and_base_together() {
+        let d = setup(&[("a.txt", "1\n2\n3\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "A\n2\n3\n");
+        let (_, old_base) = o.versions("a.txt").unwrap();
+        o.rebase_file("a.txt", Some(b"merged\n"), Some(b"project\n")).unwrap();
+        assert_eq!(read_all(&o, "a.txt"), "merged\n");
+        let (upper, base) = o.versions("a.txt").unwrap();
+        assert_eq!(fs::read(base).unwrap(), b"project\n");
+        assert_eq!(fs::read(upper).unwrap(), b"merged\n");
+        // The old base goes once the list is saved (rebase_file saves).
+        assert!(!old_base.exists());
+    }
+}
