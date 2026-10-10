@@ -7575,3 +7575,91 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   white-space: nowrap;
   color: var(--fg-dim);
 }
+
+/* Consecutive calls to one tool as one line (ToolCallGroup.tsx), opened
+   like the model's thinking. */
+
+.tool-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 90%;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.tool-group-header:hover,
+.tool-group.active .tool-group-header {
+  color: var(--fg);
+}
+
+.tool-group-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tool-group-toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tool-group-items {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group-file {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--info);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tool-group-file:hover {
+  text-decoration: underline;
+}
+
+.tool-group-meta {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.tool-group-meta.error {
+  color: var(--error);
+}
+
+.tool-group-calls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.tool-group-calls .tool-call {
+  max-width: 100%;
+}

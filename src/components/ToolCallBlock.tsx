@@ -25,6 +25,7 @@ import {
 } from '../lib/contextDoc';
 import { APPROVE_AT, REJECT_AT, reviewChecks } from '../lib/aiApproval';
 import { requestOpenFile } from '../lib/editorBridge';
+import { isErrorResult, parseArgsLenient, type Args } from '../lib/toolArgs';
 import {
   allow,
   decideRemaining,
@@ -78,52 +79,7 @@ async function loadBody(messageId: string): Promise<string> {
   return body;
 }
 
-type Args = Record<string, unknown>;
 type Status = 'running' | 'done' | 'error' | 'idle';
-
-/**
- * Arguments stream in as partial JSON, so a strict parse fails until the
- * last chunk lands. Fall back to pulling complete string/number fields out
- * with a regex so the header can say "Reading src/foo.ts" mid-stream.
- */
-function parseArgsLenient(raw: string): Args {
-  const trimmed = raw.trim();
-  if (!trimmed) return {};
-
-  try {
-    const parsed = JSON.parse(trimmed);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    const out: Args = {};
-    const fieldRe = /"(\w+)"\s*:\s*(?:"((?:[^"\\]|\\.)*)"|(-?\d+))/g;
-    let m: RegExpExecArray | null;
-    while ((m = fieldRe.exec(trimmed)) !== null) {
-      const [, key, str, num] = m;
-      if (str !== undefined) {
-        try {
-          out[key] = JSON.parse(`"${str}"`);
-        } catch {
-          out[key] = str;
-        }
-      } else if (num !== undefined) {
-        out[key] = Number(num);
-      }
-    }
-    // A string still arriving (a file's content as it's written): what
-    // there is so far, so the header can count its lines while it streams.
-    const open = /"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*\\?)$/.exec(trimmed);
-    if (open && !(open[1] in out)) {
-      // Drop a half-received escape at the end ("\", "\u00").
-      const raw = open[2].replace(/\\(u[0-9a-fA-F]{0,3})?$/, '');
-      try {
-        out[open[1]] = JSON.parse(`"${raw}"`);
-      } catch {
-        out[open[1]] = raw;
-      }
-    }
-    return out;
-  }
-}
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
@@ -141,10 +97,6 @@ function countLines(text: string): number {
 
 function plural(n: number, one: string, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`;
-}
-
-function isErrorResult(result?: string) {
-  return result !== undefined && /^Error:/.test(result.trimStart());
 }
 
 /** "https://docs.rs/tokio/latest/" → "docs.rs/tokio/latest" */
