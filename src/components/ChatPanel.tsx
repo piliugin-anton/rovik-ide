@@ -3015,6 +3015,7 @@ export default function ChatPanel(props: ChatProps) {
             running={sending()}
             canAskChat={!!activeProfile() && !isRunning(id)}
             onAskChat={askToResolve}
+            chatTitle={(other) => store.state.list.items.find((d) => d.id === other)?.title}
           />
         )}
       </Show>

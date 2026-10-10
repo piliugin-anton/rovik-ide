@@ -472,8 +472,17 @@ impl<R: Runtime> Run<R> {
             }
         };
         // An isolated chat's changes are saved as they happen (overlay/fs.rs).
-        if let Some(o) = crate::overlay::chats::get(&self.dialog_id) {
-            o.fs.flush();
+        // Then compared with the other open chats on the project, so a clash
+        // on the same lines is told with this result.
+        if crate::overlay::chats::get(&self.dialog_id).is_some() {
+            let id = self.dialog_id.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                if let Some(o) = crate::overlay::chats::get(&id) {
+                    o.fs.flush();
+                    crate::overlay::chats::check_peer_conflicts(&id);
+                }
+            })
+            .await;
         }
         // The project changed under an isolated chat: its model hears it with
         // this result.

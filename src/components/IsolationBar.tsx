@@ -38,6 +38,8 @@ interface Props {
   canAskChat: boolean;
   /** Sends `dialogId` a message, starting a run; whether it started. */
   onAskChat: (dialogId: string, request: string) => Promise<boolean>;
+  /** A chat's title, to name the other chats a clash is with. */
+  chatTitle?: (dialogId: string) => string | undefined;
 }
 
 const LABEL: Record<ChangedFile['change'], string> = {
@@ -66,6 +68,16 @@ export default function IsolationBar(props: Props) {
     return s?.isolated && s.files.length > 0 ? s : undefined;
   };
   const conflicted = (path: string) => !!status()?.pending?.conflicts.some((c) => c.path === path);
+  const peerOf = (path: string) => status()?.peerConflicts.find((c) => c.path === path);
+  const chatName = (id: string) => {
+    const title = props.chatTitle?.(id);
+    return title ? `“${title}”` : 'another chat';
+  };
+  /** Other chats changing the same lines, named, for the bar. */
+  const peerNames = (s: OverlayStatus) => {
+    const ids = [...new Set(s.peerConflicts.flatMap((c) => c.peers))];
+    return ids.length === 1 ? chatName(ids[0]) : `${ids.length} other chats`;
+  };
   const [resolving, setResolving] = createSignal<string | null>(null);
   /** One round of conflicts: the resolver's saved choices belong to it. */
   const roundKey = () => {
@@ -256,63 +268,80 @@ export default function IsolationBar(props: Props) {
         {(s) => (
           <div class="isolation-bar">
             <div class="isolation-bar-head">
-              <button
-                class="isolation-bar-toggle"
-                aria-expanded={open()}
-                onClick={() => setOpen(!open())}
-              >
-                <span class="isolation-bar-caret" aria-hidden="true">
-                  {open() ? '▾' : '▸'}
-                </span>
-                {plural(s().files.length, 'changed file')} in this chat, not in the project yet
-              </button>
-              <Show
-                when={s().pending?.conflicts.length}
-                fallback={
+              <div class="isolation-bar-top">
+                <button
+                  class="isolation-bar-toggle"
+                  aria-expanded={open()}
+                  onClick={() => setOpen(!open())}
+                >
+                  <span class="isolation-bar-caret" aria-hidden="true">
+                    {open() ? '▾' : '▸'}
+                  </span>
+                  <span class="isolation-bar-title">
+                    {plural(s().files.length, 'changed file')} in this chat, not in the project yet
+                  </span>
+                </button>
+                <button
+                  class="isolation-bar-action quiet"
+                  disabled={disabled()}
+                  title={props.running ? 'Stop the run first' : 'Throw this chat’s changes away'}
+                  onClick={() => void discard()}
+                >
+                  Discard
+                </button>
+              </div>
+              <div class="isolation-bar-actions">
+                <Show
+                  when={s().pending?.conflicts.length}
+                  fallback={
+                    <button
+                      class="isolation-bar-action primary"
+                      disabled={disabled()}
+                      onClick={() => void land(false)}
+                    >
+                      Land
+                    </button>
+                  }
+                >
                   <button
                     class="isolation-bar-action primary"
                     disabled={disabled()}
-                    onClick={() => void land(false)}
+                    title="Choose, conflict by conflict, what lands"
+                    onClick={() => setResolving(s().pending?.conflicts[0]?.path ?? null)}
                   >
-                    Land
+                    Resolve…
                   </button>
-                }
-              >
-                <button
-                  class="isolation-bar-action primary"
-                  disabled={disabled()}
-                  title="Choose, conflict by conflict, what lands"
-                  onClick={() => setResolving(s().pending?.conflicts[0]?.path ?? null)}
-                >
-                  Resolve…
-                </button>
-                <button
-                  class="isolation-bar-action"
-                  disabled={disabled()}
-                  title="Put conflict markers in the chat’s files and ask it to combine both changes"
-                  onClick={() => void askChat()}
-                >
-                  Ask the chat
-                </button>
-                <button
-                  class="isolation-bar-action"
-                  disabled={disabled()}
-                  onClick={() => void land(true)}
-                >
-                  Land anyway
-                </button>
-              </Show>
-              <button
-                class="isolation-bar-action"
-                disabled={disabled()}
-                title={props.running ? 'Stop the run first' : 'Throw this chat’s changes away'}
-                onClick={() => void discard()}
-              >
-                Discard
-              </button>
+                  <button
+                    class="isolation-bar-action"
+                    disabled={disabled()}
+                    title="Put conflict markers in the chat’s files and ask it to combine both changes"
+                    onClick={() => void askChat()}
+                  >
+                    Ask the chat
+                  </button>
+                  <button
+                    class="isolation-bar-action"
+                    disabled={disabled()}
+                    onClick={() => void land(true)}
+                  >
+                    Land anyway
+                  </button>
+                </Show>
+              </div>
             </div>
             <Show when={s().pending}>
               {(p) => <div class="isolation-bar-reason">{p().reason}</div>}
+            </Show>
+            <Show when={s().peerConflicts.length > 0}>
+              <div class="isolation-bar-reason">
+                {peerNames(s())} is changing{' '}
+                {s().peerConflicts.length === 1 ? 'this file' : 'these files'} too:{' '}
+                {s()
+                  .peerConflicts.map((c) => c.path)
+                  .join(', ')}
+                . Only one version of {s().peerConflicts.length === 1 ? 'it' : 'them'} lands as it
+                is; the other then has to be resolved.
+              </div>
             </Show>
             <Show when={s().byProducts >= BY_PRODUCTS_SHOWN}>
               <div
@@ -364,6 +393,24 @@ export default function IsolationBar(props: Props) {
                         </Show>
                         <Show when={conflicted(file.path)}>
                           <span class="isolation-bar-conflict">conflict</span>
+                        </Show>
+                        <Show when={!conflicted(file.path) && peerOf(file.path)}>
+                          {(peer) => (
+                            <span
+                              class="isolation-bar-conflict"
+                              title={
+                                peer().sameLines
+                                  ? `${peer()
+                                      .peers.map(chatName)
+                                      .join(
+                                        ', '
+                                      )} changed the same lines: only one version lands as it is`
+                                  : `${peer().peers.map(chatName).join(', ')} changed this file too`
+                              }
+                            >
+                              {peer().sameLines ? 'also edited' : 'also touched'}
+                            </span>
+                          )}
                         </Show>
                       </button>
                     </li>

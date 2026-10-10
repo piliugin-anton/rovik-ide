@@ -7397,14 +7397,23 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .isolation-bar-head {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.isolation-bar-top {
+  display: flex;
+  align-items: flex-start;
   gap: 8px;
+  min-width: 0;
 }
 
 .isolation-bar-toggle {
   flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 0;
   background: none;
@@ -7416,8 +7425,46 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .isolation-bar-caret {
+  flex-shrink: 0;
   width: 10px;
+  margin-top: 1px;
   color: var(--fg-dim);
+}
+
+.isolation-bar-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.isolation-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.isolation-bar-actions .isolation-bar-action {
+  flex: 1 1 auto;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.isolation-bar-action.quiet {
+  flex-shrink: 0;
+  border-color: transparent;
+  color: var(--fg-dim);
+}
+
+.isolation-bar.landed .isolation-bar-head {
+  flex-direction: row;
+  align-items: center;
+}
+
+.isolation-bar.landed .isolation-bar-toggle {
+  align-items: center;
 }
 
 .isolation-bar-action {
@@ -7450,10 +7497,12 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .isolation-bar-reason {
+  overflow-wrap: break-word;
   color: var(--warning);
 }
 
 .isolation-bar-conflict {
+  flex-shrink: 0;
   margin-left: auto;
   color: var(--error);
 }
@@ -7471,9 +7520,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .isolation-bar-file {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   width: 100%;
+  min-width: 0;
   padding: 2px 4px;
   background: none;
   border: none;
@@ -7489,6 +7539,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .isolation-bar-kind {
+  flex-shrink: 0;
   width: 12px;
   font-family: var(--font-mono);
   font-weight: 600;
@@ -7508,9 +7559,19 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .isolation-bar-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
 }
 
 .isolation-bar-from {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg-dim);
 }

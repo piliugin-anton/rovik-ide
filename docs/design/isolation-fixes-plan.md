@@ -543,3 +543,10 @@ and 4 for a while.
     tab is checked against, so a save after merging by hand goes through.
 - **Not planned any more:** CI (phase 6) and landing after each finished
   step (phase 7), at the user's request.
+- **Phase 3 (done).** Built from the user's proposed change, without its
+  "landed history" check (it would refuse a chat's deliberate follow-up
+  edit to lines another chat landed before it started). Open chats on a
+  project are compared pair by pair after each tool call, on files both
+  changed, with the same merge landing uses; both models are told once,
+  and the bars show the other chat by its title. The status the bar polls
+  reads the last comparison; it doesn't compare again.

@@ -12,7 +12,7 @@
 //! isolation, and the run says so.
 
 use super::fs::{OverlayChange, OverlayFs, DEFAULT_LIMIT};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -274,7 +274,13 @@ pub fn close(dialog_id: &str) {
 
 /// Throws the chat's changes away.
 pub fn discard(dialog_id: &str) -> Result<(), String> {
+    // The project, so the chats left open on it stop warning about this one.
+    let project = project_of(dialog_id);
     close(dialog_id);
+    drop_peer_state(dialog_id);
+    if let Some(project) = project {
+        refresh_project_peers(&project);
+    }
     match store_dir(dialog_id) {
         Some(store) if store.exists() => std::fs::remove_dir_all(&store).map_err(|e| e.to_string()),
         _ => Ok(()),
@@ -473,7 +479,7 @@ fn conflicts_now(o: &ChatOverlay, rel: &str) -> bool {
 /// What the chat's model should know about the project changing under it,
 /// once: added to its next tool result.
 pub fn take_note(dialog_id: &str) -> Option<String> {
-    let notes = NOTES.lock().unwrap_or_else(|e| e.into_inner()).remove(dialog_id)?;
+    let notes = NOTES.lock().unwrap_or_else(|e| e.into_inner()).remove(dialog_id).unwrap_or_default();
     let mut parts = Vec::new();
     if notes.many {
         parts.push("Many files changed in the project meanwhile (a branch switch or a pull?). Files you haven't changed now show their new content; read again what you rely on.".to_string());
@@ -490,7 +496,242 @@ pub fn take_note(dialog_id: &str) -> Option<String> {
             "Also changed in the project, on lines you changed too: {list}. Your version won't land without the user deciding; say so in your summary."
         ));
     }
+    if let Some(peer) = fresh_peer_note(dialog_id) {
+        parts.push(peer);
+    }
     (!parts.is_empty()).then(|| format!("\n\nNote: {}", parts.join(" ")))
+}
+
+// ---------------------------------------------------------------------------
+// Chats changing the same files as each other
+// ---------------------------------------------------------------------------
+//
+// Landing serializes chats against the project: the second chat to land
+// finds the first one's changes there and merges or conflicts then. That's
+// late: both may have built on incompatible versions of the same lines. So
+// after every tool call, the open overlays on a project are compared with
+// each other, pair by pair, on the files both changed, with the same
+// three-way merge landing uses. A clash warns both chats' models (once, with
+// their next tool result) and shows in their bars. It never blocks landing:
+// landing still decides against the project as it is then.
+
+/// A file this chat and other open chats on the same project all changed.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerConflict {
+    pub path: String,
+    /// The other chats' ids.
+    pub peers: Vec<String>,
+    /// They changed the same lines (false: they disagree, but their bases
+    /// had already diverged, so lines can't be told apart).
+    pub same_lines: bool,
+}
+
+/// Live clashes: chat → path → (other chats, same lines).
+type PeerRows = HashMap<String, BTreeMap<String, (BTreeSet<String>, bool)>>;
+static PEERS: LazyLock<Mutex<PeerRows>> = LazyLock::new(Default::default);
+
+/// Which (path, other chat) pairs a chat's model already heard about.
+static TOLD_PEERS: LazyLock<Mutex<HashMap<String, BTreeSet<String>>>> = LazyLock::new(Default::default);
+
+fn told_key(path: &str, peer: &str) -> String {
+    format!("{path}\0{peer}")
+}
+
+/// One side of a comparison: what a chat has at a path.
+struct Side {
+    /// False: the chat deleted it.
+    present: bool,
+    content: Vec<u8>,
+    /// What the project had when the chat first changed it (None: created).
+    base: Option<Vec<u8>>,
+}
+
+/// What a chat with `changes` has at `rel`: None when it never touched it
+/// (or its content can't be read: never warn on guesses).
+fn side_of(changes: &[OverlayChange], project: &Path, rel: &str) -> Option<Side> {
+    match changes.iter().rev().find(|c| c.path() == rel)? {
+        OverlayChange::Delete { .. } => Some(Side { present: false, content: Vec::new(), base: None }),
+        OverlayChange::Write { kind, origin, upper, base_copy, target, .. } => match kind {
+            crate::vfs::store::Kind::Dir => None,
+            // A link is one value: same target, no clash.
+            crate::vfs::store::Kind::Symlink => {
+                Some(Side { present: true, content: target.clone().unwrap_or_default().into_bytes(), base: None })
+            }
+            crate::vfs::store::Kind::File => match (upper, origin) {
+                (Some(file), _) => Some(Side {
+                    present: true,
+                    content: std::fs::read(file).ok()?,
+                    base: base_copy.as_ref().and_then(|b| std::fs::read(b).ok()),
+                }),
+                // Moved or permissions only: the project's file it came from.
+                (None, Some(o)) => Some(Side { present: true, content: std::fs::read(project.join(o)).ok()?, base: None }),
+                (None, None) => None,
+            },
+        },
+    }
+}
+
+/// Whether two chats' versions of one file clash: `Some(true)` on the same
+/// lines, `Some(false)` when they disagree but lines can't be told apart,
+/// `None` when both can land (same content, or a clean merge).
+fn clash(a: &Side, b: &Side) -> Option<bool> {
+    if !a.present && !b.present {
+        return None;
+    }
+    if !a.present || !b.present {
+        // Deleted on one side and changed on the other (created-then-
+        // deleted is no clash).
+        let other = if a.present { a } else { b };
+        return other.base.is_some().then_some(true);
+    }
+    if a.content == b.content {
+        return None;
+    }
+    match (&a.base, &b.base) {
+        // Both created it, differently: only one can land.
+        (None, None) => Some(true),
+        (Some(x), Some(y)) if x == y => match crate::merge::merge_bytes(x, &a.content, &b.content) {
+            Ok(Some(_)) => None,
+            Ok(None) => Some(true),
+            Err(_) => Some(false),
+        },
+        // The bases diverged (one chat took in a landing): landing still
+        // decides, but lines can't be told apart here.
+        _ => {
+            let clean_against =
+                |base: &[u8]| matches!(crate::merge::merge_bytes(base, &a.content, &b.content), Ok(Some(_)));
+            let clean = a.base.as_deref().is_some_and(clean_against) && b.base.as_deref().is_some_and(clean_against);
+            (!clean).then_some(false)
+        }
+    }
+}
+
+/// This chat's current clashes with other open chats.
+pub fn peer_conflicts(dialog_id: &str) -> Vec<PeerConflict> {
+    PEERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(dialog_id)
+        .map(|row| {
+            row.iter()
+                .map(|(path, (peers, same_lines))| PeerConflict {
+                    path: path.clone(),
+                    peers: peers.iter().cloned().collect(),
+                    same_lines: *same_lines,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Compares every open overlay on `project` with the others and keeps the
+/// result. Only files two chats both changed are merged.
+fn refresh_project_peers(project: &Path) {
+    let on_project: Vec<(String, Arc<ChatOverlay>)> = OPEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, o)| same_folder(&o.project, project))
+        .map(|(id, o)| (id.clone(), o.clone()))
+        .collect();
+    let snapshots: Vec<(String, Arc<ChatOverlay>, Vec<OverlayChange>)> = on_project
+        .into_iter()
+        .map(|(id, o)| {
+            let changed = o.fs.changes().into_iter().filter(|c| !c.by_product()).collect();
+            (id, o, changed)
+        })
+        .collect();
+    let mut rows: PeerRows = snapshots.iter().map(|(id, _, _)| (id.clone(), BTreeMap::new())).collect();
+    for i in 0..snapshots.len() {
+        for j in (i + 1)..snapshots.len() {
+            let (a_id, a_o, a_changes) = &snapshots[i];
+            let (b_id, b_o, b_changes) = &snapshots[j];
+            let b_paths: BTreeSet<&str> = b_changes.iter().map(|c| c.path()).collect();
+            let shared: BTreeSet<&str> = a_changes.iter().map(|c| c.path()).filter(|p| b_paths.contains(p)).collect();
+            for rel in shared {
+                let (Some(a), Some(b)) = (side_of(a_changes, &a_o.project, rel), side_of(b_changes, &b_o.project, rel)) else {
+                    continue;
+                };
+                if let Some(same_lines) = clash(&a, &b) {
+                    for (me, other) in [(a_id, b_id), (b_id, a_id)] {
+                        let cell = rows.entry(me.clone()).or_default().entry(rel.to_string()).or_default();
+                        cell.0.insert(other.clone());
+                        cell.1 |= same_lines;
+                    }
+                }
+            }
+        }
+    }
+    let mut peers = PEERS.lock().unwrap_or_else(|e| e.into_inner());
+    for (id, row) in &rows {
+        peers.insert(id.clone(), row.clone());
+    }
+    drop(peers);
+    // Forget what's no longer true, so a new clash is told again.
+    let mut told = TOLD_PEERS.lock().unwrap_or_else(|e| e.into_inner());
+    for (id, row) in &rows {
+        let live: BTreeSet<String> =
+            row.iter().flat_map(|(path, (others, _))| others.iter().map(|o| told_key(path, o))).collect();
+        if let Some(entry) = told.get_mut(id) {
+            entry.retain(|k| live.contains(k));
+        }
+    }
+}
+
+/// Drops a chat's clash state (discarded, or landed and gone).
+fn drop_peer_state(dialog_id: &str) {
+    PEERS.lock().unwrap_or_else(|e| e.into_inner()).remove(dialog_id);
+    TOLD_PEERS.lock().unwrap_or_else(|e| e.into_inner()).remove(dialog_id);
+}
+
+/// Compares this chat with the other open chats on its project (after each
+/// of its tool calls); returns its clashes.
+pub fn check_peer_conflicts(dialog_id: &str) -> Vec<PeerConflict> {
+    if let Some(o) = get(dialog_id) {
+        refresh_project_peers(&o.project);
+    }
+    peer_conflicts(dialog_id)
+}
+
+/// The clashes this chat's model hasn't heard about yet, as one note.
+fn fresh_peer_note(dialog_id: &str) -> Option<String> {
+    let current = PEERS.lock().unwrap_or_else(|e| e.into_inner()).get(dialog_id).cloned().unwrap_or_default();
+    if current.is_empty() {
+        return None;
+    }
+    let mut told = TOLD_PEERS.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = told.entry(dialog_id.to_string()).or_default();
+    let mut same = Vec::new();
+    let mut file_level = Vec::new();
+    for (path, (others, same_lines)) in &current {
+        let new_here: Vec<&String> = others.iter().filter(|o| !entry.contains(&told_key(path, o))).collect();
+        if new_here.is_empty() {
+            continue;
+        }
+        for o in &new_here {
+            entry.insert(told_key(path, o));
+        }
+        if *same_lines {
+            same.push(format!("`{path}`"));
+        } else {
+            file_level.push(format!("`{path}`"));
+        }
+    }
+    let mut parts = Vec::new();
+    if !same.is_empty() {
+        parts.push(format!(
+            "Another isolated chat is changing the same lines you changed in: {}. Only one version can land as it is: keep your change to those lines as small as you can, and say in your summary that the user may have to pick.",
+            same.join(", ")
+        ));
+    }
+    if !file_level.is_empty() {
+        parts.push(format!(
+            "Another isolated chat also changed files you changed: {}. Check with the user before assuming yours wins.",
+            file_level.join(", ")
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 /// What the chat changed, for the UI: landable changes only.
@@ -589,6 +830,9 @@ pub struct OverlayStatus {
     pub view: Option<String>,
     /// Files the project's newer changes were merged into (Undo the merge).
     pub merged_in: Vec<String>,
+    /// Files other open chats on the project are changing too, on the
+    /// same lines (as of their last tool calls).
+    pub peer_conflicts: Vec<PeerConflict>,
     pub files: Vec<ChangedFile>,
     pub used: u64,
     pub limit: u64,
@@ -641,6 +885,7 @@ fn status(dialog_id: String) -> OverlayStatus {
         last_landing: last_landing(&dialog_id),
         view: open.map(|o| o.view.to_string_lossy().into_owned()),
         merged_in: if isolated { merged_in(&dialog_id) } else { Vec::new() },
+        peer_conflicts: if isolated { peer_conflicts(&dialog_id) } else { Vec::new() },
         files: if isolated { summarize(&changes(&dialog_id)) } else { Vec::new() },
         used,
         limit,
@@ -1362,6 +1607,42 @@ mod conflict_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    fn side(content: &str, base: Option<&str>) -> Side {
+        Side { present: true, content: content.as_bytes().to_vec(), base: base.map(|b| b.as_bytes().to_vec()) }
+    }
+
+    fn gone() -> Side {
+        Side { present: false, content: Vec::new(), base: None }
+    }
+
+    #[test]
+    fn chats_on_the_same_lines_clash_and_on_different_lines_do_not() {
+        let base = "1\n2\n3\n4\n5\n";
+        assert_eq!(clash(&side("A\n2\n3\n4\n5\n", Some(base)), &side("B\n2\n3\n4\n5\n", Some(base))), Some(true));
+        assert_eq!(clash(&side("A\n2\n3\n4\n5\n", Some(base)), &side("1\n2\n3\n4\nB\n", Some(base))), None);
+        assert_eq!(clash(&side("x\n2\n", Some(base)), &side("x\n2\n", Some(base))), None);
+        assert_eq!(clash(&gone(), &gone()), None);
+        assert_eq!(clash(&gone(), &side("CHANGED\n", Some(base))), Some(true));
+        assert_eq!(clash(&gone(), &side("new\n", None)), None);
+        assert_eq!(clash(&side("a\n", None), &side("b\n", None)), Some(true));
+        // Bases diverged: a file-level warning.
+        assert_eq!(clash(&side("A\n2\n3\n", Some("1\n2\n3\n")), &side("1\nB\n3\n", Some("1\nX\n3\n"))), Some(false));
+    }
+
+    #[test]
+    fn a_clash_is_told_once() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let id = "peer-note-chat";
+        PEERS.lock().unwrap().insert(
+            id.to_string(),
+            BTreeMap::from([("a.txt".to_string(), (BTreeSet::from(["other-chat".to_string()]), true))]),
+        );
+        let note = take_note(id).unwrap();
+        assert!(note.contains("`a.txt`") && note.contains("same lines"), "{note}");
+        assert!(take_note(id).is_none(), "told once");
+        drop_peer_state(id);
+    }
+
     #[test]
     fn chat_ids_name_one_folder() {
         assert!(valid_id("8f1c2d3e-aaaa"));
@@ -1440,6 +1721,19 @@ mod hub_tests {
         let note = take_note("hub-chat-b").unwrap();
         assert!(note.contains("b.txt") && note.contains("on lines you changed too: a.txt"), "{note}");
         assert!(take_note("hub-chat-b").is_none(), "told once");
+        // Two running chats on the same line: both hear it before either lands.
+        let c = open("hub-chat-c", &project, Box::new(|_, _| {})).unwrap();
+        write(&c, "b.txt", "changed by c\n");
+        // B now has b.txt as A landed it; C started from that too.
+        write(&b, "b.txt", "changed by b\n");
+        let clashes = check_peer_conflicts("hub-chat-c");
+        assert_eq!(clashes.len(), 1, "{clashes:?}");
+        assert_eq!(clashes[0].path, "b.txt");
+        assert!(clashes[0].same_lines);
+        assert!(peer_conflicts("hub-chat-b").iter().any(|p| p.peers == vec!["hub-chat-c".to_string()]));
+        assert!(take_note("hub-chat-b").unwrap().contains("same lines"));
+        discard("hub-chat-c").unwrap();
+        assert!(peer_conflicts("hub-chat-b").is_empty(), "gone with the other chat");
         discard("hub-chat-b").unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
