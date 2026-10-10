@@ -31,6 +31,8 @@ import { invoke } from '@tauri-apps/api/core';
 import type { MonacoLibEntry } from '../types';
 import { readDirEntries, readFileContent } from './commands';
 import {
+  declaresGlobals,
+  importedTypesPackages,
   projectFor,
   resolveTsProjects,
   typeReferences,
@@ -214,8 +216,8 @@ export function sanitizeExtraLibs(libs: ExtraLibInput[]): { filePath: string; co
 
 /**
  * One sanitized send to both TS and JS defaults. `libs` is the complete
- * set; @types packages the active file's config doesn't allow are held
- * back here (heldLibs) instead of sent, see "Global @types".
+ * set; global declarations of @types packages the active file's config
+ * doesn't allow are held back here (heldLibs), see "Global @types".
  */
 function safeSetExtraLibs(libs: ExtraLibInput[]): void {
   let all: { filePath: string; content: string }[];
@@ -224,11 +226,17 @@ function safeSetExtraLibs(libs: ExtraLibInput[]): void {
   } catch {
     return;
   }
+  // The sources may have changed what is imported: decide again.
+  importsByOwner.clear();
+  const complete = all;
+  hiddenTypes = hiddenTypesFor(activeFile, () =>
+    complete.map(({ filePath, content }) => [filePath, content] as const)
+  );
   heldLibs.clear();
   if (hiddenTypes.size > 0) {
     all = all.filter(({ filePath, content }) => {
       const pkg = typesPackageOf(filePath);
-      if (pkg === null || !hiddenTypes.has(pkg)) return true;
+      if (pkg === null || !hiddenTypes.has(pkg) || !globalTypings.has(filePath)) return true;
       heldLibs.set(filePath, content);
       return false;
     });
@@ -290,8 +298,7 @@ async function load(root: string) {
 
     ts.setCompilerOptions(sanitizeCompilerOptions(options.compilerOptions));
     js.setCompilerOptions(sanitizeCompilerOptions(options.compilerOptions));
-    tsProjects = options.projects;
-    typesDefaultAll = options.typesDefaultAll;
+    setTsProjects(options.projects, options.typesDefaultAll);
     // One call each: adding thousands of files one by one would resync the
     // worker every time. Typings (node_modules .d.ts) are never opened as
     // models, so they all go in; project sources skip URIs that already have
@@ -306,7 +313,6 @@ async function load(root: string) {
       typings.map((t) => ({ filePath: libUriFor(root, t.name), content: t.content }))
     );
     indexTypes(typingLibs);
-    hiddenTypes = hiddenTypesFor(activeFile);
     const libs = [
       ...typingLibs,
       ...sources.files
@@ -400,7 +406,6 @@ async function runTypingsRefresh(root: string): Promise<void> {
     for (const { filePath, content } of addable) next.set(filePath, content);
     typingsUris = new Set(addable.map((l) => l.filePath));
     indexTypes(addable);
-    hiddenTypes = hiddenTypesFor(activeFile);
     safeSetExtraLibs([...next].map(([filePath, content]) => ({ filePath, content })));
   } finally {
     typingsInFlight = false;
@@ -662,15 +667,22 @@ function pathUriFor(path: string): string {
  * The worker has one program, and every extra lib is a root file of it
  * (tsWorker getScriptFileNames), so each @types package in node_modules
  * would declare its globals for every file: `process` typed in browser code
- * because @types/node is installed for vite.config.ts. tsc only includes
- * the @types a config's `types` names (all of them when unset, before TS 6).
+ * because @types/node is installed for vite.config.ts.
  *
- * So the active file's owning config decides: @types packages it doesn't
- * allow are held back from the worker (heldLibs) and sent again when a file
- * whose config allows them becomes active. The swap resyncs the worker, so
- * it only happens when the allowed set actually changes — switching between
- * two app files costs nothing. Every read-modify-write of the libs goes
- * through allLibs(), which includes the held ones, so nothing is lost.
+ * tsc puts an @types package in a program when the config's `types` names
+ * it (every one when unset, before TS 6), or when the program's code
+ * imports it (`import _ from 'lodash'` → @types/lodash, whatever `types`
+ * says). The same here, for the config owning the active file: packages it
+ * neither lists nor imports are hidden, and of those only the files that
+ * declare globals (scripts like @types/node's, or `declare global`) are
+ * held back from the worker (heldLibs). Module files stay: they add nothing
+ * until imported, and a new import must resolve as soon as it's typed.
+ *
+ * Decided again on every lib update (a saved file can add an import) and
+ * when the active file changes; the worker is only resent when the hidden
+ * set changes — switching between two app files costs nothing. Every
+ * read-modify-write of the libs goes through allLibs(), which includes the
+ * held ones, so nothing is lost.
  *
  * Markers of other open files are computed under the active file's types
  * meanwhile; typesScopeCovers() tells the diagnostics reporter which of
@@ -680,12 +692,22 @@ function pathUriFor(path: string): string {
 let tsProjects: TsProject[] = [];
 let typesDefaultAll = true;
 let activeFile: string | null = null;
-/** @types package names currently held back from the worker. */
+/** @types package names currently hidden from the active file. */
 let hiddenTypes = new Set<string>();
-/** Their libs, by URI. */
+/** Global declaration files of hidden packages, held back, by URI. */
 const heldLibs = new Map<string, string>();
 /** Every @types package in the typings, with the `types` it references. */
 let typesIndex = new Map<string, string[]>();
+/** URIs of @types files that declare globals: the only ones ever held. */
+let globalTypings = new Set<string>();
+/** Owning config of a source URI (undefined: none), until the configs change. */
+const ownerCache = new Map<string, TsProject | undefined>();
+/** @types packages a source imports, while its text is the same. */
+const importsCache = new Map<string, { content: string; pkgs: string[] }>();
+/** @types packages imported by each config's files ('' = no config). */
+const importsByOwner = new Map<string, Set<string>>();
+
+type Sources = () => Iterable<readonly [uri: string, content: string]>;
 
 const TYPES_PACKAGE = /\/node_modules\/@types\/([^/]+)\//;
 
@@ -700,23 +722,74 @@ function allLibs(): Record<string, { content: string }> {
   return out;
 }
 
+const allLibSources: Sources = () =>
+  Object.entries(allLibs()).map(([uri, lib]) => [uri, lib.content] as const);
+
+function setTsProjects(projects: TsProject[], defaultAll: boolean): void {
+  tsProjects = projects;
+  typesDefaultAll = defaultAll;
+  ownerCache.clear();
+  importsByOwner.clear();
+}
+
 function indexTypes(typings: { filePath: string; content: string }[]): void {
   const index = new Map<string, string[]>();
+  const globals = new Set<string>();
   for (const { filePath, content } of typings) {
     const pkg = typesPackageOf(filePath);
     if (pkg === null) continue;
     const refs = index.get(pkg) ?? [];
-    if (filePath.endsWith('.d.ts')) refs.push(...typeReferences(content));
+    if (filePath.endsWith('.d.ts')) {
+      refs.push(...typeReferences(content));
+      if (declaresGlobals(content)) globals.add(filePath);
+    }
     index.set(pkg, refs);
   }
   typesIndex = index;
+  globalTypings = globals;
 }
 
-/** The @types packages a file's config doesn't let it see. */
-function hiddenTypesFor(path: string | null): Set<string> {
+function ownerOfPath(path: string): TsProject | undefined {
+  return projectFor(tsProjects, path.replace(/\\/g, '/'));
+}
+
+function ownerOfUri(uri: string): TsProject | undefined {
+  if (!ownerCache.has(uri)) ownerCache.set(uri, ownerOfPath(monaco.Uri.parse(uri).fsPath));
+  return ownerCache.get(uri);
+}
+
+/** @types packages imported by the files `owner` covers (open tabs included). */
+function importedTypesOf(owner: TsProject | undefined, sources: Sources): Set<string> {
+  const key = owner?.path ?? '';
+  const cached = importsByOwner.get(key);
+  if (cached) return cached;
+  const out = new Set<string>();
+  const consider = (uri: string, content: string) => {
+    if (uri.includes('/node_modules/') || !SOURCE_FILE.test(uri)) return;
+    if (ownerOfUri(uri) !== owner) return;
+    let entry = importsCache.get(uri);
+    if (entry?.content !== content) {
+      entry = { content, pkgs: importedTypesPackages(content) };
+      importsCache.set(uri, entry);
+    }
+    for (const pkg of entry.pkgs) if (typesIndex.has(pkg)) out.add(pkg);
+  };
+  for (const [uri, content] of sources()) consider(uri, content);
+  for (const m of monaco.editor.getModels()) {
+    if (!m.isDisposed() && m.uri.scheme === 'file') consider(m.uri.toString(), m.getValue());
+  }
+  importsByOwner.set(key, out);
+  return out;
+}
+
+/** The @types packages a file's config neither lists nor imports. */
+function hiddenTypesFor(path: string | null, sources: Sources): Set<string> {
   if (!path || typesIndex.size === 0) return new Set();
-  const owner = projectFor(tsProjects, path.replace(/\\/g, '/'));
-  const visible = visibleTypes(owner?.types, typesDefaultAll, (pkg) => typesIndex.get(pkg) ?? []);
+  const owner = ownerOfPath(path);
+  if (owner?.types === undefined && typesDefaultAll) return new Set();
+  if (owner?.types?.includes('*')) return new Set();
+  const allowed = [...(owner?.types ?? []), ...importedTypesOf(owner, sources)];
+  const visible = visibleTypes(allowed, false, (pkg) => typesIndex.get(pkg) ?? []);
   if (visible === 'all') return new Set();
   return new Set([...typesIndex.keys()].filter((pkg) => !visible.has(pkg)));
 }
@@ -727,16 +800,16 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
 
 /**
  * The file shown in the editor: its config's @types become the worker's.
- * Cheap when the allowed set doesn't change.
+ * Cheap when the hidden set doesn't change.
  */
 export function setActiveTypesFile(path: string | null, force = false): void {
   // Other files (Markdown, Rust...) don't use the worker: keep the scope.
   if (path !== null && !SOURCE_FILE.test(path)) return;
   activeFile = path;
   if (!loadedRoot || !readyRoots.has(loadedRoot)) return; // load() applies it
-  const next = hiddenTypesFor(path);
-  if (!force && sameSet(next, hiddenTypes)) return;
-  hiddenTypes = next;
+  // Open tabs may have new imports since the last decision.
+  importsByOwner.clear();
+  if (!force && sameSet(hiddenTypesFor(path, allLibSources), hiddenTypes)) return;
   safeSetExtraLibs(
     Object.entries(allLibs()).map(([filePath, lib]) => ({ filePath, content: lib.content }))
   );
@@ -748,7 +821,7 @@ export function setActiveTypesFile(path: string | null, force = false): void {
  * active and the two allow different ones).
  */
 export function typesScopeCovers(path: string): boolean {
-  return sameSet(hiddenTypesFor(path), hiddenTypes);
+  return sameSet(hiddenTypesFor(path, allLibSources), hiddenTypes);
 }
 
 const TS_CONFIG_FILE = /[\\/](tsconfig|jsconfig)(\.[^\\/]*)?\.json$/i;
@@ -768,8 +841,7 @@ export function notifyTsConfigMaybeChanged(path: string): void {
     if (root !== loadedRoot) return;
     ts.setCompilerOptions(sanitizeCompilerOptions(options.compilerOptions));
     js.setCompilerOptions(sanitizeCompilerOptions(options.compilerOptions));
-    tsProjects = options.projects;
-    typesDefaultAll = options.typesDefaultAll;
+    setTsProjects(options.projects, options.typesDefaultAll);
     setActiveTypesFile(activeFile, true);
   }, QUIET_MS);
 }

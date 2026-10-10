@@ -3,6 +3,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  declaresGlobals,
+  importedTypesPackages,
   jsonc,
   normalize,
   projectFor,
@@ -215,6 +217,39 @@ describe('projects', () => {
       typeReferences('/// <reference types="node" />\n// x\n///<reference types=\'react\'/>'),
       ['node', 'react']
     );
+  });
+});
+
+describe('global and imported typings', () => {
+  it('declaresGlobals: scripts and declare global, not plain modules', () => {
+    assert.equal(declaresGlobals('declare var process: any;\ninterface X {}'), true);
+    assert.equal(declaresGlobals('declare module "fs" {\n  export function a(): void;\n}'), true);
+    assert.equal(declaresGlobals('export = _;\ndeclare const _: any;'), false);
+    assert.equal(declaresGlobals('import * as R from "react";\nexport function f(): void;'), false);
+    assert.equal(declaresGlobals('export = React;\ndeclare global {\n  namespace JSX {}\n}'), true);
+  });
+
+  it('importedTypesPackages', () => {
+    const src = [
+      "import _ from 'lodash';",
+      "import type { X } from '@tanstack/solid-virtual/core';",
+      "export * from 'zod';",
+      "import 'reflect-metadata';",
+      "const m = await import('dayjs');",
+      'const r = require("express");',
+      "import fs from 'node:fs';",
+      "import a from './a';",
+      '/// <reference types="jest" />',
+    ].join('\n');
+    assert.deepEqual(importedTypesPackages(src).sort(), [
+      'dayjs',
+      'express',
+      'jest',
+      'lodash',
+      'reflect-metadata',
+      'tanstack__solid-virtual',
+      'zod',
+    ]);
   });
 });
 

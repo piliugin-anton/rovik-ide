@@ -207,6 +207,34 @@ export function typeReferences(text: string): string[] {
 }
 
 /**
+ * Whether a declaration file adds globals just by being in the program: a
+ * script (no top-level import/export, e.g. most of @types/node) or one with
+ * `declare global`. A module file only matters once something imports it.
+ * Top level means column 0, as declaration files are written.
+ */
+export function declaresGlobals(text: string): boolean {
+  return /^\s*declare\s+global\b/m.test(text) || !/^(?:import|export)\b/m.test(text);
+}
+
+/**
+ * The @types package names a source file pulls in by import, require,
+ * dynamic import, export-from or `/// <reference types>`: `lodash` →
+ * `lodash`, `@scope/pkg/sub` → `scope__pkg`. Relative paths and `node:`
+ * built-ins (typed by @types/node's ambient modules, not by import) aren't.
+ */
+export function importedTypesPackages(text: string): string[] {
+  const out = new Set<string>(typeReferences(text).map(typesPackageName));
+  const specifiers = text.matchAll(
+    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["']([^"'\n]+)["']/gm
+  );
+  for (const [, spec] of specifiers) {
+    if (/^(\.|\/|[A-Za-z]:|node:|[a-z][a-z0-9+.-]*:\/\/)/.test(spec)) continue;
+    out.add(typesPackageName(spec));
+  }
+  return [...out];
+}
+
+/**
  * tsconfig include/exclude semantics: `*` and `?` stay within a folder,
  * `**` spans folders, and a pattern whose last part has no wildcard also
  * matches everything under it (a folder).
