@@ -1,6 +1,6 @@
 // EditorSettings.tsx
 //
-// The Settings → Editor page: theme selector plus formatting options.
+// The Settings → Editor page: theme, indentation, display and formatting.
 // Changes apply live (components/Editor.tsx follows the same store) and
 // persist to localStorage via lib/editorSettings.ts.
 
@@ -21,7 +21,8 @@ export default function EditorSettings() {
   return (
     <div class="permissions-settings editor-settings">
       <p class="settings-hint">
-        How the editor looks and formats text. Applies right away to every open file.
+        How the editor looks and formats text. Applies right away to every open file; a project's
+        .editorconfig takes precedence over the indentation set here.
       </p>
 
       <div class="settings-section">
@@ -78,7 +79,7 @@ export default function EditorSettings() {
       </div>
 
       <div class="settings-section">
-        <div class="settings-section-title">Formatting</div>
+        <div class="settings-section-title">Indentation</div>
         <div class="setting-row">
           <span class="setting-row-label">Indent</span>
           <div class="setting-row-control">
@@ -120,6 +121,24 @@ export default function EditorSettings() {
             />
           </div>
         </div>
+        <label class="setting-checkbox">
+          <input
+            type="checkbox"
+            checked={s().detectIndentation}
+            onChange={(e) => updateEditorSettings({ detectIndentation: e.currentTarget.checked })}
+          />
+          <span>
+            Detect from file
+            <span class="setting-checkbox-sub">
+              Follow the indentation a file already uses; the settings above apply where it shows
+              none.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Display</div>
         <div class="setting-row">
           <span class="setting-row-label">Whitespace</span>
           <div class="setting-row-control">
@@ -174,6 +193,25 @@ export default function EditorSettings() {
             Minimap
             <span class="setting-checkbox-sub">
               Show the zoomed-out code overview on the right.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">Formatting</div>
+        <label class="setting-checkbox">
+          <input
+            type="checkbox"
+            checked={s().formatOnSave}
+            onChange={(e) => updateEditorSettings({ formatOnSave: e.currentTarget.checked })}
+          />
+          <span>
+            Format on save
+            <span class="setting-checkbox-sub">
+              Run the language's formatter on Ctrl+S. Available today for TypeScript, JavaScript,
+              JSON, CSS, HTML and, with rust-analyzer, Rust. Format Document (Shift+Alt+F) runs it
+              by hand.
             </span>
           </span>
         </label>

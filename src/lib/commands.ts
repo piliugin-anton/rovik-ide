@@ -8,6 +8,7 @@ import type {
   ToolSearchResult,
   WebSearchHit,
 } from '../types';
+import type { EditorConfigFile } from './editorconfig';
 
 /** Opens the native "select a folder" dialog. Returns null if the user cancels. */
 export async function pickProjectFolder(): Promise<string | null> {
@@ -43,6 +44,11 @@ export async function writeFileContent(
 
 export async function pathExists(path: string): Promise<boolean> {
   return invoke<boolean>('path_exists', { path });
+}
+
+/** The .editorconfig files from a file's folder up to the root, nearest first. */
+export async function readEditorConfigs(path: string): Promise<EditorConfigFile[]> {
+  return invoke<EditorConfigFile[]>('read_editorconfigs', { path });
 }
 
 /**

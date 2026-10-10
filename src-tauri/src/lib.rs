@@ -89,6 +89,7 @@ pub fn run() {
             filesystem::read_file_content,
             filesystem::write_file_content,
             filesystem::path_exists,
+            filesystem::read_editorconfigs,
             filesystem::dir_entry_count,
             filesystem::load_ai_settings,
             filesystem::save_ai_settings,
