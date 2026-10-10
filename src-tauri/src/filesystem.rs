@@ -816,6 +816,40 @@ pub fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
 }
 
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct EditorConfigFile {
+    dir: String,
+    content: String,
+}
+
+/// Bigger isn't a real .editorconfig.
+const MAX_EDITORCONFIG: u64 = 256 * 1024;
+
+/// The `.editorconfig` files that can apply to a file: one per folder from
+/// the file's own up to the filesystem root, nearest first. Which of them
+/// count (`root = true` stops the search) is decided by the frontend's
+/// parser (src/lib/editorconfig.ts), the only place that reads them.
+#[tauri::command]
+pub fn read_editorconfigs(path: String) -> Vec<EditorConfigFile> {
+    let Some(parent) = Path::new(&path).parent() else {
+        return Vec::new();
+    };
+    parent
+        .ancestors()
+        .filter_map(|dir| {
+            let file = dir.join(".editorconfig");
+            let meta = fs::metadata(&file).ok()?;
+            if !meta.is_file() || meta.len() > MAX_EDITORCONFIG {
+                return None;
+            }
+            Some(EditorConfigFile {
+                dir: dir.to_string_lossy().into_owned(),
+                content: fs::read_to_string(&file).ok()?,
+            })
+        })
+        .collect()
+}
+
 // --- File tree mutations: create / delete / rename / copy ------------------
 //
 // All of these take a stable id (from DirEntryInfo.id / get_path_id), never
@@ -1986,6 +2020,33 @@ mod save_tests {
             fs::read_link(dir.join("dest/to-sub")).unwrap(),
             Path::new("sub")
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod editorconfig_tests {
+    use super::*;
+
+    #[test]
+    fn editorconfigs_are_read_nearest_first() {
+        let dir = std::env::temp_dir().join(format!("editorconfigs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("a/b")).unwrap();
+        fs::write(dir.join(".editorconfig"), "root = true\n").unwrap();
+        fs::write(dir.join("a/b/.editorconfig"), "[*]\nindent_size = 4\n").unwrap();
+        // A folder by that name isn't a config file.
+        fs::create_dir_all(dir.join("a/.editorconfig")).unwrap();
+
+        let found = read_editorconfigs(dir.join("a/b/main.rs").to_string_lossy().into_owned());
+        let ours: Vec<_> = found
+            .iter()
+            .filter(|f| Path::new(&f.dir).starts_with(&dir))
+            .collect();
+        assert_eq!(ours.len(), 2);
+        assert_eq!(Path::new(&ours[0].dir), dir.join("a/b"));
+        assert_eq!(ours[0].content, "[*]\nindent_size = 4\n");
+        assert_eq!(Path::new(&ours[1].dir), dir);
         let _ = fs::remove_dir_all(&dir);
     }
 }

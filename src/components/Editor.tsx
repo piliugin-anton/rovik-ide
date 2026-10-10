@@ -5,6 +5,7 @@ import {
   untrack,
   createRoot,
   createSignal,
+  createMemo,
   Show,
 } from 'solid-js';
 import type { Accessor } from 'solid-js';
@@ -34,6 +35,9 @@ import {
 } from '../lib/lsp/rustAnalyzer';
 import { pendingEditFor } from '../lib/approvals';
 import { editorSettings } from '../lib/editorSettings';
+import type { EditorConfigProps } from '../lib/editorconfig';
+import { applyIndentation, loadEditorConfig, prepareForSave } from '../lib/editorFormatting';
+import { registerFileFormatter } from '../lib/fileFormatters';
 import { applyTheme } from '../lib/monacoThemes';
 import {
   hunkLine,
@@ -148,9 +152,6 @@ export default function Editor(props: EditorProps) {
       theme: initialTheme === 'hc-black' ? 'hc-black' : 'vs-dark',
       automaticLayout: true,
       fontSize: editorSettings().fontSize,
-      tabSize: editorSettings().tabSize,
-      insertSpaces: editorSettings().insertSpaces,
-      detectIndentation: false,
       wordWrap: editorSettings().wordWrap,
       minimap: {
         enabled: editorSettings().minimap,
@@ -176,17 +177,15 @@ export default function Editor(props: EditorProps) {
       }
     });
 
-    // Settings → Editor (theme, font size, formatting): applied live.
+    // Settings → Editor (theme, font size, display): applied live.
     // applyTheme is global (defineTheme + setTheme); updateOptions targets this instance.
+    // Indentation is set on the model instead (lib/editorFormatting.ts).
     createEffect(() => {
       const s = editorSettings();
       if (!editor || disposed) return;
       void applyTheme(s.theme);
       editor.updateOptions({
         fontSize: s.fontSize,
-        tabSize: s.tabSize,
-        insertSpaces: s.insertSpaces,
-        detectIndentation: false,
         wordWrap: s.wordWrap,
         minimap: { enabled: s.minimap },
         renderWhitespace: s.renderWhitespace,
@@ -201,8 +200,72 @@ export default function Editor(props: EditorProps) {
       }
     });
 
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      props.onSave();
+    // The file's .editorconfig (null until read): its indentation beats
+    // the settings', and its whitespace rules apply on save.
+    const [editorConfig, setEditorConfig] = createSignal<EditorConfigProps | null>(null);
+    void loadEditorConfig(props.currentFilePath).then((ec) => {
+      if (!disposed) setEditorConfig(ec);
+    });
+    // Only the indentation settings: re-detecting on every theme change
+    // would undo indentation the user set for this file meanwhile.
+    const indentSettings = createMemo(
+      () => {
+        const s = editorSettings();
+        return {
+          tabSize: s.tabSize,
+          insertSpaces: s.insertSpaces,
+          detectIndentation: s.detectIndentation,
+        };
+      },
+      undefined,
+      {
+        equals: (a, b) =>
+          a.tabSize === b.tabSize &&
+          a.insertSpaces === b.insertSpaces &&
+          a.detectIndentation === b.detectIndentation,
+      }
+    );
+    createEffect(() => {
+      const s = indentSettings();
+      const ec = editorConfig() ?? {};
+      const m = editor?.getModel();
+      if (!m || disposed) return;
+      applyIndentation(m, s, ec);
+    });
+
+    // The project's command-line formatter for this file, if it has one.
+    // Looked up again when the language, the project or the setting changes.
+    const useProjectFormatters = createMemo(() => editorSettings().projectFormatters);
+    createEffect(() => {
+      const language = props.language();
+      const root = props.projectDir();
+      const m = editor?.getModel();
+      if (!useProjectFormatters() || !m) return;
+      let registered: monaco.IDisposable | null = null;
+      let stale = false;
+      onCleanup(() => {
+        stale = true;
+        registered?.dispose();
+      });
+      registerFileFormatter(m, props.currentFilePath, language, root)
+        .then((r) => {
+          if (stale || disposed) r?.disposable.dispose();
+          else registered = r?.disposable ?? null;
+        })
+        .catch((err) => console.warn(`No formatter lookup for ${props.currentFilePath}:`, err));
+    });
+
+    let saving = false;
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, async () => {
+      // A second Ctrl+S while the formatter runs would save the text twice.
+      if (saving || !editor) return;
+      saving = true;
+      try {
+        await prepareForSave(editor, editorConfig() ?? {}, editorSettings().formatOnSave);
+      } finally {
+        saving = false;
+      }
+      if (!disposed) props.onSave();
     });
 
     const reportCursor = (sel: monaco.Selection) => {

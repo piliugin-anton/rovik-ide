@@ -1,7 +1,7 @@
 // editorSettings.ts
 //
 // The editor's appearance and formatting options (theme, font size,
-// indentation, word wrap, minimap). Kept in localStorage — they are
+// indentation, word wrap, minimap, format on save). Kept in localStorage — they are
 // per-user, not per-project — and exposed as reactive signals so the
 // Monaco instance in components/Editor.tsx follows them live.
 
@@ -31,8 +31,17 @@ export const EDITOR_THEMES: EditorThemeOption[] = [
 export interface EditorSettings {
   theme: EditorThemeId;
   fontSize: number;
+  /** Default indentation: what a file gets when neither its .editorconfig
+   *  nor (with detectIndentation) its own content says otherwise. */
   tabSize: number;
   insertSpaces: boolean;
+  /** Take each file's indentation from its content. Default true. */
+  detectIndentation: boolean;
+  /** Run the language's formatter on Ctrl+S, when it has one. Default false. */
+  formatOnSave: boolean;
+  /** Format with the project's command-line formatter (Prettier, rustfmt,
+   *  Ruff, …) where there is one. Default true. */
+  projectFormatters: boolean;
   wordWrap: 'on' | 'off';
   minimap: boolean;
   renderWhitespace: 'none' | 'boundary' | 'all';
@@ -47,6 +56,9 @@ const DEFAULTS: EditorSettings = {
   fontSize: 14,
   tabSize: 2,
   insertSpaces: true,
+  detectIndentation: true,
+  formatOnSave: false,
+  projectFormatters: true,
   wordWrap: 'off',
   minimap: false,
   renderWhitespace: 'none',
@@ -73,6 +85,16 @@ function load(): EditorSettings {
           : DEFAULTS.tabSize,
       insertSpaces:
         typeof parsed.insertSpaces === 'boolean' ? parsed.insertSpaces : DEFAULTS.insertSpaces,
+      detectIndentation:
+        typeof parsed.detectIndentation === 'boolean'
+          ? parsed.detectIndentation
+          : DEFAULTS.detectIndentation,
+      formatOnSave:
+        typeof parsed.formatOnSave === 'boolean' ? parsed.formatOnSave : DEFAULTS.formatOnSave,
+      projectFormatters:
+        typeof parsed.projectFormatters === 'boolean'
+          ? parsed.projectFormatters
+          : DEFAULTS.projectFormatters,
       wordWrap: parsed.wordWrap === 'on' ? 'on' : 'off',
       minimap: typeof parsed.minimap === 'boolean' ? parsed.minimap : DEFAULTS.minimap,
       renderWhitespace:
@@ -113,25 +135,4 @@ export function updateEditorSettings(patch: Partial<EditorSettings>): void {
   const next = { ...settings(), ...patch };
   setSettings(next);
   persist(next);
-}
-
-/** Monaco editor options derived from the settings (for create/updateOptions). */
-export function monacoOptionsFrom(s: EditorSettings): {
-  theme: EditorThemeId;
-  fontSize: number;
-  tabSize: number;
-  insertSpaces: boolean;
-  wordWrap: 'on' | 'off';
-  minimap: { enabled: boolean };
-  renderWhitespace: 'none' | 'boundary' | 'all';
-} {
-  return {
-    theme: s.theme,
-    fontSize: s.fontSize,
-    tabSize: s.tabSize,
-    insertSpaces: s.insertSpaces,
-    wordWrap: s.wordWrap,
-    minimap: { enabled: s.minimap },
-    renderWhitespace: s.renderWhitespace,
-  };
 }
