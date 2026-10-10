@@ -183,10 +183,10 @@ export default function MessageList(props: {
   });
 
   /*
-   * Consecutive calls to one tool fold into one line (ToolCallGroup), also
-   * across replies: a reply that is nothing but tool calls continues the
-   * tool calls of the reply before it, and renders inside it rather than as
-   * a row of its own. Anything else shown with a reply (text, thinking, an
+   * Tool calls show as one line each (ToolCallGroup), and consecutive calls
+   * to one tool fold into one line, also across replies: a reply that is
+   * nothing but tool calls continues the tool calls of the reply before it,
+   * and renders inside it rather than as a row of its own. Anything else shown with a reply (text, thinking, an
    * error, a pause) starts a new row, so nothing is moved out of order.
    */
   const onlyToolCalls = (m: ChatMessage) =>
@@ -241,8 +241,9 @@ export default function MessageList(props: {
   const runKeys = (m: ChatMessage) => runsOf(m).map((r) => r.calls[0].id);
   const runAt = (m: ChatMessage, key: string) => runsOf(m).find((r) => r.calls[0].id === key);
 
-  const renderCall = (tc: ChatToolCall) => (
+  const renderCall = (tc: ChatToolCall, initiallyExpanded = false) => (
     <ToolCallBlock
+      initiallyExpanded={initiallyExpanded}
       dialogId={props.dialogId}
       toolCall={tc}
       result={toolResults().get(tc.id)}
@@ -1261,20 +1262,16 @@ export default function MessageList(props: {
                       {(key) => {
                         const run = () => runAt(m, key);
                         return (
-                          <Show
-                            when={(run()?.calls.length ?? 0) > 1}
-                            fallback={
-                              <Show when={run()?.calls[0]} keyed>
-                                {(tc) => renderCall(tc)}
-                              </Show>
-                            }
-                          >
+                          <Show when={run()}>
                             <ToolCallGroup
                               name={run()!.name}
                               calls={run()!.calls}
                               dialogId={props.dialogId}
                               result={(id) => toolResults().get(id)}
                               running={props.sending}
+                              superseded={run()!.calls.every((c) =>
+                                todoCallStates().superseded.has(c.id)
+                              )}
                               renderCall={renderCall}
                             />
                           </Show>

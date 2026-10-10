@@ -7663,3 +7663,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .tool-group-calls .tool-call {
   max-width: 100%;
 }
+
+.tool-group.superseded > .tool-group-header {
+  opacity: 0.55;
+}

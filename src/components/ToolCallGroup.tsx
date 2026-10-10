@@ -1,14 +1,16 @@
 // ToolCallGroup.tsx
 //
-// Consecutive calls to one tool as a single line, like the model's thinking:
-// "Read App.tsx, main.tsx · 3 calls". The file names open in the editor; the
-// line opens to each call's own block. A call waiting for the user's
-// approval keeps the group open, so its request is never hidden.
+// A tool call, or consecutive calls to one tool, as a single line like the
+// model's thinking: "Read App.tsx", "Read App.tsx, main.tsx · 3 calls". The
+// file names open in the editor; the line opens to each call's own block
+// (a single call's already expanded). A call waiting for the user (an
+// approval, a question) keeps the line open, so the request is never hidden.
 import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
 import { describeGroup } from '../lib/toolGroups';
 import { isErrorResult, parseArgsLenient } from '../lib/toolArgs';
 import { pendingApproval } from '../lib/approvals';
+import { pendingQuestions } from '../lib/questions';
 import { requestOpenFile } from '../lib/editorBridge';
 
 export default function ToolCallGroup(props: {
@@ -18,8 +20,10 @@ export default function ToolCallGroup(props: {
   result: (id: string) => ChatMessage | undefined;
   /** True while the agent loop is still running. */
   running: boolean;
-  /** One call's own block, as it renders outside a group. */
-  renderCall: (call: ChatToolCall) => JSX.Element;
+  /** Earlier checklist snapshots: history, dimmed. */
+  superseded?: boolean;
+  /** One call's own block; expanded when it's the only one. */
+  renderCall: (call: ChatToolCall, expanded: boolean) => JSX.Element;
 }) {
   const [userOpen, setUserOpen] = createSignal(false);
 
@@ -32,9 +36,22 @@ export default function ToolCallGroup(props: {
   );
   const active = () => states().includes('running');
   const failed = () => states().filter((s) => s === 'error').length;
+  const notRun = () => (awaiting() ? 0 : states().filter((s) => s === 'idle').length);
   const awaiting = () =>
-    !!props.dialogId && props.calls.some((c) => pendingApproval(props.dialogId!, c.id));
+    !!props.dialogId &&
+    props.calls.some(
+      (c) => pendingApproval(props.dialogId!, c.id) || pendingQuestions(props.dialogId!, c.id)
+    );
   const open = () => userOpen() || awaiting();
+  const meta = () =>
+    [
+      props.calls.length > 1 ? `${props.calls.length} calls` : '',
+      failed() ? `${failed()} failed` : '',
+      // Never ran (the app closed while it waited, say).
+      notRun() ? (props.calls.length > 1 ? `${notRun()} not run` : 'not run') : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
 
   const label = createMemo(() =>
     describeGroup(
@@ -51,7 +68,10 @@ export default function ToolCallGroup(props: {
   };
 
   return (
-    <div class="tool-group" classList={{ open: open(), active: active() }}>
+    <div
+      class="tool-group"
+      classList={{ open: open(), active: active(), superseded: !!props.superseded }}
+    >
       <div class="tool-group-header" onClick={toggle}>
         <button type="button" class="tool-group-toggle" aria-expanded={open()}>
           <svg
@@ -102,16 +122,18 @@ export default function ToolCallGroup(props: {
             <span class="tool-group-item"> and {label().more} more</span>
           </Show>
         </span>
-        <span class="tool-group-meta" classList={{ error: failed() > 0 }}>
-          {props.calls.length} calls{failed() > 0 ? ` · ${failed()} failed` : ''}
-        </span>
+        <Show when={meta()}>
+          <span class="tool-group-meta" classList={{ error: failed() > 0 }}>
+            {meta()}
+          </span>
+        </Show>
         <Show when={active() && !awaiting()}>
           <span class="tool-call-spinner" aria-label="Running" />
         </Show>
       </div>
       <Show when={open()}>
         <div class="tool-group-calls">
-          <For each={props.calls}>{(call) => props.renderCall(call)}</For>
+          <For each={props.calls}>{(call) => props.renderCall(call, props.calls.length === 1)}</For>
         </div>
       </Show>
     </div>

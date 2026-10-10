@@ -50,6 +50,8 @@ export interface ToolCallBlockProps {
   superseded?: boolean;
   /** The latest `todo` snapshot with no run going and steps unfinished. */
   interrupted?: boolean;
+  /** Opened at first (revealed from its line in the chat). */
+  initiallyExpanded?: boolean;
 }
 
 /*
@@ -556,7 +558,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const request = () =>
     props.dialogId ? pendingApproval(props.dialogId, props.toolCall.id) : undefined;
 
-  const [expanded, setExpanded] = createSignal(false);
+  const [expanded, setExpanded] = createSignal(!!props.initiallyExpanded);
 
   const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
 

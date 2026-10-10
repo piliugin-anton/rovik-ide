@@ -36,8 +36,14 @@ describe('groupToolCalls', () => {
       call('write', { path: 'b.ts', content: '' }),
     ]);
     assert.deepEqual(
-      runs.map((r) => r.calls.length),
-      [1, 1, 1, 1, 1]
+      runs.map((r) => [r.calls.length, !!r.alone]),
+      [
+        [1, true],
+        [1, true],
+        [1, false],
+        [1, true],
+        [1, false],
+      ]
     );
   });
 });
@@ -67,6 +73,34 @@ describe('describeGroup', () => {
     assert.equal(label.items.length, 4);
     assert.equal(label.more, 2);
     assert.equal(describeGroup('write', [{ path: 'a.ts' }], false).verb, 'Wrote');
+  });
+
+  it('describes questions, checklists, plans and context edits', () => {
+    const asked = describeGroup('ask_user', [{ questions: [{ question: 'Which DB?' }] }], false);
+    assert.equal(asked.verb, 'Asked');
+    assert.equal(asked.items[0].text, 'Which DB?');
+    const todo = describeGroup(
+      'todo',
+      [
+        {
+          items: [
+            { title: 'One', status: 'done' },
+            { title: 'Two', status: 'in_progress' },
+          ],
+        },
+      ],
+      false
+    );
+    assert.equal(todo.verb, 'Updated the checklist');
+    assert.equal(todo.items[0].text, '1 of 2 done · Two');
+    const plan = describeGroup('submit_plan', [{ plan: '# Add caching\n\nSteps' }], true);
+    assert.deepEqual([plan.verb, plan.items[0].text], ['Saving the plan', 'Add caching']);
+    const context = describeGroup(
+      'write',
+      [{ path: '@context', content: 'x', old_text: 'y' }],
+      false
+    );
+    assert.deepEqual([context.verb, context.items.length], ['Edited its context', 0]);
   });
 
   it('names commands by their program and pages by their site', () => {
