@@ -865,3 +865,17 @@ once; they touch different files. Everything else is sequential.
     (replanning up to three times).
   - After a landing the chat's overlay is discarded; its next run starts
     from the project as it is.
+- **Milestone 7 (conflicts found early).**
+  - The project's file watcher (while the project is open in the editor)
+    and every landing tell open isolated chats on that project what
+    changed. Untouched files show the new content at once (the kernel's
+    cache of them is dropped); folders are listed again.
+  - A chat's model gets one note with its next tool result: files it had
+    looked at that changed, files it changed that now conflict, or that
+    many files changed (more than 200 at once, or too many for the
+    watcher to list).
+  - A conflict is found when it happens: the chat's bar shows it and a
+    notice names the file, instead of waiting for the run to end.
+  - **Not done:** pausing runs on a large change (a note and fresh content
+    instead), and "landed by chat B" in notes (the note says another chat
+    or the user).

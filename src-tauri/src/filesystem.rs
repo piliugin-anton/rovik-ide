@@ -553,6 +553,8 @@ pub fn start_file_watch(
             match flush {
                 WatchFlush::Nothing => {}
                 WatchFlush::Everything => {
+                    // Isolated chats on this project read it afresh.
+                    crate::overlay::chats::project_changed(&watch_root, &[], true);
                     let _ = app_handle.emit(
                         "fs-changes",
                         FileWatchPayload {
@@ -563,6 +565,21 @@ pub fn start_file_watch(
                     );
                 }
                 WatchFlush::Events(events) => {
+                    let paths: Vec<PathBuf> = events.iter().map(|p| PathBuf::from(&p.path)).collect();
+                    // Isolated chats on this project: see it as it is now,
+                    // and hear right away when their own change conflicts.
+                    for (_chat, path) in crate::overlay::chats::project_changed(&watch_root, &paths, false) {
+                        crate::agent_run::events::emit(
+                            &app_handle,
+                            crate::agent_run::events::AgentEvent::Notice {
+                                kind: "warning".into(),
+                                title: "A chat's change conflicts with the project".into(),
+                                message: format!(
+                                    "{path} changed in the project on lines an isolated chat changed too. That chat's changes won't land without you deciding."
+                                ),
+                            },
+                        );
+                    }
                     for payload in events {
                         let _ = app_handle.emit("fs-changes", payload);
                     }

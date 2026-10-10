@@ -201,6 +201,127 @@ pub fn close_all() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The project changing under open chats
+// ---------------------------------------------------------------------------
+
+/// Notes for each chat's model, waiting for its next tool result.
+static NOTES: LazyLock<Mutex<HashMap<String, Notes>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Default)]
+struct Notes {
+    changed: std::collections::BTreeSet<String>,
+    conflicts: std::collections::BTreeSet<String>,
+    many: bool,
+}
+
+/// More files than this in one go is "many files changed" (a branch
+/// switch, a pull), not a list.
+const MANY: usize = 200;
+
+/// The project changed: `abs` paths in it, or (`everything`) too many to
+/// list. Every open chat on that project sees untouched files as they are
+/// now; its model is told about files it had looked at; a file it changed
+/// itself is merged with the new version right away, and a conflict is
+/// reported now instead of when the chat tries to land.
+pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec<(String, String)> {
+    let overlays: Vec<Arc<ChatOverlay>> = OPEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .filter(|o| same_folder(&o.project, project))
+        .cloned()
+        .collect();
+    let mut conflicts_found = Vec::new();
+    for o in overlays {
+        let id = o.store.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if everything || abs.len() > MANY {
+            o.fs.project_changed_everywhere();
+            NOTES.lock().unwrap_or_else(|e| e.into_inner()).entry(id).or_default().many = true;
+            continue;
+        }
+        let rels: Vec<String> = abs
+            .iter()
+            .filter_map(|p| p.strip_prefix(&o.project).ok())
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .filter(|r| !r.is_empty() && !r.starts_with(".git/") && r != ".git")
+            .collect();
+        let (seen, touched) = o.fs.project_changed(&rels);
+        let mut conflicts = Vec::new();
+        for rel in &touched {
+            if conflicts_now(&o, rel) {
+                conflicts.push(rel.clone());
+            }
+        }
+        let mut notes = NOTES.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = notes.entry(id.clone()).or_default();
+        entry.changed.extend(seen);
+        entry.conflicts.extend(conflicts.iter().cloned());
+        drop(notes);
+        if !conflicts.is_empty() {
+            let pending = Pending {
+                reason: "Won't land on its own: the project changed the same lines meanwhile.".into(),
+                conflicts: conflicts
+                    .iter()
+                    .map(|p| super::land::Conflict { path: p.clone(), reason: "the chat and the project changed the same lines".into() })
+                    .collect(),
+            };
+            set_pending(&id, Some(&pending));
+            conflicts_found.extend(conflicts.into_iter().map(|p| (id.clone(), p)));
+        }
+    }
+    conflicts_found
+}
+
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b || (a.canonicalize().ok().is_some() && a.canonicalize().ok() == b.canonicalize().ok())
+}
+
+/// Whether the chat's change to `rel` now conflicts with the project's file.
+fn conflicts_now(o: &ChatOverlay, rel: &str) -> bool {
+    let Some((ours, base)) = o.fs.versions(rel) else { return false };
+    let (Ok(ours), Ok(base)) = (std::fs::read(ours), std::fs::read(base)) else { return false };
+    let theirs = std::fs::read(o.project.join(rel)).ok();
+    match theirs {
+        None => true,
+        Some(t) if t == base || t == ours => false,
+        Some(t) => {
+            if crate::merge::is_binary(&t) || crate::merge::is_binary(&ours) || crate::merge::is_binary(&base) {
+                return true;
+            }
+            let merged = crate::merge::merge3(
+                &String::from_utf8_lossy(&base),
+                &String::from_utf8_lossy(&ours),
+                &String::from_utf8_lossy(&t),
+            );
+            !matches!(merged, Ok(crate::merge::Merged::Clean(_)))
+        }
+    }
+}
+
+/// What the chat's model should know about the project changing under it,
+/// once: added to its next tool result.
+pub fn take_note(dialog_id: &str) -> Option<String> {
+    let notes = NOTES.lock().unwrap_or_else(|e| e.into_inner()).remove(dialog_id)?;
+    let mut parts = Vec::new();
+    if notes.many {
+        parts.push("Many files changed in the project meanwhile (a branch switch or a pull?). Files you haven't changed now show their new content; read again what you rely on.".to_string());
+    }
+    if !notes.changed.is_empty() {
+        let list = notes.changed.iter().take(20).cloned().collect::<Vec<_>>().join(", ");
+        parts.push(format!(
+            "Changed in the project since you looked at them (another chat landed, or the user edited them): {list}. Your view shows the new content; read them again before relying on them."
+        ));
+    }
+    if !notes.conflicts.is_empty() {
+        let list = notes.conflicts.iter().cloned().collect::<Vec<_>>().join(", ");
+        parts.push(format!(
+            "Also changed in the project, on lines you changed too: {list}. Your version won't land without the user deciding; say so in your summary."
+        ));
+    }
+    (!parts.is_empty()).then(|| format!("\n\nNote: {}", parts.join(" ")))
+}
+
 /// What the chat changed, for the UI: landable changes only.
 pub fn changes(dialog_id: &str) -> Vec<OverlayChange> {
     let fs = match get(dialog_id) {
@@ -390,6 +511,12 @@ pub fn land_now(dialog_id: &str, keep_chat: bool) -> Result<Option<super::land::
     match super::land::land(&data, dialog_id, &project, &changes, keep_chat) {
         Ok(landed) => {
             let _ = discard(dialog_id);
+            // Other chats on the project hear about it now, not only when
+            // the project's watcher (if it's open in the editor) does.
+            if let Some(l) = &landed {
+                let abs: Vec<PathBuf> = l.paths.iter().map(|p| project.join(p)).collect();
+                project_changed(&project, &abs, false);
+            }
             Ok(landed)
         }
         Err(e) => {
@@ -447,4 +574,48 @@ pub async fn overlay_undo(dialog_id: String, id: String) -> Result<Vec<super::la
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod hub_tests {
+    use super::*;
+    use crate::vfs::backend::Backend;
+    use crate::vfs::store::SetAttr;
+
+    fn write(o: &ChatOverlay, rel: &str, content: &str) {
+        let ino = o.fs.resolve(rel).unwrap();
+        o.fs.setattr(ino, &SetAttr { size: Some(0), ..Default::default() }).unwrap();
+        o.fs.write(ino, 0, content.as_bytes()).unwrap();
+    }
+
+    /// Two isolated chats on one project; one lands. Needs FUSE.
+    #[test]
+    #[ignore]
+    fn a_landing_reaches_other_chats_at_once() {
+        let root = std::env::temp_dir().join(format!("hub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.txt"), "1\n2\n3\n4\n5\n").unwrap();
+        std::fs::write(project.join("b.txt"), "b\n").unwrap();
+        init(&root.join("data"));
+        let a = open("hub-chat-a", &project, Box::new(|_, _| {})).unwrap();
+        let b = open("hub-chat-b", &project, Box::new(|_, _| {})).unwrap();
+        // B looks at b.txt and changes line 1 of a.txt; A changes line 1 of
+        // a.txt too, and b.txt.
+        assert_eq!(std::fs::read_to_string(b.view.join("b.txt")).unwrap(), "b\n");
+        write(&b, "a.txt", "B\n2\n3\n4\n5\n");
+        write(&a, "a.txt", "A\n2\n3\n4\n5\n");
+        write(&a, "b.txt", "changed by a\n");
+        land_now("hub-chat-a", false).unwrap();
+        // B sees A's b.txt at once, and knows its a.txt now conflicts.
+        assert_eq!(std::fs::read_to_string(b.view.join("b.txt")).unwrap(), "changed by a\n");
+        let pending = pending("hub-chat-b").unwrap();
+        assert_eq!(pending.conflicts[0].path, "a.txt");
+        let note = take_note("hub-chat-b").unwrap();
+        assert!(note.contains("b.txt") && note.contains("on lines you changed too: a.txt"), "{note}");
+        assert!(take_note("hub-chat-b").is_none(), "told once");
+        discard("hub-chat-b").unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

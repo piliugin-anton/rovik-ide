@@ -727,6 +727,89 @@ impl OverlayFs {
     }
 
     // -----------------------------------------------------------------
+    // The project changing underneath
+    // -----------------------------------------------------------------
+
+    /// Paths in the project changed (another chat landed, the user saved, a
+    /// pull). Untouched files show the new content: the kernel drops what
+    /// it cached of them, and their folders are listed again. Returns the
+    /// paths the chat has looked at (in its view) and those it changed
+    /// itself (which may now conflict).
+    pub fn project_changed(&self, rels: &[String]) -> (Vec<String>, Vec<String>) {
+        let mut inner = self.lock();
+        let mut seen = Vec::new();
+        let mut touched = Vec::new();
+        let mut kernel = Vec::new();
+        for rel in rels {
+            let (dir_path, name) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
+            // Only what's already known: nothing is listed just for this.
+            let mut ino = ROOT;
+            let mut known = true;
+            for part in dir_path.split('/').filter(|p| !p.is_empty()) {
+                match inner.nodes.get(&ino).and_then(|n| n.children.as_ref()).and_then(|c| c.get(part)) {
+                    Some(child) => ino = *child,
+                    None => {
+                        known = false;
+                        break;
+                    }
+                }
+            }
+            if !known {
+                continue;
+            }
+            let parent = ino;
+            if let Some(dir) = inner.nodes.get_mut(&parent) {
+                if dir.children.is_some() {
+                    dir.listed_at = None;
+                    kernel.push(Change::Entry { parent, name: name.to_string() });
+                }
+            }
+            let child = inner.nodes.get(&parent).and_then(|n| n.children.as_ref()).and_then(|c| c.get(name)).copied();
+            if let Some(c) = child {
+                match &inner.nodes[&c].data {
+                    Data::Upper { .. } => touched.push(rel.clone()),
+                    Data::Base => {
+                        kernel.push(Change::Data(c));
+                        seen.push(rel.clone());
+                    }
+                    Data::None => {}
+                }
+            }
+        }
+        drop(inner);
+        self.notify(&kernel);
+        (seen, touched)
+    }
+
+    /// Too much changed in the project to say what (a branch switch):
+    /// everything untouched is read afresh.
+    pub fn project_changed_everywhere(&self) {
+        let mut inner = self.lock();
+        let mut kernel = Vec::new();
+        for (ino, node) in inner.nodes.iter_mut() {
+            if node.children.is_some() {
+                node.listed_at = None;
+            }
+            if node.data == Data::Base {
+                kernel.push(Change::Data(*ino));
+            }
+        }
+        drop(inner);
+        self.notify(&kernel);
+    }
+
+    /// The chat's version of a file it changed and the base it changed it
+    /// from, for an early conflict check.
+    pub fn versions(&self, rel: &str) -> Option<(PathBuf, PathBuf)> {
+        let mut inner = self.lock();
+        let ino = self.resolve_in(&mut inner, rel).ok()?;
+        match &inner.nodes.get(&ino)?.data {
+            Data::Upper { file, base_copy: Some(base), .. } => Some((file.clone(), base.clone())),
+            _ => None,
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Changes, for landing and for saving
     // -----------------------------------------------------------------
 

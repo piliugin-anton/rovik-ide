@@ -475,6 +475,12 @@ impl<R: Runtime> Run<R> {
         if let Some(o) = crate::overlay::chats::get(&self.dialog_id) {
             o.fs.flush();
         }
+        // The project changed under an isolated chat: its model hears it with
+        // this result.
+        let mut result = result;
+        if let Some(note) = crate::overlay::chats::take_note(&self.dialog_id) {
+            result.content.push_str(&note);
+        }
         let write = match (writes, write_path) {
             (true, Some(path)) => Some(WriteTarget { path, abs_path: abs_write_path, before }),
             _ => None,
