@@ -310,6 +310,8 @@ export default function App() {
   function openProjectAt(folder: string) {
     if (folder === rootPath()) return;
     for (const m of monaco.editor.getModels()) m.dispose();
+    // The old project's change marks; its tabs close below.
+    for (const { absPath } of markedFiles()) clearGitBase(absPath);
     setRootPath(folder);
     setOpenFiles([]);
     setActivePath(null);
@@ -955,6 +957,15 @@ export default function App() {
     if (content !== null) notifyFileWritten(abs, content);
   }
 
+  /** One file changed on disk: its tab, if open and clean, takes the new text. */
+  async function refreshCleanTab(path: string) {
+    const tab = openFiles().find((f) => f.path === path);
+    if (!tab || tab.dirty || tab.readOnly || tab.deleted) return;
+    const content = await readFileContent(tab.path).catch(() => null);
+    // Applied only if still clean then (onFileWritten checks again).
+    if (content !== null && content !== tab.content) notifyFileWritten(tab.path, content);
+  }
+
   /** A pull, merge or rebase rewrote files: open tabs without unsaved
    *  edits show the disk's text; files it removed are marked deleted. */
   async function reloadOpenFiles() {
@@ -980,11 +991,20 @@ export default function App() {
     }
   }
 
-  function closeFile(path: string) {
-    clearGitBase(path);
+  async function closeFile(path: string) {
     const file = openFiles().find((f) => f.path === path);
-    // TODO: show confirmation modal
-    if (file?.dirty /*  && !window.confirm(`Discard unsaved changes to ${file.name}?`) */) return;
+    if (file?.dirty) {
+      const discard = await confirmDialog({
+        title: `Discard changes to ${file.name}?`,
+        message: 'It has changes that aren’t saved. Closing the tab throws them away.',
+        confirmLabel: 'Discard',
+        danger: true,
+      });
+      if (!discard) return;
+    }
+    // Closed meanwhile (or never open): nothing more to do.
+    if (!openFiles().some((f) => f.path === path)) return;
+    clearGitBase(path);
 
     const remaining = openFiles().filter((f) => f.path !== path);
     setOpenFiles(remaining);
@@ -1200,8 +1220,10 @@ export default function App() {
         if (entry.mode === 'copy') {
           const newPath = await copyPathOnDisk(id, destDirId);
         } else {
+          const oldPath = openFiles().find((f) => f.id === id)?.path;
           const newPath = await movePathOnDisk(id, destDirId);
           setOpenFiles((prev) => prev.map((f) => (f.id === id ? { ...f, path: newPath } : f)));
+          if (oldPath && activePath() === oldPath) setActivePath(newPath);
         }
       }
     } catch (err) {
@@ -1272,7 +1294,7 @@ export default function App() {
           const rest = f.path.slice(m.from.length).replace(/^[\\/]/, '');
           const path = rest ? `${m.to}/${rest}` : m.to;
           const name = path.split(/[\\/]/).pop() ?? f.name;
-          return { ...f, path, name };
+          return { ...f, path, name, language: languageForFile(name) };
         })
       );
       if (activePath()) {
@@ -1383,7 +1405,9 @@ export default function App() {
     try {
       const newPath = await renamePathOnDisk(row.id, name);
       setOpenFiles((prev) =>
-        prev.map((f) => (f.id === row.id ? { ...f, path: newPath, name } : f))
+        prev.map((f) =>
+          f.id === row.id ? { ...f, path: newPath, name, language: languageForFile(name) } : f
+        )
       );
       if (activePath() === row.path) setActivePath(newPath);
     } catch (err) {
@@ -1557,6 +1581,12 @@ export default function App() {
           break;
       }
       void syncDeletedTabs(operation === 'unknown' ? undefined : path);
+      // Changed outside the editor (another program, a build, git): a tab
+      // without unsaved edits shows the new text. Our own saves read back
+      // the same text and change nothing.
+      if (!is_dir && (operation === 'create' || operation === 'modify')) {
+        void refreshCleanTab(path);
+      }
       // IntelliSense's copy of the project's sources (lib/intellisense.ts).
       // Batched there: read and applied together once changes settle.
       if (!is_dir && isProjectSource(path)) {

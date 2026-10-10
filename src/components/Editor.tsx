@@ -57,6 +57,22 @@ interface EditorProps {
   readOnlyMessage?: string;
 }
 
+/**
+ * Puts outside text (an agent's write, a revert, a reload from disk) into
+ * the model as one undoable edit. `setValue` would also clear the undo
+ * history, so Ctrl+Z could no longer reach what was typed before.
+ */
+function replaceKeepingUndo(model: monaco.editor.ITextModel, text: string) {
+  model.pushStackElement();
+  // Line endings come with the text, as setValue would take them.
+  const crlf = text.includes('\r\n');
+  if (model.getEOL() !== (crlf ? '\r\n' : '\n')) {
+    model.pushEOL(crlf ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+  }
+  model.pushEditOperations([], [{ range: model.getFullModelRange(), text }], () => null);
+  model.pushStackElement();
+}
+
 export default function Editor(props: EditorProps) {
   let containerRef!: HTMLDivElement;
 
@@ -102,7 +118,7 @@ export default function Editor(props: EditorProps) {
       // the content we just read from disk.
       monaco.editor.setModelLanguage(model, props.language());
       if (model.getValue() !== content) {
-        model.setValue(content);
+        replaceKeepingUndo(model, content);
       }
     } else {
       model = monaco.editor.createModel(content, props.language(), uri);
@@ -147,8 +163,8 @@ export default function Editor(props: EditorProps) {
     createEffect(() => {
       const ro = props.readOnly?.() ?? false;
       if (!editor || disposed) return;
-      // Agent-review tabs manage readOnly themselves (pendingEditFor);
-      // preview tabs never have approvals, so no conflict in practice.
+      // Agent-review tabs manage readOnly themselves (pendingEditFor), and
+      // put the tab's own setting back when the review ends.
       if (ro) {
         editor.updateOptions({
           readOnly: true,
@@ -271,7 +287,13 @@ export default function Editor(props: EditorProps) {
       });
       onCleanup(() => {
         handle.dispose();
-        if (!disposed) ed.updateOptions({ readOnly: false });
+        // Back to the tab's own setting: a read-only preview stays locked.
+        if (!disposed) {
+          ed.updateOptions({
+            readOnly: untrack(() => props.readOnly?.() ?? false),
+            readOnlyMessage: { value: props.readOnlyMessage ?? 'This preview is read-only.' },
+          });
+        }
       });
     });
 
@@ -391,8 +413,9 @@ export default function Editor(props: EditorProps) {
 
     if (!editor || disposed) return;
 
-    if (editor.getValue() !== next) {
-      editor.setValue(next);
+    const model = editor.getModel();
+    if (model && model.getValue() !== next) {
+      replaceKeepingUndo(model, next);
     }
   });
 
