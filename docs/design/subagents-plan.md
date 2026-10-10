@@ -23,6 +23,9 @@ Contents:
 5. [Implementation order for an AI agent](#5-implementation-order-for-an-ai-agent)
 6. [Open questions](#6-open-questions)
 
+Section 3 also describes the repair loop: what happens when the build or
+tests fail after the workers' changes are merged.
+
 ---
 
 ## 1. Decisions
@@ -141,7 +144,7 @@ the risks can be handled with five safeguards.
 6  Failures                     large → triage (C); attribute by scope
                                   inside one scope → resume that worker (sequential)
                                   seams / unowned → lead fixes
-                                  (≤ MAX_VERIFY_ROUNDS = 3, as today)
+                                  (the repair loop below: ≤ 3 rounds, progress-checked)
 7  Review (B) → verification gate → land into project, as today
 ```
 
@@ -152,6 +155,76 @@ separate settings pages. It costs more than it saves on small groups. So F
 stays off by default, and the lead uses it only for groups of two or more
 steps that each change more than about 100 lines (a prompt rule, measured
 in milestone G).
+
+### When the merged build or tests fail: the repair loop
+
+**No agent is started per failed file.** One root cause usually breaks
+many files: a changed signature can fail at twenty call sites. Twenty
+fixers would each patch a symptom, and they would repeat the coordination
+problem that parallel writers have. The loop works on **root causes**,
+fixes them **one writer at a time**, and rebuilds **once per round**.
+
+#### One repair round
+
+1. **Fingerprint the failures.** Each failure gets a stable key:
+   - for a build or type error: check, file, error code and message
+     without line numbers;
+   - for a test: the test's name.
+
+   The set of keys is this round's **failure set** (R01).
+
+2. **Group the failures into root causes.**
+   - **Small output:** group by the error locations (`error_locations`)
+     and by which worker's write scope owns each file.
+   - **Large output or unclear grouping:** triage (C) reads the whole
+     output and returns root causes, each with its files and a
+     confidence.
+
+   Type errors come first. The gate already skips tests when the type
+   check fails, because they would only repeat the same errors.
+
+3. **Assign each root cause.**
+
+   | Root cause                                              | Fixed by                                                 |
+   | ------------------------------------------------------- | -------------------------------------------------------- |
+   | Entirely inside one worker's scope                      | That worker, resumed with its context (`task{continue}`) |
+   | Across scopes, in no worker's files, or in the contract | The lead                                                 |
+   | In a test the test writer wrote                         | The lead, under the rule for changing tests (section 3)  |
+
+4. **Fix one cause at a time** in the chat overlay, in order of how many
+   failures each cause explains. Parallel fixing is allowed only when all
+   of these are true:
+   - there are two or more causes;
+   - each cause is inside a different worker's scope;
+   - triage rated each cause high confidence.
+
+   It is off by default (R07), because fixes are usually small and the
+   build, not the model, is the slow part.
+
+5. **Rebuild once** and run all the checks again.
+
+#### Making sure the loop ends with a correct result
+
+"Correct" means: **every check passes, the tests weren't weakened to get
+there, and a fresh review found nothing serious.** The loop can't
+guarantee more than the checks and tests cover. It does guarantee that
+nothing is reported as done, or landed automatically, without meeting
+this bar.
+
+| Guard                                     | How it works                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The loop is bounded**                   | At most `MAX_VERIFY_ROUNDS = 3` rounds, as today, and at most 12 subagents per run (D11). Each round starts at most one fixer per root cause.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Each round must make progress** (R01)   | A round **made progress** when its failure set is smaller than the last one and contains no new key. If the set is unchanged, or the same as two rounds ago, the round made **no progress**. A different agent shouldn't repeat the same attempt, so the loop goes straight to the next level of the escalation ladder below instead of retrying.                                                                                                                                                                                                                                                                                               |
+| **Regressions are rolled back** (R02)     | A checkpoint of the chat overlay is taken before each repair round. A key that was passing before the round (a test that used to pass) and fails after it is a regression. That round's changes are rolled back to the checkpoint, and the lead is told what the attempt broke.                                                                                                                                                                                                                                                                                                                                                                 |
+| **Tests can't be weakened to pass** (R05) | After every round, the harness compares the test files and the check setup with the start of the run. It flags removed test functions, added `skip`, `only` and `#[ignore]` markers, and fewer assertions. It also flags changes to what the checks run: `package.json` scripts, `Cargo.toml`, tsconfig, lint and test-runner configuration. A flagged change to a test that existed before the run counts as a failure unless the lead explains it, and every flag is listed for you. The number of tests that ran, before and after, is in the verification record.                                                                           |
+| **The escalation ladder**                 | Round 1: the owners fix their causes (workers resumed, the lead fixes seams). Round 2, or a round that made no progress: **the lead alone**, with every cause and the whole picture. Round 3 is the last. If it still fails, the run ends as **gave-up**, not done. The record shows the remaining failures, the triage summary and the rolled-back attempts. Nothing lands automatically, and you choose between **Continue**, **Land anyway**, **Discard** and **Redo sequentially**. Redo sequentially throws away the group's merged changes and redoes those steps one at a time with step workers (D), the slower but more reliable path. |
+| **A fresh review after green**            | Once every check passes, the change reviewer (B) reads the whole diff, with no knowledge of the repair attempts. It catches code that passes the tests but is wrong. Its high-severity findings go back to the lead, and the checks run again after any fix.                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Checks again when landing**             | This already exists: landing re-runs the checks on the chat's changes merged with the project as it is now, so work that changed meanwhile can't break it silently.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+R01, R02 and R05 also help **a single agent with no subagents**. Today's
+gate retries 3 times, but it can't tell progress from churn, doesn't roll
+back regressions, and doesn't notice a weakened test. They can ship before
+the rest of the subagent work.
 
 ---
 
@@ -234,6 +307,22 @@ e2e tests use the scripted provider in `agent_run/e2e_tests.rs`.
 | F07 | Fixes: `task{continue:"w2"}` resumes a group worker as a sequential worker in the chat overlay, with its scope; seams are fixed by the lead                                                                                                                                                                                                       | F06, A04           | e2e: a resumed worker writes into the chat overlay, inside its old scope only                                                                       |
 | F08 | Lead prompt: when to use a group (two or more steps that each change more than about 100 lines, isolation on); the contract step comes first                                                                                                                                                                                                      | F04                | Snapshot test of the prompt                                                                                                                         |
 
+### Milestone R: the repair loop
+
+R01, R02 and R05 don't need subagents. They improve today's verify gate
+and can be done first.
+
+| ID  | Task                                                                                                                                                                                                                                                                                                                                                                                                      | Needs         | Done when                                                                                                                                                                   |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R01 | `verify.rs` + `command_output.rs`: a failure key for each failure (error: check, file, error code, message without line numbers; test: its name, parsed for cargo, vitest/jest and pytest output, otherwise the check alone). Each round's failure set is stored in the verification record. Progress, no progress and regression decided as in section 3, and a round with no progress tells the lead so | –             | Unit tests on fixture outputs: line shifts give the same key; progress, no progress and regression are told apart; e2e: two identical failing rounds → the no-progress note |
+| R02 | Checkpoints: before a repair round, save the overlay's changed files (or, in direct mode, the run's `changed_files`) and restore them on a regression. The rolled-back attempt's diff is kept in the record                                                                                                                                                                                               | R01           | e2e: a fix that breaks a passing test is rolled back; the lead's next message names what it broke                                                                           |
+| R03 | Grouping and assignment: failures grouped by location and write scope, or by triage's root causes when C03 ran, then assigned to owner, lead or test rule (section 3)                                                                                                                                                                                                                                     | R01, C03, F06 | Unit tests: twenty errors from one changed signature → one cause owned by the lead (contract); errors only in w2's files → w2                                               |
+| R04 | Sequential repair runner: causes fixed one at a time, ordered by the number of failures each explains, then one rebuild per round                                                                                                                                                                                                                                                                         | R03, F07      | e2e: two causes → two fixers in order → one check run                                                                                                                       |
+| R05 | Test integrity: compares test files and check setup with the run's start (removed tests, `skip`/`only`/`#[ignore]`, fewer assertions, changed scripts and configs); the number of tests that ran in the record; flags listed in the final message                                                                                                                                                         | E01           | Fixture tests per stack; e2e: a run that adds `.skip` to an old test to pass is not reported as verified                                                                    |
+| R06 | Escalation ladder and end states: lead-only round after no progress; **gave-up** record with the remaining failures and rolled-back attempts; **Redo sequentially** in the isolation bar (discard the group's merge, then run its steps through D)                                                                                                                                                        | R02, R04      | e2e: three failing rounds → gave-up, nothing landed; Redo sequentially → step workers run on the group's steps                                                              |
+| R07 | Optional parallel repair (off by default): only for causes in different scopes, each rated high confidence by triage, in child overlays (F02), with one rebuild after they're merged                                                                                                                                                                                                                      | R04, F02      | e2e: two high-confidence causes in different scopes → fixed in parallel → one check run; a cause owned by the lead → never parallel                                         |
+| R08 | Review after green: the change reviewer (B03) runs once the checks pass after a repair; its high-severity findings start one more fix and check round                                                                                                                                                                                                                                                     | R04, B03      | e2e: green → review → a finding → fix → checks again                                                                                                                        |
+
 ### Milestone G: measure and switch on
 
 | ID  | Task                                                                                                                                                                                                                 | Needs      | Done when                                                           |
@@ -279,6 +368,8 @@ C:  C01 ─► C02 ─► C03                           (needs S03)
 D:  D01 ─► D02 ─► D03 ─► D04 ─► D05             (D01 can start any time)
 E:  E01 ─► E02 ─► E03                           (needs D02); E04 after F02
 F:  F01 (spike, can start any time) ─► F02 ─► F03 ─► F04 ─► F05 ─► F06 ─► F07 ─► F08
+R:  R01 ─► R02 ─► R05 (can start any time: they improve today's gate)
+    R03 ─► R04 ─► R06 ─► R07 ─► R08   (after F07)
 G:  G02 after each milestone ─► G03
 ```
 
