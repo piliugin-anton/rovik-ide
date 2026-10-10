@@ -218,8 +218,15 @@ fn snap_profile_dir(chrome: &Path) -> Option<PathBuf> {
     if !cfg!(target_os = "linux") || !is_snap_chromium(chrome) {
         return None;
     }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("snap/chromium/common/tauri-ide-browser"))
+    let common = PathBuf::from(std::env::var_os("HOME")?).join("snap/chromium/common");
+    let dir = common.join("rovik-ide-browser");
+    // The folder's name before the app was renamed: moved over once, so the
+    // browser keeps its cookies and logins.
+    let legacy = common.join("tauri-ide-browser");
+    if !dir.exists() && legacy.is_dir() {
+        let _ = std::fs::rename(&legacy, &dir);
+    }
+    Some(dir)
 }
 
 fn is_snap_chromium(chrome: &Path) -> bool {

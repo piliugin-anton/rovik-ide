@@ -58,12 +58,14 @@ export type MessagePatch = Partial<
   Pick<ChatMessage, 'content' | 'toolCalls' | 'error' | 'failed' | 'pending' | 'meta' | 'finalized'>
 > & { status?: MessageStatus | null };
 
-const UNREAD_KEY = 'tauri-ide:chat-unread';
+const UNREAD_KEY = 'rovik.chatUnread';
+/** Where the unread ids were kept before the app was renamed. */
+const LEGACY_UNREAD_KEY = 'tauri-ide:chat-unread';
 
 /** Unread chat ids from the last session (survives restarts; pruned on read/delete). */
 function loadPersistedUnread(): Record<string, true> {
   try {
-    const raw = localStorage.getItem(UNREAD_KEY);
+    const raw = localStorage.getItem(UNREAD_KEY) ?? localStorage.getItem(LEGACY_UNREAD_KEY);
     if (!raw) return {};
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
@@ -79,6 +81,7 @@ function loadPersistedUnread(): Record<string, true> {
 
 function savePersistedUnread(unread: Record<string, true>) {
   try {
+    localStorage.removeItem(LEGACY_UNREAD_KEY);
     if (Object.keys(unread).length === 0) localStorage.removeItem(UNREAD_KEY);
     else localStorage.setItem(UNREAD_KEY, JSON.stringify(unread));
   } catch (err) {

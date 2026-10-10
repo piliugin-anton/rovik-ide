@@ -1,11 +1,11 @@
 [package]
-name = "tauri-ide"
+name = "rovik-ide"
 version = "0.1.0"
 description = "A minimal, low-memory IDE shell"
 edition = "2021"
 
 [lib]
-name = "tauri_ide_lib"
+name = "rovik_ide_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dev-dependencies]

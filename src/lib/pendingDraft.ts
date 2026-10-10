@@ -23,11 +23,13 @@ export interface PendingDraft {
   createdAt: string;
 }
 
-const STORAGE_KEY = 'tauri-ide:pending-drafts';
+const STORAGE_KEY = 'rovik.pendingDrafts';
+/** Where drafts were kept before the app was renamed. */
+const LEGACY_STORAGE_KEY = 'tauri-ide:pending-drafts';
 
 function readAll(): Record<string, PendingDraft> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
@@ -37,6 +39,7 @@ function readAll(): Record<string, PendingDraft> {
 
 function writeAll(drafts: Record<string, PendingDraft>) {
   try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
     if (Object.keys(drafts).length === 0) localStorage.removeItem(STORAGE_KEY);
     else localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts));
   } catch (err) {
