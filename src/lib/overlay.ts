@@ -13,9 +13,25 @@ export interface ChangedFile {
   from?: string | null;
 }
 
+export interface Conflict {
+  path: string;
+  reason: string;
+}
+
+export interface LastLanding {
+  id: string;
+  paths: string[];
+  /** Seconds since 1970. */
+  at: number;
+}
+
 export interface OverlayStatus {
   /** The chat has isolated changes (or an overlay with none yet). */
   isolated: boolean;
+  /** Why its changes didn't land, if they didn't. */
+  pending?: { reason: string; conflicts: Conflict[] } | null;
+  /** Its latest landing, for Undo. */
+  lastLanding?: LastLanding | null;
   /** Where the chat sees the project, while it's mounted. */
   view?: string | null;
   files: ChangedFile[];
@@ -40,4 +56,20 @@ export function overlayFile(dialogId: string, path: string): Promise<FileVersion
 
 export function overlayDiscard(dialogId: string): Promise<void> {
   return invoke<void>('overlay_discard', { dialogId });
+}
+
+export interface LandResult {
+  landed?: { id: string; paths: string[] } | null;
+  conflicts: Conflict[];
+  error?: string | null;
+}
+
+/** Lands the chat's changes now; `keepChat`: on conflicts, its version wins. */
+export function overlayLand(dialogId: string, keepChat: boolean): Promise<LandResult> {
+  return invoke<LandResult>('overlay_land', { dialogId, keepChat });
+}
+
+/** Undoes a landing; returns the files left as they are (changed since). */
+export function overlayUndo(dialogId: string, id: string): Promise<Conflict[]> {
+  return invoke<Conflict[]>('overlay_undo', { dialogId, id });
 }

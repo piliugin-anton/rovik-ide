@@ -7420,7 +7420,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg-dim);
 }
 
-.isolation-bar-discard {
+.isolation-bar-action {
   padding: 2px 8px;
   background: none;
   border: 1px solid var(--border);
@@ -7430,9 +7430,29 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   cursor: pointer;
 }
 
-.isolation-bar-discard:disabled {
+.isolation-bar-action.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--fg-on-accent);
+}
+
+.isolation-bar-action:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.isolation-bar-reason {
+  color: var(--warning);
+}
+
+.isolation-bar-conflict {
+  margin-left: auto;
+  color: var(--error);
+}
+
+.isolation-bar.landed {
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 
 .isolation-bar-files {

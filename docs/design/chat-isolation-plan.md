@@ -841,3 +841,27 @@ once; they touch different files. Everything else is sequential.
     opens as a read-only comparison with the project's version. Discard
     throws them away. "Open in editor" from a tool block still opens the
     project's file.
+- **Milestone 6 (landing), in `overlay/land.rs` and `agent_run/landing.rs`.**
+  - When an isolated chat's run ends with its checks passed (or none to
+    run), its changes land on their own if every file merges cleanly.
+    If some file also changed in the project, the merged result is
+    written into the chat's view and the project's checks run there first
+    (queued as landing work, ahead of other chats).
+  - Otherwise nothing lands (all or nothing) and the chat's bar says why:
+    conflicts (marked per file), checks failing on the merged result, or
+    a run that didn't finish. The user lands anyway (the chat's version
+    wins where both changed the same lines) or discards.
+  - **Not done yet:** resolving conflicts in `ConflictResolver.tsx`, or in
+    a turn of the chat, and handing failing merged checks back to the
+    chat as a fix turn. Today those wait for the user's Land anyway /
+    Discard, with each file comparable to the project's version.
+  - The journal (`<app data>/landings/<chat>/<id>/`) keeps old and new
+    content of every touched path; an interrupted landing is finished at
+    start; Undo restores each path unless it changed since (those are
+    named and left alone). Deleted folders are kept whole in the journal.
+  - No OS lock file between app instances: the app is single-instance.
+    Landings into one project take turns in-process, and writes take each
+    file's lock from phase 0, checking nothing changed since the merge
+    (replanning up to three times).
+  - After a landing the chat's overlay is discarded; its next run starts
+    from the project as it is.

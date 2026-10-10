@@ -571,14 +571,48 @@ async fn an_isolated_chat_changes_only_its_overlay() {
     let messages = h.messages().await;
     assert!(result_of(&messages, "b1").content.contains("hello"), "{}", result_of(&messages, "b1").content);
     assert!(result_of(&messages, "b2").content.starts_with("Error: `git commit` changes the repository"));
-    // The project is as it was; the chat's view has the changes.
-    assert_eq!(h.file("src/a.txt").as_deref(), Some("one\ntwo\n"));
-    assert_eq!(h.file("README.md").as_deref(), Some("hi\n"));
-    assert!(h.file("new.txt").is_none());
-    let mut changed: Vec<String> = crate::overlay::chats::changes(&h.dialog_id).iter().map(|c| c.path().to_string()).collect();
-    changed.sort();
-    assert_eq!(changed, vec!["README.md", "new.txt", "src/a.txt"]);
-    crate::overlay::chats::discard(&h.dialog_id).unwrap();
+    // The run finished cleanly: its changes landed, and the overlay is gone.
+    assert_eq!(h.file("src/a.txt").as_deref(), Some("ONE\ntwo\n"));
+    assert_eq!(h.file("README.md").as_deref(), Some("hello\n"));
+    assert_eq!(h.file("new.txt").as_deref(), Some("new\n"));
+    assert!(crate::overlay::chats::changes(&h.dialog_id).is_empty());
+    assert!(h.events_of("notice").iter().any(|e| e["title"] == "Landed"), "{:#?}", h.events_of("notice"));
+    let last = crate::overlay::chats::last_landing(&h.dialog_id).unwrap();
+    assert_eq!(last.paths.len(), 3);
+}
+
+/// Changes that conflict with the project's own wait for the user.
+#[tokio::test]
+#[ignore]
+async fn an_isolated_chats_conflicting_changes_wait() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let project_file = h.project.join("a.txt");
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "old_text": "one", "content": "chat" }) },
+        // Time for the user to edit the same line in the project.
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sleep 1" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Edit"), Permissions { allow_any_command: true, ..quiet_permissions() });
+    request.isolate = Some(true);
+    h.start(request).await;
+    // The user's edit, once the chat has made its change.
+    for _ in 0..200 {
+        if crate::overlay::chats::changes(&h.dialog_id).iter().any(|c| c.path() == "a.txt") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    std::fs::write(&project_file, "user\n").unwrap();
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("user\n"));
+    let pending = crate::overlay::chats::pending(&h.dialog_id).expect("a reason it didn't land");
+    assert_eq!(pending.conflicts.len(), 1, "{pending:?}");
+    // Land anyway: the chat's version.
+    crate::overlay::chats::land_now(&h.dialog_id, true).unwrap();
+    assert_eq!(h.file("a.txt").as_deref(), Some("chat\n"));
 }
 
 #[tokio::test]

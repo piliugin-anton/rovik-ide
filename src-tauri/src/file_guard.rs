@@ -253,6 +253,12 @@ pub fn write_for_editor(path: &Path, content: &[u8], expected: Option<Hash>) -> 
     Ok(())
 }
 
+/// A chat's changes that landed in the project (overlay/land.rs): written
+/// by that chat, as far as other writers' checks go.
+pub fn note_landing(path: &Path, dialog_id: &str, content: &[u8]) {
+    note_write(path, Writer::Chat(dialog_id.to_string()), hash(content));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

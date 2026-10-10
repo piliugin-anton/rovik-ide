@@ -50,8 +50,7 @@ pub enum JobKind {
     Agent { owner: String },
     /// The checks after a chat's run (verify.rs).
     Check { owner: String },
-    /// Checks before a chat's changes land (phase 5 of the isolation plan).
-    #[allow(dead_code)]
+    /// Checks before a chat's changes land.
     Landing { owner: String },
     /// The terminal panel's shell. Never waits, never slowed.
     Terminal,

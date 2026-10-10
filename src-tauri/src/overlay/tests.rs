@@ -324,3 +324,118 @@ mod mounted {
         out
     }
 }
+
+mod landing {
+    use super::*;
+    use crate::overlay::land::{self, LandError};
+
+    fn data(d: &Dirs) -> PathBuf {
+        d.root.join("data")
+    }
+
+    fn landable(o: &OverlayFs) -> Vec<OverlayChange> {
+        o.changes().into_iter().filter(|c| !c.by_product()).collect()
+    }
+
+    fn project_file(d: &Dirs, rel: &str) -> Option<String> {
+        fs::read_to_string(d.project().join(rel)).ok()
+    }
+
+    #[test]
+    fn changes_land_and_undo_puts_everything_back() {
+        let d = setup(&[("a.txt", "one\n"), ("old/x.txt", "x\n"), ("gone.txt", "g\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "ONE\n");
+        o.unlink(ROOT, "gone.txt").unwrap();
+        o.rename(ROOT, "old", ROOT, "new", RenameMode::Replace).unwrap();
+        let n = o.create(ROOT, "n.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+        o.write(n.ino, 0, b"N\n").unwrap();
+
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("ONE\n"));
+        assert_eq!(project_file(&d, "n.txt").as_deref(), Some("N\n"));
+        assert_eq!(project_file(&d, "new/x.txt").as_deref(), Some("x\n"));
+        assert!(project_file(&d, "gone.txt").is_none());
+        assert!(!d.project().join("old").exists());
+
+        let (id, _, _) = land::latest(&data(&d), "chat").unwrap();
+        assert_eq!(id, landed.id);
+        let kept = land::undo(&data(&d), "chat", &d.project(), &id).unwrap();
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("one\n"));
+        assert_eq!(project_file(&d, "old/x.txt").as_deref(), Some("x\n"));
+        assert_eq!(project_file(&d, "gone.txt").as_deref(), Some("g\n"));
+        assert!(project_file(&d, "n.txt").is_none());
+        assert!(!d.project().join("new").exists());
+        assert!(land::latest(&data(&d), "chat").is_none(), "undone landings can't be undone again");
+    }
+
+    #[test]
+    fn changes_merge_with_the_projects_own() {
+        let d = setup(&[("a.txt", "1\n2\n3\n4\n5\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "ONE\n2\n3\n4\n5\n");
+        // Meanwhile, in the project:
+        fs::write(d.project().join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert!(plan.merged && plan.conflicts.is_empty());
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap();
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("ONE\n2\n3\n4\nFIVE\n"));
+    }
+
+    #[test]
+    fn the_same_lines_changed_twice_stop_the_landing() {
+        let d = setup(&[("a.txt", "1\n2\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "chat\n2\n");
+        write_all(&o, "b.txt", "B\n");
+        fs::write(d.project().join("a.txt"), "project\n2\n").unwrap();
+        let Err(LandError::Conflicts(c)) = land::land(&data(&d), "chat", &d.project(), &landable(&o), false) else {
+            panic!("expected a conflict")
+        };
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].path, "a.txt");
+        // Nothing landed, not even the file without a conflict.
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("b\n"));
+        // Land anyway: the chat's version wins.
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), true).unwrap();
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("chat\n2\n"));
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("B\n"));
+    }
+
+    #[test]
+    fn a_file_deleted_in_the_project_but_changed_in_the_chat_conflicts() {
+        let d = setup(&[("a.txt", "a\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "A\n");
+        fs::remove_file(d.project().join("a.txt")).unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert_eq!(plan.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn nothing_to_land_when_the_project_already_has_it() {
+        let d = setup(&[("a.txt", "a\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "A\n");
+        fs::write(d.project().join("a.txt"), "A\n").unwrap();
+        assert!(land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_interrupted_landing_is_finished_at_start() {
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "ONE\n");
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap();
+        // As if the app died after writing the journal, before the files.
+        fs::write(d.project().join("a.txt"), "one\n").unwrap();
+        let (id, _, _) = land::latest(&data(&d), "chat").unwrap();
+        let journal = data(&d).join("landings").join("chat").join(&id).join("journal.json");
+        let text = fs::read_to_string(&journal).unwrap().replace("\"done\"", "\"applying\"");
+        fs::write(&journal, text).unwrap();
+        let done = land::recover(&data(&d));
+        assert_eq!(done, vec!["a.txt"]);
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("ONE\n"));
+    }
+}

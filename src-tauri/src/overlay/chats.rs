@@ -89,9 +89,14 @@ fn names_path(text: &str, path: &str) -> bool {
 static OPEN: LazyLock<Mutex<HashMap<String, Arc<ChatOverlay>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static DATA_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Where overlays are kept: the app's data folder.
+/// Where overlays are kept: the app's data folder. Landings a crash
+/// interrupted are finished first.
 pub fn init(data_dir: &Path) {
     *DATA_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.to_path_buf());
+    let finished = super::land::recover(data_dir);
+    if !finished.is_empty() {
+        eprintln!("overlay: finished an interrupted landing: {}", finished.join(", "));
+    }
 }
 
 /// Whether chats work in overlays. A development setting until isolation is
@@ -244,6 +249,10 @@ pub struct ChangedFile {
 pub struct OverlayStatus {
     /// The chat has an overlay (open or saved).
     pub isolated: bool,
+    /// Why its changes didn't land, if they didn't.
+    pub pending: Option<Pending>,
+    /// Its latest landing, for Undo.
+    pub last_landing: Option<LastLanding>,
     /// Its view, while it's mounted.
     pub view: Option<String>,
     pub files: Vec<ChangedFile>,
@@ -286,6 +295,8 @@ pub fn overlay_status(dialog_id: String) -> OverlayStatus {
     let (used, limit) = open.as_ref().map(|o| o.fs.used()).unwrap_or((0, DEFAULT_LIMIT));
     OverlayStatus {
         isolated,
+        pending: if isolated { pending(&dialog_id) } else { None },
+        last_landing: last_landing(&dialog_id),
         view: open.map(|o| o.view.to_string_lossy().into_owned()),
         files: if isolated { summarize(&changes(&dialog_id)) } else { Vec::new() },
         used,
@@ -325,4 +336,115 @@ pub fn overlay_file(dialog_id: String, path: String) -> Result<FileVersions, Str
 #[tauri::command]
 pub fn overlay_discard(dialog_id: String) -> Result<(), String> {
     discard(&dialog_id)
+}
+
+// ---------------------------------------------------------------------------
+// Landing
+// ---------------------------------------------------------------------------
+
+/// Why a chat's changes didn't land, kept until they do (or are discarded).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pending {
+    pub reason: String,
+    pub conflicts: Vec<super::land::Conflict>,
+}
+
+pub fn set_pending(dialog_id: &str, pending: Option<&Pending>) {
+    let Some(store) = store_dir(dialog_id) else { return };
+    let file = store.join("landing.json");
+    match pending {
+        Some(p) if store.is_dir() => {
+            if let Ok(bytes) = serde_json::to_vec(p) {
+                let _ = crate::atomic_file::write_atomic(&file, &bytes);
+            }
+        }
+        _ => {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+}
+
+pub fn pending(dialog_id: &str) -> Option<Pending> {
+    let bytes = std::fs::read(store_dir(dialog_id)?.join("landing.json")).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn project_of(dialog_id: &str) -> Option<PathBuf> {
+    get(dialog_id)
+        .map(|o| o.project.clone())
+        .or_else(|| store_dir(dialog_id).and_then(|s| std::fs::read_to_string(s.join("project.txt")).ok()).map(|p| PathBuf::from(p.trim())))
+}
+
+/// Lands the chat's changes now. `keep_chat`: on conflicts, the chat's
+/// version wins ("Land anyway"). Landed (or nothing to land): the overlay
+/// is gone, and the chat's next run starts from the project as it is.
+pub fn land_now(dialog_id: &str, keep_chat: bool) -> Result<Option<super::land::Landed>, super::land::LandError> {
+    use super::land::LandError;
+    let data = data_dir().ok_or_else(|| LandError::Failed("the app's data folder isn't known yet".into()))?;
+    let project = project_of(dialog_id).ok_or_else(|| LandError::Failed("this chat has no isolated changes".into()))?;
+    if let Some(o) = get(dialog_id) {
+        o.fs.flush();
+    }
+    let changes = changes(dialog_id);
+    match super::land::land(&data, dialog_id, &project, &changes, keep_chat) {
+        Ok(landed) => {
+            let _ = discard(dialog_id);
+            Ok(landed)
+        }
+        Err(e) => {
+            let conflicts = match &e {
+                LandError::Conflicts(c) => c.clone(),
+                _ => Vec::new(),
+            };
+            set_pending(dialog_id, Some(&Pending { reason: e.to_string(), conflicts }));
+            Err(e)
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastLanding {
+    pub id: String,
+    pub paths: Vec<String>,
+    /// Seconds since 1970.
+    pub at: u64,
+}
+
+pub fn last_landing(dialog_id: &str) -> Option<LastLanding> {
+    let (id, paths, at) = super::land::latest(&data_dir()?, dialog_id)?;
+    Some(LastLanding { id, paths, at })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LandResult {
+    pub landed: Option<super::land::Landed>,
+    pub conflicts: Vec<super::land::Conflict>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn overlay_land(dialog_id: String, keep_chat: bool) -> LandResult {
+    let result = tauri::async_runtime::spawn_blocking(move || land_now(&dialog_id, keep_chat)).await;
+    match result {
+        Ok(Ok(landed)) => LandResult { landed, conflicts: Vec::new(), error: None },
+        Ok(Err(super::land::LandError::Conflicts(c))) => LandResult { landed: None, conflicts: c, error: None },
+        Ok(Err(e)) => LandResult { landed: None, conflicts: Vec::new(), error: Some(e.to_string()) },
+        Err(e) => LandResult { landed: None, conflicts: Vec::new(), error: Some(e.to_string()) },
+    }
+}
+
+/// Undoes a landing. Returns the files left as they are because they
+/// changed since.
+#[tauri::command]
+pub async fn overlay_undo(dialog_id: String, id: String) -> Result<Vec<super::land::Conflict>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = data_dir().ok_or("the app's data folder isn't known yet")?;
+        let project = super::land::project_of(&data, &dialog_id).ok_or("no landing to undo")?;
+        super::land::undo(&data, &dialog_id, &project, &id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

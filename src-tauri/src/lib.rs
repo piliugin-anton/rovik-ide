@@ -190,6 +190,8 @@ pub fn run() {
             overlay::chats::overlay_status,
             overlay::chats::overlay_file,
             overlay::chats::overlay_discard,
+            overlay::chats::overlay_land,
+            overlay::chats::overlay_undo,
             workload::workload_set_slots,
             outline::outline_symbols,
             vfs::vfs_status,

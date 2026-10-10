@@ -94,6 +94,8 @@ pub struct Run<R: Runtime> {
     /// The project folder itself. Differs from `root` in an isolated chat,
     /// whose tools and commands work in its overlay's view.
     pub(super) project_root: Option<String>,
+    /// An isolated chat's changes landed at the end of this run.
+    pub(super) landed: bool,
     /// What this run has read and written of each file, so a whole-file
     /// write over a change it hasn't seen is refused (file_guard.rs).
     pub(super) seen: Arc<crate::file_guard::Seen>,
@@ -538,6 +540,7 @@ impl<R: Runtime> Run<R> {
             context_mode: request.context_mode.unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
             project_root,
+            landed: false,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
@@ -613,6 +616,8 @@ impl<R: Runtime> Run<R> {
                 "error".to_string()
             }
         };
+        // An isolated chat's changes land now, or say why they don't.
+        self.land_at_end(&outcome).await;
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
