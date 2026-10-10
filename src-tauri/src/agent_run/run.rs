@@ -1740,6 +1740,9 @@ struct Stream<R: Runtime> {
     reasoning: String,
     /// The reasoning as it is sent back (`reasoning_details`; reasoning_echo.rs).
     reasoning_details: Vec<Value>,
+    /// The reasoning came in the reply text, in this tag (`<think>`): it goes
+    /// back in the same form.
+    reasoning_inline: Option<String>,
     /// The model replying: reasoning is sent back to this model only.
     model: String,
     reasoning_started: Option<Instant>,
@@ -1795,6 +1798,7 @@ impl<R: Runtime> Stream<R> {
             text: String::new(),
             reasoning: String::new(),
             reasoning_details: Vec::new(),
+            reasoning_inline: None,
             model: run.profile.model.clone(),
             reasoning_started: None,
             reasoning_ended: None,
@@ -1953,6 +1957,7 @@ impl<R: Runtime> Stream<R> {
             ChatStreamEvent::Error { error } => self.failure = Some(error),
             ChatStreamEvent::FocusNote => self.focus_note = true,
             ChatStreamEvent::ReasoningDetails { details } => self.reasoning_details = details,
+            ChatStreamEvent::ReasoningInline { tag } => self.reasoning_inline = Some(tag),
             ChatStreamEvent::ContextNotes { notes } => {
                 // A budget reminder (CLM), up to its numbers, for the reply's log.
                 self.clm_reminder = notes
@@ -2031,6 +2036,9 @@ impl<R: Runtime> Stream<R> {
         }
         if !self.reasoning_details.is_empty() {
             r["details"] = json!(self.reasoning_details);
+        }
+        if let Some(tag) = &self.reasoning_inline {
+            r["inline"] = json!(tag);
         }
         if with_time {
             if let Some(start) = self.reasoning_started {

@@ -14,6 +14,12 @@ pub enum ChatStreamEvent {
     Reasoning {
         content: String,
     },
+    /// The reply wrote its reasoning into the text, in this tag
+    /// (`<think>…</think>`): it's shown as reasoning, and sent back to the
+    /// model in the same form (chat_db::history).
+    ReasoningInline {
+        tag: String,
+    },
     /// Which reasoning fields this request sent that the provider accepted
     /// or rejected (see `REASONING_FIELDS`): the frontend remembers it per
     /// model, so later requests send only what works.
@@ -165,17 +171,36 @@ pub struct OpenAIChatOptions {
 /// The ways providers take a reasoning effort:
 /// - `reasoning_effort`: OpenAI, Gemini's OpenAI-compatible API, many gateways;
 /// - `reasoning`: OpenRouter (`{ "effort": … }`);
-/// - `chat_template_kwargs`: Qwen-style models on vLLM / SGLang (`enable_thinking`).
-pub const REASONING_FIELDS: [&str; 3] = ["reasoning_effort", "reasoning", "chat_template_kwargs"];
+/// - `chat_template_kwargs`: Qwen-style models on vLLM / SGLang (`enable_thinking`);
+/// - `thinking`: `{ "type": "enabled" | "disabled" }`, DeepSeek, Kimi, GLM,
+///   Doubao, Fireworks: on by default there, and only this turns it off.
+pub const REASONING_FIELDS: [&str; 4] = ["reasoning_effort", "reasoning", "chat_template_kwargs", "thinking"];
+
+/// Effort levels providers name, lowest first. Which a model takes varies:
+/// GPT-5 has `minimal` but not `none`, DeepSeek `low`/`high`/`max`, Mistral
+/// `none`/`high` (see `effort_value`).
+const LEVELS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+impl ReasoningEffort {
+    pub fn level(self) -> &'static str {
+        match self {
+            ReasoningEffort::None => "none",
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+        }
+    }
+}
 
 /// Puts the effort into the request in each of `formats`.
+#[cfg(test)]
 pub fn apply_reasoning(body: &mut serde_json::Value, effort: ReasoningEffort, formats: &[String]) {
-    let level = match effort {
-        ReasoningEffort::None => "none",
-        ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
-    };
+    apply_reasoning_level(body, effort, effort.level(), formats);
+}
+
+/// `apply_reasoning` with the level named as `level`: the one the provider
+/// takes in place of `effort`'s own (`effort_value`).
+fn apply_reasoning_level(body: &mut serde_json::Value, effort: ReasoningEffort, level: &str, formats: &[String]) {
     let thinking = !matches!(effort, ReasoningEffort::None);
     for format in formats {
         match format.as_str() {
@@ -189,6 +214,9 @@ pub fn apply_reasoning(body: &mut serde_json::Value, effort: ReasoningEffort, fo
             }
             "chat_template_kwargs" => {
                 body["chat_template_kwargs"] = serde_json::json!({ "enable_thinking": thinking })
+            }
+            "thinking" => {
+                body["thinking"] = serde_json::json!({ "type": if thinking { "enabled" } else { "disabled" } })
             }
             _ => {}
         }
@@ -255,6 +283,10 @@ pub async fn run_with_reasoning(
     // gate remains the fallback for every provider.
     let forced_tool = body.get("tool_choice").filter(|v| v.is_object()).cloned();
     let mut force_fell_back = false;
+    // The effort's level as this provider takes it (`effort_value`), and
+    // those it refused this time.
+    let mut level = effort.map(|e| effort_value::remembered(url, model, e.level()));
+    let mut refused_levels: Vec<String> = Vec::new();
     let result = loop {
         let mut attempt_body = body.clone();
         if force_fell_back {
@@ -263,8 +295,8 @@ pub async fn run_with_reasoning(
         if !echo {
             crate::reasoning_echo::strip(&mut attempt_body);
         }
-        if let Some(effort) = effort {
-            apply_reasoning(&mut attempt_body, effort, &formats);
+        if let (Some(effort), Some(level)) = (effort, level.as_deref()) {
+            apply_reasoning_level(&mut attempt_body, effort, level, &formats);
         }
         // The Responses API always reports usage.
         let sends_usage = ask_usage && api == Api::ChatCompletions;
@@ -325,10 +357,26 @@ pub async fn run_with_reasoning(
                     stream_usage::rejected(url);
                     continue;
                 }
+                // The field is taken, the level isn't ("does not support
+                // 'none' with this model. Supported values are: 'minimal',
+                // …"): the nearest level it does take, not the field dropped.
+                let sends_level = formats.iter().any(|f| f == "reasoning_effort" || f == "reasoning");
+                if let (true, Some(sent)) = (sends_level, level.clone()) {
+                    if refused_levels.len() < 3 && effort_value::refused(&text, &sent) {
+                        refused_levels.push(sent.clone());
+                        if let Some(next) = effort_value::nearest(&sent, &effort_value::offered(&text, &sent), &refused_levels) {
+                            eprintln!("chat: {model} refuses effort {sent:?}; trying {next:?}");
+                            level = Some(next.to_string());
+                            continue;
+                        }
+                    }
+                }
                 // On `/responses`, both effort forms are `reasoning.effort`.
                 let names = |f: &String| {
                     mentions_field(&text, f)
-                        || (api == Api::Responses && f != "chat_template_kwargs" && mentions_field(&text, "reasoning"))
+                        || (api == Api::Responses
+                            && (f == "reasoning_effort" || f == "reasoning")
+                            && mentions_field(&text, "reasoning"))
                 };
                 let named: Vec<String> = formats.iter().filter(|f| names(f)).cloned().collect();
                 if !named.is_empty() {
@@ -359,6 +407,11 @@ pub async fn run_with_reasoning(
         }
         if api != saved_route.unwrap_or_default() {
             emit(ChatStreamEvent::ApiRoute { route: api.as_str().to_string() });
+        }
+    }
+    if let (Some(effort), Some(level), true) = (effort, level.as_deref(), result.is_ok()) {
+        if level != effort.level() {
+            effort_value::remember(url, model, effort.level(), level);
         }
     }
     if usage_stripped_blindly && result.is_ok() {
@@ -398,6 +451,87 @@ pub mod stream_usage {
         if let Ok(mut r) = REJECTED.lock() {
             r.insert(url.to_string());
         }
+    }
+}
+
+/// Effort levels a provider refuses although it takes the field: GPT-5 has
+/// no `none` (its lowest is `minimal`), DeepSeek no `medium`, Mistral only
+/// `none` and `high`. Such a 400 names the field too, but dropping the field
+/// would lose the effort altogether: the nearest level it takes is sent
+/// instead, and remembered for the model while the app runs.
+pub mod effort_value {
+    use super::{mentions_field, LEVELS};
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    static TAKEN: LazyLock<Mutex<HashMap<(String, String, String), String>>> = LazyLock::new(Default::default);
+
+    /// The level to send for `level` to this model: one found to work in its
+    /// place, or `level` itself.
+    pub fn remembered(url: &str, model: &str, level: &str) -> String {
+        TAKEN
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&(url.to_string(), model.to_string(), level.to_string())).cloned())
+            .unwrap_or_else(|| level.to_string())
+    }
+
+    pub fn remember(url: &str, model: &str, level: &str, taken: &str) {
+        if let Ok(mut m) = TAKEN.lock() {
+            m.insert((url.to_string(), model.to_string(), level.to_string()), taken.to_string());
+        }
+    }
+
+    fn quoted(text: &str, value: &str) -> bool {
+        [format!("'{value}'"), format!("\"{value}\""), format!("`{value}`"), format!("\\\"{value}\\\"")]
+            .iter()
+            .any(|q| text.contains(q.as_str()))
+    }
+
+    /// Whether a 400 refuses the effort's value `sent`, not the field: it is
+    /// about the effort and says the value is wrong, or quotes it.
+    pub fn refused(text: &str, sent: &str) -> bool {
+        let lower = text.to_lowercase();
+        let about_effort = mentions_field(&lower, "reasoning_effort") || mentions_field(&lower, "effort");
+        let wrong_value = [
+            "unsupported value",
+            "invalid value",
+            "not a valid",
+            "must be one of",
+            "supported values",
+            "allowed values",
+            "valid values",
+            "expected one of",
+            "input should be",
+            "literal_error",
+        ]
+        .iter()
+        .any(|p| lower.contains(p));
+        about_effort && (wrong_value || quoted(&lower, sent))
+    }
+
+    /// The levels the error lists as taken (quoted), other than `sent`.
+    pub fn offered(text: &str, sent: &str) -> Vec<&'static str> {
+        let lower = text.to_lowercase();
+        LEVELS.iter().copied().filter(|l| *l != sent && quoted(&lower, l)).collect()
+    }
+
+    /// The level nearest `sent` among those offered (any known level if the
+    /// error lists none), not yet refused; on a tie the higher. For `none`,
+    /// the lowest: as little thinking as the model allows.
+    pub fn nearest(sent: &str, offered: &[&'static str], refused: &[String]) -> Option<&'static str> {
+        let at = |l: &str| LEVELS.iter().position(|x| *x == l);
+        let from = at(sent)?;
+        let pool: Vec<&'static str> = if offered.is_empty() { LEVELS.to_vec() } else { offered.to_vec() };
+        pool.into_iter()
+            .filter(|l| *l != sent && !refused.iter().any(|r| r == l))
+            .filter_map(|l| at(l).map(|i| (l, i)))
+            .min_by_key(|(_, i)| {
+                let distance = i.abs_diff(from);
+                // Ties go up: higher index sorts first.
+                (distance, usize::MAX - i)
+            })
+            .map(|(l, _)| l)
     }
 }
 
@@ -1619,8 +1753,10 @@ mod reasoning_tests {
         assert_eq!(body["reasoning_effort"], "high");
         assert_eq!(body["reasoning"]["effort"], "high");
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+        assert_eq!(body["thinking"]["type"], "enabled");
         let mut off = serde_json::json!({});
-        apply_reasoning(&mut off, ReasoningEffort::None, &["reasoning".into(), "chat_template_kwargs".into()]);
+        apply_reasoning(&mut off, ReasoningEffort::None, &["reasoning".into(), "chat_template_kwargs".into(), "thinking".into()]);
+        assert_eq!(off["thinking"]["type"], "disabled");
         assert_eq!(off["reasoning"]["enabled"], false);
         assert_eq!(off["chat_template_kwargs"]["enable_thinking"], false);
         assert!(off.get("reasoning_effort").is_none());
@@ -1697,6 +1833,10 @@ mod reasoning_tests {
     }
 
     async fn send(url: &str, formats: &[&str]) -> (bool, Option<ReasoningSupport>) {
+        send_effort(url, formats, ReasoningEffort::High).await
+    }
+
+    async fn send_effort(url: &str, formats: &[&str], effort: ReasoningEffort) -> (bool, Option<ReasoningSupport>) {
         let client = Client::new();
         let body = serde_json::json!({ "model": "m", "messages": [] });
         let (tx, mut rx) = tokio::sync::watch::channel(false);
@@ -1714,7 +1854,7 @@ mod reasoning_tests {
             &body,
             true,
             limits,
-            Some(ReasoningEffort::High),
+            Some(effort),
             formats.iter().map(|s| s.to_string()).collect(),
             None,
             None,
@@ -1723,6 +1863,101 @@ mod reasoning_tests {
         )
         .await;
         (result.is_ok(), learned)
+    }
+
+    /// Takes `reasoning_effort` but only the levels in `taken`, refusing
+    /// others as OpenAI does for GPT-5's missing `none`.
+    async fn level_provider(taken: &'static [&'static str]) -> (String, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 65536];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body: serde_json::Value =
+                    raw.split("\r\n\r\n").nth(1).and_then(|b| serde_json::from_str(b).ok()).unwrap_or_default();
+                let level = body["reasoning_effort"].as_str().unwrap_or("").to_string();
+                log.lock().unwrap().push(body);
+                let reply = if !level.is_empty() && !taken.contains(&level.as_str()) {
+                    let list = taken.iter().map(|l| format!("'{l}'")).collect::<Vec<_>>().join(", ");
+                    let msg = format!(
+                        r#"{{"error":{{"message":"Unsupported value: 'reasoning_effort' does not support '{level}' with this model. Supported values are: {list}.","type":"invalid_request_error","param":"reasoning_effort","code":"unsupported_value"}}}}"#
+                    );
+                    format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}", msg.len())
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string()
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn a_refused_level_gets_the_nearest_taken_one_and_the_field_stays() {
+        // GPT-5: no `none`; its lowest is `minimal`.
+        let (url, seen) = level_provider(&["minimal", "low", "medium", "high"]).await;
+        let (ok, learned) = send_effort(&url, &["reasoning_effort", "thinking"], ReasoningEffort::None).await;
+        assert!(ok);
+        let s = learned.unwrap();
+        assert_eq!(s.accepted, ["reasoning_effort", "thinking"], "the field isn't dropped");
+        assert!(s.rejected.is_empty());
+        {
+            let bodies = seen.lock().unwrap();
+            assert_eq!(bodies.len(), 2);
+            assert_eq!(bodies[0]["reasoning_effort"], "none");
+            assert_eq!(bodies[1]["reasoning_effort"], "minimal");
+            assert_eq!(bodies[1]["thinking"]["type"], "disabled", "thinking stays off");
+        }
+        // Remembered: the next request sends `minimal` straight away.
+        let (ok, _) = send_effort(&url, &["reasoning_effort"], ReasoningEffort::None).await;
+        assert!(ok);
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[2]["reasoning_effort"], "minimal");
+    }
+
+    #[tokio::test]
+    async fn a_model_with_two_levels_gets_the_nearer() {
+        // Mistral-like: only `none` and `high`.
+        let (url, seen) = level_provider(&["none", "high"]).await;
+        let (ok, learned) = send_effort(&url, &["reasoning_effort"], ReasoningEffort::Medium).await;
+        assert!(ok);
+        assert_eq!(learned.unwrap().accepted, ["reasoning_effort"]);
+        assert_eq!(seen.lock().unwrap()[1]["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn value_errors_are_told_from_field_errors() {
+        use effort_value::{nearest, offered, refused};
+        let openai = "Unsupported value: 'reasoning_effort' does not support 'none' with this model. Supported values are: 'minimal', 'low', 'medium', and 'high'.";
+        assert!(refused(openai, "none"));
+        assert_eq!(offered(openai, "none"), ["minimal", "low", "medium", "high"]);
+        assert_eq!(nearest("none", &offered(openai, "none"), &[]), Some("minimal"));
+
+        let field = "Unsupported parameter: 'reasoning_effort' is not supported with this model.";
+        assert!(!refused(field, "high"), "the field itself: dropped as before");
+        assert!(!refused(r#"{"error":{"message":"Unrecognized request argument supplied: reasoning_effort"}}"#, "high"));
+
+        let pydantic = r#"{"detail":[{"type":"literal_error","loc":["body","reasoning_effort"],"msg":"Input should be 'none' or 'high'"}]}"#;
+        assert!(refused(pydantic, "medium"));
+        assert_eq!(nearest("medium", &offered(pydantic, "medium"), &[]), Some("high"));
+
+        // A list that isn't quoted: any known level, the nearest, ties going up.
+        let bare = "reasoning_effort must be one of: none, low, high, max";
+        assert!(refused(bare, "medium"));
+        assert!(offered(bare, "medium").is_empty());
+        assert_eq!(nearest("medium", &[], &[]), Some("high"));
+        assert_eq!(nearest("medium", &[], &["high".into()]), Some("low"));
+        assert_eq!(nearest("none", &[], &["minimal".into()]), Some("low"));
+
+        // About something else entirely.
+        assert!(!refused("Invalid value for 'temperature': must be 1.", "high"));
     }
 
     #[tokio::test]

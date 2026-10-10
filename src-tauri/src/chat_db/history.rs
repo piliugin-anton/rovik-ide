@@ -662,9 +662,12 @@ pub fn attach_reasoning(conn: &Connection, messages: &mut [Msg], model: &str) ->
         }
         let details = r.get("details").filter(|d| d.as_array().is_some_and(|a| !a.is_empty()));
         let text = r.get("text").filter(|t| t.as_str().is_some_and(|t| !t.is_empty()));
-        messages[i].reasoning = match (details, text) {
-            (Some(details), _) => Some(json!({ "details": details })),
-            (None, Some(text)) => Some(json!({ "text": text })),
+        let inline = r.get("inline").filter(|t| t.is_string());
+        messages[i].reasoning = match (details, text, inline) {
+            (Some(details), _, _) => Some(json!({ "details": details })),
+            // Written in the reply text: back in the text, in its tag.
+            (None, Some(text), Some(tag)) => Some(json!({ "text": text, "inline": tag })),
+            (None, Some(text), None) => Some(json!({ "text": text })),
             _ => None,
         };
     }
@@ -907,8 +910,13 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
             }
         }
 
+        let inline = m.reasoning.as_ref().and_then(|r| Some((r.get("inline")?.as_str()?, r.get("text")?.as_str()?)));
+        if let Some((tag, text)) = inline {
+            content = format!("<{tag}>{text}</{tag}>{content}");
+        }
         let mut msg = json!({ "role": m.role, "content": content });
         match m.reasoning.as_ref().map(|r| (r.get("details"), r.get("text"))) {
+            _ if inline.is_some() => {}
             Some((Some(details), _)) => msg["reasoning_details"] = details.clone(),
             Some((None, Some(text))) => msg["reasoning_content"] = text.clone(),
             _ => {}
@@ -967,6 +975,21 @@ mod tests {
             reasoning: None,
         }
     }
+    #[test]
+    fn reasoning_goes_back_in_the_form_it_came_in() {
+        let dir = std::env::temp_dir();
+        let mut inline = msg("assistant", "\n\nThe answer.");
+        inline.reasoning = Some(json!({ "text": "Plan.", "inline": "think" }));
+        let mut field = msg("assistant", "Answer.");
+        field.reasoning = Some(json!({ "text": "Plan." }));
+        let wire = to_wire(&[msg("user", "q"), inline, field], &dir, false, false);
+        // In its tag, as the model wrote it (MiniMax wants it back unchanged).
+        assert_eq!(wire[1]["content"], "<think>Plan.</think>\n\nThe answer.");
+        assert!(wire[1].get("reasoning_content").is_none());
+        assert_eq!(wire[2]["content"], "Answer.");
+        assert_eq!(wire[2]["reasoning_content"], "Plan.");
+    }
+
     fn call(ids: &[&str]) -> Msg {
         let mut m = msg("assistant", "");
         m.tool_calls = Some(ids.iter().map(|id| ToolCall { id: id.to_string(), name: "read".into(), arguments: "{}".into(), extra_content: None }).collect());

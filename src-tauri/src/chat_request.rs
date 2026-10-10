@@ -429,7 +429,27 @@ pub struct ReplyParser {
     /// Responses API: where to note that this model labels its messages
     /// with a phase (`responses::note_phases`).
     phase_key: Option<String>,
+    /// Reasoning written into the reply text as `<think>…</think>`.
+    think: InlineThink,
 }
+
+/// Reasoning some models write at the start of the reply text instead of
+/// a field of its own (MiniMax by default, DeepSeek R1 on some hosts,
+/// Perplexity, local servers without a reasoning parser): shown as
+/// reasoning, not as the answer.
+#[derive(Default)]
+enum InlineThink {
+    /// The reply's start so far: may still turn out to open a tag.
+    #[default]
+    Start,
+    Undecided(String),
+    /// Inside the tag (`think` or `thinking`); `carry` may be the start of
+    /// the closing tag.
+    Inside { tag: &'static str, carry: String },
+    Done,
+}
+
+const THINK_TAGS: [&str; 2] = ["think", "thinking"];
 
 #[derive(Default)]
 struct PendingCall {
@@ -466,8 +486,7 @@ impl ReplyParser {
         if let Some(delta) = choice.and_then(|c| c.get("delta")) {
             if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
                 if !content.is_empty() {
-                    self.text_len += content.len();
-                    emit(ChatStreamEvent::Delta { content: content.to_string() });
+                    self.content(content, emit);
                 }
             }
             // Reasoning: `reasoning_content` (DeepSeek, vLLM, many gateways)
@@ -539,8 +558,83 @@ impl ReplyParser {
         Ok(())
     }
 
+    fn text(&mut self, text: &str, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) {
+        if !text.is_empty() {
+            self.text_len += text.len();
+            emit(ChatStreamEvent::Delta { content: text.to_string() });
+        }
+    }
+
+    fn reasoning_text(&mut self, text: &str, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) {
+        if !text.is_empty() {
+            self.reasoning_len += text.len();
+            emit(ChatStreamEvent::Reasoning { content: text.to_string() });
+        }
+    }
+
+    /// Reply text, with a leading `<think>…</think>` taken out as reasoning.
+    fn content(&mut self, piece: &str, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) {
+        let mut piece = piece.to_string();
+        loop {
+            match std::mem::take(&mut self.think) {
+                InlineThink::Done => {
+                    self.think = InlineThink::Done;
+                    return self.text(&piece, emit);
+                }
+                InlineThink::Start => self.think = InlineThink::Undecided(String::new()),
+                InlineThink::Undecided(mut seen) => {
+                    seen.push_str(&piece);
+                    let start = seen.trim_start();
+                    let opened = THINK_TAGS.iter().find(|t| start.starts_with(&format!("<{t}>")));
+                    if let Some(tag) = opened {
+                        let rest = start[tag.len() + 2..].to_string();
+                        emit(ChatStreamEvent::ReasoningInline { tag: tag.to_string() });
+                        self.think = InlineThink::Inside { tag, carry: String::new() };
+                        piece = rest;
+                        continue;
+                    }
+                    // Whitespace, or "<thi": wait for more.
+                    let may_open = start.is_empty() || THINK_TAGS.iter().any(|t| format!("<{t}>").starts_with(start));
+                    if may_open {
+                        self.think = InlineThink::Undecided(seen);
+                        return;
+                    }
+                    self.think = InlineThink::Done;
+                    return self.text(&seen, emit);
+                }
+                InlineThink::Inside { tag, mut carry } => {
+                    carry.push_str(&piece);
+                    let close = format!("</{tag}>");
+                    if let Some(at) = carry.find(&close) {
+                        let thought = carry[..at].to_string();
+                        let after = carry[at + close.len()..].to_string();
+                        self.reasoning_text(&thought, emit);
+                        self.think = InlineThink::Done;
+                        return self.text(&after, emit);
+                    }
+                    // Keep what could be the start of the closing tag.
+                    let mut keep = carry.len().saturating_sub(close.len() - 1);
+                    while !carry.is_char_boundary(keep) {
+                        keep -= 1;
+                    }
+                    let thought = carry[..keep].to_string();
+                    self.reasoning_text(&thought, emit);
+                    self.think = InlineThink::Inside { tag, carry: carry[keep..].to_string() };
+                    return;
+                }
+            }
+        }
+    }
+
     /// End of the reply: completes tool calls and checks it said something.
     pub fn finish(&mut self, emit: &mut (dyn FnMut(ChatStreamEvent) + Send)) -> Result<(), ChatError> {
+        // Text held back while it might have opened or closed a tag.
+        match std::mem::replace(&mut self.think, InlineThink::Done) {
+            InlineThink::Undecided(seen) => self.text(&seen, emit),
+            // Never closed: all of it was reasoning.
+            InlineThink::Inside { carry, .. } => self.reasoning_text(&carry, emit),
+            InlineThink::Start | InlineThink::Done => {}
+        }
         // Decide before draining: the drained calls are what made it visible.
         let said_something = self.visible();
         for (_, call) in self.calls.drain(..) {
