@@ -65,6 +65,7 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             let db = chat_db::DbState::open(&dir).map_err(|e| format!("Chat database: {e}"))?;
             workload::init(&dir);
+            overlay::chats::init(&dir);
             app.manage(db);
             Ok(())
         })
@@ -186,6 +187,9 @@ pub fn run() {
             agent::chat_context_estimate,
             command_tool::tool_run_command,
             workload::workload_focus,
+            overlay::chats::overlay_status,
+            overlay::chats::overlay_file,
+            overlay::chats::overlay_discard,
             workload::workload_set_slots,
             outline::outline_symbols,
             vfs::vfs_status,
@@ -224,6 +228,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(browser.shutdown());
                 // Unmount the virtual files, or the folder stays a dead mount.
                 let _ = app.state::<vfs::VfsState>().unmount();
+                overlay::chats::close_all();
                 if let Some(db) = app.try_state::<chat_db::DbState>() {
                     db.mark_clean_exit();
                 }

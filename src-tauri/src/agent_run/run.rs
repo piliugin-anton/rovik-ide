@@ -91,6 +91,9 @@ pub struct Run<R: Runtime> {
     pub(super) plan_mode: bool,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
+    /// The project folder itself. Differs from `root` in an isolated chat,
+    /// whose tools and commands work in its overlay's view.
+    pub(super) project_root: Option<String>,
     /// What this run has read and written of each file, so a whole-file
     /// write over a change it hasn't seen is refused (file_guard.rs).
     pub(super) seen: Arc<crate::file_guard::Seen>,
@@ -240,7 +243,48 @@ impl<R: Runtime> Run<R> {
         let config = state.config();
         let mode = run_mode_for(&recent).or(request.mode.clone()).unwrap_or_else(|| "agent".into());
         let plan_mode = mode == "plan";
-        let root = request.root.clone().filter(|r| !r.trim().is_empty());
+        let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
+        // An isolated chat works in its overlay: the project with its own
+        // changes on top, mounted as a folder (src/overlay). Plan mode
+        // changes nothing, so it reads the project itself.
+        let mut isolation_problem = None;
+        let root = match &project_root {
+            Some(r) if !plan_mode && request.isolate.unwrap_or_else(crate::overlay::chats::enabled) => {
+                let app_ = app.clone();
+                let on_warn = Box::new(move |used: u64, limit: u64| {
+                    emit(
+                        &app_,
+                        AgentEvent::Notice {
+                            kind: "warning".into(),
+                            title: "This chat's changes are near their limit".into(),
+                            message: format!(
+                                "{} MB of {} MB. Past the limit, its writes fail until its changes land or are discarded.",
+                                used >> 20,
+                                limit >> 20
+                            ),
+                        },
+                    )
+                });
+                match crate::overlay::chats::open(&dialog_id, std::path::Path::new(r), on_warn) {
+                    Ok(o) => Some(o.view.to_string_lossy().into_owned()),
+                    Err(e) => {
+                        isolation_problem = Some(e);
+                        project_root.clone()
+                    }
+                }
+            }
+            _ => project_root.clone(),
+        };
+        if let Some(problem) = isolation_problem {
+            emit(
+                app,
+                AgentEvent::Notice {
+                    kind: "warning".into(),
+                    title: "This chat isn't isolated".into(),
+                    message: format!("{problem}. It works in the project folder directly."),
+                },
+            );
+        }
         let is_send = matches!(request.start, StartKind::Send { .. });
         let is_continue_run = matches!(request.start, StartKind::ContinueRun);
         // Plan-implementation first turn forces the `todo` tool (named
@@ -493,6 +537,7 @@ impl<R: Runtime> Run<R> {
             plan_mode,
             context_mode: request.context_mode.unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
+            project_root,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),

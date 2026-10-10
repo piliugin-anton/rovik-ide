@@ -308,11 +308,6 @@ impl OverlayFs {
         Ok(fs_)
     }
 
-    /// The project folder underneath.
-    pub fn base(&self) -> &Path {
-        &self.base
-    }
-
     /// Called once when the chat's changes pass WARN_AT of its limit:
     /// (used, limit).
     pub fn on_warn(&self, f: Box<dyn Fn(u64, u64) + Send + Sync>) {

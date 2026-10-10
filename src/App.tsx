@@ -60,7 +60,12 @@ import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
 import { notifyFileWritten, onFileWritten, onRevealEdit } from './lib/approvals';
 import { editorSettings } from './lib/editorSettings';
-import { onAddToChat, onOpenFileRequest, setProjectFileResolver } from './lib/editorBridge';
+import {
+  onAddToChat,
+  onCompareRequest,
+  onOpenFileRequest,
+  setProjectFileResolver,
+} from './lib/editorBridge';
 import { findSnippetLine } from './lib/codeLocation';
 import { isPlanFile, requestImplementPlan } from './lib/plans';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
@@ -490,6 +495,25 @@ export default function App() {
       setRevealRequest({ path, line, column: 1, length: 0, nonce: Date.now() });
     })();
   });
+
+  // A comparison tab (an isolated chat's change against the project):
+  // read-only, the chat's version shown with what differs marked.
+  const stopCompareRequests = onCompareRequest((request) => {
+    const tab: OpenFile = {
+      id: request.id,
+      path: request.id,
+      name: request.title,
+      content: request.after,
+      originalContent: request.after,
+      dirty: false,
+      language: languageForFile(request.fileName),
+      readOnly: true,
+    };
+    setGitBase(request.id, request.fileName, request.before);
+    setOpenFiles((prev) => [...prev.filter((f) => f.path !== request.id), tab]);
+    setActivePath(request.id);
+  });
+  onCleanup(stopCompareRequests);
 
   // "Open in editor" anywhere in the chat (lib/editorBridge.ts): open the
   // file, then center its start position: the line given, or where the

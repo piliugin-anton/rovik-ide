@@ -471,6 +471,10 @@ impl<R: Runtime> Run<R> {
                 tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json, &self.stop, &ctx).await
             }
         };
+        // An isolated chat's changes are saved as they happen (overlay/fs.rs).
+        if let Some(o) = crate::overlay::chats::get(&self.dialog_id) {
+            o.fs.flush();
+        }
         let write = match (writes, write_path) {
             (true, Some(path)) => Some(WriteTarget { path, abs_path: abs_write_path, before }),
             _ => None,
@@ -1050,7 +1054,8 @@ impl<R: Runtime> Run<R> {
             );
             return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
         }
-        let Some(root) = self.root.clone() else {
+        // Plans are the project's, not a chat's change.
+        let Some(root) = self.project_root.clone() else {
             return self
                 .add_tool_result(&tc.id, "Error: no project is open, so the plan can't be saved.".into(), None, Vec::new())
                 .await;

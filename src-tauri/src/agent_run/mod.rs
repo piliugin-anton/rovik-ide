@@ -343,6 +343,9 @@ pub struct StartRequest {
     /// Today, as the user's clock has it ("2026-10-04"), for plan file names.
     pub local_date: Option<String>,
     pub config: Option<AgentConfig>,
+    /// Work in the chat's overlay (src/overlay). `None`: the app's setting.
+    #[serde(default)]
+    pub isolate: Option<bool>,
 }
 
 #[tauri::command]

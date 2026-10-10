@@ -713,10 +713,14 @@ async fn run<R: Runtime>(
             };
             let timeout = num(args, "timeout_seconds").filter(|s| *s > 0.0).map(|s| (s * 1000.0) as u64);
             let stop = stop.clone();
+            if let Some(problem) = crate::overlay::chats::get(&ctx.owner).and_then(|o| o.command_problem(command)) {
+                return Ok(ToolResult::text(problem));
+            }
             let note = ctx.note.clone();
             let queued = crate::command_tool::Queued {
                 kind: crate::workload::JobKind::Agent { owner: ctx.owner.clone() },
                 note: Box::new(move |n| note(n)),
+                env: crate::overlay::chats::get(&ctx.owner).map(|o| o.command_env()).unwrap_or_default(),
             };
             let out =
                 crate::command_tool::run_command(root_owned, command.into(), timeout, move || stop.is_set(), Some(queued))

@@ -240,6 +240,7 @@ impl Harness {
             current_user_content: None,
             local_date: Some("2026-10-06".into()),
             config: Some(AgentConfig { permissions, approval_profiles: Vec::new() }),
+            isolate: Some(false),
         }
     }
 
@@ -547,6 +548,37 @@ async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
     assert_eq!(h.run_end().await, "done");
     // The note is cleared once it runs.
     assert!(h.events_of("toolNote").last().unwrap()["note"].is_null());
+}
+
+/// An isolated chat: its writes and commands change its overlay, not the
+/// project. Needs FUSE: cargo test -- --ignored.
+#[tokio::test]
+#[ignore]
+async fn an_isolated_chat_changes_only_its_overlay() {
+    let h = harness(&[("src/a.txt", "one\ntwo\n"), ("README.md", "hi\n")]).await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "src/a.txt", "old_text": "one", "content": "ONE" }) },
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sed -i 's/hi/hello/' README.md && cat README.md && echo new > new.txt" }) },
+        Reply::Call { id: "b2", name: "bash", args: json!({ "command": "git commit -am x" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Change things"), Permissions { allow_any_command: true, ..quiet_permissions() });
+    request.isolate = Some(true);
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "b1").content.contains("hello"), "{}", result_of(&messages, "b1").content);
+    assert!(result_of(&messages, "b2").content.starts_with("Error: `git commit` changes the repository"));
+    // The project is as it was; the chat's view has the changes.
+    assert_eq!(h.file("src/a.txt").as_deref(), Some("one\ntwo\n"));
+    assert_eq!(h.file("README.md").as_deref(), Some("hi\n"));
+    assert!(h.file("new.txt").is_none());
+    let mut changed: Vec<String> = crate::overlay::chats::changes(&h.dialog_id).iter().map(|c| c.path().to_string()).collect();
+    changed.sort();
+    assert_eq!(changed, vec!["README.md", "new.txt", "src/a.txt"]);
+    crate::overlay::chats::discard(&h.dialog_id).unwrap();
 }
 
 #[tokio::test]

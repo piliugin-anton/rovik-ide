@@ -815,3 +815,29 @@ once; they touch different files. Everything else is sequential.
   - What counts as a by-product (not landed, not counted toward the
     512 MiB): what the project's `.gitignore` files ignore, plus `.git`;
     a short fallback list when the project has none.
+- **Milestone 5 (chats in overlays).**
+  - A run in an isolated chat opens the chat's overlay and mounts it at
+    `$XDG_RUNTIME_DIR/rovik-ide/chats/<chat id>` (Linux; a temp folder
+    elsewhere); the run's root is that folder. Plan mode isn't isolated
+    (it changes nothing) and plans are saved in the project.
+  - Turned on by `ROVIK_ISOLATE_CHATS=1` (or `isolate` in the start
+    request) until milestone 8 switches it on for every chat.
+  - **No copied-tree fallback yet.** Without the driver, the chat works in
+    the project directly with the phase-0 protections, and a notice says
+    so. Linux has FUSE nearly everywhere; macOS and Windows need macFUSE /
+    WinFsp, which the app can already install (`vfs_install_driver`).
+  - Dependencies: no separate private copies or `pip`→`uv` rule. In an
+    overlay an install writes into the chat's own folder (only what it
+    writes), so the copy the decision wanted to avoid only happens for a
+    chat that installs, and only for what it installs; package managers
+    that hard-link can't link across the mount and copy instead.
+  - `CARGO_TARGET_DIR` points at the overlay's own folder, so Rust builds
+    don't go through the mount and don't share the project's `target/`.
+  - Escapes: a command naming the project's own folder by its full path
+    is refused with a hint to use relative paths (on top of git commands
+    that change the repository). Watching the project for unexplained
+    writes is left for milestone 9.
+  - UI: a bar above the composer lists the chat's changed files; each
+    opens as a read-only comparison with the project's version. Discard
+    throws them away. "Open in editor" from a tool block still opens the
+    project's file.

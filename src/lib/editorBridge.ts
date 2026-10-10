@@ -35,6 +35,32 @@ export function onOpenFileRequest(listener: (request: OpenFileRequest) => void):
   return () => listeners.delete(listener);
 }
 
+/**
+ * A read-only tab comparing two versions of a file: `after` shown, with the
+ * lines that differ from `before` marked (an isolated chat's change against
+ * the project).
+ */
+export interface CompareRequest {
+  /** Identifies the tab, so asking again switches to it. */
+  id: string;
+  title: string;
+  /** For the language. */
+  fileName: string;
+  before: string;
+  after: string;
+}
+
+const compareListeners = new Set<(request: CompareRequest) => void>();
+
+export function requestCompare(request: CompareRequest) {
+  for (const listener of compareListeners) listener(request);
+}
+
+export function onCompareRequest(listener: (request: CompareRequest) => void): () => void {
+  compareListeners.add(listener);
+  return () => compareListeners.delete(listener);
+}
+
 /*
  * Whether a path the chat mentions is a file in the project, so a code
  * block offers "Open in editor" only when there's a file to open. App

@@ -62,6 +62,7 @@ import {
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
+import IsolationBar from './IsolationBar';
 import { isSettled, latestChecklist } from '../lib/todo';
 import {
   dismissChecklist,
@@ -240,6 +241,17 @@ export default function ChatPanel(props: ChatProps) {
     const id = activeDialogId();
     if (id && store.state.chatVisible) store.markRead(id);
   });
+  // An isolated chat's changes: looked at again while a run goes and when
+  // it ends (IsolationBar).
+  const [isolationRevision, setIsolationRevision] = createSignal(0);
+  createEffect(
+    on(sending, (running) => {
+      setIsolationRevision((n) => n + 1);
+      if (!running) return;
+      const timer = setInterval(() => setIsolationRevision((n) => n + 1), 3000);
+      onCleanup(() => clearInterval(timer));
+    })
+  );
   // The chat on screen goes first in the queue for heavy work (builds,
   // tests) when several chats want the CPU at once (src-tauri/src/workload).
   createEffect(() => {
@@ -2965,6 +2977,12 @@ export default function ChatPanel(props: ChatProps) {
             onContinue={continueRun}
             onDismiss={dismissIdleChecklist}
           />
+        )}
+      </Show>
+      {/* An isolated chat's changes that aren't in the project yet. */}
+      <Show when={activeDialogId()}>
+        {(id) => (
+          <IsolationBar dialogId={id()} revision={isolationRevision()} running={sending()} />
         )}
       </Show>
       {/* The agent's questions, one at a time, above the input. */}

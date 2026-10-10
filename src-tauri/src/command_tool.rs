@@ -46,6 +46,8 @@ pub struct CommandOutput {
 pub struct Queued {
     pub kind: crate::workload::JobKind,
     pub note: Box<dyn Fn(Option<String>) + Send + Sync>,
+    /// More environment for the command (an isolated chat's build folder).
+    pub env: Vec<(String, String)>,
 }
 
 #[cfg(windows)]
@@ -218,6 +220,9 @@ fn run_blocking(
         .env("NO_COLOR", "1")
         .env("CARGO_TERM_COLOR", "never");
     for (key, value) in job.as_ref().map(|j| j.cpu_split_env()).unwrap_or_default() {
+        cmd.env(key, value);
+    }
+    for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
         cmd.env(key, value);
     }
     // Its own process group, so a timeout can take down everything the
