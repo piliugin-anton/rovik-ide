@@ -1195,6 +1195,7 @@ export default function MessageList(props: {
                     <For each={m.toolCalls!}>
                       {(tc) => (
                         <ToolCallBlock
+                          dialogId={props.dialogId}
                           toolCall={tc}
                           result={toolResults().get(tc.id)}
                           running={props.sending}

@@ -65,9 +65,13 @@ export type ManualDecision =
       rejected: DiffHunk[];
     };
 
+// Keyed by chat and call: providers number calls per reply (Gemini:
+// "function-call-1"), so two chats can wait on the same call id.
 const [state, setState] = createStore<{ pending: Record<string, PendingApproval> }>({
   pending: {},
 });
+
+const keyOf = (dialogId: string, toolCallId: string) => `${dialogId}\n${toolCallId}`;
 
 const revealListeners = new Set<(absPath: string) => void>();
 const writtenListeners = new Set<(absPath: string, content: string) => void>();
@@ -102,22 +106,24 @@ export function buildEditReview(
 
 /** A run waits for the user's decision on a tool call. File edits open in the editor. */
 export function registerApproval(request: ApprovalRequest) {
-  if (state.pending[request.toolCallId]) return;
+  const key = keyOf(request.dialogId, request.toolCallId);
+  if (state.pending[key]) return;
   const { edit, ...rest } = request;
   const review = edit
     ? buildEditReview(edit.absPath, edit.relPath, edit.current, edit.proposed)
     : null;
-  setState('pending', request.toolCallId, { ...rest, ...(review ? { edit: review } : {}) });
-  if (review) revealEdit(request.toolCallId);
+  setState('pending', key, { ...rest, ...(review ? { edit: review } : {}) });
+  if (review) revealEdit(request.dialogId, request.toolCallId);
 }
 
 /** Answered, or no longer waited for (the run stopped). */
-export function clearApproval(toolCallId: string) {
-  if (!state.pending[toolCallId]) return;
+export function clearApproval(dialogId: string, toolCallId: string) {
+  const key = keyOf(dialogId, toolCallId);
+  if (!state.pending[key]) return;
   setState(
     'pending',
     produce((pending) => {
-      delete pending[toolCallId];
+      delete pending[key];
     })
   );
 }
@@ -128,8 +134,8 @@ export function clearApproval(toolCallId: string) {
  * ---------------------------------------------------------------------------
  */
 
-export function pendingApproval(toolCallId: string): PendingApproval | undefined {
-  return state.pending[toolCallId];
+export function pendingApproval(dialogId: string, toolCallId: string): PendingApproval | undefined {
+  return state.pending[keyOf(dialogId, toolCallId)];
 }
 
 /** The pending edit review of a file, if any. */
@@ -158,24 +164,26 @@ const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+/g, '/');
  * ---------------------------------------------------------------------------
  */
 
-function settle(toolCallId: string, decision: ManualDecision) {
-  clearApproval(toolCallId);
-  void invoke('agent_resolve_approval', { toolCallId, decision }).catch((err) =>
+function settle(dialogId: string, toolCallId: string, decision: ManualDecision) {
+  clearApproval(dialogId, toolCallId);
+  void invoke('agent_resolve_approval', { dialogId, toolCallId, decision }).catch((err) =>
     console.error('Approval not delivered:', err)
   );
 }
 
-export const allow = (toolCallId: string) => settle(toolCallId, { kind: 'allow' });
-export const deny = (toolCallId: string) => settle(toolCallId, { kind: 'deny' });
+export const allow = (dialogId: string, toolCallId: string) =>
+  settle(dialogId, toolCallId, { kind: 'allow' });
+export const deny = (dialogId: string, toolCallId: string) =>
+  settle(dialogId, toolCallId, { kind: 'deny' });
 
 /** Resolves an edit review once no change is left pending. */
-function finishIfDecided(toolCallId: string) {
-  const edit = state.pending[toolCallId]?.edit;
+function finishIfDecided(dialogId: string, toolCallId: string) {
+  const edit = state.pending[keyOf(dialogId, toolCallId)]?.edit;
   if (!edit) return;
   const { pending, accepted, total } = hunkCounts(edit);
   if (pending > 0) return;
-  if (accepted === total) return allow(toolCallId);
-  if (accepted === 0) return deny(toolCallId);
+  if (accepted === total) return allow(dialogId, toolCallId);
+  if (accepted === 0) return deny(dialogId, toolCallId);
 
   const hunks = edit.hunks.map((h) => ({ ...h, added: [...h.added], deleted: [...h.deleted] }));
   const merged = applyHunks(
@@ -183,7 +191,7 @@ function finishIfDecided(toolCallId: string) {
     hunks,
     (h) => (h as ReviewHunk).state === 'accepted'
   );
-  settle(toolCallId, {
+  settle(dialogId, toolCallId, {
     kind: 'partial',
     content: merged.join(edit.eol),
     total: hunks.length,
@@ -193,18 +201,23 @@ function finishIfDecided(toolCallId: string) {
   });
 }
 
-export function setHunkState(toolCallId: string, index: number, next: HunkState) {
-  if (!state.pending[toolCallId]?.edit) return;
-  setState('pending', toolCallId, 'edit', 'hunks', index, 'state', next);
-  finishIfDecided(toolCallId);
+export function setHunkState(dialogId: string, toolCallId: string, index: number, next: HunkState) {
+  const key = keyOf(dialogId, toolCallId);
+  if (!state.pending[key]?.edit) return;
+  setState('pending', key, 'edit', 'hunks', index, 'state', next);
+  finishIfDecided(dialogId, toolCallId);
 }
 
 /** Accepts (or rejects) every change still pending; decided ones stay. */
-export function decideRemaining(toolCallId: string, next: 'accepted' | 'rejected') {
-  const edit = state.pending[toolCallId]?.edit;
-  if (!edit) return;
-  setState('pending', toolCallId, 'edit', 'hunks', (h) => h.state === 'pending', 'state', next);
-  finishIfDecided(toolCallId);
+export function decideRemaining(
+  dialogId: string,
+  toolCallId: string,
+  next: 'accepted' | 'rejected'
+) {
+  const key = keyOf(dialogId, toolCallId);
+  if (!state.pending[key]?.edit) return;
+  setState('pending', key, 'edit', 'hunks', (h) => h.state === 'pending', 'state', next);
+  finishIfDecided(dialogId, toolCallId);
 }
 
 /*
@@ -214,10 +227,11 @@ export function decideRemaining(toolCallId: string, next: 'accepted' | 'rejected
  */
 
 /** Opens the file of an edit review and scrolls to its next pending change. */
-export function revealEdit(toolCallId: string) {
-  const edit = state.pending[toolCallId]?.edit;
+export function revealEdit(dialogId: string, toolCallId: string) {
+  const key = keyOf(dialogId, toolCallId);
+  const edit = state.pending[key]?.edit;
   if (!edit) return;
-  setState('pending', toolCallId, 'edit', 'revealNonce', (n) => n + 1);
+  setState('pending', key, 'edit', 'revealNonce', (n) => n + 1);
   for (const listener of revealListeners) listener(edit.absPath);
 }
 

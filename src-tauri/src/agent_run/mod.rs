@@ -152,12 +152,17 @@ struct Waiting<T, R> {
     reply: oneshot::Sender<T>,
 }
 
+/// (dialog id, tool call id)
+type WaitKey = (String, String);
+
 #[derive(Default)]
 struct Inner {
     config: AgentConfig,
     runs: HashMap<String, RunControl>,
-    approvals: HashMap<String, Waiting<ApprovalDecision, ApprovalRequest>>,
-    questions: HashMap<String, Waiting<QuestionsOutcome, QuestionsRequest>>,
+    /// Keyed by chat and tool call: providers number calls per reply
+    /// (Gemini: "function-call-1"), so two chats can wait on the same id.
+    approvals: HashMap<WaitKey, Waiting<ApprovalDecision, ApprovalRequest>>,
+    questions: HashMap<WaitKey, Waiting<QuestionsOutcome, QuestionsRequest>>,
 }
 
 /// Runs in progress (one per chat at most), what they wait on, and the settings.
@@ -226,20 +231,20 @@ impl AgentState {
         let mut inner = self.lock();
         let Some(run) = inner.runs.get(dialog_id) else { return false };
         run.stop.set();
-        let approvals: Vec<String> =
-            inner.approvals.iter().filter(|(_, w)| w.request.dialog_id == dialog_id).map(|(id, _)| id.clone()).collect();
-        for id in approvals {
-            if let Some(w) = inner.approvals.remove(&id) {
+        let approvals: Vec<WaitKey> = inner.approvals.keys().filter(|(d, _)| d == dialog_id).cloned().collect();
+        for key in approvals {
+            if let Some(w) = inner.approvals.remove(&key) {
                 let _ = w.reply.send(ApprovalDecision::Deny);
-                emit(app, AgentEvent::ApprovalSettled { tool_call_id: id });
+                let (dialog_id, tool_call_id) = key;
+                emit(app, AgentEvent::ApprovalSettled { dialog_id, tool_call_id });
             }
         }
-        let questions: Vec<String> =
-            inner.questions.iter().filter(|(_, w)| w.request.dialog_id == dialog_id).map(|(id, _)| id.clone()).collect();
-        for id in questions {
-            if let Some(w) = inner.questions.remove(&id) {
+        let questions: Vec<WaitKey> = inner.questions.keys().filter(|(d, _)| d == dialog_id).cloned().collect();
+        for key in questions {
+            if let Some(w) = inner.questions.remove(&key) {
                 let _ = w.reply.send(QuestionsOutcome::Stopped { stopped: true });
-                emit(app, AgentEvent::QuestionsSettled { tool_call_id: id });
+                let (dialog_id, tool_call_id) = key;
+                emit(app, AgentEvent::QuestionsSettled { dialog_id, tool_call_id });
             }
         }
         true
@@ -253,20 +258,22 @@ impl AgentState {
         stop: &StopSignal,
     ) -> ApprovalDecision {
         let (tx, rx) = oneshot::channel();
-        let id = request.tool_call_id.clone();
-        self.lock().approvals.insert(id.clone(), Waiting { request: request.clone(), reply: tx });
+        let key = (request.dialog_id.clone(), request.tool_call_id.clone());
+        self.lock().approvals.insert(key.clone(), Waiting { request: request.clone(), reply: tx });
         emit(app, AgentEvent::ApprovalRequested { request });
         // Stopped just before it was registered: nobody would answer.
         if stop.is_set() {
-            self.resolve_approval(app, &id, ApprovalDecision::Deny);
+            self.resolve_approval(app, &key.0, &key.1, ApprovalDecision::Deny);
         }
         rx.await.unwrap_or(ApprovalDecision::Deny)
     }
 
-    fn resolve_approval<R: Runtime>(&self, app: &AppHandle<R>, tool_call_id: &str, decision: ApprovalDecision) -> bool {
-        let Some(w) = self.lock().approvals.remove(tool_call_id) else { return false };
+    fn resolve_approval<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str, tool_call_id: &str, decision: ApprovalDecision) -> bool {
+        let key = (dialog_id.to_string(), tool_call_id.to_string());
+        let Some(w) = self.lock().approvals.remove(&key) else { return false };
         let _ = w.reply.send(decision);
-        emit(app, AgentEvent::ApprovalSettled { tool_call_id: tool_call_id.to_string() });
+        let (dialog_id, tool_call_id) = key;
+        emit(app, AgentEvent::ApprovalSettled { dialog_id, tool_call_id });
         true
     }
 
@@ -278,19 +285,21 @@ impl AgentState {
         stop: &StopSignal,
     ) -> QuestionsOutcome {
         let (tx, rx) = oneshot::channel();
-        let id = request.tool_call_id.clone();
-        self.lock().questions.insert(id.clone(), Waiting { request: request.clone(), reply: tx });
+        let key = (request.dialog_id.clone(), request.tool_call_id.clone());
+        self.lock().questions.insert(key.clone(), Waiting { request: request.clone(), reply: tx });
         emit(app, AgentEvent::QuestionsAsked { request });
         if stop.is_set() {
-            self.answer_questions(app, &id, QuestionsOutcome::Stopped { stopped: true });
+            self.answer_questions(app, &key.0, &key.1, QuestionsOutcome::Stopped { stopped: true });
         }
         rx.await.unwrap_or(QuestionsOutcome::Stopped { stopped: true })
     }
 
-    fn answer_questions<R: Runtime>(&self, app: &AppHandle<R>, tool_call_id: &str, outcome: QuestionsOutcome) -> bool {
-        let Some(w) = self.lock().questions.remove(tool_call_id) else { return false };
+    fn answer_questions<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str, tool_call_id: &str, outcome: QuestionsOutcome) -> bool {
+        let key = (dialog_id.to_string(), tool_call_id.to_string());
+        let Some(w) = self.lock().questions.remove(&key) else { return false };
         let _ = w.reply.send(outcome);
-        emit(app, AgentEvent::QuestionsSettled { tool_call_id: tool_call_id.to_string() });
+        let (dialog_id, tool_call_id) = key;
+        emit(app, AgentEvent::QuestionsSettled { dialog_id, tool_call_id });
         true
     }
 }
@@ -373,6 +382,20 @@ pub async fn agent_start<R: Runtime>(
         state.set_config(config);
     }
     let dialog_id = request.dialog_id.clone();
+    // A chat works in its own project only: its history, plan and changes
+    // are about that one.
+    if let Some(root) = request.root.clone().filter(|r| !r.trim().is_empty()) {
+        let id = dialog_id.clone();
+        let ok = db
+            .read(move |c| {
+                let project = store::dialog_project(c, &id)?;
+                crate::chat_db::projects::chat_may_use(c, project.as_deref(), std::path::Path::new(&root))
+            })
+            .await?;
+        if !ok {
+            return Err("This chat belongs to another project. Open that project to continue it.".into());
+        }
+    }
     let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone()) else {
         return Err("The agent is already working in this chat.".into());
     };
@@ -479,20 +502,22 @@ pub fn agent_stop<R: Runtime>(app: AppHandle<R>, state: State<'_, AgentState>, d
 pub fn agent_resolve_approval<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AgentState>,
+    dialog_id: String,
     tool_call_id: String,
     decision: ApprovalDecision,
 ) -> bool {
-    state.resolve_approval(&app, &tool_call_id, decision)
+    state.resolve_approval(&app, &dialog_id, &tool_call_id, decision)
 }
 
 #[tauri::command]
 pub fn agent_answer_questions<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AgentState>,
+    dialog_id: String,
     tool_call_id: String,
     outcome: QuestionsOutcome,
 ) -> bool {
-    state.answer_questions(&app, &tool_call_id, outcome)
+    state.answer_questions(&app, &dialog_id, &tool_call_id, outcome)
 }
 
 #[derive(Serialize)]

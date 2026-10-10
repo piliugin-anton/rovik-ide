@@ -242,6 +242,22 @@ fn decide(conn: &Connection, key: &str, id: &str, decision: &str) -> DbResult<()
     Ok(())
 }
 
+/// Whether a chat of `project_id` may work in the folder `root`: it's one of
+/// that project's folders. A chat with no project (no folder was open when
+/// it began) isn't tied to one.
+pub fn chat_may_use(conn: &Connection, project_id: Option<&str>, root: &Path) -> DbResult<bool> {
+    let Some(project_id) = project_id else { return Ok(true) };
+    let key = path_key(root);
+    conn.query_row(
+        "SELECT 1 FROM project_paths WHERE project_id = ?1 AND path = ?2",
+        params![project_id, key],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
+    .map_err(err)
+}
+
 pub fn summary(conn: &Connection, id: &str) -> DbResult<Option<ProjectSummary>> {
     let row: Option<(String, String, i64, i64)> = conn
         .query_row(

@@ -81,9 +81,9 @@ type AgentEvent =
   | { type: 'messagesAdded'; dialogId: string; messages: (MessageRow & { pending?: boolean })[] }
   | { type: 'messagePatched'; dialogId: string; messageId: string; patch: MessagePatch }
   | { type: 'approvalRequested'; request: ApprovalRequest }
-  | { type: 'approvalSettled'; toolCallId: string }
+  | { type: 'approvalSettled'; dialogId: string; toolCallId: string }
   | { type: 'questionsAsked'; request: PendingQuestions }
-  | { type: 'questionsSettled'; toolCallId: string }
+  | { type: 'questionsSettled'; dialogId: string; toolCallId: string }
   | { type: 'toolNote'; dialogId: string; toolCallId: string; note: string | null }
   | { type: 'checklist'; dialogId: string; items: import('./todo').TodoItem[] }
   | {
@@ -105,11 +105,16 @@ type AgentEvent =
     };
 
 const [state, setState] = createStore<{
-  /** Live notes on tool calls, e.g. "Reviewing with …", by tool call id. */
-  toolNotes: Record<string, string>;
+  /**
+   * Live notes on tool calls, e.g. "Reviewing with …", by chat, then tool
+   * call id (two chats can have calls with the same id).
+   */
+  toolNotes: Record<string, Record<string, string>>;
 }>({ toolNotes: {} });
 
-export const toolNotes = () => state.toolNotes;
+/** The chat's live tool call notes. */
+export const toolNotes = (dialogId: string | null): Record<string, string> | undefined =>
+  dialogId ? state.toolNotes[dialogId] : undefined;
 
 /*
  * ---------------------------------------------------------------------------
@@ -256,14 +261,14 @@ function handle(event: AgentEvent) {
       registerApproval(event.request);
       break;
     case 'approvalSettled':
-      clearApproval(event.toolCallId);
+      clearApproval(event.dialogId, event.toolCallId);
       break;
     case 'questionsAsked': {
       registerQuestions(event.request);
       // In the chat; and in the corner, in case the user is working elsewhere.
-      const { questions, toolCallId } = event.request;
+      const { questions, toolCallId, dialogId } = event.request;
       notify({
-        id: `question-${toolCallId}`,
+        id: `question-${dialogId}-${toolCallId}`,
         title:
           questions.length === 1
             ? 'The agent has a question'
@@ -282,15 +287,17 @@ function handle(event: AgentEvent) {
       break;
     }
     case 'questionsSettled':
-      clearQuestions(event.toolCallId);
-      dismiss(`question-${event.toolCallId}`);
+      clearQuestions(event.dialogId, event.toolCallId);
+      dismiss(`question-${event.dialogId}-${event.toolCallId}`);
       break;
     case 'toolNote':
       setState(
         'toolNotes',
         produce((notes) => {
-          if (event.note) notes[event.toolCallId] = event.note;
-          else delete notes[event.toolCallId];
+          const chat = (notes[event.dialogId] ??= {});
+          if (event.note) chat[event.toolCallId] = event.note;
+          else delete chat[event.toolCallId];
+          if (Object.keys(chat).length === 0) delete notes[event.dialogId];
         })
       );
       break;

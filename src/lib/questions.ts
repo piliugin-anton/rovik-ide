@@ -47,28 +47,35 @@ export interface PendingQuestions {
 const MAX_QUESTIONS = 3;
 const MAX_OPTIONS = 6;
 
+// Keyed by chat and call: two chats can wait on the same call id.
 const [state, setState] = createStore<{ pending: Record<string, PendingQuestions> }>({
   pending: {},
 });
 
+const keyOf = (dialogId: string, toolCallId: string) => `${dialogId}\n${toolCallId}`;
+
 /** A run waits for the user's answer to a call's questions. */
 export function registerQuestions(request: PendingQuestions) {
-  setState('pending', request.toolCallId, request);
+  setState('pending', keyOf(request.dialogId, request.toolCallId), request);
 }
 
 /** Answered, or no longer waited for (the run stopped). */
-export function clearQuestions(toolCallId: string) {
-  if (!state.pending[toolCallId]) return;
+export function clearQuestions(dialogId: string, toolCallId: string) {
+  const key = keyOf(dialogId, toolCallId);
+  if (!state.pending[key]) return;
   setState(
     'pending',
     produce((pending) => {
-      delete pending[toolCallId];
+      delete pending[key];
     })
   );
 }
 
-export function pendingQuestions(toolCallId: string): PendingQuestions | undefined {
-  return state.pending[toolCallId];
+export function pendingQuestions(
+  dialogId: string,
+  toolCallId: string
+): PendingQuestions | undefined {
+  return state.pending[keyOf(dialogId, toolCallId)];
 }
 
 /** The questions waiting in a chat, if any (the composer answers them). */
@@ -76,9 +83,9 @@ export function pendingQuestionsIn(dialogId: string): PendingQuestions | undefin
   return Object.values(state.pending).find((p) => p.dialogId === dialogId);
 }
 
-export function answerQuestions(toolCallId: string, outcome: QuestionsOutcome) {
-  clearQuestions(toolCallId);
-  void invoke('agent_answer_questions', { toolCallId, outcome }).catch((err) =>
+export function answerQuestions(dialogId: string, toolCallId: string, outcome: QuestionsOutcome) {
+  clearQuestions(dialogId, toolCallId);
+  void invoke('agent_answer_questions', { dialogId, toolCallId, outcome }).catch((err) =>
     console.error('Answer not delivered:', err)
   );
 }

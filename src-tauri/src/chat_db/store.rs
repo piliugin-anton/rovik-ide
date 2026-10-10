@@ -240,6 +240,14 @@ pub fn get_dialog(conn: &Connection, id: &str) -> DbResult<Option<DialogSummary>
     .map_err(err)
 }
 
+/// The chat's project; None for a chat with no project, or no such chat.
+pub fn dialog_project(conn: &Connection, id: &str) -> DbResult<Option<String>> {
+    conn.query_row("SELECT project_id FROM dialogs WHERE id = ?1", params![id], |r| r.get(0))
+        .optional()
+        .map(Option::flatten)
+        .map_err(err)
+}
+
 pub fn create_dialog(conn: &mut Connection, d: &NewDialog) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     tx.execute(

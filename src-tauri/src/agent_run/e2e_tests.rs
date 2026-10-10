@@ -357,7 +357,7 @@ async fn a_denied_edit_is_reported_to_the_model() {
     assert!(request["edit"]["absPath"].as_str().unwrap().ends_with("a.txt"));
 
     let app = h.app.handle().clone();
-    assert!(agent_resolve_approval(app.clone(), app.state(), "e1".into(), ApprovalDecision::Deny));
+    assert!(agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "e1".into(), ApprovalDecision::Deny));
     assert_eq!(h.run_end().await, "done");
 
     assert_eq!(h.file("a.txt").as_deref(), Some("one\ntwo\n"));
@@ -391,6 +391,7 @@ async fn a_partly_accepted_edit_writes_only_those_changes() {
     agent_resolve_approval(
         app.clone(),
         app.state(),
+        h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Partial { content: "ONE\ntwo\nthree\n".into(), total: 2, rejected },
     );
@@ -466,7 +467,7 @@ async fn an_approved_edit_merges_with_a_change_made_while_it_waited() {
     // Another chat changes another line while the user reviews.
     std::fs::write(h.project.join("a.txt"), "one\ntwo\nTHREE\n").unwrap();
     let app = h.app.handle().clone();
-    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "w1".into(), ApprovalDecision::Allow);
     assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nTHREE\n"));
     let messages = h.messages().await;
@@ -488,6 +489,7 @@ async fn a_partly_accepted_edit_keeps_a_change_made_while_it_waited() {
     agent_resolve_approval(
         app.clone(),
         app.state(),
+        h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Partial { content: "ONE\ntwo\nthree\n".into(), total: 1, rejected: Vec::new() },
     );
@@ -507,7 +509,7 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
     std::fs::write(h.project.join("a.txt"), "uno\ntwo\n").unwrap();
     let app = h.app.handle().clone();
-    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "w1".into(), ApprovalDecision::Allow);
     // The same call is asked again, against the file as it is now.
     for _ in 0..200 {
         if h.events_of("approvalRequested").len() >= 2 {
@@ -518,7 +520,7 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
     let again = h.events_of("approvalRequested");
     assert_eq!(again.len(), 2, "{again:#?}");
     assert_eq!(again[1]["request"]["edit"]["current"], "uno\ntwo\n");
-    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Deny);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "w1".into(), ApprovalDecision::Deny);
     assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("a.txt").as_deref(), Some("uno\ntwo\n"));
 }
@@ -854,7 +856,7 @@ async fn plan_mode_asks_and_saves_the_plan() {
     let app = h.app.handle().clone();
     let outcome: plan::QuestionsOutcome =
         serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] })).unwrap();
-    assert!(agent_answer_questions(app.clone(), app.state(), "q1".into(), outcome));
+    assert!(agent_answer_questions(app.clone(), app.state(), h.dialog_id.clone(), "q1".into(), outcome));
     assert_eq!(h.run_end().await, "done");
 
     let saved = h.project.join(".rovik").join("plans").join("2026-10-06-add-users.md");
@@ -890,7 +892,7 @@ async fn a_resumed_chat_asks_again_then_continues() {
     let asked = h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
     assert!(asked["request"]["note"].as_str().unwrap().starts_with("Interrupted"));
     let app = h.app.handle().clone();
-    agent_resolve_approval(app.clone(), app.state(), "l1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "l1".into(), ApprovalDecision::Allow);
     assert_eq!(h.run_end().await, "done");
     assert_eq!(roles(&h.messages().await), ["user", "assistant", "tool", "assistant"]);
 
@@ -947,7 +949,7 @@ async fn the_ai_reviewer_decides_and_risky_commands_still_ask() {
     assert_eq!(asked["request"]["toolCallId"], "r2");
     assert!(asked["request"]["note"].as_str().unwrap().starts_with("Commands that push"));
     let app = h.app.handle().clone();
-    agent_resolve_approval(app.clone(), app.state(), "r2".into(), ApprovalDecision::Deny);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "r2".into(), ApprovalDecision::Deny);
     assert_eq!(h.run_end().await, "done");
 
     let messages = h.messages().await;
@@ -1091,7 +1093,7 @@ async fn an_effort_picked_mid_run_applies_to_the_next_request() {
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
     let app = h.app.handle().clone();
     h.pick_effort("low");
-    agent_resolve_approval(app.clone(), app.state(), "r1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "r1".into(), ApprovalDecision::Allow);
     assert_eq!(h.run_end().await, "done");
     let requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
@@ -1167,7 +1169,7 @@ async fn every_call_of_a_turn_gets_a_result_when_stopped_midway() {
     h.start(h.request(&url, Harness::send("Look"), ask_approval("tools"))).await;
     h.wait_for("approval c1", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "c1").await;
     let app = h.app.handle().clone();
-    agent_resolve_approval(app.clone(), app.state(), "c1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "c1".into(), ApprovalDecision::Allow);
     h.wait_for("approval c2", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "c2").await;
     agent_stop(app.clone(), app.state(), h.dialog_id.clone());
     assert_eq!(h.run_end().await, "stopped");
@@ -1293,10 +1295,10 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
     for id in ["q1", "q2", "q3"] {
         h.wait_for(id, |e| e["type"] == "questionsAsked" && e["request"]["toolCallId"] == id).await;
         let outcome: plan::QuestionsOutcome = serde_json::from_value(json!({ "reply": "whatever" })).unwrap();
-        assert!(agent_answer_questions(app.clone(), app.state(), id.into(), outcome));
+        assert!(agent_answer_questions(app.clone(), app.state(), h.dialog_id.clone(), id.into(), outcome));
         // Answering twice does nothing.
         let again: plan::QuestionsOutcome = serde_json::from_value(json!({ "reply": "again" })).unwrap();
-        assert!(!agent_answer_questions(app.clone(), app.state(), id.into(), again));
+        assert!(!agent_answer_questions(app.clone(), app.state(), h.dialog_id.clone(), id.into(), again));
     }
     assert_eq!(h.run_end().await, "done");
 
@@ -1957,10 +1959,10 @@ async fn a_new_file_is_approved_whole_and_an_allowed_edit_is_recorded_as_reviewe
     assert!(asked["request"].get("edit").is_none(), "nothing to diff against");
     assert!(asked["request"]["note"].as_str().unwrap().contains("New file"));
     let app = h.app.handle().clone();
-    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "w1".into(), ApprovalDecision::Allow);
     // Unknown and repeated answers do nothing.
-    assert!(!agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Deny));
-    assert!(!agent_resolve_approval(app.clone(), app.state(), "nope".into(), ApprovalDecision::Allow));
+    assert!(!agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "w1".into(), ApprovalDecision::Deny));
+    assert!(!agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "nope".into(), ApprovalDecision::Allow));
     assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("dir/new.txt").as_deref(), Some("hello"));
     let written = h.events_of("fileWritten");
@@ -2004,11 +2006,11 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
     // .env: never left to the reviewer.
     let asked = h.wait_for("approval e2", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e2").await;
     assert!(asked["request"]["note"].as_str().unwrap().starts_with("Edits to credential or secret files"));
-    agent_resolve_approval(app.clone(), app.state(), "e2".into(), ApprovalDecision::Deny);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "e2".into(), ApprovalDecision::Deny);
     // The reviewer failed: the user decides.
     let asked = h.wait_for("approval e3", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e3").await;
     assert!(asked["request"]["note"].as_str().unwrap().contains("couldn’t answer"), "{asked}");
-    agent_resolve_approval(app.clone(), app.state(), "e3".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "e3".into(), ApprovalDecision::Allow);
     assert_eq!(h.run_end().await, "done");
 
     let messages = h.messages().await;
@@ -2032,7 +2034,7 @@ async fn no_reviewer_model_means_the_user_approves() {
     let asked = h.wait_for("approval", |e| e["type"] == "approvalRequested").await;
     assert!(asked["request"]["note"].as_str().unwrap().starts_with("No AI reviewer model is set"));
     let app = h.app.handle().clone();
-    agent_resolve_approval(app.clone(), app.state(), "r1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "r1".into(), ApprovalDecision::Allow);
     assert_eq!(h.run_end().await, "done");
 }
 
@@ -2152,7 +2154,7 @@ async fn status_lists_what_a_run_waits_on() {
     assert_eq!(status.runs[0].dialog_id, h.dialog_id);
     assert_eq!(status.approvals[0].tool_call_id, "r1");
     assert!(status.questions.is_empty());
-    agent_resolve_approval(app.clone(), app.state(), "r1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "r1".into(), ApprovalDecision::Allow);
     h.run_end().await;
     let status = agent_status(app.state());
     assert!(status.runs.is_empty() && status.approvals.is_empty());
@@ -2366,7 +2368,7 @@ async fn reads_that_need_approval_are_asked_one_at_a_time() {
         // Only this one is waiting: the next isn't asked before it's decided.
         let asked: Vec<Value> = h.events_of("approvalRequested");
         assert_eq!(asked.last().unwrap()["request"]["toolCallId"], id);
-        agent_resolve_approval(app.clone(), app.state(), id.into(), ApprovalDecision::Allow);
+        agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), id.into(), ApprovalDecision::Allow);
     }
     assert_eq!(h.run_end().await, "done");
     assert!(parallel::batches_of(&h.dialog_id).is_empty());
@@ -2535,7 +2537,7 @@ async fn reads_after_an_approved_edit_run_together_and_see_the_edit() {
     h.start(h.request(&url, Harness::send("Edit"), ask_approval("edits"))).await;
     h.wait_for("approval e1", |e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e1").await;
     let app = h.app.handle().clone();
-    agent_resolve_approval(app.clone(), app.state(), "e1".into(), ApprovalDecision::Allow);
+    agent_resolve_approval(app.clone(), app.state(), h.dialog_id.clone(), "e1".into(), ApprovalDecision::Allow);
     assert_eq!(h.run_end().await, "done");
     assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [["r1", "r2"]]);
     let messages = h.messages().await;
@@ -2712,4 +2714,35 @@ async fn the_code_tools_run_together_and_word_their_errors_once() {
     assert!(unknown.starts_with("Error: no declaration named"), "{unknown}");
     assert!(!unknown.contains("Error: Error:"), "{unknown}");
     assert_eq!(result_of(&messages, "g6").content, "Error: \"path\" is required.");
+}
+
+#[tokio::test]
+async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
+    // Gemini numbers calls per reply: two chats both get "function-call-1".
+    let h = harness(&[]).await;
+    let app = h.app.handle().clone();
+    let state = app.state::<AgentState>().inner().clone();
+    let request = |dialog: &str| ApprovalRequest {
+        tool_call_id: "function-call-1".into(),
+        dialog_id: dialog.into(),
+        tool_name: "bash".into(),
+        summary: "Run `ls`".into(),
+        command: Some("ls".into()),
+        note: None,
+        edit: None,
+    };
+    let wait = |dialog: &str| {
+        let (state, app, request) = (state.clone(), app.clone(), request(dialog));
+        tokio::spawn(async move { state.wait_for_approval(&app, request, &StopSignal::new()).await })
+    };
+    let a = wait("chat-a");
+    let b = wait("chat-b");
+    while state.lock().approvals.len() < 2 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(agent_resolve_approval(app.clone(), app.state(), "chat-a".into(), "function-call-1".into(), ApprovalDecision::Allow));
+    assert!(matches!(a.await.unwrap(), ApprovalDecision::Allow));
+    assert!(!b.is_finished(), "the other chat still waits");
+    assert!(agent_resolve_approval(app.clone(), app.state(), "chat-b".into(), "function-call-1".into(), ApprovalDecision::Deny));
+    assert!(matches!(b.await.unwrap(), ApprovalDecision::Deny));
 }
