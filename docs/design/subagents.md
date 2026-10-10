@@ -16,6 +16,9 @@ should start with read-only scouts and a fresh-context reviewer, then add
 sequential step workers. Parallel writers should come last, and only for
 plan steps whose file sets don't overlap.
 
+The development plan, task by task, is in
+[`subagents-plan.md`](subagents-plan.md).
+
 ---
 
 ## 1. What the evidence says
