@@ -124,6 +124,20 @@ Rovik already has most of the pieces a subagent system needs:
   to the verification gate.
 - **Difference from `review.rs`:** that reviewer decides whether one
   action may run. This one judges the whole change.
+- **Plan reviewer (Plan mode):** the same idea, applied to a plan before
+  the user sees it. Code checks run first: the files a step names must
+  exist, and steps in a parallel group must not share files. Then a
+  read-only reviewer reads the code and looks for the problems a plan
+  causes later:
+  - callers and dependents the plan doesn't update;
+  - names of functions, types or settings that don't exist;
+  - steps in the wrong order;
+  - scope missing from the request, or added beyond it;
+  - registration points (such as `lib.rs` or `commands.ts`) that several
+    steps of one group would all edit.
+
+  At most 2 rounds. Anything still open is listed at the end of the plan
+  for the user.
 
 **C. Failure triage.**
 
@@ -209,7 +223,9 @@ flowchart TD
     P --> S2[Scout 2]
     P --> S3[Scout 3]
     S1 & S2 & S3 --> PL[Lead writes plan<br/>steps + files + parallel groups]
-    PL --> AP{User approves plan}
+    PL --> PR[Plan reviewer<br/>fresh context, reads the code]
+    PR -- findings --> PL
+    PR -- clean or 2 rounds --> AP{User approves plan}
     AP -- edits --> PL
     AP -- yes --> EX[Execute groups in order]
 
@@ -244,7 +260,9 @@ flowchart TD
 3. **Plan.** The lead writes the plan with `submit_plan`. Each step already
    names its files. A new optional "Group" line marks steps that can run
    together, and the plan checker accepts a group only if its steps' file
-   lists don't overlap. The user approves or edits the plan, as today.
+   lists don't overlap. Before the plan is saved, the plan reviewer checks
+   it against the code, for at most 2 rounds. The user approves or edits
+   the plan, as today.
 4. **Execute.** Groups run in order.
    - A one-step group runs on the lead, or on a fresh step worker when the
      plan is long.
