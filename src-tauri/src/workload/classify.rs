@@ -217,6 +217,11 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
 /// `npm run build`, `pnpm test`, `yarn dev`, `npm exec tsc`, …
 fn package_script(prog: &str, words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
     let args: Vec<&str> = words.iter().skip(1).map(String::as_str).filter(|w| !w.starts_with('-')).collect();
+    // `bun test` is bun's own test runner, whatever package.json's "test"
+    // script says (`bun run test` runs the script).
+    if prog == "bun" && args.first() == Some(&"test") {
+        return Class::Heavy;
+    }
     let name = match args.as_slice() {
         ["run" | "run-script", name, ..] => *name,
         ["exec" | "dlx" | "x", ..] => return tool_after(words, 2, cwd, depth),

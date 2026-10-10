@@ -3012,7 +3012,7 @@ export default function ChatPanel(props: ChatProps) {
           <IsolationBar
             dialogId={id}
             revision={isolationRevision()}
-            running={sending()}
+            running={isRunning(id)}
             canAskChat={!!activeProfile() && !isRunning(id)}
             onAskChat={askToResolve}
             chatTitle={(other) => store.state.list.items.find((d) => d.id === other)?.title}

@@ -49,6 +49,27 @@ const SHORT_REQUEST_CHARS: usize = 80;
 pub(super) const RESUME_NOTE: &str =
     "Interrupted: the app was closed before this ran. Allow it to continue the task.";
 
+/// Marks a chat as running for its run's length (conflicts found for it go
+/// to it), and releases that and its hold on writing commands when the run
+/// ends, however it ends.
+struct RunningGuard(String);
+
+impl RunningGuard {
+    fn new(dialog_id: &str, takes_conflicts: bool) -> Self {
+        if takes_conflicts {
+            crate::overlay::chats::set_running(dialog_id, true);
+        }
+        RunningGuard(dialog_id.to_string())
+    }
+}
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        crate::overlay::chats::set_running(&self.0, false);
+        crate::overlay::chats::release_direct_writes(&self.0);
+    }
+}
+
 pub(super) const IDE_NOTE: &str = "[Automatic check by the IDE, not written by the user]\n";
 /// End-of-run checklist reminders before the run ends as unfinished-checklist.
 const MAX_CHECKLIST_NUDGES: u32 = 2;
@@ -620,8 +641,11 @@ impl<R: Runtime> Run<R> {
 
     /// Runs to the end and returns how it ended (for the log and the UI).
     pub(super) async fn go(&mut self, entry: Entry) -> String {
-        // While it runs, conflicts found for this chat go to it.
-        crate::overlay::chats::set_running(&self.dialog_id, true);
+        // While it runs, conflicts found for this chat go to it (not in plan
+        // mode: it can't edit files to resolve them). The guard takes that
+        // back, and any hold on writing commands, however the run ends,
+        // a panic included.
+        let _running = RunningGuard::new(&self.dialog_id, !self.plan_mode);
         let outcome = self.drive(entry).await;
         crate::overlay::chats::set_running(&self.dialog_id, false);
         let outcome = match outcome {
@@ -641,7 +665,6 @@ impl<R: Runtime> Run<R> {
         };
         // An isolated chat's changes land now, or say why they don't.
         self.land_at_end(&outcome).await;
-        crate::overlay::chats::release_direct_writes(&self.dialog_id);
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
@@ -670,11 +693,17 @@ impl<R: Runtime> Run<R> {
                 let outcome = self.verify_at_end(true, Some(record_id)).await?;
                 if outcome != "continue" {
                     // As at any other end: the project's newer changes to
-                    // the same files are merged in and checked first.
-                    match self.take_project_changes(&outcome).await? {
-                        Some(next) if next == "continue" => {}
-                        Some(next) => return Ok(next),
-                        None => return Ok(outcome),
+                    // the same files are merged in and checked first, and
+                    // conflict markers handed over meanwhile are mentioned.
+                    let end = match self.take_project_changes(&outcome).await? {
+                        Some(next) if next == "continue" => None,
+                        Some(next) => Some(next),
+                        None => Some(outcome),
+                    };
+                    if let Some(end) = end {
+                        if !self.remind_of_markers().await? {
+                            return Ok(end);
+                        }
                     }
                 }
             }
@@ -797,13 +826,16 @@ impl<R: Runtime> Run<R> {
                 }
                 // Isolated: the project's newer changes to the same files
                 // are merged in and checked before the run ends.
-                if let Some(next) = self.take_project_changes(&outcome).await? {
-                    if next == "continue" {
-                        continue;
-                    }
-                    return Ok(next);
+                let end = match self.take_project_changes(&outcome).await? {
+                    Some(next) if next == "continue" => continue,
+                    Some(next) => next,
+                    None => outcome,
+                };
+                // Markers handed to it while the checks ran: told now.
+                if self.remind_of_markers().await? {
+                    continue;
                 }
-                return Ok(outcome);
+                return Ok(end);
             }
 
             // Isolated: not while the project is mid-switch.

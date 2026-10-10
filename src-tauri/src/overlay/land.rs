@@ -79,6 +79,9 @@ struct Action {
     expected: Snapshot,
     /// The project changed the file too: `new` is both changes merged.
     merged: bool,
+    /// The project's file the merge used: `expected`, or for a moved file
+    /// the project's file where it came from.
+    source: Snapshot,
 }
 
 #[derive(Clone, Debug)]
@@ -154,17 +157,17 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                     conflicts.push(Conflict { path, reason });
                     continue;
                 }
-                actions.push(Action { path, new: NewContent::Absent, expected: now, merged: false })
+                actions.push(Action { path, new: NewContent::Absent, expected: now, merged: false, source: Snapshot::Absent })
             }
             OverlayChange::Write { kind: Kind::Dir, .. } => {
                 if now != Snapshot::Dir {
-                    actions.push(Action { path, new: NewContent::Dir, expected: now, merged: false });
+                    actions.push(Action { path, new: NewContent::Dir, expected: now, merged: false, source: Snapshot::Absent });
                 }
             }
             OverlayChange::Write { kind: Kind::Symlink, target: link, .. } => {
                 let link = link.clone().unwrap_or_default();
                 if now != Snapshot::Symlink(link.clone()) {
-                    actions.push(Action { path, new: NewContent::Symlink(link), expected: now, merged: false });
+                    actions.push(Action { path, new: NewContent::Symlink(link), expected: now, merged: false, source: Snapshot::Absent });
                 }
             }
             OverlayChange::Write { kind: Kind::File, origin, upper, base_copy, perm, perm_changed, .. } => {
@@ -220,7 +223,7 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                         continue;
                     }
                 };
-                actions.push(Action { path, new: NewContent::File { bytes, perm }, expected: now, merged: was_merged });
+                actions.push(Action { path, new: NewContent::File { bytes, perm }, expected: now, merged: was_merged, source });
             }
         }
     }
@@ -269,7 +272,7 @@ impl Plan {
         self.actions
             .iter()
             .filter(|a| a.merged)
-            .filter_map(|a| match (&a.new, &a.expected) {
+            .filter_map(|a| match (&a.new, &a.source) {
                 (NewContent::File { bytes, .. }, Snapshot::File(project)) => Some((a.path.clone(), bytes.clone(), project.clone())),
                 _ => None,
             })
@@ -632,18 +635,38 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
             }
             // Only paths still as the landing found them, or already as it
             // left them: anything else changed after the crash and stays.
-            let mut skipped = Vec::new();
+            // A path can have two entries (a file replaced by a folder: its
+            // delete, then the folder), each starting where the one before
+            // left it.
+            let mut order: Vec<&str> = Vec::new();
+            let mut by_path: HashMap<&str, Vec<&Entry>> = HashMap::new();
             for e in &journal.entries {
-                if is_content(&project, &e.path, &e.new) {
+                if !by_path.contains_key(e.path.as_str()) {
+                    order.push(&e.path);
+                }
+                by_path.entry(&e.path).or_default().push(e);
+            }
+            let mut skipped = Vec::new();
+            for path in order {
+                let group = &by_path[path];
+                if group.last().is_some_and(|e| is_content(&project, path, &e.new)) {
                     continue;
                 }
-                if !is_content(&project, &e.path, &e.old) {
-                    skipped.push(e.path.clone());
-                    continue;
+                let mut ok = true;
+                for (k, e) in group.iter().enumerate() {
+                    if is_content(&project, path, &e.new) {
+                        continue;
+                    }
+                    let before = if k == 0 { &e.old } else { &group[k - 1].new };
+                    if !is_content(&project, path, before) || write_content(&project, path, &e.new, &dialog_id).is_err() {
+                        ok = false;
+                        break;
+                    }
                 }
-                match write_content(&project, &e.path, &e.new, &dialog_id) {
-                    Ok(()) => done.push(e.path.clone()),
-                    Err(_) => skipped.push(e.path.clone()),
+                if ok {
+                    done.push(path.to_string());
+                } else {
+                    skipped.push(path.to_string());
                 }
             }
             journal.state = if skipped.is_empty() { "done".into() } else { "partial".into() };
@@ -704,13 +727,17 @@ pub fn undo(data_dir: &Path, dialog_id: &str, project: &Path, id: &str) -> Resul
             kept.push(Conflict { path: e.path.clone(), reason: "changed since it landed".into() });
             continue;
         }
-        // A folder the landing created goes only if nothing else is in it
-        // now (files added since, or files kept above).
-        if matches!((&e.new, &e.old), (Content::Dir, Content::Absent)) {
+        // A folder the landing made (where there was nothing, or a file or
+        // link) goes only if nothing else is in it now: files added since,
+        // or files kept above, stay with it.
+        if matches!(e.new, Content::Dir) && !matches!(e.old, Content::Dir) {
             if fs::remove_dir(&path).is_err() {
                 kept.push(Conflict { path: e.path.clone(), reason: "files were added to this folder since it landed".into() });
+                continue;
             }
-            continue;
+            if matches!(e.old, Content::Absent) {
+                continue;
+            }
         }
         write_content(project, &e.path, &e.old, dialog_id)?;
     }

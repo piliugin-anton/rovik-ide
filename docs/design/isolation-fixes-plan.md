@@ -564,3 +564,41 @@ and 4 for a while.
   - Measured through a chat's mount (debug build, this repository):
     `grep -r` 71 ms (was 94; 9 directly), `find` 17 ms (was 30; 3
     directly), `git status` 174 ms (unchanged; 6 directly).
+- **Second review fixes (done; not compiled or tested, at the user's
+  request).**
+  - Conflict state: one lock per chat around marking, resolving, taking
+    merged changes and undoing; kept versions get files of their own
+    (never shared between rounds); a file already marked isn't marked
+    again, and each file is recorded as soon as it's marked.
+  - Undo the merge leaves files the chat changed since as they are (and
+    says so); markers handed to a chat that couldn't take them are taken
+    out of those files only (`overlay_unmark`). Resolving and handing
+    conflicts over are refused while a run is going.
+  - Overlay: a folder deleted whole remembers the files the chat changed
+    in it; a file moved away and back isn't remembered as deleted; a
+    case-only rename and a rename over a file use the stored names; a
+    link checks the target again after the copy-in; a rebase restores or
+    records deletions; leftovers are swept when a chat's view opens, not
+    on every open of the store.
+  - Landing: undo of a file turned folder keeps what was added in it;
+    recovery replays a path's journal entries in order; join errors and
+    a stopped run keep the changes waiting instead of dropping them;
+    checks the permissions refuse don't count.
+  - Runs: the running flag and direct writes are released however a run
+    ends; markers left at the end are reminded about on every way a run
+    ends; a chat is deleted only once its run has stopped.
+  - Workload: the window counts as full by the spacing samples actually
+    have; much memory with little CPU isn't idle; a pause clears idle and
+    a resume starts a fresh window; nothing is paused after exit starts;
+    the slots page reads the machine without keeping the reading; `bun
+    test` is heavy whatever package.json says.
+  - Chats are compared only when one of them changed since the last
+    comparison.
+  - UI: a round of conflicts keeps its resolver choices until it's over;
+    blocked Land anyway / Discard say why; long path lists are cut short;
+    the bar follows its own chat's run; Compare after a refused save uses
+    the tab's text as it is now.
+  - Not done: telling the kernel to drop its cache for relisted folders
+    from inside a request (the notification waits on the kernel, which
+    waits on the request: a deadlock), and the lock key of a dangling
+    symlink (rare; harmless).

@@ -54,14 +54,22 @@ impl<R: Runtime> Run<R> {
         }
         let dialog_id = self.dialog_id.clone();
         // Reading and merging files: off the async threads.
-        let (changes, marked) = {
+        let read = {
             let (o, id) = (overlay.clone(), dialog_id.clone());
             tauri::async_runtime::spawn_blocking(move || {
                 o.fs.flush();
                 (chats::changes(&id), chats::markers_left(&id))
             })
             .await
-            .unwrap_or_default()
+        };
+        // Couldn't even look: nothing is decided, and the pending state the
+        // chat has stays as it is.
+        let (changes, marked) = match read {
+            Ok(r) => r,
+            Err(e) => {
+                self.notice("error", "This chat's changes didn't land", &format!("Its changes couldn't be read: {e}"));
+                return Some(("failed", 0));
+            }
         };
         if changes.is_empty() {
             chats::set_pending(&dialog_id, None);
@@ -94,7 +102,13 @@ impl<R: Runtime> Run<R> {
 
         let plan = {
             let project = overlay.project.clone();
-            tauri::async_runtime::spawn_blocking(move || land::plan(&project, &changes, false)).await.ok()?
+            match tauri::async_runtime::spawn_blocking(move || land::plan(&project, &changes, false)).await {
+                Ok(plan) => plan,
+                Err(e) => {
+                    self.notice("error", "This chat's changes didn't land", &format!("Planning the landing failed: {e}"));
+                    return Some(("failed", count));
+                }
+            }
         };
         if !plan.conflicts.is_empty() {
             let n = plan.conflicts.len();
@@ -109,7 +123,13 @@ impl<R: Runtime> Run<R> {
             return Some(("waits: conflicts", count));
         }
         let p = self.state.config().permissions;
-        let has_checks = p.verify_changes && self.checks.iter().any(|c| c.enabled && !c.command.trim().is_empty());
+        // Checks that would run: set up, and allowed by the command rules.
+        let has_checks = p.verify_changes
+            && self.checks.iter().any(|c| {
+                c.enabled
+                    && !c.command.trim().is_empty()
+                    && !matches!(super::permissions::check_command(&c.command, &p), super::permissions::Verdict::Refused(_))
+            });
         if plan.merged && has_checks && p.command_approval.required {
             // The merged result's checks are commands too: not without the
             // user's go. Land (in the bar) lands it as it is.
@@ -125,6 +145,12 @@ impl<R: Runtime> Run<R> {
         }
         if plan.merged {
             if let Some(failed) = self.check_merged(&plan, &overlay.view).await {
+                // Stopped while checking (Stop, or the chat deleted): not a
+                // failure of the checks.
+                if self.stopped() {
+                    chats::set_pending(&dialog_id, Some(&Pending { reason: "Not landed: the run was stopped.".into(), conflicts: Vec::new() }));
+                    return Some(("waits: stopped", count));
+                }
                 chats::set_pending(
                     &dialog_id,
                     Some(&Pending {
@@ -158,7 +184,9 @@ impl<R: Runtime> Run<R> {
             }
             Ok(Ok(None)) => Some(("nothing new", count)),
             Ok(Err(e @ LandError::Unchecked(_))) => {
-                let reason = format!("Not landed: {e}. Land again (the checks run on the new result), or Land in the bar to take it as it is.");
+                let reason = format!(
+                    "Not landed: {e}. Land (above) takes it as it is, unchecked; or send the chat a message, and its checks run on the new result when it finishes."
+                );
                 chats::set_pending(&self.dialog_id, Some(&Pending { reason, conflicts: Vec::new() }));
                 self.notice("warning", "This chat's changes didn't land", "The project changed the same files again while the checks ran.");
                 Some(("waits: changed again", count))

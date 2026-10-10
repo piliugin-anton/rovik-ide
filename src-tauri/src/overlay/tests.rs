@@ -671,10 +671,11 @@ mod safety {
         // The saved list still names the first version, whose file is still there.
         let o = overlay(&d);
         assert_eq!(read_all(&o, "a.txt"), "first\n");
-        // Once saved, files nothing names are cleaned up when reopening.
+        // Once saved, files nothing names are cleaned up when the chat's own
+        // overlay opens (chats::open sweeps).
         o.flush();
         drop(o);
-        let _ = overlay(&d);
+        overlay(&d).sweep_orphans();
         let files = fs::read_dir(d.store().join("upper")).unwrap().count();
         assert_eq!(files, 1, "only the file the list names stays");
     }
@@ -704,5 +705,79 @@ mod safety {
         assert_eq!(fs::read(upper).unwrap(), b"merged\n");
         // The old base goes once the list is saved (rebase_file saves).
         assert!(!old_base.exists());
+    }
+}
+
+/// Fixes from the second review.
+mod second_review {
+    use super::*;
+    use crate::overlay::land;
+
+    fn landable(o: &OverlayFs) -> Vec<OverlayChange> {
+        o.changes().into_iter().filter(|c| !c.by_product()).collect()
+    }
+
+    #[test]
+    fn a_delete_conflict_is_settled_by_either_side() {
+        // Keeping the delete.
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        o.unlink(ROOT, "a.txt").unwrap();
+        fs::write(d.project().join("a.txt"), "user\n").unwrap();
+        assert_eq!(land::plan(&d.project(), &landable(&o), false).conflicts.len(), 1);
+        o.rebase_file("a.txt", None, Some(b"user\n")).unwrap();
+        assert!(land::plan(&d.project(), &landable(&o), false).conflicts.is_empty());
+        // Keeping the project's file.
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        o.unlink(ROOT, "a.txt").unwrap();
+        fs::write(d.project().join("a.txt"), "user\n").unwrap();
+        o.rebase_file("a.txt", Some(b"user\n"), Some(b"user\n")).unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert!(plan.conflicts.is_empty(), "{:?}", plan.conflicts);
+        assert!(plan.is_empty(), "the project already has it");
+    }
+
+    #[test]
+    fn a_folder_deleted_whole_still_guards_the_files_the_chat_changed_in_it() {
+        let d = setup(&[("x/a.txt", "1\n"), ("x/b.txt", "b\n")]);
+        let o = overlay(&d);
+        write_all(&o, "x/a.txt", "chat\n");
+        // Another chat lands a change to x/a.txt, then this one runs rm -rf x.
+        fs::write(d.project().join("x/a.txt"), "other chat\n").unwrap();
+        let x = ino(&o, "x");
+        o.unlink(x, "a.txt").unwrap();
+        o.unlink(x, "b.txt").unwrap();
+        o.rmdir(ROOT, "x").unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert_eq!(plan.conflicts.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), vec!["x"]);
+    }
+
+    #[test]
+    fn undoing_a_file_turned_folder_keeps_what_was_added_to_it() {
+        let d = setup(&[("x", "a file\n")]);
+        let o = overlay(&d);
+        o.unlink(ROOT, "x").unwrap();
+        let dir = o.create(ROOT, "x", Kind::Dir, 0o755, 0, 0, None).unwrap();
+        let f = o.create(dir.ino, "a.txt", Kind::File, 0o644, 0, 0, None).unwrap();
+        o.write(f.ino, 0, b"a\n").unwrap();
+        let data = d.root.join("data");
+        let landed = land::land(&data, "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        fs::write(d.project().join("x/b.txt"), "user's\n").unwrap();
+        let kept = land::undo(&data, "chat", &d.project(), &landed.id).unwrap();
+        assert_eq!(fs::read_to_string(d.project().join("x/b.txt")).unwrap(), "user's\n");
+        assert!(kept.iter().any(|k| k.path == "x"), "{kept:?}");
+    }
+
+    #[test]
+    fn a_file_moved_away_and_back_isnt_remembered_as_deleted() {
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace).unwrap();
+        o.rename(ROOT, "b.txt", ROOT, "a.txt", RenameMode::Replace).unwrap();
+        fs::write(d.project().join("a.txt"), "changed\n").unwrap();
+        // The chat sees the new content, then deletes it: that's what it deleted.
+        o.unlink(ROOT, "a.txt").unwrap();
+        assert!(land::plan(&d.project(), &landable(&o), false).conflicts.is_empty());
     }
 }
