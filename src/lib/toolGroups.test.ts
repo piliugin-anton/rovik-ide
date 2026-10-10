@@ -139,6 +139,32 @@ describe('list_dir', () => {
       ['project root', 'src']
     );
   });
+
+  it('names folders in the project relative to it, Windows paths too', () => {
+    const items = (root, paths) =>
+      describeGroup(
+        'list_dir',
+        paths.map((path) => ({ path })),
+        false,
+        root
+      ).items.map((i) => i.text);
+    assert.deepEqual(items('/home/me/proj', ['/home/me/proj', '/home/me/proj/src/', '/etc']), [
+      'project root',
+      'src',
+      '/etc',
+    ]);
+    assert.deepEqual(
+      items('C:\\Users\\Me\\Proj', [
+        'c:\\users\\me\\proj\\',
+        'C:/Users/Me/Proj',
+        '.\\',
+        'C:\\Users\\Me\\Proj\\src\\lib',
+        '.\\src\\lib\\',
+        'D:\\other',
+      ]),
+      ['project root', 'src\\lib', 'D:\\other']
+    );
+  });
 });
 
 describe('editCounts', () => {

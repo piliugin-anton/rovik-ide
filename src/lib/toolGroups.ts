@@ -175,7 +175,13 @@ export function editCounts(
 }
 
 /** The group's line, e.g. { verb: "Edited", items: [App.tsx, main.tsx] }. */
-export function describeGroup(name: string, argsList: Args[], active: boolean): GroupLabel {
+export function describeGroup(
+  name: string,
+  argsList: Args[],
+  active: boolean,
+  /** The project's folder, to name folders inside it relative to it. */
+  root?: string | null
+): GroupLabel {
   const verb = (running: string, done: string) => (active ? running : done);
   switch (name) {
     case 'read':
@@ -206,7 +212,7 @@ export function describeGroup(name: string, argsList: Args[], active: boolean): 
       return label(
         verb('Listing', 'Listed'),
         argsList.map((a) => {
-          const dir = dirName(str(a.path));
+          const dir = dirName(str(a.path), root);
           return { text: short(dir), title: dir };
         })
       );

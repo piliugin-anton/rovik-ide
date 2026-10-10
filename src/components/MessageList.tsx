@@ -65,6 +65,8 @@ export interface MessageListController {
 
 export default function MessageList(props: {
   dialogId: string | null;
+  /** The project's folder, to name paths inside it relative to it. */
+  rootPath?: string | null;
   chat: OpenChat | undefined;
   sending: boolean;
   /** Message to scroll to and highlight (a search hit). */
@@ -246,6 +248,7 @@ export default function MessageList(props: {
     <ToolCallBlock
       initiallyExpanded={initiallyExpanded}
       dialogId={props.dialogId}
+      root={props.rootPath}
       toolCall={tc}
       result={toolResults().get(tc.id)}
       running={props.sending}
@@ -1269,6 +1272,7 @@ export default function MessageList(props: {
                               name={run()!.name}
                               calls={run()!.calls}
                               dialogId={props.dialogId}
+                              root={props.rootPath}
                               result={(id) => toolResults().get(id)}
                               running={props.sending}
                               superseded={run()!.calls.every((c) =>

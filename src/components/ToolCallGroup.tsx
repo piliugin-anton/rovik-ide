@@ -17,6 +17,8 @@ export default function ToolCallGroup(props: {
   name: string;
   calls: ChatToolCall[];
   dialogId: string | null;
+  /** The project's folder. */
+  root?: string | null;
   result: (id: string) => ChatMessage | undefined;
   /** True while the agent loop is still running. */
   running: boolean;
@@ -70,7 +72,8 @@ export default function ToolCallGroup(props: {
     describeGroup(
       props.name,
       props.calls.map((c) => parseArgsLenient(c.arguments)),
-      active()
+      active(),
+      props.root
     )
   );
 

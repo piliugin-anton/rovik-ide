@@ -2970,6 +2970,7 @@ export default function ChatPanel(props: ChatProps) {
       </Show>
       <MessageList
         dialogId={activeDialogId()}
+        rootPath={props.rootPath()}
         chat={activeChat()}
         sending={sending()}
         focusMessageId={focusMessageId()}

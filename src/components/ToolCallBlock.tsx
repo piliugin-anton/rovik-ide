@@ -40,6 +40,8 @@ export interface ToolCallBlockProps {
   toolCall: ChatToolCall;
   /** The chat it's in: approvals and questions are its own. */
   dialogId: string | null;
+  /** The project's folder. */
+  root?: string | null;
   /** Content of the matching role:"tool" message, if it has arrived. */
   result?: ChatMessage;
   /** True while the agent loop is still running (args streaming or tool executing). */
@@ -204,7 +206,13 @@ function describeContextChange(name: string, args: Args, status: Status): Summar
   return { title, meta: [describeChanges(change.changes), size].filter(Boolean).join(' · ') };
 }
 
-function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Summary {
+function describe(
+  name: string,
+  args: Args,
+  status: Status,
+  meta?: ToolMeta,
+  root?: string | null
+): Summary {
   const active = status === 'running';
   const failed = status === 'error';
   const path = str(args.path);
@@ -300,7 +308,7 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
     }
 
     case 'list_dir': {
-      const title = `${active ? 'Listing' : 'Listed'} ${dirName(path)}`;
+      const title = `${active ? 'Listing' : 'Listed'} ${dirName(path, root)}`;
       if (count === undefined) return { title };
       return { title, meta: count === 0 ? 'empty' : plural(count, 'entry', 'entries') };
     }
@@ -592,7 +600,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   const summary = createMemo(() =>
     status() === 'idle' && !request()
       ? { title: describeToolCall(props.toolCall.name, props.toolCall.arguments), meta: 'not run' }
-      : describe(props.toolCall.name, args(), status(), resultMeta())
+      : describe(props.toolCall.name, args(), status(), resultMeta(), props.root)
   );
 
   // A large result arrives as a preview; the full text loads on expand.
