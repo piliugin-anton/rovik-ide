@@ -329,18 +329,11 @@ fn run_blocking(
 }
 
 /// Runs `command` through the user's shell with the project root as the
-/// working directory.
-#[tauri::command]
-pub async fn tool_run_command(
-    root: String,
-    command: String,
-    timeout_ms: Option<u64>,
-) -> Result<CommandOutput, String> {
-    run_command(root, command, timeout_ms, || false, None).await
-}
-
-/// `tool_run_command`, killed as soon as `stop` says so (checked a few
-/// times a second): the agent's Stop button. A chat's command is `queued`.
+/// working directory, killed as soon as `stop` says so (checked a few times
+/// a second): the agent's Stop button. A chat's command is `queued`.
+///
+/// Not a Tauri command: only the agent's run calls it, after its permission
+/// checks, so the webview can't run shell commands on its own.
 pub async fn run_command(
     root: String,
     command: String,

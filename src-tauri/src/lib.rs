@@ -185,7 +185,6 @@ pub fn run() {
             project_profile::load_project_settings,
             project_profile::save_project_settings,
             agent::chat_context_estimate,
-            command_tool::tool_run_command,
             workload::workload_focus,
             overlay::chats::overlay_status,
             overlay::chats::overlay_file,

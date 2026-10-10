@@ -694,9 +694,17 @@ fn looks_binary(path: &Path) -> Result<bool, String> {
     Ok(buf[..n].contains(&0))
 }
 
+/// Largest file `read_file_content` opens.
+const MAX_EDITOR_FILE: u64 = 50 << 20;
+
 #[tauri::command]
 pub fn read_file_content(path: String) -> Result<String, String> {
     let p = Path::new(&path);
+    // A huge log or dump would be copied whole into the webview and stall
+    // (or kill) both sides; the editor can't usefully show it anyway.
+    if fs::metadata(p).is_ok_and(|m| m.len() > MAX_EDITOR_FILE) {
+        return Err(format!("{path}: larger than {} MB, too large to open in the editor", MAX_EDITOR_FILE >> 20));
+    }
     if looks_binary(p)? {
         return Err(format!("{path}: binary file, cannot open in editor"));
     }
@@ -1404,7 +1412,7 @@ pub fn load_ai_settings(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn save_ai_settings(app: AppHandle, json: String) -> Result<(), String> {
     let path = ai_settings_path(&app)?;
-    crate::atomic_file::write_atomic(&path, json.as_bytes()).map_err(|e| e.to_string())
+    crate::atomic_file::write_atomic_private(&path, json.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Deserialize)]
