@@ -1,1 +1,1 @@
-1. Clean CLM context after sucessfull checklist?
+1. При переименовании файла не подгружается intellisense
