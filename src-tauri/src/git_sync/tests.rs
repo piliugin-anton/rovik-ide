@@ -418,6 +418,74 @@ fn a_push_behind_the_remote_is_rejected_not_failed() {
     }
     let out = crate::git::git_push_blocking(p(&b_dir)).unwrap();
     assert_eq!(out.result, "rejected");
+    // Rejected means untouched: the remote still has a's commit, not b's.
+    let bare = Repository::open_bare(&remote).unwrap();
+    let tip = bare.refname_to_id(&format!("refs/heads/{branch}")).unwrap();
+    assert_eq!(tip, a.head().unwrap().target().unwrap());
+}
+
+/// The push is never a force push: a branch whose pushed commits were
+/// rewritten (amend, reset, rebase), with the old tip still known locally,
+/// is turned down instead of replacing what the remote has.
+#[test]
+fn a_push_never_rewrites_the_remote_history() {
+    let remote = temp_dir("remote-rewrite");
+    Repository::init_bare(&remote).unwrap();
+    let dir = temp_dir("rewrite");
+    let repo = Repository::init(&dir).unwrap();
+    {
+        let mut c = repo.config().unwrap();
+        c.set_str("user.name", "t").unwrap();
+        c.set_str("user.email", "t@t").unwrap();
+    }
+    repo.remote("origin", &p(&remote)).unwrap();
+    fs::write(dir.join("f.txt"), "one\n").unwrap();
+    let first = commit_all(&repo, "one");
+    fs::write(dir.join("f.txt"), "two\n").unwrap();
+    let pushed = commit_all(&repo, "two");
+    assert_eq!(
+        crate::git::git_push_blocking(p(&dir)).unwrap().result,
+        "pushed"
+    );
+    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+    let remote_tip = || {
+        Repository::open_bare(&remote)
+            .unwrap()
+            .refname_to_id(&format!("refs/heads/{branch}"))
+            .unwrap()
+    };
+
+    // Amend the pushed commit: same parent, different content.
+    fs::write(dir.join("f.txt"), "rewritten\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("f.txt")).unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let sig = repo.signature().unwrap();
+    let parent = repo.find_commit(first).unwrap();
+    let amended = repo
+        .commit(None, &sig, &sig, "two, amended", &tree, &[&parent])
+        .unwrap();
+    repo.find_reference(&format!("refs/heads/{branch}"))
+        .unwrap()
+        .set_target(amended, "amend")
+        .unwrap();
+    assert_eq!(
+        crate::git::git_push_blocking(p(&dir)).unwrap().result,
+        "rejected"
+    );
+    assert_eq!(remote_tip(), pushed);
+
+    // Reset behind the remote: pushing would drop its newest commit.
+    repo.find_reference(&format!("refs/heads/{branch}"))
+        .unwrap()
+        .set_target(first, "reset")
+        .unwrap();
+    assert_eq!(
+        crate::git::git_push_blocking(p(&dir)).unwrap().result,
+        "rejected"
+    );
+    assert_eq!(remote_tip(), pushed);
 }
 
 #[cfg(unix)]
