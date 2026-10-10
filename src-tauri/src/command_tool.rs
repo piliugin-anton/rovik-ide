@@ -64,11 +64,14 @@ fn shell_command(command: &str) -> Command {
     cmd
 }
 
+/// The user's shell when it's a POSIX one (the commands are POSIX shell, as
+/// models write them and the permission checks read them); `/bin/sh` when
+/// it's fish, nu or another shell with a syntax of its own.
 #[cfg(not(windows))]
 fn shell_command(command: &str) -> Command {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
+    use crate::process::{shell_kind, user_shell, ShellKind};
+    let shell = user_shell()
+        .filter(|s| shell_kind(s) == ShellKind::Posix)
         .unwrap_or_else(|| "/bin/sh".to_string());
     let mut cmd = Command::new(shell);
     cmd.args(["-c", command]);

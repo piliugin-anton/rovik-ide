@@ -909,9 +909,10 @@ fn is_at_or_under(path: &Path, ancestor: &Path) -> bool {
     }
     #[cfg(any(windows, target_os = "macos"))]
     {
-        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+        // One separator too: Windows paths come with `\`, or a mix.
+        let lower = |p: &Path| p.to_string_lossy().to_lowercase().replace('\\', "/");
         let (p, a) = (lower(path), lower(ancestor));
-        p == a || p.starts_with(&format!("{}/", a.trim_end_matches(['/', '\\'])))
+        p == a || p.starts_with(&format!("{}/", a.trim_end_matches('/')))
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -935,8 +936,8 @@ fn is_same_file(a: &Path, b: &Path) -> bool {
 /// `std::fs::rename` maps to `rename(2)` / `MoveFileExW` *with* replace, so
 /// a plain check-then-rename has a TOCTOU hole: a file created between the
 /// check and the rename gets destroyed. Where the OS offers an atomic
-/// no-replace rename, use it; elsewhere fall back to check-then-rename
-/// (a tiny residual race on those platforms, noted here rather than hidden).
+/// no-replace rename (Linux, macOS, Windows), use it; elsewhere fall back to
+/// check-then-rename (a tiny residual race there, noted rather than hidden).
 fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -1000,6 +1001,27 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
             )
         }
         .map_err(|e| std::io::Error::from_raw_os_error(e.code().0));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| {
+            CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains NUL"))
+        };
+        let (c_from, c_to) = (c(from)?, c(to)?);
+        // SAFETY: plain C call with valid pointers; no locks held.
+        let r = unsafe { libc::renamex_np(c_from.as_ptr(), c_to.as_ptr(), libc::RENAME_EXCL) };
+        if r == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        // A volume without exclusive rename (some network shares): the
+        // check-then-rename below.
+        if !matches!(err.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EINVAL)) {
+            return Err(err);
+        }
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {

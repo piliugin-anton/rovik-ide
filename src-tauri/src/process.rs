@@ -20,6 +20,36 @@ pub fn no_window(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
+/// The user's login shell (`$SHELL`), if set.
+#[cfg(unix)]
+pub fn user_shell() -> Option<String> {
+    std::env::var("SHELL").ok().filter(|s| !s.trim().is_empty())
+}
+
+/// A shell's family, by its file name.
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ShellKind {
+    /// sh, bash, zsh, dash, ksh: run POSIX shell scripts as they are.
+    Posix,
+    Fish,
+    /// Takes `-l` for a login shell, but not POSIX syntax (nu, pwsh, …).
+    OtherLogin,
+    /// Anything else: no flags assumed.
+    Other,
+}
+
+#[cfg(unix)]
+pub fn shell_kind(shell: &str) -> ShellKind {
+    let name = std::path::Path::new(shell).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match name.as_str() {
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "mksh" | "ash" => ShellKind::Posix,
+        "fish" => ShellKind::Fish,
+        "nu" | "pwsh" | "xonsh" | "tcsh" | "csh" => ShellKind::OtherLogin,
+        _ => ShellKind::Other,
+    }
+}
+
 /// Started from Finder, the Dock or a desktop entry, the app gets a minimal
 /// PATH (on macOS `/usr/bin:/bin:/usr/sbin:/sbin`): no Homebrew, nvm,
 /// `~/.cargo/bin`, … The terminal panel starts a login shell and is fine,
@@ -54,10 +84,21 @@ fn login_shell_path() -> Option<String> {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
-    let shell = std::env::var("SHELL").ok().filter(|s| !s.trim().is_empty())?;
-    let script = format!("printf '{MARKER}%s{MARKER}' \"$PATH\"");
-    let mut child = Command::new(&shell)
-        .args(["-l", "-i", "-c", &script])
+    // A POSIX shell prints "$PATH" as it is; fish keeps PATH as a list
+    // ("$PATH" joins it with spaces); any other shell has a syntax of its
+    // own, so `sh -l` reads the profile files instead.
+    let shell = user_shell()?;
+    let posix = format!("printf '{MARKER}%s{MARKER}' \"$PATH\"");
+    let (program, args) = match shell_kind(&shell) {
+        ShellKind::Posix => (shell, vec!["-l".to_string(), "-i".into(), "-c".into(), posix]),
+        ShellKind::Fish => (
+            shell,
+            vec!["-l".to_string(), "-i".into(), "-c".into(), format!("printf '{MARKER}%s{MARKER}' (string join : $PATH)")],
+        ),
+        ShellKind::OtherLogin | ShellKind::Other => ("/bin/sh".to_string(), vec!["-l".to_string(), "-c".into(), posix]),
+    };
+    let mut child = Command::new(&program)
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -125,6 +166,15 @@ mod tests {
         let merged = merge_paths("/opt/homebrew/bin:/usr/bin", OsStr::new("/usr/bin:/bin")).unwrap();
         assert_eq!(merged, "/opt/homebrew/bin:/usr/bin:/bin");
         assert_eq!(merge_paths("/usr/bin:/bin", OsStr::new("/usr/bin:/bin")), None);
+    }
+
+    #[test]
+    fn shells_by_family() {
+        assert_eq!(shell_kind("/bin/zsh"), ShellKind::Posix);
+        assert_eq!(shell_kind("/usr/local/bin/bash"), ShellKind::Posix);
+        assert_eq!(shell_kind("/opt/homebrew/bin/fish"), ShellKind::Fish);
+        assert_eq!(shell_kind("/usr/bin/nu"), ShellKind::OtherLogin);
+        assert_eq!(shell_kind("/usr/bin/elvish"), ShellKind::Other);
     }
 
     #[test]
