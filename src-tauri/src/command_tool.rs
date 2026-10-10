@@ -48,6 +48,8 @@ pub struct Queued {
     pub note: Box<dyn Fn(Option<String>) + Send + Sync>,
     /// More environment for the command (an isolated chat's build folder).
     pub env: Vec<(String, String)>,
+    /// An isolated chat's command: the project's path shows its view.
+    pub confine: Option<crate::overlay::confine::Confine>,
 }
 
 #[cfg(windows)]
@@ -224,6 +226,9 @@ fn run_blocking(
     }
     for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
         cmd.env(key, value);
+    }
+    if let Some(c) = queued.and_then(|q| q.confine.as_ref()) {
+        crate::overlay::confine::apply(&mut cmd, c);
     }
     // Its own process group, so a timeout can take down everything the
     // shell started (a `node server.js`), not just the shell.

@@ -932,3 +932,12 @@ once; they touch different files. Everything else is sequential.
     the project busy. Isolated runs wait before their next tool call and
     before landing until it has been still for two seconds (ten minutes
     at most), with a notice and an `event: project-busy` log line.
+  - Commands of an isolated chat (its bash calls, its checks, the checks
+    of a landing) run, on Linux, in a mount namespace of their own in which
+    the project's path is the chat's view (`overlay/confine.rs`): a
+    command naming the project by its full path reaches the chat's files.
+    It needs no privileges (a user namespace mapping the user to itself);
+    it's tried once, and where the kernel or AppArmor forbids it (or
+    `ROVIK_CONFINE_COMMANDS=0`), and on macOS and Windows, such commands
+    are refused by the textual check as before. The user's own terminal
+    isn't confined.

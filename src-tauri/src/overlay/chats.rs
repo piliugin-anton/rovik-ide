@@ -41,11 +41,20 @@ impl ChatOverlay {
         vec![("CARGO_TARGET_DIR".into(), dir.to_string_lossy().into_owned())]
     }
 
+    /// How the chat's commands are kept out of the project: the project's
+    /// path shows the chat's view to them (confine.rs). None where that
+    /// isn't possible.
+    pub fn confine(&self) -> Option<super::confine::Confine> {
+        let c = super::confine::Confine { view: self.view.clone(), project: self.project.clone() };
+        super::confine::available(&c).then_some(c)
+    }
+
     /// Why a command can't run in this chat as written, if it can't.
     /// Changes reach the project by landing, so git commands that change
     /// the repository are refused (reading it works: status, diff, log,
-    /// show, blame), and so is the project's own folder named by its full
-    /// path, which would reach past the chat's view.
+    /// show, blame). Where commands can't be confined, so is the project's
+    /// own folder named by its full path, which would reach past the
+    /// chat's view.
     pub fn command_problem(&self, command: &str) -> Option<String> {
         const CHANGES_REPO: &[&str] = &[
             "checkout", "switch", "reset", "commit", "stash", "push", "pull", "merge", "rebase", "clean", "restore",
@@ -64,7 +73,7 @@ impl ChatOverlay {
             }
         }
         let project = self.project.to_string_lossy();
-        if names_path(command, &project) {
+        if names_path(command, &project) && self.confine().is_none() {
             return Some(format!(
                 "Error: this chat works in its own view of the project (the current folder, {}), not in {project} itself. Use paths relative to the current folder.",
                 self.view.display()

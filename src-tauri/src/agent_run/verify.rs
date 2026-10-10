@@ -345,6 +345,7 @@ impl<R: Runtime> Run<R> {
                     Box::new(move |note| *waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(note))
                 },
                 env: crate::overlay::chats::get(&self.dialog_id).map(|o| o.command_env()).unwrap_or_default(),
+                confine: crate::overlay::chats::get(&self.dialog_id).and_then(|o| o.confine()),
             };
             let run = crate::command_tool::run_command(
                 root.into(),

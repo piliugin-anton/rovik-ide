@@ -561,6 +561,8 @@ async fn an_isolated_chat_changes_only_its_overlay() {
         Reply::Call { id: "w1", name: "write", args: json!({ "path": "src/a.txt", "old_text": "one", "content": "ONE" }) },
         Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sed -i 's/hi/hello/' README.md && cat README.md && echo new > new.txt" }) },
         Reply::Call { id: "b2", name: "bash", args: json!({ "command": "git commit -am x" }) },
+        // The project's own path: the chat's view, not the project.
+        Reply::Call { id: "b3", name: "bash", args: json!({ "command": format!("echo leak > {}/leak.txt && ls {}", h.project.display(), h.project.display()) }) },
         Reply::Text("Done."),
     ])
     .await;
@@ -571,6 +573,8 @@ async fn an_isolated_chat_changes_only_its_overlay() {
     let messages = h.messages().await;
     assert!(result_of(&messages, "b1").content.contains("hello"), "{}", result_of(&messages, "b1").content);
     assert!(result_of(&messages, "b2").content.starts_with("Error: `git commit` changes the repository"));
+    let b3 = &result_of(&messages, "b3").content;
+    assert!(b3.contains("new.txt"), "the listing is the chat's view: {b3}");
     // The run finished cleanly: its changes landed, and the overlay is gone.
     assert_eq!(h.file("src/a.txt").as_deref(), Some("ONE\ntwo\n"));
     assert_eq!(h.file("README.md").as_deref(), Some("hello\n"));
@@ -578,7 +582,9 @@ async fn an_isolated_chat_changes_only_its_overlay() {
     assert!(crate::overlay::chats::changes(&h.dialog_id).is_empty());
     assert!(h.events_of("notice").iter().any(|e| e["title"] == "Landed"), "{:#?}", h.events_of("notice"));
     let last = crate::overlay::chats::last_landing(&h.dialog_id).unwrap();
-    assert_eq!(last.paths.len(), 3);
+    // leak.txt came through the chat's view, so it landed with the rest.
+    assert_eq!(last.paths.len(), 4, "{:?}", last.paths);
+    assert_eq!(h.file("leak.txt").as_deref(), Some("leak\n"));
 }
 
 /// Changes that conflict with the project's own wait for the user.
