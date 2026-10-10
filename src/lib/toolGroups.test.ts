@@ -127,6 +127,20 @@ describe('describeGroup', () => {
   });
 });
 
+describe('list_dir', () => {
+  it('calls the project root by name, however the model wrote it', () => {
+    const listed = describeGroup(
+      'list_dir',
+      [{}, { path: '.' }, { path: './' }, { path: ' .\\ ' }, { path: 'src' }, { path: './src' }],
+      false
+    );
+    assert.deepEqual(
+      listed.items.map((i) => i.text),
+      ['project root', 'src']
+    );
+  });
+});
+
 describe('editCounts', () => {
   it('totals the lines writes add and remove, skipping context edits', () => {
     assert.deepEqual(

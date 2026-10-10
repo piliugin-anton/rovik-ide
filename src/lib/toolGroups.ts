@@ -6,7 +6,7 @@
 // main.tsx"). Only the tool's name decides; the arguments only name the line.
 import type { ChatToolCall } from '../types';
 import { isLiveContextPath } from './contextDoc';
-import { parseArgsLenient, type Args } from './toolArgs';
+import { dirName, parseArgsLenient, type Args } from './toolArgs';
 import { parseTodo, progressLabel } from './todo';
 import { diffRows, snippetLines } from './lineDiff';
 
@@ -206,8 +206,8 @@ export function describeGroup(name: string, argsList: Args[], active: boolean): 
       return label(
         verb('Listing', 'Listed'),
         argsList.map((a) => {
-          const path = str(a.path)?.trim();
-          return path ? { text: short(path), title: path } : { text: 'project root' };
+          const dir = dirName(str(a.path));
+          return { text: short(dir), title: dir };
         })
       );
     case 'bash':

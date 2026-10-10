@@ -25,7 +25,7 @@ import {
 } from '../lib/contextDoc';
 import { APPROVE_AT, REJECT_AT, reviewChecks } from '../lib/aiApproval';
 import { requestOpenFile } from '../lib/editorBridge';
-import { isErrorResult, parseArgsLenient, type Args } from '../lib/toolArgs';
+import { dirName, isErrorResult, parseArgsLenient, type Args } from '../lib/toolArgs';
 import {
   allow,
   decideRemaining,
@@ -300,7 +300,7 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
     }
 
     case 'list_dir': {
-      const title = `${active ? 'Listing' : 'Listed'} ${path || 'project root'}`;
+      const title = `${active ? 'Listing' : 'Listed'} ${dirName(path)}`;
       if (count === undefined) return { title };
       return { title, meta: count === 0 ? 'empty' : plural(count, 'entry', 'entries') };
     }

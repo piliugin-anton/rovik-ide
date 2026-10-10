@@ -53,3 +53,12 @@ export function parseArgsLenient(raw: string): Args {
 export function isErrorResult(result?: string) {
   return result !== undefined && /^Error:/.test(result.trimStart());
 }
+
+/**
+ * A directory as the model named it, without a leading "./"; "project root"
+ * for the root itself ("", ".", "./").
+ */
+export function dirName(path: string | undefined): string {
+  const trimmed = (path?.trim() ?? '').replace(/^\.[\\/]+/, '');
+  return trimmed === '' || trimmed === '.' ? 'project root' : trimmed;
+}
