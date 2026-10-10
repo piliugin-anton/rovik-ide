@@ -62,7 +62,7 @@ export default function ToolCallGroup(props: {
         .filter(
           (c, i) => state[i] === 'done' && props.result(c.id)?.meta?.approval?.approved !== false
         )
-        .map((c) => parseArgsLenient(c.arguments))
+        .map((c) => ({ args: parseArgsLenient(c.arguments), result: props.result(c.id)?.meta }))
     );
   });
 

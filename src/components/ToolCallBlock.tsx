@@ -154,6 +154,11 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
       const waited = lines[2]?.startsWith('Waited ') ? lines[2].replace(/\.$/, '') : undefined;
       return { exitCode: code !== undefined ? Number(code) : null, ...(waited ? { waited } : {}) };
     }
+    case 'write': {
+      // A whole-file write: "wrote 120 bytes to a.ts (+3 -1 lines)".
+      const changes = result.match(/\(\+(\d+) -(\d+) lines\)$/);
+      return changes ? { added: Number(changes[1]), removed: Number(changes[2]) } : undefined;
+    }
     case 'browse_url': {
       const pageTitle = result.match(/^# (.+)$/m)?.[1];
       return pageTitle && pageTitle !== '(untitled)' ? { pageTitle } : {};
@@ -255,7 +260,12 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
         const title = `${active ? 'Writing' : 'Wrote'} ${path ?? 'file'}`;
         if (content === undefined) return { title };
         const lines = plural(countLines(content), 'line');
-        return { title, meta: active ? `${lines} so far` : lines };
+        // Against the file before, as the result counted them (older results didn't).
+        const counts =
+          !active && meta?.added !== undefined
+            ? { added: meta.added, removed: meta.removed ?? 0 }
+            : undefined;
+        return { title, meta: active ? `${lines} so far` : lines, counts };
       }
       const title = `${active ? 'Editing' : 'Edited'} ${path ?? 'file'}`;
       const start = lineArg(args.start_line);
