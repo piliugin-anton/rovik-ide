@@ -4614,8 +4614,24 @@ body.is-resizing * {
 }
 
 .chat-verify.needs-approval,
-.chat-verify.unverified {
+.chat-verify.unverified,
+.chat-verify.rolled-back,
+.chat-verify.flagged {
   border-left-color: var(--warning);
+}
+
+.chat-verify-progress {
+  color: var(--fg-dim);
+}
+
+.chat-verify-rollback summary {
+  cursor: pointer;
+}
+
+.chat-verify-flags {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--warning);
 }
 
 .chat-verify-head {

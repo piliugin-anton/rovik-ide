@@ -12,6 +12,7 @@
 //!   execute.rs    one turn's tool calls: permission, approval, running them
 //!   review.rs     the AI reviewer (approval "by AI")
 //!   verify.rs     the verification gate: the project's checks after a run
+//!   repair.rs     its fix rounds: progress, rollback, test integrity
 //!   guard.rs      checkpoints and loop detection
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
 //!   tools.rs      tool schemas and running a tool
@@ -32,6 +33,7 @@ mod parallel;
 pub mod permissions;
 pub mod plan;
 pub mod project;
+pub mod repair;
 pub mod repetition;
 pub mod review;
 mod run;

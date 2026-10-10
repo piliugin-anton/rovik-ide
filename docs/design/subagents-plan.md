@@ -571,3 +571,19 @@ scout, all behind the master switch (off by default).
 Tests: `agent_run/subagent_e2e_tests.rs` (12 e2e runs), unit tests in
 `subagent.rs`, `subagent_run.rs`, `chat_db/tests.rs` and `schema.rs`, and
 `src/lib/subagentSettings.test.ts`, `src/lib/subagents.test.ts`.
+
+### R01, R02 and R05: the gate's fix rounds
+
+Done, in `agent_run/repair.rs` (the progress verdict, checkpoints and
+rollback, test integrity), `command_output.rs` (`failure_keys`,
+`tests_ran`) and `verify.rs` (wiring, the record, the agent's report).
+
+| Task | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R01  | Keys come from the whole output, not the focused excerpt. Only checks that ran in both rounds are compared: tests skipped because the type check failed aren't "fixed", and their failures once it passes aren't "new". A no-progress round adds a note to the failure report; progress adds "resolved N; M remain". The history lives in the run, so a run started by "Run checks" (a new run) starts it afresh.                                                                                                                                                                                                                            |
+| R02  | The checkpoint is taken when a failing round goes back to the agent: the run's changed files and, in an isolated chat, the overlay's. The write tool adds a file's pre-write content the first time the round writes it. In an isolated chat, a file a command changed during the round goes back to the project's copy. Not isolated: only a file whose content is what this run last wrote or read is restored (K15); others are listed as left alone, the report says the code isn't quite back, and the gate re-runs the checks when the agent finishes even without new writes. A rolled-back round doesn't enter the progress history. |
+| R05  | Baselines are taken at a file's first write in the run (an isolated chat's project copy otherwise). Test files are counted whole; other source files only by their tests and skip markers (inline test modules), so a program's own `assert!` isn't counted. Manifests are compared on what decides the checks only: package.json's scripts, the test and lint sections of Cargo.toml, pyproject.toml and setup.cfg. Flags after passing checks get one question to the agent; kept, the run ends as `verify-flagged`, which doesn't land on its own. Not isolated: files changed by commands have no baseline.                              |
+
+Tests: `agent_run/repair_e2e_tests.rs` (4 e2e runs on a node test script), unit
+tests in `repair.rs`, `command_output.rs` and `verify.rs`, and
+`src/lib/verification.test.ts`.

@@ -8,10 +8,13 @@
 //! `meta.verification`, never sent to the model, saved on every change so it
 //! reads the same after a restart.
 
-use super::command_output::{error_locations, focus_failures, split_by_changed};
+use super::command_output::{
+    error_locations, failure_keys, focus_failures, split_by_changed, tests_ran,
+};
 use super::log;
 use super::permissions::{check_command, Permissions, Verdict};
 use super::project::{check_label, ordered_checks, ProjectCheck};
+use super::repair::{self, Judgement, RoundFailures, Verdict as Progress};
 use super::run::{new_message, Run};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -57,6 +60,13 @@ pub struct CheckResult {
     /// when that was long (workload/queue.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// failed: a key for each failure, the same when only lines moved
+    /// (command_output.rs `failure_keys`; repair.rs compares rounds by them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failures: Option<Vec<String>>,
+    /// The test check: how many tests ran, when its summary said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tests_ran: Option<u32>,
 }
 
 impl CheckResult {
@@ -72,6 +82,8 @@ impl CheckResult {
             output: None,
             error_files: None,
             note: None,
+            failures: None,
+            tests_ran: None,
         }
     }
 
@@ -100,6 +112,66 @@ fn record(
         v["reason"] = json!(reason);
     }
     json!({ "verification": v })
+}
+
+/// A record with more facts: the round's progress, a rollback, flags.
+fn with(mut meta: Value, extra: Value) -> Value {
+    if let (Some(v), Value::Object(extra)) = (meta.get_mut("verification"), extra) {
+        if let Some(v) = v.as_object_mut() {
+            v.extend(extra.into_iter().filter(|(_, x)| !x.is_null()));
+        }
+    }
+    meta
+}
+
+/// This round's failures, for comparing rounds (repair.rs).
+fn round_failures(results: &[CheckResult]) -> RoundFailures {
+    RoundFailures {
+        keys: results
+            .iter()
+            .flat_map(|r| r.failures.iter().flatten().cloned())
+            .collect(),
+        ran: results
+            .iter()
+            .filter(|r| r.status == "passed" || r.status == "failed")
+            .map(|r| r.kind.clone())
+            .collect(),
+        tests_ran: results
+            .iter()
+            .filter_map(|r| r.tests_ran)
+            .reduce(|a, b| a + b),
+    }
+}
+
+/// What the agent hears when its fix broke something and was rolled back.
+fn rollback_note(rb: &repair::Rollback) -> String {
+    let broke = repair::key_list(&rb.broke, 8);
+    let mut note = format!(
+        "Your last fix broke something that didn't fail before:\n{broke}\nSo it was rolled back"
+    );
+    if rb.restored.is_empty() {
+        note.push_str(", but no file could be put back");
+    } else {
+        note.push_str(&format!(
+            ": {} {} as before that fix",
+            rb.restored.join(", "),
+            if rb.restored.len() == 1 { "is" } else { "are" }
+        ));
+    }
+    note.push('.');
+    if rb.skipped.is_empty() {
+        note.push_str(
+            " The failures below are the ones from before that fix. Read the files again before editing them, and try a different fix.",
+        );
+    } else {
+        note.push_str(&format!(
+            " Left as they are, because they changed outside this chat meanwhile: {}. So the code isn't quite as it was \
+             before that fix: the failures below are from then, and the checks run again when you finish. Read the files \
+             again before editing them, and try a different fix.",
+            rb.skipped.join(", ")
+        ));
+    }
+    note
 }
 
 /// "Errors point at …", for the report: changed files first, the rest flagged.
@@ -132,7 +204,12 @@ fn describe_error_files(files: &ErrorFiles) -> Option<String> {
 }
 
 /// The message the agent gets when checks fail (sent as a user-role message).
-pub fn failure_report(results: &[CheckResult], changed_files: &[String], round: u32) -> String {
+pub fn failure_report(
+    results: &[CheckResult],
+    changed_files: &[String],
+    round: u32,
+    notes: &[String],
+) -> String {
     let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
     let passed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "passed").collect();
     let fail = if failed.len() == 1 {
@@ -143,6 +220,12 @@ pub fn failure_report(results: &[CheckResult], changed_files: &[String], round: 
     let mut lines = vec![
         "[Automatic check by the IDE, not written by the user]".to_string(),
         format!("Your changes are not done yet: {fail} (attempt {round} of {MAX_VERIFY_ROUNDS})."),
+    ];
+    for note in notes {
+        lines.push(String::new());
+        lines.push(note.clone());
+    }
+    lines.extend([
         String::new(),
         format!(
             "Files you changed in this task: {}",
@@ -152,7 +235,7 @@ pub fn failure_report(results: &[CheckResult], changed_files: &[String], round: 
                 changed_files.join(", ")
             }
         ),
-    ];
+    ]);
     if !passed.is_empty() {
         let list: Vec<String> = passed
             .iter()
@@ -229,6 +312,23 @@ impl<R: Runtime> Run<R> {
         let changed = self.changed_files.clone();
 
         if !self.writes_since_verify {
+            // Asked about changes that weaken the checks, and it kept them:
+            // not verified; the user reviews them (R05).
+            if !self.integrity_open.is_empty() && !self.last_verify_failed {
+                let flags = self.integrity_open.clone();
+                self.add_record(with(
+                    record(
+                        "flagged",
+                        self.verify_rounds,
+                        &self.last_verify_results,
+                        &changed,
+                        None,
+                    ),
+                    json!({ "integrity": flags }),
+                ))
+                .await?;
+                return Ok("verify-flagged".into());
+            }
             // Failures were sent back, and the model finished without touching
             // anything: it decided not to (or couldn't). Say so; don't loop.
             if self.last_verify_failed {
@@ -301,10 +401,85 @@ impl<R: Runtime> Run<R> {
         let ran = results
             .iter()
             .any(|r| r.status == "passed" || r.status == "failed");
+        // R01: how this round compares with the earlier ones.
+        let now = round_failures(&results);
+        let judgement = repair::judge(&self.verify_history, &now);
+        // R05: what weakens the checks, and fewer tests than last round.
+        let mut flags = if ran {
+            self.integrity_flags()
+        } else {
+            Vec::new()
+        };
+        if let (Some(before), Some(after)) = (
+            self.verify_history.last().and_then(|r| r.tests_ran),
+            now.tests_ran,
+        ) {
+            if after < before {
+                flags.push(format!(
+                    "fewer tests ran than in the last round ({before} → {after})"
+                ));
+            }
+        }
+        let tests_before = self.verify_history.last().and_then(|r| r.tests_ran);
+        let extra = |rolled_back: Option<&repair::Rollback>| {
+            json!({
+                "progress": (judgement.verdict != Progress::First).then_some(&judgement),
+                "failureCount": now.keys.len(),
+                "testsRun": now.tests_ran,
+                "testsRunBefore": tests_before,
+                "integrity": (!flags.is_empty()).then_some(&flags),
+                "rolledBack": rolled_back,
+            })
+        };
+
+        // R02: a fix that broke what didn't fail before is undone; the
+        // agent hears what it broke and gets the earlier failures again.
+        if failed && judgement.verdict == Progress::Regression && !self.stopped() {
+            if let Some(rb) = self.roll_back(judgement.new.clone()).await {
+                let status = if round >= MAX_VERIFY_ROUNDS {
+                    "gave-up"
+                } else {
+                    "rolled-back"
+                };
+                let changed = self.changed_files.clone();
+                self.update_meta(
+                    &record_id,
+                    with(
+                        record(status, round, &results, &changed, None),
+                        extra(Some(&rb)),
+                    ),
+                )
+                .await?;
+                self.log_round(round, status, &results, &judgement, &flags);
+                self.last_verify_failed = true;
+                if status == "gave-up" {
+                    return Ok("verify-gave-up".into());
+                }
+                // The code is back where the last round left it: its
+                // failures stand, and the round's history stays as it was.
+                let earlier = if self.last_verify_results.is_empty() {
+                    results.clone()
+                } else {
+                    self.last_verify_results.clone()
+                };
+                let report = failure_report(&earlier, &changed, round, &[rollback_note(&rb)]);
+                self.add_harness(report, "verification").await?;
+                // Not all of it went back: the code is new, check it again.
+                self.writes_since_verify = !rb.skipped.is_empty();
+                self.take_checkpoint();
+                return Ok("continue".into());
+            }
+        }
+        self.verify_history.push(now.clone());
+        self.last_verify_results = results.clone();
+
         let status = if self.stopped() {
             "stopped"
         } else if !ran {
             "unverified"
+        } else if !failed && !flags.is_empty() && !self.integrity_open.is_empty() {
+            // Asked about them once already, and they're still there.
+            "flagged"
         } else if !failed {
             "passed"
         } else if round >= MAX_VERIFY_ROUNDS {
@@ -315,39 +490,51 @@ impl<R: Runtime> Run<R> {
         let reason = (status == "unverified").then_some("none of the checks were allowed to run");
         self.update_meta(
             &record_id,
-            record(status, round, &results, &changed, reason),
+            with(
+                record(status, round, &results, &changed, reason),
+                extra(None),
+            ),
         )
         .await?;
-        log::write(
-            &self.app,
-            json!({
-                "event": "verify",
-                "dialogId": self.dialog_id,
-                "round": round,
-                "status": status,
-                "checks": results.iter().map(|r| json!({
-                    "kind": r.kind,
-                    "command": r.command,
-                    "status": r.status,
-                    "exitCode": r.exit_code,
-                    "ms": r.duration_ms,
-                })).collect::<Vec<_>>(),
-            }),
-        );
+        self.log_round(round, status, &results, &judgement, &flags);
 
         self.last_verify_failed = failed;
+        if status == "passed" && !flags.is_empty() {
+            // R05: the checks pass, but maybe only because the tests or what
+            // the checks run were weakened. Asked once; kept: the run isn't
+            // verified, and the user decides.
+            self.integrity_open = flags.clone();
+            self.take_checkpoint();
+            self.add_harness(repair::integrity_note(&flags, true), "integrity")
+                .await?;
+            return Ok("continue".into());
+        }
         if status != "failed" {
-            return Ok(if status == "passed" {
-                "verified".into()
-            } else {
-                format!("verify-{status}")
+            self.checkpoint = None;
+            return Ok(match status {
+                "passed" => "verified".into(),
+                _ => format!("verify-{status}"),
             });
         }
 
         // Back to the model. User-role, so every provider accepts it after an
         // assistant reply; marked as the IDE's, so it's never shown as the
         // user's message or replaced by the request's editor context.
-        let mut report = failure_report(&results, &changed, round);
+        let mut notes: Vec<String> = Vec::new();
+        if let Some(note) = repair::progress_note(&judgement, now.keys.len()) {
+            notes.push(note);
+        }
+        if judgement.verdict == Progress::Regression {
+            // No checkpoint to go back to (too large, or the first round).
+            notes.push(format!(
+                "Your last fix broke something that didn't fail before:\n{}",
+                repair::key_list(&judgement.new, 8)
+            ));
+        }
+        if !flags.is_empty() {
+            notes.push(repair::integrity_note(&flags, false));
+        }
+        let mut report = failure_report(&results, &changed, round, &notes);
         if let Some(files) = &self.merged_from_project {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
             let diffs: String = files
@@ -365,7 +552,42 @@ impl<R: Runtime> Run<R> {
             );
         }
         self.add_harness(report, "verification").await?;
+        // R02: what the next fix round can be rolled back to.
+        self.take_checkpoint();
         Ok("continue".into())
+    }
+
+    /// One line per round in the run log.
+    fn log_round(
+        &self,
+        round: u32,
+        status: &str,
+        results: &[CheckResult],
+        judgement: &Judgement,
+        flags: &[String],
+    ) {
+        log::write(
+            &self.app,
+            json!({
+                "event": "verify",
+                "dialogId": self.dialog_id,
+                "round": round,
+                "status": status,
+                "progress": judgement.verdict,
+                "newFailures": judgement.new.len(),
+                "fixed": judgement.fixed.len(),
+                "integrityFlags": flags.len(),
+                "checks": results.iter().map(|r| json!({
+                    "kind": r.kind,
+                    "command": r.command,
+                    "status": r.status,
+                    "exitCode": r.exit_code,
+                    "ms": r.duration_ms,
+                    "failures": r.failures.as_ref().map(Vec::len),
+                    "testsRan": r.tests_ran,
+                })).collect::<Vec<_>>(),
+            }),
+        );
     }
 
     /// Runs the enabled checks in order (type check, lint, tests, build),
@@ -462,16 +684,22 @@ impl<R: Runtime> Run<R> {
                     r.duration_ms = Some(out.duration_ms);
                     r.exit_code = Some(out.exit_code);
                     r.timed_out = Some(out.timed_out);
+                    // Compilers print to either stream; keep both, in order of usefulness.
+                    let combined = [out.stderr.trim(), out.stdout.trim()]
+                        .into_iter()
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if r.kind == "test" {
+                        r.tests_ran = tests_ran(&combined);
+                    }
                     if out.exit_code == Some(0) && !out.timed_out {
                         r.status = "passed";
                     } else {
                         r.status = "failed";
-                        // Compilers print to either stream; keep both, in order of usefulness.
-                        let combined = [out.stderr.trim(), out.stdout.trim()]
-                            .into_iter()
-                            .filter(|s| !s.is_empty())
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                        // From the whole output, not the focused part: every
+                        // failure counts when rounds are compared.
+                        r.failures = Some(failure_keys(&r.kind, &combined, out.timed_out));
                         let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
                         let output = if focused.is_empty() {
                             "(no output)".to_string()
@@ -493,6 +721,7 @@ impl<R: Runtime> Run<R> {
                 Err(e) => {
                     r.status = "failed";
                     r.output = Some(format!("Could not run the command: {e}"));
+                    r.failures = Some(vec![format!("{}|could not run", r.kind)]);
                 }
             }
             self.update_meta(record_id, progress(&results)).await?;
@@ -525,7 +754,13 @@ mod tests {
         let mut skipped = check("test", "npm test", "pending");
         skipped.skip("the type check failed");
         let results = vec![check("lint", "eslint .", "passed"), failed, skipped];
-        let text = failure_report(&results, &["src/a.ts".into()], 1);
+        let text = failure_report(
+            &results,
+            &["src/a.ts".into()],
+            1,
+            &["No progress: x".into()],
+        );
+        assert!(text.contains("(attempt 1 of 3).\n\nNo progress: x\n\nFiles you changed"));
         assert!(text.contains("Your changes are not done yet: a check fails (attempt 1 of 3)."));
         assert!(text.contains("Passed: Lint (`eslint .`)"));
         assert!(text.contains("## Type check failed: `tsc` (exit code 2)\nErrors point at files you changed: src/a.ts."));

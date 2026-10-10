@@ -231,6 +231,10 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Value {
 #[path = "subagent_e2e_tests.rs"]
 mod subagent_tests;
 
+#[cfg(test)]
+#[path = "repair_e2e_tests.rs"]
+mod repair_tests;
+
 /*
  * The app
  */

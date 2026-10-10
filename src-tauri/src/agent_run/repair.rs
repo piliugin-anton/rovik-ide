@@ -1,0 +1,952 @@
+//! Making the verification gate's fix rounds converge (docs/design/
+//! subagents-plan.md, section 3: R01, R02, R05). They help any run, with or
+//! without subagents:
+//!
+//!   - R01, progress: each round's failures are keys (command_output.rs
+//!     `failure_keys`), the same when only line numbers moved. A round made
+//!     progress when it fixed some and broke none; it made none when the
+//!     same failures came back (or the ones of two rounds ago), and the
+//!     agent is told so instead of being sent the same report again.
+//!   - R02, rollback: before each fix round, a checkpoint of the files the
+//!     run changed. A round that makes a check fail that didn't fail before
+//!     (a regression) is rolled back to it, and the agent is told what its
+//!     attempt broke. A file someone else changed meanwhile is never
+//!     overwritten: it's left as it is and listed (K15).
+//!   - R05, test integrity: the test files and the check setup are compared
+//!     with what they were when the run first touched them. Removed tests,
+//!     new skip or `only` markers, fewer assertions, fewer tests run, and
+//!     changes to what the checks run are flagged: the agent is asked to
+//!     undo them or say why, and a run that keeps them isn't reported as
+//!     verified (it waits for the user).
+//!
+//! What can't be seen: in a chat that isn't isolated, files a command
+//! changed (not the write tool) have no checkpoint or baseline here, so
+//! they're neither rolled back nor compared.
+
+use super::run::Run;
+use super::tools;
+use regex::Regex;
+use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::sync::LazyLock;
+use tauri::Runtime;
+
+/// A checkpoint isn't taken of more than this (rollback then isn't offered).
+const MAX_CHECKPOINT_BYTES: usize = 64 << 20;
+/// The rolled-back attempt's diff kept in the record, at most.
+const MAX_ROLLBACK_DIFF_CHARS: usize = 6_000;
+
+/*
+ * ---------------------------------------------------------------------------
+ * R01: progress between rounds
+ * ---------------------------------------------------------------------------
+ */
+
+/// One round's failures, as the next round compares with them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RoundFailures {
+    pub keys: BTreeSet<String>,
+    /// The checks (kinds) that ran: their keys can be compared.
+    pub ran: BTreeSet<String>,
+    /// Tests the test check ran, when it said.
+    pub tests_ran: Option<u32>,
+}
+
+/// The check a key belongs to (`failure_keys` puts it first).
+fn kind_of(key: &str) -> &str {
+    key.split('|').next().unwrap_or("")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Verdict {
+    /// Nothing to compare with (the first round, or no check ran in both).
+    First,
+    /// Fewer failures, none new.
+    Progress,
+    /// The same failures as the round before, or as two rounds before.
+    NoProgress,
+    /// A failure that wasn't there before, in a check that ran then.
+    Regression,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Judgement {
+    pub verdict: Verdict,
+    /// Failing now, not before.
+    pub new: Vec<String>,
+    /// Failing before, not now.
+    pub fixed: Vec<String>,
+    /// Back to the failures of two rounds ago.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub back_and_forth: bool,
+}
+
+/// How this round compares with the earlier ones (`history`, oldest first).
+/// Only checks that ran in both rounds are compared: tests skipped because
+/// the type check failed aren't "fixed", and their failures once the type
+/// check passes aren't "new".
+pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
+    let Some(prev) = history.last() else {
+        return Judgement {
+            verdict: Verdict::First,
+            new: Vec::new(),
+            fixed: Vec::new(),
+            back_and_forth: false,
+        };
+    };
+    let both: BTreeSet<&String> = prev.ran.intersection(&now.ran).collect();
+    let comparable = |k: &&String| both.iter().any(|b| b.as_str() == kind_of(k));
+    let new: Vec<String> = now
+        .keys
+        .iter()
+        .filter(comparable)
+        .filter(|k| !prev.keys.contains(*k))
+        .cloned()
+        .collect();
+    let fixed: Vec<String> = prev
+        .keys
+        .iter()
+        .filter(comparable)
+        .filter(|k| !now.keys.contains(*k))
+        .cloned()
+        .collect();
+    let back_and_forth =
+        history.len() >= 2 && history[history.len() - 2].keys == now.keys && prev.keys != now.keys;
+    let verdict = if both.is_empty() {
+        Verdict::First
+    } else if !new.is_empty() {
+        Verdict::Regression
+    } else if back_and_forth || fixed.is_empty() {
+        Verdict::NoProgress
+    } else {
+        Verdict::Progress
+    };
+    Judgement {
+        verdict,
+        new,
+        fixed,
+        back_and_forth,
+    }
+}
+
+/// Keys as a list for the agent, without their check prefix.
+pub fn key_list(keys: &[String], max: usize) -> String {
+    let shown: Vec<String> = keys
+        .iter()
+        .take(max)
+        .map(|k| {
+            format!(
+                "- {}",
+                k.split_once('|').map_or(k.as_str(), |(_, rest)| rest)
+            )
+        })
+        .collect();
+    let more = keys.len().saturating_sub(max);
+    if more > 0 {
+        format!("{}\n- and {more} more", shown.join("\n"))
+    } else {
+        shown.join("\n")
+    }
+}
+
+/// What the agent is told about this round's progress, in its failure
+/// report (nothing for the first round).
+pub fn progress_note(j: &Judgement, remaining: usize) -> Option<String> {
+    match j.verdict {
+        Verdict::First | Verdict::Regression => None,
+        Verdict::Progress => Some(format!(
+            "Progress: your last fix resolved {} failure{}; {remaining} remain{}.",
+            j.fixed.len(),
+            if j.fixed.len() == 1 { "" } else { "s" },
+            if remaining == 1 { "s" } else { "" },
+        )),
+        Verdict::NoProgress if j.back_and_forth => Some(
+            "No progress: these are the same failures as two rounds ago, so your last two fixes undid each other. \
+             Step back: find the cause both attempts missed, and don't repeat either fix."
+                .into(),
+        ),
+        Verdict::NoProgress => Some(
+            "No progress: your last fix left exactly the same failures. Don't repeat it. Read the failing code and \
+             the error again, check your assumption about the cause, and try a different fix."
+                .into(),
+        ),
+    }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * R05: test integrity
+ * ---------------------------------------------------------------------------
+ */
+
+/// A test file by the usual conventions (`*.test.ts`, `__tests__/`,
+/// `tests/`, `test_*.py`, `*_test.go`, Rust `tests.rs` modules…).
+pub fn is_test_path(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_lowercase();
+    let name = p.rsplit('/').next().unwrap_or(&p);
+    let in_dir = |d: &str| p.starts_with(&format!("{d}/")) || p.contains(&format!("/{d}/"));
+    in_dir("__tests__")
+        || in_dir("tests")
+        || in_dir("test")
+        || in_dir("spec")
+        || name.contains(".test.")
+        || name.contains(".spec.")
+        || name.starts_with("test_") && name.ends_with(".py")
+        || name.ends_with("_test.py")
+        || name.ends_with("_test.go")
+        || name == "tests.rs"
+        || name.ends_with("_tests.rs")
+}
+
+/// A file that decides what the checks run: scripts, test-runner, lint and
+/// type-check configuration.
+pub fn is_check_setup(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_lowercase();
+    let name = p.rsplit('/').next().unwrap_or(&p);
+    const NAMES: &[&str] = &[
+        "package.json",
+        "cargo.toml",
+        "pyproject.toml",
+        "setup.cfg",
+        "tox.ini",
+        "pytest.ini",
+        "ruff.toml",
+        ".ruff.toml",
+        "mypy.ini",
+        "clippy.toml",
+        "biome.json",
+    ];
+    const PREFIXES: &[&str] = &[
+        "tsconfig",
+        "jsconfig",
+        "vitest.config",
+        "vite.config",
+        "jest.config",
+        "playwright.config",
+        "karma.conf",
+        "eslint.config",
+        ".eslintrc",
+        ".mocharc",
+    ];
+    NAMES.contains(&name)
+        || PREFIXES.iter().any(|pre| name.starts_with(pre))
+        || p.ends_with(".cargo/config.toml")
+}
+
+/// The part of a manifest that decides what the checks run, so adding a
+/// dependency isn't flagged: package.json's scripts, and the test and lint
+/// sections of Cargo.toml, pyproject.toml and setup.cfg. Other files whole.
+fn check_relevant(path: &str, text: &str) -> String {
+    let name = path.replace('\\', "/").to_lowercase();
+    let name = name.rsplit('/').next().unwrap_or("").to_string();
+    let sections: &[&str] = match name.as_str() {
+        "package.json" => {
+            return package_scripts(text).map_or_else(String::new, |s| s.to_string());
+        }
+        "cargo.toml" => &[
+            "[lints",
+            "[workspace.lints",
+            "[[test]]",
+            "[[bench]]",
+            "[lib]",
+        ],
+        "pyproject.toml" => &["[tool.pytest", "[tool.ruff", "[tool.mypy", "[tool.coverage"],
+        "setup.cfg" => &["[tool:pytest]", "[flake8]", "[mypy", "[coverage"],
+        _ => return text.to_string(),
+    };
+    let mut keep = false;
+    let mut out = String::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            keep = sections.iter().any(|s| t.starts_with(s));
+        }
+        if keep && !t.is_empty() {
+            out.push_str(t);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// What a file's tests look like, counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TestCounts {
+    pub tests: usize,
+    pub skips: usize,
+    pub only: usize,
+    pub assertions: usize,
+}
+
+struct Patterns {
+    tests: Regex,
+    skips: Regex,
+    only: Option<Regex>,
+    assertions: Regex,
+}
+
+fn re(s: &str) -> Regex {
+    Regex::new(s).unwrap()
+}
+
+static JS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
+    tests: re(r"\b(?:it|test)(?:\.(?:each|concurrent|only|skip|todo|failing)\b[^(]*)?\s*\("),
+    skips: re(r"\b(?:it|test|describe)\.(?:skip|todo)\b|\bx(?:it|test|describe)\s*\("),
+    only: Some(re(
+        r"\b(?:it|test|describe)\.only\b|\bf(?:it|describe)\s*\(",
+    )),
+    assertions: re(r"\bexpect\s*\(|\bassert(?:\.\w+)?\s*\("),
+});
+static RUST: LazyLock<Patterns> = LazyLock::new(|| Patterns {
+    tests: re(r"#\[(?:tokio::)?test\b"),
+    skips: re(r"#\[ignore\b"),
+    only: None,
+    assertions: re(r"\b(?:assert|assert_eq|assert_ne|debug_assert)!\s*\("),
+});
+static PYTHON: LazyLock<Patterns> = LazyLock::new(|| Patterns {
+    tests: re(r"(?m)^\s*(?:async\s+)?def\s+test_"),
+    skips: re(r"@pytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.skip|\bpytest\.skip\s*\("),
+    only: None,
+    assertions: re(r"(?m)^\s*assert\b|\bself\.assert\w+\s*\(|\bpytest\.raises\s*\("),
+});
+static GO: LazyLock<Patterns> = LazyLock::new(|| Patterns {
+    tests: re(r"(?m)^func\s+Test\w*\s*\("),
+    skips: re(r"\bt\.Skip(?:f|Now)?\s*\("),
+    only: None,
+    assertions: re(
+        r"\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\s*\(|\b(?:assert|require)\.\w+\s*\(",
+    ),
+});
+
+fn patterns_for(path: &str) -> Option<&'static Patterns> {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts" => Some(&JS),
+        "rs" => Some(&RUST),
+        "py" => Some(&PYTHON),
+        "go" => Some(&GO),
+        _ => None,
+    }
+}
+
+pub fn count_tests(path: &str, content: &str) -> Option<TestCounts> {
+    let p = patterns_for(path)?;
+    Some(TestCounts {
+        tests: p.tests.find_iter(content).count(),
+        skips: p.skips.find_iter(content).count(),
+        only: p.only.as_ref().map_or(0, |o| o.find_iter(content).count()),
+        assertions: p.assertions.find_iter(content).count(),
+    })
+}
+
+/// The scripts of a package.json (what `npm test` and the like run).
+fn package_scripts(text: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()?
+        .get("scripts")
+        .cloned()
+}
+
+/// What weakens the checks in one file's change, from what it was when the
+/// run first touched it (`before`, None: it didn't exist) to now (`after`,
+/// None: deleted). Test files are counted whole; other source files only by
+/// their tests and skip markers (inline test modules), since their
+/// assertions may be the program's own.
+pub fn integrity_flags(path: &str, before: Option<&str>, after: Option<&str>) -> Vec<String> {
+    let mut flags = Vec::new();
+    if is_check_setup(path) {
+        let changed = match (before, after) {
+            (Some(b), Some(a)) => check_relevant(path, b) != check_relevant(path, a),
+            (Some(b), None) => !check_relevant(path, b).is_empty(),
+            _ => false,
+        };
+        if changed {
+            let what = match path
+                .rsplit('/')
+                .next()
+                .unwrap_or(path)
+                .to_lowercase()
+                .as_str()
+            {
+                "package.json" => " (its scripts)",
+                "cargo.toml" | "pyproject.toml" | "setup.cfg" => " (its test or lint settings)",
+                _ => "",
+            };
+            flags.push(format!(
+                "{path}: changed, and it decides what the checks run{what}"
+            ));
+        }
+        return flags;
+    }
+    let test_file = is_test_path(path);
+    let count = |text: Option<&str>| text.and_then(|t| count_tests(path, t));
+    let (was, now) = (count(before), count(after));
+    if let (Some(was), None) = (was, after) {
+        if test_file || was.tests > 0 {
+            flags.push(format!(
+                "{path}: deleted, with {} test{}",
+                was.tests,
+                if was.tests == 1 { "" } else { "s" }
+            ));
+        }
+        return flags;
+    }
+    let now = match now {
+        Some(n) => n,
+        None => return flags,
+    };
+    // A new file's tests take nothing away, but an `only` in it keeps the
+    // others from running.
+    let was = was.unwrap_or_default();
+    if now.only > was.only {
+        flags.push(format!(
+            "{path}: added `only` ({} → {}), so other tests don't run",
+            was.only, now.only
+        ));
+    }
+    if before.is_none() {
+        return flags;
+    }
+    if now.tests < was.tests {
+        flags.push(format!(
+            "{path}: {} test{} removed ({} → {})",
+            was.tests - now.tests,
+            if was.tests - now.tests == 1 { "" } else { "s" },
+            was.tests,
+            now.tests
+        ));
+    }
+    if now.skips > was.skips {
+        flags.push(format!(
+            "{path}: skip markers added ({} → {})",
+            was.skips, now.skips
+        ));
+    }
+    if test_file && now.assertions < was.assertions {
+        flags.push(format!(
+            "{path}: fewer assertions ({} → {})",
+            was.assertions, now.assertions
+        ));
+    }
+    flags
+}
+
+/// The note asking the agent about flagged changes.
+pub fn integrity_note(flags: &[String], checks_pass: bool) -> String {
+    let list = flags
+        .iter()
+        .map(|f| format!("- {f}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let head = if checks_pass {
+        "[Automatic check by the IDE, not written by the user]\nThe checks pass, but these changes weaken the existing tests or change what the checks run:"
+    } else {
+        "Also, these changes weaken the existing tests or change what the checks run:"
+    };
+    format!(
+        "{head}\n{list}\n\nA test that existed before this task may change only when the request or the plan needs it. \
+         Undo these changes and fix the code instead. If the request does need one, keep it and say why in your \
+         final reply, citing the request; the user reviews every flagged change before your work counts as verified."
+    )
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * R02: checkpoints and rollback
+ * ---------------------------------------------------------------------------
+ */
+
+/// Files as they were before a fix round: content, or None when the file
+/// didn't exist.
+#[derive(Debug, Default)]
+pub struct Checkpoint {
+    pub files: BTreeMap<String, Option<Vec<u8>>>,
+    /// The run's changed files then.
+    pub changed_files: Vec<String>,
+    /// Over the size limit: no rollback for this round.
+    pub too_big: bool,
+}
+
+/// What a rollback did, for the record and the agent.
+#[derive(Debug, Default, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Rollback {
+    /// Put back as they were before the round.
+    pub restored: Vec<String>,
+    /// Changed by someone else meanwhile: left as they are.
+    pub skipped: Vec<String>,
+    /// The failures the attempt brought in.
+    pub broke: Vec<String>,
+    /// The rolled-back attempt, as a diff.
+    pub diff: String,
+}
+
+/// A path relative to the root, with forward slashes, whatever spelling the
+/// tool call used.
+pub fn rel_key(root: &str, path: &str) -> String {
+    let abs = tools::to_absolute_path(path, root).replace('\\', "/");
+    let root = root.replace('\\', "/");
+    let root = root.trim_end_matches('/');
+    abs.strip_prefix(root)
+        .map(|r| r.trim_start_matches('/').to_string())
+        .unwrap_or(abs)
+}
+
+fn read(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
+    match std::fs::read(path) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+impl<R: Runtime> Run<R> {
+    /// Whether the run works in its chat's own copy (an overlay), where
+    /// nobody else writes.
+    pub(super) fn isolated(&self) -> bool {
+        self.root.is_some() && self.root != self.project_root
+    }
+
+    /// The files the chat's overlay changed (project-relative), when it has one.
+    fn overlay_paths(&self) -> Vec<String> {
+        if !self.isolated() {
+            return Vec::new();
+        }
+        crate::overlay::chats::changes(&self.dialog_id)
+            .iter()
+            .map(|c| c.path().replace('\\', "/"))
+            .collect()
+    }
+
+    /// A file is about to be written by the write tool: what it was is kept
+    /// as its baseline (the first time in the run, R05) and in the open
+    /// checkpoint (the first time in the round, R02).
+    pub(super) fn note_before_write(&mut self, path: &str) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let key = rel_key(&root, path);
+        let needs_baseline = !self.baseline.contains_key(&key);
+        let needs_checkpoint = self
+            .checkpoint
+            .as_ref()
+            .is_some_and(|c| !c.too_big && !c.files.contains_key(&key));
+        if !needs_baseline && !needs_checkpoint {
+            return;
+        }
+        let abs = tools::to_absolute_path(path, &root);
+        let Ok(before) = read(Path::new(&abs)) else {
+            return;
+        };
+        if !self.baseline.contains_key(&key) {
+            // In an isolated chat, the project's copy is what the file was
+            // before the chat (an earlier run may have changed the view).
+            let original = match (&self.project_root, self.isolated()) {
+                (Some(project), true) => read(&Path::new(project).join(&key)).ok().flatten(),
+                _ => before.clone(),
+            };
+            self.baseline.insert(
+                key.clone(),
+                original.map(|b| String::from_utf8_lossy(&b).into_owned()),
+            );
+        }
+        if let Some(cp) = self.checkpoint.as_mut().filter(|c| !c.too_big) {
+            cp.files.entry(key).or_insert(before);
+        }
+    }
+
+    /// A checkpoint of the files the run changed, before a fix round.
+    pub(super) fn take_checkpoint(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let mut cp = Checkpoint {
+            changed_files: self.changed_files.clone(),
+            ..Default::default()
+        };
+        let mut paths: BTreeSet<String> = self
+            .changed_files
+            .iter()
+            .map(|p| rel_key(&root, p))
+            .collect();
+        paths.extend(self.overlay_paths());
+        let mut size = 0usize;
+        for key in paths {
+            // Unreadable (a folder, permissions): left out.
+            if let Ok(content) = read(Path::new(&tools::to_absolute_path(&key, &root))) {
+                size += content.as_ref().map_or(0, Vec::len);
+                cp.files.insert(key, content);
+            }
+            if size > MAX_CHECKPOINT_BYTES {
+                cp.too_big = true;
+                cp.files.clear();
+                break;
+            }
+        }
+        self.checkpoint = Some(cp);
+    }
+
+    /// Puts the files back as they were at the checkpoint. A file changed
+    /// by someone other than this run since (direct mode: the user, another
+    /// chat) is left as it is and listed (K15). None: no checkpoint to go
+    /// back to.
+    pub(super) async fn roll_back(&mut self, broke: Vec<String>) -> Option<Rollback> {
+        let root = self.root.clone()?;
+        let cp = self.checkpoint.take().filter(|c| !c.too_big)?;
+        let isolated = self.isolated();
+        // Changed in the round but not in the checkpoint: in an isolated
+        // chat, a command's change; before the round it was the project's.
+        let mut targets: BTreeMap<String, Option<Vec<u8>>> = cp.files.clone();
+        for key in self.overlay_paths() {
+            if let std::collections::btree_map::Entry::Vacant(slot) = targets.entry(key) {
+                let original = self
+                    .project_root
+                    .as_ref()
+                    .and_then(|p| read(&Path::new(p).join(slot.key())).ok().flatten());
+                slot.insert(original);
+            }
+        }
+        let seen = self.seen.clone();
+        let mut result = Rollback {
+            broke,
+            ..Default::default()
+        };
+        let mut diffs: Vec<String> = Vec::new();
+        let mut written: Vec<(String, Option<String>, String)> = Vec::new();
+        for (key, target) in &targets {
+            let abs = tools::to_absolute_path(key, &root);
+            let path = Path::new(&abs);
+            let Ok(current) = read(path) else {
+                result.skipped.push(key.clone());
+                continue;
+            };
+            if current == *target {
+                continue;
+            }
+            // Not isolated: only what this run itself last wrote or read is
+            // its to undo.
+            if !isolated {
+                let ours = match &current {
+                    Some(bytes) => seen.get(path) == Some(crate::file_guard::hash(bytes)),
+                    None => false,
+                };
+                if !ours {
+                    result.skipped.push(key.clone());
+                    continue;
+                }
+            }
+            let text = |b: &Option<Vec<u8>>| {
+                b.as_ref()
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .unwrap_or_default()
+            };
+            let (was, now) = (text(target), text(&current));
+            let hunks = super::diff::diff_lines(
+                &super::diff::split_lines(&was),
+                &super::diff::split_lines(&now),
+            );
+            if !hunks.is_empty() {
+                diffs.push(format!("--- {key}\n{}", super::diff::compact_diff(&hunks)));
+            }
+            let done = {
+                let _lock = crate::file_guard::lock(path);
+                match target {
+                    Some(bytes) => path
+                        .parent()
+                        .map_or(Ok(()), std::fs::create_dir_all)
+                        .and_then(|_| std::fs::write(path, bytes)),
+                    None => std::fs::remove_file(path),
+                }
+            };
+            match done {
+                Ok(()) => {
+                    if let Some(bytes) = target {
+                        seen.record(path, bytes);
+                        written.push((abs.clone(), current.as_ref().map(|_| now.clone()), was));
+                    }
+                    crate::outline::invalidate_path(path);
+                    crate::repo_map::invalidate_path(Path::new(&root), path);
+                    result.restored.push(key.clone());
+                }
+                Err(_) => result.skipped.push(key.clone()),
+            }
+        }
+        if isolated {
+            let id = self.dialog_id.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                if let Some(o) = crate::overlay::chats::get(&id) {
+                    o.fs.flush();
+                }
+            })
+            .await;
+        }
+        for (abs, before, content) in written {
+            super::events::emit(
+                &self.app,
+                super::events::AgentEvent::FileWritten {
+                    abs_path: abs,
+                    before,
+                    content,
+                    reviewed: true,
+                },
+            );
+        }
+        // The run's list of changed files is what it was then, plus what
+        // couldn't be put back.
+        let mut changed = cp.changed_files.clone();
+        for key in &result.skipped {
+            if !changed.iter().any(|c| rel_key(&root, c) == *key) {
+                changed.push(key.clone());
+            }
+        }
+        self.changed_files = changed;
+        self.map_writes_since_refresh += 1;
+        let mut diff = diffs.join("\n");
+        if diff.chars().count() > MAX_ROLLBACK_DIFF_CHARS {
+            diff = format!(
+                "{}\n[… diff shortened …]",
+                crate::chat_db::store::char_prefix(&diff, MAX_ROLLBACK_DIFF_CHARS)
+            );
+        }
+        result.diff = diff;
+        Some(result)
+    }
+
+    /// R05: what weakens the checks among the files the run changed, from
+    /// their baselines.
+    pub(super) fn integrity_flags(&self) -> Vec<String> {
+        let Some(root) = self.root.clone() else {
+            return Vec::new();
+        };
+        let mut paths: BTreeSet<String> = self.baseline.keys().cloned().collect();
+        paths.extend(self.overlay_paths());
+        paths.extend(self.changed_files.iter().map(|p| rel_key(&root, p)));
+        let mut flags = Vec::new();
+        for key in paths {
+            let before: Option<String> = match self.baseline.get(&key) {
+                Some(b) => b.clone(),
+                // An overlay change the write tool didn't make: the
+                // project's copy is what it was.
+                None => match (&self.project_root, self.isolated()) {
+                    (Some(project), true) => std::fs::read(Path::new(project).join(&key))
+                        .ok()
+                        .map(|b| String::from_utf8_lossy(&b).into_owned()),
+                    _ => continue,
+                },
+            };
+            let after = std::fs::read(tools::to_absolute_path(&key, &root))
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned());
+            flags.extend(integrity_flags(&key, before.as_deref(), after.as_deref()));
+        }
+        flags
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round(keys: &[&str], ran: &[&str]) -> RoundFailures {
+        RoundFailures {
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            ran: ran.iter().map(|k| k.to_string()).collect(),
+            tests_ran: None,
+        }
+    }
+
+    #[test]
+    fn progress_no_progress_and_regression_are_told_apart() {
+        let r1 = round(
+            &["typecheck|a.ts|TS1|x", "typecheck|b.ts|TS2|y"],
+            &["typecheck", "lint"],
+        );
+        assert_eq!(judge(&[], &r1).verdict, Verdict::First);
+
+        let fewer = round(&["typecheck|a.ts|TS1|x"], &["typecheck", "lint"]);
+        let j = judge(std::slice::from_ref(&r1), &fewer);
+        assert_eq!(j.verdict, Verdict::Progress);
+        assert_eq!(j.fixed, ["typecheck|b.ts|TS2|y"]);
+        assert!(progress_note(&j, 1)
+            .unwrap()
+            .contains("resolved 1 failure; 1 remains"));
+
+        let same = judge(std::slice::from_ref(&r1), &r1);
+        assert_eq!(same.verdict, Verdict::NoProgress);
+        assert!(progress_note(&same, 2).unwrap().starts_with("No progress"));
+
+        let broke = round(
+            &["typecheck|a.ts|TS1|x", "lint|c.ts|rule|z"],
+            &["typecheck", "lint"],
+        );
+        let j = judge(std::slice::from_ref(&r1), &broke);
+        assert_eq!(j.verdict, Verdict::Regression);
+        assert_eq!(j.new, ["lint|c.ts|rule|z"]);
+        assert_eq!(progress_note(&j, 2), None);
+    }
+
+    #[test]
+    fn checks_that_didnt_run_before_are_not_compared() {
+        // Round 1: the type check failed, so tests were skipped.
+        let r1 = round(&["typecheck|a.ts|TS1|x"], &["typecheck"]);
+        // Round 2: the type check passes; tests run and fail.
+        let r2 = round(&["test|test|adds"], &["typecheck", "test"]);
+        let j = judge(&[r1], &r2);
+        assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
+        assert!(j.new.is_empty());
+    }
+
+    #[test]
+    fn going_back_to_two_rounds_ago_is_no_progress() {
+        let a = round(&["test|test|a", "test|test|b"], &["test"]);
+        let b = round(&["test|test|a"], &["test"]);
+        let j = judge(&[a.clone(), b], &a);
+        // It's also a regression against the last round (b came back).
+        assert_eq!(j.verdict, Verdict::Regression);
+        assert!(j.back_and_forth);
+        let c = round(&["test|test|c", "test|test|d"], &["test"]);
+        let d = round(&["test|test|c"], &["test"]);
+        let fixed_then_same = judge(&[c.clone(), d.clone()], &d);
+        assert_eq!(fixed_then_same.verdict, Verdict::NoProgress);
+        assert!(!fixed_then_same.back_and_forth);
+    }
+
+    #[test]
+    fn test_paths_and_check_setup() {
+        for p in [
+            "src/a.test.ts",
+            "src/__tests__/b.ts",
+            "tests/it.rs",
+            "app/test_x.py",
+            "pkg/x_test.go",
+            "src-tauri/src/chat_db/tests.rs",
+            "src/agent_run/subagent_e2e_tests.rs",
+        ] {
+            assert!(is_test_path(p), "{p}");
+        }
+        for p in ["src/a.ts", "src/testing.rs", "latest/x.py"] {
+            assert!(!is_test_path(p), "{p}");
+        }
+        for p in [
+            "package.json",
+            "src-tauri/Cargo.toml",
+            "tsconfig.node.json",
+            "vitest.config.ts",
+            ".eslintrc.cjs",
+        ] {
+            assert!(is_check_setup(p), "{p}");
+        }
+        assert!(!is_check_setup("src/config.ts"));
+    }
+
+    #[test]
+    fn weakened_tests_are_flagged() {
+        let before =
+            "test('a', () => { expect(1).toBe(1); });\ntest('b', () => { expect(2).toBe(2); });\n";
+        let skipped = "test.skip('a', () => { expect(1).toBe(1); });\ntest('b', () => { expect(2).toBe(2); });\n";
+        let flags = integrity_flags("src/a.test.ts", Some(before), Some(skipped));
+        assert_eq!(flags, ["src/a.test.ts: skip markers added (0 → 1)"]);
+
+        let removed = "test('b', () => { expect(2).toBe(2); });\n";
+        let flags = integrity_flags("src/a.test.ts", Some(before), Some(removed));
+        assert!(
+            flags.contains(&"src/a.test.ts: 1 test removed (2 → 1)".to_string()),
+            "{flags:?}"
+        );
+        assert!(flags.iter().any(|f| f.contains("fewer assertions (2 → 1)")));
+
+        let only = before.replace("test('a'", "test.only('a'");
+        assert!(
+            integrity_flags("src/a.test.ts", Some(before), Some(&only))[0].contains("added `only`")
+        );
+        assert_eq!(
+            integrity_flags("src/a.test.ts", Some(before), None),
+            ["src/a.test.ts: deleted, with 2 tests"]
+        );
+        // New tests, more assertions, and unrelated edits are fine.
+        let more = format!("{before}test('c', () => {{ expect(3).toBe(3); }});\n");
+        assert!(integrity_flags("src/a.test.ts", Some(before), Some(&more)).is_empty());
+        assert!(integrity_flags("src/new.test.ts", None, Some(before)).is_empty());
+
+        // Rust: an inline test module in a source file.
+        let rs =
+            "fn f() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { assert!(true); }\n}\n";
+        let ignored = rs.replace("#[test]", "#[test]\n    #[ignore]");
+        assert_eq!(
+            integrity_flags("src/lib.rs", Some(rs), Some(&ignored)),
+            ["src/lib.rs: skip markers added (0 → 1)"]
+        );
+        // A source file's own assertions aren't counted.
+        assert!(integrity_flags(
+            "src/lib.rs",
+            Some("fn f() { assert!(x); }"),
+            Some("fn f() {}")
+        )
+        .is_empty());
+
+        // Python and Go.
+        let py = "def test_a():\n    assert f() == 1\n";
+        let py_skip = "import pytest\n@pytest.mark.skip\ndef test_a():\n    assert f() == 1\n";
+        assert_eq!(
+            integrity_flags("tests/test_a.py", Some(py), Some(py_skip)).len(),
+            1
+        );
+        let go = "func TestA(t *testing.T) {\n\tif f() != 1 { t.Fatal(\"x\") }\n}\n";
+        let go_skip =
+            "func TestA(t *testing.T) {\n\tt.Skip()\n\tif f() != 1 { t.Fatal(\"x\") }\n}\n";
+        assert_eq!(
+            integrity_flags("a_test.go", Some(go), Some(go_skip)).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn manifests_are_flagged_for_their_check_settings_only() {
+        let cargo = "[package]\nname = \"x\"\n\n[dependencies]\nserde = \"1\"\n\n[lints.rust]\nunsafe_code = \"forbid\"\n";
+        let dep = cargo.replace("serde = \"1\"", "serde = \"1\"\nregex = \"1\"");
+        assert!(integrity_flags("Cargo.toml", Some(cargo), Some(&dep)).is_empty());
+        let lints = cargo.replace("forbid", "allow");
+        assert_eq!(
+            integrity_flags("Cargo.toml", Some(cargo), Some(&lints)),
+            ["Cargo.toml: changed, and it decides what the checks run (its test or lint settings)"]
+        );
+        let py = "[project]\nname = \"x\"\n[tool.pytest.ini_options]\naddopts = \"-q\"\n";
+        let py_dep = py.replace("[project]\n", "[project]\ndependencies = [\"x\"]\n");
+        assert!(integrity_flags("pyproject.toml", Some(py), Some(&py_dep)).is_empty());
+        let py_ignore = py.replace("-q", "-q --ignore=tests");
+        assert_eq!(
+            integrity_flags("pyproject.toml", Some(py), Some(&py_ignore)).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn check_setup_changes_are_flagged() {
+        let pkg = r#"{ "name": "x", "version": "1.0.0", "scripts": { "test": "vitest run" } }"#;
+        let bumped = r#"{ "name": "x", "version": "1.0.1", "scripts": { "test": "vitest run" } }"#;
+        let neutered = r#"{ "name": "x", "version": "1.0.0", "scripts": { "test": "true" } }"#;
+        assert!(integrity_flags("package.json", Some(pkg), Some(bumped)).is_empty());
+        assert_eq!(
+            integrity_flags("package.json", Some(pkg), Some(neutered)),
+            ["package.json: changed, and it decides what the checks run (its scripts)"]
+        );
+        assert_eq!(
+            integrity_flags("tsconfig.json", Some("{}"), Some(r#"{"x":1}"#)).len(),
+            1
+        );
+        assert!(
+            integrity_flags("tsconfig.json", None, Some("{}")).is_empty(),
+            "a new config isn't a change"
+        );
+    }
+
+    #[test]
+    fn keys_are_relative_to_the_root() {
+        assert_eq!(rel_key("/p", "src/a.ts"), "src/a.ts");
+        assert_eq!(rel_key("/p/", "./src/a.ts"), "src/a.ts");
+        assert_eq!(rel_key("/p", "/p/src/a.ts"), "src/a.ts");
+    }
+}

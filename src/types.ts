@@ -238,7 +238,8 @@ export interface ToolMeta {
     | 'repetition'
     | 'plan'
     | 'subagentBudget'
-    | 'subagentFormat';
+    | 'subagentFormat'
+    | 'integrity';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */

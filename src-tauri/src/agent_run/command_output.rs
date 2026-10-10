@@ -8,6 +8,10 @@
 //!     and final summary, not thousands of lines of passing tests.
 //!   - `error_locations`: the files the errors point at, so a report can say
 //!     whether they're files the agent changed.
+//!   - `failure_keys`: a stable key for each failure (an error, a failing
+//!     test), the same when only line numbers moved, so the verification
+//!     gate can tell progress from churn between rounds (repair.rs).
+//!   - `tests_ran`: how many tests a test run ran, from its summary.
 //!
 //! Plain text heuristics that work across tsc, eslint, cargo, rustc, jest,
 //! vitest, pytest and go test, without parsing any one tool's format.
@@ -246,6 +250,205 @@ pub fn split_by_changed(
     locations.iter().cloned().partition(|loc| is_changed(loc))
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Failure keys
+ * ---------------------------------------------------------------------------
+ */
+
+/// Most keys kept for one check: past this, the rest are one key.
+pub const MAX_KEYS: usize = 50;
+const MAX_MESSAGE_CHARS: usize = 160;
+
+/// tsc: `src/a.ts(12,5): error TS2322: …` and `src/a.ts:12:5 - error TS2322: …`.
+static TSC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?P<file>[^\s(:]+\.[A-Za-z0-9]+)(?:\(\d+,\d+\)|:\d+:\d+)\s*[:-]\s*error\s+(?P<code>TS\d+)\s*:\s*(?P<msg>.+)$").unwrap()
+});
+/// rustc and other compilers: `error[E0308]: mismatched types` (its file on
+/// a later `--> src/main.rs:3:5` line).
+static RUST_ERROR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^error(?:\[(?P<code>[A-Z]+\d+)\])?:\s*(?P<msg>.+)$").unwrap());
+static RUST_ARROW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*-->\s*(?P<file>[^\s:]+\.[A-Za-z0-9]+):\d+").unwrap());
+/// Summary lines that say it failed, not what did.
+static RUST_SUMMARY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(could not compile|aborting due to|test failed|\d+ previous errors?|build failed|failed to run|Some errors have detailed)").unwrap()
+});
+/// `path:12:5: error: msg` (gcc, clang), `path:12:5: F401 msg` (ruff),
+/// `./a.go:3:2: msg` (go vet).
+static GENERIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?P<file>(?:\.{1,2}/)?[A-Za-z0-9_@./+-]+\.[A-Za-z][A-Za-z0-9]{0,5}):\d+(?::\d+)?:\s*(?:(?:fatal\s+)?error:\s*|(?P<code>[A-Z]{1,4}\d{2,5})\s+)?(?P<msg>.+)$").unwrap()
+});
+/// eslint (stylish): a file on its own line, then `  12:5  error  msg  rule`.
+static ESLINT_FILE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?P<file>(?:/|\.{0,2}/?)[A-Za-z0-9_@./+-]+\.[A-Za-z][A-Za-z0-9]{0,5})\s*$")
+        .unwrap()
+});
+static ESLINT_ROW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s+\d+:\d+\s+error\s+(?P<msg>.+?)(?:\s{2,}(?P<code>[@\w/-]+))?\s*$").unwrap()
+});
+/// Failing tests: cargo, go, pytest, jest/vitest.
+static TEST_FAILS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"^test (?P<name>\S+) \.\.\. FAILED$",
+        r"^\s*--- FAIL: (?P<name>\S+)",
+        r"^(?:FAILED|ERROR) (?P<name>\S+::\S+)",
+        r"^\s*(?:✕|×|✗)\s+(?P<name>.+?)(?:\s+\d+\s*m?s)?$",
+        r"^\s*FAIL\s+(?P<name>\S+\s+>\s+.+?)(?:\s+\d+\s*m?s)?$",
+        r"^\s*●\s+(?P<name>.+›.+)$",
+    ]
+    .iter()
+    .map(|r| Regex::new(r).unwrap())
+    .collect()
+});
+/// Line and column numbers inside a message, which move when code above
+/// them changes: `a.rs:12:5`, `(12,5)`, `line 12`.
+static MESSAGE_LOCATION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r":\d+(?::\d+)?\b|\(\d+,\s*\d+\)|\bline \d+\b").unwrap());
+
+fn key_message(msg: &str) -> String {
+    let m = MESSAGE_LOCATION.replace_all(msg, "");
+    let m = m.split_whitespace().collect::<Vec<_>>().join(" ");
+    crate::chat_db::store::char_prefix(&m, MAX_MESSAGE_CHARS).to_string()
+}
+
+fn key_path(path: &str) -> String {
+    let p = path.replace('\\', "/");
+    p.strip_prefix("./").unwrap_or(&p).to_string()
+}
+
+/// A key for each failure in a failed check's output: for an error, the
+/// check, file, error code and message without line numbers; for a failing
+/// test, its name. Output with neither is the check alone. Each key once,
+/// sorted; at most MAX_KEYS (the rest are counted in one key).
+pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
+    let clean = clean_output(output);
+    let lines: Vec<&str> = clean.lines().collect();
+    let mut keys: Vec<String> = Vec::new();
+    let push = |k: String, keys: &mut Vec<String>| {
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    };
+    let mut eslint_file: Option<String> = None;
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(c) = TSC.captures(line) {
+            push(
+                format!(
+                    "{kind}|{}|{}|{}",
+                    key_path(&c["file"]),
+                    &c["code"],
+                    key_message(&c["msg"])
+                ),
+                &mut keys,
+            );
+            continue;
+        }
+        if let Some(c) = RUST_ERROR.captures(line) {
+            if RUST_SUMMARY.is_match(&c["msg"]) {
+                continue;
+            }
+            let file = lines[i + 1..lines.len().min(i + 6)]
+                .iter()
+                .find_map(|l| RUST_ARROW.captures(l).map(|a| key_path(&a["file"])))
+                .unwrap_or_default();
+            let code = c.name("code").map_or("", |m| m.as_str());
+            push(
+                format!("{kind}|{file}|{code}|{}", key_message(&c["msg"])),
+                &mut keys,
+            );
+            continue;
+        }
+        if let Some(c) = TEST_FAILS.iter().find_map(|r| r.captures(line)) {
+            push(format!("{kind}|test|{}", c["name"].trim()), &mut keys);
+            continue;
+        }
+        if let Some(c) = ESLINT_FILE.captures(line) {
+            eslint_file = Some(key_path(&c["file"]));
+            continue;
+        }
+        if let (Some(file), Some(c)) = (&eslint_file, ESLINT_ROW.captures(line)) {
+            let code = c.name("code").map_or("", |m| m.as_str());
+            push(
+                format!("{kind}|{file}|{code}|{}", key_message(&c["msg"])),
+                &mut keys,
+            );
+            continue;
+        }
+        if line.trim().is_empty() {
+            eslint_file = None;
+        }
+        if let Some(c) = GENERIC.captures(line) {
+            let file = key_path(&c["file"]);
+            // Stack frames (indented) and library paths aren't the errors;
+            // a line that starts with its path is (go vet, gcc).
+            let indented = line.starts_with(char::is_whitespace);
+            if file.contains("node_modules/")
+                || indented && !FAILURE_LINE.is_match(line) && c.name("code").is_none()
+            {
+                continue;
+            }
+            let code = c.name("code").map_or("", |m| m.as_str());
+            push(
+                format!("{kind}|{file}|{code}|{}", key_message(&c["msg"])),
+                &mut keys,
+            );
+        }
+    }
+    if keys.is_empty() {
+        keys.push(format!(
+            "{kind}|{}",
+            if timed_out { "timed out" } else { "failed" }
+        ));
+    }
+    keys.sort();
+    if keys.len() > MAX_KEYS {
+        let more = keys.len() - (MAX_KEYS - 1);
+        keys.truncate(MAX_KEYS - 1);
+        keys.push(format!("{kind}|and {more} more"));
+    }
+    keys
+}
+
+/// How many tests a run ran, from its summary lines (cargo, vitest, jest,
+/// pytest); None when it doesn't say.
+pub fn tests_ran(output: &str) -> Option<u32> {
+    static CARGO: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"test result: \w+\. (\d+) passed; (\d+) failed").unwrap());
+    static JS_TOTAL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*Tests:?\s+(.*?)(?:\((\d+)\)|(\d+) total)").unwrap());
+    static JS_PARTS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(\d+) (?:passed|failed)").unwrap());
+    static PYTEST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^=+ (.*\b(?:passed|failed)\b.*) in [\d.]+s").unwrap());
+    let clean = clean_output(output);
+    let cargo: Vec<u32> = CARGO
+        .captures_iter(&clean)
+        .map(|c| c[1].parse::<u32>().unwrap_or(0) + c[2].parse::<u32>().unwrap_or(0))
+        .collect();
+    if !cargo.is_empty() {
+        return Some(cargo.iter().sum());
+    }
+    if let Some(c) = JS_TOTAL.captures_iter(&clean).last() {
+        if let Some(total) = c.get(2).or(c.get(3)) {
+            return total.as_str().parse().ok();
+        }
+        let sum: u32 = JS_PARTS
+            .captures_iter(&c[1])
+            .filter_map(|p| p[1].parse::<u32>().ok())
+            .sum();
+        return (sum > 0).then_some(sum);
+    }
+    if let Some(c) = PYTEST.captures_iter(&clean).last() {
+        let sum: u32 = JS_PARTS
+            .captures_iter(&c[1])
+            .filter_map(|p| p[1].parse::<u32>().ok())
+            .sum();
+        return Some(sum);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +548,100 @@ mod tests {
             ["src/a.ts"],
             "each once"
         );
+    }
+
+    #[test]
+    fn failure_keys_survive_moved_lines() {
+        let before = "src/a.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.";
+        let after = "src/a.ts(40,9): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.";
+        assert_eq!(
+            failure_keys("typecheck", before, false),
+            failure_keys("typecheck", after, false)
+        );
+        assert_eq!(
+            failure_keys("typecheck", before, false),
+            ["typecheck|src/a.ts|TS2322|Type 'string' is not assignable to type 'number'."]
+        );
+        let pretty = "src/b.ts:3:1 - error TS2304: Cannot find name 'x'.";
+        assert_eq!(
+            failure_keys("typecheck", pretty, false),
+            ["typecheck|src/b.ts|TS2304|Cannot find name 'x'."]
+        );
+    }
+
+    #[test]
+    fn failure_keys_for_rust_and_other_tools() {
+        let cargo = "error[E0308]: mismatched types\n  --> src/main.rs:3:5\n   |\n3  |     x\n\nerror: could not compile `app` due to 1 previous error";
+        assert_eq!(
+            failure_keys("build", cargo, false),
+            ["build|src/main.rs|E0308|mismatched types"]
+        );
+        let moved = cargo.replace("main.rs:3:5", "main.rs:30:1");
+        assert_eq!(
+            failure_keys("build", &moved, false),
+            failure_keys("build", cargo, false)
+        );
+
+        let eslint = "/p/src/a.ts\n  3:7  error  'x' is assigned a value but never used  no-unused-vars\n  9:1  warning  Unexpected console  no-console\n\n✖ 1 problem";
+        assert_eq!(
+            failure_keys("lint", eslint, false),
+            ["lint|/p/src/a.ts|no-unused-vars|'x' is assigned a value but never used"]
+        );
+        let ruff = "app/x.py:1:8: F401 [*] `os` imported but unused\nFound 1 error.";
+        assert_eq!(
+            failure_keys("lint", ruff, false),
+            ["lint|app/x.py|F401|[*] `os` imported but unused"]
+        );
+        let go = "./main.go:7:2: undefined: foo";
+        assert_eq!(
+            failure_keys("build", go, false),
+            ["build|main.go||undefined: foo"]
+        );
+        // A stack frame isn't an error of its own.
+        assert_eq!(
+            failure_keys("test", "    at src/a.ts:3:4\nError: boom", false),
+            ["test|failed"]
+        );
+    }
+
+    #[test]
+    fn failing_tests_are_keyed_by_name() {
+        let cargo = "running 3 tests\ntest a::ok ... ok\ntest a::bad ... FAILED\n\nfailures:\n\n---- a::bad stdout ----\nthread panicked at src/a.rs:9:5\n\ntest result: FAILED. 2 passed; 1 failed";
+        let keys = failure_keys("test", cargo, false);
+        assert!(keys.contains(&"test|test|a::bad".to_string()), "{keys:?}");
+        assert_eq!(tests_ran(cargo), Some(3));
+
+        let pytest = "FAILED tests/test_x.py::test_add - assert 1 == 2\n===== 1 failed, 4 passed in 0.12s =====";
+        assert_eq!(
+            failure_keys("test", pytest, false),
+            ["test|test|tests/test_x.py::test_add"]
+        );
+        assert_eq!(tests_ran(pytest), Some(5));
+
+        let vitest = " FAIL  src/a.test.ts > math > adds 3ms\n × math > adds\n Test Files  1 failed (1)\n      Tests  1 failed | 6 passed (7)";
+        let keys = failure_keys("test", vitest, false);
+        assert!(
+            keys.contains(&"test|test|math > adds".to_string()),
+            "{keys:?}"
+        );
+        assert_eq!(tests_ran(vitest), Some(7));
+        assert_eq!(
+            tests_ran("Tests:       1 failed, 2 passed, 3 total"),
+            Some(3)
+        );
+        assert_eq!(tests_ran("nothing to see"), None);
+    }
+
+    #[test]
+    fn a_failure_with_nothing_recognizable_is_the_check_alone() {
+        assert_eq!(
+            failure_keys("build", "Segmentation fault", false),
+            ["build|failed"]
+        );
+        assert_eq!(failure_keys("test", "", true), ["test|timed out"]);
+        let many: String = (0..80).map(|i| format!("test t{i} ... FAILED\n")).collect();
+        let keys = failure_keys("test", &many, false);
+        assert_eq!(keys.len(), MAX_KEYS);
+        assert!(keys.last().unwrap().ends_with("and 31 more"));
     }
 }

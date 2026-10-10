@@ -86,6 +86,9 @@ impl<R: Runtime> Run<R> {
                 "repetition" => "the model kept repeating itself",
                 "error" => "the run ended with an error",
                 "verify-gave-up" | "verify-unresolved" => "the checks still fail",
+                "verify-flagged" => {
+                    "the change weakens tests or what the checks run: review it first"
+                }
                 "verify-needs-approval" => "the checks wait for your approval",
                 "unfinished-checklist" => "the checklist isn't finished",
                 _ => "the run didn't finish",

@@ -5,7 +5,12 @@
 // checks on demand. Updates live while the checks run.
 import { For, Match, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
-import type { CheckResult, VerificationMeta } from '../lib/verification';
+import {
+  describeFailure,
+  progressLine,
+  type CheckResult,
+  type VerificationMeta,
+} from '../lib/verification';
 
 function headline(meta: VerificationMeta, interrupted: boolean): string {
   if (interrupted) return 'Checks didn’t finish: the run ended while they were running.';
@@ -17,7 +22,13 @@ function headline(meta: VerificationMeta, interrupted: boolean): string {
     case 'failed':
       return `Checks failed: sent to the agent to fix (attempt ${meta.round} of ${meta.maxRounds}).`;
     case 'gave-up':
-      return `Checks still fail after ${meta.round} attempts. The agent stopped here.`;
+      return meta.rolledBack
+        ? `The last fix broke something that passed before, so it was rolled back. Checks still fail after ${meta.round} attempts: the agent stopped here.`
+        : `Checks still fail after ${meta.round} attempts. The agent stopped here.`;
+    case 'rolled-back':
+      return `The fix broke something that passed before, so it was rolled back (attempt ${meta.round} of ${meta.maxRounds}).`;
+    case 'flagged':
+      return 'Checks pass, but the change weakens tests or what the checks run: review it before relying on it.';
     case 'unresolved':
       return 'The agent finished without changing anything after the failed checks.';
     case 'needs-approval':
@@ -164,6 +175,31 @@ export default function VerificationRecord(props: {
               </li>
             )}
           </For>
+        </ul>
+      </Show>
+
+      <Show when={props.meta.status !== 'running' && progressLine(props.meta)}>
+        {(line) => <div class="chat-verify-progress">{line()}</div>}
+      </Show>
+
+      <Show when={props.meta.rolledBack}>
+        {(rb) => (
+          <details class="chat-verify-rollback">
+            <summary>
+              Broke: {rb().broke.map(describeFailure).join(', ')}
+              {rb().restored.length ? ` · put back: ${rb().restored.join(', ')}` : ''}
+              {rb().skipped.length ? ` · left as they were: ${rb().skipped.join(', ')}` : ''}
+            </summary>
+            <Show when={rb().diff}>
+              <pre class="chat-verify-output">{rb().diff}</pre>
+            </Show>
+          </details>
+        )}
+      </Show>
+
+      <Show when={props.meta.integrity?.length}>
+        <ul class="chat-verify-flags">
+          <For each={props.meta.integrity}>{(flag) => <li>{flag}</li>}</For>
         </ul>
       </Show>
 

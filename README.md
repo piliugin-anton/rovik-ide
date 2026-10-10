@@ -47,7 +47,10 @@ Electron-based editors.
   also let a second "reviewer" AI model approve routine actions.
 - **Automatic checks.** When the agent finishes, the IDE runs the project's
   type check, lint and tests. If anything fails, the agent is sent back to
-  fix it.
+  fix it. It's told when a fix made no progress, a fix that breaks
+  something that passed before is rolled back, and tests weakened to pass
+  (skipped, deleted, fewer assertions) are flagged for you instead of
+  counting as verified.
 - **Several chats at once, safely.** Each chat works on its own private
   copy of your changes, so two chats (or a chat and you) never overwrite
   each other. When a chat finishes, its changes are merged into the

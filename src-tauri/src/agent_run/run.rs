@@ -14,7 +14,7 @@ use super::permissions::ChecklistMode;
 use super::project::{self, ProjectCheck};
 use super::subagent_run::SubCtx;
 use super::{
-    failure, log, plan, repetition, subagent, tools, AgentState, Controls, EffortPick,
+    failure, log, plan, repair, repetition, subagent, tools, AgentState, Controls, EffortPick,
     ModelProfile, StartKind, StartRequest, StopSignal,
 };
 use crate::agent::{
@@ -243,6 +243,18 @@ pub struct Run<R: Runtime> {
     pub(super) role: Role,
     /// The subagents this run started (a lead's).
     pub(super) ledger: subagent::Ledger,
+    /// Each verification round's failures, oldest first (repair.rs, R01):
+    /// a rolled-back round isn't among them.
+    pub(super) verify_history: Vec<repair::RoundFailures>,
+    /// The last round's results, reported again after a rollback.
+    pub(super) last_verify_results: Vec<super::verify::CheckResult>,
+    /// The files as they were before the current fix round (R02).
+    pub(super) checkpoint: Option<repair::Checkpoint>,
+    /// Each file as it was when the run first wrote it (R05), by path
+    /// relative to the root; None: it didn't exist.
+    pub(super) baseline: std::collections::HashMap<String, Option<String>>,
+    /// Changes that weaken the checks, which the agent was asked about (R05).
+    pub(super) integrity_open: Vec<String>,
 }
 
 /// Who a run works for.
@@ -679,6 +691,11 @@ impl<R: Runtime> Run<R> {
             continue_reply,
             role: Role::Lead,
             ledger: subagent::Ledger::default(),
+            verify_history: Vec::new(),
+            last_verify_results: Vec::new(),
+            checkpoint: None,
+            baseline: Default::default(),
+            integrity_open: Vec::new(),
         };
         Ok(Some((run, entry)))
     }
@@ -764,6 +781,11 @@ impl<R: Runtime> Run<R> {
             continue_reply: false,
             role: Role::Sub(Box::new(sub)),
             ledger: subagent::Ledger::default(),
+            verify_history: Vec::new(),
+            last_verify_results: Vec::new(),
+            checkpoint: None,
+            baseline: Default::default(),
+            integrity_open: Vec::new(),
         }
     }
 

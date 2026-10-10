@@ -571,6 +571,11 @@ impl<R: Runtime> Run<R> {
             (Some(p), Some(root)) => Some(tools::to_absolute_path(p, root)),
             _ => None,
         };
+        // What the file was, for the fix round's checkpoint and the run's
+        // test-integrity baseline (repair.rs).
+        if let Some(path) = &write_path {
+            self.note_before_write(path);
+        }
         // The file before a write, so the guard can tell an edit undoing earlier ones.
         let before = abs_write_path
             .as_ref()
