@@ -239,7 +239,8 @@ export interface ToolMeta {
     | 'plan'
     | 'subagentBudget'
     | 'subagentFormat'
-    | 'integrity';
+    | 'integrity'
+    | 'review';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */
@@ -256,6 +257,8 @@ export interface ToolMeta {
   mode?: import('./lib/chatMode').ChatMode;
   /** Agent message implementing a saved plan: the first turn forces the `todo` tool. */
   implementsPlan?: boolean;
+  /** The change reviewer's record (lib/changeReview.ts). */
+  review?: import('./lib/changeReview').ReviewMeta;
   /** A `task` result: the subagent that answered it (lib/subagents.ts). */
   subagent?: import('./lib/subagents').SubagentMeta;
   /** A subagent chat's first message: the lead's brief. */

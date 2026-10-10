@@ -48,15 +48,24 @@ const MAX_PATHS: usize = 20;
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
     Scout,
+    /// Reviews the whole change before the checks run (change_review.rs).
+    Reviewer,
 }
 
 impl Kind {
-    pub const ALL: &'static [Kind] = &[Kind::Scout];
+    pub const ALL: &'static [Kind] = &[Kind::Scout, Kind::Reviewer];
 
     pub fn id(self) -> &'static str {
         match self {
             Kind::Scout => "scout",
+            Kind::Reviewer => "reviewer",
         }
+    }
+
+    /// Whether the lead starts it with `task`; the others the IDE starts
+    /// itself, and they don't count against the run's limit (D11).
+    pub fn lead_starts(self) -> bool {
+        matches!(self, Kind::Scout)
     }
 
     pub fn parse(s: &str) -> Option<Kind> {
@@ -66,8 +75,17 @@ impl Kind {
     pub fn spec(self) -> &'static KindSpec {
         match self {
             Kind::Scout => &SCOUT,
+            Kind::Reviewer => &super::change_review::REVIEWER,
         }
     }
+}
+
+/// How a kind's report is checked.
+pub enum Format {
+    /// `## ` sections, the first `required` of them needed.
+    Sections,
+    /// The reviewers' findings list (change_review.rs `parse_findings`).
+    Findings,
 }
 
 /// What the harness fixes for a kind: the model can't widen any of it.
@@ -81,8 +99,9 @@ pub struct KindSpec {
     /// `required` must be there.
     pub sections: &'static [&'static str],
     pub required: usize,
+    pub format: Format,
     /// The kind's system prompt; `{tool_calls}` and `{minutes}` are filled in.
-    prompt: &'static str,
+    pub(super) prompt: &'static str,
 }
 
 impl KindSpec {
@@ -165,6 +184,7 @@ static SCOUT: KindSpec = KindSpec {
     },
     sections: &["Answer", "Evidence", "Open questions", "Web sources"],
     required: 1,
+    format: Format::Sections,
     prompt: SCOUT_PROMPT,
 };
 
@@ -207,6 +227,8 @@ pub struct SubagentConfig {
     pub kinds: HashMap<String, KindConfig>,
     pub max_at_once: Option<usize>,
     pub max_per_run: Option<usize>,
+    /// The change reviewer runs on changes of at least this many lines.
+    pub review_min_lines: Option<usize>,
 }
 
 impl SubagentConfig {
@@ -218,13 +240,25 @@ impl SubagentConfig {
         self.kinds.get(kind.id()).filter(|k| k.enabled)
     }
 
-    /// The kinds the lead may start, in a stable order.
+    /// The kinds that are on, in a stable order.
     pub fn enabled_kinds(&self) -> Vec<Kind> {
         Kind::ALL
             .iter()
             .copied()
             .filter(|k| self.kind(*k).is_some())
             .collect()
+    }
+
+    /// The kinds the lead may start with `task`.
+    pub fn lead_kinds(&self) -> Vec<Kind> {
+        self.enabled_kinds()
+            .into_iter()
+            .filter(|k| k.lead_starts())
+            .collect()
+    }
+
+    pub fn review_min_lines(&self) -> usize {
+        self.review_min_lines.unwrap_or(10).min(10_000)
     }
 
     pub fn max_at_once(&self) -> usize {
@@ -507,6 +541,9 @@ pub fn sections(text: &str) -> Sections {
 /// What's wrong with a report's format, for the repair turn (S13); None
 /// when it follows the format. A blocked report needs only its reason.
 pub fn format_problem(spec: &KindSpec, text: &str) -> Option<String> {
+    if let Format::Findings = spec.format {
+        return super::change_review::parse_findings(text).err();
+    }
     let found = sections(text);
     if found.get("Blocked").is_some_and(|b| !b.is_empty()) {
         return None;

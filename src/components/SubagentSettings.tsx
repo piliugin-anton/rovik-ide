@@ -84,8 +84,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           <span>
             Use subagents
             <span class="setting-checkbox-sub">
-              Helpers the agent starts for exploring the code. Each works in a fresh context of its
-              own and hands back a short report. They use more tokens. Off: chats work exactly as
+              Helpers for exploring and reviewing the code. Each works in a fresh context of its own
+              and hands back a short report. They use more tokens. Off: chats work exactly as
               without subagents.
             </span>
           </span>
@@ -125,7 +125,7 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   <span>
                     {kind.label}
                     <span class="setting-checkbox-sub">
-                      {kind.hint} Used in chats with a project folder, in Agent and Plan mode.
+                      {kind.hint} {kind.when}
                     </span>
                   </span>
                 </label>
@@ -199,6 +199,17 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
               max={LIMITS.perRun.max}
               disabled={off()}
               onChange={(v) => patch({ maxPerRun: Math.round(v ?? LIMITS.perRun.default) })}
+            />
+            <NumberInput
+              label="Review changes from (lines)"
+              value={s().reviewMinLines}
+              placeholder={LIMITS.reviewMinLines.default}
+              min={LIMITS.reviewMinLines.min}
+              max={LIMITS.reviewMinLines.max}
+              disabled={off()}
+              onChange={(v) =>
+                patch({ reviewMinLines: Math.round(v ?? LIMITS.reviewMinLines.default) })
+              }
             />
           </div>
           <For each={SUBAGENT_KINDS}>

@@ -736,6 +736,7 @@ impl<R: Runtime> Run<R> {
                     self.changed_files.push(path.clone());
                 }
                 self.writes_since_verify = true;
+                self.writes_since_review = true;
                 self.map_writes_since_refresh += 1;
             }
             // The parse caches key on mtime+size: a fast same-size rewrite

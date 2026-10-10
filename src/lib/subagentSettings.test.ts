@@ -65,6 +65,8 @@ test('defaults: everything off, chats work as before', () => {
   const config = resolveSubagentConfig(s, providers, resolve);
   assert.equal(config.enabled, false);
   assert.deepEqual(ids(config.kinds.scout!.models), ['chat']);
+  assert.equal(config.kinds.reviewer!.enabled, false);
+  assert.equal(config.reviewMinLines, 10);
 });
 
 test('saved settings load back, and garbage is dropped', () => {
@@ -73,6 +75,7 @@ test('saved settings load back, and garbage is dropped', () => {
     enabled: true,
     defaultModel: sel('a', 'cheap'),
     kinds: {
+      ...DEFAULT_SUBAGENT_SETTINGS.kinds,
       scout: {
         enabled: true,
         model: sel('a', 'strong'),
@@ -87,6 +90,7 @@ test('saved settings load back, and garbage is dropped', () => {
     enabled: 'yes',
     maxAtOnce: 99,
     kinds: {
+      ...DEFAULT_SUBAGENT_SETTINGS.kinds,
       scout: {
         enabled: true,
         model: { providerId: 'a', modelId: 'strong' },
@@ -110,6 +114,7 @@ test('a kind tries its model, its fallbacks, the default model, then the chat', 
     defaultModel: sel('a', 'cheap'),
     defaultFallbacks: [sel('b', 'other')],
     kinds: {
+      ...DEFAULT_SUBAGENT_SETTINGS.kinds,
       scout: {
         enabled: true,
         model: sel('a', 'strong'),
@@ -136,7 +141,7 @@ test('a kind tries its model, its fallbacks, the default model, then the chat', 
   // "Default": the default model's chain, then the chat's.
   const byDefault = {
     ...s,
-    kinds: { scout: { ...s.kinds.scout, model: 'default' as const, fallbacks: [] } },
+    kinds: { ...s.kinds, scout: { ...s.kinds.scout, model: 'default' as const, fallbacks: [] } },
   };
   assert.deepEqual(ids(resolveSubagentConfig(byDefault, providers, resolve).kinds.scout!.models), [
     'a::cheap',
@@ -156,6 +161,7 @@ test("a kind's effort goes in the forms its first model takes", () => {
     ...DEFAULT_SUBAGENT_SETTINGS,
     enabled: true,
     kinds: {
+      ...DEFAULT_SUBAGENT_SETTINGS.kinds,
       scout: {
         enabled: true,
         model: sel('b', 'other'),
@@ -171,7 +177,7 @@ test("a kind's effort goes in the forms its first model takes", () => {
     reasoning_formats: ['reasoning_effort'],
   });
   assert.equal(scout.maxMinutes, 2);
-  const chat = { ...s, kinds: { scout: { ...s.kinds.scout, model: 'chat' as const } } };
+  const chat = { ...s, kinds: { ...s.kinds, scout: { ...s.kinds.scout, model: 'chat' as const } } };
   assert.deepEqual(resolveSubagentConfig(chat, providers, resolve).kinds.scout!.options, {
     reasoning_effort: 'high',
   });
@@ -182,6 +188,7 @@ test('models from other providers than the chat’s are named (K18)', () => {
     ...DEFAULT_SUBAGENT_SETTINGS,
     enabled: true,
     kinds: {
+      ...DEFAULT_SUBAGENT_SETTINGS.kinds,
       scout: {
         enabled: true,
         model: sel('b', 'other'),

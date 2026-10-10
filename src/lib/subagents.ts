@@ -177,7 +177,7 @@ export async function openTranscript(childDialogId: string, dialogId: string, to
  * ---------------------------------------------------------------------------
  */
 
-const KIND_LABELS: Record<string, string> = { scout: 'Scout' };
+const KIND_LABELS: Record<string, string> = { scout: 'Scout', reviewer: 'Change reviewer' };
 
 export const kindLabel = (kind: string | undefined) =>
   (kind && KIND_LABELS[kind]) || (kind ? kind[0].toUpperCase() + kind.slice(1) : 'Subagent');

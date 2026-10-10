@@ -24,7 +24,7 @@
 use super::events::{emit, AgentEvent};
 use super::guard::FinishedCall;
 use super::run::{new_message, unanswered_tool_calls, Role, Run, IDE_NOTE};
-use super::subagent::{self, Brief, Budget, Kind, SubResult, SubStatus, SubagentConfig};
+use super::subagent::{self, Budget, Kind, SubResult, SubStatus, SubagentConfig};
 use super::{failure, log, permissions, ModelProfile};
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewChildDialog, ToolCall};
@@ -255,15 +255,35 @@ impl<R: Runtime> Run<R> {
             }
         };
 
+        let budget = brief.budget(config.budget(kind));
+        let sub = self.new_sub(kind, &tc.id, budget, config).await;
+        match &existing {
+            Some(_) => self.close_child_calls(&child_id).await?,
+            None => {
+                self.store_child(&child_id, &tc.id, kind, &brief.goal, brief.message())
+                    .await?
+            }
+        }
+        self.launch_child(child_id, &tc.id, &brief.goal, sub)
+    }
+
+    /// A subagent's context, before it has a run.
+    async fn new_sub(
+        &self,
+        kind: Kind,
+        call_id: &str,
+        budget: Budget,
+        config: &SubagentConfig,
+    ) -> SubCtx {
         let models = config.models(kind, &self.profile);
         let kind_options = config.kinds.get(kind.id()).and_then(|k| k.options.clone());
         let mut sub = SubCtx {
             kind,
             parent_dialog_id: self.dialog_id.clone(),
-            parent_call_id: tc.id.clone(),
+            parent_call_id: call_id.to_string(),
             parent_request: self.latest_user_request().await,
             run_id: String::new(),
-            budget: brief.budget(config.budget(kind)),
+            budget,
             models_tried: vec![models[0].label.clone()],
             models,
             model_index: 0,
@@ -277,15 +297,22 @@ impl<R: Runtime> Run<R> {
             usage_seen: false,
         };
         sub.options = sub.options_for(&sub.models[0]);
+        sub
+    }
 
-        match &existing {
-            Some(_) => self.close_child_calls(&child_id).await?,
-            None => self.store_child(&child_id, tc, &brief).await?,
-        }
+    /// Registers a child under this run and prepares its run; the chat
+    /// hears it started.
+    fn launch_child(
+        &self,
+        child_id: String,
+        call_id: &str,
+        goal: &str,
+        mut sub: SubCtx,
+    ) -> Result<Run<R>, String> {
         let Some(controls) = self.state.register_child(
             &child_id,
             &self.dialog_id,
-            &tc.id,
+            call_id,
             &sub.models[0].id,
             sub.options.clone(),
         ) else {
@@ -296,38 +323,62 @@ impl<R: Runtime> Run<R> {
             &self.app,
             AgentEvent::SubagentStarted {
                 dialog_id: self.dialog_id.clone(),
-                tool_call_id: tc.id.clone(),
+                tool_call_id: call_id.to_string(),
                 child_dialog_id: child_id.clone(),
-                kind: kind.id().into(),
+                kind: sub.kind.id().into(),
                 model: sub.models[0].label.clone(),
-                goal: brief.goal.clone(),
+                goal: goal.to_string(),
             },
         );
         Ok(Run::prepare_child(self, child_id, sub, controls))
+    }
+
+    /// A subagent the IDE starts itself (a reviewer), for `call_id` (the
+    /// record that shows it): its brief is `message`, written by the
+    /// harness. Runs to its report as a task of its own, so Stop on this
+    /// run ends it cleanly. Err: it couldn't start.
+    pub(super) async fn run_ide_subagent(
+        &self,
+        kind: Kind,
+        call_id: &str,
+        goal: &str,
+        message: String,
+    ) -> Result<(String, Option<SubResult>), String> {
+        let config = self.state.config().subagents;
+        let sub = self
+            .new_sub(kind, call_id, config.budget(kind), &config)
+            .await;
+        let child_id = uuid::Uuid::new_v4().to_string();
+        self.store_child(&child_id, call_id, kind, goal, message)
+            .await?;
+        let child = self.launch_child(child_id.clone(), call_id, goal, sub)?;
+        let result = tauri::async_runtime::spawn(go_sub(child))
+            .await
+            .ok()
+            .flatten();
+        Ok((child_id, result))
     }
 
     /// The child chat, with the brief as its first message.
     async fn store_child(
         &self,
         child_id: &str,
-        tc: &ToolCall,
-        brief: &Brief,
+        call_id: &str,
+        kind: Kind,
+        goal: &str,
+        message: String,
     ) -> Result<(), String> {
         let dialog = NewChildDialog {
             id: child_id.to_string(),
             parent_id: self.dialog_id.clone(),
-            parent_call_id: tc.id.clone(),
-            kind: brief.kind.id().into(),
-            title: format!(
-                "{}: {}",
-                brief.kind.spec().label,
-                store::char_prefix(&brief.goal, 80)
-            ),
+            parent_call_id: call_id.to_string(),
+            kind: kind.id().into(),
+            title: format!("{}: {}", kind.spec().label, store::char_prefix(goal, 80)),
             created_at: store::now_ms(),
         };
-        let mut first = new_message("user", &brief.message());
+        let mut first = new_message("user", &message);
         first.meta =
-            Some(json!({ "subagentBrief": { "kind": brief.kind.id(), "parentCallId": tc.id } }));
+            Some(json!({ "subagentBrief": { "kind": kind.id(), "parentCallId": call_id } }));
         self.db
             .write(move |c| {
                 store::create_child_dialog(c, &dialog)?;

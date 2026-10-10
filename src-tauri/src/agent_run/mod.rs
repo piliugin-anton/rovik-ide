@@ -15,10 +15,12 @@
 //!   repair.rs     its fix rounds: progress, rollback, test integrity
 //!   guard.rs      checkpoints and loop detection
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
+//!   change_review.rs  a fresh-context review of the change before the checks
 //!   tools.rs      tool schemas and running a tool
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
 //!   command_output.rs: the rules and text they use
 
+pub mod change_review;
 pub mod command_output;
 pub mod diff;
 #[cfg(test)]

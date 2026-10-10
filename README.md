@@ -61,7 +61,9 @@ Electron-based editors.
 - **Subagents (optional, off by default).** The agent can send scouts:
   read-only helpers that explore one question about the code in a fresh
   context and hand back a short report, so long explorations don't fill
-  the agent's own context. Turn them on, and pick their models, in
+  the agent's own context. A change reviewer can read each finished
+  change with fresh eyes before the checks run; the agent fixes or
+  answers what it finds. Turn them on, and pick their models, in
   Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.

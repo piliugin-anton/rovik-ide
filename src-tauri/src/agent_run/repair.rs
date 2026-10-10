@@ -715,27 +715,47 @@ impl<R: Runtime> Run<R> {
         Some(result)
     }
 
+    /// The files the run changed, relative to the root: those it wrote, and
+    /// in an isolated chat all its overlay's changes.
+    pub(super) fn touched_keys(&self) -> BTreeSet<String> {
+        let Some(root) = self.root.clone() else {
+            return BTreeSet::new();
+        };
+        let mut paths: BTreeSet<String> = self.baseline.keys().cloned().collect();
+        paths.extend(self.overlay_paths());
+        paths.extend(self.changed_files.iter().map(|p| rel_key(&root, p)));
+        paths
+    }
+
+    /// What a file was before the run changed it: Some(None) when it didn't
+    /// exist; None when that isn't known (a command's change outside an
+    /// isolated chat).
+    pub(super) fn original_of(&self, key: &str) -> Option<Option<String>> {
+        if let Some(b) = self.baseline.get(key) {
+            return Some(b.clone());
+        }
+        // An overlay change the write tool didn't make: the project's copy
+        // is what it was.
+        match (&self.project_root, self.isolated()) {
+            (Some(project), true) => Some(
+                std::fs::read(Path::new(project).join(key))
+                    .ok()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned()),
+            ),
+            _ => None,
+        }
+    }
+
     /// R05: what weakens the checks among the files the run changed, from
     /// their baselines.
     pub(super) fn integrity_flags(&self) -> Vec<String> {
         let Some(root) = self.root.clone() else {
             return Vec::new();
         };
-        let mut paths: BTreeSet<String> = self.baseline.keys().cloned().collect();
-        paths.extend(self.overlay_paths());
-        paths.extend(self.changed_files.iter().map(|p| rel_key(&root, p)));
         let mut flags = Vec::new();
-        for key in paths {
-            let before: Option<String> = match self.baseline.get(&key) {
-                Some(b) => b.clone(),
-                // An overlay change the write tool didn't make: the
-                // project's copy is what it was.
-                None => match (&self.project_root, self.isolated()) {
-                    (Some(project), true) => std::fs::read(Path::new(project).join(&key))
-                        .ok()
-                        .map(|b| String::from_utf8_lossy(&b).into_owned()),
-                    _ => continue,
-                },
+        for key in self.touched_keys() {
+            let Some(before) = self.original_of(&key) else {
+                continue;
             };
             let after = std::fs::read(tools::to_absolute_path(&key, &root))
                 .ok()

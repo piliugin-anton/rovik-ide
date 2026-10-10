@@ -574,7 +574,7 @@ function shortGoal(goal: string | undefined): string {
  * A subagent's work: its chat's tool calls and replies, loaded when the
  * block asks for it and followed live from then on (lib/subagents.ts).
  */
-function SubagentTranscript(props: { childDialogId: string; running: boolean }) {
+export function SubagentTranscript(props: { childDialogId: string; running: boolean }) {
   const t = () => transcript(props.childDialogId);
   const resultOf = (callId: string) =>
     t()?.messages.find((m) => m.role === 'tool' && m.tool_call_id === callId);

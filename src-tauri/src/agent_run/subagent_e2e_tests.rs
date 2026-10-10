@@ -22,6 +22,14 @@ fn task(id: &'static str, goal: &str) -> Reply {
     }
 }
 
+fn write_call(id: &'static str, path: &str, content: &str) -> Reply {
+    Reply::Call {
+        id,
+        name: "write",
+        args: json!({ "path": path, "content": content }),
+    }
+}
+
 fn task_call(id: &'static str, goal: &str) -> (&'static str, &'static str, Value) {
     (id, "task", json!({ "kind": "scout", "goal": goal }))
 }
@@ -598,4 +606,384 @@ async fn routed_scripts_stay_apart() {
             .collect();
         assert!(reads.iter().all(|a| a.contains("b.txt")), "{reads:?}");
     }
+}
+
+/*
+ * The change reviewer (change_review.rs)
+ */
+
+const REVIEW: &str = "# Review this change";
+
+const FINDING_A: &str = "## Findings\n\n1. [high] a.txt:1 — The greeting is wrong\n   - Scenario: anyone reading a.txt sees \"helo\".\n   - Fix: spell it \"hello\".\n   - Confidence: confirmed";
+const FINDING_B: &str = "## Findings\n\n1. [medium] b.txt:1 — The farewell is missing\n   - Scenario: b.txt is empty.\n   - Fix: add one.\n   - Confidence: plausible";
+const NO_FINDINGS: &str = "## Findings\n\nNone.";
+
+fn reviewer_on(extra: Value) -> subagent::SubagentConfig {
+    let mut reviewer = json!({ "enabled": true });
+    if let (Some(r), Some(e)) = (reviewer.as_object_mut(), extra.as_object()) {
+        r.extend(e.clone());
+    }
+    serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "reviewer": reviewer },
+        "reviewMinLines": 1,
+    }))
+    .unwrap()
+}
+
+/// With checks on and none set up: each run ends in an "unverified" record.
+fn checks_on() -> Permissions {
+    Permissions {
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    }
+}
+
+fn reviews(messages: &[MessageRow]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("review").cloned())
+        .collect()
+}
+
+/// What each record in the chat is, in order: "review:<status>",
+/// "note" (findings sent to the agent), "verification:<status>".
+fn record_order(messages: &[MessageRow]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|m| {
+            let meta = m.meta.as_ref()?;
+            if let Some(r) = meta.get("review") {
+                return Some(format!("review:{}", r["status"].as_str().unwrap_or("")));
+            }
+            if meta["harness"] == "review" {
+                return Some("note".into());
+            }
+            meta.get("verification")
+                .map(|v| format!("verification:{}", v["status"].as_str().unwrap_or("")))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, seen) = model_routed(
+        vec![(
+            REVIEW,
+            vec![Reply::Text(FINDING_A), Reply::Text(NO_FINDINGS)],
+        )],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            // The findings came back: fix and answer.
+            write_call("w2", "a.txt", "hello\n"),
+            Reply::Text("1: fixed, it says hello now."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        [
+            "review:findings",
+            "note",
+            "review:clean",
+            "verification:unverified"
+        ]
+    );
+    let note = messages
+        .iter()
+        .find(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "review"))
+        .unwrap();
+    assert!(note
+        .content
+        .contains("1. [high] a.txt:1 — The greeting is wrong"));
+    assert!(note.content.contains("not this conversation"));
+
+    let rounds = reviews(&messages);
+    assert_eq!(rounds[0]["findings"][0]["severity"], "high");
+    assert_eq!(rounds[0]["findings"][0]["line"], 1);
+    assert_eq!(rounds[0]["round"], 1);
+    assert_eq!(rounds[1]["round"], 2);
+    assert_eq!(rounds[0]["files"], json!(["a.txt"]));
+    // Its chat is kept (and the record says which), as the transcript.
+    let child = rounds[0]["childDialogId"].as_str().unwrap().to_string();
+    let work = h.messages_of(&child).await;
+    assert!(work[0].content.starts_with(REVIEW));
+
+    // The reviewer saw the request and the diff, never the lead's history.
+    let briefs: Vec<String> = requests_with(&seen, REVIEW)
+        .iter()
+        .map(|b| {
+            b["messages"][1]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(briefs.len(), 2);
+    assert!(briefs[0].contains("## The user's request\n\nGreet"));
+    assert!(briefs[0].contains("+helo"));
+    assert!(
+        !briefs[0].contains("Done."),
+        "nothing from the lead's conversation"
+    );
+    assert!(!briefs[0].contains("earlier review"));
+    // Round 2: the earlier findings and the lead's answer.
+    assert!(briefs[1].contains("## The earlier review"));
+    assert!(briefs[1].contains("The greeting is wrong"));
+    assert!(briefs[1].contains("1: fixed, it says hello now."));
+    assert!(briefs[1].contains("+hello"));
+    let tools = tool_names(&requests_with(&seen, REVIEW)[0]);
+    assert!(tools.contains(&"read".to_string()) && tools.contains(&"callers".to_string()));
+    for t in ["write", "bash", "task", "web_search"] {
+        assert!(
+            !tools.contains(&t.to_string()),
+            "{t} offered to the reviewer"
+        );
+    }
+    assert!(system_prompt(&requests_with(&seen, REVIEW)[0]).starts_with("You are a code reviewer"));
+    // The lead isn't offered `task` for the reviewer: it's the IDE's.
+    let first = seen.lock().unwrap()[0].clone();
+    assert!(!tool_names(&first).contains(&"task".to_string()));
+}
+
+#[tokio::test]
+async fn a_third_review_in_a_row_never_happens() {
+    let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
+    let (url, _) = model_routed(
+        vec![(REVIEW, vec![Reply::Text(FINDING_A), Reply::Text(FINDING_B)])],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "hello\n"),
+            Reply::Text("1: fixed."),
+            write_call("w3", "b.txt", "bye\n"),
+            Reply::Text("1: added."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    assert_eq!(
+        record_order(&h.messages().await),
+        [
+            "review:findings",
+            "note",
+            "review:findings",
+            "note",
+            "verification:unverified"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_finding_without_new_evidence_is_dropped() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model_routed(
+        vec![(REVIEW, vec![Reply::Text(FINDING_A), Reply::Text(FINDING_A)])],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "helo there\n"),
+            Reply::Text("1: not a bug, because helo is the brand name."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        [
+            "review:findings",
+            "note",
+            "review:clean",
+            "verification:unverified"
+        ]
+    );
+    let second = &reviews(&messages)[1];
+    assert_eq!(second["dropped"].as_array().unwrap().len(), 1);
+    assert_eq!(second["dropped"][0]["title"], "The greeting is wrong");
+}
+
+#[tokio::test]
+async fn a_failing_reviewer_is_skipped_and_the_run_goes_on() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (bad, _) = model(vec![Reply::Status(
+        400,
+        r#"{"error":{"message":"no such model"}}"#,
+    )])
+    .await;
+    let (url, _) = model(vec![
+        write_call("w1", "a.txt", "new\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let config = reviewer_on(json!({ "models": [profile("bad", &bad)] }));
+    h.start(h.with_subagents(&url, "Change it", checks_on(), config))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        ["review:skipped", "verification:unverified"]
+    );
+    let r = &reviews(&messages)[0];
+    assert!(
+        r["reason"].as_str().unwrap().contains("model failed"),
+        "{r}"
+    );
+    assert!(
+        r.get("findings").is_none(),
+        "skipped, never \"no findings\""
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_review_is_skipped_never_clean() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![
+                Reply::Text("Looks fine to me."),
+                Reply::Text("Really, it's fine."),
+            ],
+        )],
+        vec![write_call("w1", "a.txt", "new\n"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Change it", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    let r = &reviews(&messages)[0];
+    assert_eq!(r["status"], "skipped");
+    assert!(r["reason"]
+        .as_str()
+        .unwrap()
+        .contains("didn't follow the format"));
+}
+
+#[tokio::test]
+async fn small_changes_and_runs_with_the_reviewer_off_get_no_review() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model(vec![
+        write_call("w1", "a.txt", "new\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    // The default threshold is 10 changed lines; this is 2.
+    let mut config = reviewer_on(json!({}));
+    config.review_min_lines = None;
+    h.start(h.with_subagents(&url, "Change it", checks_on(), config))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    assert!(reviews(&h.messages().await).is_empty());
+
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model(vec![
+        write_call("w1", "a.txt", "new\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut off = reviewer_on(json!({}));
+    off.enabled = false;
+    h.start(h.with_subagents(&url, "Change it", checks_on(), off))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    assert!(reviews(&h.messages().await).is_empty());
+}
+
+#[tokio::test]
+async fn the_review_goes_to_the_reviewers_model_and_its_fallback() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (bad, _) = model(vec![Reply::Status(
+        400,
+        r#"{"error":{"message":"no such model"}}"#,
+    )])
+    .await;
+    let (strong, strong_seen) = model(vec![Reply::Text(NO_FINDINGS)]).await;
+    let (url, seen) = model(vec![
+        write_call("w1", "a.txt", "new\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let config =
+        reviewer_on(json!({ "models": [profile("bad", &bad), profile("strong", &strong)] }));
+    h.start(h.with_subagents(&url, "Change it", checks_on(), config))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let r = &reviews(&h.messages().await)[0];
+    assert_eq!(r["status"], "clean");
+    assert_eq!(r["model"], "Other/strong");
+    assert_eq!(r["modelsTried"], json!(["Other/bad", "Other/strong"]));
+    assert_eq!(requests_with(&strong_seen, REVIEW).len(), 1);
+    assert!(
+        requests_with(&seen, REVIEW).is_empty(),
+        "not the chat's model"
+    );
+}
+
+#[tokio::test]
+async fn no_run_gets_more_than_three_reviews() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    // The checks always fail: every fix round goes back to the agent.
+    let h = harness(&[
+        ("a.txt", "old\n"),
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(1)\"" } }"#,
+        ),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![Reply::Text(FINDING_A), Reply::Text(NO_FINDINGS)],
+        )],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "hello\n"),
+            Reply::Text("1: fixed."),
+            write_call("w3", "a.txt", "hello 3\n"),
+            Reply::Text("Done."),
+            write_call("w4", "a.txt", "hello 4\n"),
+            Reply::Text("Done."),
+            write_call("w5", "a.txt", "hello 5\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "verify-gave-up");
+    assert_eq!(
+        record_order(&h.messages().await),
+        [
+            "review:findings",
+            "note",
+            "review:clean",
+            "verification:failed",
+            // The checks ran in between: a review again, the third and last.
+            "review:clean",
+            "verification:failed",
+            "verification:gave-up",
+        ]
+    );
 }

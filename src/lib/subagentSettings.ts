@@ -14,12 +14,14 @@ import { formatsToSend, type Effort } from './reasoning';
 import { sameModel } from './permissions';
 
 /** The kinds built so far (agent_run/subagent.rs `Kind`). */
-export type SubagentKindId = 'scout';
+export type SubagentKindId = 'scout' | 'reviewer';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
   label: string;
   hint: string;
+  /** When it's used. */
+  when: string;
   /** Default budget (agent_run/subagent.rs). */
   toolCalls: number;
   minutes: number;
@@ -28,8 +30,17 @@ export const SUBAGENT_KINDS: {
     id: 'scout',
     label: 'Scout',
     hint: 'Explores the code and answers one question. Read-only.',
+    when: 'The agent sends scouts in chats with a project folder, in Agent and Plan mode.',
     toolCalls: 20,
     minutes: 3,
+  },
+  {
+    id: 'reviewer',
+    label: 'Change reviewer',
+    hint: 'Reviews the whole change with fresh eyes before the checks run. Read-only.',
+    when: 'Runs when the agent finishes a change of at least the size set in Limits, at most 3 times a run.',
+    toolCalls: 30,
+    minutes: 5,
   },
 ];
 
@@ -57,11 +68,14 @@ export interface SubagentSettings {
   maxAtOnce: number;
   /** Subagents one run may start. */
   maxPerRun: number;
+  /** The change reviewer runs on changes of at least this many lines. */
+  reviewMinLines: number;
 }
 
 export const LIMITS = {
   atOnce: { min: 1, max: 8, default: 3 },
   perRun: { min: 1, max: 50, default: 12 },
+  reviewMinLines: { min: 1, max: 10_000, default: 10 },
   toolCalls: { min: 1, max: 200 },
   minutes: { min: 0.25, max: 120 },
 };
@@ -77,9 +91,10 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   enabled: false,
   defaultModel: 'chat',
   defaultFallbacks: [],
-  kinds: { scout: { ...DEFAULT_KIND } },
+  kinds: { scout: { ...DEFAULT_KIND }, reviewer: { ...DEFAULT_KIND } },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,
+  reviewMinLines: LIMITS.reviewMinLines.default,
 };
 
 const EFFORT_IDS: Effort[] = ['default', 'none', 'low', 'medium', 'high'];
@@ -147,6 +162,10 @@ export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
     maxPerRun: Math.round(
       clampNumber(r.maxPerRun, LIMITS.perRun.min, LIMITS.perRun.max) ?? LIMITS.perRun.default
     ),
+    reviewMinLines: Math.round(
+      clampNumber(r.reviewMinLines, LIMITS.reviewMinLines.min, LIMITS.reviewMinLines.max) ??
+        LIMITS.reviewMinLines.default
+    ),
   };
 }
 
@@ -172,6 +191,7 @@ export interface SubagentConfig {
   kinds: Partial<Record<SubagentKindId, KindConfig>>;
   maxAtOnce: number;
   maxPerRun: number;
+  reviewMinLines: number;
 }
 
 const CHAT = 'chat' as const;
@@ -251,6 +271,7 @@ export function resolveSubagentConfig(
     kinds,
     maxAtOnce: settings.maxAtOnce,
     maxPerRun: settings.maxPerRun,
+    reviewMinLines: settings.reviewMinLines,
   };
 }
 

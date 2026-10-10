@@ -255,6 +255,15 @@ pub struct Run<R: Runtime> {
     pub(super) baseline: std::collections::HashMap<String, Option<String>>,
     /// Changes that weaken the checks, which the agent was asked about (R05).
     pub(super) integrity_open: Vec<String>,
+    /// Files changed since the change reviewer last ran (change_review.rs).
+    pub(super) writes_since_review: bool,
+    /// Change reviews in this run, and since the checks last ran.
+    pub(super) reviews_total: u32,
+    pub(super) reviews_in_row: u32,
+    /// The findings sent to the agent so far, and the note that sent the
+    /// latest (its answers follow it).
+    pub(super) review_findings: Vec<super::change_review::Finding>,
+    pub(super) review_note_id: Option<String>,
 }
 
 /// Who a run works for.
@@ -696,6 +705,11 @@ impl<R: Runtime> Run<R> {
             checkpoint: None,
             baseline: Default::default(),
             integrity_open: Vec::new(),
+            writes_since_review: false,
+            reviews_total: 0,
+            reviews_in_row: 0,
+            review_findings: Vec::new(),
+            review_note_id: None,
         };
         Ok(Some((run, entry)))
     }
@@ -786,6 +800,11 @@ impl<R: Runtime> Run<R> {
             checkpoint: None,
             baseline: Default::default(),
             integrity_open: Vec::new(),
+            writes_since_review: false,
+            reviews_total: 0,
+            reviews_in_row: 0,
+            review_findings: Vec::new(),
+            review_note_id: None,
         }
     }
 
@@ -810,7 +829,7 @@ impl<R: Runtime> Run<R> {
         if self.sub().is_some() || self.root.is_none() || self.profile.no_tools {
             return Vec::new();
         }
-        self.state.config().subagents.enabled_kinds()
+        self.state.config().subagents.lead_kinds()
     }
 
     pub(super) fn stopped(&self) -> bool {
@@ -1005,6 +1024,13 @@ impl<R: Runtime> Run<R> {
                 // Conflicts handed to it: not done while their markers are left.
                 if self.remind_of_markers().await? {
                     continue;
+                }
+                // A fresh-context review of the change, before the checks.
+                if self.review_change().await? {
+                    continue;
+                }
+                if self.stopped() {
+                    return Ok("stopped".into());
                 }
                 let outcome = self.verify_at_end(false, None).await?;
                 if outcome == "continue" {

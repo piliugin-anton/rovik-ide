@@ -587,3 +587,24 @@ rollback, test integrity), `command_output.rs` (`failure_keys`,
 Tests: `agent_run/repair_e2e_tests.rs` (4 e2e runs on a node test script), unit
 tests in `repair.rs`, `command_output.rs` and `verify.rs`, and
 `src/lib/verification.test.ts`.
+
+### B01–B06: the change reviewer
+
+Done, in `agent_run/change_review.rs`, with the IDE-started subagent
+helper in `subagent_run.rs` (`run_ide_subagent`), `ReviewRecord.tsx` and
+`lib/changeReview.ts`.
+
+| Task | Notes                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B01  | `Kind::Reviewer`, which the lead can't start (`Kind::lead_starts`; `task` offers lead kinds only). The diff is built from the run's baselines (R05) and, in an isolated chat, the overlay's project copies, so the file guard's and repair's view of "what the run changed" is the reviewer's too. The large-diff budget is the reviewer model's context in tokens, taken as characters (a quarter of it in tokens). |
+| B02  | The format is a numbered list: `1. [high] path:line — title` with `- Scenario:`, `- Fix:` and `- Confidence:` (confirmed or plausible) lines, or "None.". `KindSpec.format` makes the S13 repair turn use the same strict parser.                                                                                                                                                                                    |
+| B03  | Runs only with subagents and the reviewer on, after files changed since the last review, from `reviewMinLines` changed lines (a setting, default 10). The checks running reset the "in a row" count. The record is added before the reviewer starts and updated when it ends; the reviewer's live progress is keyed to the record's id.                                                                              |
+| B04  | The agent's answers are its replies after the findings note. "Rejected" can't be told from free text reliably, so every finding an earlier round sent is treated alike: a repeat (same file, and lines within 8 or the same title) without a `- New evidence:` line is dropped and shown as such in the record.                                                                                                      |
+| B05  | The record is an empty assistant message with `meta.review`, which the history never sends.                                                                                                                                                                                                                                                                                                                          |
+| B06  | Through S08's settings: the reviewer has its own row (model, fallbacks, effort, budget), plus "Review changes from (lines)" in Limits.                                                                                                                                                                                                                                                                               |
+
+Tests: 8 e2e runs in `agent_run/subagent_e2e_tests.rs` (findings → fix →
+second review → checks; no third in a row; at most 3 a run; a repeat
+dropped; a failing or unreadable reviewer skipped; small changes and the
+switch; the reviewer's own model and fallback), unit tests in
+`change_review.rs`, and `src/lib/changeReview.test.ts`.

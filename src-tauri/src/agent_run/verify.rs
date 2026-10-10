@@ -380,6 +380,8 @@ impl<R: Runtime> Run<R> {
 
         self.verify_rounds += 1;
         self.writes_since_verify = false;
+        // The checks run: the next change review isn't "in a row".
+        self.reviews_in_row = 0;
         let round = self.verify_rounds;
         let record_id = match record_id {
             Some(id) => {

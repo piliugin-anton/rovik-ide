@@ -4613,6 +4613,12 @@ body.is-resizing * {
   border-left-color: var(--error);
 }
 
+.chat-review.clean {
+  border-left-color: var(--success);
+}
+
+.chat-review.findings,
+.chat-review.skipped,
 .chat-verify.needs-approval,
 .chat-verify.unverified,
 .chat-verify.rolled-back,
@@ -7751,4 +7757,66 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   border-radius: 4px;
   background: transparent;
   color: inherit;
+}
+
+/* The change reviewer's record (ReviewRecord.tsx). */
+.review-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-finding.dropped {
+  opacity: 0.7;
+}
+
+.review-finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--fg);
+}
+
+.review-severity {
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 15px;
+  text-transform: uppercase;
+  background: var(--bg-editor);
+}
+
+.review-severity.high {
+  color: var(--error);
+}
+
+.review-severity.medium {
+  color: var(--warning);
+}
+
+.review-location {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.review-confidence {
+  margin-left: auto;
+  color: var(--fg-dim);
+}
+
+.review-finding-body {
+  margin: 2px 0 0 12px;
+  white-space: pre-wrap;
+}
+
+.review-label {
+  color: var(--fg-dim);
+}
+
+.review-dropped summary {
+  cursor: pointer;
 }

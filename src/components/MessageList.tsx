@@ -33,6 +33,7 @@ import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
+import ReviewRecord from './ReviewRecord';
 import { requestOpenFile } from '../lib/editorBridge';
 import { isSettled, parseTodo } from '../lib/todo';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
@@ -202,6 +203,7 @@ export default function MessageList(props: {
     !m.meta?.interrupted &&
     !m.meta?.paused &&
     !m.meta?.verification &&
+    !m.meta?.review &&
     !m.meta?.planFile &&
     props.planMessageId !== m.id &&
     !(m.pending && m.status);
@@ -1243,6 +1245,17 @@ export default function MessageList(props: {
                       </button>
                       , where you can edit it before implementing.
                     </div>
+                  )}
+                </Show>
+
+                <Show when={m.meta?.review}>
+                  {(r) => (
+                    <ReviewRecord
+                      meta={r()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending}
+                    />
                   )}
                 </Show>
 
