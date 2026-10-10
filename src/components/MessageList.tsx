@@ -127,7 +127,8 @@ export default function MessageList(props: {
 
   const statusText = (m: ChatMessage) => {
     const status = m.status;
-    if (!status) return 'Thinking...';
+    // Sent, nothing back yet: not "Thinking", the model hasn't started.
+    if (!status) return 'Roviking…';
     if (status.since) {
       const elapsed = now() - status.since;
       return elapsed >= 1000 ? `${status.text}… ${formatDuration(elapsed)}` : `${status.text}…`;
@@ -1064,10 +1065,11 @@ export default function MessageList(props: {
                     !m.meta?.reasoning
                   }
                 >
-                  <div class="chat-message assistant">
-                    <span class="chat-pending" classList={{ status: !!m.status }} role="status">
-                      {statusText(m)}
-                    </span>
+                  <div class="tool-group active chat-waiting" role="status">
+                    <div class="tool-group-header">
+                      <span class="tool-call-spinner" aria-hidden="true" />
+                      <span class="tool-group-verb">{statusText(m)}</span>
+                    </div>
                   </div>
                 </Show>
 
@@ -1398,8 +1400,9 @@ function CopyMessageButton(props: { text: string }) {
 }
 
 /**
- * The model's reasoning: "Thinking…" with its latest line while it thinks,
- * "Thought for 12 s" after; opens to the whole text (plain, it can be long).
+ * The model's reasoning, as a line like a tool call's: "Thinking…" with its
+ * latest line while it thinks, "Thought for 12 s" after; opens to the whole
+ * text (plain, it can be long).
  */
 function ThinkingBlock(props: { text: string; ms?: number; thinking: boolean }) {
   const [open, setOpen] = createSignal(false);
@@ -1410,35 +1413,37 @@ function ThinkingBlock(props: { text: string; ms?: number; thinking: boolean }) 
     return line.length > 160 ? `…${line.slice(-160)}` : line;
   };
   return (
-    <div class="chat-thinking" classList={{ active: props.thinking }}>
-      <button
-        type="button"
-        class="chat-thinking-toggle"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open()}
-      >
-        <svg
-          class="chat-pasted-caret"
-          classList={{ open: open() }}
-          width="10"
-          height="10"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M6 4l4 4-4 4" />
-        </svg>
-        {props.thinking ? 'Thinking…' : seconds() ? `Thought for ${seconds()} s` : 'Thought'}
-      </button>
-      <Show when={props.thinking && !open()}>
-        <div class="chat-thinking-preview">{lastLine()}</div>
-      </Show>
+    <div class="tool-group" classList={{ open: open(), active: props.thinking }}>
+      <div class="tool-group-header" onClick={() => setOpen((o) => !o)}>
+        <button type="button" class="tool-group-toggle" aria-expanded={open()}>
+          <svg
+            class="chat-pasted-caret"
+            classList={{ open: open() }}
+            width="10"
+            height="10"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M6 4l4 4-4 4" />
+          </svg>
+          {props.thinking ? 'Thinking…' : seconds() ? `Thought for ${seconds()} s` : 'Thought'}
+        </button>
+        <Show when={props.thinking && !open()}>
+          <span class="tool-group-items chat-thinking-preview">{lastLine()}</span>
+        </Show>
+        <Show when={props.thinking}>
+          <span class="tool-call-spinner" aria-label="Thinking" />
+        </Show>
+      </div>
       <Show when={open()}>
-        <div class="chat-thinking-text">{props.text}</div>
+        <div class="tool-group-calls">
+          <div class="chat-thinking-text">{props.text}</div>
+        </div>
       </Show>
     </div>
   );

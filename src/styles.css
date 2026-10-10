@@ -6187,53 +6187,17 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   text-overflow: ellipsis;
 }
 
-/* The model's thinking above its reply (MessageList.tsx) */
-
-.chat-thinking {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-self: flex-start;
-  max-width: 90%;
-  font-size: 12px;
-}
-
-.chat-thinking-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  padding: 2px 0;
-  background: none;
-  border: none;
-  color: var(--fg-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.chat-thinking-toggle:hover {
-  color: var(--fg);
-}
-
-.chat-thinking.active .chat-thinking-toggle {
-  color: var(--fg);
-}
+/* The model's thinking above its reply (MessageList.tsx): a line like a
+   tool call's (.tool-group). */
 
 .chat-thinking-preview {
-  padding-left: 16px;
-  overflow: hidden;
   color: var(--fg-dim);
   font-style: italic;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .chat-thinking-text {
   max-height: 320px;
   overflow-y: auto;
-  padding: 6px 10px;
-  border-left: 2px solid var(--border);
   color: var(--fg-muted);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -7640,6 +7604,16 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .tool-group-file:hover {
   text-decoration: underline;
+}
+
+.tool-group-verb {
+  flex: 0 0 auto;
+}
+
+/* "Roviking…": sent, nothing back yet. The spinner sits where a line's
+   caret is. */
+.chat-waiting .tool-call-spinner {
+  margin-left: 0;
 }
 
 .tool-group-meta {
