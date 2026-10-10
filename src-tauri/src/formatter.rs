@@ -449,6 +449,22 @@ fn handles(language: &str, path: &Path) -> bool {
             .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
 }
 
+/// Whether two paths name the same folder. Windows and macOS file systems
+/// ignore case by default, and a drive letter can come either way (`c:` in
+/// a URI, `C:` from a dialog), so case doesn't count there.
+fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        let parts = |p: &Path| {
+            p.components()
+                .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+                .collect::<Vec<_>>()
+        };
+        parts(a) == parts(b)
+    } else {
+        a.components().eq(b.components())
+    }
+}
+
 /// The folders to look in, from the file's up to (and including) the
 /// project root, or the repository root, or the filesystem root.
 fn search_dirs(path: &Path, root: Option<&Path>) -> Vec<PathBuf> {
@@ -456,10 +472,14 @@ fn search_dirs(path: &Path, root: Option<&Path>) -> Vec<PathBuf> {
     let Some(parent) = path.parent() else {
         return dirs;
     };
-    let root = root.filter(|r| path.starts_with(r));
+    let root = root.filter(|r| parent.ancestors().any(|d| same_path(d, r)));
     for dir in parent.ancestors() {
         dirs.push(dir.to_path_buf());
-        if root.is_some_and(|r| dir == r) || (root.is_none() && dir.join(".git").exists()) {
+        let at_root = match root {
+            Some(r) => same_path(dir, r),
+            None => dir.join(".git").exists(),
+        };
+        if at_root {
             break;
         }
     }
@@ -645,15 +665,33 @@ fn lookup(
 }
 
 /// Runs `program` with `input` on stdin; its stdout, or why it failed.
-fn run(mut cmd: Command, input: String, ok_codes: &[i32]) -> Result<String, String> {
+///
+/// Many formatters are wrappers: `prettier.cmd` runs node through cmd.exe
+/// on Windows, `mix`, `dart` and `ktlint` are shell scripts starting a VM.
+/// So the tool gets its own process group, a timeout kills the whole tree
+/// (command_tool::kill_tree), and it is only reaped once its output is
+/// done, so the group can't be a stranger's by then (shell_exited).
+fn run(
+    mut cmd: Command,
+    input: String,
+    ok_codes: &[i32],
+    timeout: Duration,
+) -> Result<String, String> {
+    use crate::command_tool::{kill_tree, shell_exited};
+
     crate::process::no_window(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
 
     let mut stdin = child.stdin.take().expect("piped stdin");
-    let writer = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         // A formatter that exits early (bad config) closes the pipe: the
         // error is reported from its exit status instead.
         let _ = stdin.write_all(input.as_bytes());
@@ -673,19 +711,25 @@ fn run(mut cmd: Command, input: String, ok_codes: &[i32]) -> Result<String, Stri
         err
     });
 
+    // Done when it has exited and its output has ended: something it
+    // started that still holds the pipes counts as running.
     let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            break status;
+    let mut exited = false;
+    loop {
+        if !exited {
+            exited = shell_exited(&mut child).map_err(|e| e.to_string())?;
         }
-        if start.elapsed() > TIMEOUT {
-            let _ = child.kill();
+        if exited && reader.is_finished() && err_reader.is_finished() {
+            break;
+        }
+        if start.elapsed() > timeout {
+            kill_tree(&mut child);
             let _ = child.wait();
-            return Err(format!("timed out after {} s", TIMEOUT.as_secs()));
+            return Err(format!("timed out after {} s", timeout.as_secs()));
         }
         std::thread::sleep(Duration::from_millis(10));
-    };
-    let _ = writer.join();
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
     let out = reader.join().unwrap_or_default();
     let err = String::from_utf8_lossy(&err_reader.join().unwrap_or_default())
         .trim()
@@ -749,7 +793,7 @@ fn format_text(
     if content.trim().is_empty() {
         return Ok(content);
     }
-    run(cmd, content, f.spec.ok_codes).map_err(|e| format!("{}: {e}", f.spec.name))
+    run(cmd, content, f.spec.ok_codes, TIMEOUT).map_err(|e| format!("{}: {e}", f.spec.name))
 }
 
 /// The formatter for a file: the project's own, else the language's

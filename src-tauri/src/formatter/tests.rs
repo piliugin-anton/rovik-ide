@@ -190,3 +190,106 @@ fn the_search_stops_at_the_project_root() {
     let dirs = search_dirs(&file, Some(&p.0));
     assert_eq!(dirs, vec![p.0.join("a/b"), p.0.join("a"), p.0.clone()]);
 }
+
+#[test]
+fn the_project_root_matches_whatever_the_case_where_case_doesnt_count() {
+    let p = Project::new("case");
+    let file = p.file("a/b.ts", "");
+    let upper = PathBuf::from(p.0.to_string_lossy().to_uppercase());
+    let dirs = search_dirs(&file, Some(&upper));
+    if cfg!(any(windows, target_os = "macos")) {
+        assert_eq!(dirs, vec![p.0.join("a"), p.0.clone()]);
+    } else {
+        // Not the project's folder: the search goes on past it.
+        assert!(dirs.len() > 2);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_finds_cmd_wrappers_and_virtualenv_scripts() {
+    let p = Project::new("win-lookup");
+    p.file("package.json", r#"{"devDependencies":{"prettier":"3"}}"#);
+    // npm puts a sh script, a .cmd and a .ps1 in .bin; only the .cmd runs.
+    p.file("node_modules/.bin/prettier", "#!/bin/sh\n");
+    let cmd = p.file("node_modules/.bin/prettier.cmd", "@echo off\r\n");
+    p.file("node_modules/.bin/prettier.ps1", "");
+    let ruff = p.file(".venv/Scripts/ruff.exe", "");
+    let ts = p.file("src/a.ts", "");
+    let py = p.file("a.py", "");
+    let pick = |f: &Path, l: &str| {
+        resolve(f, l, Some(&p.0), &p.path_env())
+            .found
+            .map(|r| r.program)
+    };
+    assert!(pick(&ts, "typescript").is_some_and(|f| same_path(&f, &cmd)));
+    assert!(pick(&py, "python").is_some_and(|f| same_path(&f, &ruff)));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_runs_cmd_wrappers_with_paths_that_have_spaces() {
+    let p = Project::new("win-run");
+    p.file(".prettierrc", "{}");
+    // Prints the --stdin-filepath argument, as cmd.exe received it.
+    p.file(
+        "node_modules/.bin/prettier.cmd",
+        "@echo off\r\necho %~2\r\n",
+    );
+    let file = p.file("my project/a b.ts", "");
+    let out = format_text(&file, "typescript", Some(&p.0), "x\n".into(), &p.path_env());
+    assert_eq!(
+        out.map(|o| o.trim_end().to_string()),
+        Ok(file.to_string_lossy().into_owned())
+    );
+}
+
+/// A wrapper script whose real tool hangs: the timeout takes down both,
+/// and doesn't wait on the pipes the tool still holds.
+#[cfg(unix)]
+#[test]
+fn a_hanging_formatter_is_killed_with_everything_it_started() {
+    let p = Project::new("hang");
+    let marker = p.0.join("still-running");
+    let tool = p.tool(
+        "hang.sh",
+        &format!("sh -c 'sleep 3; touch {}' & wait", marker.display()),
+    );
+    let start = Instant::now();
+    let out = run(
+        Command::new(&tool),
+        "x".into(),
+        &[0],
+        Duration::from_secs(1),
+    );
+    assert_eq!(out, Err("timed out after 1 s".into()));
+    assert!(start.elapsed() < Duration::from_secs(3));
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(!marker.exists(), "the tool's child outlived the timeout");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_hanging_cmd_wrapper_is_killed_with_everything_it_started() {
+    let p = Project::new("win-hang");
+    let marker = p.0.join("still-running");
+    // The wrapper's child does the (hanging) work, as node does for a .cmd.
+    let tool = p.file(
+        "hang.cmd",
+        &format!(
+            "@echo off\r\ncmd /c \"ping -n 4 127.0.0.1 >nul & echo x > \"{}\"\"\r\n",
+            marker.display()
+        ),
+    );
+    let start = Instant::now();
+    let out = run(
+        Command::new(&tool),
+        "x".into(),
+        &[0],
+        Duration::from_secs(1),
+    );
+    assert_eq!(out, Err("timed out after 1 s".into()));
+    assert!(start.elapsed() < Duration::from_secs(3));
+    std::thread::sleep(Duration::from_secs(5));
+    assert!(!marker.exists(), "the wrapper's child outlived the timeout");
+}

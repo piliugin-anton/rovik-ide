@@ -58,6 +58,11 @@ export async function registerFileFormatter(
       if (token.isCancellationRequested || m.isDisposed() || m.getVersionId() !== version) {
         return [];
       }
+      // The file keeps its line endings: tools print LF (gofmt) or follow
+      // their own config (Prettier's endOfLine), and a CRLF file on Windows
+      // would otherwise come back with mixed or changed ones. An
+      // .editorconfig end_of_line still applies on save.
+      out = out.replace(/\r\n|\r|\n/g, m.getEOL());
       if (out === text) return [];
       return [{ range: m.getFullModelRange(), text: out }];
     },
