@@ -24,8 +24,8 @@
 use super::events::{emit, AgentEvent};
 use super::guard::FinishedCall;
 use super::run::{new_message, unanswered_tool_calls, Role, Run, IDE_NOTE};
-use super::subagent::{self, Budget, Kind, SubResult, SubStatus, SubagentConfig};
-use super::{failure, log, permissions, ModelProfile};
+use super::subagent::{self, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig};
+use super::{failure, log, permissions, tools, ModelProfile};
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewChildDialog, ToolCall};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -60,6 +60,12 @@ pub(super) struct SubCtx {
     chat_options: Option<OpenAIChatOptions>,
     /// Time spent waiting for the user's approval.
     waited: Mutex<Duration>,
+    /// The history was trimmed once after a reply didn't fit (S10).
+    pub trimmed: bool,
+    /// The models that failed it, by id, with the error kind (S12).
+    pub failures: Vec<(String, String)>,
+    /// Tests only: tools beyond the kind's (`KindConfig::extra_tools`).
+    pub extra_tools: Vec<String>,
     /// Tokens the provider reported, when it did (S09).
     pub tokens_in: u64,
     pub tokens_out: u64,
@@ -67,6 +73,11 @@ pub(super) struct SubCtx {
 }
 
 impl SubCtx {
+    /// Whether it may call `tool`: its kind's tools only.
+    pub fn allows(&self, tool: &str) -> bool {
+        self.kind.spec().allows(tool) || self.extra_tools.iter().any(|t| t == tool)
+    }
+
     pub fn add_waited(&self, d: Duration) {
         *self.waited.lock().unwrap_or_else(|e| e.into_inner()) += d;
     }
@@ -150,6 +161,10 @@ impl<R: Runtime> Run<R> {
         }
         let started = Instant::now();
         let running = jobs.iter().filter(|j| matches!(j, Job::Run(_))).count();
+        let throttled = jobs.iter().any(|j| match j {
+            Job::Run(child) => self.ledger.is_throttled(&child.profile.id),
+            Job::Answered(_) => false,
+        });
         #[cfg(test)]
         super::parallel::BATCHES.lock().unwrap().push((
             self.dialog_id.clone(),
@@ -177,15 +192,21 @@ impl<R: Runtime> Run<R> {
                 }
             })
             .collect();
-        let mut results = stream::iter(futures).buffered(config.max_at_once());
+        // A model a rate limit stopped runs one subagent at a time (S12).
+        let limit = if throttled { 1 } else { config.max_at_once() };
+        let mut results = stream::iter(futures).buffered(limit);
         for (tc, refusal) in calls.iter().zip(answered) {
             let result = results.next().await.flatten();
             let (content, meta): (String, Option<Value>) = match (refusal, result) {
                 (Some(text), _) => (text, None),
-                (None, Some(result)) => (
-                    result.for_lead(),
-                    Some(json!({ "subagent": result.meta() })),
-                ),
+                (None, Some(result)) => {
+                    self.absorb_child_writes(&result.writes);
+                    self.note_models(&result);
+                    (
+                        result.for_lead(),
+                        Some(json!({ "subagent": result.meta() })),
+                    )
+                }
                 (None, None) => (
                     "Error: the subagent ended without a report (its run failed).".into(),
                     None,
@@ -256,7 +277,7 @@ impl<R: Runtime> Run<R> {
         };
 
         let budget = brief.budget(config.budget(kind));
-        let sub = self.new_sub(kind, &tc.id, budget, config).await;
+        let sub = self.new_sub(kind, &tc.id, budget, config).await?;
         match &existing {
             Some(_) => self.close_child_calls(&child_id).await?,
             None => {
@@ -267,15 +288,28 @@ impl<R: Runtime> Run<R> {
         self.launch_child(child_id, &tc.id, &brief.goal, sub)
     }
 
-    /// A subagent's context, before it has a run.
+    /// A subagent's context, before it has a run. Err: none of its models
+    /// can be used (they kept failing in this run, S12).
     async fn new_sub(
         &self,
         kind: Kind,
         call_id: &str,
         budget: Budget,
         config: &SubagentConfig,
-    ) -> SubCtx {
-        let models = config.models(kind, &self.profile);
+    ) -> Result<SubCtx, String> {
+        let all = config.models(kind, &self.profile);
+        let models: Vec<ModelProfile> = all
+            .iter()
+            .filter(|m| !self.ledger.is_open(&m.id))
+            .cloned()
+            .collect();
+        if models.is_empty() {
+            let names: Vec<&str> = all.iter().map(|m| m.label.as_str()).collect();
+            return Err(format!(
+                "Error: subagents are unavailable for the rest of this run: their models keep failing ({}). Do the work yourself.",
+                names.join(", ")
+            ));
+        }
         let kind_options = config.kinds.get(kind.id()).and_then(|k| k.options.clone());
         let mut sub = SubCtx {
             kind,
@@ -292,12 +326,19 @@ impl<R: Runtime> Run<R> {
             chat_profile_id: self.profile.id.clone(),
             chat_options: self.options.clone(),
             waited: Mutex::new(Duration::ZERO),
+            trimmed: false,
+            failures: Vec::new(),
+            extra_tools: Vec::new(),
             tokens_in: 0,
             tokens_out: 0,
             usage_seen: false,
         };
+        #[cfg(test)]
+        if let Some(k) = config.kinds.get(kind.id()) {
+            sub.extra_tools = k.extra_tools.clone();
+        }
         sub.options = sub.options_for(&sub.models[0]);
-        sub
+        Ok(sub)
     }
 
     /// Registers a child under this run and prepares its run; the chat
@@ -338,7 +379,7 @@ impl<R: Runtime> Run<R> {
     /// harness. Runs to its report as a task of its own, so Stop on this
     /// run ends it cleanly. Err: it couldn't start.
     pub(super) async fn run_ide_subagent(
-        &self,
+        &mut self,
         kind: Kind,
         call_id: &str,
         goal: &str,
@@ -347,7 +388,7 @@ impl<R: Runtime> Run<R> {
         let config = self.state.config().subagents;
         let sub = self
             .new_sub(kind, call_id, config.budget(kind), &config)
-            .await;
+            .await?;
         let child_id = uuid::Uuid::new_v4().to_string();
         self.store_child(&child_id, call_id, kind, goal, message)
             .await?;
@@ -356,6 +397,10 @@ impl<R: Runtime> Run<R> {
             .await
             .ok()
             .flatten();
+        if let Some(r) = &result {
+            self.absorb_child_writes(&r.writes);
+            self.note_models(r);
+        }
         Ok((child_id, result))
     }
 
@@ -456,6 +501,7 @@ impl<R: Runtime> Run<R> {
             } else {
                 Vec::new()
             };
+        let writes = self.child_writes();
         let Role::Sub(sub) = &self.role else {
             unreachable!("go_sub runs subagents only")
         };
@@ -472,6 +518,10 @@ impl<R: Runtime> Run<R> {
             ms,
             error,
             files_read,
+            writes,
+            failed_models: sub.failures.clone(),
+            answered_by: (!matches!(status, SubStatus::Failed | SubStatus::Stopped))
+                .then(|| self.profile.id.clone()),
         };
         emit(
             &self.app,
@@ -487,6 +537,75 @@ impl<R: Runtime> Run<R> {
             subagent_log_line(sub, &self.dialog_id, &self.profile.model, &result),
         );
         result
+    }
+
+    /// The files this subagent changed, with what each was before it.
+    fn child_writes(&self) -> Vec<ChildWrite> {
+        let Some(root) = self.root.clone() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (path, original) in &self.baseline {
+            let now = std::fs::read(tools::to_absolute_path(path, &root))
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned());
+            if now != *original {
+                out.push(ChildWrite {
+                    path: path.clone(),
+                    original: original.clone(),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
+    }
+
+    /// S03b: a subagent's changes count as this run's (D15, K01, K02): they
+    /// join its changed files and what the checks and the reviewer look
+    /// at, the repository map's counter, and what the file guard counts as
+    /// seen, so this run can write them without "changed since you read it".
+    pub(super) fn absorb_child_writes(&mut self, writes: &[ChildWrite]) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        for w in writes {
+            if !self
+                .changed_files
+                .iter()
+                .any(|c| super::repair::rel_key(&root, c) == w.path)
+            {
+                self.changed_files.push(w.path.clone());
+            }
+            self.baseline
+                .entry(w.path.clone())
+                .or_insert_with(|| w.original.clone());
+            if let Some(cp) = self.checkpoint.as_mut().filter(|c| !c.too_big) {
+                cp.files
+                    .entry(w.path.clone())
+                    .or_insert_with(|| w.original.clone().map(String::into_bytes));
+            }
+            let abs = tools::to_absolute_path(&w.path, &root);
+            if let Ok(now) = std::fs::read(&abs) {
+                self.seen.record(std::path::Path::new(&abs), &now);
+            }
+            self.writes_since_verify = true;
+            self.writes_since_review = true;
+            self.map_writes_since_refresh += 1;
+        }
+    }
+
+    /// S12: what a subagent's end says about its models, for the next ones.
+    fn note_models(&mut self, result: &SubResult) {
+        for model in self.ledger.note(result) {
+            log::write(
+                &self.app,
+                json!({
+                    "event": "subagentCircuit",
+                    "dialogId": self.dialog_id,
+                    "model": model,
+                }),
+            );
+        }
     }
 
     /// The paths its `read` calls named, for a report that has little else.
@@ -558,6 +677,20 @@ impl<R: Runtime> Run<R> {
                 }
                 if error.kind == ErrorKind::Cancelled || self.stopped() {
                     return Ok((SubStatus::Stopped, last_text, None));
+                }
+                // The request didn't fit the model's window: the same model
+                // again, once, with the history trimmed to three quarters.
+                if error.kind == ErrorKind::ContextLength && self.trim_once() {
+                    continue;
+                }
+                // Anything else after chat_request's own retries (a rate
+                // limit too long to wait for included): the next model.
+                // A window too small isn't the provider's fault (S12).
+                if error.kind != ErrorKind::ContextLength {
+                    let failed = (self.profile.id.clone(), error_kind(&error));
+                    if let Some(sub) = self.sub_mut() {
+                        sub.failures.push(failed);
+                    }
                 }
                 if self.next_model(&error) {
                     continue;
@@ -632,6 +765,34 @@ impl<R: Runtime> Run<R> {
             )
             .await
         }
+    }
+
+    /// Once per subagent: its requests are fitted to three quarters of the
+    /// window they were (S10). False when that was done already.
+    fn trim_once(&mut self) -> bool {
+        let Some(sub) = self.sub_mut() else {
+            return false;
+        };
+        if sub.trimmed {
+            return false;
+        }
+        sub.trimmed = true;
+        let window = self
+            .profile
+            .context_tokens
+            .filter(|t| *t > 0)
+            .unwrap_or(32_000);
+        self.profile.context_tokens = Some(window * 3 / 4);
+        log::write(
+            &self.app,
+            json!({
+                "event": "subagentTrim",
+                "dialogId": self.dialog_id,
+                "model": self.profile.label,
+                "window": window,
+            }),
+        );
+        true
     }
 
     /// The kind's next model takes over, on the same stored history (S10).
@@ -810,6 +971,9 @@ mod tests {
             chat_profile_id: "p::m".into(),
             chat_options: None,
             waited: Mutex::new(Duration::ZERO),
+            trimmed: false,
+            failures: Vec::new(),
+            extra_tools: Vec::new(),
             tokens_in: 0,
             tokens_out: 0,
             usage_seen: false,
@@ -830,6 +994,9 @@ mod tests {
             ms: 1200,
             error: None,
             files_read: vec![],
+            writes: vec![],
+            failed_models: vec![],
+            answered_by: None,
         };
         let line = subagent_log_line(&sub, "k", "m", &result);
         assert_eq!(line["event"], "subagent");

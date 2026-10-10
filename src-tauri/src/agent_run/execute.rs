@@ -234,7 +234,7 @@ impl<R: Runtime> Run<R> {
         if resume_note.is_some()
             || self.stopped()
             || !parallel::PARALLEL_TOOLS.contains(&tc.name.as_str())
-            || self.sub().is_some_and(|s| !s.kind.spec().allows(&tc.name))
+            || self.sub().is_some_and(|s| !s.allows(&tc.name))
         {
             return false;
         }
@@ -326,7 +326,7 @@ impl<R: Runtime> Run<R> {
         // A subagent may call its kind's tools only, whatever it was sent.
         if let Some(sub) = self.sub() {
             let spec = sub.kind.spec();
-            if !spec.allows(&tc.name) {
+            if !sub.allows(&tc.name) {
                 let content = format!(
                     "Error: {} isn't available to a {} subagent. Its tools: {}. If you can't do the task with them, say so under \"## Blocked\" in your report.",
                     tc.name,

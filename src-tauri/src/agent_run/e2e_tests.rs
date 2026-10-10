@@ -36,6 +36,8 @@ enum Reply {
     Thought(&'static str, Vec<Value>, Box<Reply>),
     /// The reply, after this many milliseconds.
     Slow(u64, Box<Reply>),
+    /// 429 with a Retry-After of this many seconds.
+    RateLimited(u64),
 }
 
 impl Reply {
@@ -84,6 +86,7 @@ impl Reply {
                 out + &then.sse()
             }
             Reply::Slow(_, then) => then.sse(),
+            Reply::RateLimited(_) => String::new(),
         }
     }
 
@@ -95,6 +98,13 @@ impl Reply {
                 body.len()
             ),
             Reply::Slow(_, then) => then.response(),
+            Reply::RateLimited(secs) => {
+                let body = r#"{"error":{"message":"rate limited"}}"#;
+                format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {secs}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            }
             _ => format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
                 self.sse()

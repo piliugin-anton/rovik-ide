@@ -216,6 +216,10 @@ pub struct KindConfig {
     pub options: Option<OpenAIChatOptions>,
     pub max_tool_calls: Option<u32>,
     pub max_minutes: Option<f64>,
+    /// Tests only: tools the kind gets beyond its own (a scout that writes
+    /// stands in for the writing kinds to come).
+    #[cfg(test)]
+    pub extra_tools: Vec<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -592,6 +596,21 @@ pub struct SubResult {
     pub error: Option<String>,
     /// Files it read, for a failed or stopped subagent's result.
     pub files_read: Vec<String>,
+    /// Files it changed (in its lead's root), with what they were before
+    /// it: they count as the lead's changes (S03b).
+    pub writes: Vec<ChildWrite>,
+    /// The models that failed it, by id, with the error kind; and the one
+    /// that answered, if one did (S12).
+    pub failed_models: Vec<(String, String)>,
+    pub answered_by: Option<String>,
+}
+
+/// A file a subagent changed: its path relative to the root, and what it
+/// was before the subagent's first write (None: it didn't exist).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChildWrite {
+    pub path: String,
+    pub original: Option<String>,
 }
 
 impl SubResult {
@@ -718,7 +737,8 @@ pub fn lead_prompt(kinds: &[Kind]) -> Option<String> {
     )
 }
 
-/// What the lead's run counts (D11): subagents started and briefs seen.
+/// What the lead's run counts (D11): subagents started and briefs seen;
+/// and how its subagents' models fare (S12).
 #[derive(Debug, Default)]
 pub struct Ledger {
     /// Scouts (and, later, test writers and repair fixers) started in this
@@ -726,9 +746,53 @@ pub struct Ledger {
     pub started: usize,
     /// Times each brief (`Brief::key`) was asked for in this run.
     pub briefs: HashMap<String, usize>,
+    /// Subagents in a row a model failed, by model id.
+    streaks: HashMap<String, u32>,
+    /// Models skipped for the rest of the run (an open circuit).
+    open: std::collections::HashSet<String>,
+    /// Models a rate limit stopped: one subagent at a time on them.
+    throttled: std::collections::HashSet<String>,
 }
 
+/// Subagents in a row a model may fail before it's skipped for the run.
+pub const CIRCUIT_AFTER: u32 = 2;
+
 impl Ledger {
+    pub fn is_open(&self, model: &str) -> bool {
+        self.open.contains(model)
+    }
+
+    pub fn is_throttled(&self, model: &str) -> bool {
+        self.throttled.contains(model)
+    }
+
+    /// A subagent ended: the models that failed it count toward their
+    /// circuit, the one that answered starts afresh. Returns the models
+    /// whose circuit just opened.
+    pub fn note(&mut self, result: &SubResult) -> Vec<String> {
+        let mut opened = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
+        for (model, kind) in &result.failed_models {
+            if kind == "rate_limited" {
+                self.throttled.insert(model.clone());
+            }
+            // One subagent counts once per model, however often it failed.
+            if seen.contains(&model.as_str()) {
+                continue;
+            }
+            seen.push(model);
+            let streak = self.streaks.entry(model.clone()).or_insert(0);
+            *streak += 1;
+            if *streak >= CIRCUIT_AFTER && self.open.insert(model.clone()) {
+                opened.push(model.clone());
+            }
+        }
+        if let Some(model) = &result.answered_by {
+            self.streaks.remove(model);
+        }
+        opened
+    }
+
     /// Takes one place for a brief, or says why not.
     pub fn admit(&mut self, brief: &Brief, max_per_run: usize) -> Result<(), String> {
         let seen = self.briefs.get(&brief.key()).copied().unwrap_or(0);
@@ -821,6 +885,32 @@ mod tests {
     }
 
     #[test]
+    fn a_model_failing_two_subagents_in_a_row_is_skipped() {
+        let mut ledger = Ledger::default();
+        let failed = |models: &[(&str, &str)], answered: Option<&str>| SubResult {
+            failed_models: models
+                .iter()
+                .map(|(m, k)| (m.to_string(), k.to_string()))
+                .collect(),
+            answered_by: answered.map(str::to_string),
+            ..result(SubStatus::Done, String::new())
+        };
+        assert!(ledger
+            .note(&failed(&[("x", "server_error")], Some("y")))
+            .is_empty());
+        // A success on x in between starts it afresh.
+        ledger.note(&failed(&[], Some("x")));
+        assert!(ledger
+            .note(&failed(&[("x", "server_error")], Some("y")))
+            .is_empty());
+        assert_eq!(ledger.note(&failed(&[("x", "bad_request")], None)), ["x"]);
+        assert!(ledger.is_open("x") && !ledger.is_open("y"));
+        // A rate limit: one at a time on that model.
+        ledger.note(&failed(&[("z", "rate_limited")], Some("y")));
+        assert!(ledger.is_throttled("z") && !ledger.is_open("z"));
+    }
+
+    #[test]
     fn the_same_brief_is_refused_the_third_time_and_runs_have_a_limit() {
         let b = |goal: &str| Brief {
             kind: Kind::Scout,
@@ -888,6 +978,9 @@ mod tests {
             ms: 10,
             error: None,
             files_read: vec!["a.rs".into()],
+            writes: vec![],
+            failed_models: vec![],
+            answered_by: None,
         }
     }
 

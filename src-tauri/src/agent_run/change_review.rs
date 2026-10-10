@@ -606,10 +606,11 @@ impl<R: Runtime> Run<R> {
                 brief,
             )
             .await;
+        let mut not_started = None;
         let (child_id, result) = match outcome {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("agent: the change reviewer couldn't start: {e}");
+                not_started = Some(e.trim_start_matches("Error: ").to_string());
                 (String::new(), None)
             }
         };
@@ -621,7 +622,10 @@ impl<R: Runtime> Run<R> {
         };
         let mut serious: Vec<Finding> = Vec::new();
         match result {
-            None => skipped(&mut review, "the reviewer couldn't run".into()),
+            None => skipped(
+                &mut review,
+                not_started.unwrap_or_else(|| "the reviewer couldn't run".into()),
+            ),
             Some(r) => {
                 review["model"] = json!(r.model);
                 review["modelsTried"] = json!(r.models_tried);

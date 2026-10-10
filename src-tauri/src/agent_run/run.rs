@@ -808,6 +808,19 @@ impl<R: Runtime> Run<R> {
         }
     }
 
+    /// Who this run's requests are for, for ROVIK_API_LOG (S09).
+    fn log_tags(&self) -> Value {
+        match self.sub() {
+            Some(sub) => json!({
+                "role": "sub",
+                "kind": sub.kind.id(),
+                "dialogId": self.dialog_id,
+                "parentDialogId": sub.parent_dialog_id,
+            }),
+            None => json!({ "role": "lead", "dialogId": self.dialog_id }),
+        }
+    }
+
     /// The subagent's context, when this run is one.
     pub(super) fn sub(&self) -> Option<&SubCtx> {
         match &self.role {
@@ -1193,7 +1206,7 @@ impl<R: Runtime> Run<R> {
         if let Some(sub) = self.sub() {
             let spec = sub.kind.spec();
             tools.retain(|t| {
-                spec.allows(
+                sub.allows(
                     t.pointer("/function/name")
                         .and_then(|n| n.as_str())
                         .unwrap_or(""),
@@ -1318,8 +1331,11 @@ impl<R: Runtime> Run<R> {
             let mut ask_again = false;
             let vfs = self.app.state::<crate::vfs::VfsState>();
             let result = {
-                let request =
-                    crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event);
+                // ROVIK_API_LOG writes who each request is for (S09).
+                let request = crate::api_log::TAGS.scope(
+                    self.log_tags(),
+                    crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event),
+                );
                 tokio::pin!(request);
                 let mut stop_rx = self.stop.subscribe();
                 let mut ticker = tokio::time::interval(Duration::from_millis(100));

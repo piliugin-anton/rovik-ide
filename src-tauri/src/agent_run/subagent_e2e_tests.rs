@@ -987,3 +987,292 @@ async fn no_run_gets_more_than_three_reviews() {
         ]
     );
 }
+
+/*
+ * S03b: a subagent's writes count as the lead's. No writing kind exists
+ * yet, so a scout is given `write` (a test-only setting) to stand in.
+ */
+
+fn writing_scout() -> subagent::SubagentConfig {
+    let mut config = scouts_on(json!({}));
+    config.kinds.get_mut("scout").unwrap().extra_tools = vec!["write".into()];
+    config
+}
+
+#[tokio::test]
+async fn a_lead_that_only_delegates_writing_still_gets_its_changes_checked() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-WR",
+            vec![
+                write_call("s1", "a.txt", "child\n"),
+                Reply::Text("## Answer\nChanged a.txt."),
+            ],
+        )],
+        vec![task("t1", "MARK-WR: change a.txt"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Change it", checks_on(), writing_scout()))
+        .await;
+    // Without S03b the lead changed nothing itself: "done", no checks.
+    assert_eq!(h.run_end().await, "unverified");
+    assert_eq!(h.file("a.txt").as_deref(), Some("child\n"));
+    let messages = h.messages().await;
+    let record = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .expect("a verification record");
+    assert_eq!(record["changedFiles"], json!(["a.txt"]));
+}
+
+#[tokio::test]
+async fn the_lead_can_write_a_file_its_subagent_changed() {
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-WR2",
+            vec![
+                write_call("s1", "a.txt", "child\n"),
+                Reply::Text("## Answer\nChanged a.txt."),
+            ],
+        )],
+        vec![
+            // The lead reads the file, its subagent changes it, then the
+            // lead writes it whole: it counts as having seen the change.
+            Reply::Call {
+                id: "r1",
+                name: "read",
+                args: json!({ "path": "a.txt" }),
+            },
+            task("t1", "MARK-WR2: change a.txt"),
+            write_call("w1", "a.txt", "lead\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Change it", quiet_permissions(), writing_scout()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let result = h
+        .messages()
+        .await
+        .into_iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("w1"))
+        .unwrap();
+    assert!(!result.content.starts_with("Error"), "{}", result.content);
+    assert_eq!(h.file("a.txt").as_deref(), Some("lead\n"));
+}
+
+/// S09: ROVIK_API_LOG says who each request is for. (Other tests running
+/// meanwhile write here too; their lines are told apart by chat.)
+#[tokio::test]
+async fn the_api_log_tags_each_request_with_its_role_and_kind() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let log = h._dir.0.join("api-log.jsonl");
+    *crate::api_log::TEST_TARGET.lock().unwrap() = Some(log.clone());
+    let (url, _) = model_routed(
+        vec![("MARK-LOG", vec![Reply::Text(REPORT)])],
+        vec![task("t1", "MARK-LOG: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    let outcome = h.run_end().await;
+    *crate::api_log::TEST_TARGET.lock().unwrap() = None;
+    assert_eq!(outcome, "done");
+    let child = h.child_of("t1").await;
+    let tags: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|l| l["dir"] == "request")
+        .map(|l| l["tags"].clone())
+        .filter(|t| t["dialogId"] == h.dialog_id.as_str() || t["dialogId"] == child.id.as_str())
+        .collect();
+    assert_eq!(
+        tags.iter().filter(|t| t["role"] == "lead").count(),
+        2,
+        "{tags:?}"
+    );
+    let sub: Vec<&Value> = tags.iter().filter(|t| t["role"] == "sub").collect();
+    assert_eq!(sub.len(), 1);
+    assert_eq!(sub[0]["kind"], "scout");
+    assert_eq!(sub[0]["parentDialogId"], h.dialog_id.as_str());
+}
+
+/// S10: a rate limit too long to wait for goes to the next model at once.
+#[tokio::test]
+async fn a_long_rate_limit_goes_to_the_fallback_without_waiting() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (limited, limited_seen) = model(vec![Reply::RateLimited(3_600)]).await;
+    let (url, _) = model_routed(
+        vec![("MARK-RL", vec![Reply::Text(REPORT)])],
+        vec![task("t1", "MARK-RL: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    let config = scouts_on(json!({ "models": [profile("limited", &limited), { "chat": true }] }));
+    let started = std::time::Instant::now();
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "no wait for the limit"
+    );
+    assert_eq!(
+        limited_seen.lock().unwrap().len(),
+        1,
+        "asked once, not retried"
+    );
+    let meta = &h.task_result("t1").await.meta.unwrap()["subagent"];
+    assert_eq!(meta["status"], "done");
+    assert_eq!(meta["modelsTried"], json!(["Other/limited", "Test/m"]));
+}
+
+/// S10: a request that doesn't fit the window is sent again, trimmed, to
+/// the same model, once.
+#[tokio::test]
+async fn a_reply_too_long_for_the_window_is_trimmed_and_sent_again_once() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let overflow = r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "MARK-CL1",
+                vec![Reply::Status(400, overflow), Reply::Text(REPORT)],
+            ),
+            ("MARK-CL2", vec![Reply::Status(400, overflow)]),
+        ],
+        vec![
+            Reply::Calls(vec![
+                task_call("t1", "MARK-CL1: where?"),
+                task_call("t2", "MARK-CL2: where?"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let once = &h.task_result("t1").await.meta.unwrap()["subagent"];
+    assert_eq!(once["status"], "done");
+    assert_eq!(once["modelsTried"], json!(["Test/m"]), "the same model");
+    assert_eq!(requests_with(&seen, "MARK-CL1").len(), 2);
+    // Still too long after trimming: no endless retries.
+    let twice = &h.task_result("t2").await.meta.unwrap()["subagent"];
+    assert_eq!(twice["status"], "failed");
+    assert_eq!(requests_with(&seen, "MARK-CL2").len(), 2);
+}
+
+/// S12: a model that fails two subagents in a row is skipped for the run.
+#[tokio::test]
+async fn a_model_that_keeps_failing_is_skipped_for_the_run() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (bad, bad_seen) = model(vec![Reply::Status(
+        400,
+        r#"{"error":{"message":"no such model"}}"#,
+    )])
+    .await;
+    let (url, _) = model_routed(
+        vec![
+            ("MARK-C1", vec![Reply::Text(REPORT)]),
+            ("MARK-C2", vec![Reply::Text(REPORT)]),
+            ("MARK-C3", vec![Reply::Text(REPORT)]),
+        ],
+        vec![
+            task("t1", "MARK-C1: where?"),
+            task("t2", "MARK-C2: where?"),
+            task("t3", "MARK-C3: where?"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let config = scouts_on(json!({ "models": [profile("bad", &bad), { "chat": true }] }));
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let tried = |call: &'static str| {
+        let h = &h;
+        async move { h.task_result(call).await.meta.unwrap()["subagent"]["modelsTried"].clone() }
+    };
+    assert_eq!(tried("t1").await, json!(["Other/bad", "Test/m"]));
+    assert_eq!(tried("t2").await, json!(["Other/bad", "Test/m"]));
+    assert_eq!(
+        tried("t3").await,
+        json!(["Test/m"]),
+        "straight to the fallback"
+    );
+    assert!(!requests_with(&bad_seen, "MARK-C2").is_empty());
+    assert!(requests_with(&bad_seen, "MARK-C3").is_empty());
+}
+
+/// S12: with no model left, the lead is told to do the work itself.
+#[tokio::test]
+async fn with_every_model_failing_the_lead_is_told_to_work_alone() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (bad, bad_seen) = model(vec![Reply::Status(
+        400,
+        r#"{"error":{"message":"no such model"}}"#,
+    )])
+    .await;
+    let (url, _) = model(vec![
+        task("t1", "First?"),
+        task("t2", "Second?"),
+        task("t3", "Third?"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let config = scouts_on(json!({ "models": [profile("bad", &bad)] }));
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(h.task_result("t2").await.content.contains("Status: failed"));
+    let third = h.task_result("t3").await.content;
+    assert!(
+        third.starts_with("Error: subagents are unavailable for the rest of this run"),
+        "{third}"
+    );
+    assert!(third.contains("Do the work yourself."));
+    assert!(!requests_with(&bad_seen, "Second?").is_empty());
+    assert!(requests_with(&bad_seen, "Third?").is_empty());
+}
+
+/// S12: after a rate limit on a model, its subagents run one at a time.
+#[tokio::test]
+async fn a_rate_limited_model_runs_one_subagent_at_a_time() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    // Rate limited once, then slow answers.
+    let (limited, _) = model(vec![
+        Reply::RateLimited(3_600),
+        Reply::Slow(400, Box::new(Reply::Text(REPORT))),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![("MARK-T0", vec![Reply::Text(REPORT)])],
+        vec![
+            task("t0", "MARK-T0: where?"),
+            Reply::Calls(vec![
+                task_call("t1", "MARK-TA: where?"),
+                task_call("t2", "MARK-TB: where?"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    // t0's scout gets the 429 and falls back to the chat's model; t1's
+    // and t2's ask the limited model again, but one at a time.
+    let config = scouts_on(json!({ "models": [profile("limited", &limited), { "chat": true }] }));
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let a = h.child_of("t1").await;
+    let b = h.child_of("t2").await;
+    let first_ask = |m: Vec<MessageRow>| m[1].created_at;
+    let (a_at, b_at) = (
+        first_ask(h.messages_of(&a.id).await),
+        first_ask(h.messages_of(&b.id).await),
+    );
+    assert!(b_at.abs_diff(a_at) >= 300, "one at a time: {a_at} {b_at}");
+}
