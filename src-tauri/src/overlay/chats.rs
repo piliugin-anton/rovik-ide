@@ -210,6 +210,14 @@ pub fn discard(dialog_id: &str) -> Result<(), String> {
     }
 }
 
+/// A deleted chat: its overlay and its landings' journals go.
+pub fn forget(dialog_id: &str) {
+    let _ = discard(dialog_id);
+    if let Some(data) = data_dir() {
+        let _ = std::fs::remove_dir_all(data.join("landings").join(dialog_id));
+    }
+}
+
 /// At exit: every view unmounted, or its folder stays a dead mount.
 pub fn close_all() {
     let all: Vec<Arc<ChatOverlay>> = OPEN.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, o)| o).collect();
@@ -634,5 +642,35 @@ mod hub_tests {
         assert!(take_note("hub-chat-b").is_none(), "told once");
         discard("hub-chat-b").unwrap();
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    /// Rough timing through a chat's mount: `cargo test --release --lib
+    /// overlay::chats::bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn reading_through_the_mount() {
+        let project = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+        let data = std::env::temp_dir().join(format!("bench-{}", std::process::id()));
+        super::init(&data);
+        let o = super::open("bench-chat", &project, Box::new(|_, _| {})).unwrap();
+        let time = |what: &str, dir: &std::path::Path, cmd: &str| {
+            let t = std::time::Instant::now();
+            let out = std::process::Command::new("sh").args(["-c", cmd]).current_dir(dir).output().unwrap();
+            eprintln!("{what:>8}: {:>6} ms  {}", t.elapsed().as_millis(), String::from_utf8_lossy(&out.stdout).trim());
+        };
+        for (name, cmd) in [
+            ("grep", "grep -rc 'fn ' src-tauri/src | wc -l"),
+            ("cat", "cat src-tauri/src/agent_run/*.rs | wc -c"),
+            ("find", "find src src-tauri/src -type f | wc -l"),
+            ("git", "git status --short | wc -l"),
+        ] {
+            time(&format!("{name} dir"), &project, cmd);
+            time(&format!("{name} view"), &o.view, cmd);
+        }
+        super::discard("bench-chat").unwrap();
+        let _ = std::fs::remove_dir_all(&data);
     }
 }

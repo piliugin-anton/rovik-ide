@@ -894,3 +894,18 @@ once; they touch different files. Everything else is sequential.
   - Known rough edge: reviewing an edit that needs approval opens the file
     from the chat's view (its mount path); a tab of it stops working once
     the chat's changes land.
+- **Milestone 9 (hardening), partly.**
+  - Done: the drivers take any backend (brought forward as milestone 3);
+    deleting a chat removes its overlay and landing journals, and the
+    delete dialog says how many unlanded changed files go with it.
+  - Measured (debug build, this repository): through a chat's mount,
+    `grep -r` over `src-tauri/src` takes 94 ms against 13 ms directly,
+    `find` 30 ms against 7, `git status` 166 ms against 10; `cat` is the
+    same. Each read opens the file anew; an open-file cache and FUSE
+    passthrough (Linux 6.9+) are the next steps if it matters.
+  - **Not done:** running commands in a Linux mount namespace with the
+    view mounted over the project's path (the textual check refuses
+    commands naming the project's path instead); watching the project for
+    writes no landing or save explains; seeding build folders with
+    copy-on-write clones; language servers per chat; a copied-tree
+    fallback for machines without the driver.

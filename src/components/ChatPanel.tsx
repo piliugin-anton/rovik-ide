@@ -63,6 +63,7 @@ import {
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
+import { overlayStatus } from '../lib/overlay';
 import { isSettled, latestChecklist } from '../lib/todo';
 import {
   dismissChecklist,
@@ -887,6 +888,10 @@ export default function ChatPanel(props: ChatProps) {
 
   async function confirmAndDeleteDialog(dialog: DialogSummary) {
     const count = dialog.messageCount;
+    // Changes of an isolated chat that haven't landed go with it.
+    const unlanded = await overlayStatus(dialog.id)
+      .then((s) => (s.isolated ? s.files.length : 0))
+      .catch(() => 0);
     const confirmed = await confirmDialog({
       title: 'Delete this chat?',
       message: (
@@ -894,6 +899,9 @@ export default function ChatPanel(props: ChatProps) {
           <strong>{dialog.title || 'Untitled chat'}</strong>
           {count > 0 ? ` and its ${count} message${count === 1 ? '' : 's'}` : ''} will be
           permanently deleted.
+          {unlanded > 0
+            ? ` So will its ${unlanded} changed file${unlanded === 1 ? '' : 's'} that haven’t landed in the project.`
+            : ''}
         </>
       ),
       confirmLabel: 'Delete',

@@ -144,6 +144,8 @@ pub async fn chat_rename_dialog(db: State<'_, DbState>, dialog_id: String, title
 #[tauri::command]
 pub async fn chat_delete_dialog(db: State<'_, DbState>, dialog_id: String) -> Result<(), String> {
     let data_dir = db.data_dir().to_path_buf();
+    // Its isolated changes and landing history go with it.
+    crate::overlay::chats::forget(&dialog_id);
     db.write(move |c| {
         store::delete_dialog(c, &dialog_id)?;
         // Best effort; anything missed is collected at the next start.
