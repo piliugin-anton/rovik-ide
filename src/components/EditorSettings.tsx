@@ -209,9 +209,23 @@ export default function EditorSettings() {
           <span>
             Format on save
             <span class="setting-checkbox-sub">
-              Run the language's formatter on Ctrl+S. Available today for TypeScript, JavaScript,
-              JSON, CSS, HTML and, with rust-analyzer, Rust. Format Document (Shift+Alt+F) runs it
-              by hand.
+              Run the file's formatter on Ctrl+S. Format Document (Shift+Alt+F) runs it by hand.
+            </span>
+          </span>
+        </label>
+        <label class="setting-checkbox">
+          <input
+            type="checkbox"
+            checked={s().projectFormatters}
+            onChange={(e) => updateEditorSettings({ projectFormatters: e.currentTarget.checked })}
+          />
+          <span>
+            Use the project's formatters
+            <span class="setting-checkbox-sub">
+              Format with the tool the project uses (Prettier, Biome, rustfmt, Ruff, gofmt,
+              clang-format, …), its own copy first, or the language's standard formatter when it's
+              installed. Off: only the editor's built-in formatters (TypeScript, JavaScript, JSON,
+              CSS, HTML) and language servers.
             </span>
           </span>
         </label>

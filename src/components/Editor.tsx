@@ -36,6 +36,7 @@ import { pendingEditFor } from '../lib/approvals';
 import { editorSettings } from '../lib/editorSettings';
 import type { EditorConfigProps } from '../lib/editorconfig';
 import { applyIndentation, loadEditorConfig, prepareForSave } from '../lib/editorFormatting';
+import { registerFileFormatter } from '../lib/fileFormatters';
 import { applyTheme } from '../lib/monacoThemes';
 import {
   hunkLine,
@@ -227,6 +228,28 @@ export default function Editor(props: EditorProps) {
       const m = editor?.getModel();
       if (!m || disposed) return;
       applyIndentation(m, s, ec);
+    });
+
+    // The project's command-line formatter for this file, if it has one.
+    // Looked up again when the language, the project or the setting changes.
+    const useProjectFormatters = createMemo(() => editorSettings().projectFormatters);
+    createEffect(() => {
+      const language = props.language();
+      const root = props.projectDir();
+      const m = editor?.getModel();
+      if (!useProjectFormatters() || !m) return;
+      let registered: monaco.IDisposable | null = null;
+      let stale = false;
+      onCleanup(() => {
+        stale = true;
+        registered?.dispose();
+      });
+      registerFileFormatter(m, props.currentFilePath, language, root)
+        .then((r) => {
+          if (stale || disposed) r?.disposable.dispose();
+          else registered = r?.disposable ?? null;
+        })
+        .catch((err) => console.warn(`No formatter lookup for ${props.currentFilePath}:`, err));
     });
 
     let saving = false;

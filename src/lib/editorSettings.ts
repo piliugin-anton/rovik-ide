@@ -39,6 +39,9 @@ export interface EditorSettings {
   detectIndentation: boolean;
   /** Run the language's formatter on Ctrl+S, when it has one. Default false. */
   formatOnSave: boolean;
+  /** Format with the project's command-line formatter (Prettier, rustfmt,
+   *  Ruff, …) where there is one. Default true. */
+  projectFormatters: boolean;
   wordWrap: 'on' | 'off';
   minimap: boolean;
   renderWhitespace: 'none' | 'boundary' | 'all';
@@ -55,6 +58,7 @@ const DEFAULTS: EditorSettings = {
   insertSpaces: true,
   detectIndentation: true,
   formatOnSave: false,
+  projectFormatters: true,
   wordWrap: 'off',
   minimap: false,
   renderWhitespace: 'none',
@@ -87,6 +91,10 @@ function load(): EditorSettings {
           : DEFAULTS.detectIndentation,
       formatOnSave:
         typeof parsed.formatOnSave === 'boolean' ? parsed.formatOnSave : DEFAULTS.formatOnSave,
+      projectFormatters:
+        typeof parsed.projectFormatters === 'boolean'
+          ? parsed.projectFormatters
+          : DEFAULTS.projectFormatters,
       wordWrap: parsed.wordWrap === 'on' ? 'on' : 'off',
       minimap: typeof parsed.minimap === 'boolean' ? parsed.minimap : DEFAULTS.minimap,
       renderWhitespace:

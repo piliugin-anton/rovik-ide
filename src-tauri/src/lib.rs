@@ -16,6 +16,7 @@ mod command_tool;
 mod edit_file;
 mod file_guard;
 mod filesystem;
+mod formatter;
 mod git;
 mod git_sync;
 mod lsp;
@@ -90,6 +91,8 @@ pub fn run() {
             filesystem::write_file_content,
             filesystem::path_exists,
             filesystem::read_editorconfigs,
+            formatter::formatter_for_file,
+            formatter::format_file,
             filesystem::dir_entry_count,
             filesystem::load_ai_settings,
             filesystem::save_ai_settings,

@@ -46,6 +46,39 @@ export async function pathExists(path: string): Promise<boolean> {
   return invoke<boolean>('path_exists', { path });
 }
 
+/** A command-line formatter for a file (src-tauri/src/formatter.rs). */
+export interface FormatterInfo {
+  id: string;
+  name: string;
+  /** The project's own (it has a config file or a dependency for it). */
+  declared: boolean;
+  program: string;
+}
+
+export interface FormatterLookup {
+  formatter: FormatterInfo | null;
+  /** The project's formatter, by name, when it isn't installed. */
+  missing: string | null;
+}
+
+export async function formatterForFile(
+  path: string,
+  language: string,
+  root: string | null
+): Promise<FormatterLookup> {
+  return invoke<FormatterLookup>('formatter_for_file', { path, language, root });
+}
+
+/** `content` formatted by the file's formatter; the file on disk is untouched. */
+export async function formatFile(
+  path: string,
+  language: string,
+  root: string | null,
+  content: string
+): Promise<string> {
+  return invoke<string>('format_file', { path, language, root, content });
+}
+
 /** The .editorconfig files from a file's folder up to the root, nearest first. */
 export async function readEditorConfigs(path: string): Promise<EditorConfigFile[]> {
   return invoke<EditorConfigFile[]>('read_editorconfigs', { path });

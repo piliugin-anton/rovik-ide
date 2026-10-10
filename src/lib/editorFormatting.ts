@@ -19,7 +19,7 @@ import { resolveEditorConfig, type EditorConfigProps } from './editorconfig';
 import type { EditorSettings } from './editorSettings';
 
 /** A formatter that hangs doesn't hold up the save longer than this. */
-const FORMAT_ON_SAVE_TIMEOUT_MS = 2000;
+const FORMAT_ON_SAVE_TIMEOUT_MS = 5000;
 
 /** The .editorconfig properties for a file; none when it can't be read. */
 export async function loadEditorConfig(path: string): Promise<EditorConfigProps> {
