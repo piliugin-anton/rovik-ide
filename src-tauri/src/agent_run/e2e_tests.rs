@@ -523,6 +523,33 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
 }
 
 #[tokio::test]
+async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
+    let _serial = crate::workload::queue::test_support::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    crate::workload::queue::test_reset(4, 16 << 30, 8 << 30);
+    let h = harness(&[]).await;
+    // Another chat holds the only slot.
+    let holder = crate::workload::begin(crate::workload::JobKind::Agent { owner: "other".into() }, "cargo build", None);
+    assert!(holder.wait_for_slot(&|| false, &|_| {}).is_some());
+    let (url, _) = model(vec![
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "make --version" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions { allow_any_command: true, ..quiet_permissions() };
+    h.start(h.request(&url, Harness::send("Build"), permissions)).await;
+    let note = h.wait_for("a waiting note", |e| e["type"] == "toolNote" && e["note"].is_string()).await;
+    assert!(
+        note["note"].as_str().unwrap().starts_with("Waiting for a CPU slot: another chat is running `cargo build`"),
+        "{note}"
+    );
+    assert_eq!(h.messages().await.iter().filter(|m| m.role == "tool").count(), 0, "not run yet");
+    drop(holder);
+    assert_eq!(h.run_end().await, "done");
+    // The note is cleared once it runs.
+    assert!(h.events_of("toolNote").last().unwrap()["note"].is_null());
+}
+
+#[tokio::test]
 async fn stop_ends_a_run_waiting_for_approval() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![Reply::Call { id: "r1", name: "bash", args: json!({ "command": "ls" }) }]).await;

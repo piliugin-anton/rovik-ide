@@ -124,7 +124,9 @@ export default function VerificationRecord(props: {
                           ? 'didn’t finish'
                           : check.status === 'skipped'
                             ? `skipped: ${check.reason}`
-                            : seconds(check.durationMs)}
+                            : check.status === 'running' && check.note
+                              ? check.note
+                              : [seconds(check.durationMs), check.note].filter(Boolean).join(' · ')}
                       </span>
                     </div>
                   }
@@ -141,6 +143,7 @@ export default function VerificationRecord(props: {
                             ? `exit ${check.exitCode}`
                             : ''}
                         {check.durationMs !== undefined ? `, ${seconds(check.durationMs)}` : ''}
+                        {check.note ? ` · ${check.note}` : ''}
                       </span>
                     </summary>
                     <Show when={check.errorFiles}>

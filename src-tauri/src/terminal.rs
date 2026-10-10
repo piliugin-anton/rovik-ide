@@ -219,12 +219,22 @@ pub fn spawn_terminal(
         })
         .map_err(|e| e.to_string())?;
 
+    // The shell's commands count in the queue for heavy work: a build run
+    // here takes a CPU slot (chats wait, with a note naming it), but the
+    // terminal itself never waits and is never slowed (src/workload).
+    let job = child.process_id().map(|pid| {
+        let job = crate::workload::begin(crate::workload::JobKind::Terminal, "", None);
+        job.spawned(pid);
+        job
+    });
+
     // Waiter: reap the child, release the pty, report the exit.
     let exit_id = id.clone();
     std::thread::Builder::new()
         .name(format!("pty-wait-{id}"))
         .spawn(move || {
             let code = child.wait().ok().map(|status| status.exit_code());
+            drop(job);
             // Drops writer and master. On Windows that closes the
             // pseudoconsole, which is what ends the reader's blocking read.
             app.state::<TerminalState>().remove(&exit_id);

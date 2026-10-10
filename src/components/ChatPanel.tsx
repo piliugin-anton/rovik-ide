@@ -240,6 +240,12 @@ export default function ChatPanel(props: ChatProps) {
     const id = activeDialogId();
     if (id && store.state.chatVisible) store.markRead(id);
   });
+  // The chat on screen goes first in the queue for heavy work (builds,
+  // tests) when several chats want the CPU at once (src-tauri/src/workload).
+  createEffect(() => {
+    const id = store.state.chatVisible ? (activeDialogId() ?? null) : null;
+    void invoke('workload_focus', { dialogId: id }).catch(() => {});
+  });
 
   // The Settings dialog lives in App (gear next to the project selector).
   // Its saves bump aiSettingsRevision — reload our copy (providers /

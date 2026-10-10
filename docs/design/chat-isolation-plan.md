@@ -764,3 +764,25 @@ once; they touch different files. Everything else is sequential.
   - `e2e_tests::plan_mode_asks_and_saves_the_plan` and
     `e2e_tests::a_revised_plan_replaces_the_chats_plan_file` already fail
     on the base branch, unrelated to this work.
+- **Track Q (T06–T10a)**, in `src-tauri/src/workload/`.
+  - Process trees are measured with the `sysinfo` crate on all three
+    systems (descendants of the command's process, plus its process group
+    on Unix), not with cgroups or Windows Job Objects. One implementation,
+    testable here; daemons that leave both the tree and the group escape
+    measurement, as the plan's limits already said for the fallback.
+  - "Slowed down" is the lowest scheduling priority (`nice 19`, Windows
+    idle priority), not a hard CPU cap: without cgroups there is none, and
+    an unprivileged process can't raise its priority again on Unix. It
+    only matters while something else wants the CPU, so it isn't undone.
+    Pausing under low memory is Unix only (`SIGSTOP`/`SIGCONT`).
+  - No lock files for slots: the app is single-instance
+    (tauri-plugin-single-instance), so the slots live in one process.
+  - History is a JSON file in the app's data folder
+    (`workload-history.json`), not a chat database table: it describes
+    the machine and the project, not a chat.
+  - The note in the chat: live on the tool call (and on a check's row)
+    while it waits; kept afterwards only for waits of 10 s or more, as the
+    line the model also gets. The terminal's command is its shell's
+    newest child process.
+  - Slots can be set by the `workload_set_slots` command; there is no
+    settings screen for it yet.

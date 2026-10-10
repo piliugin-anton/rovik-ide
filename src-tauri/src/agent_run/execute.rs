@@ -214,9 +214,9 @@ impl<R: Runtime> Run<R> {
             .map(|tc| {
                 let (app, root) = (self.app.clone(), self.root.clone());
                 let (name, args, stop) = (tc.name.clone(), tc.arguments.clone(), self.stop.clone());
-                let seen = self.seen.clone();
+                let ctx = self.call_context(&tc.id);
                 async move {
-                    parallel::spawned(async move { tools::execute(&app, root.as_deref(), &name, &args, &stop, &seen).await })
+                    parallel::spawned(async move { tools::execute(&app, root.as_deref(), &name, &args, &stop, &ctx).await })
                         .await
                         .unwrap_or_else(|e| tools::ToolResult { content: format!("Error: {e}"), ..Default::default() })
                 }
@@ -466,7 +466,10 @@ impl<R: Runtime> Run<R> {
 
         let result = match &auth.refusal {
             Some(refusal) => tools::ToolResult { content: refusal.clone(), ..Default::default() },
-            None => tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json, &self.stop, &self.seen).await,
+            None => {
+                let ctx = self.call_context(&tc.id);
+                tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json, &self.stop, &ctx).await
+            }
         };
         let write = match (writes, write_path) {
             (true, Some(path)) => Some(WriteTarget { path, abs_path: abs_write_path, before }),
@@ -958,6 +961,19 @@ impl<R: Runtime> Run<R> {
             return Some(Prepared::Unchanged);
         }
         Some(Prepared::Diff { proposal: EditProposal { abs_path, rel_path: path, current, proposed }, hunks })
+    }
+
+    /// What a call runs with: the run's record of files it has seen, and
+    /// its note on the tool block (a wait for a CPU slot shows there).
+    fn call_context(&self, tool_call_id: &str) -> tools::CallContext {
+        let (app, dialog_id, id) = (self.app.clone(), self.dialog_id.clone(), tool_call_id.to_string());
+        tools::CallContext {
+            seen: self.seen.clone(),
+            owner: self.dialog_id.clone(),
+            note: std::sync::Arc::new(move |note| {
+                emit(&app, AgentEvent::ToolNote { dialog_id: dialog_id.clone(), tool_call_id: id.clone(), note })
+            }),
+        }
     }
 
     fn tool_note(&self, tool_call_id: &str, note: Option<String>) {

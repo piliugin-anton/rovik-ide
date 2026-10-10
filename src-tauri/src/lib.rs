@@ -28,6 +28,7 @@ mod filesystem;
 mod terminal;
 mod typings;
 mod vfs;
+mod workload;
 mod clm;
 mod git;
 mod git_sync;
@@ -62,6 +63,7 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             let db = chat_db::DbState::open(&dir).map_err(|e| format!("Chat database: {e}"))?;
+            workload::init(&dir);
             app.manage(db);
             Ok(())
         })
@@ -182,6 +184,8 @@ pub fn run() {
             project_profile::save_project_settings,
             agent::chat_context_estimate,
             command_tool::tool_run_command,
+            workload::workload_focus,
+            workload::workload_set_slots,
             outline::outline_symbols,
             vfs::vfs_status,
             vfs::vfs_install_driver,
