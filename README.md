@@ -55,6 +55,11 @@ Electron-based editors.
 - **Long tasks stay on track.** Older history is trimmed automatically, or
   the agent can manage its own context (see
   [Context management](#context-management)).
+- **Subagents (optional, off by default).** The agent can send scouts:
+  read-only helpers that explore one question about the code in a fresh
+  context and hand back a short report, so long explorations don't fill
+  the agent's own context. Turn them on, and pick their models, in
+  Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
 - Chats are saved and searchable, and they keep running in the background

@@ -297,7 +297,7 @@ pub fn summary(conn: &Connection, id: &str) -> DbResult<Option<ProjectSummary>> 
     let row: Option<(String, String, i64, i64)> = conn
         .query_row(
             "SELECT p.name, p.path, p.last_opened_at,
-                    (SELECT COUNT(*) FROM dialogs d WHERE d.project_id = p.id)
+                    (SELECT COUNT(*) FROM dialogs d WHERE d.project_id = p.id AND d.parent_id IS NULL)
              FROM projects p WHERE p.id = ?1",
             params![id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
@@ -695,7 +695,7 @@ pub fn relink(conn: &mut Connection, id: &str, root: &Path, merge_ok: bool) -> D
 pub fn delete(conn: &mut Connection, id: &str) -> DbResult<()> {
     let chats: Vec<String> = {
         let mut stmt = conn
-            .prepare_cached("SELECT id FROM dialogs WHERE project_id = ?1")
+            .prepare_cached("SELECT id FROM dialogs WHERE project_id = ?1 AND parent_id IS NULL")
             .map_err(err)?;
         let rows = stmt
             .query_map(params![id], |r| r.get::<_, String>(0))

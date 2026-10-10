@@ -34,6 +34,8 @@ enum Reply {
     /// Reasoning (`reasoning` text, and `reasoning_details` fragments, one
     /// per chunk, as OpenRouter streams them), then the reply.
     Thought(&'static str, Vec<Value>, Box<Reply>),
+    /// The reply, after this many milliseconds.
+    Slow(u64, Box<Reply>),
 }
 
 impl Reply {
@@ -81,6 +83,7 @@ impl Reply {
                 }
                 out + &then.sse()
             }
+            Reply::Slow(_, then) => then.sse(),
         }
     }
 
@@ -91,6 +94,7 @@ impl Reply {
                 "HTTP/1.1 {code} Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             ),
+            Reply::Slow(_, then) => then.response(),
             _ => format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
                 self.sse()
@@ -99,7 +103,18 @@ impl Reply {
     }
 
     fn hangs(&self) -> bool {
-        matches!(self, Reply::Hang(_))
+        match self {
+            Reply::Hang(_) => true,
+            Reply::Slow(_, then) => then.hangs(),
+            _ => false,
+        }
+    }
+
+    fn delay(&self) -> Duration {
+        match self {
+            Reply::Slow(ms, _) => Duration::from_millis(*ms),
+            _ => Duration::ZERO,
+        }
     }
 }
 
@@ -107,28 +122,78 @@ impl Reply {
 /// last one again once they run out). Returns its base URL and the request
 /// bodies it saw.
 async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    model_routed(Vec::new(), replies).await
+}
+
+/// The script a request is answered from: the first route whose marker is
+/// in the request's first message after the system prompt (a subagent's
+/// brief, or the user's request), else the default script (K05: parallel
+/// runs each get their own replies, in their own order).
+fn route_of(body: &Value, markers: &[&str]) -> Option<usize> {
+    let first = body["messages"]
+        .as_array()?
+        .iter()
+        .find(|m| m["role"] != "system")?;
+    let text = match &first["content"] {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    markers.iter().position(|m| text.contains(m))
+}
+
+/// `model`, with one script per run: `routes` pairs a marker (found in the
+/// run's first message) with that run's replies; anything else is answered
+/// from `default`. Each script is answered in order, the last reply again
+/// once it runs out.
+async fn model_routed(
+    routes: Vec<(&'static str, Vec<Reply>)>,
+    default: Vec<Reply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    let bodies: Vec<(String, bool)> = replies.iter().map(|r| (r.response(), r.hangs())).collect();
+    let script = |replies: &[Reply]| -> Vec<(String, bool, Duration)> {
+        replies
+            .iter()
+            .map(|r| (r.response(), r.hangs(), r.delay()))
+            .collect()
+    };
+    let markers: Vec<&'static str> = routes.iter().map(|(m, _)| *m).collect();
+    let mut scripts: Vec<Vec<(String, bool, Duration)>> =
+        routes.iter().map(|(_, r)| script(r)).collect();
+    scripts.push(script(&default));
+    let next = Arc::new(Mutex::new(vec![0usize; scripts.len()]));
+    let scripts = Arc::new(scripts);
     tokio::spawn(async move {
-        let mut n = 0;
         while let Ok((mut socket, _)) = listener.accept().await {
-            let body = read_request(&mut socket).await;
-            log.lock().unwrap().push(body);
-            let (reply, hangs) = bodies[n.min(bodies.len() - 1)].clone();
-            n += 1;
-            let _ = socket.write_all(reply.as_bytes()).await;
-            if hangs {
-                // Keeps the connection open, saying nothing more.
-                tokio::spawn(async move {
+            let (log, next, scripts, markers) =
+                (log.clone(), next.clone(), scripts.clone(), markers.clone());
+            // Each connection answered on its own: a slow reply to one run
+            // doesn't hold up another's.
+            tokio::spawn(async move {
+                let body = read_request(&mut socket).await;
+                let which = route_of(&body, &markers).unwrap_or(scripts.len() - 1);
+                log.lock().unwrap().push(body);
+                let (reply, hangs, delay) = {
+                    let mut next = next.lock().unwrap();
+                    let bodies = &scripts[which];
+                    let n = next[which];
+                    next[which] += 1;
+                    bodies[n.min(bodies.len() - 1)].clone()
+                };
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                let _ = socket.write_all(reply.as_bytes()).await;
+                if hangs {
+                    // Keeps the connection open, saying nothing more.
                     tokio::time::sleep(Duration::from_secs(120)).await;
                     drop(socket);
-                });
-                continue;
-            }
-            let _ = socket.shutdown().await;
+                    return;
+                }
+                let _ = socket.shutdown().await;
+            });
         }
     });
     (url, seen)
@@ -161,6 +226,10 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Value {
     }
     Value::Null
 }
+
+#[cfg(test)]
+#[path = "subagent_e2e_tests.rs"]
+mod subagent_tests;
 
 /*
  * The app
@@ -273,6 +342,7 @@ impl Harness {
             config: Some(AgentConfig {
                 permissions,
                 approval_profiles: Vec::new(),
+                subagents: Default::default(),
             }),
             isolate: Some(false),
         }
@@ -4299,6 +4369,8 @@ async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
         command: Some("ls".into()),
         note: None,
         edit: None,
+        parent_dialog_id: None,
+        parent_call_id: None,
     };
     let wait = |dialog: &str| {
         let (state, app, request) = (state.clone(), app.clone(), request(dialog));

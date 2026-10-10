@@ -111,6 +111,11 @@ import {
 } from '../lib/composerDraft';
 import { toRelativePath } from '../lib/fileTools';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
+import {
+  DEFAULT_SUBAGENT_SETTINGS,
+  resolveSubagentConfig,
+  type SubagentSettings,
+} from '../lib/subagentSettings';
 import { readFileContent } from '../lib/commands';
 
 const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
@@ -145,6 +150,8 @@ export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
+  const [subagentSettings, setSubagentSettings] =
+    createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
 
   // Chat list page + open chats (the app's, kept while the panel is away);
   // everything else stays in the database.
@@ -274,6 +281,7 @@ export default function ChatPanel(props: ChatProps) {
             setProviders(settings.providers);
             setSelection((sel) => reconcileSelection(settings.providers, sel ?? settings.active));
             setPermissions(settings.permissions);
+            setSubagentSettings(settings.subagents);
           } catch (err) {
             console.error('Failed to reload AI settings:', err);
           }
@@ -677,6 +685,7 @@ export default function ChatPanel(props: ChatProps) {
       setProviders(settings.providers);
       setSelection(reconcileSelection(settings.providers, settings.active));
       setPermissions(settings.permissions);
+      setSubagentSettings(settings.subagents);
 
       try {
         // This project's chats (or, with no folder open, the ones with none).
@@ -1900,6 +1909,7 @@ export default function ChatPanel(props: ChatProps) {
       providers: nextProviders,
       active: nextSelection,
       permissions: nextPermissions,
+      subagents: subagentSettings(),
     }).catch((err) => console.error('Failed to save AI settings:', err));
   }
 
@@ -1999,6 +2009,7 @@ export default function ChatPanel(props: ChatProps) {
   const agentConfig = (): AgentConfig => ({
     permissions: permissions(),
     approvalProfiles: approvalProfiles(permissions()),
+    subagents: resolveSubagentConfig(subagentSettings(), providers(), resolveProfile),
   });
   createEffect(() => configureAgent(agentConfig()));
 

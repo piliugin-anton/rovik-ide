@@ -134,6 +134,11 @@ pub struct ApprovalRequest {
     pub note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit: Option<EditProposal>,
+    /// A subagent's request: the chat it shows in, and the `task` call there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_dialog_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_call_id: Option<String>,
 }
 
 /// An ask_user call waiting for the user's answers.
@@ -242,6 +247,30 @@ pub enum AgentEvent {
         kind: String,
         title: String,
         message: String,
+    },
+    /// A subagent started for the lead's `task` call `tool_call_id` in
+    /// `dialog_id` (the parent chat); its own chat is `child_dialog_id`.
+    SubagentStarted {
+        dialog_id: String,
+        tool_call_id: String,
+        child_dialog_id: String,
+        kind: String,
+        model: String,
+        goal: String,
+    },
+    /// How far it got: tool calls so far, and the one it's on.
+    SubagentProgress {
+        dialog_id: String,
+        tool_call_id: String,
+        tool_calls: u32,
+        current_tool: Option<String>,
+        model: String,
+    },
+    SubagentEnded {
+        dialog_id: String,
+        tool_call_id: String,
+        child_dialog_id: String,
+        status: String,
     },
 }
 

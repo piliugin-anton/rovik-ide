@@ -2,6 +2,11 @@ import { settingOf } from './reasoning';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelProfile, ModelSelection, Provider, ProviderModel } from '../types';
 import { DEFAULT_PERMISSIONS, normalizePermissions, type AgentPermissions } from './permissions';
+import {
+  DEFAULT_SUBAGENT_SETTINGS,
+  normalizeSubagentSettings,
+  type SubagentSettings,
+} from './subagentSettings';
 
 export interface PersistedAiSettings {
   version: 2;
@@ -9,6 +14,8 @@ export interface PersistedAiSettings {
   active: ModelSelection | null;
   /** Missing in files written before permissions existed. */
   permissions: AgentPermissions;
+  /** Missing in files written before subagents existed: all off. */
+  subagents: SubagentSettings;
 }
 
 const EMPTY: PersistedAiSettings = {
@@ -16,6 +23,7 @@ const EMPTY: PersistedAiSettings = {
   providers: [],
   active: null,
   permissions: DEFAULT_PERMISSIONS,
+  subagents: DEFAULT_SUBAGENT_SETTINGS,
 };
 
 export async function loadAiSettings(): Promise<PersistedAiSettings> {
@@ -29,6 +37,7 @@ export async function loadAiSettings(): Promise<PersistedAiSettings> {
         providers: parsed.providers,
         active: parsed.active ?? null,
         permissions: normalizePermissions(parsed.permissions),
+        subagents: normalizeSubagentSettings(parsed.subagents),
       };
     }
 

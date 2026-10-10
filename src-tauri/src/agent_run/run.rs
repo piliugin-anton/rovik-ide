@@ -12,9 +12,10 @@ use super::events::{emit, AgentEvent, OutMessage, Patch, Status};
 use super::guard::Guard;
 use super::permissions::ChecklistMode;
 use super::project::{self, ProjectCheck};
+use super::subagent_run::SubCtx;
 use super::{
-    failure, log, plan, repetition, tools, AgentState, Controls, EffortPick, ModelProfile,
-    StartKind, StartRequest, StopSignal,
+    failure, log, plan, repetition, subagent, tools, AgentState, Controls, EffortPick,
+    ModelProfile, StartKind, StartRequest, StopSignal,
 };
 use crate::agent::{
     ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS,
@@ -238,6 +239,19 @@ pub struct Run<R: Runtime> {
     /// The sent message waiting for its first answer.
     pub(super) settle_message: Option<String>,
     continue_reply: bool,
+    /// The chat's lead, or a subagent of a lead (subagent_run.rs).
+    pub(super) role: Role,
+    /// The subagents this run started (a lead's).
+    pub(super) ledger: subagent::Ledger,
+}
+
+/// Who a run works for.
+pub(super) enum Role {
+    /// The chat's own agent: talks to the user, owns the plan, the checklist
+    /// and the checks.
+    Lead,
+    /// A subagent of a lead (subagent_run.rs).
+    Sub(Box<SubCtx>),
 }
 
 /// Where a run starts.
@@ -251,14 +265,14 @@ pub(super) enum Entry {
 }
 
 /// What one model turn produced.
-struct TurnOutput {
-    message_id: String,
-    text: String,
-    tool_calls: Vec<ToolCall>,
-    failure: Option<ChatError>,
-    repetition_cut: Option<usize>,
+pub(super) struct TurnOutput {
+    pub(super) message_id: String,
+    pub(super) text: String,
+    pub(super) tool_calls: Vec<ToolCall>,
+    pub(super) failure: Option<ChatError>,
+    pub(super) repetition_cut: Option<usize>,
     /// `{ text, ms }`, when the model reasoned.
-    reasoning: Option<Value>,
+    pub(super) reasoning: Option<Value>,
 }
 
 impl<R: Runtime> Run<R> {
@@ -663,8 +677,118 @@ impl<R: Runtime> Run<R> {
             refused_formats: Vec::new(),
             settle_message,
             continue_reply,
+            role: Role::Lead,
+            ledger: subagent::Ledger::default(),
         };
         Ok(Some((run, entry)))
+    }
+
+    /// A subagent's run, in the child chat `dialog_id` (already stored, its
+    /// brief its first message). It works in the parent's root (D5) and
+    /// never opens an overlay of its own (K04); it shares the parent's
+    /// project section and repository map, gets its kind's tools and
+    /// prompt, and none of the lead's end-of-run machinery: no checklist,
+    /// no checks, no CLM, no plan mode, no checkpoints (K03).
+    pub(super) fn prepare_child(
+        parent: &Run<R>,
+        dialog_id: String,
+        sub: SubCtx,
+        controls: Controls,
+    ) -> Run<R> {
+        let profile = sub.models[0].clone();
+        let options = sub.options.clone();
+        Run {
+            app: parent.app.clone(),
+            state: parent.state.clone(),
+            db: parent.db.clone(),
+            seen: crate::file_guard::Seen::new(dialog_id.clone()),
+            dialog_id,
+            profile,
+            options,
+            plan_mode: false,
+            context_mode: crate::clm::MODE_TRIMMING.into(),
+            root: parent.root.clone(),
+            project_root: parent.project_root.clone(),
+            merged_from_project: None,
+            marker_reminders: 0,
+            landed: false,
+            current_user_content: None,
+            local_date: parent.local_date.clone(),
+            guard: Guard::new(None, 0),
+            questions_asked: 0,
+            checks: Vec::new(),
+            project_context: parent.project_context.clone(),
+            base_project_context: parent.base_project_context.clone(),
+            repo_map: parent.repo_map.clone(),
+            repo_map_chars: parent.repo_map_chars,
+            map_writes_since_refresh: 0,
+            map_refreshed_at: Instant::now(),
+            map_refreshes: 0,
+            writes_since_verify: false,
+            changed_files: Vec::new(),
+            verify_rounds: 0,
+            last_verify_failed: false,
+            checklist_nudges: 0,
+            force_todo_next: false,
+            checklist_gate_refused: false,
+            open_steps_at_end: None,
+            pending_step_compaction: None,
+            clm_restricted: false,
+            restricted_turns: 0,
+            restricted_stall: 0,
+            clm_non_compliant: false,
+            clm_turns: 0,
+            clm_peak_pct: 0,
+            clm_edits_seen: 0,
+            clm_edit_deltas: Vec::new(),
+            clm_recall_hits: 0,
+            clm_reminders_fired: Vec::new(),
+            step_asked_turn: None,
+            step_turns_to_edit: None,
+            tier75_turns_to_edit: None,
+            urgent_turns_to_edit: None,
+            tier75_since: None,
+            urgent_since: None,
+            clm_tracking_started: false,
+            context_edited: false,
+            edit_delta_pending: None,
+            words_only: false,
+            plan_context: String::new(),
+            plan_nudged: false,
+            repetition_stops: 0,
+            started_at: Instant::now(),
+            stop: controls.stop,
+            effort: controls.effort,
+            refused_formats: Vec::new(),
+            settle_message: None,
+            continue_reply: false,
+            role: Role::Sub(Box::new(sub)),
+            ledger: subagent::Ledger::default(),
+        }
+    }
+
+    /// The subagent's context, when this run is one.
+    pub(super) fn sub(&self) -> Option<&SubCtx> {
+        match &self.role {
+            Role::Sub(sub) => Some(sub),
+            Role::Lead => None,
+        }
+    }
+
+    pub(super) fn sub_mut(&mut self) -> Option<&mut SubCtx> {
+        match &mut self.role {
+            Role::Sub(sub) => Some(sub),
+            Role::Lead => None,
+        }
+    }
+
+    /// The kinds of subagent this lead may start now (none for a subagent:
+    /// depth 1, D3). Read at each turn: settings changes apply at once.
+    pub(super) fn subagent_kinds(&self) -> Vec<subagent::Kind> {
+        if self.sub().is_some() || self.root.is_none() || self.profile.no_tools {
+            return Vec::new();
+        }
+        self.state.config().subagents.enabled_kinds()
     }
 
     pub(super) fn stopped(&self) -> bool {
@@ -988,7 +1112,7 @@ impl<R: Runtime> Run<R> {
     /// history is read from the database, so everything up to here must be
     /// stored. Failed attempts are retried in chat_request.rs, which reports
     /// each retry, then succeeds or fails for good.
-    async fn model_turn(&mut self) -> Result<TurnOutput, String> {
+    pub(super) async fn model_turn(&mut self) -> Result<TurnOutput, String> {
         let mut started = Instant::now();
         let mut pending = new_message("assistant", "");
         pending.finalized = false;
@@ -1005,7 +1129,7 @@ impl<R: Runtime> Run<R> {
         // context tools (90%+ at once, step/75% after 4 calls with no edit).
         self.update_clm_pressure(clm).await;
         let context_only = clm && self.clm_restricted;
-        let tools = tools::tools_for(
+        let mut tools = tools::tools_for(
             self.root.is_some(),
             self.profile.vision,
             self.profile.no_tools,
@@ -1014,6 +1138,32 @@ impl<R: Runtime> Run<R> {
             clm,
             context_only,
         );
+        // A subagent gets its kind's tools only; a lead with subagents on,
+        // the `task` tool (not on a turn restricted to context tools).
+        let kinds = self.subagent_kinds();
+        let mut system_prompt = None;
+        if let Some(sub) = self.sub() {
+            let spec = sub.kind.spec();
+            tools.retain(|t| {
+                spec.allows(
+                    t.pointer("/function/name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or(""),
+                )
+            });
+            system_prompt = Some(format!(
+                "{}\n\n{}",
+                spec.prompt(&sub.budget),
+                self.project_context
+            ));
+        } else if !kinds.is_empty() && !context_only && !tools.is_empty() {
+            tools.push(subagent::task_schema(&kinds));
+        }
+        let subagent_section = if context_only {
+            None
+        } else {
+            subagent::lead_prompt(&kinds)
+        };
         let project_context = if self.plan_mode {
             [
                 self.project_context.as_str(),
@@ -1027,6 +1177,10 @@ impl<R: Runtime> Run<R> {
             .join("\n\n")
         } else {
             self.project_context.clone()
+        };
+        let project_context = match subagent_section {
+            Some(section) => format!("{project_context}\n\n{section}"),
+            None => project_context,
         };
         let continue_reply = std::mem::take(&mut self.continue_reply);
         let no_tool_calls = std::mem::take(&mut self.words_only);
@@ -1084,7 +1238,7 @@ impl<R: Runtime> Run<R> {
                 continue_reply: Some(continue_reply),
                 assistant_message_id: Some(message_id.clone()),
                 tools: Some(tools.clone()),
-                system_prompt: None,
+                system_prompt: system_prompt.clone(),
                 project_context: Some(project_context.clone()),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
@@ -1256,6 +1410,9 @@ impl<R: Runtime> Run<R> {
                 self.drop_reasoning_formats(&rejected, &unresolved);
             }
 
+            if let Some(sub) = self.sub_mut() {
+                sub.note_usage(usage.as_ref());
+            }
             let mut entry = json!({
                 "event": "reply",
                 "dialogId": self.dialog_id,
@@ -1270,6 +1427,11 @@ impl<R: Runtime> Run<R> {
             });
             if let Some(error) = &output.failure {
                 entry["error"] = json!(error.kind);
+            }
+            if let Some(sub) = self.sub() {
+                entry["role"] = json!("sub");
+                entry["kind"] = json!(sub.kind.id());
+                entry["parentDialogId"] = json!(sub.parent_dialog_id);
             }
             log::write(&self.app, entry);
             return Ok(output);
@@ -1756,7 +1918,7 @@ impl<R: Runtime> Run<R> {
     }
 
     /// A reply's final content: stored (indexed for search), and shown.
-    async fn finalize(
+    pub(super) async fn finalize(
         &self,
         message_id: &str,
         content: String,
@@ -1862,6 +2024,11 @@ impl<R: Runtime> Run<R> {
 
     /// The user's latest request in the chat, as sent (for the AI reviewer).
     pub(super) async fn latest_user_request(&self) -> String {
+        // A subagent acts for the lead's user request, not for the brief the
+        // lead wrote (K06): the AI reviewer judges by the user's intent.
+        if let Some(sub) = self.sub() {
+            return sub.parent_request.clone();
+        }
         let recent = self.recent().await.unwrap_or_default();
         recent
             .iter()

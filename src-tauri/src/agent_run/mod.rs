@@ -13,6 +13,7 @@
 //!   review.rs     the AI reviewer (approval "by AI")
 //!   verify.rs     the verification gate: the project's checks after a run
 //!   guard.rs      checkpoints and loop detection
+//!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
 //!   tools.rs      tool schemas and running a tool
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
 //!   command_output.rs: the rules and text they use
@@ -34,6 +35,8 @@ pub mod project;
 pub mod repetition;
 pub mod review;
 mod run;
+pub mod subagent;
+mod subagent_run;
 pub mod tools;
 mod verify;
 
@@ -84,6 +87,8 @@ pub struct AgentConfig {
     pub permissions: Permissions,
     /// The AI reviewer, then its fallbacks (enabled models only).
     pub approval_profiles: Vec<ModelProfile>,
+    /// Subagents (subagent.rs): off unless the user turns them on.
+    pub subagents: subagent::SubagentConfig,
 }
 
 /// The user's decision on a tool call waiting for approval.
@@ -134,6 +139,9 @@ impl StopSignal {
 
 struct RunControl {
     run_id: String,
+    /// A subagent's run: its lead's chat and `task` call. Stop there stops it too.
+    parent: Option<String>,
+    parent_call: Option<String>,
     /// The run's model (`ModelProfile::id`): an effort chosen for it applies.
     profile_id: String,
     stop: Arc<StopSignal>,
@@ -200,6 +208,35 @@ impl AgentState {
         profile_id: &str,
         options: Option<OpenAIChatOptions>,
     ) -> Option<Controls> {
+        self.register_in(dialog_id, None, profile_id, options)
+    }
+
+    /// Registers a subagent's run in its own chat, under its lead's chat.
+    /// Stopped already when the lead was stopped meanwhile.
+    pub(super) fn register_child(
+        &self,
+        dialog_id: &str,
+        parent: &str,
+        parent_call: &str,
+        profile_id: &str,
+        options: Option<OpenAIChatOptions>,
+    ) -> Option<Controls> {
+        let controls =
+            self.register_in(dialog_id, Some((parent, parent_call)), profile_id, options)?;
+        let parent_stopped = self.lock().runs.get(parent).is_none_or(|r| r.stop.is_set());
+        if parent_stopped {
+            controls.stop.set();
+        }
+        Some(controls)
+    }
+
+    fn register_in(
+        &self,
+        dialog_id: &str,
+        parent: Option<(&str, &str)>,
+        profile_id: &str,
+        options: Option<OpenAIChatOptions>,
+    ) -> Option<Controls> {
         let mut inner = self.lock();
         if inner.runs.contains_key(dialog_id) {
             return None;
@@ -214,6 +251,8 @@ impl AgentState {
             dialog_id.to_string(),
             RunControl {
                 run_id: run_id.clone(),
+                parent: parent.map(|(p, _)| p.to_string()),
+                parent_call: parent.map(|(_, c)| c.to_string()),
                 profile_id: profile_id.to_string(),
                 stop: stop.clone(),
                 effort: effort_tx,
@@ -241,7 +280,7 @@ impl AgentState {
         for (dialog, run) in inner
             .runs
             .iter()
-            .filter(|(_, r)| r.profile_id == profile_id)
+            .filter(|(_, r)| r.profile_id == profile_id && r.parent.is_none())
         {
             let here = dialog_id == Some(dialog.as_str());
             run.effort.send_replace(EffortPick {
@@ -253,7 +292,7 @@ impl AgentState {
         reached
     }
 
-    fn unregister(&self, dialog_id: &str, run_id: &str) {
+    pub(super) fn unregister(&self, dialog_id: &str, run_id: &str) {
         let mut inner = self.lock();
         if inner
             .runs
@@ -264,23 +303,39 @@ impl AgentState {
         }
     }
 
-    /// Whether the chat has a run going.
+    /// Whether the chat has a run going (a lead's subagents count as its own).
     pub fn is_running(&self, dialog_id: &str) -> bool {
-        self.lock().runs.contains_key(dialog_id)
+        let inner = self.lock();
+        inner.runs.contains_key(dialog_id)
+            || inner
+                .runs
+                .values()
+                .any(|r| r.parent.as_deref() == Some(dialog_id))
     }
 
     /// Stops the chat's run: its current request, its next steps, and
     /// whatever it waits on (approvals count as denied, questions as stopped).
+    /// A lead's subagents stop with it; a subagent's chat stops only itself.
     pub fn stop<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) -> bool {
         let mut inner = self.lock();
         let Some(run) = inner.runs.get(dialog_id) else {
             return false;
         };
         run.stop.set();
+        let children: Vec<String> = inner
+            .runs
+            .iter()
+            .filter(|(_, r)| r.parent.as_deref() == Some(dialog_id))
+            .map(|(d, r)| {
+                r.stop.set();
+                d.clone()
+            })
+            .collect();
+        let stopping = |d: &String| d == dialog_id || children.contains(d);
         let approvals: Vec<WaitKey> = inner
             .approvals
             .keys()
-            .filter(|(d, _)| d == dialog_id)
+            .filter(|(d, _)| stopping(d))
             .cloned()
             .collect();
         for key in approvals {
@@ -299,7 +354,7 @@ impl AgentState {
         let questions: Vec<WaitKey> = inner
             .questions
             .keys()
-            .filter(|(d, _)| d == dialog_id)
+            .filter(|(d, _)| stopping(d))
             .cloned()
             .collect();
         for key in questions {
@@ -691,8 +746,17 @@ pub struct RunningRun {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RunningSubagent {
+    dialog_id: String,
+    parent_dialog_id: String,
+    parent_call_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentStatus {
     runs: Vec<RunningRun>,
+    subagents: Vec<RunningSubagent>,
     approvals: Vec<ApprovalRequest>,
     questions: Vec<QuestionsRequest>,
 }
@@ -702,12 +766,26 @@ pub struct AgentStatus {
 pub fn agent_status(state: State<'_, AgentState>) -> AgentStatus {
     let inner = state.lock();
     AgentStatus {
+        // A subagent's chat isn't a chat in the list: its lead's run stands
+        // for it (its blocks show it running).
         runs: inner
             .runs
             .iter()
+            .filter(|(_, r)| r.parent.is_none())
             .map(|(dialog_id, r)| RunningRun {
                 dialog_id: dialog_id.clone(),
                 run_id: r.run_id.clone(),
+            })
+            .collect(),
+        subagents: inner
+            .runs
+            .iter()
+            .filter_map(|(dialog_id, r)| {
+                Some(RunningSubagent {
+                    dialog_id: dialog_id.clone(),
+                    parent_dialog_id: r.parent.clone()?,
+                    parent_call_id: r.parent_call.clone().unwrap_or_default(),
+                })
             })
             .collect(),
         approvals: inner

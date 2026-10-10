@@ -90,6 +90,31 @@ pub struct NewDialog {
     pub project_id: Option<String>,
 }
 
+/// A subagent's chat (agent_run/subagent.rs), hidden from the chat list and
+/// search, in its parent's project.
+#[derive(Debug, Clone)]
+pub struct NewChildDialog {
+    pub id: String,
+    pub parent_id: String,
+    /// The parent's `task` call this chat answers.
+    pub parent_call_id: String,
+    /// The subagent kind ("scout", …).
+    pub kind: String,
+    pub title: String,
+    pub created_at: i64,
+}
+
+/// A child chat as its parent sees it.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildDialog {
+    pub id: String,
+    pub parent_id: String,
+    pub parent_call_id: String,
+    pub kind: String,
+    pub created_at: i64,
+}
+
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageRow {
@@ -225,12 +250,13 @@ pub fn list_dialogs(
 }
 
 /// The ids of a project's chats (`project` None: the chats with no project).
+/// Subagents' chats aren't among them: they belong to their parent.
 pub fn dialogs_in_project(
     conn: &Connection,
     project: Option<&str>,
 ) -> DbResult<std::collections::HashSet<String>> {
     let mut stmt = conn
-        .prepare_cached("SELECT id FROM dialogs WHERE project_id IS ?1")
+        .prepare_cached("SELECT id FROM dialogs WHERE project_id IS ?1 AND parent_id IS NULL")
         .map_err(err)?;
     let rows = stmt
         .query_map(params![project], |r| r.get::<_, String>(0))
@@ -271,6 +297,55 @@ pub fn create_dialog(conn: &mut Connection, d: &NewDialog) -> DbResult<()> {
     tx.commit().map_err(err)
 }
 
+/// A subagent's chat: in its parent's project, stored with `archived = 2`
+/// so no chat list shows it (older app versions list `archived = 0`), and
+/// its title isn't indexed for search.
+pub fn create_child_dialog(conn: &mut Connection, d: &NewChildDialog) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO dialogs (id, title, created_at, updated_at, project_id, archived, parent_id, parent_call_id, kind)
+         SELECT ?1, ?2, ?3, ?3, project_id, 2, id, ?5, ?6 FROM dialogs WHERE id = ?4",
+        params![d.id, d.title, d.created_at, d.parent_id, d.parent_call_id, d.kind],
+    )
+    .map_err(err)
+    .and_then(|n| {
+        if n == 1 {
+            Ok(())
+        } else {
+            Err(format!("no chat {} to add a subagent to", d.parent_id))
+        }
+    })
+}
+
+fn child_from_row(r: &Row) -> rusqlite::Result<ChildDialog> {
+    Ok(ChildDialog {
+        id: r.get(0)?,
+        parent_id: r.get(1)?,
+        parent_call_id: r.get(2)?,
+        kind: r.get(3)?,
+        created_at: r.get(4)?,
+    })
+}
+
+const CHILD_COLUMNS: &str = "id, parent_id, parent_call_id, kind, created_at";
+
+/// The subagent chat answering a parent's tool call, if there is one.
+pub fn child_for_call(
+    conn: &Connection,
+    parent_id: &str,
+    parent_call_id: &str,
+) -> DbResult<Option<ChildDialog>> {
+    conn.query_row(
+        &format!(
+            "SELECT {CHILD_COLUMNS} FROM dialogs WHERE parent_id = ?1 AND parent_call_id = ?2
+             ORDER BY created_at DESC, id DESC LIMIT 1"
+        ),
+        params![parent_id, parent_call_id],
+        child_from_row,
+    )
+    .optional()
+    .map_err(err)
+}
+
 pub fn rename_dialog(conn: &mut Connection, id: &str, title: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     tx.execute(
@@ -284,6 +359,27 @@ pub fn rename_dialog(conn: &mut Connection, id: &str, title: &str) -> DbResult<(
 
 pub fn delete_dialog(conn: &mut Connection, id: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
+    delete_dialog_in(&tx, id)?;
+    tx.commit().map_err(err)
+}
+
+/// A chat, its subagents' chats first (the foreign key would remove their
+/// rows, but not their search rows).
+fn delete_dialog_in(tx: &Connection, id: &str) -> DbResult<()> {
+    let children: Vec<String> = {
+        let mut stmt = tx
+            .prepare_cached("SELECT id FROM dialogs WHERE parent_id = ?1")
+            .map_err(err)?;
+        let ids = stmt
+            .query_map(params![id], |r| r.get(0))
+            .map_err(err)?
+            .collect::<Result<_, _>>()
+            .map_err(err)?;
+        ids
+    };
+    for child in children {
+        delete_dialog_in(tx, &child)?;
+    }
     let rowids: Vec<i64> = {
         let mut stmt = tx
             .prepare("SELECT rowid FROM search_rows WHERE dialog_id = ?1")
@@ -308,7 +404,7 @@ pub fn delete_dialog(conn: &mut Connection, id: &str) -> DbResult<()> {
         .map_err(err)?;
     tx.execute("DELETE FROM dialogs WHERE id = ?1", params![id])
         .map_err(err)?;
-    tx.commit().map_err(err)
+    Ok(())
 }
 
 /*

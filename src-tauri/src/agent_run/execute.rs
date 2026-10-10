@@ -191,6 +191,20 @@ impl<R: Runtime> Run<R> {
 
         let mut rest = calls;
         while !rest.is_empty() {
+            // The lead's subagents: a run of `task` calls starts together
+            // (subagent_run.rs), at most the settings' number at once.
+            let tasks = if self.sub().is_none() {
+                rest.iter().take_while(|tc| tc.name == "task").count()
+            } else {
+                0
+            };
+            if tasks > 0 {
+                self.execute_tasks(&rest[..tasks], resume_note.is_some())
+                    .await?;
+                rest = &rest[tasks..];
+                continue;
+            }
+            self.note_sub_progress(&rest[0].name);
             // Decided when it's this call's turn: an approval before it may
             // have taken a while, and Stop may have come.
             let n = parallel::batch_len(rest, |tc| {
@@ -220,6 +234,7 @@ impl<R: Runtime> Run<R> {
         if resume_note.is_some()
             || self.stopped()
             || !parallel::PARALLEL_TOOLS.contains(&tc.name.as_str())
+            || self.sub().is_some_and(|s| !s.kind.spec().allows(&tc.name))
         {
             return false;
         }
@@ -307,6 +322,21 @@ impl<R: Runtime> Run<R> {
     ) -> Result<(), String> {
         if self.stopped() {
             return self.stopped_result(tc).await;
+        }
+        // A subagent may call its kind's tools only, whatever it was sent.
+        if let Some(sub) = self.sub() {
+            let spec = sub.kind.spec();
+            if !spec.allows(&tc.name) {
+                let content = format!(
+                    "Error: {} isn't available to a {} subagent. Its tools: {}. If you can't do the task with them, say so under \"## Blocked\" in your report.",
+                    tc.name,
+                    spec.label.to_lowercase(),
+                    spec.tools.join(", ")
+                );
+                return self
+                    .add_tool_result(&tc.id, content, None, Vec::new())
+                    .await;
+            }
         }
         let args = permissions::parse_args(&tc.arguments);
         let path_arg = args.get("path").and_then(|p| p.as_str());
@@ -492,6 +522,7 @@ impl<R: Runtime> Run<R> {
         // exempt (context management, not project work), as are fixes after
         // the checks failed (continuing started work, not new scope).
         if !self.plan_mode
+            && self.sub().is_none()
             && !self.checklist_gate_refused
             && resume_note.is_none()
             && !self.last_verify_failed
@@ -1010,11 +1041,19 @@ impl<R: Runtime> Run<R> {
             command,
             note: (!note.is_empty()).then_some(note),
             edit: proposal,
+            // A subagent's approvals show in its parent's chat (D8).
+            parent_dialog_id: self.sub().map(|s| s.parent_dialog_id.clone()),
+            parent_call_id: self.sub().map(|s| s.parent_call_id.clone()),
         };
+        let waiting = std::time::Instant::now();
         let decision = self
             .state
             .wait_for_approval(&self.app, request, &self.stop)
             .await;
+        // Waiting for the user isn't the subagent's time (K07).
+        if let Some(sub) = self.sub() {
+            sub.add_waited(waiting.elapsed());
+        }
 
         match decision {
             ApprovalDecision::Allow => Authorized {

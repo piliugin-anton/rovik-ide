@@ -97,6 +97,7 @@ import {
   openAppSettings,
 } from './lib/appSettings';
 import { loadAiSettings, reconcileSelection, saveAiSettings } from './lib/aiSettings';
+import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './lib/subagentSettings';
 import { DEFAULT_PERMISSIONS, type AgentPermissions } from './lib/permissions';
 import type { ModelSelection, Provider } from './types';
 
@@ -157,11 +158,16 @@ export default function App() {
   const [settingsProviders, setSettingsProviders] = createSignal<Provider[]>([]);
   const [settingsPermissions, setSettingsPermissions] =
     createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
+  const [settingsSubagents, setSettingsSubagents] =
+    createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
+  const [settingsChatModel, setSettingsChatModel] = createSignal<ModelSelection | null>(null);
   onMount(async () => {
     try {
       const settings = await loadAiSettings();
       setSettingsProviders(settings.providers);
       setSettingsPermissions(settings.permissions);
+      setSettingsSubagents(settings.subagents);
+      setSettingsChatModel(reconcileSelection(settings.providers, settings.active));
     } catch (err) {
       console.error('Failed to load AI settings for Settings dialog:', err);
     }
@@ -169,9 +175,11 @@ export default function App() {
   function handleAppSettingsSaved(changes: {
     providers: Provider[];
     permissions: AgentPermissions;
+    subagents: SubagentSettings;
   }) {
     setSettingsProviders(changes.providers);
     setSettingsPermissions(changes.permissions);
+    setSettingsSubagents(changes.subagents);
     // Keep the chat's current model choice: only the providers/permissions
     // changed here, so reconcile against the saved selection.
     void loadAiSettings()
@@ -186,6 +194,7 @@ export default function App() {
           providers: changes.providers,
           active,
           permissions: changes.permissions,
+          subagents: changes.subagents,
         });
       })
       .then(() => notifyAiSettingsSaved())
@@ -1962,6 +1971,8 @@ export default function App() {
           <AiSettingsModal
             providers={settingsProviders()}
             permissions={settingsPermissions()}
+            subagents={settingsSubagents()}
+            chatModel={settingsChatModel()}
             initialPage={page}
             rootPath={rootPath()}
             onSave={handleAppSettingsSaved}

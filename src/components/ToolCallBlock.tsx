@@ -32,9 +32,20 @@ import {
   deny,
   hunkCounts,
   pendingApproval,
+  pendingApprovalsOf,
   revealEdit,
   type PendingApproval,
 } from '../lib/approvals';
+import {
+  kindLabel,
+  liveSubagent,
+  openTranscript,
+  reportBody,
+  statusLabel,
+  transcript,
+  workLabel,
+} from '../lib/subagents';
+import { stopRun } from '../lib/agentRuns';
 
 export interface ToolCallBlockProps {
   toolCall: ChatToolCall;
@@ -553,7 +564,186 @@ function ApprovalBar(props: { request: PendingApproval }) {
   );
 }
 
+/** A shortened goal for a header line. */
+function shortGoal(goal: string | undefined): string {
+  const line = (goal ?? '').trim().split('\n')[0];
+  return line.length > 80 ? `${line.slice(0, 77)}…` : line;
+}
+
+/**
+ * A subagent's work: its chat's tool calls and replies, loaded when the
+ * block asks for it and followed live from then on (lib/subagents.ts).
+ */
+function SubagentTranscript(props: { childDialogId: string; running: boolean }) {
+  const t = () => transcript(props.childDialogId);
+  const resultOf = (callId: string) =>
+    t()?.messages.find((m) => m.role === 'tool' && m.tool_call_id === callId);
+  const shown = () =>
+    (t()?.messages ?? []).filter(
+      (m) => m.role === 'assistant' && (m.toolCalls?.length || m.content.trim() || m.error)
+    );
+  return (
+    <div class="subagent-transcript">
+      <Show when={!t()?.loading} fallback={<div class="tool-call-pending">Loading…</div>}>
+        <Show when={!t()?.error} fallback={<div class="tool-call-pending">{t()?.error}</div>}>
+          <For each={shown()} fallback={<div class="tool-call-pending">Nothing yet</div>}>
+            {(m) => (
+              <>
+                <Show when={m.content.trim() || m.error}>
+                  <pre class="tool-call-pre subagent-reply">{m.error ?? m.content}</pre>
+                </Show>
+                <For each={m.toolCalls ?? []}>
+                  {(call) => (
+                    <ToolCallBlock
+                      toolCall={call}
+                      dialogId={props.childDialogId}
+                      result={resultOf(call.id)}
+                      running={props.running}
+                    />
+                  )}
+                </For>
+              </>
+            )}
+          </For>
+        </Show>
+      </Show>
+    </div>
+  );
+}
+
+/**
+ * A `task` call: a subagent at work for the lead. Live progress while it
+ * runs (with its own approvals and a Stop for it alone), then its report;
+ * its work opens on demand.
+ */
+function TaskBlock(props: ToolCallBlockProps) {
+  const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
+  const live = () => liveSubagent(props.dialogId, props.toolCall.id);
+  const done = () => props.result?.meta?.subagent;
+  const childId = () => done()?.childDialogId ?? live()?.childDialogId ?? null;
+  const kind = () => done()?.kind ?? live()?.kind ?? str(args().kind);
+  const working = () => !props.result && !!props.running && !!live() && !live()!.status;
+  const refused = () => !!props.result && !done();
+  const approvals = () => {
+    const id = childId();
+    return id && working() ? pendingApprovalsOf(id) : [];
+  };
+  const [expanded, setExpanded] = createSignal(!!props.initiallyExpanded);
+  const [showWork, setShowWork] = createSignal(false);
+
+  const meta = () => {
+    const d = done();
+    if (d) {
+      const model =
+        d.modelsTried.length > 1
+          ? `${d.model} (after ${d.modelsTried.length - 1} failed)`
+          : d.model;
+      return [statusLabel(d.status), workLabel(d.toolCalls, d.ms), model]
+        .filter(Boolean)
+        .join(' · ');
+    }
+    if (refused()) return 'not started';
+    const l = live();
+    if (l && working()) {
+      const doing = l.currentTool ? ` · ${l.currentTool}` : '';
+      return `${workLabel(l.toolCalls)}${doing} · ${l.model}`;
+    }
+    return props.running ? 'starting…' : 'not run';
+  };
+
+  function toggleWork() {
+    const id = childId();
+    if (!id) return;
+    if (!showWork() && props.dialogId) void openTranscript(id, props.dialogId, props.toolCall.id);
+    setShowWork(!showWork());
+  }
+
+  const paths = () =>
+    Array.isArray(args().paths)
+      ? (args().paths as unknown[]).filter((p) => typeof p === 'string')
+      : [];
+
+  return (
+    <div
+      class="tool-call subagent-block"
+      classList={{
+        expanded: expanded(),
+        awaiting: approvals().length > 0,
+        running: working(),
+        error: refused() || done()?.status === 'failed',
+      }}
+    >
+      <button
+        type="button"
+        class="tool-call-header"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded()}
+        title={str(args().goal)}
+      >
+        <ChevronIcon />
+        <span class="subagent-kind">{kindLabel(kind())}</span>
+        <span class="tool-call-title">{shortGoal(str(args().goal) ?? live()?.goal)}</span>
+        <Show when={meta()}>
+          <span class="tool-call-meta">{meta()}</span>
+        </Show>
+        <Show when={working() && approvals().length === 0}>
+          <span class="tool-call-spinner" aria-label="Running" />
+        </Show>
+      </button>
+      <Show when={working() && childId()}>
+        <div class="subagent-actions">
+          <button
+            class="link-button"
+            title="Stop this subagent only; the agent goes on with what it found"
+            onClick={() => void stopRun(childId()!)}
+          >
+            Stop this {kindLabel(kind()).toLowerCase()}
+          </button>
+        </div>
+      </Show>
+
+      <For each={approvals()}>{(r) => <ApprovalBar request={r} />}</For>
+
+      <Show when={expanded()}>
+        <div class="tool-call-body">
+          <section class="tool-call-section">
+            <div class="tool-call-label">Task</div>
+            <pre class="tool-call-pre">{str(args().goal) ?? ''}</pre>
+            <Show when={str(args().context)}>
+              {(context) => <pre class="tool-call-pre subagent-context">{context()}</pre>}
+            </Show>
+            <Show when={paths().length > 0}>
+              <div class="subagent-paths">Look first at: {paths().join(', ')}</div>
+            </Show>
+          </section>
+          <section class="tool-call-section">
+            <div class="tool-call-label">Report</div>
+            <Show
+              when={props.result}
+              fallback={<div class="tool-call-pending">{working() ? 'Working…' : 'No report'}</div>}
+            >
+              {(r) => <pre class="tool-call-pre">{reportBody(r().content)}</pre>}
+            </Show>
+          </section>
+          <Show when={childId()}>
+            <section class="tool-call-section">
+              <button class="link-button" aria-expanded={showWork()} onClick={toggleWork}>
+                {showWork() ? 'Hide its work' : 'Show its work'}
+              </button>
+              <Show when={showWork()}>
+                <SubagentTranscript childDialogId={childId()!} running={working()} />
+              </Show>
+            </section>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 export default function ToolCallBlock(props: ToolCallBlockProps) {
+  // A subagent's work has its own block.
+  if (props.toolCall.name === 'task') return <TaskBlock {...props} />;
   // The agent's questions have their own card, always open.
   if (props.toolCall.name === 'ask_user') {
     return (

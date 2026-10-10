@@ -444,3 +444,80 @@ fn composer_drafts_round_trip_and_clean_up() {
     delete_dialog(&mut conn, "d").unwrap();
     assert_eq!(get_composer_draft(&conn, "d").unwrap(), None);
 }
+
+fn child(conn: &mut Connection, id: &str, parent: &str, call: &str) {
+    create_child_dialog(
+        conn,
+        &NewChildDialog {
+            id: id.into(),
+            parent_id: parent.into(),
+            parent_call_id: call.into(),
+            kind: "scout".into(),
+            title: "Scout".into(),
+            created_at: now_ms(),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn subagent_chats_stay_out_of_lists_and_search() {
+    let mut conn = db();
+    dialog(&mut conn, "p", "Pancakes", 0);
+    child(&mut conn, "k", "p", "call-1");
+    add(
+        &mut conn,
+        "k",
+        vec![message("k1", "assistant", "blueberry evidence")],
+    );
+
+    let listed: Vec<String> = list_dialogs(&conn, None, None, 50)
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|d| d.id)
+        .collect();
+    assert_eq!(listed, ["p"]);
+    assert!(!dialogs_in_project(&conn, None).unwrap().contains("k"));
+    assert!(search(&conn, "blueberry", None, 10).unwrap().is_empty());
+    assert!(search(&conn, "scout", None, 10).unwrap().is_empty());
+
+    let found = child_for_call(&conn, "p", "call-1").unwrap().unwrap();
+    assert_eq!(found.id, "k");
+    assert_eq!(found.kind, "scout");
+    assert_eq!(found.parent_id, "p");
+    assert_eq!(child_for_call(&conn, "p", "call-2").unwrap(), None);
+    assert!(
+        create_child_dialog(
+            &mut conn,
+            &NewChildDialog {
+                id: "orphan".into(),
+                parent_id: "missing".into(),
+                parent_call_id: "c".into(),
+                kind: "scout".into(),
+                title: "Scout".into(),
+                created_at: 0,
+            },
+        )
+        .is_err(),
+        "a child needs its parent"
+    );
+}
+
+#[test]
+fn deleting_a_chat_deletes_its_subagents_and_their_search_rows() {
+    let mut conn = db();
+    dialog(&mut conn, "p", "Pancakes", 0);
+    child(&mut conn, "k", "p", "call-1");
+    add(
+        &mut conn,
+        "k",
+        vec![message("k1", "assistant", "blueberry")],
+    );
+
+    delete_dialog(&mut conn, "p").unwrap();
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(count("SELECT COUNT(*) FROM dialogs"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM messages"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM search_rows"), 0);
+}

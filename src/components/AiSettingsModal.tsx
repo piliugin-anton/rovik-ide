@@ -5,27 +5,36 @@
 // header, outside the scrolling body. AI changes are kept here and handed
 // to the chat on close; editor changes apply live (lib/editorSettings.ts).
 import { createSignal, Match, onCleanup, onMount, Show, Switch } from 'solid-js';
-import type { Provider } from '../types';
+import type { ModelSelection, Provider } from '../types';
 import type { AgentPermissions, ApprovalRule } from '../lib/permissions';
 import ModelProvidersSettings, { type ProvidersSettingsController } from './ModelProvidersSettings';
 import PermissionsSettings from './PermissionsSettings';
 import ProjectChecksSettings from './ProjectChecksSettings';
 import VirtualFilesSettings from './VirtualFilesSettings';
 import BuildsSettings from './BuildsSettings';
+import SubagentSettings from './SubagentSettings';
+import { subagentSummary, type SubagentSettings as SubagentChoices } from '../lib/subagentSettings';
 import EditorSettings from './EditorSettings';
 import { editorSettings, EDITOR_THEMES } from '../lib/editorSettings';
 
 export type AiSettingsPage =
-  'menu' | 'editor' | 'providers' | 'permissions' | 'project' | 'builds' | 'vfs';
+  'menu' | 'editor' | 'providers' | 'permissions' | 'subagents' | 'project' | 'builds' | 'vfs';
 
 interface AiSettingsModalProps {
   providers: Provider[];
   permissions: AgentPermissions;
+  subagents: SubagentChoices;
+  /** The chat's model, for the Subagents page's provider warning. */
+  chatModel?: ModelSelection | null;
   /** Opens straight on a page (e.g. "Manage providers…" in the model picker). */
   initialPage?: AiSettingsPage;
   /** The open project, for its checks page; none without a project. */
   rootPath?: string | null;
-  onSave: (changes: { providers: Provider[]; permissions: AgentPermissions }) => void;
+  onSave: (changes: {
+    providers: Provider[];
+    permissions: AgentPermissions;
+    subagents: SubagentChoices;
+  }) => void;
   onClose: () => void;
 }
 
@@ -34,6 +43,7 @@ const PAGE_TITLE: Record<AiSettingsPage, string> = {
   editor: 'Editor',
   providers: 'Model providers',
   permissions: 'Permissions & Approval',
+  subagents: 'Subagents',
   project: 'Project checks',
   builds: 'Builds & checks',
   vfs: 'Virtual files',
@@ -43,6 +53,7 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
   const [page, setPage] = createSignal<AiSettingsPage>(props.initialPage ?? 'menu');
   const [providers, setProviders] = createSignal<Provider[]>(props.providers);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(props.permissions);
+  const [subagents, setSubagents] = createSignal<SubagentChoices>(props.subagents);
   const [providersApi, setProvidersApi] = createSignal<ProvidersSettingsController | null>(null);
 
   const title = () => {
@@ -64,7 +75,7 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
   }
 
   function commitAndClose() {
-    props.onSave({ providers: providers(), permissions: permissions() });
+    props.onSave({ providers: providers(), permissions: permissions(), subagents: subagents() });
     props.onClose();
   }
 
@@ -174,6 +185,15 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                     ›
                   </span>
                 </button>
+                <button class="settings-menu-item" onClick={() => setPage('subagents')}>
+                  <span class="settings-menu-text">
+                    <span class="settings-menu-label">Subagents</span>
+                    <span class="settings-menu-sub">{subagentSummary(subagents())}</span>
+                  </span>
+                  <span class="settings-menu-chevron" aria-hidden="true">
+                    ›
+                  </span>
+                </button>
                 <button class="settings-menu-item" onClick={() => setPage('builds')}>
                   <span class="settings-menu-text">
                     <span class="settings-menu-label">Builds &amp; checks</span>
@@ -221,6 +241,14 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                 providers={providers()}
                 onChange={setPermissions}
                 onOpenProviders={() => setPage('providers')}
+              />
+            </Match>
+            <Match when={page() === 'subagents'}>
+              <SubagentSettings
+                settings={subagents()}
+                providers={providers()}
+                chatModel={props.chatModel ?? null}
+                onChange={setSubagents}
               />
             </Match>
             <Match when={page() === 'builds'}>

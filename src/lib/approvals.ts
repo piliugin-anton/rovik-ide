@@ -138,6 +138,11 @@ export function pendingApproval(dialogId: string, toolCallId: string): PendingAp
   return state.pending[keyOf(dialogId, toolCallId)];
 }
 
+/** Every approval a chat waits on (a subagent's, shown on its block). */
+export function pendingApprovalsOf(dialogId: string): PendingApproval[] {
+  return Object.values(state.pending).filter((p) => p.dialogId === dialogId);
+}
+
 /** The pending edit review of a file, if any. */
 export function pendingEditFor(absPath: string): PendingApproval | undefined {
   const key = normalizePath(absPath);

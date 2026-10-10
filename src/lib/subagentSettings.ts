@@ -1,0 +1,288 @@
+// subagentSettings.ts
+//
+// The Subagents settings (docs/design/subagents-plan.md, D14 and S08): a
+// master switch, a default subagent model with fallbacks, and for each kind
+// of subagent a switch, a model with fallbacks, a reasoning effort and a
+// budget. Saved with the AI settings (lib/aiSettings.ts), off by default:
+// with the master switch off, chats work exactly as without subagents.
+//
+// The backend gets them resolved (`resolveSubagentConfig`): for each kind,
+// the models to try in order (its model, its fallbacks, the default model
+// and its fallbacks, then the chat's model), enabled models only.
+import type { ModelProfile, ModelSelection, OpenAIChatOptions, Provider } from '../types';
+import { formatsToSend, type Effort } from './reasoning';
+import { sameModel } from './permissions';
+
+/** The kinds built so far (agent_run/subagent.rs `Kind`). */
+export type SubagentKindId = 'scout';
+
+export const SUBAGENT_KINDS: {
+  id: SubagentKindId;
+  label: string;
+  hint: string;
+  /** Default budget (agent_run/subagent.rs). */
+  toolCalls: number;
+  minutes: number;
+}[] = [
+  {
+    id: 'scout',
+    label: 'Scout',
+    hint: 'Explores the code and answers one question. Read-only.',
+    toolCalls: 20,
+    minutes: 3,
+  },
+];
+
+/** "default": the default subagent model; "chat": the chat's own model. */
+export type KindModel = 'default' | 'chat' | ModelSelection;
+
+export interface KindSettings {
+  enabled: boolean;
+  model: KindModel;
+  fallbacks: ModelSelection[];
+  effort: Effort;
+  /** The budget; undefined: the kind's default. */
+  maxToolCalls?: number;
+  maxMinutes?: number;
+}
+
+export interface SubagentSettings {
+  /** The master switch. */
+  enabled: boolean;
+  /** "chat": the chat's own model. */
+  defaultModel: 'chat' | ModelSelection;
+  defaultFallbacks: ModelSelection[];
+  kinds: Record<SubagentKindId, KindSettings>;
+  /** Subagents running at once in one chat. */
+  maxAtOnce: number;
+  /** Subagents one run may start. */
+  maxPerRun: number;
+}
+
+export const LIMITS = {
+  atOnce: { min: 1, max: 8, default: 3 },
+  perRun: { min: 1, max: 50, default: 12 },
+  toolCalls: { min: 1, max: 200 },
+  minutes: { min: 0.25, max: 120 },
+};
+
+const DEFAULT_KIND: KindSettings = {
+  enabled: false,
+  model: 'default',
+  fallbacks: [],
+  effort: 'default',
+};
+
+export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
+  enabled: false,
+  defaultModel: 'chat',
+  defaultFallbacks: [],
+  kinds: { scout: { ...DEFAULT_KIND } },
+  maxAtOnce: LIMITS.atOnce.default,
+  maxPerRun: LIMITS.perRun.default,
+};
+
+const EFFORT_IDS: Effort[] = ['default', 'none', 'low', 'medium', 'high'];
+
+function isSelection(v: unknown): v is ModelSelection {
+  const s = v as ModelSelection | null;
+  return !!s && typeof s.providerId === 'string' && typeof s.modelId === 'string';
+}
+
+function selections(v: unknown): ModelSelection[] {
+  if (!Array.isArray(v)) return [];
+  const out: ModelSelection[] = [];
+  for (const s of v.filter(isSelection)) {
+    if (!out.some((o) => sameModel(o, s)))
+      out.push({ providerId: s.providerId, modelId: s.modelId });
+  }
+  return out;
+}
+
+function clampNumber(v: unknown, min: number, max: number): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : undefined;
+}
+
+function normalizeKind(raw: unknown): KindSettings {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const model: KindModel =
+    r.model === 'chat' || r.model === 'default'
+      ? r.model
+      : isSelection(r.model)
+        ? { providerId: r.model.providerId, modelId: r.model.modelId }
+        : 'default';
+  const toolCalls = clampNumber(r.maxToolCalls, LIMITS.toolCalls.min, LIMITS.toolCalls.max);
+  const minutes = clampNumber(r.maxMinutes, LIMITS.minutes.min, LIMITS.minutes.max);
+  return {
+    enabled: r.enabled === true,
+    model,
+    fallbacks: selections(r.fallbacks).filter(
+      (f) => typeof model === 'string' || !sameModel(f, model)
+    ),
+    effort: EFFORT_IDS.includes(r.effort as Effort) ? (r.effort as Effort) : 'default',
+    ...(toolCalls !== undefined ? { maxToolCalls: Math.round(toolCalls) } : {}),
+    ...(minutes !== undefined ? { maxMinutes: minutes } : {}),
+  };
+}
+
+/** Saved settings (or nothing, or garbage) as valid settings; defaults fill gaps. */
+export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const kinds = (r.kinds && typeof r.kinds === 'object' ? r.kinds : {}) as Record<string, unknown>;
+  const defaultModel = isSelection(r.defaultModel)
+    ? { providerId: r.defaultModel.providerId, modelId: r.defaultModel.modelId }
+    : 'chat';
+  return {
+    enabled: r.enabled === true,
+    defaultModel,
+    defaultFallbacks: selections(r.defaultFallbacks).filter(
+      (f) => defaultModel === 'chat' || !sameModel(f, defaultModel)
+    ),
+    kinds: Object.fromEntries(
+      SUBAGENT_KINDS.map((k) => [k.id, normalizeKind(kinds[k.id])])
+    ) as Record<SubagentKindId, KindSettings>,
+    maxAtOnce: Math.round(
+      clampNumber(r.maxAtOnce, LIMITS.atOnce.min, LIMITS.atOnce.max) ?? LIMITS.atOnce.default
+    ),
+    maxPerRun: Math.round(
+      clampNumber(r.maxPerRun, LIMITS.perRun.min, LIMITS.perRun.max) ?? LIMITS.perRun.default
+    ),
+  };
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Resolution for the backend (AgentConfig.subagents)
+ * ---------------------------------------------------------------------------
+ */
+
+/** A model in a kind's list, as the backend takes it (subagent.rs `ModelChoice`). */
+export type ModelChoice = ModelProfile | { chat: true };
+
+export interface KindConfig {
+  enabled: boolean;
+  models: ModelChoice[];
+  options?: OpenAIChatOptions;
+  maxToolCalls?: number;
+  maxMinutes?: number;
+}
+
+export interface SubagentConfig {
+  enabled: boolean;
+  kinds: Partial<Record<SubagentKindId, KindConfig>>;
+  maxAtOnce: number;
+  maxPerRun: number;
+}
+
+const CHAT = 'chat' as const;
+type ChainEntry = typeof CHAT | ModelSelection;
+
+const sameEntry = (a: ChainEntry, b: ChainEntry) =>
+  a === CHAT || b === CHAT ? a === b : sameModel(a, b);
+
+/**
+ * The models a kind tries, in order, before they're resolved: its model
+ * and fallbacks (the default model's when set to Default), then the
+ * default model and its fallbacks, then the chat's model. Each once.
+ */
+export function kindChain(settings: SubagentSettings, kind: SubagentKindId): ChainEntry[] {
+  const k = settings.kinds[kind];
+  const defaults: ChainEntry[] = [settings.defaultModel, ...settings.defaultFallbacks];
+  const own: ChainEntry[] =
+    k.model === 'default' ? [...defaults, ...k.fallbacks] : [k.model, ...k.fallbacks];
+  const out: ChainEntry[] = [];
+  for (const entry of [...own, ...defaults, CHAT]) {
+    if (!out.some((o) => sameEntry(o, entry))) out.push(entry);
+  }
+  return out;
+}
+
+/** An enabled model that can call tools: one a kind can use. */
+export function usableModel(providers: Provider[], sel: ModelSelection): boolean {
+  const model = providers
+    .find((p) => p.id === sel.providerId)
+    ?.models.find((m) => m.id === sel.modelId);
+  return !!model && model.enabled && !model.noTools;
+}
+
+/**
+ * The settings as the backend takes them. `resolve` turns a selection into
+ * a model (lib/aiSettings.ts `resolveProfile`); models turned off, removed
+ * or marked "no tools" are left out, so the next one is tried instead.
+ */
+export function resolveSubagentConfig(
+  settings: SubagentSettings,
+  providers: Provider[],
+  resolve: (providers: Provider[], sel: ModelSelection) => ModelProfile | null
+): SubagentConfig {
+  const kinds: Partial<Record<SubagentKindId, KindConfig>> = {};
+  for (const { id } of SUBAGENT_KINDS) {
+    const k = settings.kinds[id];
+    const models: ModelChoice[] = [];
+    for (const entry of kindChain(settings, id)) {
+      if (entry === CHAT) {
+        models.push({ chat: true });
+        continue;
+      }
+      if (!usableModel(providers, entry)) continue;
+      const profile = resolve(providers, entry);
+      if (profile) models.push(profile);
+    }
+    const first = models[0];
+    let options: OpenAIChatOptions | undefined;
+    // The kind's effort, in the forms its first model takes; the chat's
+    // model with "Default" follows the chat's effort (the backend's rule).
+    if (k.effort !== 'default' && first && !('chat' in first)) {
+      const formats = formatsToSend(first.reasoning);
+      if (formats.length) options = { reasoning_effort: k.effort, reasoning_formats: formats };
+    } else if (k.effort !== 'default') {
+      options = { reasoning_effort: k.effort };
+    }
+    kinds[id] = {
+      enabled: k.enabled,
+      models,
+      ...(options ? { options } : {}),
+      ...(k.maxToolCalls !== undefined ? { maxToolCalls: k.maxToolCalls } : {}),
+      ...(k.maxMinutes !== undefined ? { maxMinutes: k.maxMinutes } : {}),
+    };
+  }
+  return {
+    enabled: settings.enabled,
+    kinds,
+    maxAtOnce: settings.maxAtOnce,
+    maxPerRun: settings.maxPerRun,
+  };
+}
+
+/** The provider a selection's model is from (the K18 warning). */
+export function providerOf(providers: Provider[], sel: ModelSelection): Provider | undefined {
+  return providers.find((p) => p.id === sel.providerId);
+}
+
+/**
+ * Other providers than the chat's that a kind's models send code to (K18):
+ * their names, for "Code will also be sent to …".
+ */
+export function otherProviders(
+  providers: Provider[],
+  settings: SubagentSettings,
+  kind: SubagentKindId,
+  chat: ModelSelection | null
+): string[] {
+  const names: string[] = [];
+  for (const entry of kindChain(settings, kind)) {
+    if (entry === CHAT || !usableModel(providers, entry)) continue;
+    if (chat && entry.providerId === chat.providerId) continue;
+    const provider = providerOf(providers, entry);
+    const name = provider?.name || provider?.baseUrl;
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/** One line for the Settings menu. */
+export function subagentSummary(settings: SubagentSettings): string {
+  if (!settings.enabled) return 'Off: the agent works alone';
+  const on = SUBAGENT_KINDS.filter((k) => settings.kinds[k.id].enabled).map((k) => k.label);
+  return on.length ? `On: ${on.join(', ')}` : 'On, but no kind is turned on';
+}
