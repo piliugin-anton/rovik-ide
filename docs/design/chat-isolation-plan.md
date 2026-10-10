@@ -797,3 +797,21 @@ once; they touch different files. Everything else is sequential.
   the drivers now take any `vfs::backend::Backend`, the in-memory
   `VirtualFs` being one. Without a driver, the chat's view is the copied
   tree of phase 4 at the same place, so tools don't care which it is.
+- **Milestone 4 (overlay core), in `src-tauri/src/overlay/`.**
+  - `OverlayFs` implements the drivers' `Backend`. A chat's changed files
+    are plain files in its folder (`upper/`, with `base/` copies for
+    merging); there is no separate content store keyed by hash and no
+    128 MiB in-app cache: the OS caches those files, and the app's memory
+    holds only the folder structure. Identical edits in two chats are not
+    shared on disk.
+  - A rename over a project file (how `sed -i` and most editors save)
+    continues that file: same origin, same merge base.
+  - Folders are listed from the project when first needed and again on a
+    missed lookup at most every 2 s, so files that appear in the project
+    show up in the chat's view (no frozen mode).
+  - The change list (`manifest.json`) is saved at most every 2 s while
+    things change, and by `flush()` (end of each tool call, from
+    milestone 5).
+  - What counts as a by-product (not landed, not counted toward the
+    512 MiB): what the project's `.gitignore` files ignore, plus `.git`;
+    a short fallback list when the project has none.

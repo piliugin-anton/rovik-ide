@@ -27,7 +27,7 @@ pub const MAX_NAME: usize = 255;
 /// Symlinks deeper than this are a loop.
 const MAX_SYMLINK_HOPS: usize = 40;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
     File,

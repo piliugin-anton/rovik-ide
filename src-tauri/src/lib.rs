@@ -29,6 +29,7 @@ mod terminal;
 mod typings;
 mod vfs;
 mod workload;
+mod overlay;
 mod clm;
 mod git;
 mod git_sync;
