@@ -1,0 +1,17 @@
+{
+  "id": "self-rejected-again",
+  "repo": "self",
+  "base": "6f0fc3fd3642dd513b984735e0915dacfc4558da",
+  "reference": "441acd2b7c1cf99060d56778d5e7d24c7a1d6e01",
+  "lang": "rust",
+  "request": "Loop guard (src-tauri/src/agent_run/guard.rs): a call that the user, their AI reviewer or their permission settings rejected, made again with the same arguments, should pause the run at once (outcome \"paused-loop\"), since the rejection already said not to retry. The repeated call's result says \"the run was paused here for the user\" and the pause reason says it \"was made again after it was rejected\". Different rejected calls and calls that merely failed don't count. Also catch two calls alternating (A B A B A B) with identical results each time, and warn once per pattern before pausing.",
+  "hidden": ["src-tauri/src/agent_run/e2e_tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["agent_run::e2e_tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

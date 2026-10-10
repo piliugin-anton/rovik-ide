@@ -95,3 +95,76 @@ async fn a_scripted_task_runs_headless_and_reports() {
     );
     assert!(log.iter().filter(|l| l["event"] == "reply").count() >= 3);
 }
+
+#[tokio::test]
+async fn the_token_cap_stops_a_run_and_the_report_counts_its_cost() {
+    let dir = temp_dir();
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("a.txt"), "old\n").unwrap();
+    // Each request reports 400k tokens in; the third would go past the cap,
+    // and the model would carry on forever.
+    let read = |id: &'static str| Reply::Call {
+        id,
+        name: "read",
+        args: json!({ "path": "a.txt" }),
+    };
+    let (url, _) = model(vec![
+        Reply::Usage(400_000, 1_000, Box::new(read("r1"))),
+        Reply::Usage(400_000, 1_000, Box::new(read("r2"))),
+        Reply::Usage(
+            400_000,
+            1_000,
+            Box::new(Reply::Slow(30_000, Box::new(read("r3")))),
+        ),
+        Reply::Hang(None),
+    ])
+    .await;
+    let settings = dir.0.join("settings.json");
+    std::fs::write(
+        &settings,
+        json!({
+            "profile": { "id": "p::m", "label": "Test/m", "model": "m", "baseUrl": url, "stream": true, "contextTokens": 1000000 },
+            "apiKeyEnv": "ROVIK_HEADLESS_TEST_KEY",
+            "mode": "agent",
+            "price": { "inputPerMillion": 1.0, "outputPerMillion": 10.0 },
+            "config": { "permissions": { "verifyChanges": false, "checklist": "off" } },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out = dir.0.join("report.json");
+    let argv: Vec<String> = [
+        "--project",
+        project.to_str().unwrap(),
+        "--settings",
+        settings.to_str().unwrap(),
+        "--prompt",
+        "Read a.txt",
+        "--out",
+        out.to_str().unwrap(),
+        "--data",
+        dir.0.join("data").to_str().unwrap(),
+        "--timeout",
+        "60",
+        "--max-tokens",
+        "1000000",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let args = crate::headless::parse_args(&argv).unwrap();
+    let started = std::time::Instant::now();
+    crate::headless::run(&args).await.unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(25));
+
+    let report: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(report["outcome"], "budget", "{report:#}");
+    assert_eq!(report["usage"]["leadInputTokens"], 1_200_000);
+    assert_eq!(report["usage"]["leadOutputTokens"], 3_000);
+    assert_eq!(report["usage"]["peakLeadContext"], 400_000);
+    assert_eq!(report["costSource"], "price");
+    let cost = report["costUsd"].as_f64().unwrap();
+    assert!((cost - (1.2 + 0.03)).abs() < 1e-9, "{cost}");
+    assert_eq!(report["interventions"], 0);
+}

@@ -1,0 +1,16 @@
+{
+  "id": "self-list-dir-windows",
+  "repo": "self",
+  "base": "4f348aee7265e0568d7b8323739a39e70d7f49e4",
+  "reference": "cc2356727491b4dfe83eb22e3e05d7b3d0c149ff",
+  "lang": "ts",
+  "request": "describeGroup(name, argsList, running, projectRoot?) in src/lib/toolGroups.ts gets an optional fourth argument, the project's root path. A list_dir of the project's own absolute path reads \"project root\", and a folder inside it is named relative to the project (\"/home/me/proj/src/\" -> \"src\"); folders outside stay absolute. Windows paths compare ignoring case and slash direction (C:\\Proj\\ equals c:/proj), keeping the path's own separators in the name (\"C:\\Users\\Me\\Proj\\src\\lib\" -> \"src\\lib\"); trailing separators and a leading \".\\\" are dropped, and duplicates are named once. Pass the project root from the chat components.",
+  "hidden": ["src/lib/toolGroups.test.ts"],
+  "checks": [
+    {
+      "kind": "ts",
+      "files": ["src/lib/toolGroups.test.ts"]
+    }
+  ],
+  "setup": ["node"]
+}

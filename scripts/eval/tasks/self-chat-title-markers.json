@@ -1,0 +1,16 @@
+{
+  "id": "self-chat-title-markers",
+  "repo": "self",
+  "base": "4201427adba667a5c8bfb9291a2ee1b11d79b14f",
+  "reference": "11eda4f8078539ae2d48386d40f0b5fb0b21c76b",
+  "lang": "ts",
+  "request": "A long paste is sent wrapped in <pasted_text lines=\"N\"> ... </pasted_text> markers, and chat titles end up as \"<pasted_text lines=...\". In src/lib/chatTitle.ts: export withoutPasteMarkers(text) that removes the marker lines (keeping the pasted text); make fallbackTitle(text) (the first words of the message, capitalized) work on the text without markers; export cleanTitle(title) that drops markup (any <tag ...> or </tag>) from a title the model wrote, collapsing the spaces left behind. Use the text without markers for the title request too.",
+  "hidden": ["src/lib/chatTitle.test.ts"],
+  "checks": [
+    {
+      "kind": "ts",
+      "files": ["src/lib/chatTitle.test.ts"]
+    }
+  ],
+  "setup": ["node"]
+}

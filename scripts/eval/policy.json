@@ -1,0 +1,8 @@
+{
+  "default": "allow",
+  "rules": [
+    { "tool": "bash", "contains": "git push", "decision": "deny" },
+    { "tool": "bash", "contains": "sudo ", "decision": "deny" }
+  ],
+  "questions": "recommended"
+}

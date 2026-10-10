@@ -1,0 +1,19 @@
+{
+  "id": "mi-subfactorial",
+  "repo": {
+    "url": "https://github.com/more-itertools/more-itertools",
+    "name": "more-itertools"
+  },
+  "base": "0c48044a70bae53fed919526bb1229d459a3e496",
+  "reference": "504b087128d853d7b2cc6478237626e585514935",
+  "lang": "python",
+  "request": "Add more_itertools.subfactorial(n): the number of derangements of n items (OEIS A000166: 1, 0, 1, 2, 9, 44, ...), exact for large n (integers). Raise TypeError for non-int n (floats, strings) and ValueError for negative n. Export it from more_itertools (more.py __all__, more.pyi) and document it.",
+  "hidden": ["tests/test_more.py"],
+  "checks": [
+    {
+      "kind": "pytest",
+      "files": ["tests/test_more.py"]
+    }
+  ],
+  "setup": ["python"]
+}

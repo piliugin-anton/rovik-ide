@@ -1,0 +1,19 @@
+{
+  "id": "mi-split-maxsplit-empty",
+  "repo": {
+    "url": "https://github.com/more-itertools/more-itertools",
+    "name": "more-itertools"
+  },
+  "base": "d92f081a089714e0aa92434c797fdd1a06da1290",
+  "reference": "3e87c08ac878f4bb79349d38ac69ba75c45dc5bf",
+  "lang": "python",
+  "request": "more_itertools split_at, split_before, split_after and split_when: with an empty iterable they must behave like str.split for every maxsplit (-1, 0, 1, ...): split_at('' ...) yields one empty list like ''.split(','), and split_before/split_after/split_when yield nothing for an empty input whatever maxsplit is. Today maxsplit=0 yields a list for empty input.",
+  "hidden": ["tests/test_more.py"],
+  "checks": [
+    {
+      "kind": "pytest",
+      "files": ["tests/test_more.py"]
+    }
+  ],
+  "setup": ["python"]
+}

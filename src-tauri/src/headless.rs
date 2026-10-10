@@ -7,7 +7,11 @@
 //!   cargo run --features headless --bin rovik-headless -- \
 //!     --project ./repo --settings settings.json [--policy policy.json] \
 //!     --prompt "Fix the failing test" --out report.json [--data ./data] \
-//!     [--timeout 1800]
+//!     [--timeout 1800] [--max-tokens 1500000]
+//!
+//! `--max-tokens` stops the run once its requests (its subagents' included)
+//! have used that many tokens, as the provider reports them: a budget cap
+//! for evaluations (scripts/eval).
 //!
 //! The settings file:
 //!
@@ -16,6 +20,7 @@
 //!                  "contextTokens": 128000 },
 //!     "apiKeyEnv": "OPENROUTER_API_KEY",
 //!     "options": { "reasoning_effort": "low" },
+//!     "price": { "inputPerMillion": 3.0, "outputPerMillion": 15.0 },
 //!     "mode": "agent", "contextMode": "trimming",
 //!     "config": { "permissions": { … }, "approvalProfiles": [],
 //!                 "subagents": { "enabled": true, "kinds": { … } } } }
@@ -62,6 +67,17 @@ pub struct Settings {
     pub context_mode: Option<String>,
     #[serde(default)]
     pub config: AgentConfig,
+    /// What the model costs, for runs whose provider doesn't report it.
+    #[serde(default)]
+    pub price: Option<Price>,
+}
+
+/// US dollars per million tokens.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Price {
+    pub input_per_million: f64,
+    pub output_per_million: f64,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Default)]
@@ -159,6 +175,8 @@ pub struct Args {
     pub out: PathBuf,
     pub data: Option<PathBuf>,
     pub timeout: Duration,
+    /// Stop the run past this many tokens (all its requests).
+    pub max_tokens: Option<u64>,
 }
 
 pub const USAGE: &str =
@@ -173,6 +191,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut out = None;
     let mut data = None;
     let mut timeout = Duration::from_secs(1800);
+    let mut max_tokens = None;
     let mut it = argv.iter();
     while let Some(flag) = it.next() {
         let mut value = || {
@@ -193,6 +212,12 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .map_err(|_| format!("--timeout takes seconds\n{USAGE}"))?;
                 timeout = Duration::from_secs(secs.max(1));
             }
+            "--max-tokens" => {
+                let n: u64 = value()?
+                    .parse()
+                    .map_err(|_| format!("--max-tokens takes a number\n{USAGE}"))?;
+                max_tokens = Some(n.max(1));
+            }
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -207,7 +232,106 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
         out: need(out, "--out")?,
         data,
         timeout,
+        max_tokens,
     })
+}
+
+/// Tokens in and out, and the cost when the provider says, of one reply's
+/// usage (OpenAI's names, or the Responses API's).
+pub fn usage_of(u: &Value) -> (u64, u64, Option<f64>) {
+    let n = |keys: &[&str]| keys.iter().find_map(|k| u.get(*k)?.as_u64()).unwrap_or(0);
+    (
+        n(&["prompt_tokens", "input_tokens"]),
+        n(&["completion_tokens", "output_tokens"]),
+        u.get("cost").and_then(|c| c.as_f64()),
+    )
+}
+
+/// What a run's requests used, from its run log's reply lines.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Totals {
+    pub lead_in: u64,
+    pub lead_out: u64,
+    pub sub_in: u64,
+    pub sub_out: u64,
+    /// The largest request the lead sent (its context at its fullest).
+    pub peak_lead_context: u64,
+    /// Reported cost, when every reply with usage reported one.
+    pub reported_cost: Option<f64>,
+    /// Replies with usage.
+    pub replies: usize,
+}
+
+impl Totals {
+    pub fn tokens(&self) -> u64 {
+        self.lead_in + self.lead_out + self.sub_in + self.sub_out
+    }
+
+    /// One reply line of the run log: the lead's (`dialog_id`) or a
+    /// subagent's.
+    pub fn add(&mut self, line: &Value, dialog_id: &str) {
+        if line["event"] != "reply" {
+            return;
+        }
+        let Some(u) = line.get("usage").filter(|u| u.is_object()) else {
+            return;
+        };
+        let (i, o, cost) = usage_of(u);
+        if line["dialogId"] == dialog_id {
+            self.lead_in += i;
+            self.lead_out += o;
+            self.peak_lead_context = self.peak_lead_context.max(i);
+        } else {
+            self.sub_in += i;
+            self.sub_out += o;
+        }
+        self.reported_cost = match (self.replies, self.reported_cost, cost) {
+            (0, _, c) => c,
+            (_, Some(a), Some(c)) => Some(a + c),
+            _ => None,
+        };
+        self.replies += 1;
+    }
+
+    /// Its cost: as reported, else by the settings' price; None: unknown.
+    pub fn cost(&self, price: Option<Price>) -> (Option<f64>, &'static str) {
+        if let Some(c) = self.reported_cost {
+            return (Some(c), "provider");
+        }
+        match price {
+            Some(p) => (
+                Some(
+                    (self.lead_in + self.sub_in) as f64 * p.input_per_million / 1e6
+                        + (self.lead_out + self.sub_out) as f64 * p.output_per_million / 1e6,
+                ),
+                "price",
+            ),
+            None if self.replies == 0 => (Some(0.0), "none"),
+            None => (None, "unknown"),
+        }
+    }
+}
+
+/// Reads the run log's new lines since `offset` (the log is appended to).
+fn new_log_lines(path: &Path, offset: &mut u64) -> Vec<Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    if f.seek(SeekFrom::Start(*offset)).is_err() {
+        return Vec::new();
+    }
+    let mut text = String::new();
+    if f.read_to_string(&mut text).is_err() {
+        return Vec::new();
+    }
+    // Only whole lines: a line being written stays for next time.
+    let whole = text.rfind('\n').map_or(0, |i| i + 1);
+    *offset += whole as u64;
+    text[..whole]
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
@@ -217,6 +341,9 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
 
 /// Runs once and writes the report; returns it too.
 pub async fn run(args: &Args) -> Result<Value, String> {
+    // One run at a time: the agent log's folder is process-wide.
+    static ONE_RUN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = ONE_RUN.lock().await;
     let mut settings: Settings = read_json(&args.settings)?;
     if settings.profile.api_key.is_empty() {
         if let Some(var) = &settings.api_key_env {
@@ -307,8 +434,39 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     let mut approvals: Vec<Value> = Vec::new();
     let mut questions = 0usize;
     let deadline = tokio::time::Instant::now() + args.timeout;
+    // The token cap: the run log's replies, read as they're written.
+    let log_file = log_dir.join("agent-log.jsonl");
+    let mut log_offset = std::fs::metadata(&log_file).map_or(0, |m| m.len());
+    let mut children: Vec<String> = Vec::new();
+    let mut watched = Totals::default();
+    let mut tick = tokio::time::interval(Duration::from_secs(2));
     let outcome = loop {
-        let event = match tokio::time::timeout_at(deadline, rx.recv()).await {
+        let next = tokio::select! {
+            e = tokio::time::timeout_at(deadline, rx.recv()) => e,
+            _ = tick.tick(), if args.max_tokens.is_some() => {
+                for line in new_log_lines(&log_file, &mut log_offset) {
+                    let of_run = line["dialogId"] == dialog_id.as_str()
+                        || children.iter().any(|c| line["dialogId"] == c.as_str());
+                    if of_run {
+                        watched.add(&line, &dialog_id);
+                    }
+                }
+                if args.max_tokens.is_some_and(|max| watched.tokens() > max) {
+                    agent_run::agent_stop(handle.clone(), handle.state(), dialog_id.clone());
+                    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+                        while let Some(e) = rx.recv().await {
+                            if e["type"] == "runEnded" && e["dialogId"] == dialog_id.as_str() {
+                                break;
+                            }
+                        }
+                    })
+                    .await;
+                    break "budget".to_string();
+                }
+                continue;
+            }
+        };
+        let event = match next {
             Ok(Some(e)) => e,
             Ok(None) => break "error".to_string(),
             Err(_) => {
@@ -326,6 +484,11 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             }
         };
         match event["type"].as_str() {
+            Some("subagentStarted") if event["dialogId"] == dialog_id.as_str() => {
+                if let Some(c) = event["childDialogId"].as_str() {
+                    children.push(c.to_string());
+                }
+            }
             Some("approvalRequested") => {
                 let r = &event["request"];
                 let (chat, call) = (
@@ -441,6 +604,7 @@ fn report(
             Some(u["inputTokens"].as_u64()? + u["outputTokens"].as_u64()?)
         })
         .sum();
+    let mut totals = Totals::default();
     let final_message = messages
         .iter()
         .rev()
@@ -459,6 +623,10 @@ fn report(
                     .any(|s| s["childDialogId"] == l["dialogId"] && !l["dialogId"].is_null())
         })
         .collect();
+    for line in &run_log {
+        totals.add(line, dialog_id);
+    }
+    let (cost, cost_source) = totals.cost(settings.price);
     json!({
         "outcome": outcome,
         "ms": ms,
@@ -473,6 +641,18 @@ fn report(
         "reviews": meta("review"),
         "subagents": subagents,
         "subagentTokens": tokens,
+        "usage": {
+            "leadInputTokens": totals.lead_in,
+            "leadOutputTokens": totals.lead_out,
+            "subagentInputTokens": totals.sub_in,
+            "subagentOutputTokens": totals.sub_out,
+            "totalTokens": totals.tokens(),
+            "peakLeadContext": totals.peak_lead_context,
+            "replies": totals.replies,
+        },
+        "costUsd": cost,
+        "costSource": cost_source,
+        "interventions": approvals.len() + questions,
         "approvals": approvals,
         "questions": questions,
         "finalMessage": final_message,
@@ -540,6 +720,7 @@ mod tests {
         assert_eq!(a.project, PathBuf::from("p"));
         assert_eq!(a.prompt, "Do it");
         assert_eq!(a.timeout, Duration::from_secs(60));
+        assert_eq!(a.max_tokens, None);
         assert_eq!(a.policy, None);
         assert!(parse_args(&argv(&["--project", "p"]))
             .unwrap_err()
@@ -550,6 +731,55 @@ mod tests {
         assert!(parse_args(&argv(&["--prompt"]))
             .unwrap_err()
             .contains("needs a value"));
+    }
+
+    #[test]
+    fn totals_and_cost_from_the_run_log() {
+        let reply = |dialog: &str, usage: Value| json!({ "event": "reply", "dialogId": dialog, "usage": usage });
+        let mut t = Totals::default();
+        t.add(
+            &reply(
+                "lead",
+                json!({ "prompt_tokens": 1000, "completion_tokens": 100 }),
+            ),
+            "lead",
+        );
+        t.add(
+            &reply(
+                "lead",
+                json!({ "prompt_tokens": 3000, "completion_tokens": 50 }),
+            ),
+            "lead",
+        );
+        t.add(
+            &reply("kid", json!({ "input_tokens": 500, "output_tokens": 20 })),
+            "lead",
+        );
+        t.add(&json!({ "event": "run", "dialogId": "lead" }), "lead");
+        t.add(&reply("lead", Value::Null), "lead");
+        assert_eq!(t.tokens(), 4670);
+        assert_eq!(t.peak_lead_context, 3000);
+        assert_eq!(t.replies, 3);
+        assert_eq!(t.cost(None), (None, "unknown"));
+        let price = Price {
+            input_per_million: 2.0,
+            output_per_million: 10.0,
+        };
+        let (cost, source) = t.cost(Some(price));
+        assert_eq!(source, "price");
+        assert!((cost.unwrap() - (4500.0 * 2.0 + 170.0 * 10.0) / 1e6).abs() < 1e-12);
+
+        let mut reported = Totals::default();
+        reported.add(
+            &reply("lead", json!({ "prompt_tokens": 10, "cost": 0.25 })),
+            "lead",
+        );
+        reported.add(
+            &reply("lead", json!({ "prompt_tokens": 10, "cost": 0.5 })),
+            "lead",
+        );
+        assert_eq!(reported.cost(Some(price)), (Some(0.75), "provider"));
+        assert_eq!(Totals::default().cost(None), (Some(0.0), "none"));
     }
 
     #[test]

@@ -1,0 +1,17 @@
+{
+  "id": "self-undo-retry",
+  "repo": "self",
+  "base": "fa695211929f4492160df63477a713553e318ab3",
+  "reference": "7b41784c79d2653af8fd12efe53accfb5f0594a6",
+  "lang": "rust",
+  "request": "Landing undo (src-tauri/src/overlay/land.rs): if an undo stopped partway (some files already restored), retrying it reports the restored files as changed and keeps them. A path already back to its pre-landing content should count as undone, so retrying land::undo finishes and returns no kept files.",
+  "hidden": ["src-tauri/src/overlay/tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["overlay::tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

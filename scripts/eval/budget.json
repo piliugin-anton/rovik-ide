@@ -1,0 +1,15 @@
+{
+  "perRun": { "maxTokens": 1500000, "timeoutSeconds": 1800 },
+  "pilot": {
+    "tasks": [
+      "self-chat-title-markers",
+      "self-git-mode-lines",
+      "self-think-tags",
+      "mi-subfactorial",
+      "lo-filter-map"
+    ],
+    "repeats": 1,
+    "capUsd": 5
+  },
+  "baseline": { "repeats": 3, "capUsd": 75 }
+}

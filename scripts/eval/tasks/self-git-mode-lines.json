@@ -1,0 +1,17 @@
+{
+  "id": "self-git-mode-lines",
+  "repo": "self",
+  "base": "11eda4f8078539ae2d48386d40f0b5fb0b21c76b",
+  "reference": "0443ad021f1285c578ee46829b9f3008319b3683",
+  "lang": "rust",
+  "request": "Git status line counts: a tracked file whose mode alone changed (chmod +x) is reported with every line added. Only new (untracked) files should fall back to counting lines on disk; a mode-only change is 0 added, 0 removed (git_status_blocking in src-tauri/src/git.rs). Also: in default_remote_name and fetch refspecs skip remote names that aren't UTF-8 instead of panicking, and show non-UTF-8 paths lossily in status.",
+  "hidden": ["src-tauri/src/git_sync/tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["git_sync::tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

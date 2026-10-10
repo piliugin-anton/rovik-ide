@@ -1,0 +1,17 @@
+{
+  "id": "self-clm-later-once",
+  "repo": "self",
+  "base": "d9ddd40f50d9da0ef3152cf5015d557877925f32",
+  "reference": "2a38c297f04724a3c563aadb0379e5a22e30f722",
+  "lang": "rust",
+  "request": "CLM (src-tauri/src/clm): if the context file was rewritten but the state saying so wasn't saved (a failed database write), the newer rendering is read back as an agent edit, and messages stored after the older rendering are sent twice. Add fn with_later(base: Vec<CtxMsg>, later: &[CtxMsg]) -> Vec<CtxMsg> in clm/mod.rs that appends the later messages to the agent's version, skipping those already in it (an id \"m2~e\" is an edited m2 and counts as m2), and use it in prepare so every message appears once, in order. Also: use the CLM system prompt section and budget only once CLM has built the request's history; when prepare fails partway, send the plain prompt and budget.",
+  "hidden": ["src-tauri/src/clm/tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["clm::tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

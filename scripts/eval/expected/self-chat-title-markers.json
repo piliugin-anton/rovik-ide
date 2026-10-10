@@ -1,0 +1,17 @@
+{
+  "id": "self-chat-title-markers",
+  "reference": "11eda4f8078539ae2d48386d40f0b5fb0b21c76b",
+  "ok": true,
+  "problems": [],
+  "failingAtBase": [
+    "src/lib/chatTitle.test.ts > markup the model copies into a title is dropped",
+    "src/lib/chatTitle.test.ts > paste markers are not part of the message",
+    "src/lib/chatTitle.test.ts > the fallback title has no paste markers"
+  ],
+  "flaky": [],
+  "required": [
+    "src/lib/chatTitle.test.ts > markup the model copies into a title is dropped",
+    "src/lib/chatTitle.test.ts > paste markers are not part of the message",
+    "src/lib/chatTitle.test.ts > the fallback title has no paste markers"
+  ]
+}

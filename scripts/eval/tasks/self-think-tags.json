@@ -1,0 +1,17 @@
+{
+  "id": "self-think-tags",
+  "repo": "self",
+  "base": "b90a2023599f852fcca0e5d375f74498718d2ccd",
+  "reference": "c0ef61ceae1c6d7e767a2b16a9838c4ca48ab083",
+  "lang": "rust",
+  "request": "Some models write their reasoning at the start of the reply as <think>...</think> (or <thinking>...</thinking>). ReplyParser in src-tauri/src/chat_request.rs should emit that as ChatStreamEvent::Reasoning, not Delta, and emit a new event ChatStreamEvent::ReasoningInline { tag: String } (tag \"think\" or \"thinking\") once when it does. Only a tag at the start of the reply (after whitespace) counts; tags may be split anywhere across chunks (multi-byte text included), so hold back a possible tag prefix until it's decided; text that only starts like a tag (\"<this is html>\") or a reply that is just \"<\" is shown as text; a tag never closed makes the rest of the reply reasoning. Text after the closing tag is the answer. Keep the reasoning in the stored reply with its tag when it's sent back to the model.",
+  "hidden": ["src-tauri/src/chat_request/tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["chat_request::tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

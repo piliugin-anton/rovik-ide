@@ -1,0 +1,19 @@
+{
+  "id": "mi-seekable-getitem",
+  "repo": {
+    "url": "https://github.com/more-itertools/more-itertools",
+    "name": "more-itertools"
+  },
+  "base": "18d98893df45e0014bf316ca7832d441dd94aa4f",
+  "reference": "264b18d8dfbab42fdbd969fc09abf602c6ea58b3",
+  "lang": "python",
+  "request": "Add __getitem__ to more_itertools.seekable: index the items cached so far (negative indexes from the end), raising IndexError past them; with maxlen, indexes are into the retained cache (after taking 5 with maxlen=2, s[0] is the 4th item). Add it to more.pyi.",
+  "hidden": ["tests/test_more.py"],
+  "checks": [
+    {
+      "kind": "pytest",
+      "files": ["tests/test_more.py"]
+    }
+  ],
+  "setup": ["python"]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "self-loop-summary",
+  "repo": "self",
+  "base": "34064b1643a18b1287c651d8e48f98169530775b",
+  "reference": "2328ba375ac4db5fefee7ffee3719b70dee5eb11",
+  "lang": "rust",
+  "request": "When the loop guard pauses a run, the user only sees the guard's reason. Before pausing, send the model one more request with its tools still described but tool_choice \"none\", with a harness note asking for a few bullets: what it was trying to do, what it tried, what blocks it and what would unblock it (the note includes \"Don't call any tools\"). Store the reply above the pause message; tool calls in it aren't run. Add a no_tool_calls flag to ChatParams for this. Checkpoint pauses are unchanged.",
+  "hidden": ["src-tauri/src/agent_run/e2e_tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["agent_run::e2e_tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "lo-filter-map",
+  "repo": {
+    "url": "https://github.com/samber/lo",
+    "name": "lo"
+  },
+  "base": "74f4bf7ffd271ef1cf4c70ec5f60c0f6876c950a",
+  "reference": "3df5ddb66ee641cbe5d3286904e6b004afae9f4a",
+  "lang": "go",
+  "request": "Add lo.FilterMap[T any, R any](collection []T, callback func(T, int) (R, bool)) []R in slice.go: maps each item with its index and keeps the results whose second value is true, in order (an empty, non-nil slice when none).",
+  "hidden": ["slice_test.go"],
+  "checks": [
+    {
+      "kind": "go",
+      "packages": ["."]
+    }
+  ],
+  "setup": ["go"]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "self-clm-stable-prompt",
+  "repo": "self",
+  "base": "840d7f4dfecf591964e71096d995da85a313a3d7",
+  "reference": "b6245e9f3efd6e1b94b0892683660d0f196c1877",
+  "lang": "rust",
+  "request": "The CLM section of the system prompt includes the context file's revision, the history budget and the task card, which change almost every request and defeat provider prompt caching. Make prompt::system_section(path, chat_id) depend only on the chat's paths. The size/budget/revision stay in the readout notes at the end of every request (\"... /5000 tokens ... revision 2\"), and the task card now goes in those notes on every request (\"your task card\" with its text); when the card file is deleted the notes say it \"was deleted\" once, with its last text.",
+  "hidden": ["src-tauri/src/clm/edge_tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["clm::edge_tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

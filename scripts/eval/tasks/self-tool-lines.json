@@ -1,0 +1,16 @@
+{
+  "id": "self-tool-lines",
+  "repo": "self",
+  "base": "2f2375940f231607fa381894cbda680a3639087f",
+  "reference": "3002cb80c8c47aa6dddeeed8dee3c88a4e790d56",
+  "lang": "ts",
+  "request": "Make questions, checklists, plans and context edits one-line entries in the chat like other tool calls. describeGroup in src/lib/toolGroups.ts: ask_user -> verb \"Asked\", one item per question with its text; todo -> verb \"Updated the checklist\", item \"<done> of <total> done \u00b7 <title of the step in progress>\"; submit_plan -> verb \"Saved the plan\" (\"Saving the plan\" while running), item: the plan's first heading's text; write to \"@context\" -> verb \"Edited its context\" with no items. Render them in ToolCallGroup.tsx/MessageList.tsx.",
+  "hidden": ["src/lib/toolGroups.test.ts"],
+  "checks": [
+    {
+      "kind": "ts",
+      "files": ["src/lib/toolGroups.test.ts"]
+    }
+  ],
+  "setup": ["node"]
+}

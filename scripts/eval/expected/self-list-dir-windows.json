@@ -1,0 +1,23 @@
+{
+  "id": "self-list-dir-windows",
+  "reference": "cc2356727491b4dfe83eb22e3e05d7b3d0c149ff",
+  "ok": true,
+  "problems": [],
+  "failingAtBase": [
+    "src/lib/toolGroups.test.ts > list_dir > names folders in the project relative to it, Windows paths too"
+  ],
+  "flaky": [],
+  "required": [
+    "src/lib/toolGroups.test.ts > commandName > skips variable assignments and paths",
+    "src/lib/toolGroups.test.ts > describeGroup > describes questions, checklists, plans and context edits",
+    "src/lib/toolGroups.test.ts > describeGroup > names commands by their program and pages by their site",
+    "src/lib/toolGroups.test.ts > describeGroup > names files once each, with where to open them",
+    "src/lib/toolGroups.test.ts > describeGroup > says editing for partial writes and caps the list",
+    "src/lib/toolGroups.test.ts > domainName > takes the host from a URL with or without a scheme",
+    "src/lib/toolGroups.test.ts > editCounts > totals the lines writes add and remove, skipping context edits",
+    "src/lib/toolGroups.test.ts > groupToolCalls > groups consecutive calls to one tool, whatever their arguments",
+    "src/lib/toolGroups.test.ts > groupToolCalls > keeps questions, checklists and context edits apart",
+    "src/lib/toolGroups.test.ts > list_dir > calls the project root by name, however the model wrote it",
+    "src/lib/toolGroups.test.ts > list_dir > names folders in the project relative to it, Windows paths too"
+  ]
+}

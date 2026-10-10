@@ -1,0 +1,17 @@
+{
+  "id": "self-search-regex-fallback",
+  "repo": "self",
+  "base": "c359178ed738a2bcd639f25310b9a3a295ba9be7",
+  "reference": "220770f114783c4991bcdf8c7373e7a09ba38860",
+  "lang": "rust",
+  "request": "search_code: models often send a pattern without regex: true, e.g. \"cursor-follower|link-hover|rotate\\(45deg\\)\", which as literal text finds nothing (\"No matches.\"). When a literal search finds nothing and the query has regex syntax (an escaped special character, an alternation, a wildcard), compiles as a regex, and can't match an empty line, search again as a regular expression. The result says so (\"... searched as a regular expression ...\"), with the usual \"N matches in M file(s)\" header and meta count; if that finds nothing either, the result starts with \"No matches.\" and says it found nothing \"as a regular expression either\". \"regex\"/\"case_sensitive\" sent as the string \"true\" count as true.",
+  "hidden": ["src-tauri/src/agent_run/e2e_tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["agent_run::e2e_tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

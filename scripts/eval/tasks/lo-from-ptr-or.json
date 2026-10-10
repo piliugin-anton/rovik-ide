@@ -1,0 +1,19 @@
+{
+  "id": "lo-from-ptr-or",
+  "repo": {
+    "url": "https://github.com/samber/lo",
+    "name": "lo"
+  },
+  "base": "22bd27195379a456c10232f1935802477a2fae86",
+  "reference": "83b311dccf601be69def09885ab1b8694eb20a4c",
+  "lang": "go",
+  "request": "Add lo.FromPtrOr[T any](x *T, fallback T) T in type_manipulation.go: the pointed-to value, or fallback when x is nil. Document it in README.md.",
+  "hidden": ["type_manipulation_test.go"],
+  "checks": [
+    {
+      "kind": "go",
+      "packages": ["."]
+    }
+  ],
+  "setup": ["go"]
+}

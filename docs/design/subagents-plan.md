@@ -624,5 +624,57 @@ lines of the run log. The chat isn't isolated. Tested by an e2e run through
 its argument parsing, and by hand from the command line against a scripted
 server.
 
-G01 (the evaluation set) waits for an agreed evaluation budget, as the plan
-asks, before anything runs.
+### G01: the evaluation set
+
+The set, its driver and its budget are in `scripts/eval/` (README there).
+
+- **Tasks.** 30 tasks, each a real commit with tests, started from its
+  parent:
+  - 20 from this repository: 9 TypeScript (one also checked in Rust) and
+    11 Rust. One candidate was dropped and replaced, because its test
+    already passed at the base.
+  - 5 from more-itertools (Python).
+  - 5 from samber/lo (Go).
+- **Grading.** SWE-bench style.
+  - The agent works in a fresh repository holding only the base commit's
+    files, with no history.
+  - Afterwards, the reference's version of the hidden test files is put
+    back.
+  - A run passes when every test the reference passes, passes.
+  - `validate` fixes those tests per task in `expected/`. It needs a test
+    failing at the base, and drops tests that don't pass at the reference
+    both times.
+  - Requests name the interfaces the tests call. A hidden test can only
+    check a name it was told.
+- **Budget.** I decided it when asked to:
+  - A pilot of 5 tasks × 1 run, capped at $5.
+  - Then the baseline of 30 × 3 runs, capped at $75. It starts only if the
+    pilot's mean cost a run, times 90, fits.
+  - Each run is limited to 1.5 million tokens and 30 minutes.
+  - A run starts only while what the campaign has spent, plus its mean run
+    cost, stays under the cap.
+  - Cost is the provider's `usage.cost` when reported, else tokens × the
+    settings' `price`. The price is required, and a run whose cost can't be
+    known stops the campaign.
+- **Runner additions.** The report gets:
+  - `usage`: the lead's and subagents' tokens in and out, and the lead's
+    peak context (its largest request), all from the run log's reply lines.
+  - `costUsd` with its `costSource`.
+  - `interventions`.
+
+  `--max-tokens` stops a run as it passes the cap, with outcome `budget`:
+  the run log is read as it's written. Headless runs take a process-wide
+  lock, since the agent log's folder is global.
+
+- **Eval permissions.** Settings must allow any command and turn off the
+  50-call checkpoint. The default command list has no pytest or `go test`,
+  and a checkpoint pause would end a headless run. The dry run found this:
+  its `git apply` was refused.
+- **Dry run.** `eval.mjs dry-run` runs tasks with `fake-model.mjs`. One
+  model applies the reference change (it must pass) and one changes nothing
+  (it must fail). This tests the pipeline without a provider.
+
+Not done yet: the real pilot and baseline. They need a provider key in the
+environment and the provider's host allowed. The completion criterion (the
+set run with subagents off, 3 runs each, with a report of the spread) waits
+on them. G02's report then goes in `docs/design/subagents-results.md`.
