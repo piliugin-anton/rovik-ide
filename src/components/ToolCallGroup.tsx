@@ -70,7 +70,8 @@ export default function ToolCallGroup(props: {
     describeGroup(
       props.name,
       props.calls.map((c) => parseArgsLenient(c.arguments)),
-      active()
+      active(),
+      props.calls.map((c) => props.result(c.id)?.meta)
     )
   );
 

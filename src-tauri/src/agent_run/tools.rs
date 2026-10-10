@@ -455,6 +455,9 @@ pub struct ToolResult {
     pub attachments: Vec<String>,
     /// Partial write: the path (as given) and the file's new content.
     pub written: Option<(String, String)>,
+    /// Facts for the chat's tool block beyond what `result_meta` reads from
+    /// the text, merged into the stored result's meta.
+    pub meta: Option<Map<String, Value>>,
 }
 
 impl ToolResult {
@@ -666,7 +669,7 @@ async fn run<R: Runtime>(
                     shot.url, shot.width, shot.height
                 ),
                 attachments: vec![shot.attachment_id],
-                written: None,
+                ..Default::default()
             });
         }
         _ => {}
@@ -691,7 +694,7 @@ async fn run<R: Runtime>(
             .await
             .map_err(|e| e.to_string())?;
             let outcome = outcome?;
-            return Ok(ToolResult { content: outcome.summary, attachments: Vec::new(), written: Some((edit.path, outcome.content)) });
+            return Ok(ToolResult { content: outcome.summary, written: Some((edit.path, outcome.content)), ..Default::default() });
         }
         "read" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
@@ -753,13 +756,9 @@ async fn run<R: Runtime>(
             format_command_output(command, &out)
         }
         "list_dir" => {
-            let entries = crate::agent_tools::tool_list_dir(
-                root_owned,
-                text(args, "path").map(str::to_string),
-                uint(args, "max_depth"),
-            )
-            .await?;
-            if entries.is_empty() {
+            let path = text(args, "path").map(str::to_string);
+            let entries = crate::agent_tools::tool_list_dir(root_owned.clone(), path.clone(), uint(args, "max_depth")).await?;
+            let content = if entries.is_empty() {
                 "(empty, or everything under this path is ignored)".to_string()
             } else {
                 entries
@@ -767,7 +766,15 @@ async fn run<R: Runtime>(
                     .map(|e| format!("{}  {}", if e.is_dir { "dir " } else { "file" }, e.path))
                     .collect::<Vec<_>>()
                     .join("\n")
-            }
+            };
+            // The folder it listed, as the chat names it: relative to the
+            // project, "" for the root, however the model wrote the path.
+            let meta = crate::agent_tools::project_relative(&root_owned, path.as_deref().unwrap_or("")).map(|dir| {
+                let mut meta = Map::new();
+                meta.insert("dir".into(), json!(dir));
+                meta
+            });
+            return Ok(ToolResult { content, meta, ..Default::default() });
         }
         "search_code" => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {

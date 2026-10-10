@@ -6,7 +6,7 @@
 // main.tsx"). Only the tool's name decides; the arguments only name the line.
 import type { ChatToolCall } from '../types';
 import { isLiveContextPath } from './contextDoc';
-import { parseArgsLenient, type Args } from './toolArgs';
+import { dirName, parseArgsLenient, type Args } from './toolArgs';
 import { parseTodo, progressLabel } from './todo';
 import { diffRows, snippetLines } from './lineDiff';
 
@@ -175,7 +175,13 @@ export function editCounts(
 }
 
 /** The group's line, e.g. { verb: "Edited", items: [App.tsx, main.tsx] }. */
-export function describeGroup(name: string, argsList: Args[], active: boolean): GroupLabel {
+export function describeGroup(
+  name: string,
+  argsList: Args[],
+  active: boolean,
+  /** Each call's stored result facts, where it has finished. */
+  results: ({ dir?: string } | undefined)[] = []
+): GroupLabel {
   const verb = (running: string, done: string) => (active ? running : done);
   switch (name) {
     case 'read':
@@ -205,9 +211,9 @@ export function describeGroup(name: string, argsList: Args[], active: boolean): 
     case 'list_dir':
       return label(
         verb('Listing', 'Listed'),
-        argsList.map((a) => {
-          const path = str(a.path)?.trim();
-          return path ? { text: short(path), title: path } : { text: 'project root' };
+        argsList.map((a, i) => {
+          const dir = dirName(str(a.path), results[i]?.dir);
+          return { text: short(dir), title: dir };
         })
       );
     case 'bash':

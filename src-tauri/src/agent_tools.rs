@@ -74,6 +74,18 @@ fn canonicalize_existing(path: &Path) -> Result<PathBuf, String> {
     Ok(out)
 }
 
+/// `path` (as the model gave it: relative, absolute, "./src", "src\\")
+/// relative to the project, with '/' between folders and "" for the project
+/// itself. Resolved like the tools resolve it (symlinks, the file system's
+/// own case and separators), so it names what they used. None when it
+/// isn't inside the project.
+pub fn project_relative(root: &str, path: &str) -> Option<String> {
+    let target = canonicalize_existing(&resolve_within_root(root, path).ok()?).ok()?;
+    let root = canonicalize_or_err(Path::new(root)).ok()?;
+    let relative = target.strip_prefix(&root).ok()?;
+    Some(relative.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
+}
+
 /// Resolves `candidate` (as given by the model, relative to the project
 /// root unless absolute) and checks it stays inside `root`.
 ///
@@ -835,6 +847,29 @@ mod tests {
         let link = base.join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         (base, link)
+    }
+
+    #[test]
+    fn folders_are_named_relative_to_the_project() {
+        let (base, root) = linked_project("relative");
+        fs::create_dir_all(root.join("src/lib")).unwrap();
+        let root_s = root.to_string_lossy().to_string();
+        let real = base.join("real").to_string_lossy().to_string();
+        let nested = format!("{real}/src/lib");
+        for (path, dir) in [
+            ("", ""),
+            (".", ""),
+            ("./", ""),
+            (root_s.as_str(), ""),
+            (real.as_str(), ""),
+            ("src", "src"),
+            ("./src/lib/", "src/lib"),
+            (nested.as_str(), "src/lib"),
+        ] {
+            assert_eq!(project_relative(&root_s, path).as_deref(), Some(dir), "{path:?}");
+        }
+        assert_eq!(project_relative(&root_s, "/etc"), None);
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

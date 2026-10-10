@@ -127,6 +127,33 @@ describe('describeGroup', () => {
   });
 });
 
+describe('list_dir', () => {
+  it('calls the project root by name, however the model wrote it', () => {
+    const listed = describeGroup(
+      'list_dir',
+      [{}, { path: '.' }, { path: './' }, { path: ' .\\ ' }, { path: 'src' }, { path: './src' }],
+      false
+    );
+    assert.deepEqual(
+      listed.items.map((i) => i.text),
+      ['project root', 'src']
+    );
+  });
+
+  it('names the folder the backend listed, once it has', () => {
+    const listed = describeGroup(
+      'list_dir',
+      [{ path: 'C:\\Proj' }, { path: '/home/me/proj/src/' }, { path: 'D:\\other\\' }],
+      false,
+      [{ dir: '' }, { dir: 'src' }, undefined]
+    );
+    assert.deepEqual(
+      listed.items.map((i) => i.text),
+      ['project root', 'src', 'D:\\other']
+    );
+  });
+});
+
 describe('editCounts', () => {
   it('totals the lines writes add and remove, skipping context edits', () => {
     assert.deepEqual(

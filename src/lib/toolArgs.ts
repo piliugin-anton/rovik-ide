@@ -53,3 +53,16 @@ export function parseArgsLenient(raw: string): Args {
 export function isErrorResult(result?: string) {
   return result !== undefined && /^Error:/.test(result.trimStart());
 }
+
+/**
+ * A folder a listing named: `listed` is the one it actually listed, relative
+ * to the project ("" for the project itself), as the backend resolved it
+ * (agent_tools::project_relative). Without it (still running, or listed
+ * before results said), the path as the model wrote it, without a leading
+ * "./" or a trailing separator.
+ */
+export function dirName(path: string | undefined, listed?: string): string {
+  const dir =
+    listed ?? (path?.trim() ?? '').replace(/(.)[\\/]+$/, '$1').replace(/^(\.[\\/]+)+/, '');
+  return dir === '' || dir === '.' ? 'project root' : dir;
+}
