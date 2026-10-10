@@ -288,7 +288,7 @@ pub fn edit_distance(a: &str, b: &str, max: usize) -> usize {
 }
 
 /// A title word matches when it, or its prefix of the term's length, is
-/// within the term's typo budget ("tauir" matches "tauri-ide").
+/// within the term's typo budget ("rovk" matches "rovik-ide").
 fn title_matches_fuzzy(title: &str, term: &str) -> bool {
     let budget = max_typos(term);
     if budget == 0 {

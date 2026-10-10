@@ -546,7 +546,7 @@ mod tests {
             ("tsconfig.json", "{}"),
             ("package-lock.json", "{}"),
             ("src-tauri/Cargo.toml", "[package]"),
-            ("README.md", "# tauri-ide\n\nA minimal IDE."),
+            ("README.md", "# rovik-ide\n\nA minimal IDE."),
         ]);
         let p = detect(&dir);
         assert_eq!(p.stack, ["TypeScript", "Solid", "Vite", "Tauri", "Rust"]);
