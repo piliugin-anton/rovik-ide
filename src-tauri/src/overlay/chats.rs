@@ -76,6 +76,7 @@ impl ChatOverlay {
 
     fn unmount(&self) {
         self.fs.flush();
+        self.fs.close_handles();
         crate::file_guard::forget_under(&self.view);
         if let Some(m) = self.mount.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = m.unmount();
@@ -244,6 +245,9 @@ pub fn open(
         mount: Mutex::new(Some(mount)),
     });
     open.insert(dialog_id.to_string(), overlay.clone());
+    drop(open);
+    // Closed until now (a restart): the project may have changed meanwhile.
+    check_all(&overlay, dialog_id);
     Ok(overlay)
 }
 
@@ -374,6 +378,7 @@ pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec
         .collect();
     if everything || abs.len() > MANY {
         project_busy(project);
+        check_after_quiet(project);
     }
     let mut conflicts_found = Vec::new();
     for o in overlays {
@@ -390,39 +395,82 @@ pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec
             .filter(|r| !r.is_empty() && !r.starts_with(".git/") && r != ".git")
             .collect();
         let (seen, touched) = o.fs.project_changed(&rels);
-        let mut conflicts = Vec::new();
-        for rel in &touched {
-            if conflicts_now(&o, rel) {
-                conflicts.push(rel.clone());
-            }
-        }
-        let mut notes = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = notes.entry(id.clone()).or_default();
-        entry.changed.extend(seen);
-        entry.conflicts.extend(conflicts.iter().cloned());
-        drop(notes);
-        if !conflicts.is_empty() {
-            let pending = Pending {
-                reason: "Won't land on its own: the project changed the same lines meanwhile.".into(),
-                conflicts: conflicts
-                    .iter()
-                    .map(|p| super::land::Conflict { path: p.clone(), reason: "the chat and the project changed the same lines".into() })
-                    .collect(),
-            };
-            set_pending(&id, Some(&pending));
-            // A running chat takes its conflicts itself (unless the user
-            // said to ask them); the rest are the user's.
-            let marked = hand_to_running_chat(&id);
-            if !marked.is_empty() {
-                let mut notes = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(n) = notes.get_mut(&id) {
-                    n.conflicts.retain(|p| !marked.contains(p));
-                }
-            }
-            conflicts_found.extend(conflicts.into_iter().filter(|p| !marked.contains(p)).map(|p| (id.clone(), p)));
-        }
+        NOTES.lock().unwrap_or_else(|e| e.into_inner()).entry(id.clone()).or_default().changed.extend(seen);
+        conflicts_found.extend(record_conflicts(&o, &id, &touched).into_iter().map(|p| (id.clone(), p)));
     }
     conflicts_found
+}
+
+/// Of the files the chat changed (`candidates`), those that now conflict
+/// with the project: added to its pending conflicts (kept with any found
+/// before), told to its model, or handed to it if it's running. Returns
+/// the ones left for the user.
+fn record_conflicts(o: &ChatOverlay, id: &str, candidates: &[String]) -> Vec<String> {
+    let conflicts: Vec<String> = candidates.iter().filter(|rel| conflicts_now(o, rel)).cloned().collect();
+    if conflicts.is_empty() {
+        return Vec::new();
+    }
+    NOTES.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_string()).or_default().conflicts.extend(conflicts.iter().cloned());
+    let mut pending = pending(id).unwrap_or(Pending { reason: String::new(), conflicts: Vec::new() });
+    for p in &conflicts {
+        if !pending.conflicts.iter().any(|c| &c.path == p) {
+            pending.conflicts.push(super::land::Conflict { path: p.clone(), reason: "the chat and the project changed the same lines".into() });
+        }
+    }
+    let n = pending.conflicts.len();
+    pending.reason = format!("Won't land on its own: the project changed the same lines meanwhile ({n} file{}).", if n == 1 { "" } else { "s" });
+    set_pending(id, Some(&pending));
+    // A running chat takes its conflicts itself (unless the user said to
+    // ask them); the rest are the user's.
+    let marked = hand_to_running_chat(id);
+    if !marked.is_empty() {
+        let mut notes = NOTES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = notes.get_mut(id) {
+            n.conflicts.retain(|p| !marked.contains(p));
+        }
+    }
+    conflicts.into_iter().filter(|p| !marked.contains(p)).collect()
+}
+
+/// Every file the chat changed, checked against the project as it is now:
+/// after a branch switch settles, or when the chat's overlay opens again.
+fn check_all(o: &ChatOverlay, id: &str) -> Vec<String> {
+    let changed: Vec<String> = o
+        .fs
+        .changes()
+        .into_iter()
+        .filter(|c| !c.by_product() && matches!(c, OverlayChange::Write { upper: Some(_), base_copy: Some(_), .. }))
+        .map(|c| c.path().to_string())
+        .collect();
+    record_conflicts(o, id, &changed)
+}
+
+/// Many files changed (a branch switch, a pull): once the project is still,
+/// every open chat on it is checked for conflicts.
+fn check_after_quiet(project: &Path) {
+    static WAITING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = LazyLock::new(Default::default);
+    let key = busy_key(project);
+    if !WAITING.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
+        return;
+    }
+    let project = project.to_path_buf();
+    let _ = std::thread::Builder::new().name("overlay-recheck".into()).spawn(move || {
+        let started = Instant::now();
+        while is_busy(&project) && started.elapsed() < Duration::from_secs(600) {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        WAITING.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+        let overlays: Vec<(String, Arc<ChatOverlay>)> = OPEN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, o)| same_folder(&o.project, &project))
+            .map(|(id, o)| (id.clone(), o.clone()))
+            .collect();
+        for (id, o) in overlays {
+            check_all(&o, &id);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

@@ -102,6 +102,8 @@ struct Inner {
     deleted: HashMap<String, DeletedBase>,
     /// Files of changes that are gone, deleted after the next save.
     trash: Vec<PathBuf>,
+    /// Files being copied into the overlay right now (copy_up).
+    copying: std::collections::HashSet<Ino>,
     /// Changed since the list of changes was last saved.
     dirty: bool,
     saved_at: Option<Instant>,
@@ -252,6 +254,11 @@ pub struct OverlayFs {
     /// One save at a time, so an older list is never written after a
     /// newer one.
     saving: Mutex<()>,
+    /// A copy into the overlay finished (copy_up).
+    copied: std::sync::Condvar,
+    /// The chat's files kept open between reads and writes (a build reads
+    /// and writes the same files many times).
+    handles: Mutex<HashMap<PathBuf, std::sync::Arc<fs::File>>>,
 }
 
 fn now() -> SystemTime {
@@ -286,9 +293,8 @@ fn io_err(e: io::Error) -> VfsError {
 }
 
 #[cfg(unix)]
-fn read_at(path: &Path, offset: u64, size: usize) -> io::Result<Vec<u8>> {
+fn read_at(file: &fs::File, offset: u64, size: usize) -> io::Result<Vec<u8>> {
     use std::os::unix::fs::FileExt;
-    let file = fs::File::open(path)?;
     let mut buf = vec![0; size];
     let mut done = 0;
     while done < size {
@@ -303,9 +309,8 @@ fn read_at(path: &Path, offset: u64, size: usize) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(windows)]
-fn read_at(path: &Path, offset: u64, size: usize) -> io::Result<Vec<u8>> {
+fn read_at(file: &fs::File, offset: u64, size: usize) -> io::Result<Vec<u8>> {
     use std::os::windows::fs::FileExt;
-    let file = fs::File::open(path)?;
     let mut buf = vec![0; size];
     let mut done = 0;
     while done < size {
@@ -320,15 +325,14 @@ fn read_at(path: &Path, offset: u64, size: usize) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(unix)]
-fn write_at(path: &Path, offset: u64, data: &[u8]) -> io::Result<()> {
+fn write_at(file: &fs::File, offset: u64, data: &[u8]) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
-    fs::OpenOptions::new().write(true).open(path)?.write_all_at(data, offset)
+    file.write_all_at(data, offset)
 }
 
 #[cfg(windows)]
-fn write_at(path: &Path, offset: u64, data: &[u8]) -> io::Result<()> {
+fn write_at(file: &fs::File, offset: u64, data: &[u8]) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
-    let file = fs::OpenOptions::new().write(true).open(path)?;
     let mut done = 0;
     while done < data.len() {
         done += file.seek_write(&data[done..], offset + done as u64)?;
@@ -363,11 +367,14 @@ impl OverlayFs {
                 warned: false,
                 deleted: HashMap::new(),
                 trash: Vec::new(),
+                copying: std::collections::HashSet::new(),
                 dirty: false,
                 saved_at: None,
             }),
             listener: Mutex::new(None),
             saving: Mutex::new(()),
+            copied: std::sync::Condvar::new(),
+            handles: Mutex::new(HashMap::new()),
             on_warn: Mutex::new(None),
         };
         nodes.insert(
@@ -427,6 +434,27 @@ impl OverlayFs {
                 _ => 0,
             })
             .sum()
+    }
+
+    /// One of the chat's files, open for reading and writing.
+    fn handle(&self, path: &Path) -> io::Result<std::sync::Arc<fs::File>> {
+        let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = handles.get(path) {
+            return Ok(f.clone());
+        }
+        // Few files at once in practice; past this, start over.
+        if handles.len() >= 256 {
+            handles.clear();
+        }
+        let f = std::sync::Arc::new(fs::OpenOptions::new().read(true).write(true).open(path)?);
+        handles.insert(path.to_path_buf(), f.clone());
+        Ok(f)
+    }
+
+    /// Closes the files kept open (before they're deleted, or the overlay
+    /// closes: Windows can't delete an open file).
+    pub fn close_handles(&self) {
+        self.handles.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -560,6 +588,11 @@ impl OverlayFs {
         ino
     }
 
+    /// Whether a folder's listing may be out of date.
+    fn stale(inner: &Inner, ino: Ino) -> bool {
+        inner.nodes.get(&ino).is_none_or(|n| n.listed_at.is_none_or(|t| t.elapsed() >= RELIST_AFTER))
+    }
+
     fn dir_node(inner: &Inner, ino: Ino) -> VfsResult<&Node> {
         let node = inner.nodes.get(&ino).ok_or(VfsError::NotFound)?;
         if !node.is_dir() {
@@ -680,38 +713,87 @@ impl OverlayFs {
     /// Makes a file the chat's own before it changes: its content copied
     /// into the overlay, and kept as it was for landing to merge against.
     /// `keep_content`: false when it's about to be emptied anyway.
-    fn copy_up(&self, inner: &mut Inner, ino: Ino, keep_content: bool) -> VfsResult<()> {
-        let node = inner.nodes.get(&ino).ok_or(VfsError::NotFound)?;
-        if node.kind != Kind::File {
-            return Err(VfsError::IsDir);
+    ///
+    /// The copies are made with the lock released (a large file takes a
+    /// while, and every other access to the chat's view would wait): the
+    /// node is marked as copying, and another writer of the same file waits
+    /// for it. Takes the lock and gives it back.
+    fn copy_up<'a>(
+        &'a self,
+        mut inner: std::sync::MutexGuard<'a, Inner>,
+        ino: Ino,
+        keep_content: bool,
+    ) -> VfsResult<std::sync::MutexGuard<'a, Inner>> {
+        loop {
+            let node = inner.nodes.get(&ino).ok_or(VfsError::NotFound)?;
+            if node.kind != Kind::File {
+                return Err(VfsError::IsDir);
+            }
+            if !matches!(node.data, Data::Base) {
+                return Ok(inner);
+            }
+            if !inner.copying.contains(&ino) {
+                break;
+            }
+            inner = self.copied.wait(inner).unwrap_or_else(|e| e.into_inner());
         }
-        if !matches!(node.data, Data::Base) {
-            return Ok(());
-        }
+        let node = &inner.nodes[&ino];
         let origin = node.origin.clone().unwrap_or_default();
         let by_product = node.by_product;
+        let src = self.abs(&origin);
+        // Over the limit before copying anything, not after.
+        let expected = if keep_content { fs::metadata(&src).map(|m| m.len()).unwrap_or(0) } else { 0 };
+        if !by_product && inner.used + expected > self.limit {
+            return Err(VfsError::NoSpace);
+        }
         let n = inner.next_file;
         inner.next_file += 1;
+        inner.copying.insert(ino);
+        drop(inner);
+
         let file = self.store.join("upper").join(n.to_string());
-        let src = self.abs(&origin);
-        let base_copy = if by_product {
-            None
-        } else {
-            let copy = self.store.join("base").join(n.to_string());
-            fs::copy(&src, &copy).map_err(io_err)?;
-            Some(copy)
+        let base = (!by_product).then(|| self.store.join("base").join(n.to_string()));
+        let copied = (|| -> io::Result<u64> {
+            if let Some(b) = &base {
+                fs::copy(&src, b)?;
+            }
+            if keep_content {
+                fs::copy(&src, &file)
+            } else {
+                fs::write(&file, b"").map(|_| 0)
+            }
+        })();
+
+        let mut inner = self.lock();
+        inner.copying.remove(&ino);
+        self.copied.notify_all();
+        let cleanup = || {
+            let _ = fs::remove_file(&file);
+            if let Some(b) = &base {
+                let _ = fs::remove_file(b);
+            }
         };
-        let size = if keep_content {
-            fs::copy(&src, &file).map_err(io_err)?
-        } else {
-            fs::write(&file, b"").map_err(io_err)?;
-            0
+        let size = match copied {
+            Ok(size) => size,
+            Err(e) => {
+                cleanup();
+                return Err(io_err(e));
+            }
         };
-        if !by_product {
-            self.charge(inner, size)?;
+        // Gone or changed while copying (deleted, renamed over): the copy
+        // isn't needed; the caller finds the node as it is now.
+        if !inner.nodes.get(&ino).is_some_and(|n| matches!(n.data, Data::Base)) {
+            cleanup();
+            return if inner.nodes.contains_key(&ino) { Ok(inner) } else { Err(VfsError::NotFound) };
         }
-        inner.nodes.get_mut(&ino).unwrap().data = Data::Upper { file, size, base_copy };
-        Ok(())
+        if !by_product {
+            if let Err(e) = self.charge(&mut inner, size) {
+                cleanup();
+                return Err(e);
+            }
+        }
+        inner.nodes.get_mut(&ino).unwrap().data = Data::Upper { file, size, base_copy: base };
+        Ok(inner)
     }
 
     /// Counts `more` bytes against the chat's limit, or refuses them.
@@ -877,6 +959,8 @@ impl OverlayFs {
         let mut seen = Vec::new();
         let mut touched = Vec::new();
         let mut kernel = Vec::new();
+        // Not found at its own place in the view: maybe the chat moved it.
+        let mut elsewhere: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for rel in rels {
             let (dir_path, name) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
             // Only what's already known: nothing is listed just for this.
@@ -892,6 +976,7 @@ impl OverlayFs {
                 }
             }
             if !known {
+                elsewhere.insert(rel);
                 continue;
             }
             let parent = ino;
@@ -910,6 +995,20 @@ impl OverlayFs {
                         seen.push(rel.clone());
                     }
                     Data::None => {}
+                }
+                if inner.nodes[&c].origin.as_deref() != Some(rel.as_str()) {
+                    elsewhere.insert(rel);
+                }
+            } else {
+                elsewhere.insert(rel);
+            }
+        }
+        // An untouched file the chat moved still shows the project's file:
+        // the kernel drops what it cached of it wherever it is now.
+        if !elsewhere.is_empty() {
+            for (ino, node) in &inner.nodes {
+                if node.data == Data::Base && node.origin.as_deref().is_some_and(|o| elsewhere.contains(o)) {
+                    kernel.push(Change::Data(*ino));
                 }
             }
         }
@@ -1110,7 +1209,9 @@ impl OverlayFs {
             .ok()
             .is_some_and(|bytes| crate::atomic_file::write_atomic(&self.store.join("manifest.json"), &bytes).is_ok());
         if saved {
+            let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
             for f in trash {
+                handles.remove(&f);
                 let _ = fs::remove_file(f);
             }
         } else {
@@ -1455,7 +1556,7 @@ impl Backend for OverlayFs {
         // Linked names share content the chat owns: the project's file can
         // change or go without taking the link's content with it.
         if inner.nodes[&ino].kind == Kind::File {
-            self.copy_up(&mut inner, ino, true)?;
+            inner = self.copy_up(inner, ino, true)?;
         }
         self.attach(&mut inner, new_parent, new_name, ino);
         // `attach` makes the newest name the first; keep the original first.
@@ -1480,28 +1581,34 @@ impl Backend for OverlayFs {
     fn read(&self, ino: Ino, offset: u64, size: usize) -> VfsResult<Vec<u8>> {
         let inner = self.lock();
         let node = inner.nodes.get(&ino).ok_or(VfsError::NotFound)?;
-        let path = match &node.data {
-            Data::Upper { file, .. } => file.clone(),
-            Data::Base => self.abs(node.origin.as_deref().unwrap_or("")),
+        let (path, own) = match &node.data {
+            Data::Upper { file, .. } => (file.clone(), true),
+            Data::Base => (self.abs(node.origin.as_deref().unwrap_or("")), false),
             Data::None => return Err(VfsError::IsDir),
         };
         drop(inner);
-        read_at(&path, offset, size).map_err(io_err)
+        // The project's files are opened afresh: they may be replaced.
+        let file = if own { self.handle(&path).map_err(io_err)? } else { std::sync::Arc::new(fs::File::open(&path).map_err(io_err)?) };
+        read_at(&file, offset, size).map_err(io_err)
     }
 
     fn write(&self, ino: Ino, offset: u64, data: &[u8]) -> VfsResult<usize> {
-        let mut inner = self.lock();
-        self.copy_up(&mut inner, ino, true)?;
+        let mut inner = self.copy_up(self.lock(), ino, true)?;
         let node = &inner.nodes[&ino];
         let (file, size) = match &node.data {
             Data::Upper { file, size, .. } => (file.clone(), *size),
             _ => return Err(VfsError::IsDir),
         };
         let end = offset + data.len() as u64;
-        if end > size && !node.by_product {
-            self.charge(&mut inner, end - size)?;
+        let grows = if end > size && !node.by_product { end - size } else { 0 };
+        if grows > 0 {
+            self.charge(&mut inner, grows)?;
         }
-        write_at(&file, offset, data).map_err(io_err)?;
+        if let Err(e) = self.handle(&file).and_then(|f| write_at(&f, offset, data)) {
+            // Nothing was added: the charge goes back.
+            inner.used = inner.used.saturating_sub(grows);
+            return Err(io_err(e));
+        }
         let node = inner.nodes.get_mut(&ino).unwrap();
         if let Data::Upper { size, .. } = &mut node.data {
             *size = (*size).max(end);
@@ -1515,7 +1622,7 @@ impl Backend for OverlayFs {
     fn setattr(&self, ino: Ino, set: &SetAttr) -> VfsResult<Attr> {
         let mut inner = self.lock();
         if let Some(new_size) = set.size {
-            self.copy_up(&mut inner, ino, new_size > 0)?;
+            inner = self.copy_up(inner, ino, new_size > 0)?;
             let node = &inner.nodes[&ino];
             if let Data::Upper { file, size, .. } = &node.data {
                 let (file, size, by_product) = (file.clone(), *size, node.by_product);
@@ -1568,13 +1675,18 @@ impl Backend for OverlayFs {
 
     fn dir_is_empty(&self, ino: Ino) -> VfsResult<bool> {
         let mut inner = self.lock();
-        self.load_dir(&mut inner, ino, true)?;
+        let stale = Self::stale(&inner, ino);
+        self.load_dir(&mut inner, ino, stale)?;
         Ok(inner.nodes[&ino].children.as_ref().is_none_or(|c| c.is_empty()))
     }
 
     fn readdir_plus(&self, ino: Ino) -> VfsResult<Vec<(DirEntry, Attr)>> {
         let mut inner = self.lock();
-        let changes = self.load_dir(&mut inner, ino, true)?;
+        // Listed again from the project only when it may have changed: the
+        // project's watcher marks folders it saw change (project_changed),
+        // and anything else is re-read after RELIST_AFTER.
+        let stale = Self::stale(&inner, ino);
+        let changes = self.load_dir(&mut inner, ino, stale)?;
         let children: Vec<(String, Ino)> =
             inner.nodes[&ino].children.as_ref().map(|c| c.iter().map(|(n, i)| (n.clone(), *i)).collect()).unwrap_or_default();
         let out = children

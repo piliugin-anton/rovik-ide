@@ -61,6 +61,7 @@ pub struct Conflict {
 }
 
 /// What landing would do: the changes, merged; conflicts if any.
+#[derive(Clone)]
 pub struct Plan {
     actions: Vec<Action>,
     pub conflicts: Vec<Conflict>,
@@ -69,7 +70,7 @@ pub struct Plan {
     pub merged: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Action {
     path: String,
     new: NewContent,
@@ -80,7 +81,7 @@ struct Action {
     merged: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum NewContent {
     Absent,
     Dir,

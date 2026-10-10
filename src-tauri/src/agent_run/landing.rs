@@ -49,12 +49,20 @@ impl<R: Runtime> Run<R> {
             return None;
         }
         let overlay = chats::get(&self.dialog_id)?;
-        overlay.fs.flush();
         if LANDS_AFTER.contains(&outcome) {
             self.wait_while_project_busy().await;
         }
         let dialog_id = self.dialog_id.clone();
-        let changes = chats::changes(&dialog_id);
+        // Reading and merging files: off the async threads.
+        let (changes, marked) = {
+            let (o, id) = (overlay.clone(), dialog_id.clone());
+            tauri::async_runtime::spawn_blocking(move || {
+                o.fs.flush();
+                (chats::changes(&id), chats::markers_left(&id))
+            })
+            .await
+            .unwrap_or_default()
+        };
         if changes.is_empty() {
             chats::set_pending(&dialog_id, None);
             return None;
@@ -74,7 +82,6 @@ impl<R: Runtime> Run<R> {
             return Some(("waits: run didn't finish", count));
         }
 
-        let marked = chats::markers_left(&dialog_id);
         if !marked.is_empty() {
             let list = marked.join(", ");
             chats::set_pending(
@@ -85,7 +92,10 @@ impl<R: Runtime> Run<R> {
             return Some(("waits: markers left", count));
         }
 
-        let plan = land::plan(&overlay.project, &changes, false);
+        let plan = {
+            let project = overlay.project.clone();
+            tauri::async_runtime::spawn_blocking(move || land::plan(&project, &changes, false)).await.ok()?
+        };
         if !plan.conflicts.is_empty() {
             let n = plan.conflicts.len();
             chats::set_pending(
@@ -178,7 +188,11 @@ impl<R: Runtime> Run<R> {
         }
         // Into the chat's files, merged against the project as it is now:
         // what's checked is what lands.
-        if let Err(e) = chats::take_merged(&self.dialog_id, plan) {
+        let taken = {
+            let (id, files) = (self.dialog_id.clone(), plan.clone());
+            tauri::async_runtime::spawn_blocking(move || chats::take_merged(&id, &files)).await.map_err(|e| e.to_string())
+        };
+        if let Err(e) = taken.and_then(|r| r) {
             return Some(format!("(writing the merged files: {e})"));
         }
         for check in super::project::ordered_checks(&checks.into_iter().cloned().collect::<Vec<_>>()) {
@@ -219,13 +233,18 @@ impl<R: Runtime> Run<R> {
         }
         let Some(overlay) = chats::get(&self.dialog_id) else { return Ok(None) };
         self.wait_while_project_busy().await;
-        overlay.fs.flush();
-        let plan = land::plan(&overlay.project, &chats::changes(&self.dialog_id), false);
-        // Conflicts are the user's (or, if they say so, the chat's) to settle.
-        if !plan.merged || !plan.conflicts.is_empty() {
-            return Ok(None);
-        }
-        let files = chats::take_merged(&self.dialog_id, &plan)?;
+        let (o, id) = (overlay.clone(), self.dialog_id.clone());
+        let files = tauri::async_runtime::spawn_blocking(move || {
+            o.fs.flush();
+            let plan = land::plan(&o.project, &chats::changes(&id), false);
+            // Conflicts are the user's (or the chat's, if it's handed them).
+            if !plan.merged || !plan.conflicts.is_empty() {
+                return Ok(Vec::new());
+            }
+            chats::take_merged(&id, &plan)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         if files.is_empty() {
             return Ok(None);
         }

@@ -682,7 +682,15 @@ async fn run<R: Runtime>(
                 Ok(edit) => edit,
                 Err(e) => return Ok(ToolResult::text(e)),
             };
-            let outcome = apply_edit(root, &edit, false, Some(seen))?;
+            // Off the async threads: a write may wait for a landing's locks.
+            let (root_s, seen_arc) = (root.to_string(), ctx.seen.clone());
+            let (edit, outcome) = tauri::async_runtime::spawn_blocking(move || {
+                let outcome = apply_edit(&root_s, &edit, false, Some(&seen_arc));
+                (edit, outcome)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            let outcome = outcome?;
             return Ok(ToolResult { content: outcome.summary, attachments: Vec::new(), written: Some((edit.path, outcome.content)) });
         }
         "read" => {
@@ -705,7 +713,10 @@ async fn run<R: Runtime>(
             let Some(content) = text(args, "content") else {
                 return Ok(ToolResult::text("Error: \"content\" is required."));
             };
-            crate::agent_tools::write_file(root, path, content, Some(seen))?
+            let (root_s, path, content, seen_arc) = (root.to_string(), path.to_string(), content.to_string(), ctx.seen.clone());
+            tauri::async_runtime::spawn_blocking(move || crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc)))
+                .await
+                .map_err(|e| e.to_string())??
         }
         "bash" => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {

@@ -128,10 +128,13 @@ fn files_appearing_in_the_project_show_up_unless_the_chat_removed_them() {
     o.readdir_plus(ROOT).unwrap();
     o.unlink(ROOT, "a.txt").unwrap();
     fs::write(d.project().join("later.txt"), "l").unwrap();
+    // What the project's watcher (or a landing) tells the overlay.
+    o.project_changed(&["later.txt".to_string()]);
     let names: Vec<String> = o.readdir_plus(ROOT).unwrap().into_iter().map(|(e, _)| e.name).collect();
     assert_eq!(names, vec!["later.txt"]);
     // Untouched entries that leave the project leave the view too.
     fs::remove_file(d.project().join("later.txt")).unwrap();
+    o.project_changed(&["later.txt".to_string()]);
     assert!(o.readdir_plus(ROOT).unwrap().is_empty());
 }
 

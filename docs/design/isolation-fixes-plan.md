@@ -554,3 +554,13 @@ and 4 for a while.
   ("Isolated chats → Conflicts"), on by default. A chat that says it's
   done with markers still in its files is reminded twice at most; after
   that the run ends and the changes wait (markers left) as before.
+- **Phase 5 (done).** As planned, except:
+  - Locking stays one lock per chat's view, but the slow part (copying a
+    file in on its first write) now runs without it.
+  - Base copies don't count toward the limit (the settings text is as
+    before); a move out of a build folder still isn't checked against it.
+  - The sampler builds command lines for every process still; with the
+    slower tick when only the terminal is watched, that's cheap enough.
+  - Measured through a chat's mount (debug build, this repository):
+    `grep -r` 71 ms (was 94; 9 directly), `find` 17 ms (was 30; 3
+    directly), `git status` 174 ms (unchanged; 6 directly).
