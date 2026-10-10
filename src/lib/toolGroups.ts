@@ -179,8 +179,8 @@ export function describeGroup(
   name: string,
   argsList: Args[],
   active: boolean,
-  /** The project's folder, to name folders inside it relative to it. */
-  root?: string | null
+  /** Each call's stored result facts, where it has finished. */
+  results: ({ dir?: string } | undefined)[] = []
 ): GroupLabel {
   const verb = (running: string, done: string) => (active ? running : done);
   switch (name) {
@@ -211,8 +211,8 @@ export function describeGroup(
     case 'list_dir':
       return label(
         verb('Listing', 'Listed'),
-        argsList.map((a) => {
-          const dir = dirName(str(a.path), root);
+        argsList.map((a, i) => {
+          const dir = dirName(str(a.path), results[i]?.dir);
           return { text: short(dir), title: dir };
         })
       );

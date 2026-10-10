@@ -140,29 +140,16 @@ describe('list_dir', () => {
     );
   });
 
-  it('names folders in the project relative to it, Windows paths too', () => {
-    const items = (root, paths) =>
-      describeGroup(
-        'list_dir',
-        paths.map((path) => ({ path })),
-        false,
-        root
-      ).items.map((i) => i.text);
-    assert.deepEqual(items('/home/me/proj', ['/home/me/proj', '/home/me/proj/src/', '/etc']), [
-      'project root',
-      'src',
-      '/etc',
-    ]);
+  it('names the folder the backend listed, once it has', () => {
+    const listed = describeGroup(
+      'list_dir',
+      [{ path: 'C:\\Proj' }, { path: '/home/me/proj/src/' }, { path: 'D:\\other\\' }],
+      false,
+      [{ dir: '' }, { dir: 'src' }, undefined]
+    );
     assert.deepEqual(
-      items('C:\\Users\\Me\\Proj', [
-        'c:\\users\\me\\proj\\',
-        'C:/Users/Me/Proj',
-        '.\\',
-        'C:\\Users\\Me\\Proj\\src\\lib',
-        '.\\src\\lib\\',
-        'D:\\other',
-      ]),
-      ['project root', 'src\\lib', 'D:\\other']
+      listed.items.map((i) => i.text),
+      ['project root', 'src', 'D:\\other']
     );
   });
 });

@@ -629,6 +629,9 @@ impl<R: Runtime> Run<R> {
         }
 
         let mut meta = tools::result_meta(&tc.name, &result.content);
+        if let Some(extra) = result.meta {
+            meta.get_or_insert_with(Map::new).extend(extra);
+        }
         if let Some(approval) = auth.approval {
             meta.get_or_insert_with(Map::new).insert("approval".into(), approval);
         }
