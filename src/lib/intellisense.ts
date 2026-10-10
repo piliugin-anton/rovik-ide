@@ -13,6 +13,9 @@
 //   - compiler options follow the project's tsconfig/jsconfig (baseUrl,
 //     paths, jsx), with extends and references followed (lib/tsconfig.ts),
 //     and JavaScript is understood too (allowJs);
+//   - global @types (process, Buffer... from @types/node) are only given
+//     to the worker when the config owning the active file allows them
+//     (its `types`), as tsc does; see "Global @types" below;
 //   - go-to-definition into another file opens it in a tab at that line
 //     (Monaco can't open other files by itself: registerEditorOpener).
 //
@@ -27,7 +30,14 @@ import * as monaco from 'monaco-editor';
 import { invoke } from '@tauri-apps/api/core';
 import type { MonacoLibEntry } from '../types';
 import { readDirEntries, readFileContent } from './commands';
-import { resolveTsOptions, type ResolvedTsOptions } from './tsconfig';
+import {
+  projectFor,
+  resolveTsProjects,
+  typeReferences,
+  visibleTypes,
+  type ResolvedTsOptions,
+  type TsProject,
+} from './tsconfig';
 import { requestOpenFile } from './editorBridge';
 
 const ts = monaco.typescript.typescriptDefaults;
@@ -202,13 +212,26 @@ export function sanitizeExtraLibs(libs: ExtraLibInput[]): { filePath: string; co
   return [...byPath].map(([filePath, content]) => ({ filePath, content }));
 }
 
-/** One sanitized send to both TS and JS defaults. */
+/**
+ * One sanitized send to both TS and JS defaults. `libs` is the complete
+ * set; @types packages the active file's config doesn't allow are held
+ * back here (heldLibs) instead of sent, see "Global @types".
+ */
 function safeSetExtraLibs(libs: ExtraLibInput[]): void {
   let all: { filePath: string; content: string }[];
   try {
     all = sanitizeExtraLibs(libs);
   } catch {
     return;
+  }
+  heldLibs.clear();
+  if (hiddenTypes.size > 0) {
+    all = all.filter(({ filePath, content }) => {
+      const pkg = typesPackageOf(filePath);
+      if (pkg === null || !hiddenTypes.has(pkg)) return true;
+      heldLibs.set(filePath, content);
+      return false;
+    });
   }
   for (const [, defaults] of [
     ['ts', ts],
@@ -265,8 +288,10 @@ async function load(root: string) {
     ]);
     if (root !== loadedRoot) return; // another project was opened meanwhile
 
-    ts.setCompilerOptions(sanitizeCompilerOptions(options));
-    js.setCompilerOptions(sanitizeCompilerOptions(options));
+    ts.setCompilerOptions(sanitizeCompilerOptions(options.compilerOptions));
+    js.setCompilerOptions(sanitizeCompilerOptions(options.compilerOptions));
+    tsProjects = options.projects;
+    typesDefaultAll = options.typesDefaultAll;
     // One call each: adding thousands of files one by one would resync the
     // worker every time. Typings (node_modules .d.ts) are never opened as
     // models, so they all go in; project sources skip URIs that already have
@@ -280,6 +305,8 @@ async function load(root: string) {
     const typingLibs = sanitizeExtraLibs(
       typings.map((t) => ({ filePath: libUriFor(root, t.name), content: t.content }))
     );
+    indexTypes(typingLibs);
+    hiddenTypes = hiddenTypesFor(activeFile);
     const libs = [
       ...typingLibs,
       ...sources.files
@@ -368,10 +395,12 @@ async function runTypingsRefresh(root: string): Promise<void> {
     // models itself, so never add an extra-lib copy of one.
     const have = liveModelUris();
     const addable = fresh.filter((l) => !have.has(l.filePath));
-    const next = new Map(Object.entries(ts.getExtraLibs()).map(([uri, lib]) => [uri, lib.content]));
+    const next = new Map(Object.entries(allLibs()).map(([uri, lib]) => [uri, lib.content]));
     for (const uri of typingsUris) next.delete(uri);
     for (const { filePath, content } of addable) next.set(filePath, content);
     typingsUris = new Set(addable.map((l) => l.filePath));
+    indexTypes(addable);
+    hiddenTypes = hiddenTypesFor(activeFile);
     safeSetExtraLibs([...next].map(([filePath, content]) => ({ filePath, content })));
   } finally {
     typingsInFlight = false;
@@ -442,7 +471,7 @@ async function flush() {
     })
   );
   if (root !== loadedRoot || stale) return;
-  const libs = ts.getExtraLibs();
+  const libs = allLibs();
   const changed = read.filter(([uri, text]) => (libs[uri]?.content ?? '') !== text);
   const next = new Map(Object.entries(libs).map(([uri, lib]) => [uri, lib.content]));
   for (const [uri, text] of changed) next.set(uri, text);
@@ -489,7 +518,7 @@ function liveModelUris(): Set<string> {
  */
 export function dropProjectSourceLib(filePath: string): void {
   const uri = modelUriFor(filePath).toString();
-  const libs = ts.getExtraLibs();
+  const libs = allLibs();
   if (!(uri in libs)) return;
   const all = sanitizeExtraLibs(
     Object.entries(libs)
@@ -510,7 +539,7 @@ export function restoreProjectSourceLibs(models: monaco.editor.ITextModel[]): vo
   const root = loadedRoot;
   if (!root) return;
   const rootPath = modelUriFor(root).path.replace(/\/+$/, '');
-  const libs = ts.getExtraLibs();
+  const libs = allLibs();
   const added = models
     .filter((m) => !m.isDisposed() && m.uri.scheme === 'file')
     .filter((m) => m.uri.path.startsWith(`${rootPath}/`) && isProjectSource(m.uri.path))
@@ -570,13 +599,20 @@ function sanitizeCompilerOptions(
  * The options the project's configs set that matter for navigation —
  * tsconfig.json with its `extends` and `references` followed, so a solution
  * config pointing at tsconfig.app.json / tsconfig.node.json works (see
- * lib/tsconfig.ts).
+ * lib/tsconfig.ts) — and the configs themselves, for "Global @types".
  */
-async function projectCompilerOptions(root: string): Promise<monaco.typescript.CompilerOptions> {
+async function projectCompilerOptions(root: string): Promise<{
+  compilerOptions: monaco.typescript.CompilerOptions;
+  projects: TsProject[];
+  typesDefaultAll: boolean;
+}> {
   const options = { ...BASE_OPTIONS };
-  const resolved = await resolveTsOptions(root, readFileContent, async (dir) =>
-    (await readDirEntries(root, dir)).filter((e) => !e.is_dir).map((e) => e.name)
-  ).catch(() => ({}) as ResolvedTsOptions);
+  const [{ options: resolved, projects }, typesDefaultAll] = await Promise.all([
+    resolveTsProjects(root, readFileContent, async (dir) =>
+      (await readDirEntries(root, dir)).filter((e) => !e.is_dir).map((e) => e.name)
+    ).catch(() => ({ options: {} as ResolvedTsOptions, projects: [] as TsProject[] })),
+    typesDefaultToAll(root),
+  ]);
   if (resolved.baseUrl) options.baseUrl = modelUriFor(resolved.baseUrl).toString();
   if (resolved.paths && Object.keys(resolved.paths).length > 0) {
     // Substitutions are absolute, so mappings from configs in different
@@ -588,7 +624,24 @@ async function projectCompilerOptions(root: string): Promise<monaco.typescript.C
   }
   if (resolved.jsx && JSX[resolved.jsx] !== undefined) options.jsx = JSX[resolved.jsx];
   if (resolved.jsxImportSource) options.jsxImportSource = resolved.jsxImportSource;
-  return options;
+  return { compilerOptions: options, projects, typesDefaultAll };
+}
+
+/**
+ * Whether an unset `types` means every @types package: true before
+ * TypeScript 6, which made it mean none. Follows the project's installed
+ * compiler; without one, the editor's own (5.x).
+ */
+async function typesDefaultToAll(root: string): Promise<boolean> {
+  try {
+    const pkg = JSON.parse(
+      await readFileContent(`${root.replace(/[\\/]+$/, '')}/node_modules/typescript/package.json`)
+    ) as { version?: unknown };
+    const major = parseInt(String(pkg.version), 10);
+    return !(major >= 6);
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -601,6 +654,124 @@ function pathUriFor(path: string): string {
   if (star < 0) return modelUriFor(path).toString();
   const slash = path.lastIndexOf('/', star);
   return modelUriFor(path.slice(0, Math.max(slash, 0))).toString() + path.slice(Math.max(slash, 0));
+}
+
+/* ---------------------------------------------------------------------------
+ * Global @types
+ *
+ * The worker has one program, and every extra lib is a root file of it
+ * (tsWorker getScriptFileNames), so each @types package in node_modules
+ * would declare its globals for every file: `process` typed in browser code
+ * because @types/node is installed for vite.config.ts. tsc only includes
+ * the @types a config's `types` names (all of them when unset, before TS 6).
+ *
+ * So the active file's owning config decides: @types packages it doesn't
+ * allow are held back from the worker (heldLibs) and sent again when a file
+ * whose config allows them becomes active. The swap resyncs the worker, so
+ * it only happens when the allowed set actually changes — switching between
+ * two app files costs nothing. Every read-modify-write of the libs goes
+ * through allLibs(), which includes the held ones, so nothing is lost.
+ *
+ * Markers of other open files are computed under the active file's types
+ * meanwhile; typesScopeCovers() tells the diagnostics reporter which of
+ * them to trust (lib/diagnostics.ts).
+ * ------------------------------------------------------------------------- */
+
+let tsProjects: TsProject[] = [];
+let typesDefaultAll = true;
+let activeFile: string | null = null;
+/** @types package names currently held back from the worker. */
+let hiddenTypes = new Set<string>();
+/** Their libs, by URI. */
+const heldLibs = new Map<string, string>();
+/** Every @types package in the typings, with the `types` it references. */
+let typesIndex = new Map<string, string[]>();
+
+const TYPES_PACKAGE = /\/node_modules\/@types\/([^/]+)\//;
+
+function typesPackageOf(uri: string): string | null {
+  return TYPES_PACKAGE.exec(uri)?.[1] ?? null;
+}
+
+/** The complete lib set: what the worker has plus what is held back. */
+function allLibs(): Record<string, { content: string }> {
+  const out: Record<string, { content: string }> = { ...ts.getExtraLibs() };
+  for (const [uri, content] of heldLibs) out[uri] ??= { content };
+  return out;
+}
+
+function indexTypes(typings: { filePath: string; content: string }[]): void {
+  const index = new Map<string, string[]>();
+  for (const { filePath, content } of typings) {
+    const pkg = typesPackageOf(filePath);
+    if (pkg === null) continue;
+    const refs = index.get(pkg) ?? [];
+    if (filePath.endsWith('.d.ts')) refs.push(...typeReferences(content));
+    index.set(pkg, refs);
+  }
+  typesIndex = index;
+}
+
+/** The @types packages a file's config doesn't let it see. */
+function hiddenTypesFor(path: string | null): Set<string> {
+  if (!path || typesIndex.size === 0) return new Set();
+  const owner = projectFor(tsProjects, path.replace(/\\/g, '/'));
+  const visible = visibleTypes(owner?.types, typesDefaultAll, (pkg) => typesIndex.get(pkg) ?? []);
+  if (visible === 'all') return new Set();
+  return new Set([...typesIndex.keys()].filter((pkg) => !visible.has(pkg)));
+}
+
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  return a.size === b.size && [...a].every((x) => b.has(x));
+}
+
+/**
+ * The file shown in the editor: its config's @types become the worker's.
+ * Cheap when the allowed set doesn't change.
+ */
+export function setActiveTypesFile(path: string | null, force = false): void {
+  // Other files (Markdown, Rust...) don't use the worker: keep the scope.
+  if (path !== null && !SOURCE_FILE.test(path)) return;
+  activeFile = path;
+  if (!loadedRoot || !readyRoots.has(loadedRoot)) return; // load() applies it
+  const next = hiddenTypesFor(path);
+  if (!force && sameSet(next, hiddenTypes)) return;
+  hiddenTypes = next;
+  safeSetExtraLibs(
+    Object.entries(allLibs()).map(([filePath, lib]) => ({ filePath, content: lib.content }))
+  );
+}
+
+/**
+ * Whether the worker's current markers for `path` are computed with the
+ * @types its own config allows (false while another config's file is
+ * active and the two allow different ones).
+ */
+export function typesScopeCovers(path: string): boolean {
+  return sameSet(hiddenTypesFor(path), hiddenTypes);
+}
+
+const TS_CONFIG_FILE = /[\\/](tsconfig|jsconfig)(\.[^\\/]*)?\.json$/i;
+let configTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * A tsconfig/jsconfig changed on disk: re-read the configs (compiler
+ * options, which config owns which file, their `types`) once writes settle.
+ */
+export function notifyTsConfigMaybeChanged(path: string): void {
+  const root = loadedRoot;
+  if (!root || !TS_CONFIG_FILE.test(path) || !path.startsWith(root)) return;
+  if (!readyRoots.has(root)) return; // the running load reads them anyway
+  clearTimeout(configTimer);
+  configTimer = setTimeout(async () => {
+    const options = await projectCompilerOptions(root);
+    if (root !== loadedRoot) return;
+    ts.setCompilerOptions(sanitizeCompilerOptions(options.compilerOptions));
+    js.setCompilerOptions(sanitizeCompilerOptions(options.compilerOptions));
+    tsProjects = options.projects;
+    typesDefaultAll = options.typesDefaultAll;
+    setActiveTypesFile(activeFile, true);
+  }, QUIET_MS);
 }
 
 /* ---------------------------------------------------------------------------
@@ -639,6 +810,8 @@ monaco.editor.registerEditorOpener({
 
 interface IntellisenseDiag {
   loadedRoot: string | null;
+  /** @types packages held back for the active file's config. */
+  hiddenTypes: string[];
   extraLibs: number;
   extraLibSample: string[];
   /** Prototype of what getExtraLibs() returns (what is posted to the worker). */
@@ -678,6 +851,7 @@ async function intellisenseDiag(): Promise<IntellisenseDiag> {
   });
   const diag: IntellisenseDiag = {
     loadedRoot,
+    hiddenTypes: [...hiddenTypes],
     extraLibs: keys.length,
     extraLibSample: keys.slice(0, 5),
     extraLibsProto:
