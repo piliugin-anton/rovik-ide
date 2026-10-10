@@ -356,6 +356,7 @@ pub struct StartRequest {
 
 #[tauri::command]
 pub fn agent_configure(state: State<'_, AgentState>, config: AgentConfig) {
+    crate::overlay::chats::set_chat_resolves(config.permissions.chat_resolves_conflicts);
     state.set_config(config);
 }
 

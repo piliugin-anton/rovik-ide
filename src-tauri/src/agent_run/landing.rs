@@ -240,6 +240,30 @@ impl<R: Runtime> Run<R> {
         Ok(Some(outcome))
     }
 
+    /// The model says it's done, but conflict markers handed to it are
+    /// still in its files: it's told, twice at most. True: it was told.
+    pub(super) async fn remind_of_markers(&mut self) -> Result<bool, String> {
+        if self.root == self.project_root || self.plan_mode || self.marker_reminders >= 2 {
+            return Ok(false);
+        }
+        let id = self.dialog_id.clone();
+        let left = tauri::async_runtime::spawn_blocking(move || chats::markers_left(&id)).await.unwrap_or_default();
+        if left.is_empty() {
+            return Ok(false);
+        }
+        self.marker_reminders += 1;
+        self.add_harness(
+            format!(
+                "{}Conflict markers are still in {}. Your changes can't land until every marker is gone: combine both sides in each conflict, then finish.",
+                super::run::IDE_NOTE,
+                left.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")
+            ),
+            "markers",
+        )
+        .await?;
+        Ok(true)
+    }
+
     /// Waits while many files change in the project at once (a branch
     /// switch, a pull): the chat's view would show a half-switched project.
     /// Says so, once, if it has to wait.

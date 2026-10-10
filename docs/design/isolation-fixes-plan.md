@@ -550,3 +550,7 @@ and 4 for a while.
   changed, with the same merge landing uses; both models are told once,
   and the bars show the other chat by its title. The status the bar polls
   reads the last comparison; it doesn't compare again.
+- **Phase 4 (done).** The setting is in Settings → Permissions & Approval
+  ("Isolated chats → Conflicts"), on by default. A chat that says it's
+  done with markers still in its files is reminded twice at most; after
+  that the run ends and the changes wait (markers left) as before.

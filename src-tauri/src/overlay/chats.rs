@@ -317,7 +317,42 @@ static NOTES: LazyLock<Mutex<HashMap<String, Notes>>> = LazyLock::new(|| Mutex::
 struct Notes {
     changed: std::collections::BTreeSet<String>,
     conflicts: std::collections::BTreeSet<String>,
+    /// Conflicts handed to the chat: markers in these files.
+    marked: std::collections::BTreeSet<String>,
     many: bool,
+}
+
+/// Chats with a run going: a conflict found for one goes to it.
+static RUNNING: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Default::default);
+/// Whether running chats resolve their conflicts (the user's setting).
+static CHAT_RESOLVES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_running(dialog_id: &str, running: bool) {
+    let mut set = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    if running {
+        set.insert(dialog_id.to_string());
+    } else {
+        set.remove(dialog_id);
+    }
+}
+
+pub fn set_chat_resolves(on: bool) {
+    CHAT_RESOLVES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A conflict found for a running chat goes to it: markers in its files,
+/// and a note with its next tool result. Returns the files marked.
+fn hand_to_running_chat(dialog_id: &str) -> Vec<String> {
+    let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).contains(dialog_id);
+    if !running || !CHAT_RESOLVES.load(std::sync::atomic::Ordering::Relaxed) {
+        return Vec::new();
+    }
+    let marked = mark_conflicts(dialog_id).unwrap_or_default();
+    if !marked.is_empty() {
+        let mut notes = NOTES.lock().unwrap_or_else(|e| e.into_inner());
+        notes.entry(dialog_id.to_string()).or_default().marked.extend(marked.iter().cloned());
+    }
+    marked
 }
 
 /// More files than this in one go is "many files changed" (a branch
@@ -375,7 +410,16 @@ pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec
                     .collect(),
             };
             set_pending(&id, Some(&pending));
-            conflicts_found.extend(conflicts.into_iter().map(|p| (id.clone(), p)));
+            // A running chat takes its conflicts itself (unless the user
+            // said to ask them); the rest are the user's.
+            let marked = hand_to_running_chat(&id);
+            if !marked.is_empty() {
+                let mut notes = NOTES.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(n) = notes.get_mut(&id) {
+                    n.conflicts.retain(|p| !marked.contains(p));
+                }
+            }
+            conflicts_found.extend(conflicts.into_iter().filter(|p| !marked.contains(p)).map(|p| (id.clone(), p)));
         }
     }
     conflicts_found
@@ -495,6 +539,10 @@ pub fn take_note(dialog_id: &str) -> Option<String> {
         parts.push(format!(
             "Also changed in the project, on lines you changed too: {list}. Your version won't land without the user deciding; say so in your summary."
         ));
+    }
+    if !notes.marked.is_empty() {
+        let files: Vec<String> = notes.marked.iter().cloned().collect();
+        parts.push(resolve_request(&files).replace("\n\n", " "));
     }
     if let Some(peer) = fresh_peer_note(dialog_id) {
         parts.push(peer);

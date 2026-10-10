@@ -380,6 +380,27 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
         </p>
       </section>
 
+      {/* Isolated chats */}
+      <section class="settings-section">
+        <div class="settings-section-title">Isolated chats</div>
+        <SettingRow label="Conflicts">
+          <select
+            class="settings-select"
+            value={p().chatResolvesConflicts ? 'chat' : 'me'}
+            onChange={(e) => patch({ chatResolvesConflicts: e.currentTarget.value === 'chat' })}
+          >
+            <option value="chat">The running chat resolves them</option>
+            <option value="me">Ask me</option>
+          </select>
+        </SettingRow>
+        <p class="settings-hint">
+          When a chat’s changes conflict with the project’s while it’s still running (another chat
+          landed, or you edited the same lines), the chat gets conflict markers in its files and
+          combines both changes before it finishes. Ask me: the conflicts wait above the message box
+          for you to resolve. A chat that isn’t running always waits for you.
+        </p>
+      </section>
+
       {/* AI reviewer: only when something is approved by AI */}
       <Show when={usesAiReview(p())}>
         <section class="settings-section">

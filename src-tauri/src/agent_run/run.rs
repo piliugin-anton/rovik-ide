@@ -49,7 +49,7 @@ const SHORT_REQUEST_CHARS: usize = 80;
 pub(super) const RESUME_NOTE: &str =
     "Interrupted: the app was closed before this ran. Allow it to continue the task.";
 
-const IDE_NOTE: &str = "[Automatic check by the IDE, not written by the user]\n";
+pub(super) const IDE_NOTE: &str = "[Automatic check by the IDE, not written by the user]\n";
 /// End-of-run checklist reminders before the run ends as unfinished-checklist.
 const MAX_CHECKLIST_NUDGES: u32 = 2;
 /// Context percent at and above which a finished checklist step asks for a
@@ -99,6 +99,8 @@ pub struct Run<R: Runtime> {
     /// Files the project's newer changes were just merged into, for the
     /// failure report of the checks that follow (landing.rs).
     pub(super) merged_from_project: Option<Vec<(String, String)>>,
+    /// Times the model was reminded of conflict markers it left.
+    pub(super) marker_reminders: u32,
     /// What this run has read and written of each file, so a whole-file
     /// write over a change it hasn't seen is refused (file_guard.rs).
     pub(super) seen: Arc<crate::file_guard::Seen>,
@@ -556,6 +558,7 @@ impl<R: Runtime> Run<R> {
             root,
             project_root,
             merged_from_project: None,
+            marker_reminders: 0,
             landed: false,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
@@ -617,7 +620,11 @@ impl<R: Runtime> Run<R> {
 
     /// Runs to the end and returns how it ended (for the log and the UI).
     pub(super) async fn go(&mut self, entry: Entry) -> String {
-        let outcome = match self.drive(entry).await {
+        // While it runs, conflicts found for this chat go to it.
+        crate::overlay::chats::set_running(&self.dialog_id, true);
+        let outcome = self.drive(entry).await;
+        crate::overlay::chats::set_running(&self.dialog_id, false);
+        let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(e) => {
                 eprintln!("agent: run in {} failed: {e}", self.dialog_id);
@@ -756,6 +763,10 @@ impl<R: Runtime> Run<R> {
                         continue;
                     }
                 } else if self.check_checklist().await? {
+                    continue;
+                }
+                // Conflicts handed to it: not done while their markers are left.
+                if self.remind_of_markers().await? {
                     continue;
                 }
                 let outcome = self.verify_at_end(false, None).await?;

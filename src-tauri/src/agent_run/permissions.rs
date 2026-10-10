@@ -57,6 +57,9 @@ pub struct Permissions {
     pub verify_changes: bool,
     /// When the agent must keep a checklist (the `todo` tool, Agent mode).
     pub checklist: ChecklistMode,
+    /// An isolated chat that's still running resolves conflicts with the
+    /// project itself (markers in its files); off: they wait for the user.
+    pub chat_resolves_conflicts: bool,
 }
 
 /// When the agent must keep a checklist.
@@ -109,6 +112,7 @@ impl Default for Permissions {
             tool_call_checkpoint: Some(DEFAULT_TOOL_CALL_CHECKPOINT),
             verify_changes: true,
             checklist: ChecklistMode::Auto,
+            chat_resolves_conflicts: true,
         }
     }
 }

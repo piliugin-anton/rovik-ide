@@ -670,6 +670,44 @@ async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
     assert_eq!(h.file("a.txt").as_deref(), Some("chat\n2\n3\n4\nGOOD\n"));
 }
 
+/// A conflict found while the chat runs goes to it: markers in its file and
+/// a note; it combines both changes and they land. Needs FUSE:
+/// cargo test -- --ignored.
+#[tokio::test]
+#[ignore]
+async fn a_running_chat_resolves_its_own_conflict() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    crate::overlay::chats::set_chat_resolves(true);
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "old_text": "one", "content": "chat" }) },
+        // Time for the user to edit the same line in the project.
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sleep 1" }) },
+        Reply::Call { id: "r1", name: "read", args: json!({ "path": "a.txt" }) },
+        Reply::Call { id: "w2", name: "write", args: json!({ "path": "a.txt", "content": "user and chat\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Edit"), Permissions { allow_any_command: true, ..quiet_permissions() });
+    request.isolate = Some(true);
+    h.start(request).await;
+    for _ in 0..200 {
+        if crate::overlay::chats::changes(&h.dialog_id).iter().any(|c| c.path() == "a.txt") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    std::fs::write(h.project.join("a.txt"), "user\n").unwrap();
+    // What the project's watcher does when the file changes.
+    crate::overlay::chats::project_changed(&h.project, &[h.project.join("a.txt")], false);
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let b1 = &result_of(&messages, "b1").content;
+    assert!(b1.contains("conflict markers"), "the chat was told: {b1}");
+    assert!(result_of(&messages, "r1").content.contains("<<<<<<< project (now)"));
+    assert_eq!(h.file("a.txt").as_deref(), Some("user and chat\n"), "landed once resolved");
+}
+
 /// While many files change in the project (a branch switch), an isolated
 /// run waits before its next step. Needs FUSE: cargo test -- --ignored.
 #[tokio::test]
