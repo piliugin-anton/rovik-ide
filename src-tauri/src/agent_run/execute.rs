@@ -920,10 +920,14 @@ impl<R: Runtime> Run<R> {
             return Ok(auth);
         };
         let abs = std::path::Path::new(&reviewed.abs_path);
-        let Ok(now) = std::fs::read_to_string(abs) else {
+        let Ok(now) = std::fs::read(abs) else {
             // Gone or unreadable: the write recreates it, as approved.
             return Ok(auth);
         };
+        // It was text when reviewed and isn't UTF-8 now (re-encoded, or
+        // made binary): nothing to merge into, and writing over it would
+        // lose that change. Another review.
+        let Ok(now) = String::from_utf8(now) else { return Err(auth) };
         if now == reviewed.current {
             self.seen.record(abs, now.as_bytes());
             return Ok(auth);

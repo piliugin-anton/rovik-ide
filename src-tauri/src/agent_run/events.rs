@@ -168,12 +168,14 @@ pub enum AgentEvent {
     },
     /// Answered, or dropped (Stop).
     ApprovalSettled {
+        dialog_id: String,
         tool_call_id: String,
     },
     QuestionsAsked {
         request: QuestionsRequest,
     },
     QuestionsSettled {
+        dialog_id: String,
         tool_call_id: String,
     },
     /// A live note on a tool call, e.g. "Reviewing with …"; None clears it.

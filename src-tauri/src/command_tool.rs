@@ -64,11 +64,14 @@ fn shell_command(command: &str) -> Command {
     cmd
 }
 
+/// The user's shell when it's a POSIX one (the commands are POSIX shell, as
+/// models write them and the permission checks read them); `/bin/sh` when
+/// it's fish, nu or another shell with a syntax of its own.
 #[cfg(not(windows))]
 fn shell_command(command: &str) -> Command {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
+    use crate::process::{shell_kind, user_shell, ShellKind};
+    let shell = user_shell()
+        .filter(|s| shell_kind(s) == ShellKind::Posix)
         .unwrap_or_else(|| "/bin/sh".to_string());
     let mut cmd = Command::new(shell);
     cmd.args(["-c", command]);
@@ -159,6 +162,26 @@ fn kill_tree(child: &mut std::process::Child) {
         unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
     let _ = child.kill();
+}
+
+/// Whether the shell has exited, without reaping it. A reaped shell's pid
+/// can go to a new process once its group is empty (say, the only process
+/// still holding the pipes left the group with setsid), and `kill_tree`
+/// would then signal that stranger's group. The unreaped zombie keeps the
+/// pid, and so the group id, ours until `wait`.
+#[cfg(target_os = "linux")]
+fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    if unsafe { libc::waitid(libc::P_PID, child.id(), &mut info, flags) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } != 0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
+    child.try_wait().map(|s| s.is_some())
 }
 
 #[cfg(windows)]
@@ -252,15 +275,12 @@ fn run_blocking(
     // output would never end, so it counts as running until the timeout.
     let mut timed_out = false;
     let mut stopped = false;
-    let mut status = None;
+    let mut exited = false;
     loop {
-        if status.is_none() {
-            match child.try_wait() {
-                Ok(s) => status = s,
-                Err(e) => return Err(format!("failed to wait for the command: {e}")),
-            }
+        if !exited {
+            exited = shell_exited(&mut child).map_err(|e| format!("failed to wait for the command: {e}"))?;
         }
-        if status.is_some() && stdout.is_finished() && stderr.is_finished() {
+        if exited && stdout.is_finished() && stderr.is_finished() {
             break;
         }
         stopped = stop();
@@ -269,13 +289,12 @@ fn run_blocking(
         timed_out = !stopped && started.elapsed().saturating_sub(paused) >= timeout;
         if stopped || timed_out {
             kill_tree(&mut child);
-            if status.is_none() {
-                status = child.wait().ok();
-            }
             break;
         }
         thread::sleep(Duration::from_millis(25));
     }
+    // Reaped only now, after any kill_tree: see shell_exited.
+    let status = child.wait().ok();
 
     // A process that left the group (setsid, a detached daemon) may still
     // hold the pipes after the kill; don't wait on the readers forever then.
@@ -313,18 +332,11 @@ fn run_blocking(
 }
 
 /// Runs `command` through the user's shell with the project root as the
-/// working directory.
-#[tauri::command]
-pub async fn tool_run_command(
-    root: String,
-    command: String,
-    timeout_ms: Option<u64>,
-) -> Result<CommandOutput, String> {
-    run_command(root, command, timeout_ms, || false, None).await
-}
-
-/// `tool_run_command`, killed as soon as `stop` says so (checked a few
-/// times a second): the agent's Stop button. A chat's command is `queued`.
+/// working directory, killed as soon as `stop` says so (checked a few times
+/// a second): the agent's Stop button. A chat's command is `queued`.
+///
+/// Not a Tauri command: only the agent's run calls it, after its permission
+/// checks, so the webview can't run shell commands on its own.
 pub async fn run_command(
     root: String,
     command: String,

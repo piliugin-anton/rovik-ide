@@ -37,6 +37,8 @@ import {
 
 export interface ToolCallBlockProps {
   toolCall: ChatToolCall;
+  /** The chat it's in: approvals and questions are its own. */
+  dialogId: string | null;
   /** Content of the matching role:"tool" message, if it has arrived. */
   result?: ChatMessage;
   /** True while the agent loop is still running (args streaming or tool executing). */
@@ -521,6 +523,7 @@ function ApprovalDetails(props: { approval: ToolApproval }) {
 }
 
 function ApprovalBar(props: { request: PendingApproval }) {
+  const dialogId = () => props.request.dialogId;
   const id = () => props.request.toolCallId;
   const counts = () => (props.request.edit ? hunkCounts(props.request.edit) : null);
 
@@ -550,10 +553,10 @@ function ApprovalBar(props: { request: PendingApproval }) {
           when={props.request.edit}
           fallback={
             <>
-              <button class="tool-approval-button primary" onClick={() => allow(id())}>
+              <button class="tool-approval-button primary" onClick={() => allow(dialogId(), id())}>
                 Allow
               </button>
-              <button class="tool-approval-button" onClick={() => deny(id())}>
+              <button class="tool-approval-button" onClick={() => deny(dialogId(), id())}>
                 Deny
               </button>
             </>
@@ -561,21 +564,21 @@ function ApprovalBar(props: { request: PendingApproval }) {
         >
           <button
             class="tool-approval-button primary"
-            onClick={() => revealEdit(id())}
+            onClick={() => revealEdit(dialogId(), id())}
             title="Open the file with the changes highlighted"
           >
             Review in editor
           </button>
           <button
             class="tool-approval-button"
-            onClick={() => decideRemaining(id(), 'accepted')}
+            onClick={() => decideRemaining(dialogId(), id(), 'accepted')}
             title="Accept every remaining change"
           >
             Accept all
           </button>
           <button
             class="tool-approval-button danger"
-            onClick={() => decideRemaining(id(), 'rejected')}
+            onClick={() => decideRemaining(dialogId(), id(), 'rejected')}
             title="Reject every remaining change"
           >
             Reject all
@@ -589,9 +592,17 @@ function ApprovalBar(props: { request: PendingApproval }) {
 export default function ToolCallBlock(props: ToolCallBlockProps) {
   // The agent's questions have their own card, always open.
   if (props.toolCall.name === 'ask_user') {
-    return <QuestionCard toolCall={props.toolCall} result={props.result} running={props.running} />;
+    return (
+      <QuestionCard
+        dialogId={props.dialogId}
+        toolCall={props.toolCall}
+        result={props.result}
+        running={props.running}
+      />
+    );
   }
-  const request = () => pendingApproval(props.toolCall.id);
+  const request = () =>
+    props.dialogId ? pendingApproval(props.dialogId, props.toolCall.id) : undefined;
 
   const [expanded, setExpanded] = createSignal(false);
 

@@ -190,27 +190,6 @@ export function toolEditFile(
   return invoke<EditOutcome>('tool_edit_file', { root, ...args, dryRun });
 }
 
-/** Result of `tool_run_command` (src-tauri/src/command_tool.rs). */
-export interface CommandOutput {
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-  /** Killed by the agent's Stop button. */
-  stopped: boolean;
-  truncated: boolean;
-  durationMs: number;
-}
-
-/** Runs a shell command in the project root (permission checks happen before this). */
-export async function toolRunCommand(
-  root: string,
-  command: string,
-  timeoutMs?: number
-): Promise<CommandOutput> {
-  return invoke<CommandOutput>('tool_run_command', { root, command, timeoutMs });
-}
-
 /*
  * Web tools (src-tauri/src/browser_tools.rs). The first call starts a
  * headless Chrome, so it can take a few seconds.

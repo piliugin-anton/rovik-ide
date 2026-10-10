@@ -419,3 +419,27 @@ fn a_push_behind_the_remote_is_rejected_not_failed() {
     let out = crate::git::git_push_blocking(p(&b_dir)).unwrap();
     assert_eq!(out.result, "rejected");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_mode_change_alone_adds_no_lines() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("mode-only");
+    let repo = Repository::init(&dir).unwrap();
+    {
+        let mut c = repo.config().unwrap();
+        c.set_str("user.name", "t").unwrap();
+        c.set_str("user.email", "t@t").unwrap();
+    }
+    fs::write(dir.join("run.sh"), "echo 1\necho 2\n").unwrap();
+    commit_all(&repo, "start");
+    fs::set_permissions(dir.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(dir.join("new.txt"), "a\nb\nc\n").unwrap();
+    let status = crate::git::git_status_blocking(dir.to_string_lossy().into_owned()).unwrap();
+    let counts = |name: &str| {
+        let f = status.files.iter().find(|f| f.path == name).unwrap();
+        (f.additions, f.deletions)
+    };
+    assert_eq!(counts("run.sh"), (0, 0), "only its mode changed");
+    assert_eq!(counts("new.txt"), (3, 0), "a new file still gets its lines");
+}

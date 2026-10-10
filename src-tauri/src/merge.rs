@@ -84,13 +84,19 @@ pub fn parse_merged(text: &str) -> Vec<MergeSegment> {
     }
     let mut out = Vec::new();
     let (mut common, mut ours, mut base, mut theirs) = (String::new(), String::new(), String::new(), String::new());
+    // The open conflict's lines as written, markers included.
+    let mut raw = String::new();
     let mut at = At::Common;
     for line in text.split_inclusive('\n') {
+        if at != At::Common {
+            raw.push_str(line);
+        }
         match at {
             At::Common if is_marker(line, '<', true) => {
                 if !common.is_empty() {
                     out.push(MergeSegment::Common { text: std::mem::take(&mut common) });
                 }
+                raw = line.to_string();
                 at = At::Ours;
             }
             At::Ours if is_marker(line, '|', true) => at = At::Base,
@@ -109,10 +115,14 @@ pub fn parse_merged(text: &str) -> Vec<MergeSegment> {
             At::Theirs => theirs.push_str(line),
         }
     }
-    // Unterminated (shouldn't happen): keep what was read as common text.
+    // Unterminated: not a conflict after all (the file has a line that
+    // looks like a marker). Its lines stay as they were, markers and all.
     if at != At::Common {
-        common.push_str(&ours);
-        common.push_str(&theirs);
+        if let Some(MergeSegment::Common { text }) = out.last() {
+            common = text.clone();
+            out.pop();
+        }
+        common.push_str(&raw);
     }
     if !common.is_empty() {
         out.push(MergeSegment::Common { text: common });
@@ -189,6 +199,14 @@ mod tests {
         assert!(merge_bytes(&enc("1\n"), &enc("A\n"), &enc("B\n")).unwrap().is_none());
         // Real binary: no merge.
         assert!(merge_bytes(b"\0a", b"\0b", b"\0c").is_err());
+    }
+
+    #[test]
+    fn a_marker_never_closed_is_kept_as_text() {
+        let lt = "<".repeat(MARKER);
+        let bar = "|".repeat(MARKER);
+        let text = format!("a\n{lt} x\nours\n{bar} y\nbase\nb\n");
+        assert_eq!(parse_merged(&text), vec![MergeSegment::Common { text }]);
     }
 
     const BASE: &str = "one\ntwo\nthree\nfour\nfive\n";

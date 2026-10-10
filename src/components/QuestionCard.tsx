@@ -9,17 +9,16 @@ import type { ChatMessage, ChatToolCall } from '../types';
 import { parseQuestions, pendingQuestions, type QuestionAnswer } from '../lib/questions';
 
 export default function QuestionCard(props: {
+  dialogId: string | null;
   toolCall: ChatToolCall;
   result?: ChatMessage;
   running?: boolean;
 }) {
-  const pending = () => pendingQuestions(props.toolCall.id);
+  const pending = () =>
+    props.dialogId ? pendingQuestions(props.dialogId, props.toolCall.id) : undefined;
   const questions = createMemo(() => {
     try {
-      return (
-        pendingQuestions(props.toolCall.id)?.questions ??
-        parseQuestions(JSON.parse(props.toolCall.arguments))
-      );
+      return pending()?.questions ?? parseQuestions(JSON.parse(props.toolCall.arguments));
     } catch {
       return [];
     }

@@ -301,7 +301,8 @@ export function ConflictResolver(props: ConflictResolverProps) {
       doneFiles().add(file);
       setVersion((v) => v + 1);
       props.onFileWritten(file);
-      const next = props.operation.conflicts.find((f) => f !== file);
+      // The next file still to resolve, not one done earlier in this session.
+      const next = props.operation.conflicts.find((f) => f !== file && !doneFiles().has(f));
       if (next) setSelected(next);
     } catch (e) {
       setError(String(e));
@@ -318,8 +319,12 @@ export function ConflictResolver(props: ConflictResolverProps) {
     try {
       if (props.source) await props.source.resolve(file, null, side);
       else await invoke('git_conflict_resolve', { path: props.projectPath, file, side });
-      savedChoices.set(choiceKey(file), [{ sides: [side] }]);
-      setChoices([{ sides: [side] }]);
+      // Every conflict to that side, so coming back shows the file resolved;
+      // a file with no segments (binary) keeps the one choice its card shows.
+      const segments = data()?.segments ?? [];
+      const all = segments.length ? allTo(segments, side) : [{ sides: [side] }];
+      savedChoices.set(choiceKey(file), all);
+      setChoices(all);
       doneFiles().add(file);
       setVersion((v) => v + 1);
       props.onFileWritten(file);

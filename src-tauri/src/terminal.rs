@@ -94,9 +94,15 @@ fn default_shell() -> (String, Vec<String>) {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-        // `-l` starts a login shell so PATH/rc files behave like a normal terminal.
-        (shell, vec!["-l".into()])
+        use crate::process::{shell_kind, ShellKind};
+        let shell = crate::process::user_shell().unwrap_or_else(|| "/bin/bash".into());
+        // `-l` starts a login shell so PATH/rc files behave like a normal
+        // terminal; only for shells known to take it.
+        let args = match shell_kind(&shell) {
+            ShellKind::Other => vec![],
+            _ => vec!["-l".into()],
+        };
+        (shell, args)
     }
 }
 

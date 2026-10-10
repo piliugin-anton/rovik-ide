@@ -956,10 +956,15 @@ export default function ChatPanel(props: ChatProps) {
     setFileSuggestionsOpen(true);
   }
 
+  // Quotes too: the chip puts names inside attributes, and a file may be
+  // named `a" onmouseover="…`.
   function escapeHtml(text: string): string {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   /** Builds the non-editable "file reference" chip used in the composer. */
@@ -2356,7 +2361,7 @@ export default function ChatPanel(props: ChatProps) {
       const dialogId = activeDialogId();
       clearChatInput();
       if (dialogId) clearComposerDraft(dialogId);
-      answerQuestions(waiting.toolCallId, { reply });
+      answerQuestions(waiting.dialogId, waiting.toolCallId, { reply });
       return;
     }
     const text = input().trim();
@@ -2980,7 +2985,7 @@ export default function ChatPanel(props: ChatProps) {
           if (active) await store.openChat(active, { reload: true });
         }}
         controller={(c) => (listController = c)}
-        toolNotes={toolNotes()}
+        toolNotes={toolNotes(activeDialogId())}
         onRetry={retryLastTurn}
         onContinue={continueReply}
         onContinueRun={continueRun}

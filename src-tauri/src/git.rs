@@ -144,7 +144,7 @@ fn default_remote_name(repo: &Repository) -> Result<String, String> {
     }
         remotes
         .iter()
-        .filter_map(|r| r.ok().unwrap())
+        .filter_map(|r| r.ok().flatten())
         .map(|s| s.to_string())
         .next()
         .ok_or_else(|| "No remotes configured".to_string())
@@ -201,9 +201,22 @@ fn workdir_line_stats(repo: &Repository) -> std::collections::HashMap<String, (u
             })
             .or_insert((a, d));
     };
+    // Files that are new, the only ones the fallback below may count: a
+    // tracked file at 0/0 changed only its mode (or type), not its lines.
+    let mut new_files = std::collections::HashSet::new();
+    let mut note_new = |diff: &git2::Diff| {
+        for delta in diff.deltas() {
+            if matches!(delta.status(), git2::Delta::Added | git2::Delta::Untracked) {
+                if let Some(p) = delta.new_file().path() {
+                    new_files.insert(p.to_string_lossy().into_owned());
+                }
+            }
+        }
+    };
     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     // Staged: HEAD → index.
     if let Ok(diff) = repo.diff_tree_to_index(head_tree.as_ref(), None, None) {
+        note_new(&diff);
         for (path, (a, d)) in diff_line_stats(&diff) {
             add(path, a, d);
         }
@@ -215,6 +228,7 @@ fn workdir_line_stats(repo: &Repository) -> std::collections::HashMap<String, (u
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
     if let Ok(diff) = repo.diff_index_to_workdir(None, Some(&mut opts)) {
+        note_new(&diff);
         for (path, (a, d)) in diff_line_stats(&diff) {
             add(path, a, d);
         }
@@ -223,7 +237,7 @@ fn workdir_line_stats(repo: &Repository) -> std::collections::HashMap<String, (u
     // (empty diff, binary check skipped): count lines on disk.
     let workdir = repo.workdir().map(|w| w.to_path_buf());
     for (path, counts) in merged.clone() {
-        if counts != (0, 0) {
+        if counts != (0, 0) || !new_files.contains(&path) {
             continue;
         }
         let abs = match &workdir {
@@ -310,7 +324,8 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
         .filter(|entry| !entry.status().is_ignored())
         .map(|entry| {
             let s = entry.status();
-            let path = entry.path().unwrap_or_default().to_string();
+            // Not UTF-8: shown as near as it gets, not as an empty row.
+            let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
             let (additions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
             GitFile {
                 path,
@@ -460,7 +475,7 @@ pub fn git_fetch_blocking(path: String) -> Result<(), String> {
         .fetch_refspecs()
         .map_err(|e| e.to_string())?
         .iter()
-        .filter_map(|r| r.ok().unwrap())
+        .filter_map(|r| r.ok().flatten())
         .map(String::from)
         .collect();
 

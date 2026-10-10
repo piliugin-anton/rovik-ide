@@ -50,7 +50,7 @@ export default function QuestionPanel(props: { pending: PendingQuestions }) {
   }
 
   function send() {
-    answerQuestions(props.pending.toolCallId, {
+    answerQuestions(props.pending.dialogId, props.pending.toolCallId, {
       answers: questions().map((_, i) => answerAt(i) ?? { kind: 'agent' }),
     });
   }
@@ -115,7 +115,9 @@ export default function QuestionPanel(props: { pending: PendingQuestions }) {
         <button
           type="button"
           class="link-button question-panel-stop"
-          onClick={() => answerQuestions(props.pending.toolCallId, { stopped: true })}
+          onClick={() =>
+            answerQuestions(props.pending.dialogId, props.pending.toolCallId, { stopped: true })
+          }
           title="Stop the task instead of answering"
         >
           Stop

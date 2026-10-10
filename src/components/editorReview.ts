@@ -76,7 +76,7 @@ export function renderEditReview(
   const model = editor.getModel();
   if (!model) return { dispose: () => {} };
 
-  const id = approval.toolCallId;
+  const { dialogId, toolCallId: id } = approval;
   const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
   const fontInfo = editor.getOption(monaco.editor.EditorOption.fontInfo);
   const language = model.getLanguageId();
@@ -144,11 +144,16 @@ export function renderEditReview(
         label.textContent = `Change ${index + 1} of ${total}`;
         strip.append(
           label,
-          button('Accept', 'accept', () => setHunkState(id, index, 'accepted'), 'Keep this change'),
+          button(
+            'Accept',
+            'accept',
+            () => setHunkState(dialogId, id, index, 'accepted'),
+            'Keep this change'
+          ),
           button(
             'Reject',
             'reject',
-            () => setHunkState(id, index, 'rejected'),
+            () => setHunkState(dialogId, id, index, 'rejected'),
             'Discard this change'
           )
         );
@@ -156,7 +161,7 @@ export function renderEditReview(
         label.textContent = hunk.state === 'accepted' ? 'Accepted' : 'Rejected';
         strip.append(
           label,
-          button('Undo', 'undo', () => setHunkState(id, index, 'pending'), 'Decide again')
+          button('Undo', 'undo', () => setHunkState(dialogId, id, index, 'pending'), 'Decide again')
         );
       }
       dom.append(strip);
@@ -188,13 +193,13 @@ export function renderEditReview(
     button(
       'Accept all',
       'accept',
-      () => decideRemaining(id, 'accepted'),
+      () => decideRemaining(dialogId, id, 'accepted'),
       'Accept every remaining change'
     ),
     button(
       'Reject all',
       'reject',
-      () => decideRemaining(id, 'rejected'),
+      () => decideRemaining(dialogId, id, 'rejected'),
       'Reject every remaining change'
     )
   );

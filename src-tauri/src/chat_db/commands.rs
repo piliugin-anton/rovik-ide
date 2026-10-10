@@ -83,8 +83,25 @@ pub async fn chat_relink_project(
 
 /// A project and all its chats.
 #[tauri::command]
-pub async fn chat_delete_project(db: State<'_, DbState>, project_id: String) -> Result<(), String> {
-    db.write(move |c| projects::delete(c, &project_id)).await
+pub async fn chat_delete_project<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    agent: State<'_, crate::agent_run::AgentState>,
+    vfs: State<'_, crate::vfs::VfsState>,
+    db: State<'_, DbState>,
+    project_id: String,
+) -> Result<(), String> {
+    let id = project_id.clone();
+    let chats = db.read(move |c| store::dialogs_in_project(c, Some(&id))).await?;
+    for chat in &chats {
+        remove_chat_files(&app, &agent, &vfs, chat).await?;
+    }
+    let data_dir = db.data_dir().to_path_buf();
+    db.write(move |c| {
+        projects::delete(c, &project_id)?;
+        let _ = attachments::collect_garbage(c, &data_dir);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -145,26 +162,12 @@ pub async fn chat_rename_dialog(db: State<'_, DbState>, dialog_id: String, title
 pub async fn chat_delete_dialog<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     agent: State<'_, crate::agent_run::AgentState>,
+    vfs: State<'_, crate::vfs::VfsState>,
     db: State<'_, DbState>,
     dialog_id: String,
 ) -> Result<(), String> {
     let data_dir = db.data_dir().to_path_buf();
-    // A run going in it stops first: its view is about to go.
-    if agent.stop(&app, &dialog_id) {
-        for _ in 0..100 {
-            if !agent.is_running(&dialog_id) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        // Still going: its files can't go from under it.
-        if agent.is_running(&dialog_id) {
-            return Err("this chat's run didn't stop yet: try deleting it again in a moment".into());
-        }
-    }
-    // Its isolated changes and landing history go with it.
-    let id = dialog_id.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || crate::overlay::chats::forget(&id)).await;
+    remove_chat_files(&app, &agent, &vfs, &dialog_id).await?;
     db.write(move |c| {
         store::delete_dialog(c, &dialog_id)?;
         // Best effort; anything missed is collected at the next start.
@@ -172,6 +175,37 @@ pub async fn chat_delete_dialog<R: tauri::Runtime>(
         Ok(())
     })
     .await
+}
+
+/// What a deleted chat leaves outside the database: its run (stopped
+/// first: its view is about to go), its isolated changes and landing
+/// history, and its CLM context on the volume.
+async fn remove_chat_files<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    agent: &crate::agent_run::AgentState,
+    vfs: &crate::vfs::VfsState,
+    dialog_id: &str,
+) -> Result<(), String> {
+    if agent.stop(app, dialog_id) {
+        for _ in 0..100 {
+            if !agent.is_running(dialog_id) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        // Still going: its files can't go from under it.
+        if agent.is_running(dialog_id) {
+            return Err("this chat's run didn't stop yet: try deleting it again in a moment".into());
+        }
+    }
+    let id = dialog_id.to_string();
+    let _ = tauri::async_runtime::spawn_blocking(move || crate::overlay::chats::forget(&id)).await;
+    // Only an id the context folder's name keeps whole: one it shortens
+    // ("a.b" → "ab") could name another chat's folder.
+    if !dialog_id.is_empty() && dialog_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        let _ = vfs.remove(&crate::clm::context_dir(dialog_id));
+    }
+    Ok(())
 }
 
 #[tauri::command]

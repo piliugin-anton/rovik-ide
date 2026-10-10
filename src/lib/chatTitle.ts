@@ -26,7 +26,8 @@ export async function generateChatTitle(
   chatId?: string
 ): Promise<string | null> {
   const transcript = messages
-    .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content.trim())
+    .map((m) => ({ ...m, content: withoutPasteMarkers(m.content).trim() }))
+    .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content)
     .map((m) => ({ ...m, content: m.content.slice(0, MAX_MESSAGE_CHARS) }));
 
   if (!transcript.some((m) => m.role === 'user')) return null;
@@ -77,7 +78,9 @@ export function cleanTitle(raw: string): string | null {
   if (!line) return null;
 
   const title = line
-    .replace(/^#+\s*/, '')
+    // Markup the model copied from the conversation (e.g. <pasted_text>).
+    .replace(/<\/?[a-z_][\w-]*(?:\s[^>]*)?>/gi, ' ')
+    .replace(/^\s*#+\s*/, '')
     .replace(/^\*+|\*+$/g, '')
     .replace(/^(chat\s+)?title\s*:\s*/i, '')
     .replace(/^["'`“”‘’«»]+|["'`“”‘’«»]+$/g, '')
@@ -89,9 +92,22 @@ export function cleanTitle(raw: string): string | null {
   return truncate(title);
 }
 
+/**
+ * A message as the user wrote it: long pastes are sent wrapped in
+ * <pasted_text lines="N"> markers (ChatPanel), which aren't part of it.
+ */
+export function withoutPasteMarkers(text: string): string {
+  return text.replace(/<pasted_text(?:\s+lines="\d+")?>\n?([\s\S]*?)\n?<\/pasted_text>/g, '$1');
+}
+
 /** The opening words of the user's message, used when the model gives nothing. */
 export function fallbackTitle(text: string): string | null {
-  const words = text.replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ');
+  const words = withoutPasteMarkers(text)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .slice(0, 6)
+    .join(' ');
   if (!words) return null;
   return truncate(words.charAt(0).toUpperCase() + words.slice(1));
 }

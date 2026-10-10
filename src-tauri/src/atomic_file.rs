@@ -11,6 +11,16 @@ use std::io::Write;
 use std::path::Path;
 
 pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write(path, contents, false)
+}
+
+/// `write_atomic` for secrets (API keys): on Unix only the user can read
+/// the file, from the moment it exists.
+pub fn write_atomic_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write(path, contents, true)
+}
+
+fn write(path: &Path, contents: &[u8], private: bool) -> std::io::Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -29,7 +39,16 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     ));
 
     let result = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = private;
+        let mut file = options.open(&tmp)?;
         file.write_all(contents)?;
         file.sync_all()?; // data on disk before the rename makes it visible
         drop(file);
@@ -64,6 +83,18 @@ fn sync_dir(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn private_files_are_only_readable_by_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("atomic-file-private-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let target = dir.join("keys.json");
+        write_atomic_private(&target, b"secret").unwrap();
+        assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn replaces_contents_and_leaves_no_temp_files() {

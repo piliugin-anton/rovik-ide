@@ -323,3 +323,16 @@ fn deleting_a_project_deletes_its_chats() {
     assert_eq!(chats(&conn, None), ["keep"]);
     assert!(list(&conn).unwrap().iter().all(|s| s.id != p.id));
 }
+
+#[test]
+fn a_chat_works_only_in_its_own_projects_folders() {
+    let mut conn = db();
+    let a_dir = temp("may-use-a");
+    let b_dir = temp("may-use-b");
+    let a = open_project(&mut conn, &a_dir).unwrap().project;
+    open_project(&mut conn, &b_dir).unwrap();
+    assert!(chat_may_use(&conn, Some(&a.id), &a_dir).unwrap());
+    assert!(!chat_may_use(&conn, Some(&a.id), &b_dir).unwrap(), "another project's folder");
+    assert!(!chat_may_use(&conn, Some(&a.id), &temp("may-use-unknown")).unwrap(), "a folder no project has");
+    assert!(chat_may_use(&conn, None, &b_dir).unwrap(), "a chat with no project isn't tied to one");
+}

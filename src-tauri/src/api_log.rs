@@ -53,7 +53,12 @@ fn append(line: &Value) {
     let Some(path) = TARGET.as_ref() else { return };
     let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     // Best effort: a log that can't be written never breaks a request.
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    // Prompts, chat history and code: only the user may read them.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    if let Ok(mut file) = options.open(path) {
         let _ = writeln!(file, "{line}");
     }
 }
