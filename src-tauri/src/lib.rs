@@ -196,6 +196,7 @@ pub fn run() {
             overlay::chats::overlay_conflict_resolve,
             overlay::chats::overlay_conflicts_to_chat,
             overlay::chats::overlay_undo_merge,
+            overlay::chats::overlay_unmark,
             workload::workload_set_slots,
             workload::workload_status,
             outline::outline_symbols,

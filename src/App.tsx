@@ -697,6 +697,10 @@ export default function App() {
       window.alert(`Couldn't read ${file.name}: ${String(err)}`);
       return;
     }
+    // The tab may have been closed, or typed in, while the dialog was open:
+    // compare with its text as it is now.
+    const current = openFiles().find((f) => f.path === file.path);
+    if (!current) return;
     const virtualPath = `disk:${file.path}`;
     const tab: OpenFile = {
       id: virtualPath,
@@ -708,7 +712,7 @@ export default function App() {
       language: file.language,
       readOnly: true,
     };
-    setGitBase(virtualPath, file.name, file.content);
+    setGitBase(virtualPath, file.name, current.content);
     // The user has now seen the version on disk: the tab is checked against
     // it from here on, so a save after merging by hand isn't refused again
     // (and saving the tab untouched replaces it, as Overwrite would).

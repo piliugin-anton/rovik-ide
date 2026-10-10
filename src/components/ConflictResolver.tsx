@@ -74,6 +74,12 @@ const savedChoices = new Map<string, (HunkChoice | undefined)[]>();
 // Files saved during that step: listed still, so they can be changed again.
 const savedFiles = new Map<string, Set<string>>();
 
+/** Forgets the saved choices and files of every step under this project path prefix. */
+export function forgetConflictChoices(prefix: string) {
+  for (const k of [...savedChoices.keys()]) if (k.startsWith(prefix)) savedChoices.delete(k);
+  for (const k of [...savedFiles.keys()]) if (k.startsWith(prefix)) savedFiles.delete(k);
+}
+
 const opKey = (projectPath: string, op: GitOperation) =>
   `${projectPath}\0${op.kind}\0${op.branch ?? ''}\0${op.incoming ?? ''}\0${op.step ?? ''}`;
 

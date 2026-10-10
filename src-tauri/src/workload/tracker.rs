@@ -232,14 +232,19 @@ fn measure(
     s.cores = s.window.iter().map(|(_, c)| c).sum::<f64>() / s.window.len() as f64;
     s.memory = memory;
     s.peak_memory = s.peak_memory.max(memory);
-    let full_window = s.window.front().is_some_and(|(t, _)| now.duration_since(*t) >= WINDOW - INTERVAL);
+    // Full once its oldest sample is about WINDOW old: by the spacing
+    // samples actually have (2 s apart when only the terminal is watched,
+    // where `WINDOW - INTERVAL` would never be reached).
+    let full_window = s.window.front().is_some_and(|(t, _)| now.duration_since(*t) >= WINDOW.saturating_sub(elapsed));
     // A compiler counts only while it works: a watcher (`tsc -w`, Vite's
     // esbuild service) sits idle most of the time and mustn't hold a slot.
     let compiling = compiler && s.cores >= IDLE_CORES;
     // Paused, it uses no CPU: that says nothing about the job, so its
     // state stays as it was until it runs again.
     if s.paused_since.is_none() {
-        if s.cores < IDLE_CORES {
+        // Little CPU but much memory (a build stalled on swap) isn't idle:
+        // its slot must not go to another heavy job.
+        if s.cores < IDLE_CORES && memory <= HEAVY_MEMORY {
             s.idle_since.get_or_insert(now);
         } else {
             s.idle_since = None;
@@ -343,11 +348,13 @@ fn throttle(job: &mut JobState, slow: bool, low_memory: bool, memory_back: bool)
     }
     let may_pause = CAN_PAUSE && s.no_pause_until.is_none_or(|t| Instant::now() >= t);
     match s.paused_since {
-        None if slow && low_memory && may_pause => {
+        None if slow && low_memory && may_pause && !SHUTTING_DOWN.load(std::sync::atomic::Ordering::Relaxed) => {
             for pid in &s.pids {
                 pause(*pid, true);
             }
             s.paused_since = Some(Instant::now());
+            // Its CPU dipping before the pause doesn't count as idle.
+            s.idle_since = None;
         }
         Some(since) if !slow || memory_back || since.elapsed() >= MAX_PAUSE => {
             for pid in &s.pids {
@@ -358,13 +365,20 @@ fn throttle(job: &mut JobState, slow: bool, low_memory: bool, memory_back: bool)
             }
             s.paused_ms += since.elapsed().as_millis() as u64;
             s.paused_since = None;
+            // The paused time's samples (no CPU) say nothing: start afresh.
+            s.window.clear();
         }
         _ => {}
     }
 }
 
-/// At exit: nothing stays paused (its commands run on, unwatched).
+/// Set at exit: nothing is paused any more.
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// At exit: nothing stays paused (its commands run on, unwatched), and
+/// nothing is paused from here on.
 pub(super) fn release_all() {
+    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     let state = lock();
     for job in state.jobs.values() {
         release(job);

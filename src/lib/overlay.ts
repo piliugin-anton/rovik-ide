@@ -117,7 +117,18 @@ export function overlayConflictsToChat(
   return invoke('overlay_conflicts_to_chat', { dialogId });
 }
 
+/** What an undo did: files put back, and files left as they are because the chat changed them since. */
+export interface UndoneMerge {
+  restored: string[];
+  changedSince: string[];
+}
+
 /** Takes the project's merged-in changes back out of the chat's files. */
-export function overlayUndoMerge(dialogId: string): Promise<string[]> {
-  return invoke<string[]>('overlay_undo_merge', { dialogId });
+export function overlayUndoMerge(dialogId: string): Promise<UndoneMerge> {
+  return invoke<UndoneMerge>('overlay_undo_merge', { dialogId });
+}
+
+/** Takes markers just handed to the chat back out of these files (it couldn't take them). */
+export function overlayUnmark(dialogId: string, files: string[]): Promise<UndoneMerge> {
+  return invoke<UndoneMerge>('overlay_unmark', { dialogId, files });
 }

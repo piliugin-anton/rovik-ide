@@ -157,6 +157,10 @@ pub async fn chat_delete_dialog<R: tauri::Runtime>(
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        // Still going: its files can't go from under it.
+        if agent.is_running(&dialog_id) {
+            return Err("this chat's run didn't stop yet: try deleting it again in a moment".into());
+        }
     }
     // Its isolated changes and landing history go with it.
     let id = dialog_id.clone();

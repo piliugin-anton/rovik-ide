@@ -8,9 +8,9 @@
 // are resolved in the conflict resolver (Resolve…), or handed to the chat
 // (Ask the chat): markers go into its files and it's asked to settle them.
 
-import { createResource, createSignal, For, Show } from 'solid-js';
+import { createEffect, createResource, createSignal, For, Show, untrack } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
-import { ConflictResolver, type ConflictSource } from './ConflictResolver';
+import { ConflictResolver, forgetConflictChoices, type ConflictSource } from './ConflictResolver';
 import type { GitOperation } from '../types';
 import { requestCompare } from '../lib/editorBridge';
 import { notify } from '../lib/notifications';
@@ -24,6 +24,7 @@ import {
   overlayStatus,
   overlayUndo,
   overlayUndoMerge,
+  overlayUnmark,
   type ChangedFile,
   type OverlayStatus,
 } from '../lib/overlay';
@@ -51,6 +52,12 @@ const LABEL: Record<ChangedFile['change'], string> = {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/** Paths for a message: the first few, then how many more. */
+const listPaths = (paths: string[], shown = 8) =>
+  paths.length > shown
+    ? `${paths.slice(0, shown).join(', ')} and ${paths.length - shown} more`
+    : paths.join(', ');
+
 /** Build output is shown from this size, and warned about from the next. */
 const BY_PRODUCTS_SHOWN = 1 << 30;
 const BY_PRODUCTS_WARN = 5 * (1 << 30);
@@ -73,17 +80,30 @@ export default function IsolationBar(props: Props) {
     const title = props.chatTitle?.(id);
     return title ? `“${title}”` : 'another chat';
   };
-  /** Other chats changing the same lines, named, for the bar. */
+  /** Other chats changing the same lines, named, with the verb that agrees, for the bar. */
   const peerNames = (s: OverlayStatus) => {
     const ids = [...new Set(s.peerConflicts.flatMap((c) => c.peers))];
-    return ids.length === 1 ? chatName(ids[0]) : `${ids.length} other chats`;
+    return ids.length === 1 ? `${chatName(ids[0])} is` : `${ids.length} other chats are`;
   };
   const [resolving, setResolving] = createSignal<string | null>(null);
-  /** One round of conflicts: the resolver's saved choices belong to it. */
-  const roundKey = () => {
-    const p = status()?.pending;
-    return p ? `${p.reason}\u0000${p.conflicts.map((c) => c.path).join('\u0000')}` : '';
-  };
+  /**
+   * One round of conflicts: the resolver's saved choices belong to it. Fixed
+   * while the round lasts (resolving a file doesn't start a new one), new
+   * once its conflicts are all settled.
+   */
+  const newRound = () => Math.random().toString(36).slice(2);
+  const [roundKey, setRoundKey] = createSignal(newRound());
+  const roundPrefix = () => `chat:${props.dialogId}:`;
+  createEffect(() => {
+    const id = props.dialogId;
+    if (status.loading) return;
+    if (status()?.pending?.conflicts.length) return;
+    // No conflicts (any more): the round is over; its choices go with it.
+    // Not tracked: setting it below mustn't run this again.
+    const old = untrack(roundKey);
+    forgetConflictChoices(`chat:${id}:${old}`);
+    setRoundKey(newRound());
+  });
 
   /** The chat's conflicts, in the shape the resolver takes a git merge in. */
   const operation = (): GitOperation => ({
@@ -129,8 +149,9 @@ export default function IsolationBar(props: Props) {
           message: 'These conflicts aren’t in text files: resolve them here instead.',
         });
       } else if (!(await props.onAskChat(id, handed.request))) {
-        // Nobody to resolve the markers: take them back out.
-        await overlayUndoMerge(id).catch(() => {});
+        // Nobody to resolve the markers: take these back out (nothing
+        // merged before them).
+        await overlayUnmark(id, handed.files).catch(() => {});
       }
     } catch (e) {
       notify({ kind: 'error', title: 'Couldn’t hand the conflicts over', message: String(e) });
@@ -158,10 +179,7 @@ export default function IsolationBar(props: Props) {
       const s = status();
       const conflicted = s?.pending?.conflicts.map((c) => c.path) ?? [];
       const deleted = s?.files.filter((f) => f.change === 'deleted').map((f) => f.path) ?? [];
-      const list = (paths: string[]) =>
-        paths.length > 8
-          ? `${paths.slice(0, 8).join(', ')} and ${paths.length - 8} more`
-          : paths.join(', ');
+      const list = (paths: string[]) => listPaths(paths);
       const ok = await confirmDialog({
         title: 'Land anyway?',
         message:
@@ -171,8 +189,12 @@ export default function IsolationBar(props: Props) {
         confirmLabel: 'Land anyway',
         danger: true,
       });
+      if (!ok) return false;
       // A run may have started while the dialog was open.
-      if (!ok || props.running) return false;
+      if (props.running) {
+        notify({ kind: 'warning', title: 'Didn’t land', message: 'Stop the run first.' });
+        return false;
+      }
     }
     setBusy(true);
     try {
@@ -189,7 +211,7 @@ export default function IsolationBar(props: Props) {
         notify({
           kind: 'warning',
           title: 'New conflicts',
-          message: `The project changed meanwhile: ${result.conflicts.map((c) => c.path).join(', ')}.`,
+          message: `The project changed meanwhile: ${listPaths(result.conflicts.map((c) => c.path))}.`,
         });
       } else if (result.error) {
         notify({ kind: 'error', title: 'Didn’t land', message: result.error });
@@ -212,7 +234,7 @@ export default function IsolationBar(props: Props) {
         kind: kept.length ? 'warning' : 'success',
         title: 'Landing undone',
         message: kept.length
-          ? `${plural(kept.length, 'file')} changed since and stayed as they are: ${kept.map((k) => k.path).join(', ')}.`
+          ? `${plural(kept.length, 'file')} changed since and stayed as they are: ${listPaths(kept.map((k) => k.path))}.`
           : 'The project is back to how it was before.',
       });
     } catch (e) {
@@ -231,7 +253,12 @@ export default function IsolationBar(props: Props) {
       confirmLabel: 'Discard',
       danger: true,
     });
-    if (!ok || props.running) return;
+    if (!ok) return;
+    // A run may have started while the dialog was open.
+    if (props.running) {
+      notify({ kind: 'warning', title: 'Didn’t discard', message: 'Stop the run first.' });
+      return;
+    }
     setBusy(true);
     try {
       await overlayDiscard(props.dialogId);
@@ -248,11 +275,15 @@ export default function IsolationBar(props: Props) {
   async function undoMerge() {
     setBusy(true);
     try {
-      const files = await overlayUndoMerge(props.dialogId);
+      const { restored, changedSince } = await overlayUndoMerge(props.dialogId);
       notify({
-        kind: 'success',
+        kind: changedSince.length ? 'warning' : 'success',
         title: 'Merge taken back',
-        message: `${plural(files.length, 'file')} are this chat’s own version again.`,
+        message:
+          `${plural(restored.length, 'file')} ${restored.length === 1 ? 'is' : 'are'} this chat’s own version again.` +
+          (changedSince.length
+            ? ` The chat changed ${plural(changedSince.length, 'file')} since, kept as they are: ${listPaths(changedSince)}.`
+            : ''),
       });
     } catch (e) {
       notify({ kind: 'error', title: 'Couldn’t take the merge back', message: String(e) });
@@ -334,12 +365,9 @@ export default function IsolationBar(props: Props) {
             </Show>
             <Show when={s().peerConflicts.length > 0}>
               <div class="isolation-bar-reason">
-                {peerNames(s())} is changing{' '}
+                {peerNames(s())} changing{' '}
                 {s().peerConflicts.length === 1 ? 'this file' : 'these files'} too:{' '}
-                {s()
-                  .peerConflicts.map((c) => c.path)
-                  .join(', ')}
-                . Only one version of {s().peerConflicts.length === 1 ? 'it' : 'them'} lands as it
+                {listPaths(s().peerConflicts.map((c) => c.path))}. Only one version of {s().peerConflicts.length === 1 ? 'it' : 'them'} lands as it
                 is; the other then has to be resolved.
               </div>
             </Show>
@@ -423,7 +451,7 @@ export default function IsolationBar(props: Props) {
       </Show>
       <Show when={resolving() !== null}>
         <ConflictResolver
-          projectPath={`chat:${props.dialogId}:${roundKey()}`}
+          projectPath={`${roundPrefix()}${roundKey()}`}
           source={source}
           operation={operation()}
           disabled={props.running}

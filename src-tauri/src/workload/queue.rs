@@ -317,38 +317,32 @@ pub struct Slots {
 }
 
 pub fn slots() -> Slots {
-    // Not sampled yet (no command has run): read the machine now, so auto
-    // isn't judged from an all-zero machine.
-    if lock().machine.cores == 0 {
-        let mut sys = sysinfo::System::new();
-        sys.refresh_memory();
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        let mut state = lock();
-        if state.machine.cores == 0 && !state.fixed_machine {
-            state.machine.cores = cores;
-            state.machine.total_memory = sys.total_memory();
-            state.machine.free_memory = sys.available_memory();
-        }
-    }
     let state = lock();
-    let manual = state.manual_slots;
-    let auto = {
+    if state.machine.cores > 0 {
         let m = &state.machine;
-        let big = m.cores >= BIG_CORES && m.total_memory >= BIG_MEMORY;
-        let room = m.free_memory > ROOM_FREE_MEMORY && m.untracked_load < ROOM_UNTRACKED_LOAD;
-        if big && room {
-            2
-        } else {
-            1
-        }
-    };
+        let reading = (m.cores, m.total_memory, m.free_memory, m.untracked_load);
+        return slots_with(&state, reading);
+    }
+    // Not sampled yet (no command has run): read the machine for this page
+    // only, so auto isn't judged from an all-zero machine. It isn't kept:
+    // the queue judges by its own samples.
+    drop(state);
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    slots_with(&lock(), (cores, sys.total_memory(), sys.available_memory(), 0.0))
+}
+
+fn slots_with(state: &State, (cores, total_memory, free_memory, untracked_load): (usize, u64, u64, f64)) -> Slots {
+    let big = cores >= BIG_CORES && total_memory >= BIG_MEMORY;
+    let room = free_memory > ROOM_FREE_MEMORY && untracked_load < ROOM_UNTRACKED_LOAD;
     Slots {
-        manual,
-        auto,
+        manual: state.manual_slots,
+        auto: if big && room { 2 } else { 1 },
         busy: state.jobs.values().filter(|j| j.has_slot || j.terminal_busy()).count(),
         waiting: state.jobs.values().filter(|j| j.waiting.is_some()).count(),
-        cores: state.machine.cores,
-        total_memory: state.machine.total_memory,
+        cores,
+        total_memory,
     }
 }
 
