@@ -214,10 +214,13 @@ pub fn open(
     // Windows): the watcher and later runs may use another.
     let canonical = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
     let project = canonical.as_path();
-    let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(o) = open.get(dialog_id) {
+    // Only this chat waits while its view is opened and mounted; the open
+    // overlays stay free for everyone else.
+    let gate = gate(dialog_id);
+    let opening = gate.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(o) = get(dialog_id) {
         if o.project == project {
-            return Ok(o.clone());
+            return Ok(o);
         }
         return Err("this chat's isolated changes belong to another project folder".into());
     }
@@ -234,7 +237,7 @@ pub fn open(
     }
     let fs = Arc::new(OverlayFs::open(project, &store, DEFAULT_LIMIT).map_err(|e| e.to_string())?);
     // Files a crash left behind: only here, where nothing else has the
-    // chat's changes open (OPEN is held).
+    // chat's changes open (its gate is held).
     fs.sweep_orphans();
     fs.on_warn(on_warn);
     let at = mountpoint(dialog_id);
@@ -247,11 +250,21 @@ pub fn open(
         store,
         mount: Mutex::new(Some(mount)),
     });
-    open.insert(dialog_id.to_string(), overlay.clone());
-    drop(open);
+    OPEN.lock().unwrap_or_else(|e| e.into_inner()).insert(dialog_id.to_string(), overlay.clone());
+    // Before the check: it may mark conflicts, which takes the gate.
+    drop(opening);
     // Closed until now (a restart): the project may have changed meanwhile.
     check_all(&overlay, dialog_id);
     Ok(overlay)
+}
+
+/// One lock per chat, held while its overlay is opened from its saved
+/// changes (to mount it, or for one call): never two at once on the same
+/// files. The open overlays' lock is only held to look one up.
+static GATES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Default::default);
+
+fn gate(dialog_id: &str) -> Arc<Mutex<()>> {
+    GATES.lock().unwrap_or_else(|e| e.into_inner()).entry(dialog_id.to_string()).or_default().clone()
 }
 
 /// The project a folder belongs to: the project of a chat's view, or the
@@ -856,13 +869,16 @@ fn fresh_peer_note(dialog_id: &str) -> Option<String> {
 
 /// What the chat changed, for the UI: landable changes only.
 pub fn changes(dialog_id: &str) -> Vec<OverlayChange> {
-    let open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(o) = open.get(dialog_id).cloned() {
-        drop(open);
+    if let Some(o) = get(dialog_id) {
         return o.fs.changes().into_iter().filter(|c| !c.by_product()).collect();
     }
-    // Not open: read from its saved list, with the open overlays locked so
-    // the chat's own overlay isn't opened on the same files meanwhile.
+    // Not open: read from its saved list, with its gate held so the chat's
+    // own overlay isn't opened on the same files meanwhile.
+    let gate = gate(dialog_id);
+    let _held = gate.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(o) = get(dialog_id) {
+        return o.fs.changes().into_iter().filter(|c| !c.by_product()).collect();
+    }
     let (Some(store), Some(project)) = (store_dir(dialog_id), saved_project(dialog_id)) else {
         return Vec::new();
     };
@@ -1227,13 +1243,17 @@ fn saved_project(dialog_id: &str) -> Option<PathBuf> {
 }
 
 /// The chat's overlay, open or (between runs, after a restart) opened from
-/// its saved changes for this one call. The open overlays stay locked while
-/// a saved one is used, so the chat's own overlay isn't opened on the same
-/// files meanwhile. `f` mustn't look at the open overlays.
+/// its saved changes for this one call. Its gate stays held while a saved
+/// one is used, so the chat's own overlay isn't opened on the same files
+/// meanwhile: `f` mustn't open this chat's overlay.
 fn with_fs<T>(dialog_id: &str, f: impl FnOnce(&OverlayFs) -> T) -> Result<T, String> {
-    let open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(o) = open.get(dialog_id).cloned() {
-        drop(open);
+    if let Some(o) = get(dialog_id) {
+        return Ok(f(&o.fs));
+    }
+    let gate = gate(dialog_id);
+    let held = gate.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(o) = get(dialog_id) {
+        drop(held);
         return Ok(f(&o.fs));
     }
     let store = store_dir(dialog_id).filter(|s| s.join("manifest.json").is_file()).ok_or("this chat has no isolated changes")?;
@@ -1241,7 +1261,7 @@ fn with_fs<T>(dialog_id: &str, f: impl FnOnce(&OverlayFs) -> T) -> Result<T, Str
     let fs = OverlayFs::open(&project, &store, DEFAULT_LIMIT).map_err(|e| e.to_string())?;
     let out = f(&fs);
     fs.flush();
-    drop(open);
+    drop(held);
     Ok(out)
 }
 
