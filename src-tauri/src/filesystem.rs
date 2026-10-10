@@ -637,9 +637,6 @@ pub fn read_dir_entries(
     root_path: String,
     path: String,
 ) -> Result<Vec<DirEntryInfo>, String> {
-    let n = CALL_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
-    eprintln!("[debug] read_dir_entries call #{n} for {path}");
-
     let root = Path::new(&root_path);
     let matcher = get_or_build_gitignore(&state, root)?;
 
@@ -661,8 +658,11 @@ pub fn read_dir_entries(
         }
 
         let entry_path = entry.path();
+        // A link to a folder opens like one (its contents load only when
+        // it's expanded, so a link to a parent can't loop).
+        let is_dir = file_type.is_dir() || (file_type.is_symlink() && entry_path.is_dir());
         let ignored = matcher
-            .matched_path_or_any_parents(&entry_path, file_type.is_dir())
+            .matched_path_or_any_parents(&entry_path, is_dir)
             .is_ignore();
 
         let id = stable_file_id(&entry_path);
@@ -672,7 +672,7 @@ pub fn read_dir_entries(
             id,
             name,
             path: entry_path.to_string_lossy().to_string(),
-            is_dir: file_type.is_dir(),
+            is_dir,
             ignored,
         });
     }
@@ -794,13 +794,34 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let dest_path = dest.join(entry.file_name());
-        if file_type.is_dir() {
+        if file_type.is_symlink() {
+            copy_symlink(&entry.path(), &dest_path)?;
+        } else if file_type.is_dir() {
             copy_dir_recursive(&entry.path(), &dest_path)?;
         } else {
             fs::copy(entry.path(), &dest_path)?;
         }
     }
     Ok(())
+}
+
+/// A link is copied as a link: `fs::copy` would copy what it points to (a
+/// whole folder's worth for a link to one) and fails on a broken link.
+fn copy_symlink(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let target = fs::read_link(src)?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&target, dest)
+    }
+    #[cfg(windows)]
+    {
+        // Windows links are typed; a broken one is taken as a file link.
+        if fs::metadata(src).is_ok_and(|m| m.is_dir()) {
+            std::os::windows::fs::symlink_dir(&target, dest)
+        } else {
+            std::os::windows::fs::symlink_file(&target, dest)
+        }
+    }
 }
 
 /// Resolves (and caches) the id for an arbitrary path the frontend already
@@ -1267,7 +1288,11 @@ fn move_cross_device(
         ));
     }
     if meta.is_dir() {
-        copy_dir_recursive(from, to).map_err(|e| format!("{}: {e}", from.display()))?;
+        if let Err(e) = copy_dir_recursive(from, to) {
+            // A half copy isn't left behind; the source stays as it was.
+            let _ = fs::remove_dir_all(to);
+            return Err(format!("{}: {e} (nothing was moved)", from.display()));
+        }
     } else {
         fs::copy(from, to).map_err(|e| format!("{}: {e}", from.display()))?;
         // Don't delete the source when the copy looks truncated.
@@ -1288,79 +1313,52 @@ fn move_cross_device(
     Ok(to.to_string_lossy().to_string())
 }
 
-/// Generates a unique path by appending " - copy" or " - copy N" if the
-/// target name already exists. Matches typical desktop OS behavior.
-/// Generates a unique path by appending "copy" or "copyN" if the
-/// target name already exists. Matches typical desktop OS behavior.
+/// The target name, or when that's taken the first free "name copy.ext",
+/// "name copy 2.ext", "name copy 3.ext", ... (as the macOS Finder names
+/// them). Copying a copy counts on from its number instead of adding
+/// another " copy".
 fn generate_unique_path(dest_dir: &Path, name: &str, is_dir: bool) -> PathBuf {
     let dest = dest_dir.join(name);
-
-    // If path doesn't exist, use it as-is
-    if !dest.exists() {
+    if fs::symlink_metadata(&dest).is_err() {
         return dest;
     }
 
-    // Split into base and extension for files
-    let (base, ext) = if is_dir {
-        (name.to_string(), String::new())
-    } else {
-        let path = Path::new(name);
-        let base = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| name.to_string());
-        let ext = path
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy()))
-            .unwrap_or_default();
-        (base, ext)
+    // Split into base and extension for files (".gitignore" is all base).
+    let (base, ext) = match name.rfind('.') {
+        Some(dot) if !is_dir && dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name, ""),
     };
 
-    // Check if the base already ends with "copy" or "copyN"
-    // If so, extract the original base and starting counter
-    let (original_base, start_counter) = if let Some(idx) = base.rfind("copy") {
-        let before_copy = &base[..idx];
-        let after_copy = &base[idx + 4..]; // skip "copy"
-
-        // Check if there's a number after "copy"
-        if !after_copy.is_empty() {
-            // "copyN" format - try to parse the number
-            if let Ok(num) = after_copy.parse::<u32>() {
-                (before_copy.to_string(), num)
-            } else {
-                // "copy" followed by non-number, treat as copy1
-                (base.clone(), 1)
-            }
-        } else {
-            // Just "copy" with nothing after
-            (before_copy.to_string(), 1)
-        }
-    } else {
-        // No "copy" suffix, start from 1
-        (base.clone(), 1)
+    // An existing " copy" / " copy N" suffix: continue from it.
+    let (original, mut n) = match base.rfind(" copy") {
+        Some(at) => match &base[at + 5..] {
+            "" => (&base[..at], 2u64),
+            rest => match rest.strip_prefix(' ').and_then(|d| d.parse::<u64>().ok()) {
+                Some(k) => (&base[..at], k + 1),
+                None => (base, 1),
+            },
+        },
+        None => (base, 1),
     };
 
-    // Try incrementing numbers until we find a free name
-    let mut counter = start_counter;
     loop {
-        let new_name = format!("{}copy{}{}", original_base, counter, ext);
-        let new_path = dest_dir.join(&new_name);
-        if !new_path.exists() {
-            return new_path;
+        let candidate = if n == 1 {
+            format!("{original} copy{ext}")
+        } else {
+            format!("{original} copy {n}{ext}")
+        };
+        let path = dest_dir.join(candidate);
+        if fs::symlink_metadata(&path).is_err() {
+            return path;
         }
-        counter += 1;
-
-        // Safety: prevent infinite loops in pathological cases
-        if counter > 1000 {
-            return new_path; // Let the OS error if it truly can't create
-        }
+        n += 1;
     }
 }
 
 /// Copies an entry into a different directory (optionally renaming it), i.e.
 /// what a copy-then-paste does. `dest_dir_id` must be a directory's id.
 /// If a file/folder with the target name already exists, automatically
-/// generates a unique name by appending " - copy" or " - copy N".
+/// generates a unique name: "name copy.ext", "name copy 2.ext", ...
 #[tauri::command]
 pub fn copy_path(
     state: State<'_, WatcherState>,
@@ -1381,7 +1379,9 @@ pub fn copy_path(
     let dest = generate_unique_path(&dest_dir, &base_name, src.is_dir());
 
     let meta = fs::symlink_metadata(&src).map_err(|e| format!("{}: {e}", src.display()))?;
-    if meta.is_dir() {
+    if meta.file_type().is_symlink() {
+        copy_symlink(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
+    } else if meta.is_dir() {
         copy_dir_recursive(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
     } else {
         fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
@@ -1789,6 +1789,46 @@ mod save_tests {
         // Overwrite: no expectation.
         write_file_content(p, "mine again\n".into(), None).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "mine again\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copies_are_named_like_the_finder_names_them() {
+        let dir = std::env::temp_dir().join(format!("unique-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let name = |p: PathBuf| p.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(name(generate_unique_path(&dir, "notes.txt", false)), "notes.txt");
+        fs::write(dir.join("notes.txt"), "").unwrap();
+        assert_eq!(name(generate_unique_path(&dir, "notes.txt", false)), "notes copy.txt");
+        fs::write(dir.join("notes copy.txt"), "").unwrap();
+        assert_eq!(name(generate_unique_path(&dir, "notes.txt", false)), "notes copy 2.txt");
+        assert_eq!(name(generate_unique_path(&dir, "notes copy.txt", false)), "notes copy 2.txt");
+        fs::write(dir.join("copycat.txt"), "").unwrap();
+        assert_eq!(name(generate_unique_path(&dir, "copycat.txt", false)), "copycat copy.txt");
+        fs::write(dir.join(".gitignore"), "").unwrap();
+        assert_eq!(name(generate_unique_path(&dir, ".gitignore", false)), ".gitignore copy");
+        fs::create_dir(dir.join("src.d")).unwrap();
+        assert_eq!(name(generate_unique_path(&dir, "src.d", true)), "src.d copy");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_copy_keeps_its_links_as_links() {
+        let dir = std::env::temp_dir().join(format!("copy-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("sub/a.txt"), "a").unwrap();
+        std::os::unix::fs::symlink("sub", src.join("to-sub")).unwrap();
+        std::os::unix::fs::symlink("missing", src.join("broken")).unwrap();
+        copy_dir_recursive(&src, &dir.join("dest")).unwrap();
+        for link in ["to-sub", "broken"] {
+            let meta = fs::symlink_metadata(dir.join("dest").join(link)).unwrap();
+            assert!(meta.file_type().is_symlink(), "{link}");
+        }
+        assert_eq!(fs::read_link(dir.join("dest/to-sub")).unwrap(), Path::new("sub"));
         let _ = fs::remove_dir_all(&dir);
     }
 }
