@@ -635,8 +635,16 @@ export default function App() {
       const id = file.deleted ? await getPathId(file.path).catch(() => file.id) : file.id;
       setOpenFiles((prev) =>
         prev.map((f) =>
+          // What was written is the saved state; text typed while the save
+          // was in flight stays unsaved.
           f.path === file.path
-            ? { ...f, id, originalContent: f.content, dirty: false, deleted: false }
+            ? {
+                ...f,
+                id,
+                originalContent: file.content,
+                dirty: f.content !== file.content,
+                deleted: false,
+              }
             : f
         )
       );
@@ -676,6 +684,8 @@ export default function App() {
       danger: true,
     });
     if (overwrite) {
+      // The tab may have been closed while the dialog was open.
+      if (!openFiles().some((f) => f.path === file.path)) return;
       if (activePath() !== file.path) setActivePath(file.path);
       await saveActiveFile(true);
       return;
@@ -699,7 +709,17 @@ export default function App() {
       readOnly: true,
     };
     setGitBase(virtualPath, file.name, file.content);
-    setOpenFiles((prev) => [...prev.filter((f) => f.path !== virtualPath), tab]);
+    // The user has now seen the version on disk: the tab is checked against
+    // it from here on, so a save after merging by hand isn't refused again
+    // (and saving the tab untouched replaces it, as Overwrite would).
+    setOpenFiles((prev) => [
+      ...prev
+        .filter((f) => f.path !== virtualPath)
+        .map((f) =>
+          f.path === file.path ? { ...f, originalContent: disk, dirty: f.content !== disk } : f
+        ),
+      tab,
+    ]);
     setActivePath(virtualPath);
   }
 

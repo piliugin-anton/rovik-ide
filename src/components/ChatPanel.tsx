@@ -2105,10 +2105,10 @@ export default function ChatPanel(props: ChatProps) {
    * An isolated chat's conflicts with the project, handed to it
    * (IsolationBar): markers are in its files; this asks it to settle them.
    */
-  function askToResolve(dialogId: string, request: string) {
-    if (!activeProfile() || isRunning(dialogId)) return;
+  async function askToResolve(dialogId: string, request: string): Promise<boolean> {
+    if (!activeProfile() || isRunning(dialogId)) return false;
     setChatMode('agent');
-    void sendMessage(
+    return sendMessage(
       dialogId,
       {
         id: crypto.randomUUID(),
@@ -3006,13 +3006,16 @@ export default function ChatPanel(props: ChatProps) {
         )}
       </Show>
       {/* An isolated chat's changes that aren't in the project yet. */}
-      <Show when={activeDialogId()}>
+      {/* Keyed: a new bar per chat, so nothing of one chat's acts on another. */}
+      <Show when={activeDialogId()} keyed>
         {(id) => (
           <IsolationBar
-            dialogId={id()}
+            dialogId={id}
             revision={isolationRevision()}
             running={sending()}
-            onAskChat={(request) => askToResolve(id(), request)}
+            canAskChat={!!activeProfile() && !isRunning(id)}
+            onAskChat={askToResolve}
+            chatTitle={(other) => store.state.list.items.find((d) => d.id === other)?.title}
           />
         )}
       </Show>

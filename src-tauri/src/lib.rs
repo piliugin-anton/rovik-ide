@@ -195,6 +195,7 @@ pub fn run() {
             overlay::chats::overlay_conflict_file,
             overlay::chats::overlay_conflict_resolve,
             overlay::chats::overlay_conflicts_to_chat,
+            overlay::chats::overlay_undo_merge,
             workload::workload_set_slots,
             workload::workload_status,
             outline::outline_symbols,
@@ -235,6 +236,7 @@ pub fn run() {
                 // Unmount the virtual files, or the folder stays a dead mount.
                 let _ = app.state::<vfs::VfsState>().unmount();
                 overlay::chats::close_all();
+                workload::shutdown();
                 if let Some(db) = app.try_state::<chat_db::DbState>() {
                     db.mark_clean_exit();
                 }

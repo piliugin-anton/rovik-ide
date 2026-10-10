@@ -32,6 +32,12 @@ pub fn init(data_dir: &std::path::Path) {
     *SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
 }
 
+/// At exit: paused commands resume, and history is written.
+pub fn shutdown() {
+    tracker::release_all();
+    history::flush();
+}
+
 /// The most slots the user can set.
 const MAX_SLOTS: usize = 8;
 
@@ -78,12 +84,13 @@ pub fn workload_focus(dialog_id: Option<String>) {
 #[tauri::command]
 pub fn workload_set_slots(slots: Option<usize>) -> Result<(), String> {
     let slots = slots.map(|n| n.clamp(1, MAX_SLOTS));
-    queue::set_manual_slots(slots);
+    // Saved first: a setting that can't be kept isn't applied either.
     let file = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(file) = file {
         let bytes = serde_json::to_vec(&Saved { slots }).map_err(|e| e.to_string())?;
         crate::atomic_file::write_atomic(&file, &bytes).map_err(|e| e.to_string())?;
     }
+    queue::set_manual_slots(slots);
     Ok(())
 }
 

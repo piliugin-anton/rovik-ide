@@ -114,12 +114,20 @@ pub fn project_context(profile: &ProjectProfile, checks: &[ProjectCheck], verify
 }
 
 /// Detected fresh (a few file reads): the project's checks and its prompt section.
-pub fn load<R: tauri::Runtime>(app: &tauri::AppHandle<R>, root: &str, verify_on: bool) -> (Vec<ProjectCheck>, String) {
+/// The project's checks and its section of the system prompt. `root` is
+/// where the run works (an isolated chat's view); `settings_root`, the
+/// project folder its saved settings are kept under.
+pub fn load<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    root: &str,
+    settings_root: &str,
+    verify_on: bool,
+) -> (Vec<ProjectCheck>, String) {
     if !Path::new(root).is_dir() {
         return (Vec::new(), String::new());
     }
     let profile = project_profile::detect(Path::new(root));
-    let settings = project_profile::load_project_settings(app.clone(), root.to_string()).unwrap_or_default();
+    let settings = project_profile::load_project_settings(app.clone(), settings_root.to_string()).unwrap_or_default();
     let checks = effective_checks(&profile, &settings);
     let context = project_context(&profile, &checks, verify_on);
     (checks, context)
@@ -141,7 +149,7 @@ pub fn cached_context<R: tauri::Runtime>(app: &tauri::AppHandle<R>, root: &str, 
             return text;
         }
     }
-    let (_, text) = load(app, root, verify_on);
+    let (_, text) = load(app, root, root, verify_on);
     if let Ok(mut cache) = CACHE.lock() {
         cache.retain(|_, (at, _)| at.elapsed() < FRESH);
         cache.insert(key, (Instant::now(), text.clone()));

@@ -26,6 +26,14 @@ export interface LastLanding {
   at: number;
 }
 
+export interface PeerConflict {
+  path: string;
+  /** The other chats' ids. */
+  peers: string[];
+  /** The same lines (false: the same file, lines can't be told apart). */
+  sameLines: boolean;
+}
+
 export interface OverlayStatus {
   /** The chat has isolated changes (or an overlay with none yet). */
   isolated: boolean;
@@ -33,11 +41,17 @@ export interface OverlayStatus {
   pending?: { reason: string; conflicts: Conflict[] } | null;
   /** Its latest landing, for Undo. */
   lastLanding?: LastLanding | null;
+  /** Files other open chats are changing too, in a way that clashes. */
+  peerConflicts: PeerConflict[];
+  /** Files the project's newer changes were merged into (can be undone). */
+  mergedIn: string[];
   /** Where the chat sees the project, while it's mounted. */
   view?: string | null;
   files: ChangedFile[];
   used: number;
   limit: number;
+  /** Build output and dependencies in the chat's view (not landed). */
+  byProducts: number;
 }
 
 export interface FileVersions {
@@ -101,4 +115,9 @@ export function overlayConflictsToChat(
   dialogId: string
 ): Promise<{ files: string[]; request: string }> {
   return invoke('overlay_conflicts_to_chat', { dialogId });
+}
+
+/** Takes the project's merged-in changes back out of the chat's files. */
+export function overlayUndoMerge(dialogId: string): Promise<string[]> {
+  return invoke<string[]>('overlay_undo_merge', { dialogId });
 }

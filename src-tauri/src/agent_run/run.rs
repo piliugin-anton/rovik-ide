@@ -49,7 +49,7 @@ const SHORT_REQUEST_CHARS: usize = 80;
 pub(super) const RESUME_NOTE: &str =
     "Interrupted: the app was closed before this ran. Allow it to continue the task.";
 
-const IDE_NOTE: &str = "[Automatic check by the IDE, not written by the user]\n";
+pub(super) const IDE_NOTE: &str = "[Automatic check by the IDE, not written by the user]\n";
 /// End-of-run checklist reminders before the run ends as unfinished-checklist.
 const MAX_CHECKLIST_NUDGES: u32 = 2;
 /// Context percent at and above which a finished checklist step asks for a
@@ -98,7 +98,9 @@ pub struct Run<R: Runtime> {
     pub(super) landed: bool,
     /// Files the project's newer changes were just merged into, for the
     /// failure report of the checks that follow (landing.rs).
-    pub(super) merged_from_project: Option<Vec<String>>,
+    pub(super) merged_from_project: Option<Vec<(String, String)>>,
+    /// Times the model was reminded of conflict markers it left.
+    pub(super) marker_reminders: u32,
     /// What this run has read and written of each file, so a whole-file
     /// write over a change it hasn't seen is refused (file_guard.rs).
     pub(super) seen: Arc<crate::file_guard::Seen>,
@@ -251,10 +253,12 @@ impl<R: Runtime> Run<R> {
         let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
         // An isolated chat works in its overlay: the project with its own
         // changes on top, mounted as a folder (src/overlay). Plan mode
-        // changes nothing, so it reads the project itself.
+        // changes nothing, so it reads the project itself, unless the chat
+        // has changes that haven't landed: then it plans against those.
         let mut isolation_problem = None;
+        let isolate = request.isolate.unwrap_or_else(crate::overlay::chats::enabled);
         let root = match &project_root {
-            Some(r) if !plan_mode && request.isolate.unwrap_or_else(crate::overlay::chats::enabled) => {
+            Some(r) if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) => {
                 let app_ = app.clone();
                 let on_warn = Box::new(move |used: u64, limit: u64| {
                     emit(
@@ -286,9 +290,15 @@ impl<R: Runtime> Run<R> {
                 AgentEvent::Notice {
                     kind: "warning".into(),
                     title: "This chat isn't isolated".into(),
-                    message: format!(
-                        "{problem}. It works in the project folder directly. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
-                    ),
+                    message: if problem.contains("couldn't mount") {
+                        format!(
+                            "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
+                        )
+                    } else {
+                        format!(
+                            "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files."
+                        )
+                    },
                 },
             );
         }
@@ -456,8 +466,10 @@ impl<R: Runtime> Run<R> {
 
         let (checks, project_context) = match &root {
             Some(r) => {
+                // Settings are kept by the project's folder, not the view's.
+                let settings_root = project_root.clone().unwrap_or_else(|| r.clone());
                 let (app, r, verify) = (app.clone(), r.clone(), config.permissions.verify_changes);
-                tauri::async_runtime::spawn_blocking(move || project::load(&app, &r, verify))
+                tauri::async_runtime::spawn_blocking(move || project::load(&app, &r, &settings_root, verify))
                     .await
                     .unwrap_or_default()
             }
@@ -546,6 +558,7 @@ impl<R: Runtime> Run<R> {
             root,
             project_root,
             merged_from_project: None,
+            marker_reminders: 0,
             landed: false,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
@@ -607,7 +620,11 @@ impl<R: Runtime> Run<R> {
 
     /// Runs to the end and returns how it ended (for the log and the UI).
     pub(super) async fn go(&mut self, entry: Entry) -> String {
-        let outcome = match self.drive(entry).await {
+        // While it runs, conflicts found for this chat go to it.
+        crate::overlay::chats::set_running(&self.dialog_id, true);
+        let outcome = self.drive(entry).await;
+        crate::overlay::chats::set_running(&self.dialog_id, false);
+        let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(e) => {
                 eprintln!("agent: run in {} failed: {e}", self.dialog_id);
@@ -624,6 +641,7 @@ impl<R: Runtime> Run<R> {
         };
         // An isolated chat's changes land now, or say why they don't.
         self.land_at_end(&outcome).await;
+        crate::overlay::chats::release_direct_writes(&self.dialog_id);
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
@@ -651,7 +669,13 @@ impl<R: Runtime> Run<R> {
                 // The waiting record becomes the running one, then the results.
                 let outcome = self.verify_at_end(true, Some(record_id)).await?;
                 if outcome != "continue" {
-                    return Ok(outcome);
+                    // As at any other end: the project's newer changes to
+                    // the same files are merged in and checked first.
+                    match self.take_project_changes(&outcome).await? {
+                        Some(next) if next == "continue" => {}
+                        Some(next) => return Ok(next),
+                        None => return Ok(outcome),
+                    }
                 }
             }
             Entry::Resume { calls } => {
@@ -739,6 +763,10 @@ impl<R: Runtime> Run<R> {
                         continue;
                     }
                 } else if self.check_checklist().await? {
+                    continue;
+                }
+                // Conflicts handed to it: not done while their markers are left.
+                if self.remind_of_markers().await? {
                     continue;
                 }
                 let outcome = self.verify_at_end(false, None).await?;

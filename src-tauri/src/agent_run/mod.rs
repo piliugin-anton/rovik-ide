@@ -215,6 +215,11 @@ impl AgentState {
         }
     }
 
+    /// Whether the chat has a run going.
+    pub fn is_running(&self, dialog_id: &str) -> bool {
+        self.lock().runs.contains_key(dialog_id)
+    }
+
     /// Stops the chat's run: its current request, its next steps, and
     /// whatever it waits on (approvals count as denied, questions as stopped).
     pub fn stop<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) -> bool {
@@ -351,6 +356,7 @@ pub struct StartRequest {
 
 #[tauri::command]
 pub fn agent_configure(state: State<'_, AgentState>, config: AgentConfig) {
+    crate::overlay::chats::set_chat_resolves(config.permissions.chat_resolves_conflicts);
     state.set_config(config);
 }
 

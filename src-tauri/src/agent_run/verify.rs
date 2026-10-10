@@ -285,11 +285,17 @@ impl<R: Runtime> Run<R> {
         // user's message or replaced by the request's editor context.
         let mut report = failure_report(&results, &changed, round);
         if let Some(files) = &self.merged_from_project {
+            let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+            let diffs: String = files
+                .iter()
+                .filter(|(_, d)| !d.is_empty())
+                .map(|(p, d)| format!("\nWhat the project changed in `{p}`:\n```diff\n{d}\n```\n"))
+                .collect();
             report = report.replacen(
                 "\n",
                 &format!(
-                    "\nThe project changed meanwhile ({}): those changes are now merged into your files, and the checks ran on the result. Fix what fails so your changes work with the project's.\n",
-                    files.join(", ")
+                    "\nThe project changed meanwhile ({}): those changes are now merged into your files, and the checks ran on the result. Fix what fails so your changes work with the project's.\n{diffs}",
+                    names.join(", ")
                 ),
                 1,
             );

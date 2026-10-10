@@ -26,14 +26,14 @@ const FALLBACK: &[&str] = &[
 
 pub struct Tiers {
     root: PathBuf,
-    /// The ignore rules that apply in each folder (its own and its parents').
+    /// Each folder's own rules (its `.gitignore` and `.ignore`), rooted at
+    /// that folder as git reads them; None: it has none.
     rules: Mutex<HashMap<String, Option<Gitignore>>>,
-    has_any_ignore_file: bool,
 }
 
 impl Tiers {
     pub fn new(root: &Path) -> Tiers {
-        Tiers { root: root.to_path_buf(), rules: Mutex::new(HashMap::new()), has_any_ignore_file: root.join(".gitignore").is_file() }
+        Tiers { root: root.to_path_buf(), rules: Mutex::new(HashMap::new()) }
     }
 
     /// Whether a project-relative path (with `/`) is build output,
@@ -43,37 +43,40 @@ impl Tiers {
         if parts.iter().any(|p| ALWAYS.contains(p)) {
             return true;
         }
-        if !self.has_any_ignore_file {
-            return parts.iter().any(|p| FALLBACK.contains(p));
-        }
-        // Ignored itself, or inside an ignored folder.
+        // Ignored itself, or inside an ignored folder. Each path is checked
+        // against the rules of the folders above it, the deepest first: the
+        // first that says something decides (a deeper `!keep` un-ignores).
+        let mut any_rules = false;
         for end in 1..=parts.len() {
-            let dir = parts[..end - 1].join("/");
             let path = self.root.join(parts[..end].join("/"));
             let as_dir = end < parts.len() || is_dir;
-            if let Some(rules) = self.rules_for(&dir) {
-                if rules.matched(&path, as_dir).is_ignore() {
+            for depth in (0..end).rev() {
+                let Some(rules) = self.rules_of(&parts[..depth].join("/")) else { continue };
+                any_rules = true;
+                let m = rules.matched(&path, as_dir);
+                if m.is_ignore() {
                     return true;
+                }
+                if m.is_whitelist() {
+                    break;
                 }
             }
         }
-        false
+        // No ignore files on the way: the short list.
+        !any_rules && parts.iter().any(|p| FALLBACK.contains(p))
     }
 
-    /// The rules for a folder: every `.gitignore` from the root down to it.
-    fn rules_for(&self, dir: &str) -> Option<Gitignore> {
+    /// A folder's own ignore rules, anchored at that folder.
+    fn rules_of(&self, dir: &str) -> Option<Gitignore> {
         let mut cache = self.rules.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(found) = cache.get(dir) {
             return found.clone();
         }
-        let mut builder = GitignoreBuilder::new(&self.root);
+        let at = if dir.is_empty() { self.root.clone() } else { self.root.join(dir) };
+        let mut builder = GitignoreBuilder::new(&at);
         let mut any = false;
-        let mut at = self.root.clone();
-        for part in std::iter::once("").chain(dir.split('/').filter(|p| !p.is_empty())) {
-            if !part.is_empty() {
-                at.push(part);
-            }
-            let file = at.join(".gitignore");
+        for name in [".gitignore", ".ignore"] {
+            let file = at.join(name);
             if file.is_file() {
                 any |= builder.add(file).is_none();
             }
@@ -117,6 +120,27 @@ mod tests {
         // Not ignored here, so source.
         assert!(!t.is_by_product("node_modules/x.js", false));
         assert!(!t.is_by_product("bin/tool.sh", false));
+    }
+
+    #[test]
+    fn a_subfolders_rules_are_anchored_there_and_ignore_files_count() {
+        let dir = project(&[("web/.gitignore", "/build\nout/gen\n"), ("api/.ignore", "cache/\n"), (".gitignore", "*.tmp\n!keep.tmp\n")]);
+        let t = Tiers::new(&dir);
+        assert!(t.is_by_product("web/build/app.js", false), "anchored at web/");
+        assert!(!t.is_by_product("build/app.js", false), "not at the root");
+        assert!(t.is_by_product("web/out/gen/x.rs", false));
+        assert!(t.is_by_product("api/cache/x", false), ".ignore files count");
+        assert!(t.is_by_product("a.tmp", false));
+        assert!(!t.is_by_product("keep.tmp", false));
+    }
+
+    #[test]
+    fn ignore_files_only_in_a_subfolder() {
+        let dir = project(&[("web/.gitignore", "dist/\n")]);
+        let t = Tiers::new(&dir);
+        assert!(t.is_by_product("web/dist/a.js", false));
+        // Elsewhere nothing says otherwise: the short list.
+        assert!(t.is_by_product("node_modules/x.js", false));
     }
 
     #[test]

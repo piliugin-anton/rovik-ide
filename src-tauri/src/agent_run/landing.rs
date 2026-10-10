@@ -25,7 +25,10 @@ use tauri::Runtime;
 const MAX_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Run outcomes after which changes may land without asking.
-const LANDS_AFTER: &[&str] = &["done", "verified", "unverified"];
+const LANDS_AFTER: &[&str] = &["done", "verified", "unverified", "verify-unverified"];
+
+/// Outcomes that land without any check having run.
+const UNCHECKED: &[&str] = &["unverified", "verify-unverified"];
 
 impl<R: Runtime> Run<R> {
     pub(super) async fn land_at_end(&mut self, outcome: &str) {
@@ -41,16 +44,25 @@ impl<R: Runtime> Run<R> {
     /// Lands if it may; returns what happened and to how many files, for
     /// the log (None: nothing to land).
     async fn try_land(&mut self, outcome: &str) -> Option<(&'static str, usize)> {
-        if self.root == self.project_root {
+        // Plan mode only reads: what the chat changed before waits as it was.
+        if self.root == self.project_root || self.plan_mode {
             return None;
         }
         let overlay = chats::get(&self.dialog_id)?;
-        overlay.fs.flush();
         if LANDS_AFTER.contains(&outcome) {
             self.wait_while_project_busy().await;
         }
         let dialog_id = self.dialog_id.clone();
-        let changes = chats::changes(&dialog_id);
+        // Reading and merging files: off the async threads.
+        let (changes, marked) = {
+            let (o, id) = (overlay.clone(), dialog_id.clone());
+            tauri::async_runtime::spawn_blocking(move || {
+                o.fs.flush();
+                (chats::changes(&id), chats::markers_left(&id))
+            })
+            .await
+            .unwrap_or_default()
+        };
         if changes.is_empty() {
             chats::set_pending(&dialog_id, None);
             return None;
@@ -58,7 +70,9 @@ impl<R: Runtime> Run<R> {
         let count = changes.len();
         if !LANDS_AFTER.contains(&outcome) {
             let reason = match outcome {
-                "stopped" => "the run was stopped",
+                "stopped" | "verify-stopped" => "the run was stopped",
+                "repetition" => "the model kept repeating itself",
+                "error" => "the run ended with an error",
                 "verify-gave-up" | "verify-unresolved" => "the checks still fail",
                 "verify-needs-approval" => "the checks wait for your approval",
                 "unfinished-checklist" => "the checklist isn't finished",
@@ -68,7 +82,6 @@ impl<R: Runtime> Run<R> {
             return Some(("waits: run didn't finish", count));
         }
 
-        let marked = chats::markers_left(&dialog_id);
         if !marked.is_empty() {
             let list = marked.join(", ");
             chats::set_pending(
@@ -79,7 +92,10 @@ impl<R: Runtime> Run<R> {
             return Some(("waits: markers left", count));
         }
 
-        let plan = land::plan(&overlay.project, &changes, false);
+        let plan = {
+            let project = overlay.project.clone();
+            tauri::async_runtime::spawn_blocking(move || land::plan(&project, &changes, false)).await.ok()?
+        };
         if !plan.conflicts.is_empty() {
             let n = plan.conflicts.len();
             chats::set_pending(
@@ -91,6 +107,21 @@ impl<R: Runtime> Run<R> {
             );
             self.notice("warning", "This chat's changes didn't land", "They conflict with changes in the project. Review them above the message box.");
             return Some(("waits: conflicts", count));
+        }
+        let p = self.state.config().permissions;
+        let has_checks = p.verify_changes && self.checks.iter().any(|c| c.enabled && !c.command.trim().is_empty());
+        if plan.merged && has_checks && p.command_approval.required {
+            // The merged result's checks are commands too: not without the
+            // user's go. Land (in the bar) lands it as it is.
+            chats::set_pending(
+                &dialog_id,
+                Some(&Pending {
+                    reason: "Not landed: the project changed the same files meanwhile, and checking the merged result needs your approval. Land takes it as it is.".into(),
+                    conflicts: Vec::new(),
+                }),
+            );
+            self.notice("warning", "This chat's changes didn't land", "The merged result's checks wait for your approval.");
+            return Some(("waits: merged checks need approval", count));
         }
         if plan.merged {
             if let Some(failed) = self.check_merged(&plan, &overlay.view).await {
@@ -105,14 +136,20 @@ impl<R: Runtime> Run<R> {
                 return Some(("waits: merged checks fail", count));
             }
         }
-        let result = tauri::async_runtime::spawn_blocking(move || chats::land_now(&dialog_id, false)).await;
+        // With checks, only what they checked lands: a file the project
+        // changed again meanwhile waits.
+        let result = tauri::async_runtime::spawn_blocking(move || chats::land_now_with(&dialog_id, false, !has_checks)).await;
         match result {
             Ok(Ok(Some(landed))) => {
                 let n = landed.paths.len();
+                let unchecked = if UNCHECKED.contains(&outcome) { " No checks ran: none are set up or allowed." } else { "" };
                 self.notice(
                     "success",
                     "Landed",
-                    &format!("{n} change{} from this chat are in the project. Undo is above the message box.", if n == 1 { "" } else { "s" }),
+                    &format!(
+                        "{n} change{} from this chat are in the project.{unchecked} Undo is above the message box.",
+                        if n == 1 { "" } else { "s" }
+                    ),
                 );
                 // The project changed under the chat's view: the next run
                 // starts from it.
@@ -120,6 +157,12 @@ impl<R: Runtime> Run<R> {
                 Some(("landed", n))
             }
             Ok(Ok(None)) => Some(("nothing new", count)),
+            Ok(Err(e @ LandError::Unchecked(_))) => {
+                let reason = format!("Not landed: {e}. Land again (the checks run on the new result), or Land in the bar to take it as it is.");
+                chats::set_pending(&self.dialog_id, Some(&Pending { reason, conflicts: Vec::new() }));
+                self.notice("warning", "This chat's changes didn't land", "The project changed the same files again while the checks ran.");
+                Some(("waits: changed again", count))
+            }
             Ok(Err(LandError::Conflicts(_))) => {
                 self.notice("warning", "This chat's changes didn't land", "The project changed meanwhile. Review them above the message box.");
                 Some(("waits: conflicts", count))
@@ -145,7 +188,11 @@ impl<R: Runtime> Run<R> {
         }
         // Into the chat's files, merged against the project as it is now:
         // what's checked is what lands.
-        if let Err(e) = chats::take_merged(&self.dialog_id, plan) {
+        let taken = {
+            let (id, files) = (self.dialog_id.clone(), plan.clone());
+            tauri::async_runtime::spawn_blocking(move || chats::take_merged(&id, &files)).await.map_err(|e| e.to_string())
+        };
+        if let Err(e) = taken.and_then(|r| r) {
             return Some(format!("(writing the merged files: {e})"));
         }
         for check in super::project::ordered_checks(&checks.into_iter().cloned().collect::<Vec<_>>()) {
@@ -181,30 +228,59 @@ impl<R: Runtime> Run<R> {
     /// "continue" when they failed and the chat got the failures to fix.
     /// None: nothing to merge (or the run won't land anyway).
     pub(super) async fn take_project_changes(&mut self, outcome: &str) -> Result<Option<String>, String> {
-        if !LANDS_AFTER.contains(&outcome) || self.root == self.project_root {
+        if !LANDS_AFTER.contains(&outcome) || self.root == self.project_root || self.plan_mode {
             return Ok(None);
         }
         let Some(overlay) = chats::get(&self.dialog_id) else { return Ok(None) };
         self.wait_while_project_busy().await;
-        overlay.fs.flush();
-        let plan = land::plan(&overlay.project, &chats::changes(&self.dialog_id), false);
-        // Conflicts are the user's (or, if they say so, the chat's) to settle.
-        if !plan.merged || !plan.conflicts.is_empty() {
-            return Ok(None);
-        }
-        let files = chats::take_merged(&self.dialog_id, &plan)?;
+        let (o, id) = (overlay.clone(), self.dialog_id.clone());
+        let files = tauri::async_runtime::spawn_blocking(move || {
+            o.fs.flush();
+            let plan = land::plan(&o.project, &chats::changes(&id), false);
+            // Conflicts are the user's (or the chat's, if it's handed them).
+            if !plan.merged || !plan.conflicts.is_empty() {
+                return Ok(Vec::new());
+            }
+            chats::take_merged(&id, &plan)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         if files.is_empty() {
             return Ok(None);
         }
         super::log::write(
             &self.app,
-            serde_json::json!({ "event": "merged-project-changes", "dialogId": self.dialog_id, "files": files }),
+            serde_json::json!({ "event": "merged-project-changes", "dialogId": self.dialog_id, "files": files.iter().map(|(p, _)| p).collect::<Vec<_>>() }),
         );
         self.merged_from_project = Some(files);
         self.writes_since_verify = true;
         let outcome = self.verify_at_end(false, None).await?;
         self.merged_from_project = None;
         Ok(Some(outcome))
+    }
+
+    /// The model says it's done, but conflict markers handed to it are
+    /// still in its files: it's told, twice at most. True: it was told.
+    pub(super) async fn remind_of_markers(&mut self) -> Result<bool, String> {
+        if self.root == self.project_root || self.plan_mode || self.marker_reminders >= 2 {
+            return Ok(false);
+        }
+        let id = self.dialog_id.clone();
+        let left = tauri::async_runtime::spawn_blocking(move || chats::markers_left(&id)).await.unwrap_or_default();
+        if left.is_empty() {
+            return Ok(false);
+        }
+        self.marker_reminders += 1;
+        self.add_harness(
+            format!(
+                "{}Conflict markers are still in {}. Your changes can't land until every marker is gone: combine both sides in each conflict, then finish.",
+                super::run::IDE_NOTE,
+                left.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")
+            ),
+            "markers",
+        )
+        .await?;
+        Ok(true)
     }
 
     /// Waits while many files change in the project at once (a branch

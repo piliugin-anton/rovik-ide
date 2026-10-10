@@ -45,13 +45,34 @@ pub enum Writer {
 /// `.`), and on the case-insensitive file systems macOS and Windows use by
 /// default, case is ignored.
 pub fn key(path: &Path) -> PathBuf {
-    let resolved = match (path.parent(), path.file_name()) {
-        (Some(dir), Some(name)) if !dir.as_os_str().is_empty() => match dir.canonicalize() {
-            Ok(dir) => dir.join(name),
-            Err(_) => path.to_path_buf(),
-        },
-        _ => path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+    // A symlinked file is the file it points at.
+    if let Ok(target) = path.canonicalize() {
+        return fold_case(target);
+    }
+    // Not there yet: the nearest folder that is, resolved, and the rest as
+    // written, so the key doesn't change once the folders are created.
+    let mut rest = Vec::new();
+    let mut at = path;
+    let resolved = loop {
+        match at.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                if let Some(name) = at.file_name() {
+                    rest.push(name.to_os_string());
+                }
+                if let Ok(dir) = dir.canonicalize() {
+                    let mut p = dir;
+                    p.extend(rest.iter().rev());
+                    break p;
+                }
+                at = dir;
+            }
+            _ => break path.to_path_buf(),
+        }
     };
+    fold_case(resolved)
+}
+
+fn fold_case(resolved: PathBuf) -> PathBuf {
     if cfg!(any(target_os = "macos", windows)) {
         PathBuf::from(resolved.to_string_lossy().to_lowercase())
     } else {
@@ -126,8 +147,19 @@ impl Seen {
     }
 
     fn writer(&self) -> Writer {
-        Writer::Chat(self.owner.clone())
+        // No owner: a write from the UI (the editor's tools), not a chat's.
+        if self.owner.is_empty() {
+            Writer::Editor
+        } else {
+            Writer::Chat(self.owner.clone())
+        }
     }
+}
+
+/// Forgets what was written under `dir` (a chat's view that's gone).
+pub fn forget_under(dir: &Path) {
+    let dir = key(dir);
+    LEDGER.lock().unwrap_or_else(|e| e.into_inner()).retain(|path, _| !path.starts_with(&dir));
 }
 
 static LEDGER: LazyLock<Mutex<HashMap<PathBuf, (Writer, Hash)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));

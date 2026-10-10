@@ -55,6 +55,8 @@ export interface ConflictSource {
 interface ConflictResolverProps {
   projectPath: string;
   source?: ConflictSource;
+  /** Nothing can be saved or finished now (a chat's run is going). */
+  disabled?: boolean;
   operation: GitOperation;
   /** The file to show first. */
   initialFile?: string;
@@ -284,8 +286,12 @@ export function ConflictResolver(props: ConflictResolverProps) {
     setError(null);
     try {
       const content = result.deleted ? null : result.text;
-      if (props.source) await props.source.resolve(file, content);
-      else await invoke('git_conflict_resolve', { path: props.projectPath, file, content });
+      if (props.source) {
+        await props.source.resolve(file, content);
+        // Settled for good: the file is now merged against the project, so
+        // the old choices no longer fit it.
+        savedChoices.delete(choiceKey(file));
+      } else await invoke('git_conflict_resolve', { path: props.projectPath, file, content });
       doneFiles().add(file);
       setVersion((v) => v + 1);
       props.onFileWritten(file);
@@ -649,7 +655,9 @@ export function ConflictResolver(props: ConflictResolverProps) {
                         <button
                           type="button"
                           class="primary cr-save"
-                          disabled={saving() || (composed()?.unresolved ?? 1) > 0}
+                          disabled={
+                            saving() || !!props.disabled || (composed()?.unresolved ?? 1) > 0
+                          }
                           title={
                             (composed()?.unresolved ?? 0) > 0
                               ? 'Resolve every conflict of this file first'
@@ -688,7 +696,7 @@ export function ConflictResolver(props: ConflictResolverProps) {
                                   type="button"
                                   class="cr-binary-choice"
                                   classList={{ on: choices()[0]?.sides[0] === side }}
-                                  disabled={saving()}
+                                  disabled={saving() || !!props.disabled}
                                   onClick={() => void takeWhole(side)}
                                 >
                                   <strong>
@@ -783,7 +791,7 @@ export function ConflictResolver(props: ConflictResolverProps) {
               <button
                 type="button"
                 class="primary"
-                disabled={finishing() || props.operation.conflicts.length > 0}
+                disabled={finishing() || !!props.disabled || props.operation.conflicts.length > 0}
                 onClick={() => void finish()}
               >
                 {props.source?.finishLabel ??

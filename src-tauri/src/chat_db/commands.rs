@@ -142,10 +142,25 @@ pub async fn chat_rename_dialog(db: State<'_, DbState>, dialog_id: String, title
 }
 
 #[tauri::command]
-pub async fn chat_delete_dialog(db: State<'_, DbState>, dialog_id: String) -> Result<(), String> {
+pub async fn chat_delete_dialog<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    agent: State<'_, crate::agent_run::AgentState>,
+    db: State<'_, DbState>,
+    dialog_id: String,
+) -> Result<(), String> {
     let data_dir = db.data_dir().to_path_buf();
+    // A run going in it stops first: its view is about to go.
+    if agent.stop(&app, &dialog_id) {
+        for _ in 0..100 {
+            if !agent.is_running(&dialog_id) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
     // Its isolated changes and landing history go with it.
-    crate::overlay::chats::forget(&dialog_id);
+    let id = dialog_id.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || crate::overlay::chats::forget(&id)).await;
     db.write(move |c| {
         store::delete_dialog(c, &dialog_id)?;
         // Best effort; anything missed is collected at the next start.

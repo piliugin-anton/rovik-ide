@@ -67,6 +67,12 @@ export interface AgentPermissions {
    * request with a checklist; 'off' never asks (src-tauri/src/agent_run).
    */
   checklist: ChecklistMode;
+  /**
+   * An isolated chat that's still running resolves its conflicts with the
+   * project itself (conflict markers in its files); off, they wait for the
+   * user (src-tauri/src/overlay/chats.rs).
+   */
+  chatResolvesConflicts: boolean;
 }
 
 export type ChecklistMode = 'off' | 'auto' | 'always';
@@ -108,6 +114,7 @@ export const DEFAULT_PERMISSIONS: AgentPermissions = {
   toolCallCheckpoint: DEFAULT_TOOL_CALL_CHECKPOINT,
   verifyChanges: true,
   checklist: 'auto',
+  chatResolvesConflicts: true,
 };
 
 const isSelection = (v: unknown): v is ModelSelection =>
@@ -193,6 +200,7 @@ export function normalizePermissions(raw: unknown): AgentPermissions {
       r.checklist === 'off' || r.checklist === 'always'
         ? r.checklist
         : DEFAULT_PERMISSIONS.checklist,
+    chatResolvesConflicts: r.chatResolvesConflicts !== false,
   };
 }
 

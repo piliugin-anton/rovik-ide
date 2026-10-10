@@ -682,7 +682,15 @@ async fn run<R: Runtime>(
                 Ok(edit) => edit,
                 Err(e) => return Ok(ToolResult::text(e)),
             };
-            let outcome = apply_edit(root, &edit, false, Some(seen))?;
+            // Off the async threads: a write may wait for a landing's locks.
+            let (root_s, seen_arc) = (root.to_string(), ctx.seen.clone());
+            let (edit, outcome) = tauri::async_runtime::spawn_blocking(move || {
+                let outcome = apply_edit(&root_s, &edit, false, Some(&seen_arc));
+                (edit, outcome)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            let outcome = outcome?;
             return Ok(ToolResult { content: outcome.summary, attachments: Vec::new(), written: Some((edit.path, outcome.content)) });
         }
         "read" => {
@@ -705,7 +713,10 @@ async fn run<R: Runtime>(
             let Some(content) = text(args, "content") else {
                 return Ok(ToolResult::text("Error: \"content\" is required."));
             };
-            crate::agent_tools::write_file(root, path, content, Some(seen))?
+            let (root_s, path, content, seen_arc) = (root.to_string(), path.to_string(), content.to_string(), ctx.seen.clone());
+            tauri::async_runtime::spawn_blocking(move || crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc)))
+                .await
+                .map_err(|e| e.to_string())??
         }
         "bash" => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {
@@ -713,8 +724,21 @@ async fn run<R: Runtime>(
             };
             let timeout = num(args, "timeout_seconds").filter(|s| *s > 0.0).map(|s| (s * 1000.0) as u64);
             let stop = stop.clone();
-            if let Some(problem) = crate::overlay::chats::get(&ctx.owner).and_then(|o| o.command_problem(command)) {
-                return Ok(ToolResult::text(problem));
+            match crate::overlay::chats::get(&ctx.owner) {
+                Some(o) => {
+                    if let Some(problem) = o.command_problem(command) {
+                        return Ok(ToolResult::text(problem));
+                    }
+                }
+                // Working in the project itself: one such chat at a time
+                // runs commands that write.
+                None => {
+                    if super::permissions::command_modifies_files(command) {
+                        if let Err(problem) = crate::overlay::chats::claim_direct_writes(std::path::Path::new(root_owned.as_str()), &ctx.owner) {
+                            return Ok(ToolResult::text(problem));
+                        }
+                    }
+                }
             }
             let note = ctx.note.clone();
             let queued = crate::command_tool::Queued {
