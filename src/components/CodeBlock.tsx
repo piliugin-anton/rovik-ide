@@ -1,28 +1,10 @@
 import { createEffect, on, onCleanup, onMount } from 'solid-js';
 import * as monaco from 'monaco-editor';
+import { languageForAlias } from '../lib/language';
 
-// Map common fence tags (```js, ```py, ...) to the language ids Monaco knows.
-const LANGUAGE_ALIASES: Record<string, string> = {
-  js: 'javascript',
-  jsx: 'javascript',
-  ts: 'typescript',
-  tsx: 'typescript',
-  py: 'python',
-  rs: 'rust',
-  sh: 'shell',
-  bash: 'shell',
-  zsh: 'shell',
-  yml: 'yaml',
-  md: 'markdown',
-  html: 'html',
-};
-
+/** The Monaco language a code fence names (lib/languageMap.ts). */
 export function resolveLanguage(lang: string | undefined): string {
-  if (!lang) return 'plaintext';
-
-  const normalized = lang.trim().toLowerCase();
-
-  return LANGUAGE_ALIASES[normalized] ?? normalized;
+  return languageForAlias(lang);
 }
 
 const LINE_HEIGHT = 19;

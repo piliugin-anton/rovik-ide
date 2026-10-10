@@ -1,4 +1,9 @@
-// src/lib/language.ts — new file
+// src/lib/language.ts
+//
+// File types: which files aren't text, and which Monaco language a file or
+// a code fence is in (languageMap.ts, from Monaco's own registry).
+import * as monaco from 'monaco-editor';
+import { createLanguageResolver, type LanguageResolver } from './languageMap';
 
 // Extensions Monaco can't usefully edit as text — checked before we even
 // attempt a read, so obviously-binary files never round-trip through IPC.
@@ -56,58 +61,20 @@ export function isLikelyBinary(name: string): boolean {
   return BINARY_EXTENSIONS.has(extensionOf(name));
 }
 
-export const EXT_TO_LANGUAGE: Record<string, string> = {
-  ts: 'typescript',
-  tsx: 'typescript',
-  mts: 'typescript',
-  cts: 'typescript',
-  js: 'javascript',
-  jsx: 'javascript',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  json: 'json',
-  jsonc: 'json',
-  html: 'html',
-  htm: 'html',
-  css: 'css',
-  scss: 'scss',
-  less: 'less',
-  md: 'markdown',
-  mdx: 'markdown',
-  py: 'python',
-  rs: 'rust',
-  go: 'go',
-  java: 'java',
-  kt: 'kotlin',
-  c: 'c',
-  h: 'c',
-  cpp: 'cpp',
-  hpp: 'cpp',
-  cc: 'cpp',
-  cs: 'csharp',
-  php: 'php',
-  rb: 'ruby',
-  swift: 'swift',
-  sh: 'shell',
-  bash: 'shell',
-  zsh: 'shell',
-  yml: 'yaml',
-  yaml: 'yaml',
-  toml: 'ini',
-  ini: 'ini',
-  sql: 'sql',
-  xml: 'xml',
-  svg: 'xml',
-  vue: 'html',
-  svelte: 'html',
-  dockerfile: 'dockerfile',
-  makefile: 'makefile',
-  txt: 'plaintext',
-};
+// Built on first use: by then every language Monaco ships is registered
+// (importing monaco-editor registers them all).
+let resolver: LanguageResolver | null = null;
+function languages(): LanguageResolver {
+  resolver ??= createLanguageResolver(monaco.languages.getLanguages());
+  return resolver;
+}
 
+/** The Monaco language of a file, by its name or path; 'plaintext' if none. */
 export function languageForFile(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower === 'dockerfile') return 'dockerfile';
-  if (lower === 'makefile') return 'makefile';
-  return EXT_TO_LANGUAGE[extensionOf(name)] ?? 'plaintext';
+  return languages().forFile(name);
+}
+
+/** The Monaco language a code fence names (```ts, ```Rust); 'plaintext' if none. */
+export function languageForAlias(alias: string | undefined): string {
+  return languages().forAlias(alias);
 }
