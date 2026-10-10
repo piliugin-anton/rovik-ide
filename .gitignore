@@ -1,4 +1,4 @@
 node_modules
 dist
 src-tauri/target
-rovik-ide.zip
+rovik-ide.zip*.tsbuildinfo

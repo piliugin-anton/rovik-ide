@@ -1218,7 +1218,7 @@ export default function App() {
     try {
       for (const id of entry.ids) {
         if (entry.mode === 'copy') {
-          const newPath = await copyPathOnDisk(id, destDirId);
+          await copyPathOnDisk(id, destDirId);
         } else {
           const oldPath = openFiles().find((f) => f.id === id)?.path;
           const newPath = await movePathOnDisk(id, destDirId);
