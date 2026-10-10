@@ -22,11 +22,12 @@
 // The effort itself is picked in the chat (EffortSelector), per model.
 import type { ProviderModel } from '../types';
 
-export type ReasoningField = 'reasoning_effort' | 'reasoning' | 'chat_template_kwargs';
+export type ReasoningField = 'reasoning_effort' | 'reasoning' | 'chat_template_kwargs' | 'thinking';
 export const REASONING_FIELDS: ReasoningField[] = [
   'reasoning_effort',
   'reasoning',
   'chat_template_kwargs',
+  'thinking',
 ];
 
 export interface ReasoningLearned {

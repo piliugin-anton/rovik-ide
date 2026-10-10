@@ -20,6 +20,7 @@ fn names(events: &[ChatStreamEvent]) -> Vec<String> {
         .map(|e| match e {
             ChatStreamEvent::Delta { content } => format!("delta:{content}"),
             ChatStreamEvent::Reasoning { content } => format!("reasoning:{content}"),
+            ChatStreamEvent::ReasoningInline { tag } => format!("reasoning_inline:{tag}"),
             ChatStreamEvent::ReasoningSupport { .. } => "reasoning_support".into(),
             ChatStreamEvent::ApiRoute { route } => format!("api_route:{route}"),
             ChatStreamEvent::Done => "done".into(),
@@ -401,4 +402,68 @@ fn gemini_signatures_survive_and_unindexed_parallel_calls_stay_separate() {
     assert_eq!(done[0].0, "function-call-1");
     assert_eq!(done[0].1, Some(json!({"google":{"thought_signature":"SIG-A"}})));
     assert_eq!(done[1], ("function-call-2".to_string(), None));
+}
+
+/// The text the user sees and the reasoning, joined, for content streamed in `pieces`.
+fn split_think(pieces: &[&str]) -> (String, String, Vec<String>) {
+    let mut parser = ReplyParser::default();
+    let mut events = Vec::new();
+    let mut emit = |e| events.push(e);
+    for piece in pieces {
+        parser.feed(&json!({"choices":[{"delta":{"content": piece}}]}), &mut emit).unwrap();
+    }
+    parser.feed(&json!({"choices":[{"delta":{},"finish_reason":"stop"}]}), &mut emit).unwrap();
+    let _ = parser.finish(&mut emit);
+    let (mut text, mut reasoning, mut tags) = (String::new(), String::new(), Vec::new());
+    for e in &events {
+        match e {
+            ChatStreamEvent::Delta { content } => text.push_str(content),
+            ChatStreamEvent::Reasoning { content } => reasoning.push_str(content),
+            ChatStreamEvent::ReasoningInline { tag } => tags.push(tag.clone()),
+            _ => {}
+        }
+    }
+    (text, reasoning, tags)
+}
+
+#[test]
+fn reasoning_written_in_think_tags_is_shown_as_reasoning() {
+    let (text, reasoning, tags) = split_think(&["<think>Plan: add.</think>\n\nThe answer is 4."]);
+    assert_eq!(reasoning, "Plan: add.");
+    assert_eq!(text, "\n\nThe answer is 4.");
+    assert_eq!(tags, ["think"]);
+
+    // Tags split anywhere across chunks, multi-byte text included.
+    let whole = "  <thinking>Überlegung: ok</thinking>Done ✓";
+    for size in 1..whole.len() {
+        let bytes: Vec<char> = whole.chars().collect();
+        let pieces: Vec<String> = bytes.chunks(size).map(|c| c.iter().collect()).collect();
+        let refs: Vec<&str> = pieces.iter().map(|s| s.as_str()).collect();
+        let (text, reasoning, tags) = split_think(&refs);
+        assert_eq!(reasoning, "Überlegung: ok", "chunks of {size}");
+        assert_eq!(text, "Done ✓", "chunks of {size}");
+        assert_eq!(tags, ["thinking"]);
+    }
+}
+
+#[test]
+fn only_a_leading_think_tag_counts() {
+    // Mentioned in the answer: it's the answer.
+    let (text, reasoning, tags) = split_think(&["Use ", "<think> tags like <think>x</think>."]);
+    assert_eq!(text, "Use <think> tags like <think>x</think>.");
+    assert!(reasoning.is_empty() && tags.is_empty());
+    // Something that only starts like a tag.
+    let (text, reasoning, _) = split_think(&["<thi", "s is html>"]);
+    assert_eq!(text, "<this is html>");
+    assert!(reasoning.is_empty());
+    // A reply that is just a "<": held back, then shown.
+    let (text, _, _) = split_think(&["<"]);
+    assert_eq!(text, "<");
+}
+
+#[test]
+fn a_think_tag_never_closed_is_all_reasoning() {
+    let (text, reasoning, _) = split_think(&["<think>still going", " and going</thi"]);
+    assert_eq!(reasoning, "still going and going</thi");
+    assert!(text.is_empty());
 }
