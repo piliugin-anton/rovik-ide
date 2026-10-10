@@ -1,0 +1,231 @@
+{
+  "_comment": "Shared by src/lib/permissions.test.ts and src-tauri/src/agent_run/permissions.rs (tests): the UI's hints and the backend's enforcement must agree on every case. `allowed` defaults to `defaultAllowed`; `expect.permitted` false means refused.",
+  "defaultAllowed": [
+    "ls",
+    "cat",
+    "grep",
+    "git status",
+    "git diff",
+    "npm test",
+    "npm run lint",
+    "cargo test",
+    "echo"
+  ],
+  "cases": [
+    {
+      "command": "ls -la",
+      "expect": {
+        "segments": [["ls", "-la"]],
+        "writesViaRedirect": false,
+        "opaque": false,
+        "permitted": true,
+        "modifiesFiles": false
+      }
+    },
+    { "command": "", "expect": { "segments": [], "permitted": false } },
+    { "command": "   ", "expect": { "segments": [], "permitted": false } },
+    {
+      "command": "git status -s",
+      "expect": { "segments": [["git", "status", "-s"]], "permitted": true, "modifiesFiles": false }
+    },
+    { "command": "git stash", "expect": { "segments": [["git", "stash"]], "permitted": false } },
+    { "command": "git", "expect": { "segments": [["git"]], "permitted": false } },
+    {
+      "command": "npm test && npm run lint",
+      "expect": {
+        "segments": [
+          ["npm", "test"],
+          ["npm", "run", "lint"]
+        ],
+        "permitted": true,
+        "modifiesFiles": false
+      }
+    },
+    {
+      "command": "npm test; rm -rf /",
+      "expect": {
+        "segments": [
+          ["npm", "test"],
+          ["rm", "-rf", "/"]
+        ],
+        "permitted": false
+      }
+    },
+    {
+      "command": "cat a.txt | grep foo",
+      "expect": {
+        "segments": [
+          ["cat", "a.txt"],
+          ["grep", "foo"]
+        ],
+        "permitted": true,
+        "modifiesFiles": false
+      }
+    },
+    {
+      "command": "cat a.txt || echo missing",
+      "expect": {
+        "segments": [
+          ["cat", "a.txt"],
+          ["echo", "missing"]
+        ],
+        "permitted": true,
+        "modifiesFiles": false
+      }
+    },
+    { "command": "ls &", "expect": { "segments": [["ls"]], "permitted": true } },
+    { "command": "ls\ncat b", "expect": { "segments": [["ls"], ["cat", "b"]], "permitted": true } },
+    {
+      "command": "echo hi > out.txt",
+      "expect": {
+        "segments": [["echo", "hi"]],
+        "writesViaRedirect": true,
+        "permitted": true,
+        "modifiesFiles": true
+      }
+    },
+    {
+      "command": "echo hi >> out.txt",
+      "expect": { "segments": [["echo", "hi"]], "writesViaRedirect": true, "modifiesFiles": true }
+    },
+    {
+      "command": "echo hi>out.txt",
+      "expect": { "segments": [["echo", "hi"]], "writesViaRedirect": true }
+    },
+    {
+      "command": "cargo test 2>/dev/null",
+      "expect": {
+        "segments": [["cargo", "test"]],
+        "writesViaRedirect": false,
+        "permitted": true,
+        "modifiesFiles": false
+      }
+    },
+    {
+      "command": "cargo test > /dev/null 2>&1",
+      "expect": {
+        "segments": [["cargo", "test"]],
+        "writesViaRedirect": false,
+        "modifiesFiles": false
+      }
+    },
+    {
+      "command": "cargo test 2> err.log",
+      "expect": {
+        "segments": [["cargo", "test"]],
+        "writesViaRedirect": true,
+        "modifiesFiles": true
+      }
+    },
+    {
+      "command": "echo oops >&2",
+      "expect": {
+        "segments": [["echo", "oops"]],
+        "writesViaRedirect": false,
+        "modifiesFiles": false
+      }
+    },
+    { "command": "ls &> all.log", "expect": { "segments": [["ls"]], "writesViaRedirect": true } },
+    {
+      "command": "grep x < input.txt",
+      "expect": {
+        "segments": [["grep", "x"]],
+        "writesViaRedirect": false,
+        "permitted": true,
+        "modifiesFiles": false
+      }
+    },
+    { "command": "echo > NUL", "expect": { "segments": [["echo"]], "writesViaRedirect": false } },
+    { "command": "echo $(whoami)", "expect": { "opaque": true, "permitted": false } },
+    { "command": "echo `whoami`", "expect": { "opaque": true, "permitted": false } },
+    { "command": "echo \"$(whoami)\"", "expect": { "opaque": true, "permitted": false } },
+    {
+      "command": "echo '$(whoami)'",
+      "expect": { "segments": [["echo", "$(whoami)"]], "opaque": false, "permitted": true }
+    },
+    { "command": "(cd src && ls)", "expect": { "opaque": true, "permitted": false } },
+    { "command": "diff <(ls a) <(ls b)", "expect": { "opaque": true } },
+    {
+      "command": "grep \"a b\" 'c d'",
+      "expect": { "segments": [["grep", "a b", "c d"]], "permitted": true }
+    },
+    {
+      "command": "grep \"say \\\"hi\\\"\" f",
+      "expect": { "segments": [["grep", "say \"hi\"", "f"]] }
+    },
+    { "command": "grep a\\ b f", "expect": { "segments": [["grep", "a b", "f"]] } },
+    {
+      "command": "grep 'a;b' f",
+      "expect": { "segments": [["grep", "a;b", "f"]], "permitted": true }
+    },
+    {
+      "command": "RUST_LOG=debug cargo test",
+      "expect": { "segments": [["cargo", "test"]], "permitted": true, "modifiesFiles": false }
+    },
+    { "command": "A=1 B=2 ls", "expect": { "segments": [["ls"]], "permitted": true } },
+    { "command": "FOO=bar", "expect": { "segments": [], "permitted": false } },
+    { "command": "sudo ls", "expect": { "segments": [["sudo", "ls"]], "permitted": false } },
+    { "command": "rm -rf build", "expect": { "permitted": false } },
+    {
+      "command": "rm -rf build",
+      "allowAny": true,
+      "expect": { "permitted": true, "modifiesFiles": true }
+    },
+    {
+      "command": "echo $(date)",
+      "allowAny": true,
+      "expect": { "opaque": true, "permitted": true, "modifiesFiles": true }
+    },
+    { "command": "ls", "allowed": [], "expect": { "permitted": false } },
+    { "command": "git statusx", "allowed": ["git status"], "expect": { "permitted": false } },
+    {
+      "command": "git  status",
+      "allowed": ["  git   status "],
+      "expect": { "segments": [["git", "status"]], "permitted": true }
+    },
+    { "command": "npm run build", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "npm install", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "cargo fmt", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "npx eslint --fix src", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "npx eslint src", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "npx prettier --write .", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "python --version", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "node -v", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "find . -name '*.rs'", "allowAny": true, "expect": { "modifiesFiles": false } },
+    {
+      "command": "find . -name '*.tmp' -delete",
+      "allowAny": true,
+      "expect": { "modifiesFiles": true }
+    },
+    { "command": "find . -exec rm {} ;", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "sort a.txt", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "sort -o a.txt a.txt", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "git log --oneline", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "git commit -m 'x'", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "git branch", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "git branch -a", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "git branch new-feature", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "git branch -D old", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "git remote -v", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "git remote add o url", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "git stash list", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "git stash pop", "allowAny": true, "expect": { "modifiesFiles": true } },
+    {
+      "command": "git config --get user.name",
+      "allowAny": true,
+      "expect": { "modifiesFiles": false }
+    },
+    { "command": "git config user.name x", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "git -C sub status", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "git --no-pager log", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "awk '{print $1}' f", "allowAny": true, "expect": { "modifiesFiles": false } },
+    {
+      "command": "awk '{system(\"rm x\")}' f",
+      "allowAny": true,
+      "expect": { "modifiesFiles": true }
+    },
+    { "command": "cat a | tee b", "allowAny": true, "expect": { "modifiesFiles": true } },
+    { "command": "make test", "allowAny": true, "expect": { "modifiesFiles": false } },
+    { "command": "make", "allowAny": true, "expect": { "modifiesFiles": true } }
+  ]
+}

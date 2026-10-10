@@ -693,6 +693,50 @@ mod tests {
         seg.iter().map(|s| s.to_string()).collect()
     }
 
+    /// The cases the frontend's hints are tested with too
+    /// (src/lib/permissions.test.ts): both must judge every one alike.
+    #[test]
+    fn shared_command_cases_agree_with_the_frontend() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../test-fixtures/command-permissions.json")).unwrap();
+        let strings = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect()
+        };
+        let default_allowed = strings(&fixture["defaultAllowed"]);
+        for case in fixture["cases"].as_array().unwrap() {
+            let command = case["command"].as_str().unwrap();
+            let expect = &case["expect"];
+            let parsed = parse_command(command);
+            if let Some(segments) = expect.get("segments") {
+                let want: Vec<Vec<String>> = segments.as_array().unwrap().iter().map(strings).collect();
+                assert_eq!(parsed.segments, want, "segments of {command:?}");
+            }
+            if let Some(w) = expect.get("writesViaRedirect") {
+                assert_eq!(parsed.writes_via_redirect, w.as_bool().unwrap(), "redirect in {command:?}");
+            }
+            if let Some(o) = expect.get("opaque") {
+                assert_eq!(parsed.opaque, o.as_bool().unwrap(), "opaque {command:?}");
+            }
+            let permissions = Permissions {
+                allow_any_command: case["allowAny"].as_bool().unwrap_or(false),
+                allowed_commands: case.get("allowed").map(strings).unwrap_or_else(|| default_allowed.clone()),
+                ..Permissions::default()
+            };
+            let verdict = check_command(command, &permissions);
+            if let Some(p) = expect.get("permitted") {
+                assert_eq!(matches!(verdict, Verdict::Permitted { .. }), p.as_bool().unwrap(), "permitted {command:?}");
+            }
+            if let Some(m) = expect.get("modifiesFiles") {
+                match verdict {
+                    Verdict::Permitted { modifies_files } => {
+                        assert_eq!(modifies_files, m.as_bool().unwrap(), "modifies files {command:?}")
+                    }
+                    Verdict::Refused(reason) => panic!("{command:?} refused: {reason}"),
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_symbol_read_is_described_with_its_symbol() {
         assert_eq!(describe_tool_call("read", r#"{"path":"src/a.rs"}"#), "Read src/a.rs");
