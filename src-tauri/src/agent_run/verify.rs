@@ -283,7 +283,18 @@ impl<R: Runtime> Run<R> {
         // Back to the model. User-role, so every provider accepts it after an
         // assistant reply; marked as the IDE's, so it's never shown as the
         // user's message or replaced by the request's editor context.
-        self.add_harness(failure_report(&results, &changed, round), "verification").await?;
+        let mut report = failure_report(&results, &changed, round);
+        if let Some(files) = &self.merged_from_project {
+            report = report.replacen(
+                "\n",
+                &format!(
+                    "\nThe project changed meanwhile ({}): those changes are now merged into your files, and the checks ran on the result. Fix what fails so your changes work with the project's.\n",
+                    files.join(", ")
+                ),
+                1,
+            );
+        }
+        self.add_harness(report, "verification").await?;
         Ok("continue".into())
     }
 

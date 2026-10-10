@@ -4,13 +4,20 @@
 // in the project yet, and why it didn't land if it didn't. Each file opens
 // as a comparison with the project's version. Land puts the changes in the
 // project (Land anyway: the chat's version wins over conflicting changes);
-// Discard throws them away; after a landing, Undo takes it back.
+// Discard throws them away; after a landing, Undo takes it back. Conflicts
+// are resolved in the conflict resolver (Resolve…), or handed to the chat
+// (Ask the chat): markers go into its files and it's asked to settle them.
 
 import { createResource, createSignal, For, Show } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
+import { ConflictResolver, type ConflictSource } from './ConflictResolver';
+import type { GitOperation } from '../types';
 import { requestCompare } from '../lib/editorBridge';
 import { notify } from '../lib/notifications';
 import {
+  overlayConflictFile,
+  overlayConflictResolve,
+  overlayConflictsToChat,
   overlayDiscard,
   overlayFile,
   overlayLand,
@@ -26,6 +33,8 @@ interface Props {
   revision: number;
   /** A run is going: landing or discarding would pull files out from under it. */
   running: boolean;
+  /** Sends the chat a message (starting a run): handing it the conflicts. */
+  onAskChat: (request: string) => void;
 }
 
 const LABEL: Record<ChangedFile['change'], string> = {
@@ -49,6 +58,48 @@ export default function IsolationBar(props: Props) {
     return s?.isolated && s.files.length > 0 ? s : undefined;
   };
   const conflicted = (path: string) => !!status()?.pending?.conflicts.some((c) => c.path === path);
+  const [resolving, setResolving] = createSignal<string | null>(null);
+
+  /** The chat's conflicts, in the shape the resolver takes a git merge in. */
+  const operation = (): GitOperation => ({
+    kind: 'merge',
+    branch: null,
+    incoming: null,
+    step: null,
+    total: null,
+    commit: null,
+    conflicts: status()?.pending?.conflicts.map((c) => c.path) ?? [],
+    canContinue: true,
+  });
+  const source: ConflictSource = {
+    load: (file) => overlayConflictFile(props.dialogId, file),
+    resolve: async (file, content, side) => {
+      await overlayConflictResolve(props.dialogId, file, content, side);
+      await refetch();
+    },
+    title: 'This chat’s changes and the project’s',
+    doneHint: 'Land the chat’s changes to finish.',
+    finishLabel: 'Land',
+  };
+
+  async function askChat() {
+    setBusy(true);
+    try {
+      const handed = await overlayConflictsToChat(props.dialogId);
+      if (handed.request) props.onAskChat(handed.request);
+      else
+        notify({
+          kind: 'warning',
+          title: 'Nothing to hand over',
+          message: 'These conflicts aren’t in text files: resolve them here instead.',
+        });
+    } catch (e) {
+      notify({ kind: 'error', title: 'Couldn’t hand the conflicts over', message: String(e) });
+    } finally {
+      setBusy(false);
+      void refetch();
+    }
+  }
 
   async function compare(file: ChangedFile) {
     const versions = await overlayFile(props.dialogId, file.path).catch(() => null);
@@ -149,6 +200,22 @@ export default function IsolationBar(props: Props) {
                 }
               >
                 <button
+                  class="isolation-bar-action primary"
+                  disabled={disabled()}
+                  title="Choose, conflict by conflict, what lands"
+                  onClick={() => setResolving(s().pending?.conflicts[0]?.path ?? null)}
+                >
+                  Resolve…
+                </button>
+                <button
+                  class="isolation-bar-action"
+                  disabled={disabled()}
+                  title="Put conflict markers in the chat’s files and ask it to combine both changes"
+                  onClick={() => void askChat()}
+                >
+                  Ask the chat
+                </button>
+                <button
                   class="isolation-bar-action"
                   disabled={disabled()}
                   onClick={() => void land(true)}
@@ -173,7 +240,14 @@ export default function IsolationBar(props: Props) {
                 <For each={s().files}>
                   {(file) => (
                     <li>
-                      <button class="isolation-bar-file" onClick={() => void compare(file)}>
+                      <button
+                        class="isolation-bar-file"
+                        onClick={() =>
+                          conflicted(file.path) && !props.running
+                            ? setResolving(file.path)
+                            : void compare(file)
+                        }
+                      >
                         <span class={`isolation-bar-kind ${file.change}`}>
                           {LABEL[file.change]}
                         </span>
@@ -192,6 +266,23 @@ export default function IsolationBar(props: Props) {
             </Show>
           </div>
         )}
+      </Show>
+      <Show when={resolving() !== null}>
+        <ConflictResolver
+          projectPath={`chat:${props.dialogId}`}
+          source={source}
+          operation={operation()}
+          initialFile={resolving() ?? undefined}
+          onFileWritten={() => void refetch()}
+          onContinue={async () => {
+            await land(false);
+            setResolving(null);
+          }}
+          onAbort={async () => {
+            setResolving(null);
+          }}
+          onClose={() => setResolving(null)}
+        />
       </Show>
       <Show when={!changed() && status()?.lastLanding}>
         {(last) => (

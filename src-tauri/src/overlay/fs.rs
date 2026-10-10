@@ -809,6 +809,56 @@ impl OverlayFs {
         }
     }
 
+    /// Settles a file the chat and the project both changed: the chat's
+    /// version becomes `content` (None: deleted), and what it's merged
+    /// against when landing becomes `base`, the project's file as it is now
+    /// (None: not in the project). Used once a conflict is resolved, or once
+    /// the project's newer changes are merged into the chat's view, so the
+    /// landing takes the chat's version as it is.
+    pub fn rebase_file(&self, rel: &str, content: Option<&[u8]>, base: Option<&[u8]>) -> VfsResult<()> {
+        let (dir, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+        let parent = Backend::resolve(self, dir)?;
+        let Some(bytes) = content else {
+            match Backend::unlink(self, parent, name) {
+                Ok(()) | Err(VfsError::NotFound) => {}
+                Err(e) => return Err(e),
+            }
+            self.notify(&[Change::Entry { parent, name: name.to_string() }]);
+            self.save();
+            return Ok(());
+        };
+        let ino = match Backend::resolve(self, rel) {
+            Ok(ino) => ino,
+            Err(VfsError::NotFound) => {
+                Backend::create(self, parent, name, Kind::File, 0o644, self.uid, self.gid, None)?.ino
+            }
+            Err(e) => return Err(e),
+        };
+        Backend::setattr(self, ino, &SetAttr { size: Some(0), ..Default::default() })?;
+        Backend::write(self, ino, 0, bytes)?;
+        {
+            let mut inner = self.lock();
+            let n = inner.next_file;
+            let copy = match base {
+                Some(b) => {
+                    let copy = self.store.join("base").join(format!("{n}"));
+                    fs::write(&copy, b).map_err(io_err)?;
+                    inner.next_file += 1;
+                    Some(copy)
+                }
+                None => None,
+            };
+            if let Some(Data::Upper { base_copy, .. }) = inner.nodes.get_mut(&ino).map(|n| &mut n.data) {
+                if let Some(old) = std::mem::replace(base_copy, copy) {
+                    let _ = fs::remove_file(old);
+                }
+            }
+        }
+        self.notify(&[Change::Data(ino), Change::Entry { parent, name: name.to_string() }]);
+        self.save();
+        Ok(())
+    }
+
     // -----------------------------------------------------------------
     // Changes, for landing and for saving
     // -----------------------------------------------------------------

@@ -909,3 +909,26 @@ once; they touch different files. Everything else is sequential.
     writes no landing or save explains; seeding build folders with
     copy-on-write clones; language servers per chat; a copied-tree
     fallback for machines without the driver.
+- **Follow-ups (after milestone 9).**
+  - Conflicts are resolved in the Git panel's conflict resolver, opened
+    from the chat's bar (Resolve…, or a conflicted file): the project's
+    version on the left, the chat's on the right. A resolved file becomes
+    the chat's version, merged against the project's file as it is now,
+    so it lands as it is (`OverlayFs::rebase_file`). The resolver takes
+    its files and words from a `source`; git's conflicts work as before.
+  - Ask the chat: each conflicted text file gets git-style markers
+    (labelled `project (now)` / `this chat`) in the chat's version, and
+    the chat is sent a request to combine both changes. Nothing lands,
+    not even "anyway", while those markers are left.
+  - When a run is about to end and the project changed files it changed
+    too, the merged result goes into the chat's view and the checks run
+    again (a second verification record). Failures go back to the chat
+    with a line naming the merged files, like its own failures; it gets
+    the same three rounds in all. A landing that finds new merges after
+    that still checks them, and waits for the user if they fail.
+  - Pausing on a large change: more than 200 files at once, a change to
+    `.git/HEAD` or `.git/ORIG_HEAD` seen by the watcher, or one of the Git
+    panel's checkout, pull, stash, discard-all, continue or abort marks
+    the project busy. Isolated runs wait before their next tool call and
+    before landing until it has been still for two seconds (ten minutes
+    at most), with a notice and an `event: project-busy` log line.

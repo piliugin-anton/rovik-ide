@@ -615,6 +615,83 @@ async fn an_isolated_chats_conflicting_changes_wait() {
     assert_eq!(h.file("a.txt").as_deref(), Some("chat\n"));
 }
 
+/// The project changed a file the chat changed too, and the merged result
+/// fails the checks: the chat gets the failures and fixes them before its
+/// changes land. Needs FUSE and npm: cargo test -- --ignored.
+#[tokio::test]
+#[ignore]
+async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
+    let h = harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        ("check.js", "if (require('fs').readFileSync('a.txt', 'utf8').includes('BAD')) { console.error('a.txt: BAD'); process.exit(1); }"),
+        ("a.txt", "1\n2\n3\n4\n5\n"),
+    ])
+    .await;
+    if std::process::Command::new("npm").arg("--version").output().is_err() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "chat\n2\n3\n4\n5\n" }) },
+        // Time for the user to change another line in the project.
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sleep 1" }) },
+        Reply::Text("Done."),
+        // The report says the file changed: read it again, then fix it.
+        Reply::Call { id: "r1", name: "read", args: json!({ "path": "a.txt" }) },
+        Reply::Call { id: "w2", name: "write", args: json!({ "path": "a.txt", "content": "chat\n2\n3\n4\nGOOD\n" }) },
+        Reply::Text("Fixed."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Edit"), Permissions { allow_any_command: true, ..Permissions::default() });
+    request.isolate = Some(true);
+    h.start(request).await;
+    for _ in 0..200 {
+        if crate::overlay::chats::changes(&h.dialog_id).iter().any(|c| c.path() == "a.txt") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    std::fs::write(h.project.join("a.txt"), "1\n2\n3\n4\nBAD\n").unwrap();
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let report = messages
+        .iter()
+        .find(|m| m.role == "user" && m.meta.as_ref().is_some_and(|x| x["harness"] == "verification"))
+        .expect("the failures went back to the chat");
+    assert!(report.content.contains("The project changed meanwhile (a.txt)"), "{}", report.content);
+    assert!(result_of(&messages, "r1").content.contains("BAD"), "the merged file is in the chat's view");
+    assert_eq!(h.file("a.txt").as_deref(), Some("chat\n2\n3\n4\nGOOD\n"));
+}
+
+/// While many files change in the project (a branch switch), an isolated
+/// run waits before its next step. Needs FUSE: cargo test -- --ignored.
+#[tokio::test]
+#[ignore]
+async fn an_isolated_run_waits_while_the_project_switches_branches() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let (url, _) = model(vec![
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "cat a.txt" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let switching = crate::overlay::chats::hold_busy(&h.project);
+    let mut request = h.request(&url, Harness::send("Look"), Permissions { allow_any_command: true, ..quiet_permissions() });
+    request.isolate = Some(true);
+    let started = std::time::Instant::now();
+    h.start(request).await;
+    h.wait_for("notice", |e| e["type"] == "notice" && e["title"] == "Waiting for the project").await;
+    // The switch: the file changes, then the project settles.
+    std::fs::write(h.project.join("a.txt"), "switched\n").unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop(switching);
+    assert_eq!(h.run_end().await, "done");
+    assert!(started.elapsed() >= Duration::from_secs(2), "waited for the project to settle");
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "b1").content.lines().last(), Some("switched"), "{}", result_of(&messages, "b1").content);
+}
+
 #[tokio::test]
 async fn stop_ends_a_run_waiting_for_approval() {
     let h = harness(&[]).await;

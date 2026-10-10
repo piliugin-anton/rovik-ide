@@ -15,6 +15,7 @@ use super::fs::{OverlayChange, OverlayFs, DEFAULT_LIMIT};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 pub struct ChatOverlay {
     pub fs: Arc<OverlayFs>,
@@ -257,6 +258,9 @@ pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec
         .filter(|o| same_folder(&o.project, project))
         .cloned()
         .collect();
+    if everything || abs.len() > MANY {
+        project_busy(project);
+    }
     let mut conflicts_found = Vec::new();
     for o in overlays {
         let id = o.store.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -296,6 +300,56 @@ pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec
         }
     }
     conflicts_found
+}
+
+// ---------------------------------------------------------------------------
+// Many files changing at once
+// ---------------------------------------------------------------------------
+
+/// Projects where many files are changing at once (a branch switch, a pull,
+/// a stash): when that was last seen, and git operations of the app's own
+/// still going.
+static BUSY: LazyLock<Mutex<HashMap<PathBuf, (Instant, usize)>>> = LazyLock::new(Default::default);
+
+/// How long the project has to stay still before isolated chats go on.
+const QUIET: Duration = Duration::from_secs(2);
+
+fn busy_key(project: &Path) -> PathBuf {
+    project.canonicalize().unwrap_or_else(|_| project.to_path_buf())
+}
+
+/// Many files are changing in the project right now.
+pub fn project_busy(project: &Path) {
+    let mut busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
+    busy.entry(busy_key(project)).or_insert((Instant::now(), 0)).0 = Instant::now();
+}
+
+/// Whether isolated chats on the project should wait: many files changed
+/// in the last moments, or a git operation is still going.
+pub fn is_busy(project: &Path) -> bool {
+    let busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
+    busy.get(&busy_key(project)).is_some_and(|(at, held)| *held > 0 || at.elapsed() < QUIET)
+}
+
+/// Held while one of the app's git operations rewrites the working tree.
+pub struct BusyGuard(PathBuf);
+
+pub fn hold_busy(project: &Path) -> BusyGuard {
+    let key = busy_key(project);
+    let mut busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = busy.entry(key.clone()).or_insert((Instant::now(), 0));
+    entry.1 += 1;
+    BusyGuard(key)
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        let mut busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = busy.get_mut(&self.0) {
+            entry.1 = entry.1.saturating_sub(1);
+            entry.0 = Instant::now();
+        }
+    }
 }
 
 fn same_folder(a: &Path, b: &Path) -> bool {
@@ -532,6 +586,13 @@ pub fn land_now(dialog_id: &str, keep_chat: bool) -> Result<Option<super::land::
     if let Some(o) = get(dialog_id) {
         o.fs.flush();
     }
+    // Conflicts handed to the chat land once it has resolved them.
+    let left = markers_left(dialog_id);
+    if !left.is_empty() {
+        let e = LandError::Failed(format!("conflict markers are still in {}", left.join(", ")));
+        set_pending(dialog_id, Some(&Pending { reason: format!("Not landed: {e}."), conflicts: Vec::new() }));
+        return Err(e);
+    }
     let changes = changes(dialog_id);
     match super::land::land(&data, dialog_id, &project, &changes, keep_chat) {
         Ok(landed) => {
@@ -599,6 +660,349 @@ pub async fn overlay_undo(dialog_id: String, id: String) -> Result<Vec<super::la
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Conflicts: resolved by the user, or handed to the chat
+// ---------------------------------------------------------------------------
+
+/// The chat's overlay, open or (between runs, after a restart) opened from
+/// its saved changes for this one call.
+fn with_fs<T>(dialog_id: &str, f: impl FnOnce(&OverlayFs) -> T) -> Result<T, String> {
+    if let Some(o) = get(dialog_id) {
+        return Ok(f(&o.fs));
+    }
+    let store = store_dir(dialog_id).filter(|s| s.join("manifest.json").is_file()).ok_or("this chat has no isolated changes")?;
+    let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    let fs = OverlayFs::open(&project, &store, DEFAULT_LIMIT).map_err(|e| e.to_string())?;
+    let out = f(&fs);
+    fs.flush();
+    Ok(out)
+}
+
+fn check_rel(path: &str) -> Result<(), String> {
+    if path.is_empty() || path.starts_with('/') || path.split(['/', '\\']).any(|p| p == "..") {
+        return Err(format!("{path}: not a path in the project"));
+    }
+    Ok(())
+}
+
+/// A file's three versions: what the chat changed it from, the chat's
+/// version, the project's now (None: not there).
+struct Sides {
+    base: Option<Vec<u8>>,
+    chat: Option<Vec<u8>>,
+    project: Option<Vec<u8>>,
+}
+
+fn sides(dialog_id: &str, path: &str) -> Result<Sides, String> {
+    check_rel(path)?;
+    let project_dir = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    let change = changes(dialog_id).into_iter().rev().find(|c| c.path() == path).ok_or_else(|| format!("{path}: this chat didn't change it"))?;
+    let (chat, base) = match &change {
+        OverlayChange::Write { upper: Some(file), base_copy, .. } => {
+            (std::fs::read(file).ok(), base_copy.as_ref().and_then(|b| std::fs::read(b).ok()))
+        }
+        OverlayChange::Write { origin: Some(o), .. } => (std::fs::read(project_dir.join(o)).ok(), None),
+        _ => (None, None),
+    };
+    Ok(Sides { base, chat, project: std::fs::read(project_dir.join(path)).ok() })
+}
+
+/// A conflicted file for the conflict resolver: the project's version on the
+/// left ("ours", it's where the chat's changes go), the chat's on the right.
+pub fn conflict_file(dialog_id: &str, path: &str) -> Result<crate::git_sync::ConflictFile, String> {
+    use crate::merge::{is_binary, merge3_raw, parse_merged, MergeSegment};
+    let s = sides(dialog_id, path)?;
+    let binary = [&s.base, &s.chat, &s.project].iter().any(|b| b.as_deref().is_some_and(is_binary));
+    let text = |b: &Option<Vec<u8>>| b.as_deref().map(|b| String::from_utf8_lossy(b).into_owned());
+    let segments = if binary {
+        Vec::new()
+    } else if let (Some(p), Some(c)) = (&s.project, &s.chat) {
+        let merged = merge3_raw(s.base.as_deref().unwrap_or(&[]), p, c)?;
+        parse_merged(&String::from_utf8_lossy(&merged.content))
+    } else {
+        vec![MergeSegment::Conflict {
+            ours: text(&s.project).unwrap_or_default(),
+            base: text(&s.base).unwrap_or_default(),
+            theirs: text(&s.chat).unwrap_or_default(),
+        }]
+    };
+    Ok(crate::git_sync::ConflictFile {
+        path: path.to_string(),
+        ours: text(&s.project),
+        theirs: text(&s.chat),
+        base: text(&s.base),
+        binary,
+        segments,
+        resolved: false,
+        current: None,
+        ours_label: "Project (now)".into(),
+        theirs_label: "This chat".into(),
+    })
+}
+
+/// Settles a conflicted file: the chat's version becomes `content` (None:
+/// deleted), or the whole of one `side` ("ours": the project's, "theirs":
+/// the chat's), and it's merged against the project's file as it is now, so
+/// it lands as it is. Returns the conflicts left.
+pub fn resolve_conflict(dialog_id: &str, path: &str, content: Option<Vec<u8>>, side: Option<&str>) -> Result<Vec<super::land::Conflict>, String> {
+    let s = sides(dialog_id, path)?;
+    let content = match side {
+        Some("ours") => s.project.clone(),
+        Some("theirs") => s.chat.clone(),
+        Some(other) => return Err(format!("unknown side: {other}")),
+        None => content,
+    };
+    with_fs(dialog_id, |fs| fs.rebase_file(path, content.as_deref(), s.project.as_deref()))?
+        .map_err(|e| format!("{path}: {e:?}"))?;
+    let mut left = Vec::new();
+    if let Some(mut p) = pending(dialog_id) {
+        p.conflicts.retain(|c| c.path != path);
+        left = p.conflicts.clone();
+        if p.conflicts.is_empty() {
+            set_pending(dialog_id, None);
+        } else {
+            set_pending(dialog_id, Some(&p));
+        }
+    }
+    Ok(left)
+}
+
+/// The markers put in the chat's files for it to resolve, labelled so they
+/// can be found again (and aren't mistaken for markers of its own).
+const MARK_PROJECT: &str = "<<<<<<< project (now)";
+const MARK_BASE: &str = "||||||| before";
+const MARK_SPLIT: &str = "=======";
+const MARK_CHAT: &str = ">>>>>>> this chat";
+
+fn markers_file(dialog_id: &str) -> Option<PathBuf> {
+    Some(store_dir(dialog_id)?.join("markers.json"))
+}
+
+/// Files the chat was asked to resolve markers in.
+fn marked(dialog_id: &str) -> Vec<String> {
+    markers_file(dialog_id).and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Hands the conflicts to the chat: each text file the project and the chat
+/// both changed gets git-style conflict markers in the chat's version, and
+/// is merged against the project's file as it is now. Returns the files
+/// marked; the rest (binary, or deleted on one side) stay for the user.
+pub fn mark_conflicts(dialog_id: &str) -> Result<Vec<String>, String> {
+    let Some(mut p) = pending(dialog_id) else { return Ok(Vec::new()) };
+    let mut done = Vec::new();
+    for c in &p.conflicts {
+        let file = conflict_file(dialog_id, &c.path)?;
+        if file.binary || file.ours.is_none() || file.theirs.is_none() {
+            continue;
+        }
+        let mut text = String::new();
+        for seg in &file.segments {
+            match seg {
+                crate::merge::MergeSegment::Common { text: t } => text.push_str(t),
+                crate::merge::MergeSegment::Conflict { ours, base, theirs } => {
+                    for (mark, part) in [(MARK_PROJECT, ours), (MARK_BASE, base), (MARK_SPLIT, theirs)] {
+                        text.push_str(mark);
+                        text.push('\n');
+                        text.push_str(part);
+                        if !part.is_empty() && !part.ends_with('\n') {
+                            text.push('\n');
+                        }
+                    }
+                    text.push_str(MARK_CHAT);
+                    text.push('\n');
+                }
+            }
+        }
+        let project = std::fs::read(project_of(dialog_id).unwrap_or_default().join(&c.path)).ok();
+        with_fs(dialog_id, |fs| fs.rebase_file(&c.path, Some(text.as_bytes()), project.as_deref()))?
+            .map_err(|e| format!("{}: {e:?}", c.path))?;
+        done.push(c.path.clone());
+    }
+    let mut all = marked(dialog_id);
+    all.extend(done.iter().cloned());
+    all.sort();
+    all.dedup();
+    if let Some(f) = markers_file(dialog_id) {
+        let _ = crate::atomic_file::write_atomic(&f, &serde_json::to_vec(&all).unwrap_or_default());
+    }
+    p.conflicts.retain(|c| !done.contains(&c.path));
+    p.reason = "Waiting for the chat to resolve the conflicts.".into();
+    set_pending(dialog_id, Some(&p));
+    Ok(done)
+}
+
+/// Files the chat was asked to resolve that still have its markers. Ones
+/// resolved are forgotten.
+pub fn markers_left(dialog_id: &str) -> Vec<String> {
+    let all = marked(dialog_id);
+    if all.is_empty() {
+        return all;
+    }
+    let left: Vec<String> = all
+        .into_iter()
+        .filter(|path| {
+            sides(dialog_id, path).ok().and_then(|s| s.chat).is_some_and(|c| {
+                String::from_utf8_lossy(&c).lines().any(|l| l.starts_with(MARK_PROJECT) || l.starts_with(MARK_CHAT))
+            })
+        })
+        .collect();
+    if let Some(f) = markers_file(dialog_id) {
+        if left.is_empty() {
+            let _ = std::fs::remove_file(f);
+        } else {
+            let _ = crate::atomic_file::write_atomic(&f, &serde_json::to_vec(&left).unwrap_or_default());
+        }
+    }
+    left
+}
+
+/// What the chat is asked, with the conflicts marked in its files.
+pub fn resolve_request(files: &[String]) -> String {
+    format!(
+        "Your changes conflict with changes made in the project meanwhile, in: {}.\n\nEach of these files now has conflict markers: `{MARK_PROJECT}` starts the project's version, `{MARK_BASE}` the lines before either change, `{MARK_SPLIT}` your version, and `{MARK_CHAT}` ends the conflict. Read each file, combine both changes so neither is lost (keep the project's change and redo yours on top of it), remove every marker, and make sure the result still works. Your changes land once no markers are left.",
+        files.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")
+    )
+}
+
+/// The project's newer changes merged into the chat's files: each file
+/// both changed (cleanly, in `plan`) takes the merged result in the chat's
+/// view, and is merged against the project's file as it is now. Returns
+/// the files.
+pub fn take_merged(dialog_id: &str, plan: &super::land::Plan) -> Result<Vec<String>, String> {
+    let files = plan.merged_files();
+    with_fs(dialog_id, |fs| {
+        for (path, merged, project) in &files {
+            fs.rebase_file(path, Some(merged), Some(project)).map_err(|e| format!("{path}: {e:?}"))?;
+        }
+        Ok::<_, String>(())
+    })??;
+    Ok(files.into_iter().map(|(p, _, _)| p).collect())
+}
+
+#[tauri::command]
+pub async fn overlay_conflict_file(dialog_id: String, path: String) -> Result<crate::git_sync::ConflictFile, String> {
+    tauri::async_runtime::spawn_blocking(move || conflict_file(&dialog_id, &path)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn overlay_conflict_resolve(
+    dialog_id: String,
+    path: String,
+    content: Option<String>,
+    side: Option<String>,
+) -> Result<Vec<super::land::Conflict>, String> {
+    tauri::async_runtime::spawn_blocking(move || resolve_conflict(&dialog_id, &path, content.map(String::into_bytes), side.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandedOver {
+    pub files: Vec<String>,
+    /// The message to send the chat (empty: nothing could be handed over).
+    pub request: String,
+}
+
+/// Puts conflict markers in the chat's files for it to resolve; returns
+/// the message that asks it to.
+#[tauri::command]
+pub async fn overlay_conflicts_to_chat(dialog_id: String) -> Result<HandedOver, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let files = mark_conflicts(&dialog_id)?;
+        let request = if files.is_empty() { String::new() } else { resolve_request(&files) };
+        Ok(HandedOver { files, request })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+    use crate::vfs::backend::Backend;
+    use crate::vfs::store::SetAttr;
+
+    /// A chat whose change to a.txt conflicts with the project's, saved
+    /// (not mounted): as between runs.
+    fn conflicted(name: &str) -> (PathBuf, PathBuf, String) {
+        let root = std::env::temp_dir().join(format!("conflicts-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.txt"), "1\n2\n3\n4\n5\n").unwrap();
+        init(&root.join("data"));
+        let id = format!("conflict-chat-{name}");
+        let store = store_dir(&id).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("project.txt"), project.to_string_lossy().as_bytes()).unwrap();
+        let fs = OverlayFs::open(&project, &store, DEFAULT_LIMIT).unwrap();
+        let ino = fs.resolve("a.txt").unwrap();
+        fs.setattr(ino, &SetAttr { size: Some(0), ..Default::default() }).unwrap();
+        fs.write(ino, 0, b"CHAT\n2\n3\n4\n5\n").unwrap();
+        fs.save();
+        drop(fs);
+        std::fs::write(project.join("a.txt"), "PROJECT\n2\n3\n4\n5\n").unwrap();
+        let plan = super::super::land::plan(&project, &changes(&id), false);
+        set_pending(&id, Some(&Pending { reason: "conflicts".into(), conflicts: plan.conflicts }));
+        (root, project, id)
+    }
+
+    // One at a time: the data folder is the app's, one for all.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_conflict_resolved_in_the_resolver_lands() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (root, project, id) = conflicted("resolver");
+        let file = conflict_file(&id, "a.txt").unwrap();
+        assert_eq!(file.ours.as_deref(), Some("PROJECT\n2\n3\n4\n5\n"));
+        assert_eq!(file.theirs.as_deref(), Some("CHAT\n2\n3\n4\n5\n"));
+        assert!(file.segments.iter().any(|s| matches!(s, crate::merge::MergeSegment::Conflict { .. })));
+        let left = resolve_conflict(&id, "a.txt", Some(b"PROJECT CHAT\n2\n3\n4\n5\n".to_vec()), None).unwrap();
+        assert!(left.is_empty());
+        assert!(pending(&id).is_none());
+        land_now(&id, false).unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(project.join("a.txt")).unwrap(), "PROJECT CHAT\n2\n3\n4\n5\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_conflict_handed_to_the_chat_lands_once_its_markers_are_gone() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (root, project, id) = conflicted("chat");
+        assert_eq!(mark_conflicts(&id).unwrap(), vec!["a.txt"]);
+        let marked = String::from_utf8(sides(&id, "a.txt").unwrap().chat.unwrap()).unwrap();
+        assert!(marked.starts_with(&format!("{MARK_PROJECT}\nPROJECT\n{MARK_BASE}\n1\n{MARK_SPLIT}\nCHAT\n{MARK_CHAT}\n2\n")), "{marked}");
+        assert!(resolve_request(&["a.txt".into()]).contains("`a.txt`"));
+        // Markers left: nothing lands, not even anyway.
+        assert!(matches!(land_now(&id, true), Err(super::super::land::LandError::Failed(_))));
+        assert_eq!(markers_left(&id), vec!["a.txt"]);
+        // The chat resolves them.
+        with_fs(&id, |fs| fs.rebase_file("a.txt", Some(b"PROJECT\nCHAT\n2\n3\n4\n5\n"), Some(b"PROJECT\n2\n3\n4\n5\n")))
+            .unwrap()
+            .unwrap();
+        assert!(markers_left(&id).is_empty());
+        land_now(&id, false).unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(project.join("a.txt")).unwrap(), "PROJECT\nCHAT\n2\n3\n4\n5\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn busy_while_held_and_for_a_moment_after() {
+        let dir = std::env::temp_dir().join(format!("busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!is_busy(&dir));
+        let guard = hold_busy(&dir);
+        assert!(is_busy(&dir));
+        drop(guard);
+        assert!(is_busy(&dir), "settling");
+        BUSY.lock().unwrap().get_mut(&busy_key(&dir)).unwrap().0 = Instant::now() - QUIET;
+        assert!(!is_busy(&dir));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 #[cfg(test)]

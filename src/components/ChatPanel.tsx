@@ -2101,6 +2101,24 @@ export default function ChatPanel(props: ChatProps) {
     );
   }
 
+  /**
+   * An isolated chat's conflicts with the project, handed to it
+   * (IsolationBar): markers are in its files; this asks it to settle them.
+   */
+  function askToResolve(dialogId: string, request: string) {
+    if (!activeProfile() || isRunning(dialogId)) return;
+    setChatMode('agent');
+    void sendMessage(
+      dialogId,
+      {
+        id: crypto.randomUUID(),
+        content: 'Resolve the conflicts with the project’s changes.',
+        meta: { mode: 'agent', sentContent: request },
+      },
+      request
+    );
+  }
+
   /** "Implement this plan" on a plan file in the editor (App sends it). */
   function takePlanFromEditor() {
     const dialogId = activeDialogId();
@@ -2990,7 +3008,12 @@ export default function ChatPanel(props: ChatProps) {
       {/* An isolated chat's changes that aren't in the project yet. */}
       <Show when={activeDialogId()}>
         {(id) => (
-          <IsolationBar dialogId={id()} revision={isolationRevision()} running={sending()} />
+          <IsolationBar
+            dialogId={id()}
+            revision={isolationRevision()}
+            running={sending()}
+            onAskChat={(request) => askToResolve(id(), request)}
+          />
         )}
       </Show>
       {/* The agent's questions, one at a time, above the input. */}

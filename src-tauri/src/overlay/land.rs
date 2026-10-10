@@ -77,6 +77,8 @@ struct Action {
     /// The project's entry when planned, which must still be there when
     /// the landing writes.
     expected: Snapshot,
+    /// The project changed the file too: `new` is both changes merged.
+    merged: bool,
 }
 
 #[derive(Debug)]
@@ -123,16 +125,16 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
         let target = abs(project, &path);
         let now = snapshot(&target);
         match change {
-            OverlayChange::Delete { .. } => actions.push(Action { path, new: NewContent::Absent, expected: now }),
+            OverlayChange::Delete { .. } => actions.push(Action { path, new: NewContent::Absent, expected: now, merged: false }),
             OverlayChange::Write { kind: Kind::Dir, .. } => {
                 if now != Snapshot::Dir {
-                    actions.push(Action { path, new: NewContent::Dir, expected: now });
+                    actions.push(Action { path, new: NewContent::Dir, expected: now, merged: false });
                 }
             }
             OverlayChange::Write { kind: Kind::Symlink, target: link, .. } => {
                 let link = link.clone().unwrap_or_default();
                 if now != Snapshot::Symlink(link.clone()) {
-                    actions.push(Action { path, new: NewContent::Symlink(link), expected: now });
+                    actions.push(Action { path, new: NewContent::Symlink(link), expected: now, merged: false });
                 }
             }
             OverlayChange::Write { kind: Kind::File, origin, upper, base_copy, perm, perm_changed, .. } => {
@@ -156,6 +158,7 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                     }
                 };
                 let result = resolve(base.as_deref(), &ours, theirs.as_deref());
+                let was_merged = matches!(result, Resolved::Merged(_));
                 let bytes = match result {
                     Resolved::Take(bytes) => bytes,
                     Resolved::Merged(bytes) => {
@@ -177,7 +180,7 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                         continue;
                     }
                 };
-                actions.push(Action { path, new: NewContent::File { bytes, perm }, expected: now });
+                actions.push(Action { path, new: NewContent::File { bytes, perm }, expected: now, merged: was_merged });
             }
         }
     }
@@ -228,15 +231,17 @@ impl Plan {
         self.actions.iter().map(|a| a.path.clone()).collect()
     }
 
-    /// Writes the merged results into the chat's view, so its checks run on
-    /// what would land.
-    pub fn write_into(&self, view: &Path) -> Result<(), String> {
-        for a in &self.actions {
-            if let NewContent::File { bytes, .. } = &a.new {
-                fs::write(abs(view, &a.path), bytes).map_err(|e| format!("{}: {e}", a.path))?;
-            }
-        }
-        Ok(())
+    /// The files both the chat and the project changed: (path, both changes
+    /// merged, the project's file now).
+    pub fn merged_files(&self) -> Vec<(String, Vec<u8>, Vec<u8>)> {
+        self.actions
+            .iter()
+            .filter(|a| a.merged)
+            .filter_map(|a| match (&a.new, &a.expected) {
+                (NewContent::File { bytes, .. }, Snapshot::File(project)) => Some((a.path.clone(), bytes.clone(), project.clone())),
+                _ => None,
+            })
+            .collect()
     }
 }
 

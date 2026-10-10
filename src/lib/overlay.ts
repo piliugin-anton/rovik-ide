@@ -5,6 +5,7 @@
 // land. This lists them, shows each against the project, and discards them.
 
 import { invoke } from '@tauri-apps/api/core';
+import type { GitConflictFile } from '../types';
 
 export interface ChangedFile {
   path: string;
@@ -72,4 +73,32 @@ export function overlayLand(dialogId: string, keepChat: boolean): Promise<LandRe
 /** Undoes a landing; returns the files left as they are (changed since). */
 export function overlayUndo(dialogId: string, id: string): Promise<Conflict[]> {
   return invoke<Conflict[]>('overlay_undo', { dialogId, id });
+}
+
+/** A conflicted file: the project's version ("ours"), the chat's ("theirs"). */
+export function overlayConflictFile(dialogId: string, path: string): Promise<GitConflictFile> {
+  return invoke<GitConflictFile>('overlay_conflict_file', { dialogId, path });
+}
+
+/**
+ * Settles a conflicted file: `content` becomes the chat's version (null:
+ * deleted), or `side` takes one whole version. Returns the conflicts left.
+ */
+export function overlayConflictResolve(
+  dialogId: string,
+  path: string,
+  content: string | null,
+  side?: 'ours' | 'theirs'
+): Promise<Conflict[]> {
+  return invoke<Conflict[]>('overlay_conflict_resolve', { dialogId, path, content, side });
+}
+
+/**
+ * Hands the conflicts to the chat: markers go into its files. Returns the
+ * files and the message to send it (empty when nothing could be handed over).
+ */
+export function overlayConflictsToChat(
+  dialogId: string
+): Promise<{ files: string[]; request: string }> {
+  return invoke('overlay_conflicts_to_chat', { dialogId });
 }

@@ -439,3 +439,46 @@ mod landing {
         assert_eq!(project_file(&d, "a.txt").as_deref(), Some("ONE\n"));
     }
 }
+
+#[test]
+fn the_projects_changes_merged_in_land_as_they_are() {
+    let d = setup(&[("a.txt", "1\n2\n3\n4\n5\n")]);
+    let o = overlay(&d);
+    write_all(&o, "a.txt", "ONE\n2\n3\n4\n5\n");
+    fs::write(d.project().join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
+    let plan = super::land::plan(&d.project(), &o.changes(), false);
+    assert!(plan.merged);
+    let files = plan.merged_files();
+    assert_eq!(files.len(), 1);
+    for (path, merged, project) in &files {
+        o.rebase_file(path, Some(merged), Some(project)).unwrap();
+    }
+    // The chat's view has both changes; landing now just takes it.
+    assert_eq!(read_all(&o, "a.txt"), "ONE\n2\n3\n4\nFIVE\n");
+    let again = super::land::plan(&d.project(), &o.changes(), false);
+    assert!(!again.merged && again.conflicts.is_empty());
+    assert_eq!(again.paths(), vec!["a.txt"]);
+}
+
+#[test]
+fn a_rebased_file_survives_reopening() {
+    let d = setup(&[("a.txt", "1\n2\n3\n"), ("b.txt", "b\n")]);
+    {
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "A\n2\n3\n");
+        write_all(&o, "b.txt", "chat\n");
+        fs::write(d.project().join("a.txt"), "P\n2\n3\n").unwrap();
+        o.rebase_file("a.txt", Some(b"PA\n2\n3\n"), Some(b"P\n2\n3\n")).unwrap();
+        // Resolved by deleting it: gone from the view, and a delete lands.
+        o.rebase_file("b.txt", None, Some(b"b\n")).unwrap();
+        o.flush();
+    }
+    let o = overlay(&d);
+    assert_eq!(read_all(&o, "a.txt"), "PA\n2\n3\n");
+    assert_eq!(o.resolve("b.txt"), Err(VfsError::NotFound));
+    let plan = super::land::plan(&d.project(), &o.changes(), false);
+    assert!(plan.conflicts.is_empty(), "{:?}", plan.conflicts);
+    let mut p = plan.paths();
+    p.sort();
+    assert_eq!(p, vec!["a.txt", "b.txt"]);
+}

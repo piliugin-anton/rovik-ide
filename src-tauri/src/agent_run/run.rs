@@ -96,6 +96,9 @@ pub struct Run<R: Runtime> {
     pub(super) project_root: Option<String>,
     /// An isolated chat's changes landed at the end of this run.
     pub(super) landed: bool,
+    /// Files the project's newer changes were just merged into, for the
+    /// failure report of the checks that follow (landing.rs).
+    pub(super) merged_from_project: Option<Vec<String>>,
     /// What this run has read and written of each file, so a whole-file
     /// write over a change it hasn't seen is refused (file_guard.rs).
     pub(super) seen: Arc<crate::file_guard::Seen>,
@@ -542,6 +545,7 @@ impl<R: Runtime> Run<R> {
             context_mode: request.context_mode.unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
             project_root,
+            merged_from_project: None,
             landed: false,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
@@ -763,9 +767,19 @@ impl<R: Runtime> Run<R> {
                         return Ok("unfinished-checklist".into());
                     }
                 }
+                // Isolated: the project's newer changes to the same files
+                // are merged in and checked before the run ends.
+                if let Some(next) = self.take_project_changes(&outcome).await? {
+                    if next == "continue" {
+                        continue;
+                    }
+                    return Ok(next);
+                }
                 return Ok(outcome);
             }
 
+            // Isolated: not while the project is mid-switch.
+            self.wait_while_project_busy().await;
             self.execute_tool_calls(&turn.tool_calls, None).await?;
             if self.stopped() {
                 return Ok("stopped".into());

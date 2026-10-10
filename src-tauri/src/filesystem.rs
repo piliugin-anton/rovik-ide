@@ -516,6 +516,13 @@ pub fn start_file_watch(
                         match watch_path_kind(&watch_root, &ignores, &path) {
                             WatchPath::Git => {
                                 git_touched = Some(Instant::now());
+                                // A checkout, merge or rebase is rewriting the
+                                // working tree: isolated chats wait it out.
+                                if path.parent() == Some(watch_root.join(".git").as_path())
+                                    && path.file_name().is_some_and(|n| n == "HEAD" || n == "ORIG_HEAD")
+                                {
+                                    crate::overlay::chats::project_busy(&watch_root);
+                                }
                                 continue;
                             }
                             WatchPath::Ignored => continue,

@@ -239,6 +239,8 @@ pub async fn git_pull(
     strategy: Option<PullStrategy>,
     remember: Option<bool>,
 ) -> Result<PullOutcome, String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_pull_blocking(path, strategy, remember.unwrap_or(false))).await
 }
 
@@ -429,6 +431,8 @@ pub async fn git_operation_continue(
     path: String,
     message: Option<String>,
 ) -> Result<PullOutcome, String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_operation_continue_blocking(path, message)).await
 }
 
@@ -473,6 +477,8 @@ pub fn git_operation_continue_blocking(
 
 #[tauri::command]
 pub async fn git_operation_abort(path: String) -> Result<(), String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_operation_abort_blocking(path)).await
 }
 
