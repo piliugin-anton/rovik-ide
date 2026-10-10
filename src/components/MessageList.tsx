@@ -16,7 +16,7 @@ import {
   Show,
   untrack,
 } from 'solid-js';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, ChatToolCall } from '../types';
 import type { OpenChat } from '../lib/chatStore';
 import {
   afterAppend,
@@ -31,9 +31,11 @@ import { isBlank } from '../lib/textUtils';
 import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
 import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
+import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
 import { requestOpenFile } from '../lib/editorBridge';
 import { isSettled, parseTodo } from '../lib/todo';
+import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
 
 const BOTTOM_TOLERANCE_PX = 8;
 /** A scroll this soon after wheel/touch/key/scrollbar input is the user's. */
@@ -180,13 +182,76 @@ export default function MessageList(props: {
     return { superseded, latest, interruptedLatest };
   });
 
+  /*
+   * Consecutive calls to one tool fold into one line (ToolCallGroup), also
+   * across replies: a reply that is nothing but tool calls continues the
+   * tool calls of the reply before it, and renders inside it rather than as
+   * a row of its own. Anything else shown with a reply (text, thinking, an
+   * error, a pause) starts a new row, so nothing is moved out of order.
+   */
+  const onlyToolCalls = (m: ChatMessage) =>
+    m.role === 'assistant' &&
+    !!m.toolCalls?.length &&
+    isBlank(m.content) &&
+    !m.error &&
+    !m.meta?.reasoning?.text &&
+    !(m.pending && m.status);
+  /** Nothing shown after its tool calls, so the next reply's can follow on. */
+  const toolCallsLast = (m: ChatMessage) =>
+    !m.meta?.interrupted &&
+    !m.meta?.paused &&
+    !m.meta?.verification &&
+    !m.meta?.planFile &&
+    props.planMessageId !== m.id &&
+    !(m.pending && m.status);
+
+  const toolRows = createMemo(() => {
+    const { start, end } = win();
+    /** Row message id -> its tool calls, with the replies folded into it. */
+    const calls = new Map<string, ChatToolCall[]>();
+    const folded = new Set<string>();
+    let open: ChatToolCall[] | null = null;
+    for (const m of messages().slice(start, end)) {
+      if (m.role === 'tool') continue;
+      if (open && onlyToolCalls(m)) {
+        open.push(...m.toolCalls!);
+        folded.add(m.id);
+      } else {
+        open = m.toolCalls?.length ? [...m.toolCalls] : null;
+        if (open) calls.set(m.id, open);
+      }
+      if (!toolCallsLast(m)) open = null;
+    }
+    const runs = new Map<string, ToolRun[]>();
+    for (const [id, list] of calls) runs.set(id, groupToolCalls(list));
+    return { runs, folded };
+  });
+
   // Tool results render inside their call's block, not as rows of their own.
   const visible = createMemo(() => {
     const { start, end } = win();
+    const { folded } = toolRows();
     return messages()
       .slice(start, end)
-      .filter((m) => m.role !== 'tool');
+      .filter((m) => m.role !== 'tool' && !folded.has(m.id));
   });
+
+  /** A row's tool call runs, by the id of each run's first call (stable keys for <For>). */
+  const runsOf = (m: ChatMessage) => toolRows().runs.get(m.id) ?? [];
+  const runKeys = (m: ChatMessage) => runsOf(m).map((r) => r.calls[0].id);
+  const runAt = (m: ChatMessage, key: string) => runsOf(m).find((r) => r.calls[0].id === key);
+
+  const renderCall = (tc: ChatToolCall) => (
+    <ToolCallBlock
+      dialogId={props.dialogId}
+      toolCall={tc}
+      result={toolResults().get(tc.id)}
+      running={props.sending}
+      note={props.toolNotes?.[tc.id]}
+      superseded={todoCallStates().superseded.has(tc.id)}
+      interrupted={tc.id === todoCallStates().latest && todoCallStates().interruptedLatest}
+    />
+  );
 
   const atNewest = () => win().end >= messages().length && !props.chat?.hasNewer;
 
@@ -1190,22 +1255,31 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
-                <Show when={m.toolCalls && m.toolCalls.length > 0}>
+                <Show when={runKeys(m).length > 0}>
                   <div class="message-tools">
-                    <For each={m.toolCalls!}>
-                      {(tc) => (
-                        <ToolCallBlock
-                          dialogId={props.dialogId}
-                          toolCall={tc}
-                          result={toolResults().get(tc.id)}
-                          running={props.sending}
-                          note={props.toolNotes?.[tc.id]}
-                          superseded={todoCallStates().superseded.has(tc.id)}
-                          interrupted={
-                            tc.id === todoCallStates().latest && todoCallStates().interruptedLatest
-                          }
-                        />
-                      )}
+                    <For each={runKeys(m)}>
+                      {(key) => {
+                        const run = () => runAt(m, key);
+                        return (
+                          <Show
+                            when={(run()?.calls.length ?? 0) > 1}
+                            fallback={
+                              <Show when={run()?.calls[0]} keyed>
+                                {(tc) => renderCall(tc)}
+                              </Show>
+                            }
+                          >
+                            <ToolCallGroup
+                              name={run()!.name}
+                              calls={run()!.calls}
+                              dialogId={props.dialogId}
+                              result={(id) => toolResults().get(id)}
+                              running={props.sending}
+                              renderCall={renderCall}
+                            />
+                          </Show>
+                        );
+                      }}
                     </For>
                   </div>
                 </Show>
