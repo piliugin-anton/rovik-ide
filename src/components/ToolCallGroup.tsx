@@ -7,7 +7,7 @@
 // approval, a question) keeps the line open, so the request is never hidden.
 import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
-import { describeGroup } from '../lib/toolGroups';
+import { describeGroup, editCounts } from '../lib/toolGroups';
 import { isErrorResult, parseArgsLenient } from '../lib/toolArgs';
 import { pendingApproval } from '../lib/approvals';
 import { pendingQuestions } from '../lib/questions';
@@ -52,6 +52,19 @@ export default function ToolCallGroup(props: {
     ]
       .filter(Boolean)
       .join(' · ');
+
+  // Edits that went through, totalled like an edit's own header.
+  const counts = createMemo(() => {
+    if (props.name !== 'write') return undefined;
+    const state = states();
+    return editCounts(
+      props.calls
+        .filter(
+          (c, i) => state[i] === 'done' && props.result(c.id)?.meta?.approval?.approved !== false
+        )
+        .map((c) => parseArgsLenient(c.arguments))
+    );
+  });
 
   const label = createMemo(() =>
     describeGroup(
@@ -122,6 +135,17 @@ export default function ToolCallGroup(props: {
             <span class="tool-group-item"> and {label().more} more</span>
           </Show>
         </span>
+        <Show when={counts()}>
+          {(c) => (
+            <span
+              class="tool-call-counts"
+              title={`${c().added} lines added, ${c().removed} removed`}
+            >
+              <span class="added">+{c().added}</span>
+              <span class="removed">−{c().removed}</span>
+            </span>
+          )}
+        </Show>
         <Show when={meta()}>
           <span class="tool-group-meta" classList={{ error: failed() > 0 }}>
             {meta()}

@@ -7606,6 +7606,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   text-decoration: underline;
 }
 
+.tool-group-header .tool-call-counts {
+  margin-left: 0;
+}
+
 .tool-group-verb {
   flex: 0 0 auto;
 }

@@ -8,6 +8,7 @@ import type { ChatToolCall } from '../types';
 import { isLiveContextPath } from './contextDoc';
 import { parseArgsLenient, type Args } from './toolArgs';
 import { parseTodo, progressLabel } from './todo';
+import { diffRows, snippetLines } from './lineDiff';
 
 /** Consecutive calls to one tool; a single call is a run of one. */
 export interface ToolRun {
@@ -133,6 +134,31 @@ function file(args: Args): GroupItem | undefined {
 function quoted(value: unknown): GroupItem | undefined {
   const text = str(value)?.trim();
   return text ? { text: `"${short(text)}"`, title: text } : undefined;
+}
+
+/**
+ * Lines added and removed by a group's edits (writes replacing a quoted
+ * piece of a file), counted like an edit's own block (EditDiffBlock): an
+ * edited line is one removed and one added. Whole-file writes and edits to
+ * the agent's context aren't counted. Undefined when nothing was edited.
+ */
+export function editCounts(argsList: Args[]): { added: number; removed: number } | undefined {
+  let edits = 0;
+  let added = 0;
+  let removed = 0;
+  for (const args of argsList) {
+    const oldText = str(args.old_text);
+    const newText = str(args.content);
+    if (oldText === undefined || newText === undefined || isLiveContextPath(str(args.path))) {
+      continue;
+    }
+    edits += 1;
+    for (const row of diffRows(snippetLines(oldText), snippetLines(newText))) {
+      if (row.kind === 'added') added += 1;
+      else if (row.kind === 'removed') removed += 1;
+    }
+  }
+  return edits ? { added, removed } : undefined;
 }
 
 /** The group's line, e.g. { verb: "Edited", items: [App.tsx, main.tsx] }. */

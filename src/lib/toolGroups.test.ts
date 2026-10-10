@@ -2,7 +2,7 @@
 // toolGroups.ts tests (node:test). Run with: npm test
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { commandName, describeGroup, domainName, groupToolCalls } from './toolGroups';
+import { commandName, describeGroup, domainName, editCounts, groupToolCalls } from './toolGroups';
 
 let next = 0;
 function call(name, args = {}) {
@@ -124,6 +124,21 @@ describe('describeGroup', () => {
       browsed.items.map((i) => i.text),
       ['docs.rs', 'github.com']
     );
+  });
+});
+
+describe('editCounts', () => {
+  it('totals the lines edits add and remove, skipping whole writes and context', () => {
+    assert.deepEqual(
+      editCounts([
+        { path: 'a.ts', old_text: 'one\ntwo', content: 'one\nTWO\nthree' },
+        { path: 'b.ts', old_text: 'gone', content: '' },
+        { path: 'c.ts', content: 'whole\nfile' },
+        { path: '@context', old_text: 'x', content: 'y' },
+      ]),
+      { added: 2, removed: 2 }
+    );
+    assert.equal(editCounts([{ path: 'c.ts', content: 'whole' }]), undefined);
   });
 });
 
