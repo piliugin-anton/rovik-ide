@@ -301,7 +301,8 @@ export function ConflictResolver(props: ConflictResolverProps) {
       doneFiles().add(file);
       setVersion((v) => v + 1);
       props.onFileWritten(file);
-      const next = props.operation.conflicts.find((f) => f !== file);
+      // The next file still to resolve, not one done earlier in this session.
+      const next = props.operation.conflicts.find((f) => f !== file && !doneFiles().has(f));
       if (next) setSelected(next);
     } catch (e) {
       setError(String(e));
