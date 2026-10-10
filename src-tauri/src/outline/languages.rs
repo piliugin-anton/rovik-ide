@@ -216,7 +216,7 @@ const CPP_QUERY: &str = r#"
 ]) @item
 "#;
 
-static LANGUAGES: [Lang; 71] = [
+static LANGUAGES: [Lang; 70] = [
     lang!("Rust", tree_sitter_rust::LANGUAGE, ext: ["rs"], files: [],
         kinds: ["function_item", "function_signature_item", "impl_item", "trait_item", "struct_item", "enum_item",
             "union_item", "mod_item", "type_item", "const_item", "static_item", "macro_definition", "foreign_mod_item"],
@@ -522,9 +522,9 @@ static LANGUAGES: [Lang; 71] = [
     lang!("KDL", tree_sitter_kdl::LANGUAGE, ext: ["kdl"], files: [],
         kinds: ["node"],
         query: "", tags: None),
-    lang!("Perl", tree_sitter_perl::LANGUAGE, ext: ["pl", "pm", "t", "psgi"], files: [],
+/*     lang!("Perl", tree_sitter_perl::LANGUAGE, ext: ["pl", "pm", "t", "psgi"], files: [],
         kinds: ["function_definition", "package_statement"],
-        query: "", tags: None),
+        query: "", tags: None), */
     lang!("SPARQL", tree_sitter_sparql::LANGUAGE, ext: ["rq", "sparql"], files: [],
         kinds: ["SelectQuery", "ConstructQuery", "DescribeQuery", "AskQuery", "Update1"],
         query: "", tags: None),

@@ -375,11 +375,11 @@ fn analyze(path: &str, content: &str, with_identifiers: bool) -> Option<Tags> {
         );
         while let Some(m) = matches.next() {
             let name = m
-                .captures
+                .captures()
                 .iter()
                 .find(|c| Some(c.index) == name_index)
                 .map(|c| c.node);
-            for c in m.captures {
+            for c in m.captures() {
                 if !item_indexes.contains(&c.index) {
                     continue;
                 }
