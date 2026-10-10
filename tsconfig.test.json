@@ -1,0 +1,9 @@
+{
+  // Unit tests (scripts/test.mjs, node:test): the app's options plus Node.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"]
+  },
+  "include": ["src/**/*.test.ts"],
+  "exclude": []
+}
