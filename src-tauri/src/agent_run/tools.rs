@@ -1021,6 +1021,7 @@ fn count_lines(text: &str) -> usize {
 static MATCH_COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) match").unwrap());
 static NUMBERED_HIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\. ").unwrap());
 static EXIT_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^exit code (-?\d+)").unwrap());
+static WRITE_CHANGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\+(\d+) -(\d+) lines\)$").unwrap());
 static PAGE_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 
 /// Small summary of a tool's result, for the chat's tool block header.
@@ -1069,6 +1070,13 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
             }
             Some(meta)
         }
+        // A whole-file write: the lines it added and removed (agent_tools::write_file).
+        "write" => WRITE_CHANGES.captures(result).map(|c| {
+            let mut meta = Map::new();
+            meta.insert("added".into(), json!(c[1].parse::<u64>().unwrap_or(0)));
+            meta.insert("removed".into(), json!(c[2].parse::<u64>().unwrap_or(0)));
+            meta
+        }),
         "browse_url" => {
             let title = PAGE_TITLE.captures(result).map(|c| c[1].to_string()).filter(|t| t != "(untitled)");
             match title {
@@ -1083,6 +1091,14 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_writes_report_lines_added_and_removed() {
+        let meta = result_meta("write", "wrote 9 bytes to a.ts (+3 -1 lines)").unwrap();
+        assert_eq!((meta["added"].clone(), meta["removed"].clone()), (json!(3), json!(1)));
+        assert!(result_meta("write", "wrote 9 bytes to a.bin").is_none());
+        assert!(result_meta("write", "Edited a.ts: replaced lines 3-4 (2 → 2 lines), now 9.").is_none());
+    }
 
     #[test]
     fn regex_syntax_in_a_literal_query_is_recognised() {

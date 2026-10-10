@@ -312,7 +312,7 @@ async fn a_run_calls_tools_until_the_model_is_done() {
     assert_eq!(messages[1].tool_calls.as_ref().unwrap()[0].name, "write");
     assert!(messages.iter().all(|m| m.finalized), "every message is finished");
     assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
-    assert_eq!(messages[2].content, "wrote 3 bytes to hello.txt");
+    assert_eq!(messages[2].content, "wrote 3 bytes to hello.txt (+1 -0 lines)");
     assert_eq!(messages[3].content, "Wrote hello.txt.");
 
     // The second request carried the tool's result, with the tools and the system prompt.
@@ -1940,7 +1940,7 @@ async fn edits_that_change_nothing_or_cant_apply_skip_approval() {
     assert_eq!(h.run_end().await, "done");
     assert!(h.events_of("approvalRequested").is_empty(), "nothing to approve");
     let messages = h.messages().await;
-    assert_eq!(result_of(&messages, "w1").content, "wrote 4 bytes to a.txt");
+    assert!(result_of(&messages, "w1").content.starts_with("wrote 4 bytes to a.txt ("));
     assert!(result_of(&messages, "e1").content.starts_with("Error:"));
     assert!(result_of(&messages, "e2").content.contains("no such file"));
     assert_eq!(h.file("a.txt").as_deref(), Some("one\n"));

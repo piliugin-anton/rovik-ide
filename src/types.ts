@@ -195,6 +195,9 @@ export interface ReviewCheck {
 export interface ToolMeta {
   /** Tool results: counts for the block header. */
   count?: number;
+  /** Whole-file writes: lines added and removed (against the file before). */
+  added?: number;
+  removed?: number;
   /** read by symbol: the lines of the declaration it found. */
   range?: [number, number];
   pageTitle?: string;

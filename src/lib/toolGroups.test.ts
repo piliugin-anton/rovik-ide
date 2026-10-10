@@ -128,17 +128,18 @@ describe('describeGroup', () => {
 });
 
 describe('editCounts', () => {
-  it('totals the lines edits add and remove, skipping whole writes and context', () => {
+  it('totals the lines writes add and remove, skipping context edits', () => {
     assert.deepEqual(
       editCounts([
-        { path: 'a.ts', old_text: 'one\ntwo', content: 'one\nTWO\nthree' },
-        { path: 'b.ts', old_text: 'gone', content: '' },
-        { path: 'c.ts', content: 'whole\nfile' },
-        { path: '@context', old_text: 'x', content: 'y' },
+        { args: { path: 'a.ts', old_text: 'one\ntwo', content: 'one\nTWO\nthree' } },
+        { args: { path: 'b.ts', old_text: 'gone', content: '' } },
+        { args: { path: 'c.ts', content: 'whole\nfile' }, result: { added: 5, removed: 1 } },
+        { args: { path: '@context', old_text: 'x', content: 'y' } },
       ]),
-      { added: 2, removed: 2 }
+      { added: 7, removed: 3 }
     );
-    assert.equal(editCounts([{ path: 'c.ts', content: 'whole' }]), undefined);
+    // A whole-file write from before results counted its lines.
+    assert.equal(editCounts([{ args: { path: 'c.ts', content: 'whole' } }]), undefined);
   });
 });
 

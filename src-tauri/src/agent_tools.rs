@@ -736,8 +736,10 @@ pub fn write_file(root: &str, path: &str, content: &str, seen: Option<&Seen>) ->
     // Reject '..' up front (same rule as resolve_within_root) before we
     // create any directories on disk.
     let target = resolve_within_root(root, path)?;
-    if let Ok(current) = fs::read_to_string(&target) {
-        if let Some(error) = empty_overwrite_error(&path, &current, &content) {
+    // What was there: None for a new file, Some(None) when it isn't text.
+    let before = fs::read(&target).ok().map(|bytes| String::from_utf8(bytes).ok());
+    if let Some(Some(current)) = &before {
+        if let Some(error) = empty_overwrite_error(&path, current, &content) {
             return Err(error);
         }
     }
@@ -755,7 +757,29 @@ pub fn write_file(root: &str, path: &str, content: &str, seen: Option<&Seen>) ->
             fs::write(&target, content).map_err(|e| format!("{path}: {e}"))?;
         }
     }
-    Ok(format!("wrote {} bytes to {path}", content.len()))
+    let changes = match &before {
+        None => line_changes("", content),
+        Some(Some(current)) => line_changes(current, content),
+        Some(None) => return Ok(format!("wrote {} bytes to {path}", content.len())),
+    };
+    Ok(format!("wrote {} bytes to {path} (+{} -{} lines)", content.len(), changes.0, changes.1))
+}
+
+/// Lines added and removed turning `before` into `after`, counted as the
+/// chat's diffs count them: a changed line is one removed and one added.
+pub fn line_changes(before: &str, after: &str) -> (usize, usize) {
+    use crate::agent_run::diff::{diff_lines, split_lines};
+    fn lines(text: &str) -> Vec<&str> {
+        let mut lines = split_lines(text);
+        // The newline ending the last line doesn't start another.
+        if lines.last() == Some(&"") {
+            lines.pop();
+        }
+        lines
+    }
+    diff_lines(&lines(before), &lines(after))
+        .iter()
+        .fold((0, 0), |(added, removed), h| (added + h.added.len(), removed + h.deleted.len()))
 }
 
 /// The model's error for a whole-file write over a change it hasn't seen:
@@ -814,6 +838,14 @@ mod tests {
     }
 
     #[test]
+    fn line_changes_count_like_the_chat() {
+        assert_eq!(line_changes("", "a\nb\n"), (2, 0));
+        assert_eq!(line_changes("a\nb\nc\n", "a\nB\nc\nd\n"), (2, 1));
+        assert_eq!(line_changes("same\n", "same\n"), (0, 0));
+        assert_eq!(line_changes("a\r\nb\r\n", "a\nb"), (0, 0));
+    }
+
+    #[test]
     fn empty_content_never_overwrites_a_file() {
         let (base, root) = linked_project("empty");
         let root_s = root.to_string_lossy().to_string();
@@ -825,7 +857,8 @@ mod tests {
         tool_write_file(root_s.clone(), "pkg/__init__.py".into(), String::new()).unwrap();
         tool_write_file(root_s.clone(), "pkg/__init__.py".into(), String::new()).unwrap();
         // Content is fine whatever was there.
-        tool_write_file(root_s, "a.txt".into(), "new\n".into()).unwrap();
+        let wrote = tool_write_file(root_s, "a.txt".into(), "new\n".into()).unwrap();
+        assert_eq!(wrote, "wrote 4 bytes to a.txt (+1 -2 lines)");
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "new\n");
         let _ = fs::remove_dir_all(base);
     }

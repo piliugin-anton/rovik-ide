@@ -136,29 +136,42 @@ function quoted(value: unknown): GroupItem | undefined {
   return text ? { text: `"${short(text)}"`, title: text } : undefined;
 }
 
+export interface LineCounts {
+  added: number;
+  removed: number;
+}
+
 /**
- * Lines added and removed by a group's edits (writes replacing a quoted
- * piece of a file), counted like an edit's own block (EditDiffBlock): an
- * edited line is one removed and one added. Whole-file writes and edits to
- * the agent's context aren't counted. Undefined when nothing was edited.
+ * Lines added and removed by a group's writes, as each one's own header
+ * counts them: an edit (a quoted piece of a file replaced) from its
+ * arguments, like EditDiffBlock, where an edited line is one removed and one
+ * added; a whole-file write from its result, which compared the file before
+ * (results from before that have no counts). Edits to the agent's context
+ * aren't counted. Undefined when nothing could be counted.
  */
-export function editCounts(argsList: Args[]): { added: number; removed: number } | undefined {
-  let edits = 0;
+export function editCounts(
+  writes: { args: Args; result?: Partial<LineCounts> }[]
+): LineCounts | undefined {
+  let counted = 0;
   let added = 0;
   let removed = 0;
-  for (const args of argsList) {
+  for (const { args, result } of writes) {
+    if (isLiveContextPath(str(args.path))) continue;
     const oldText = str(args.old_text);
     const newText = str(args.content);
-    if (oldText === undefined || newText === undefined || isLiveContextPath(str(args.path))) {
-      continue;
-    }
-    edits += 1;
-    for (const row of diffRows(snippetLines(oldText), snippetLines(newText))) {
-      if (row.kind === 'added') added += 1;
-      else if (row.kind === 'removed') removed += 1;
+    if (oldText !== undefined && newText !== undefined) {
+      counted += 1;
+      for (const row of diffRows(snippetLines(oldText), snippetLines(newText))) {
+        if (row.kind === 'added') added += 1;
+        else if (row.kind === 'removed') removed += 1;
+      }
+    } else if (oldText === undefined && result?.added !== undefined) {
+      counted += 1;
+      added += result.added;
+      removed += result.removed ?? 0;
     }
   }
-  return edits ? { added, removed } : undefined;
+  return counted ? { added, removed } : undefined;
 }
 
 /** The group's line, e.g. { verb: "Edited", items: [App.tsx, main.tsx] }. */
