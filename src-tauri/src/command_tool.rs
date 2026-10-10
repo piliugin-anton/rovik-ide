@@ -161,6 +161,26 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
+/// Whether the shell has exited, without reaping it. A reaped shell's pid
+/// can go to a new process once its group is empty (say, the only process
+/// still holding the pipes left the group with setsid), and `kill_tree`
+/// would then signal that stranger's group. The unreaped zombie keeps the
+/// pid, and so the group id, ours until `wait`.
+#[cfg(target_os = "linux")]
+fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    if unsafe { libc::waitid(libc::P_PID, child.id(), &mut info, flags) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } != 0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
+    child.try_wait().map(|s| s.is_some())
+}
+
 #[cfg(windows)]
 fn kill_tree(child: &mut std::process::Child) {
     let _ = crate::process::no_window(&mut Command::new("taskkill"))
@@ -252,15 +272,12 @@ fn run_blocking(
     // output would never end, so it counts as running until the timeout.
     let mut timed_out = false;
     let mut stopped = false;
-    let mut status = None;
+    let mut exited = false;
     loop {
-        if status.is_none() {
-            match child.try_wait() {
-                Ok(s) => status = s,
-                Err(e) => return Err(format!("failed to wait for the command: {e}")),
-            }
+        if !exited {
+            exited = shell_exited(&mut child).map_err(|e| format!("failed to wait for the command: {e}"))?;
         }
-        if status.is_some() && stdout.is_finished() && stderr.is_finished() {
+        if exited && stdout.is_finished() && stderr.is_finished() {
             break;
         }
         stopped = stop();
@@ -269,13 +286,12 @@ fn run_blocking(
         timed_out = !stopped && started.elapsed().saturating_sub(paused) >= timeout;
         if stopped || timed_out {
             kill_tree(&mut child);
-            if status.is_none() {
-                status = child.wait().ok();
-            }
             break;
         }
         thread::sleep(Duration::from_millis(25));
     }
+    // Reaped only now, after any kill_tree: see shell_exited.
+    let status = child.wait().ok();
 
     // A process that left the group (setsid, a detached daemon) may still
     // hold the pipes after the kill; don't wait on the readers forever then.

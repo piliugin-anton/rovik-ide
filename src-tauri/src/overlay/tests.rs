@@ -626,6 +626,21 @@ mod safety {
     }
 
     #[test]
+    fn undo_that_stopped_partway_finishes_on_retry() {
+        let d = setup(&[("a.txt", "one\n"), ("b.txt", "two\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "ONE\n");
+        write_all(&o, "b.txt", "TWO\n");
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap().unwrap();
+        // As if the first undo put a.txt back, then failed before b.txt.
+        fs::write(d.project().join("a.txt"), "one\n").unwrap();
+        let kept = land::undo(&data(&d), "chat", &d.project(), &landed.id).unwrap();
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("one\n"));
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("two\n"));
+    }
+
+    #[test]
     fn undo_keeps_files_added_to_a_landed_folder() {
         let d = setup(&[]);
         let o = overlay(&d);

@@ -717,6 +717,11 @@ pub fn undo(data_dir: &Path, dialog_id: &str, project: &Path, id: &str) -> Resul
         }
         let path = abs(project, &e.path);
         let _lock = crate::file_guard::lock(&path);
+        // Already back (an earlier undo that stopped partway): done, so a
+        // retry finishes the rest instead of calling these conflicts.
+        if is_content(project, &e.path, &e.old) {
+            continue;
+        }
         let still = match (&e.new, snapshot(&path)) {
             (Content::Absent, Snapshot::Absent) | (Content::Dir, Snapshot::Dir) => true,
             (Content::File { file, .. }, Snapshot::File(now)) => fs::read(file).is_ok_and(|b| b == now),
