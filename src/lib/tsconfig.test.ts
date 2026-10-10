@@ -2,7 +2,18 @@
 // tsconfig.ts resolution tests (node:test), against an in-memory file tree.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { jsonc, normalize, resolveTsOptions } from './tsconfig';
+import {
+  declaresGlobals,
+  importedTypesPackages,
+  jsonc,
+  normalize,
+  projectFor,
+  resolveTsOptions,
+  resolveTsProjects,
+  typeReferences,
+  typesPackageName,
+  visibleTypes,
+} from './tsconfig';
 
 function fsOf(files: Record<string, string>) {
   const readFile = async (path) => {
@@ -15,6 +26,11 @@ function fsOf(files: Record<string, string>) {
       .map((p) => p.slice(dir.length + 1));
   return { readFile, listDir };
 }
+
+const fsOfFiles = (files) => {
+  const { readFile, listDir } = fsOf(files);
+  return { readFile, listDir };
+};
 
 const resolve = (files, root = '/p') => {
   const { readFile, listDir } = fsOf(files);
@@ -120,6 +136,120 @@ describe('resolveTsOptions', () => {
       'C:\\p\\'
     );
     assert.deepEqual(options.paths, { '@/*': ['C:/p/src/*'] });
+  });
+});
+
+describe('projects', () => {
+  const files = {
+    '/p/tsconfig.json': `{
+      "compilerOptions": { "types": ["vite/client"] },
+      "include": ["src"],
+      "exclude": ["src/**/*.test.ts"]
+    }`,
+    '/p/tsconfig.test.json': `{
+      "extends": "./tsconfig.json",
+      "compilerOptions": { "types": ["node", "vite/client"] },
+      "include": ["src/**/*.test.ts"],
+      "exclude": []
+    }`,
+    '/p/tsconfig.node.json': `{
+      "compilerOptions": { "types": ["node"], "paths": { "x": ["y"] } },
+      "files": ["vite.config.ts"]
+    }`,
+  };
+
+  it('picks the config that owns a file, with its types', async () => {
+    const { options } = await resolveTsProjects('/p', ...Object.values(fsOfFiles(files)));
+    assert.equal(options.paths, undefined, 'unreferenced configs leave the options alone');
+    const { projects } = await resolveTsProjects('/p', ...Object.values(fsOfFiles(files)));
+    const owner = (f) => projectFor(projects, f)?.path;
+    // tsconfig.json first; the unreferenced ones claim what it doesn't cover.
+    assert.equal(owner('/p/src/App.tsx'), '/p/tsconfig.json');
+    assert.equal(owner('/p/src/lib/a.test.ts'), '/p/tsconfig.test.json');
+    assert.equal(owner('/p/vite.config.ts'), '/p/tsconfig.node.json');
+    assert.equal(owner('/p/scripts/x.ts'), undefined);
+    assert.deepEqual(projectFor(projects, '/p/src/App.tsx').types, ['vite/client']);
+  });
+
+  it('follows references and inherits patterns through extends', async () => {
+    const withRefs = {
+      ...files,
+      '/p/tsconfig.json': `{ "files": [], "references": [
+        { "path": "./tsconfig.app.json" }, { "path": "./tsconfig.test.json" }, { "path": "./tsconfig.node.json" }] }`,
+      '/p/tsconfig.app.json': files['/p/tsconfig.json'],
+      '/p/tsconfig.test.json': files['/p/tsconfig.test.json'].replace(
+        './tsconfig.json',
+        './tsconfig.app.json'
+      ),
+    };
+    const { projects } = await resolveTsProjects('/p', ...Object.values(fsOfFiles(withRefs)));
+    const owner = (f) => projectFor(projects, f);
+    assert.equal(owner('/p/src/App.tsx').path, '/p/tsconfig.app.json');
+    assert.deepEqual(owner('/p/src/lib/a.test.ts').types, ['node', 'vite/client']);
+    assert.equal(owner('/p/vite.config.ts').path, '/p/tsconfig.node.json');
+    assert.equal(owner('/p/other/x.ts'), undefined);
+  });
+
+  it('defaults to everything except node_modules', async () => {
+    const { projects } = await resolveTsProjects(
+      '/p',
+      ...Object.values(fsOfFiles({ '/p/tsconfig.json': '{}' }))
+    );
+    assert.equal(projectFor(projects, '/p/a/b.ts')?.path, '/p/tsconfig.json');
+    assert.equal(projectFor(projects, '/p/node_modules/x/i.ts'), undefined);
+  });
+
+  it('visibleTypes follows types, the default and references', () => {
+    const refs = { react: ['prop-types'], 'prop-types': [] };
+    const of = (pkg) => refs[pkg] ?? [];
+    assert.equal(visibleTypes(undefined, true, of), 'all');
+    assert.deepEqual([...visibleTypes(undefined, false, of)], []);
+    assert.deepEqual([...visibleTypes(['vite/client'], true, of)], ['vite']);
+    assert.deepEqual([...visibleTypes(['react'], false, of)].sort(), ['prop-types', 'react']);
+    assert.equal(visibleTypes(['*'], false, of), 'all');
+  });
+
+  it('typesPackageName and typeReferences', () => {
+    assert.equal(typesPackageName('node'), 'node');
+    assert.equal(typesPackageName('@babel/core'), 'babel__core');
+    assert.equal(typesPackageName('jest/globals'), 'jest');
+    assert.deepEqual(
+      typeReferences('/// <reference types="node" />\n// x\n///<reference types=\'react\'/>'),
+      ['node', 'react']
+    );
+  });
+});
+
+describe('global and imported typings', () => {
+  it('declaresGlobals: scripts and declare global, not plain modules', () => {
+    assert.equal(declaresGlobals('declare var process: any;\ninterface X {}'), true);
+    assert.equal(declaresGlobals('declare module "fs" {\n  export function a(): void;\n}'), true);
+    assert.equal(declaresGlobals('export = _;\ndeclare const _: any;'), false);
+    assert.equal(declaresGlobals('import * as R from "react";\nexport function f(): void;'), false);
+    assert.equal(declaresGlobals('export = React;\ndeclare global {\n  namespace JSX {}\n}'), true);
+  });
+
+  it('importedTypesPackages', () => {
+    const src = [
+      "import _ from 'lodash';",
+      "import type { X } from '@tanstack/solid-virtual/core';",
+      "export * from 'zod';",
+      "import 'reflect-metadata';",
+      "const m = await import('dayjs');",
+      'const r = require("express");',
+      "import fs from 'node:fs';",
+      "import a from './a';",
+      '/// <reference types="jest" />',
+    ].join('\n');
+    assert.deepEqual(importedTypesPackages(src).sort(), [
+      'dayjs',
+      'express',
+      'jest',
+      'lodash',
+      'reflect-metadata',
+      'tanstack__solid-virtual',
+      'zod',
+    ]);
   });
 });
 

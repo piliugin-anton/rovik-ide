@@ -10,6 +10,7 @@
 // backend caps, evicts and marks them stale on its side.
 import * as monaco from 'monaco-editor';
 import { invoke } from '@tauri-apps/api/core';
+import { typesScopeCovers } from './intellisense';
 
 let root: string | null = null;
 let registered = false;
@@ -80,6 +81,10 @@ async function push(uriStr: string): Promise<void> {
   if (uri.scheme !== 'file') return;
   const abs = fsPathOf(uri);
   if (!underRoot(abs)) return;
+  // Computed under another config's global @types (a file of that config is
+  // active): not this file's real errors. Its markers are recomputed, and
+  // reported, once one of its own config's files is active again.
+  if (!typesScopeCovers(abs)) return;
   const markers = markersOf(uri);
   const key = `${root}\n${JSON.stringify(markers)}`;
   if (lastSent.get(uriStr) === key) return;

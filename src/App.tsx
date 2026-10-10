@@ -73,6 +73,7 @@ import { diffLines, splitLines } from './lib/lineDiff';
 import {
   isProjectSource,
   modelUriFor,
+  notifyTsConfigMaybeChanged,
   notifyTypingsMaybeStale,
   updateProjectSource,
 } from './lib/intellisense';
@@ -1597,6 +1598,8 @@ export default function App() {
       // may have changed: debounced typings-only refresh there (no overlay,
       // sources untouched). node_modules itself is watcher-ignored.
       if (!is_dir) notifyTypingsMaybeStale(path);
+      // A tsconfig change can move files between configs or change `types`.
+      if (!is_dir) notifyTsConfigMaybeChanged(path);
     });
   });
 

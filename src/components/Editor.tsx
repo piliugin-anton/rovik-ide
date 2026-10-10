@@ -22,6 +22,7 @@ import {
   isIntelliSenseReady,
   modelUriFor,
   dropProjectSourceLib,
+  setActiveTypesFile,
 } from '../lib/intellisense';
 import { touchModel } from '../lib/models';
 import { ensureOutlineIntelliSense } from '../lib/outlineIntelliSense';
@@ -130,6 +131,8 @@ export default function Editor(props: EditorProps) {
     // From here on the worker serves this file from its model (mirror sync),
     // so its extra-lib snapshot must go — one file in the program, not two.
     dropProjectSourceLib(props.currentFilePath);
+    // Its tsconfig's `types` decide which global @types the worker sees.
+    setActiveTypesFile(props.currentFilePath);
 
     // Create the editor SYNCHRONOUSLY during mount. The previous version
     // awaited `load_nodejs_project_typings` first, so the editor did not

@@ -8,7 +8,8 @@
 //     referenced tsconfig.app.json / tsconfig.node.json;
 //   - `extends` (a path, a package like `@tsconfig/node20`, or an array of
 //     them) supplies options the file doesn't repeat;
-//   - some projects have no tsconfig.json at all, only tsconfig.*.json.
+//   - some projects have no tsconfig.json at all, only tsconfig.*.json, or
+//     have unreferenced ones next to it (tests, tooling: `tsc -p`).
 //
 // Monaco has one program for the whole project, so the configs are merged
 // into one set of options: the root's own first, then its references (app
@@ -16,6 +17,10 @@
 // vite.config.ts and the like), first value wins. `paths` are merged across
 // all of them, each mapping made absolute against the config that declared
 // it, so mappings from configs in different folders all stay correct.
+//
+// Each config is also kept as a project (its file patterns and `types`),
+// so the editor can tell which config owns a file and give that file only
+// the global @types its config allows (see projectFor / visibleTypes).
 //
 // Pure (file access is injected) so it can be unit-tested without Tauri.
 
@@ -37,9 +42,24 @@ export interface ResolvedTsOptions {
 interface LoadedConfig {
   path: string;
   options: ResolvedTsOptions;
-  include?: unknown;
-  files?: unknown;
+  /** Absolute, each against the config file that declared it. */
+  include?: string[];
+  files?: string[];
+  exclude?: string[];
+  /** compilerOptions.types; undefined when unset. */
+  types?: string[];
   references: string[];
+}
+
+/** Which files a config covers, and the global @types it lets them see. */
+export interface TsProject {
+  path: string;
+  /** Absolute patterns. */
+  include: string[];
+  files: string[];
+  exclude: string[];
+  /** compilerOptions.types; undefined when unset (the compiler's default). */
+  types?: string[];
 }
 
 const ROOT_CONFIGS = ['tsconfig.json', 'jsconfig.json'];
@@ -51,6 +71,15 @@ export async function resolveTsOptions(
   readFile: ReadFile,
   listDir?: ListDir
 ): Promise<ResolvedTsOptions> {
+  return (await resolveTsProjects(root, readFile, listDir)).options;
+}
+
+/** The merged options, and every config found as a project, in priority order. */
+export async function resolveTsProjects(
+  root: string,
+  readFile: ReadFile,
+  listDir?: ListDir
+): Promise<{ options: ResolvedTsOptions; projects: TsProject[] }> {
   const rootDir = normalize(root);
   const configs: LoadedConfig[] = [];
   const seen = new Set<string>();
@@ -82,19 +111,22 @@ export async function resolveTsOptions(
       break;
     }
   }
-  if (!found && listDir) {
-    // No tsconfig.json: take every tsconfig.*.json in the root.
+  // The root's tsconfig.*.json that nothing references (tsconfig.test.json,
+  // tsconfig.node.json run with `tsc -p`): with no tsconfig.json they are
+  // the project's configs; next to one they only claim the files it
+  // doesn't cover (projectFor) and leave the merged options alone.
+  const siblings: LoadedConfig[] = [];
+  if (listDir) {
     const names = await listDir(rootDir).catch(() => [] as string[]);
     const extra = names.filter((n) => /^(tsconfig|jsconfig)\..+\.json$/i.test(n)).sort();
-    const loaded: LoadedConfig[] = [];
     for (const name of extra) {
       const before = configs.length;
       await visit(join(rootDir, name), 0);
-      loaded.push(...configs.splice(before));
+      siblings.push(...configs.splice(before));
     }
-    loaded.sort((a, b) => Number(isToolingConfig(a)) - Number(isToolingConfig(b)));
-    configs.push(...loaded);
+    siblings.sort((a, b) => Number(isToolingConfig(a)) - Number(isToolingConfig(b)));
   }
+  if (!found) configs.push(...siblings.splice(0));
 
   const merged: ResolvedTsOptions = {};
   for (const { options } of configs) {
@@ -106,7 +138,141 @@ export async function resolveTsOptions(
       for (const [key, subs] of Object.entries(options.paths)) merged.paths[key] ??= subs;
     }
   }
-  return merged;
+  return { options: merged, projects: [...configs, ...siblings].map(toProject) };
+}
+
+function toProject(config: LoadedConfig): TsProject {
+  const dir = dirname(config.path);
+  // tsc: no include and no files → everything; files only → no patterns.
+  const include =
+    config.include ?? (config.files === undefined ? [join(dir, '**/*')] : ([] as string[]));
+  const exclude =
+    config.exclude ??
+    ['node_modules', 'bower_components', 'jspm_packages'].map((d) => join(dir, d));
+  return { path: config.path, include, files: config.files ?? [], exclude, types: config.types };
+}
+
+/**
+ * The first project whose files include `filePath` (absolute), like
+ * tsserver picking the configured project for an open file; undefined when
+ * none does (tsserver then infers a project with the default types).
+ */
+export function projectFor(projects: TsProject[], filePath: string): TsProject | undefined {
+  const file = normalize(filePath);
+  return projects.find(
+    (p) =>
+      p.files.some((f) => samePath(f, file)) ||
+      (p.include.some((pattern) => matchesPattern(pattern, file)) &&
+        !p.exclude.some((pattern) => matchesPattern(pattern, file)))
+  );
+}
+
+/**
+ * The @types packages (folder names under node_modules/@types) a program
+ * with these `types` sees as globals, or 'all'. Unset `types` means every
+ * @types package before TypeScript 6 and none from 6 on. A visible package's
+ * own `/// <reference types="..." />` pulls that one in too, as in tsc.
+ */
+export function visibleTypes(
+  types: string[] | undefined,
+  defaultsToAll: boolean,
+  referencesOf: (typesPackage: string) => string[]
+): Set<string> | 'all' {
+  if (types === undefined && defaultsToAll) return 'all';
+  if (types?.includes('*')) return 'all';
+  const visible = new Set<string>();
+  const queue = (types ?? []).map(typesPackageName);
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (visible.has(name)) continue;
+    visible.add(name);
+    queue.push(...referencesOf(name).map(typesPackageName));
+  }
+  return visible;
+}
+
+/** `node` → `node`, `@scope/pkg` → `scope__pkg`, `jest/globals` → `jest`. */
+export function typesPackageName(reference: string): string {
+  const parts = reference.replace(/^@types\//, '').split('/');
+  return parts[0].startsWith('@') && parts.length > 1
+    ? `${parts[0].slice(1)}__${parts[1]}`
+    : parts[0];
+}
+
+/** `/// <reference types="x" />` directives in a declaration file. */
+export function typeReferences(text: string): string[] {
+  return [...text.matchAll(/^\s*\/\/\/\s*<reference\s+types\s*=\s*["']([^"']+)["']/gm)].map(
+    (m) => m[1]
+  );
+}
+
+/**
+ * Whether a declaration file adds globals just by being in the program: a
+ * script (no top-level import/export, e.g. most of @types/node) or one with
+ * `declare global`. A module file only matters once something imports it.
+ * Top level means column 0, as declaration files are written.
+ */
+export function declaresGlobals(text: string): boolean {
+  return /^\s*declare\s+global\b/m.test(text) || !/^(?:import|export)\b/m.test(text);
+}
+
+/**
+ * The @types package names a source file pulls in by import, require,
+ * dynamic import, export-from or `/// <reference types>`: `lodash` →
+ * `lodash`, `@scope/pkg/sub` → `scope__pkg`. Relative paths and `node:`
+ * built-ins (typed by @types/node's ambient modules, not by import) aren't.
+ */
+export function importedTypesPackages(text: string): string[] {
+  const out = new Set<string>(typeReferences(text).map(typesPackageName));
+  const specifiers = text.matchAll(
+    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["']([^"'\n]+)["']/gm
+  );
+  for (const [, spec] of specifiers) {
+    if (/^(\.|\/|[A-Za-z]:|node:|[a-z][a-z0-9+.-]*:\/\/)/.test(spec)) continue;
+    out.add(typesPackageName(spec));
+  }
+  return [...out];
+}
+
+/**
+ * tsconfig include/exclude semantics: `*` and `?` stay within a folder,
+ * `**` spans folders, and a pattern whose last part has no wildcard also
+ * matches everything under it (a folder).
+ */
+function matchesPattern(pattern: string, file: string): boolean {
+  if (!/[*?]/.test(pattern)) {
+    return samePath(pattern, file) || startsWithPath(file, `${pattern}/`);
+  }
+  let re = '';
+  const parts = pattern.split('/');
+  parts.forEach((part, i) => {
+    const sep = i < parts.length - 1 ? '/' : '';
+    if (part === '**') {
+      re += i < parts.length - 1 ? '(?:[^/]+/)*' : '.*';
+      return;
+    }
+    re +=
+      part
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '[^/]*')
+        .replace(/\?/g, '[^/]') + sep;
+  });
+  return new RegExp(`^${re}$`, caseInsensitive(file) ? 'i' : '').test(file);
+}
+
+/** Windows paths (drive letter) compare case-insensitively. */
+function caseInsensitive(path: string): boolean {
+  return /^[A-Za-z]:\//.test(path);
+}
+
+function samePath(a: string, b: string): boolean {
+  return caseInsensitive(b) ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function startsWithPath(path: string, prefix: string): boolean {
+  return caseInsensitive(path)
+    ? path.toLowerCase().startsWith(prefix.toLowerCase())
+    : path.startsWith(prefix);
 }
 
 /**
@@ -144,8 +310,10 @@ async function loadConfig(
       const base = await loadConfig(candidate, readFile, leafDir, depth + 1);
       if (!base) continue;
       Object.assign(result.options, definedOnly(base.options));
-      if (base.include !== undefined) result.include = base.include;
-      if (base.files !== undefined) result.files = base.files;
+      if (base.types !== undefined) result.types = base.types;
+      for (const key of ['include', 'files', 'exclude'] as const) {
+        if (base[key] !== undefined) result[key] = base[key];
+      }
       break;
     }
   }
@@ -175,8 +343,15 @@ async function loadConfig(
   if (typeof co.jsx === 'string') result.options.jsx = co.jsx.toLowerCase();
   if (typeof co.jsxImportSource === 'string') result.options.jsxImportSource = co.jsxImportSource;
 
-  if (json.include !== undefined) result.include = json.include;
-  if (json.files !== undefined) result.files = json.files;
+  if (Array.isArray(co.types)) {
+    result.types = co.types.filter((t): t is string => typeof t === 'string');
+  }
+  for (const key of ['include', 'files', 'exclude'] as const) {
+    const list = json[key];
+    if (Array.isArray(list)) {
+      result[key] = list.filter((e): e is string => typeof e === 'string').map((e) => resolve(e));
+    }
+  }
   if (Array.isArray(json.references)) {
     for (const ref of json.references) {
       if (isObject(ref) && typeof ref.path === 'string')
