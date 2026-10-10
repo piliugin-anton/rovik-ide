@@ -192,9 +192,11 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
     case 'web_search':
       return { count: result.split('\n').filter((line) => /^\d+\. /.test(line)).length };
     case 'bash': {
-      const line = result.split('\n')[1] ?? '';
-      const code = line.match(/^exit code (-?\d+)/)?.[1];
-      return { exitCode: code !== undefined ? Number(code) : null };
+      const lines = result.split('\n');
+      const code = (lines[1] ?? '').match(/^exit code (-?\d+)/)?.[1];
+      // Third line: a long wait for a CPU slot (src-tauri/src/workload).
+      const waited = lines[2]?.startsWith('Waited ') ? lines[2].replace(/\.$/, '') : undefined;
+      return { exitCode: code !== undefined ? Number(code) : null, ...(waited ? { waited } : {}) };
     }
     case 'browse_url': {
       const pageTitle = result.match(/^# (.+)$/m)?.[1];
@@ -323,11 +325,12 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       const shown = command && command.length > 60 ? `${command.slice(0, 57)}…` : command;
       const title = `${active ? 'Running' : 'Ran'} ${shown ? `\`${shown}\`` : 'a command'}`;
       if (failed || meta?.exitCode === undefined) return { title };
-      return {
-        title,
-        meta:
-          meta.exitCode === null ? 'killed' : meta.exitCode === 0 ? 'ok' : `exit ${meta.exitCode}`,
-      };
+      const outcome =
+        meta.exitCode === null ? 'killed' : meta.exitCode === 0 ? 'ok' : `exit ${meta.exitCode}`;
+      const waited = meta.waited
+        ? `${meta.waited.charAt(0).toLowerCase()}${meta.waited.slice(1)}`
+        : '';
+      return { title, meta: waited ? `${outcome} · ${waited}` : outcome };
     }
 
     case 'list_dir': {

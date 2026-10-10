@@ -262,7 +262,7 @@ pub fn save_plan_file(root: &str, request: &str, plan: &str, existing: Option<&s
         let first: String = request.split('\n').next().unwrap_or("").chars().take(100).collect();
         format!("# Plan: {first}\n\n{body}")
     };
-    crate::filesystem::write_file_content(path.clone(), format!("{titled}\n"))?;
+    crate::filesystem::write_app_file(&path, &format!("{titled}\n"))?;
     Ok(path)
 }
 

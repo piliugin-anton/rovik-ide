@@ -240,6 +240,7 @@ impl Harness {
             current_user_content: None,
             local_date: Some("2026-10-06".into()),
             config: Some(AgentConfig { permissions, approval_profiles: Vec::new() }),
+            isolate: Some(false),
         }
     }
 
@@ -400,6 +401,301 @@ async fn a_partly_accepted_edit_writes_only_those_changes() {
     assert!(result.content.contains("accepted 1 of 2 changes"), "{}", result.content);
     // Reviewed by the user: not marked as an unreviewed change.
     assert_eq!(h.events_of("fileWritten")[0]["reviewed"], true);
+}
+
+#[tokio::test]
+async fn a_whole_write_over_another_chats_unseen_change_is_refused() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    // Another chat changed the file; this one never read it.
+    let other = crate::file_guard::Seen::new("other-chat");
+    other.record(&h.project.join("a.txt"), b"one\n");
+    crate::file_guard::write_for_chat(&h.project.join("a.txt"), b"other's change\n", &other).unwrap();
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "mine\n" }) },
+        // The refusal showed the whole file: it counts as read.
+        Reply::Call { id: "w2", name: "write", args: json!({ "path": "a.txt", "content": "other's change\nmine\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Write"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let refused = result_of(&messages, "w1");
+    assert!(
+        refused.content.starts_with("Error: a.txt changed since you last read it (by another chat); your write was not applied."),
+        "{}",
+        refused.content
+    );
+    assert!(refused.content.contains("other's change"), "{}", refused.content);
+    assert_eq!(h.file("a.txt").as_deref(), Some("other's change\nmine\n"));
+}
+
+#[tokio::test]
+async fn an_edit_after_an_unrelated_change_still_applies() {
+    let h = harness(&[("a.txt", "one\ntwo\n")]).await;
+    let other = crate::file_guard::Seen::new("other-chat");
+    other.record(&h.project.join("a.txt"), b"one\ntwo\n");
+    crate::file_guard::write_for_chat(&h.project.join("a.txt"), b"one\ntwo\nthree\n", &other).unwrap();
+    let (url, _) = model(vec![
+        Reply::Call { id: "e1", name: "write", args: json!({ "path": "a.txt", "old_text": "one", "content": "ONE" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Edit"), quiet_permissions())).await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nthree\n"));
+}
+
+fn user_approves_edits() -> Permissions {
+    Permissions {
+        edit_approval: permissions::ApprovalRule { required: true, by: permissions::Approver::User },
+        ..quiet_permissions()
+    }
+}
+
+#[tokio::test]
+async fn an_approved_edit_merges_with_a_change_made_while_it_waited() {
+    let h = harness(&[("a.txt", "one\ntwo\nthree\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "ONE\ntwo\nthree\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Caps"), user_approves_edits())).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
+    // Another chat changes another line while the user reviews.
+    std::fs::write(h.project.join("a.txt"), "one\ntwo\nTHREE\n").unwrap();
+    let app = h.app.handle().clone();
+    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Allow);
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nTHREE\n"));
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "w1").content.contains("changed while this edit waited for approval"));
+}
+
+#[tokio::test]
+async fn a_partly_accepted_edit_keeps_a_change_made_while_it_waited() {
+    let h = harness(&[("a.txt", "one\ntwo\nthree\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "old_text": "one", "content": "ONE" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Caps"), user_approves_edits())).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
+    std::fs::write(h.project.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+    let app = h.app.handle().clone();
+    agent_resolve_approval(
+        app.clone(),
+        app.state(),
+        "w1".into(),
+        ApprovalDecision::Partial { content: "ONE\ntwo\nthree\n".into(), total: 1, rejected: Vec::new() },
+    );
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nthree\nfour\n"));
+}
+
+#[tokio::test]
+async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
+    let h = harness(&[("a.txt", "one\ntwo\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "ONE\ntwo\n" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Caps"), user_approves_edits())).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested").await;
+    std::fs::write(h.project.join("a.txt"), "uno\ntwo\n").unwrap();
+    let app = h.app.handle().clone();
+    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Allow);
+    // The same call is asked again, against the file as it is now.
+    for _ in 0..200 {
+        if h.events_of("approvalRequested").len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let again = h.events_of("approvalRequested");
+    assert_eq!(again.len(), 2, "{again:#?}");
+    assert_eq!(again[1]["request"]["edit"]["current"], "uno\ntwo\n");
+    agent_resolve_approval(app.clone(), app.state(), "w1".into(), ApprovalDecision::Deny);
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("uno\ntwo\n"));
+}
+
+#[tokio::test]
+async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
+    let _serial = crate::workload::queue::test_support::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    crate::workload::queue::test_reset(4, 16 << 30, 8 << 30);
+    let h = harness(&[]).await;
+    // Another chat holds the only slot.
+    let holder = crate::workload::begin(crate::workload::JobKind::Agent { owner: "other".into() }, "cargo build", None);
+    assert!(holder.wait_for_slot(&|| false, &|_| {}).is_some());
+    let (url, _) = model(vec![
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "make --version" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions { allow_any_command: true, ..quiet_permissions() };
+    h.start(h.request(&url, Harness::send("Build"), permissions)).await;
+    let note = h.wait_for("a waiting note", |e| e["type"] == "toolNote" && e["note"].is_string()).await;
+    assert!(
+        note["note"].as_str().unwrap().starts_with("Waiting for a CPU slot: another chat is running `cargo build`"),
+        "{note}"
+    );
+    assert_eq!(h.messages().await.iter().filter(|m| m.role == "tool").count(), 0, "not run yet");
+    drop(holder);
+    assert_eq!(h.run_end().await, "done");
+    // The note is cleared once it runs.
+    assert!(h.events_of("toolNote").last().unwrap()["note"].is_null());
+}
+
+/// An isolated chat: its writes and commands change its overlay, not the
+/// project. Needs FUSE: cargo test -- --ignored.
+#[tokio::test]
+#[ignore]
+async fn an_isolated_chat_changes_only_its_overlay() {
+    let h = harness(&[("src/a.txt", "one\ntwo\n"), ("README.md", "hi\n")]).await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "src/a.txt", "old_text": "one", "content": "ONE" }) },
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sed -i 's/hi/hello/' README.md && cat README.md && echo new > new.txt" }) },
+        Reply::Call { id: "b2", name: "bash", args: json!({ "command": "git commit -am x" }) },
+        // The project's own path: the chat's view, not the project.
+        Reply::Call { id: "b3", name: "bash", args: json!({ "command": format!("echo leak > {}/leak.txt && ls {}", h.project.display(), h.project.display()) }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Change things"), Permissions { allow_any_command: true, ..quiet_permissions() });
+    request.isolate = Some(true);
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert!(result_of(&messages, "b1").content.contains("hello"), "{}", result_of(&messages, "b1").content);
+    assert!(result_of(&messages, "b2").content.starts_with("Error: `git commit` changes the repository"));
+    let b3 = &result_of(&messages, "b3").content;
+    assert!(b3.contains("new.txt"), "the listing is the chat's view: {b3}");
+    // The run finished cleanly: its changes landed, and the overlay is gone.
+    assert_eq!(h.file("src/a.txt").as_deref(), Some("ONE\ntwo\n"));
+    assert_eq!(h.file("README.md").as_deref(), Some("hello\n"));
+    assert_eq!(h.file("new.txt").as_deref(), Some("new\n"));
+    assert!(crate::overlay::chats::changes(&h.dialog_id).is_empty());
+    assert!(h.events_of("notice").iter().any(|e| e["title"] == "Landed"), "{:#?}", h.events_of("notice"));
+    let last = crate::overlay::chats::last_landing(&h.dialog_id).unwrap();
+    // leak.txt came through the chat's view, so it landed with the rest.
+    assert_eq!(last.paths.len(), 4, "{:?}", last.paths);
+    assert_eq!(h.file("leak.txt").as_deref(), Some("leak\n"));
+}
+
+/// Changes that conflict with the project's own wait for the user.
+#[tokio::test]
+#[ignore]
+async fn an_isolated_chats_conflicting_changes_wait() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let project_file = h.project.join("a.txt");
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "old_text": "one", "content": "chat" }) },
+        // Time for the user to edit the same line in the project.
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sleep 1" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Edit"), Permissions { allow_any_command: true, ..quiet_permissions() });
+    request.isolate = Some(true);
+    h.start(request).await;
+    // The user's edit, once the chat has made its change.
+    for _ in 0..200 {
+        if crate::overlay::chats::changes(&h.dialog_id).iter().any(|c| c.path() == "a.txt") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    std::fs::write(&project_file, "user\n").unwrap();
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("user\n"));
+    let pending = crate::overlay::chats::pending(&h.dialog_id).expect("a reason it didn't land");
+    assert_eq!(pending.conflicts.len(), 1, "{pending:?}");
+    // Land anyway: the chat's version.
+    crate::overlay::chats::land_now(&h.dialog_id, true).unwrap();
+    assert_eq!(h.file("a.txt").as_deref(), Some("chat\n"));
+}
+
+/// The project changed a file the chat changed too, and the merged result
+/// fails the checks: the chat gets the failures and fixes them before its
+/// changes land. Needs FUSE and npm: cargo test -- --ignored.
+#[tokio::test]
+#[ignore]
+async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
+    let h = harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        ("check.js", "if (require('fs').readFileSync('a.txt', 'utf8').includes('BAD')) { console.error('a.txt: BAD'); process.exit(1); }"),
+        ("a.txt", "1\n2\n3\n4\n5\n"),
+    ])
+    .await;
+    if std::process::Command::new("npm").arg("--version").output().is_err() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let (url, _) = model(vec![
+        Reply::Call { id: "w1", name: "write", args: json!({ "path": "a.txt", "content": "chat\n2\n3\n4\n5\n" }) },
+        // Time for the user to change another line in the project.
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sleep 1" }) },
+        Reply::Text("Done."),
+        // The report says the file changed: read it again, then fix it.
+        Reply::Call { id: "r1", name: "read", args: json!({ "path": "a.txt" }) },
+        Reply::Call { id: "w2", name: "write", args: json!({ "path": "a.txt", "content": "chat\n2\n3\n4\nGOOD\n" }) },
+        Reply::Text("Fixed."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Edit"), Permissions { allow_any_command: true, ..Permissions::default() });
+    request.isolate = Some(true);
+    h.start(request).await;
+    for _ in 0..200 {
+        if crate::overlay::chats::changes(&h.dialog_id).iter().any(|c| c.path() == "a.txt") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    std::fs::write(h.project.join("a.txt"), "1\n2\n3\n4\nBAD\n").unwrap();
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let report = messages
+        .iter()
+        .find(|m| m.role == "user" && m.meta.as_ref().is_some_and(|x| x["harness"] == "verification"))
+        .expect("the failures went back to the chat");
+    assert!(report.content.contains("The project changed meanwhile (a.txt)"), "{}", report.content);
+    assert!(result_of(&messages, "r1").content.contains("BAD"), "the merged file is in the chat's view");
+    assert_eq!(h.file("a.txt").as_deref(), Some("chat\n2\n3\n4\nGOOD\n"));
+}
+
+/// While many files change in the project (a branch switch), an isolated
+/// run waits before its next step. Needs FUSE: cargo test -- --ignored.
+#[tokio::test]
+#[ignore]
+async fn an_isolated_run_waits_while_the_project_switches_branches() {
+    let h = harness(&[("a.txt", "one\n")]).await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let (url, _) = model(vec![
+        Reply::Call { id: "b1", name: "bash", args: json!({ "command": "cat a.txt" }) },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let switching = crate::overlay::chats::hold_busy(&h.project);
+    let mut request = h.request(&url, Harness::send("Look"), Permissions { allow_any_command: true, ..quiet_permissions() });
+    request.isolate = Some(true);
+    let started = std::time::Instant::now();
+    h.start(request).await;
+    h.wait_for("notice", |e| e["type"] == "notice" && e["title"] == "Waiting for the project").await;
+    // The switch: the file changes, then the project settles.
+    std::fs::write(h.project.join("a.txt"), "switched\n").unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop(switching);
+    assert_eq!(h.run_end().await, "done");
+    assert!(started.elapsed() >= Duration::from_secs(2), "waited for the project to settle");
+    let messages = h.messages().await;
+    assert_eq!(result_of(&messages, "b1").content.lines().last(), Some("switched"), "{}", result_of(&messages, "b1").content);
 }
 
 #[tokio::test]

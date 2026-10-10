@@ -7377,3 +7377,132 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   padding: 5px 12px;
   font-size: 12px;
 }
+
+/* An isolated chat's changes, above the composer (IsolationBar.tsx). */
+.isolation-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  max-height: 35%;
+  overflow-y: auto;
+  margin: 0 10px 8px;
+  padding: 6px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.isolation-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.isolation-bar-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.isolation-bar-caret {
+  width: 10px;
+  color: var(--fg-dim);
+}
+
+.isolation-bar-action {
+  padding: 2px 8px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.isolation-bar-action.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--fg-on-accent);
+}
+
+.isolation-bar-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.isolation-bar-reason {
+  color: var(--warning);
+}
+
+.isolation-bar-conflict {
+  margin-left: auto;
+  color: var(--error);
+}
+
+.isolation-bar.landed {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.isolation-bar-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.isolation-bar-file {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.isolation-bar-file:hover {
+  background: var(--row-hover);
+}
+
+.isolation-bar-kind {
+  width: 12px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.isolation-bar-kind.added {
+  color: var(--success);
+}
+
+.isolation-bar-kind.changed,
+.isolation-bar-kind.moved {
+  color: var(--warning);
+}
+
+.isolation-bar-kind.deleted {
+  color: var(--error);
+}
+
+.isolation-bar-path {
+  font-family: var(--font-mono);
+}
+
+.isolation-bar-from {
+  color: var(--fg-dim);
+}

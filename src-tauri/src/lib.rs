@@ -5,6 +5,8 @@ use tauri::Manager;
 mod agent;
 mod agent_run;
 mod atomic_file;
+mod file_guard;
+mod merge;
 mod edit_file;
 mod read_file;
 mod read_symbol;
@@ -26,6 +28,8 @@ mod filesystem;
 mod terminal;
 mod typings;
 mod vfs;
+mod workload;
+mod overlay;
 mod clm;
 mod git;
 mod git_sync;
@@ -60,6 +64,8 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             let db = chat_db::DbState::open(&dir).map_err(|e| format!("Chat database: {e}"))?;
+            workload::init(&dir);
+            overlay::chats::init(&dir);
             app.manage(db);
             Ok(())
         })
@@ -180,6 +186,17 @@ pub fn run() {
             project_profile::save_project_settings,
             agent::chat_context_estimate,
             command_tool::tool_run_command,
+            workload::workload_focus,
+            overlay::chats::overlay_status,
+            overlay::chats::overlay_file,
+            overlay::chats::overlay_discard,
+            overlay::chats::overlay_land,
+            overlay::chats::overlay_undo,
+            overlay::chats::overlay_conflict_file,
+            overlay::chats::overlay_conflict_resolve,
+            overlay::chats::overlay_conflicts_to_chat,
+            workload::workload_set_slots,
+            workload::workload_status,
             outline::outline_symbols,
             vfs::vfs_status,
             vfs::vfs_install_driver,
@@ -217,6 +234,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(browser.shutdown());
                 // Unmount the virtual files, or the folder stays a dead mount.
                 let _ = app.state::<vfs::VfsState>().unmount();
+                overlay::chats::close_all();
                 if let Some(db) = app.try_state::<chat_db::DbState>() {
                     db.mark_clean_exit();
                 }

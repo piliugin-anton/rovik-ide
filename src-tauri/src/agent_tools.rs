@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
+use crate::file_guard::{Seen, WriteError};
+
 const DENYLIST_DIRS: &[&str] = &[
     "node_modules",
     "target",
@@ -610,6 +612,20 @@ pub fn tool_read_file_range(
     end_line: Option<usize>,
     symbol: Option<String>,
 ) -> Result<String, String> {
+    read_file_range(&root, &path, start_line, end_line, symbol, None)
+}
+
+/// [`tool_read_file_range`] for a chat's run: the file's content counts as
+/// seen by it (file_guard.rs), so it may write the file whole afterwards.
+pub fn read_file_range(
+    root: &str,
+    path: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    symbol: Option<String>,
+    seen: Option<&Seen>,
+) -> Result<String, String> {
+    let (root, path) = (root.to_string(), path.to_string());
     let symbol = symbol.filter(|s| !s.is_empty());
     if symbol.is_some() && (start_line.is_some() || end_line.is_some()) {
         return Err("give either \"symbol\" or start_line/end_line, not both".into());
@@ -622,6 +638,9 @@ pub fn tool_read_file_range(
         return Err(format!("{path}: binary file, cannot read"));
     }
     let content = fs::read_to_string(&target).map_err(|e| format!("{path}: {e}"))?;
+    if let Some(seen) = seen {
+        seen.record(&target, content.as_bytes());
+    }
     match symbol {
         Some(symbol) => crate::read_symbol::read(&path, &content, &symbol),
         None => crate::read_file::read(&path, &content, start_line, end_line),
@@ -652,7 +671,24 @@ pub fn tool_edit_file(
     end_line: Option<usize>,
     dry_run: Option<bool>,
 ) -> Result<EditOutcome, String> {
-    let target = resolve_within_root(&root, &path)?;
+    let edit = Edit { old_text: &old_text, new_text: &new_text, start_line, end_line };
+    edit_file(&root, &path, &edit, dry_run.unwrap_or(false), None)
+}
+
+/// One `old_text` → `new_text` replacement, as the model gave it.
+pub struct Edit<'a> {
+    pub old_text: &'a str,
+    pub new_text: &'a str,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+}
+
+/// [`tool_edit_file`], and for a chat's run (`seen`): the edit applies to
+/// the file as it is when written, under its lock (file_guard.rs), so a
+/// change made meanwhile by someone else is kept. The edit's own text
+/// still having to be there once is its check.
+pub fn edit_file(root: &str, path: &str, edit: &Edit, dry_run: bool, seen: Option<&Seen>) -> Result<EditOutcome, String> {
+    let target = resolve_within_root(root, path)?;
     if !target.is_file() {
         return Err(format!(
             "{path}: no such file. edit changes existing files; use write to create one."
@@ -661,14 +697,24 @@ pub fn tool_edit_file(
     if looks_binary(&target)? {
         return Err(format!("{path}: binary file, cannot edit"));
     }
-    let current = fs::read_to_string(&target).map_err(|e| format!("{path}: {e}"))?;
-    let (content, span) =
-        crate::edit_file::apply_edit(&current, &old_text, &new_text, start_line, end_line)
-            .map_err(|e| format!("{path}: {e}"))?;
-    if !dry_run.unwrap_or(false) {
-        // Plain write, like write: keeps the inode (the editor's file id).
-        fs::write(&target, &content).map_err(|e| format!("{path}: {e}"))?;
-    }
+    let apply = |current: &str| {
+        crate::edit_file::apply_edit(current, edit.old_text, edit.new_text, edit.start_line, edit.end_line)
+            .map_err(|e| format!("{path}: {e}"))
+    };
+    let (content, span) = if dry_run {
+        apply(&fs::read_to_string(&target).map_err(|e| format!("{path}: {e}"))?)?
+    } else {
+        // In place, like write: keeps the inode (the editor's file id).
+        let throwaway;
+        let seen = match seen {
+            Some(seen) => seen,
+            None => {
+                throwaway = Seen::new("");
+                &throwaway
+            }
+        };
+        crate::file_guard::update_for_chat(&target, seen, apply)?
+    };
     Ok(EditOutcome {
         summary: crate::edit_file::describe_edit(&path, &span),
         content,
@@ -679,19 +725,61 @@ pub fn tool_edit_file(
 /// inside the project root.
 #[tauri::command]
 pub fn tool_write_file(root: String, path: String, content: String) -> Result<String, String> {
+    write_file(&root, &path, &content, None)
+}
+
+/// [`tool_write_file`], and for a chat's run (`seen`): refused when the file
+/// changed since the run last saw it, or is another writer's change it never
+/// saw (file_guard.rs). The refusal shows the file as it is now, so the
+/// model can redo its change on it.
+pub fn write_file(root: &str, path: &str, content: &str, seen: Option<&Seen>) -> Result<String, String> {
     // Reject '..' up front (same rule as resolve_within_root) before we
     // create any directories on disk.
-    let target = resolve_within_root(&root, &path)?;
+    let target = resolve_within_root(root, path)?;
     if let Ok(current) = fs::read_to_string(&target) {
         if let Some(error) = empty_overwrite_error(&path, &current, &content) {
             return Err(error);
         }
     }
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    match seen {
+        Some(seen) => match crate::file_guard::write_for_chat(&target, content.as_bytes(), seen) {
+            Ok(()) => {}
+            Err(WriteError::Changed(changed)) => return Err(changed_error(path, &target, &changed, seen)),
+            Err(WriteError::Io(e)) => return Err(format!("{path}: {e}")),
+        },
+        None => {
+            let _lock = crate::file_guard::lock(&target);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(&target, content).map_err(|e| format!("{path}: {e}"))?;
+        }
     }
-    fs::write(&target, &content).map_err(|e| format!("{path}: {e}"))?;
     Ok(format!("wrote {} bytes to {path}", content.len()))
+}
+
+/// The model's error for a whole-file write over a change it hasn't seen:
+/// who changed the file, and the file now. When that shows the whole file,
+/// it counts as seen, so a corrected write can follow at once.
+fn changed_error(path: &str, target: &Path, changed: &crate::file_guard::Changed, seen: &Seen) -> String {
+    let by = crate::file_guard::describe_changer(changed.by.as_ref(), Some(seen.owner()));
+    let head = format!(
+        "Error: {path} changed since you last read it ({by}); your write was not applied. \
+         Redo your change on the file as it is now"
+    );
+    if crate::merge::is_binary(&changed.current) {
+        return format!("{head} (a binary file).");
+    }
+    let current = String::from_utf8_lossy(&changed.current);
+    match crate::read_file::read(path, &current, None, None) {
+        Ok(shown) => {
+            if !shown.starts_with(crate::read_file::PARTIAL_PREFIX) {
+                seen.record(target, &changed.current);
+            }
+            format!("{head}:\n\n{shown}")
+        }
+        Err(_) => format!("{head}; read it first."),
+    }
 }
 
 /// A whole-file write with nothing in it over a file that has content:

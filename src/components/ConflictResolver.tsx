@@ -8,6 +8,10 @@
 // until the merge is committed or the rebase continued. The choices and
 // the file they make are in src/lib/conflictMerge.ts; reading and writing
 // the files, and continuing or aborting, in src-tauri/src/git_sync.rs.
+//
+// An isolated chat's conflicts with the project (IsolationBar.tsx) use the
+// same dialog through `source`: the project's version on the left, the
+// chat's on the right, and Land to finish (src-tauri/src/overlay/chats.rs).
 
 import {
   createEffect,
@@ -34,8 +38,23 @@ import {
 } from '../lib/conflictMerge';
 import { confirmDialog } from './ConfirmDialog';
 
+/** Conflicts that aren't git's: where they're read and settled, and words. */
+export interface ConflictSource {
+  load(file: string): Promise<GitConflictFile>;
+  /** `content` null: delete the file; `side`: take that whole version. */
+  resolve(file: string, content: string | null, side?: Side): Promise<void>;
+  title: string;
+  /** No conflicts left: what finishing does. */
+  doneHint: string;
+  /** The finish button. */
+  finishLabel: string;
+  /** What the two sides are called, capitalized (git's: Yours, Incoming). */
+  sideNames: { ours: string; theirs: string };
+}
+
 interface ConflictResolverProps {
   projectPath: string;
+  source?: ConflictSource;
   operation: GitOperation;
   /** The file to show first. */
   initialFile?: string;
@@ -172,10 +191,12 @@ export function ConflictResolver(props: ConflictResolverProps) {
       if (!file) return;
       setLoading(true);
       try {
-        const d = await invoke<GitConflictFile>('git_conflict_file', {
-          path: props.projectPath,
-          file,
-        });
+        const d = props.source
+          ? await props.source.load(file)
+          : await invoke<GitConflictFile>('git_conflict_file', {
+              path: props.projectPath,
+              file,
+            });
         if (selected() !== file) return;
         setData(d);
         setChoices(savedChoices.get(choiceKey(file)) ?? []);
@@ -262,11 +283,9 @@ export function ConflictResolver(props: ConflictResolverProps) {
     setSaving(true);
     setError(null);
     try {
-      await invoke('git_conflict_resolve', {
-        path: props.projectPath,
-        file,
-        content: result.deleted ? null : result.text,
-      });
+      const content = result.deleted ? null : result.text;
+      if (props.source) await props.source.resolve(file, content);
+      else await invoke('git_conflict_resolve', { path: props.projectPath, file, content });
       doneFiles().add(file);
       setVersion((v) => v + 1);
       props.onFileWritten(file);
@@ -285,7 +304,8 @@ export function ConflictResolver(props: ConflictResolverProps) {
     setSaving(true);
     setError(null);
     try {
-      await invoke('git_conflict_resolve', { path: props.projectPath, file, side });
+      if (props.source) await props.source.resolve(file, null, side);
+      else await invoke('git_conflict_resolve', { path: props.projectPath, file, side });
       savedChoices.set(choiceKey(file), [{ sides: [side] }]);
       setChoices([{ sides: [side] }]);
       doneFiles().add(file);
@@ -298,8 +318,13 @@ export function ConflictResolver(props: ConflictResolverProps) {
     }
   };
 
+  const sideName = (side: Side) =>
+    props.source?.sideNames[side] ?? (side === 'ours' ? 'Yours' : 'Incoming');
+  const lower = (side: Side) => sideName(side).toLowerCase();
+
   const verb = () => (props.operation.kind === 'rebase' ? 'rebase' : props.operation.kind);
   const title = () => {
+    if (props.source) return props.source.title;
     const op = props.operation;
     if (op.kind === 'rebase') {
       const step = op.step && op.total ? ` (${op.step} of ${op.total})` : '';
@@ -362,7 +387,7 @@ export function ConflictResolver(props: ConflictResolverProps) {
     const order = () =>
       choice()?.sides.length === 2 && taken() ? choice()!.sides.indexOf(side) + 1 : null;
     const deleted = () => data()?.[side] === null;
-    const label = () => (side === 'ours' ? 'Yours' : 'Incoming');
+    const label = () => sideName(side);
     return (
       <div
         class={`cr-cell cr-side cr-${side}`}
@@ -427,7 +452,7 @@ export function ConflictResolver(props: ConflictResolverProps) {
       const c = choice();
       if (!isResolved(c)) return 'Unresolved';
       if (c!.custom !== undefined) return 'Edited';
-      return c!.sides.map((s) => (s === 'ours' ? 'Yours' : 'Incoming')).join(' + ');
+      return c!.sides.map(sideName).join(' + ');
     };
     return (
       <div class="cr-cell cr-result" classList={{ 'cr-unresolved': !isResolved(choice()) }}>
@@ -465,7 +490,11 @@ export function ConflictResolver(props: ConflictResolverProps) {
           fallback={
             <Show
               when={isResolved(choice())}
-              fallback={<div class="cr-empty-lines">Accept yours, incoming, or both — or edit</div>}
+              fallback={
+                <div class="cr-empty-lines">
+                  Accept {lower('ours')}, {lower('theirs')}, or both — or edit
+                </div>
+              }
             >
               <CodeLines
                 text={hunkText(seg, choice())}
@@ -561,9 +590,11 @@ export function ConflictResolver(props: ConflictResolverProps) {
               </Show>
               <Show when={!selected() && !loading()}>
                 <div class="empty-state">
-                  {props.operation.canContinue
-                    ? `No conflicts left. ${props.operation.kind === 'merge' ? 'Commit the merge' : 'Continue the rebase'} to finish.`
-                    : 'No conflicts left.'}
+                  {props.source
+                    ? `No conflicts left. ${props.source.doneHint}`
+                    : props.operation.canContinue
+                      ? `No conflicts left. ${props.operation.kind === 'merge' ? 'Commit the merge' : 'Continue the rebase'} to finish.`
+                      : 'No conflicts left.'}
                 </div>
               </Show>
 
@@ -603,14 +634,14 @@ export function ConflictResolver(props: ConflictResolverProps) {
                           class="cr-tool"
                           onClick={() => setAll(allTo(d().segments, 'ours'))}
                         >
-                          Accept all yours
+                          Accept all {lower('ours')}
                         </button>
                         <button
                           type="button"
                           class="cr-tool"
                           onClick={() => setAll(allTo(d().segments, 'theirs'))}
                         >
-                          Accept all incoming
+                          Accept all {lower('theirs')}
                         </button>
                         <button type="button" class="cr-tool" onClick={() => setAll([])}>
                           Reset
@@ -639,8 +670,9 @@ export function ConflictResolver(props: ConflictResolverProps) {
 
                     <Show when={!isPending(d().path)}>
                       <div class="cr-note">
-                        Resolved and staged. Choices can still be changed — save again to replace
-                        the resolution.
+                        {props.source
+                          ? 'Resolved: this is the version that lands.'
+                          : 'Resolved and staged. Choices can still be changed — save again to replace the resolution.'}
                       </div>
                     </Show>
 
@@ -722,16 +754,18 @@ export function ConflictResolver(props: ConflictResolverProps) {
           </div>
 
           <div class="cr-footer">
-            <button
-              type="button"
-              class="danger-outline"
-              disabled={finishing()}
-              onClick={() => void abort()}
-            >
-              Abort {verb()}
-            </button>
+            <Show when={!props.source}>
+              <button
+                type="button"
+                class="danger-outline"
+                disabled={finishing()}
+                onClick={() => void abort()}
+              >
+                Abort {verb()}
+              </button>
+            </Show>
             <span class="cr-spacer" />
-            <Show when={props.operation.kind === 'merge'}>
+            <Show when={props.operation.kind === 'merge' && !props.source}>
               <input
                 class="tree-row-input cr-message"
                 placeholder="Merge commit message (optional)"
@@ -752,7 +786,8 @@ export function ConflictResolver(props: ConflictResolverProps) {
                 disabled={finishing() || props.operation.conflicts.length > 0}
                 onClick={() => void finish()}
               >
-                {props.operation.kind === 'merge' ? 'Commit merge' : 'Continue rebase'}
+                {props.source?.finishLabel ??
+                  (props.operation.kind === 'merge' ? 'Commit merge' : 'Continue rebase')}
               </button>
             </Show>
           </div>

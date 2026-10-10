@@ -11,8 +11,9 @@
 // (MERGE_HEAD, rebase-merge/) like git's own, so a terminal sees it too.
 
 use crate::git::{git_fetch_blocking, off_main_thread, open_repo};
+use crate::merge::{is_binary, parse_merged, MergeSegment};
 use git2::{
-    build::CheckoutBuilder, BranchType, ErrorCode, MergeFileInput, MergeFileOptions, Oid,
+    build::CheckoutBuilder, BranchType, ErrorCode, Oid,
     RebaseOptions, Reference, Repository, RepositoryState, ResetType, Status, StatusOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -238,6 +239,8 @@ pub async fn git_pull(
     strategy: Option<PullStrategy>,
     remember: Option<bool>,
 ) -> Result<PullOutcome, String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_pull_blocking(path, strategy, remember.unwrap_or(false))).await
 }
 
@@ -428,6 +431,8 @@ pub async fn git_operation_continue(
     path: String,
     message: Option<String>,
 ) -> Result<PullOutcome, String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_operation_continue_blocking(path, message)).await
 }
 
@@ -472,6 +477,8 @@ pub fn git_operation_continue_blocking(
 
 #[tauri::command]
 pub async fn git_operation_abort(path: String) -> Result<(), String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_operation_abort_blocking(path)).await
 }
 
@@ -583,20 +590,6 @@ pub fn current_operation(repo: &Repository) -> Option<GitOperation> {
 // One conflicted file
 // ---------------------------------------------------------------------------
 
-/// A run of the merged file: lines both sides agree on, or a conflict.
-#[derive(Debug, Serialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum MergeSegment {
-    Common {
-        text: String,
-    },
-    Conflict {
-        ours: String,
-        base: String,
-        theirs: String,
-    },
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConflictFile {
@@ -616,69 +609,6 @@ pub struct ConflictFile {
     /// commits onto the upstream, so there "ours" is the upstream.
     pub ours_label: String,
     pub theirs_label: String,
-}
-
-/// Long conflict markers, so lines of the files themselves can't pass for one.
-const MARKER: usize = 32;
-
-fn is_marker(line: &str, ch: char, labelled: bool) -> bool {
-    let bare = line.trim_end_matches(['\n', '\r']);
-    let run = bare.chars().take_while(|&c| c == ch).count();
-    run == MARKER && (bare.len() == MARKER || (labelled && bare.as_bytes()[MARKER] == b' '))
-}
-
-/// Splits libgit2's diff3-style merge output (with MARKER-long markers) into segments.
-pub fn parse_merged(text: &str) -> Vec<MergeSegment> {
-    #[derive(PartialEq)]
-    enum At {
-        Common,
-        Ours,
-        Base,
-        Theirs,
-    }
-    let mut out = Vec::new();
-    let (mut common, mut ours, mut base, mut theirs) =
-        (String::new(), String::new(), String::new(), String::new());
-    let mut at = At::Common;
-    for line in text.split_inclusive('\n') {
-        match at {
-            At::Common if is_marker(line, '<', true) => {
-                if !common.is_empty() {
-                    out.push(MergeSegment::Common {
-                        text: std::mem::take(&mut common),
-                    });
-                }
-                at = At::Ours;
-            }
-            At::Ours if is_marker(line, '|', true) => at = At::Base,
-            At::Ours | At::Base if is_marker(line, '=', false) => at = At::Theirs,
-            At::Theirs if is_marker(line, '>', true) => {
-                out.push(MergeSegment::Conflict {
-                    ours: std::mem::take(&mut ours),
-                    base: std::mem::take(&mut base),
-                    theirs: std::mem::take(&mut theirs),
-                });
-                at = At::Common;
-            }
-            At::Common => common.push_str(line),
-            At::Ours => ours.push_str(line),
-            At::Base => base.push_str(line),
-            At::Theirs => theirs.push_str(line),
-        }
-    }
-    // Unterminated (shouldn't happen): keep what was read as common text.
-    if at != At::Common {
-        common.push_str(&ours);
-        common.push_str(&theirs);
-    }
-    if !common.is_empty() {
-        out.push(MergeSegment::Common { text: common });
-    }
-    out
-}
-
-fn is_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8000).any(|&b| b == 0) || std::str::from_utf8(bytes).is_err()
 }
 
 fn blob_bytes(repo: &Repository, id: Option<Oid>) -> Result<Option<Vec<u8>>, String> {
@@ -796,17 +726,8 @@ pub fn git_conflict_file_blocking(path: String, file: String) -> Result<Conflict
     let segments = if binary {
         Vec::new()
     } else if let (Some(o), Some(t)) = (&ours, &theirs) {
-        let empty: &[u8] = &[];
-        let mut a = MergeFileInput::new();
-        a.content(base.as_deref().unwrap_or(empty));
-        let mut b = MergeFileInput::new();
-        b.content(o);
-        let mut c = MergeFileInput::new();
-        c.content(t);
-        let mut opts = MergeFileOptions::new();
-        opts.style_diff3(true).marker_size(MARKER as u16);
-        let merged = git2::merge_file(&a, &b, &c, Some(&mut opts)).map_err(|e| e.to_string())?;
-        parse_merged(&String::from_utf8_lossy(merged.content()))
+        let merged = crate::merge::merge3_raw(base.as_deref().unwrap_or(&[]), o, t)?;
+        parse_merged(&String::from_utf8_lossy(&merged.content))
     } else {
         // One side deleted the file: it's all one conflict.
         vec![MergeSegment::Conflict {

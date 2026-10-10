@@ -33,7 +33,23 @@ pub struct CommandOutput {
     /// Killed because the user pressed Stop.
     pub stopped: bool,
     pub truncated: bool,
+    /// From the start of the command, after any wait for a CPU slot.
     pub duration_ms: u64,
+    /// Waited for a CPU slot before it started (workload/queue.rs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waited: Option<crate::workload::Waited>,
+}
+
+/// A command run for a chat: it goes through the queue for heavy work
+/// (src/workload), which may make it wait for a CPU slot first. `note`
+/// shows what it waits for while it waits (`None`: no longer waiting).
+pub struct Queued {
+    pub kind: crate::workload::JobKind,
+    pub note: Box<dyn Fn(Option<String>) + Send + Sync>,
+    /// More environment for the command (an isolated chat's build folder).
+    pub env: Vec<(String, String)>,
+    /// An isolated chat's command: the project's path shows its view.
+    pub confine: Option<crate::overlay::confine::Confine>,
 }
 
 #[cfg(windows)]
@@ -156,10 +172,38 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
-fn run_blocking(root: &str, command: &str, timeout: Duration, stop: &dyn Fn() -> bool) -> Result<CommandOutput, String> {
+fn run_blocking(
+    root: &str,
+    command: &str,
+    timeout: Duration,
+    stop: &dyn Fn() -> bool,
+    queued: Option<&Queued>,
+) -> Result<CommandOutput, String> {
     let root = Path::new(root);
     if !root.is_dir() {
         return Err(format!("project root is not a directory: {}", root.display()));
+    }
+
+    // A command predicted heavy waits for a slot; the wait isn't part of
+    // its time or its timeout.
+    let job = queued.map(|q| crate::workload::begin(q.kind.clone(), command, Some(root)));
+    let mut waited = None;
+    if let (Some(job), Some(q)) = (&job, queued) {
+        match job.wait_for_slot(stop, &*q.note) {
+            Some(w) => waited = Some(w).filter(|w| w.ms > 0),
+            None => {
+                return Ok(CommandOutput {
+                    exit_code: None,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    stopped: true,
+                    truncated: false,
+                    duration_ms: 0,
+                    waited: None,
+                })
+            }
+        }
     }
 
     let started = Instant::now();
@@ -177,6 +221,15 @@ fn run_blocking(root: &str, command: &str, timeout: Duration, stop: &dyn Fn() ->
         // Plain text: color codes only cost context and break matching.
         .env("NO_COLOR", "1")
         .env("CARGO_TERM_COLOR", "never");
+    for (key, value) in job.as_ref().map(|j| j.cpu_split_env()).unwrap_or_default() {
+        cmd.env(key, value);
+    }
+    for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
+        cmd.env(key, value);
+    }
+    if let Some(c) = queued.and_then(|q| q.confine.as_ref()) {
+        crate::overlay::confine::apply(&mut cmd, c);
+    }
     // Its own process group, so a timeout can take down everything the
     // shell started (a `node server.js`), not just the shell.
     #[cfg(unix)]
@@ -187,6 +240,9 @@ fn run_blocking(root: &str, command: &str, timeout: Duration, stop: &dyn Fn() ->
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to start the command: {e}"))?;
+    if let Some(job) = &job {
+        job.spawned(child.id());
+    }
 
     let stdout = drain(child.stdout.take().ok_or("no stdout")?);
     let stderr = drain(child.stderr.take().ok_or("no stderr")?);
@@ -208,7 +264,9 @@ fn run_blocking(root: &str, command: &str, timeout: Duration, stop: &dyn Fn() ->
             break;
         }
         stopped = stop();
-        timed_out = !stopped && started.elapsed() >= timeout;
+        // Time it spent paused for lack of memory doesn't count.
+        let paused = job.as_ref().map(|j| j.paused()).unwrap_or_default();
+        timed_out = !stopped && started.elapsed().saturating_sub(paused) >= timeout;
         if stopped || timed_out {
             kill_tree(&mut child);
             if status.is_none() {
@@ -245,6 +303,7 @@ fn run_blocking(root: &str, command: &str, timeout: Duration, stop: &dyn Fn() ->
         stopped,
         truncated: out_cut || err_cut,
         duration_ms: started.elapsed().as_millis() as u64,
+        waited,
     })
 }
 
@@ -256,22 +315,23 @@ pub async fn tool_run_command(
     command: String,
     timeout_ms: Option<u64>,
 ) -> Result<CommandOutput, String> {
-    run_command(root, command, timeout_ms, || false).await
+    run_command(root, command, timeout_ms, || false, None).await
 }
 
 /// `tool_run_command`, killed as soon as `stop` says so (checked a few
-/// times a second): the agent's Stop button.
+/// times a second): the agent's Stop button. A chat's command is `queued`.
 pub async fn run_command(
     root: String,
     command: String,
     timeout_ms: Option<u64>,
     stop: impl Fn() -> bool + Send + 'static,
+    queued: Option<Queued>,
 ) -> Result<CommandOutput, String> {
     if command.trim().is_empty() {
         return Err("command is empty".into());
     }
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1_000, MAX_TIMEOUT_MS));
-    tauri::async_runtime::spawn_blocking(move || run_blocking(&root, &command, timeout, &stop))
+    tauri::async_runtime::spawn_blocking(move || run_blocking(&root, &command, timeout, &stop, queued.as_ref()))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -284,7 +344,7 @@ mod tests {
     #[test]
     fn captures_output_and_exit_code() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "echo hi; echo oops >&2; exit 3", Duration::from_secs(5), &|| false).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), "echo hi; echo oops >&2; exit 3", Duration::from_secs(5), &|| false, None).unwrap();
         assert_eq!(out.exit_code, Some(3));
         assert_eq!(out.stdout.trim(), "hi");
         assert_eq!(out.stderr.trim(), "oops");
@@ -300,6 +360,7 @@ mod tests {
             "i=0; while [ $i -lt 20000 ]; do echo \"line $i\"; i=$((i+1)); done",
             Duration::from_secs(20),
             &|| false,
+            None,
         )
         .unwrap();
         assert!(out.truncated);
@@ -317,7 +378,7 @@ mod tests {
     #[test]
     fn captures_output_and_exit_code_in_cmd() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "echo hi& echo oops 1>&2& exit /b 3", Duration::from_secs(20), &|| false).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), "echo hi& echo oops 1>&2& exit /b 3", Duration::from_secs(20), &|| false, None).unwrap();
         assert_eq!(out.exit_code, Some(3));
         assert_eq!(out.stdout.trim(), "hi");
         assert_eq!(out.stderr.trim(), "oops");
@@ -328,7 +389,7 @@ mod tests {
     #[test]
     fn quotes_reach_cmd_intact() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), r#"echo "a b" "c""#, Duration::from_secs(20), &|| false).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), r#"echo "a b" "c""#, Duration::from_secs(20), &|| false, None).unwrap();
         assert_eq!(out.stdout.trim(), r#""a b" "c""#);
     }
 
@@ -336,7 +397,7 @@ mod tests {
     #[test]
     fn long_output_keeps_its_start_and_end_in_cmd() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (0,1,19999) do @echo line %i", Duration::from_secs(120), &|| false).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (0,1,19999) do @echo line %i", Duration::from_secs(120), &|| false, None).unwrap();
         assert!(out.truncated);
         assert!(out.stdout.starts_with("line 0\r\n"));
         assert!(out.stdout.trim_end().ends_with("line 19999"));
@@ -347,7 +408,7 @@ mod tests {
     #[test]
     fn times_out_in_cmd() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (1,1,2000000000) do @rem", Duration::from_millis(500), &|| false).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), "for /L %i in (1,1,2000000000) do @rem", Duration::from_millis(500), &|| false, None).unwrap();
         assert!(out.timed_out);
     }
 
@@ -366,7 +427,7 @@ mod tests {
         // A child of the shell that would outlive it, like a dev server.
         let command = format!("sh -c 'sleep 30; echo {marker}' & echo started; wait");
         let started = Instant::now();
-        let out = run_blocking(dir.to_str().unwrap(), &command, Duration::from_millis(500), &|| false).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), &command, Duration::from_millis(500), &|| false, None).unwrap();
         assert!(out.timed_out);
         assert_eq!(out.stdout.trim(), "started");
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -379,7 +440,7 @@ mod tests {
     fn background_process_holding_the_output_times_out() {
         let dir = std::env::temp_dir();
         // The shell exits at once, but its background child keeps stdout open.
-        let out = run_blocking(dir.to_str().unwrap(), "sleep 30 & echo up", Duration::from_millis(500), &|| false).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), "sleep 30 & echo up", Duration::from_millis(500), &|| false, None).unwrap();
         assert!(out.timed_out);
         assert_eq!(out.stdout.trim(), "up");
         assert_eq!(out.exit_code, Some(0));
@@ -391,7 +452,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let started = Instant::now();
         let stop = move || started.elapsed() >= Duration::from_millis(300);
-        let out = run_blocking(dir.to_str().unwrap(), "sleep 30 & echo up; wait", Duration::from_secs(60), &stop).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), "sleep 30 & echo up; wait", Duration::from_secs(60), &stop, None).unwrap();
         assert!(out.stopped);
         assert!(!out.timed_out);
         assert_eq!(out.stdout.trim(), "up");
@@ -402,7 +463,7 @@ mod tests {
     #[test]
     fn times_out() {
         let dir = std::env::temp_dir();
-        let out = run_blocking(dir.to_str().unwrap(), "sleep 5", Duration::from_millis(300), &|| false).unwrap();
+        let out = run_blocking(dir.to_str().unwrap(), "sleep 5", Duration::from_millis(300), &|| false, None).unwrap();
         assert!(out.timed_out);
     }
 }

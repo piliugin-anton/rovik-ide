@@ -36,6 +36,17 @@ struct Authorized {
     /// The refusal is a "no" from the user, their AI reviewer or their
     /// permission settings (not a call that couldn't apply).
     rejected: bool,
+    /// An approved edit: the file it was reviewed against. The file may
+    /// change while the approval waits (reconcile_review).
+    reviewed: Option<Reviewed>,
+}
+
+/// The file an approved edit was reviewed against.
+#[derive(Clone)]
+struct Reviewed {
+    abs_path: String,
+    rel_path: String,
+    current: String,
 }
 
 fn refused(text: impl Into<String>) -> Authorized {
@@ -203,8 +214,9 @@ impl<R: Runtime> Run<R> {
             .map(|tc| {
                 let (app, root) = (self.app.clone(), self.root.clone());
                 let (name, args, stop) = (tc.name.clone(), tc.arguments.clone(), self.stop.clone());
+                let ctx = self.call_context(&tc.id);
                 async move {
-                    parallel::spawned(async move { tools::execute(&app, root.as_deref(), &name, &args, &stop).await })
+                    parallel::spawned(async move { tools::execute(&app, root.as_deref(), &name, &args, &stop, &ctx).await })
                         .await
                         .unwrap_or_else(|e| tools::ToolResult { content: format!("Error: {e}"), ..Default::default() })
                 }
@@ -437,6 +449,10 @@ impl<R: Runtime> Run<R> {
         if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
             return self.stopped_result(tc).await;
         }
+        let auth = self.reconcile_review(tc, auth).await;
+        if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
+            return self.stopped_result(tc).await;
+        }
         let args_json = auth.args_override.clone().unwrap_or_else(|| tc.arguments.clone());
         let tool_name = tc.name.clone();
         let writes = auth.refusal.is_none() && permissions::modifies_files(&tool_name);
@@ -450,8 +466,21 @@ impl<R: Runtime> Run<R> {
 
         let result = match &auth.refusal {
             Some(refusal) => tools::ToolResult { content: refusal.clone(), ..Default::default() },
-            None => tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json, &self.stop).await,
+            None => {
+                let ctx = self.call_context(&tc.id);
+                tools::execute(&self.app, self.root.as_deref(), &tool_name, &args_json, &self.stop, &ctx).await
+            }
         };
+        // An isolated chat's changes are saved as they happen (overlay/fs.rs).
+        if let Some(o) = crate::overlay::chats::get(&self.dialog_id) {
+            o.fs.flush();
+        }
+        // The project changed under an isolated chat: its model hears it with
+        // this result.
+        let mut result = result;
+        if let Some(note) = crate::overlay::chats::take_note(&self.dialog_id) {
+            result.content.push_str(&note);
+        }
         let write = match (writes, write_path) {
             (true, Some(path)) => Some(WriteTarget { path, abs_path: abs_write_path, before }),
             _ => None,
@@ -683,6 +712,11 @@ impl<R: Runtime> Run<R> {
             None => (None, Vec::new()),
         };
         let mut manual_reason: Option<String> = resume_note.map(str::to_string);
+        let reviewed = proposal.as_ref().map(|p| Reviewed {
+            abs_path: p.abs_path.clone(),
+            rel_path: p.rel_path.clone(),
+            current: p.current.clone(),
+        });
 
         if approver == Approver::Ai {
             let models = &config.approval_profiles;
@@ -736,7 +770,7 @@ impl<R: Runtime> Run<R> {
                         let approval =
                             approval_json(Approver::Ai, approved, Some(model.clone()), Some(reason.clone()), &checks);
                         return if approved {
-                            Authorized { approval: Some(approval), ..Default::default() }
+                            Authorized { approval: Some(approval), reviewed, ..Default::default() }
                         } else {
                             Authorized {
                                 refusal: Some(format!(
@@ -777,9 +811,11 @@ impl<R: Runtime> Run<R> {
         let decision = self.state.wait_for_approval(&self.app, request, &self.stop).await;
 
         match decision {
-            ApprovalDecision::Allow => {
-                Authorized { approval: Some(approval_json(Approver::User, true, None, None, &[])), ..Default::default() }
-            }
+            ApprovalDecision::Allow => Authorized {
+                approval: Some(approval_json(Approver::User, true, None, None, &[])),
+                reviewed,
+                ..Default::default()
+            },
             ApprovalDecision::Deny => Authorized {
                 refusal: Some(match &rel_path {
                     Some(rel) => format!(
@@ -822,8 +858,82 @@ impl<R: Runtime> Run<R> {
                         &rejected,
                         total,
                     )),
+                    reviewed,
                 }
             }
+        }
+    }
+
+    /// An approved edit whose file changed while the approval waited (another
+    /// chat, the user, a command). Writing the approved file whole would
+    /// erase that change, so the approved changes are merged into the file
+    /// as it is now. Changes that overlap are reviewed again, once, against
+    /// the current file; if it changes yet again, the model is told.
+    ///
+    /// Either way the run counts as having seen the file it's written over
+    /// (file_guard.rs): the user approved the change against it.
+    async fn reconcile_review(&self, tc: &ToolCall, auth: Authorized) -> Authorized {
+        if let Ok(auth) = self.merge_into_current(tc, auth) {
+            return auth;
+        }
+        let again = self
+            .authorize(
+                tc,
+                Some("The file changed while this edit waited for approval, and the changes overlap: review it again against the file as it is now."),
+            )
+            .await;
+        match self.merge_into_current(tc, again) {
+            Ok(auth) => auth,
+            Err(auth) => {
+                let path = auth.reviewed.as_ref().map_or("the file", |r| r.rel_path.as_str()).to_string();
+                refused(format!(
+                    "Error: {path} kept changing while this edit waited for approval, and the changes overlap; the file was not modified. Read it again and redo the edit."
+                ))
+            }
+        }
+    }
+
+    /// `Ok`: the call can run as authorized (adjusted to the merge when the
+    /// file changed). `Err`: the approved changes overlap the file's new
+    /// changes; it needs another review.
+    fn merge_into_current(&self, tc: &ToolCall, mut auth: Authorized) -> Result<Authorized, Authorized> {
+        let Some(reviewed) = auth.reviewed.clone() else { return Ok(auth) };
+        if auth.refusal.is_some() {
+            return Ok(auth);
+        }
+        // What the approval writes whole. An approved partial write (old_text)
+        // applies to the file as it is when it runs: nothing to merge.
+        let args = permissions::parse_args(auth.args_override.as_deref().unwrap_or(&tc.arguments));
+        if tools::is_partial_write(&tc.name, &args) && auth.args_override.is_none() {
+            return Ok(auth);
+        }
+        let Some(approved) = args.get("content").and_then(|c| c.as_str()).map(str::to_string) else {
+            return Ok(auth);
+        };
+        let abs = std::path::Path::new(&reviewed.abs_path);
+        let Ok(now) = std::fs::read_to_string(abs) else {
+            // Gone or unreadable: the write recreates it, as approved.
+            return Ok(auth);
+        };
+        if now == reviewed.current {
+            self.seen.record(abs, now.as_bytes());
+            return Ok(auth);
+        }
+        match crate::merge::merge3(&reviewed.current, &approved, &now) {
+            Ok(crate::merge::Merged::Clean(merged)) => {
+                self.seen.record(abs, now.as_bytes());
+                auth.args_override = Some(json!({ "path": reviewed.rel_path, "content": merged }).to_string());
+                let note = format!(
+                    "{} changed while this edit waited for approval; the approved changes were merged into the new version.",
+                    reviewed.rel_path
+                );
+                auth.result_note = Some(match auth.result_note.take() {
+                    Some(earlier) => format!("{earlier}\n{note}"),
+                    None => note,
+                });
+                Ok(auth)
+            }
+            Ok(crate::merge::Merged::Conflict(_)) | Err(_) => Err(auth),
         }
     }
 
@@ -840,7 +950,7 @@ impl<R: Runtime> Run<R> {
                 Ok(edit) => edit,
                 Err(e) => return Some(Prepared::Invalid(e)),
             };
-            match tools::apply_edit(root, &edit, true) {
+            match tools::apply_edit(root, &edit, true, None) {
                 Ok(outcome) => outcome.content,
                 Err(e) => return Some(Prepared::Invalid(format!("Error: {e}"))),
             }
@@ -861,6 +971,19 @@ impl<R: Runtime> Run<R> {
             return Some(Prepared::Unchanged);
         }
         Some(Prepared::Diff { proposal: EditProposal { abs_path, rel_path: path, current, proposed }, hunks })
+    }
+
+    /// What a call runs with: the run's record of files it has seen, and
+    /// its note on the tool block (a wait for a CPU slot shows there).
+    fn call_context(&self, tool_call_id: &str) -> tools::CallContext {
+        let (app, dialog_id, id) = (self.app.clone(), self.dialog_id.clone(), tool_call_id.to_string());
+        tools::CallContext {
+            seen: self.seen.clone(),
+            owner: self.dialog_id.clone(),
+            note: std::sync::Arc::new(move |note| {
+                emit(&app, AgentEvent::ToolNote { dialog_id: dialog_id.clone(), tool_call_id: id.clone(), note })
+            }),
+        }
     }
 
     fn tool_note(&self, tool_call_id: &str, note: Option<String>) {
@@ -937,7 +1060,8 @@ impl<R: Runtime> Run<R> {
             );
             return self.add_tool_result(&tc.id, content, None, Vec::new()).await;
         }
-        let Some(root) = self.root.clone() else {
+        // Plans are the project's, not a chat's change.
+        let Some(root) = self.project_root.clone() else {
             return self
                 .add_tool_result(&tc.id, "Error: no project is open, so the plan can't be saved.".into(), None, Vec::new())
                 .await;

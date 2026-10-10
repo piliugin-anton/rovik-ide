@@ -62,6 +62,8 @@ import {
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
+import IsolationBar from './IsolationBar';
+import { overlayStatus } from '../lib/overlay';
 import { isSettled, latestChecklist } from '../lib/todo';
 import {
   dismissChecklist,
@@ -239,6 +241,23 @@ export default function ChatPanel(props: ChatProps) {
   createEffect(() => {
     const id = activeDialogId();
     if (id && store.state.chatVisible) store.markRead(id);
+  });
+  // An isolated chat's changes: looked at again while a run goes and when
+  // it ends (IsolationBar).
+  const [isolationRevision, setIsolationRevision] = createSignal(0);
+  createEffect(
+    on(sending, (running) => {
+      setIsolationRevision((n) => n + 1);
+      if (!running) return;
+      const timer = setInterval(() => setIsolationRevision((n) => n + 1), 3000);
+      onCleanup(() => clearInterval(timer));
+    })
+  );
+  // The chat on screen goes first in the queue for heavy work (builds,
+  // tests) when several chats want the CPU at once (src-tauri/src/workload).
+  createEffect(() => {
+    const id = store.state.chatVisible ? (activeDialogId() ?? null) : null;
+    void invoke('workload_focus', { dialogId: id }).catch(() => {});
   });
 
   // The Settings dialog lives in App (gear next to the project selector).
@@ -869,6 +888,10 @@ export default function ChatPanel(props: ChatProps) {
 
   async function confirmAndDeleteDialog(dialog: DialogSummary) {
     const count = dialog.messageCount;
+    // Changes of an isolated chat that haven't landed go with it.
+    const unlanded = await overlayStatus(dialog.id)
+      .then((s) => (s.isolated ? s.files.length : 0))
+      .catch(() => 0);
     const confirmed = await confirmDialog({
       title: 'Delete this chat?',
       message: (
@@ -876,6 +899,9 @@ export default function ChatPanel(props: ChatProps) {
           <strong>{dialog.title || 'Untitled chat'}</strong>
           {count > 0 ? ` and its ${count} message${count === 1 ? '' : 's'}` : ''} will be
           permanently deleted.
+          {unlanded > 0
+            ? ` So will its ${unlanded} changed file${unlanded === 1 ? '' : 's'} that haven’t landed in the project.`
+            : ''}
         </>
       ),
       confirmLabel: 'Delete',
@@ -2075,6 +2101,24 @@ export default function ChatPanel(props: ChatProps) {
     );
   }
 
+  /**
+   * An isolated chat's conflicts with the project, handed to it
+   * (IsolationBar): markers are in its files; this asks it to settle them.
+   */
+  function askToResolve(dialogId: string, request: string) {
+    if (!activeProfile() || isRunning(dialogId)) return;
+    setChatMode('agent');
+    void sendMessage(
+      dialogId,
+      {
+        id: crypto.randomUUID(),
+        content: 'Resolve the conflicts with the project’s changes.',
+        meta: { mode: 'agent', sentContent: request },
+      },
+      request
+    );
+  }
+
   /** "Implement this plan" on a plan file in the editor (App sends it). */
   function takePlanFromEditor() {
     const dialogId = activeDialogId();
@@ -2958,6 +3002,17 @@ export default function ChatPanel(props: ChatProps) {
             interrupted
             onContinue={continueRun}
             onDismiss={dismissIdleChecklist}
+          />
+        )}
+      </Show>
+      {/* An isolated chat's changes that aren't in the project yet. */}
+      <Show when={activeDialogId()}>
+        {(id) => (
+          <IsolationBar
+            dialogId={id()}
+            revision={isolationRevision()}
+            running={sending()}
+            onAskChat={(request) => askToResolve(id(), request)}
           />
         )}
       </Show>

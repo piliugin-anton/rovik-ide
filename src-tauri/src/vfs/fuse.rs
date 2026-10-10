@@ -1,4 +1,5 @@
-//! The FUSE driver (Linux, macOS): kernel requests → [`VirtualFs`].
+//! The FUSE driver (Linux, macOS): kernel requests → a [`Backend`] (the app's
+//! [`VirtualFs`](super::store::VirtualFs), or a chat's overlay).
 //!
 //! Linux mounts through the `fusermount3`/`fusermount` helper (fuser's pure
 //! Rust mount, no libfuse needed). macOS mounts through macFUSE's library,
@@ -25,7 +26,8 @@ use fuser::{
 };
 
 use super::problem::MountProblem;
-use super::store::{Attr, Change, Kind, RenameMode, SetAttr, VfsError, VirtualFs};
+use super::backend::Backend;
+use super::store::{Attr, Change, Kind, RenameMode, SetAttr, VfsError};
 
 const TTL: Duration = Duration::from_secs(1);
 const BLOCK: u64 = 4096;
@@ -119,7 +121,7 @@ const RENAME_EXCHANGE: u32 = 0x2; // RENAME_SWAP
 type DirSnapshot = Vec<(String, Attr)>;
 
 pub struct FuseFs {
-    vfs: Arc<VirtualFs>,
+    vfs: Arc<dyn Backend>,
     next_fh: AtomicU64,
     /// Open directories' listings, taken at `opendir`: `rm -rf` deletes
     /// while it reads, and offsets into a list that shifts would skip names.
@@ -127,7 +129,7 @@ pub struct FuseFs {
 }
 
 impl FuseFs {
-    pub fn new(vfs: Arc<VirtualFs>) -> Self {
+    pub fn new(vfs: Arc<dyn Backend>) -> Self {
         FuseFs { vfs, next_fh: AtomicU64::new(1), dirs: Mutex::new(HashMap::new()) }
     }
 
@@ -555,7 +557,7 @@ fn mount_options() -> Config {
 /// A mounted volume. Dropping it unmounts.
 pub struct FuseMount {
     session: Option<BackgroundSession>,
-    vfs: Arc<VirtualFs>,
+    vfs: Arc<dyn Backend>,
     #[cfg_attr(target_os = "linux", allow(dead_code))]
     mountpoint: std::path::PathBuf,
     #[cfg(target_os = "macos")]
@@ -565,7 +567,7 @@ pub struct FuseMount {
 impl FuseMount {
     /// Tells the kernel what the app changed, so it doesn't serve stale
     /// cached data.
-    fn watch(session: &BackgroundSession, vfs: &Arc<VirtualFs>) {
+    fn watch(session: &BackgroundSession, vfs: &Arc<dyn Backend>) {
         let notifier = session.notifier();
         vfs.set_listener(Some(Box::new(move |changes| {
             for change in changes {
@@ -627,7 +629,7 @@ fn clear_stale_mount(mountpoint: &Path) {
 
 /// Mounts at `requested`, or where the platform mounts by default; returns
 /// where it mounted.
-pub fn mount(vfs: Arc<VirtualFs>, requested: Option<&Path>) -> Result<(FuseMount, std::path::PathBuf), MountProblem> {
+pub fn mount(vfs: Arc<dyn Backend>, requested: Option<&Path>) -> Result<(FuseMount, std::path::PathBuf), MountProblem> {
     #[cfg(target_os = "linux")]
     {
         let mountpoint = requested.map(Path::to_path_buf).unwrap_or_else(super::default_mountpoint);

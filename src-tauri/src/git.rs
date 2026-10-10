@@ -379,6 +379,8 @@ pub fn git_branches_blocking(path: String) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub async fn git_checkout(path: String, branch: String) -> Result<(), String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_checkout_blocking(path, branch)).await
 }
 
@@ -668,6 +670,8 @@ pub struct GitCommitEntry {
 /// stash, so the tree comes back clean. Needs a git identity, like commit.
 #[tauri::command]
 pub async fn git_stash_push(path: String, message: Option<String>) -> Result<(), String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_stash_push_blocking(path, message)).await
 }
 
@@ -716,6 +720,8 @@ pub fn git_stash_list_blocking(path: String) -> Result<Vec<GitStashEntry>, Strin
 /// the error says to resolve them first.
 #[tauri::command]
 pub async fn git_stash_pop(path: String, index: Option<usize>) -> Result<(), String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_stash_pop_blocking(path, index)).await
 }
 
@@ -932,6 +938,8 @@ pub fn git_stash_file_preview_blocking(
 /// one file, so the action can be undone from there).
 #[tauri::command]
 pub async fn git_discard_all(path: String) -> Result<(), String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_discard_all_blocking(path)).await
 }
 

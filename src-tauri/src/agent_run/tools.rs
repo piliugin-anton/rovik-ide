@@ -9,6 +9,7 @@ use super::plan::{MAX_TODO_ITEMS, PLAN_BLOCKED_TOOLS};
 use super::StopSignal;
 use crate::code_search::SearchResult;
 use crate::command_tool::CommandOutput;
+use crate::file_guard::Seen;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use crate::outline::Symbol;
@@ -538,17 +539,32 @@ pub fn edit_args(args: &Map<String, Value>) -> Result<EditArgs, String> {
     })
 }
 
-/// Computes (or, unless `dry_run`, makes) a partial write.
-pub fn apply_edit(root: &str, edit: &EditArgs, dry_run: bool) -> Result<crate::agent_tools::EditOutcome, String> {
-    crate::agent_tools::tool_edit_file(
-        root.into(),
-        edit.path.clone(),
-        edit.old_text.clone(),
-        edit.new_text.clone(),
-        edit.start_line,
-        edit.end_line,
-        Some(dry_run),
-    )
+/// Computes (or, unless `dry_run`, makes) a partial write. A run's write
+/// passes what it has `seen` (file_guard.rs).
+pub fn apply_edit(
+    root: &str,
+    edit: &EditArgs,
+    dry_run: bool,
+    seen: Option<&Seen>,
+) -> Result<crate::agent_tools::EditOutcome, String> {
+    let change = crate::agent_tools::Edit {
+        old_text: &edit.old_text,
+        new_text: &edit.new_text,
+        start_line: edit.start_line,
+        end_line: edit.end_line,
+    };
+    crate::agent_tools::edit_file(root, &edit.path, &change, dry_run, seen)
+}
+
+/// What a tool call runs with besides its arguments.
+pub struct CallContext {
+    /// The run's record of the files it has read and written (file_guard.rs).
+    pub seen: Arc<Seen>,
+    /// The chat (dialog id) the call is for.
+    pub owner: String,
+    /// A note on the call while it runs ("Waiting for a CPU slot: …");
+    /// `None` clears it.
+    pub note: Arc<dyn Fn(Option<String>) + Send + Sync>,
 }
 
 /// Runs one tool call. Never fails: problems come back as an "Error: ..."
@@ -560,6 +576,7 @@ pub async fn execute<R: Runtime>(
     name: &str,
     args_json: &str,
     stop: &Arc<StopSignal>,
+    ctx: &CallContext,
 ) -> ToolResult {
     let args = if args_json.trim().is_empty() {
         Map::new()
@@ -570,7 +587,7 @@ pub async fn execute<R: Runtime>(
             Err(_) => return ToolResult::text(format!("Error: could not parse arguments as JSON: {args_json}")),
         }
     };
-    match run(app, root, name, &args, stop).await {
+    match run(app, root, name, &args, stop, ctx).await {
         Ok(result) => result,
         // Some tools word their own errors ("Error: no declaration named…"):
         // don't prefix those twice.
@@ -585,7 +602,9 @@ async fn run<R: Runtime>(
     name: &str,
     args: &Map<String, Value>,
     stop: &Arc<StopSignal>,
+    ctx: &CallContext,
 ) -> Result<ToolResult, String> {
+    let seen: &Seen = &ctx.seen;
     match name {
         "web_search" => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
@@ -663,19 +682,20 @@ async fn run<R: Runtime>(
                 Ok(edit) => edit,
                 Err(e) => return Ok(ToolResult::text(e)),
             };
-            let outcome = apply_edit(root, &edit, false)?;
+            let outcome = apply_edit(root, &edit, false, Some(seen))?;
             return Ok(ToolResult { content: outcome.summary, attachments: Vec::new(), written: Some((edit.path, outcome.content)) });
         }
         "read" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"path\" is required."));
             };
-            crate::agent_tools::tool_read_file_range(
-                root_owned,
-                path.into(),
+            crate::agent_tools::read_file_range(
+                root,
+                path,
                 uint(args, "start_line"),
                 uint(args, "end_line"),
                 text(args, "symbol").map(|s| s.trim().to_string()),
+                Some(seen),
             )?
         }
         "write" => {
@@ -685,7 +705,7 @@ async fn run<R: Runtime>(
             let Some(content) = text(args, "content") else {
                 return Ok(ToolResult::text("Error: \"content\" is required."));
             };
-            crate::agent_tools::tool_write_file(root_owned, path.into(), content.into())?
+            crate::agent_tools::write_file(root, path, content, Some(seen))?
         }
         "bash" => {
             let Some(command) = text(args, "command").filter(|c| !c.trim().is_empty()) else {
@@ -693,7 +713,19 @@ async fn run<R: Runtime>(
             };
             let timeout = num(args, "timeout_seconds").filter(|s| *s > 0.0).map(|s| (s * 1000.0) as u64);
             let stop = stop.clone();
-            let out = crate::command_tool::run_command(root_owned, command.into(), timeout, move || stop.is_set()).await?;
+            if let Some(problem) = crate::overlay::chats::get(&ctx.owner).and_then(|o| o.command_problem(command)) {
+                return Ok(ToolResult::text(problem));
+            }
+            let note = ctx.note.clone();
+            let queued = crate::command_tool::Queued {
+                kind: crate::workload::JobKind::Agent { owner: ctx.owner.clone() },
+                note: Box::new(move |n| note(n)),
+                env: crate::overlay::chats::get(&ctx.owner).map(|o| o.command_env()).unwrap_or_default(),
+                confine: crate::overlay::chats::get(&ctx.owner).and_then(|o| o.confine()),
+            };
+            let out =
+                crate::command_tool::run_command(root_owned, command.into(), timeout, move || stop.is_set(), Some(queued))
+                    .await?;
             format_command_output(command, &out)
         }
         "list_dir" => {
@@ -802,6 +834,10 @@ pub fn format_command_output(command: &str, out: &CommandOutput) -> String {
     };
     // The first two lines are read back by the chat's tool block (exit code).
     let mut parts = vec![format!("$ {command}"), format!("{status}, {:.1} s", out.duration_ms as f64 / 1000.0)];
+    // Third line, read back by the tool block too: a long wait for a CPU slot.
+    if let Some(waited) = out.waited.as_ref().and_then(|w| w.describe()) {
+        parts.push(waited);
+    }
     let failed = out.timed_out || out.stopped || out.exit_code != Some(0);
     let mut shortened = out.truncated;
     // A failing run: its errors and summary. Otherwise its start and end.
@@ -1002,7 +1038,12 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
         "bash" => {
             let line = result.split('\n').nth(1).unwrap_or("");
             let code = EXIT_CODE.captures(line).and_then(|c| c[1].parse::<i64>().ok());
-            one("exitCode", json!(code))
+            let mut meta = Map::new();
+            meta.insert("exitCode".into(), json!(code));
+            if let Some(waited) = result.split('\n').nth(2).filter(|l| l.starts_with("Waited ")) {
+                meta.insert("waited".into(), json!(waited.trim_end_matches('.')));
+            }
+            Some(meta)
         }
         "browse_url" => {
             let title = PAGE_TITLE.captures(result).map(|c| c[1].to_string()).filter(|t| t != "(untitled)");
@@ -1114,10 +1155,24 @@ mod tests {
             stopped: false,
             truncated: false,
             duration_ms: 1234,
+            waited: None,
         };
         let text = format_command_output("cargo test", &out);
         assert_eq!(text, "$ cargo test\nexit code 1, 1.2 s\n--- stderr ---\nerror: boom");
         assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], json!(1));
+        assert!(result_meta("bash", &text).unwrap().get("waited").is_none());
+
+        // A long wait for a CPU slot: told to the model, kept on the tool block.
+        let waited = crate::workload::Waited { ms: 80_000, reason: Some("your terminal is running `cargo build`".into()) };
+        let out = CommandOutput { waited: Some(waited), ..out };
+        let text = format_command_output("cargo test", &out);
+        assert!(text.starts_with(
+            "$ cargo test\nexit code 1, 1.2 s\nWaited 1 min 20 s for a CPU slot (your terminal is running `cargo build`).\n"
+        ));
+        assert_eq!(
+            result_meta("bash", &text).unwrap()["waited"],
+            json!("Waited 1 min 20 s for a CPU slot (your terminal is running `cargo build`)")
+        );
     }
 
     #[test]
@@ -1360,12 +1415,12 @@ a.rs (3 matches)
     #[test]
     fn tool_text_edge_cases() {
         // A command killed by a timeout, with no output.
-        let out = CommandOutput { exit_code: None, stdout: " ".into(), stderr: String::new(), timed_out: true, stopped: false, truncated: false, duration_ms: 120_000 };
+        let out = CommandOutput { exit_code: None, stdout: " ".into(), stderr: String::new(), timed_out: true, stopped: false, truncated: false, duration_ms: 120_000, waited: None };
         let text = format_command_output("sleep 999", &out);
         assert_eq!(text, "$ sleep 999\ntimed out (killed), 120.0 s\n(no output)");
         assert_eq!(result_meta("bash", &text).unwrap()["exitCode"], Value::Null);
         // Truncated by the runner: said so.
-        let out = CommandOutput { exit_code: Some(0), stdout: "x".into(), stderr: String::new(), timed_out: false, stopped: false, truncated: true, duration_ms: 1 };
+        let out = CommandOutput { exit_code: Some(0), stdout: "x".into(), stderr: String::new(), timed_out: false, stopped: false, truncated: true, duration_ms: 1, waited: None };
         assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
         assert_eq!(format_search_result(&SearchResult {
                 lines: vec![],

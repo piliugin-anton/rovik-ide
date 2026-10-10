@@ -26,6 +26,7 @@
 //!
 //! See `events.rs` for the event kinds and what a callback may do.
 
+pub mod backend;
 pub mod driver;
 pub mod events;
 pub mod history;
@@ -62,22 +63,24 @@ const EVENT_QUEUE: usize = 16 * 1024;
 const EVENT_BATCH: usize = 1024;
 const EVENT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// A mounted volume; unmounted when dropped (or by `unmount`).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-type Mount = fuse::FuseMount;
+pub type Mount = fuse::FuseMount;
 #[cfg(windows)]
-type Mount = winfsp_fs::WinFspMount;
+pub type Mount = winfsp_fs::WinFspMount;
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-struct Mount;
+pub struct Mount;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 impl Mount {
-    fn unmount(self) -> Result<(), String> {
+    pub fn unmount(self) -> Result<(), String> {
         Ok(())
     }
 }
 
-/// Mounts at `requested`, or the platform's default place; returns where.
-fn platform_mount(fs: Arc<VirtualFs>, requested: Option<&Path>) -> Result<(Mount, PathBuf), MountProblem> {
+/// Mounts `fs` at `requested`, or the platform's default place; returns
+/// where. The virtual-files volume and chats' overlays both mount this way.
+pub fn platform_mount(fs: Arc<dyn backend::Backend>, requested: Option<&Path>) -> Result<(Mount, PathBuf), MountProblem> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         fuse::mount(fs, requested)

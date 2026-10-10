@@ -14,6 +14,7 @@ use super::project::{check_label, ordered_checks, ProjectCheck};
 use super::run::{new_message, Run};
 use super::log;
 use serde::Serialize;
+use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use tauri::Runtime;
 
@@ -52,6 +53,10 @@ pub struct CheckResult {
     /// failed: files the errors point at, split by whether this run changed them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_files: Option<ErrorFiles>,
+    /// Waiting for a CPU slot (while it waits), or how long it waited
+    /// when that was long (workload/queue.rs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl CheckResult {
@@ -66,6 +71,7 @@ impl CheckResult {
             reason: None,
             output: None,
             error_files: None,
+            note: None,
         }
     }
 
@@ -277,7 +283,18 @@ impl<R: Runtime> Run<R> {
         // Back to the model. User-role, so every provider accepts it after an
         // assistant reply; marked as the IDE's, so it's never shown as the
         // user's message or replaced by the request's editor context.
-        self.add_harness(failure_report(&results, &changed, round), "verification").await?;
+        let mut report = failure_report(&results, &changed, round);
+        if let Some(files) = &self.merged_from_project {
+            report = report.replacen(
+                "\n",
+                &format!(
+                    "\nThe project changed meanwhile ({}): those changes are now merged into your files, and the checks ran on the result. Fix what fails so your changes work with the project's.\n",
+                    files.join(", ")
+                ),
+                1,
+            );
+        }
+        self.add_harness(report, "verification").await?;
         Ok("continue".into())
     }
 
@@ -318,14 +335,40 @@ impl<R: Runtime> Run<R> {
             results[i].status = "running";
             self.update_meta(record_id, progress(&results)).await?;
             let stop = self.stop.clone();
-            let outcome = crate::command_tool::run_command(
+            // Checks are heavy work: they may wait for a CPU slot, and the
+            // record says what for while they do.
+            let waiting: Arc<Mutex<Option<Option<String>>>> = Arc::default();
+            let queued = crate::command_tool::Queued {
+                kind: crate::workload::JobKind::Check { owner: self.dialog_id.clone() },
+                note: {
+                    let waiting = waiting.clone();
+                    Box::new(move |note| *waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(note))
+                },
+                env: crate::overlay::chats::get(&self.dialog_id).map(|o| o.command_env()).unwrap_or_default(),
+                confine: crate::overlay::chats::get(&self.dialog_id).and_then(|o| o.confine()),
+            };
+            let run = crate::command_tool::run_command(
                 root.into(),
                 results[i].command.clone(),
                 Some(CHECK_TIMEOUT_MS),
                 move || stop.is_set(),
-            )
-            .await;
+                Some(queued),
+            );
+            tokio::pin!(run);
+            let outcome = loop {
+                tokio::select! {
+                    outcome = &mut run => break outcome,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
+                        let changed = waiting.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        if let Some(note) = changed {
+                            results[i].note = note;
+                            self.update_meta(record_id, progress(&results)).await?;
+                        }
+                    }
+                }
+            };
             let r = &mut results[i];
+            r.note = outcome.as_ref().ok().and_then(|o| o.waited.as_ref()).and_then(|w| w.describe());
             match outcome {
                 Ok(out) if out.stopped => r.skip("stopped"),
                 Ok(out) => {

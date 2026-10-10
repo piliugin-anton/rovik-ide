@@ -22,6 +22,8 @@ export interface CheckResult {
   output?: string;
   /** failed: files the errors point at, split by whether this run changed them. */
   errorFiles?: { changed: string[]; other: string[] };
+  /** Waiting for a CPU slot while it waits; afterwards, a long wait. */
+  note?: string;
 }
 
 export type VerificationStatus =

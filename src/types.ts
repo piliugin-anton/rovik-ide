@@ -204,6 +204,8 @@ export interface ToolMeta {
   interrupted?: StoredFailure;
   /** bash results: the exit code (null when killed or signalled). */
   exitCode?: number | null;
+  /** bash results: a long wait for a CPU slot before it ran. */
+  waited?: string;
   /** Tool results that went through approval: who decided, and why. */
   approval?: ToolApproval;
   /**

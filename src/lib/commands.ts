@@ -25,8 +25,20 @@ export async function readFileContent(path: string): Promise<string> {
   return invoke<string>('read_file_content', { path });
 }
 
-export async function writeFileContent(path: string, content: string): Promise<void> {
-  return invoke<void>('write_file_content', { path, content });
+/** Starts the error of a save refused because the file changed on disk. */
+export const CHANGED_ON_DISK = 'changed-on-disk:';
+
+/**
+ * Saves a file. With `expected` (the content the tab loaded), the save is
+ * refused if the file on disk is no longer that: the error starts with
+ * CHANGED_ON_DISK, followed by who changed it.
+ */
+export async function writeFileContent(
+  path: string,
+  content: string,
+  expected?: string
+): Promise<void> {
+  return invoke<void>('write_file_content', { path, content, expected });
 }
 
 export async function pathExists(path: string): Promise<boolean> {

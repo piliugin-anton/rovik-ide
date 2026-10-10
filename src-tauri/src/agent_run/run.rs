@@ -91,6 +91,17 @@ pub struct Run<R: Runtime> {
     pub(super) plan_mode: bool,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
+    /// The project folder itself. Differs from `root` in an isolated chat,
+    /// whose tools and commands work in its overlay's view.
+    pub(super) project_root: Option<String>,
+    /// An isolated chat's changes landed at the end of this run.
+    pub(super) landed: bool,
+    /// Files the project's newer changes were just merged into, for the
+    /// failure report of the checks that follow (landing.rs).
+    pub(super) merged_from_project: Option<Vec<String>>,
+    /// What this run has read and written of each file, so a whole-file
+    /// write over a change it hasn't seen is refused (file_guard.rs).
+    pub(super) seen: Arc<crate::file_guard::Seen>,
     /// The request's user message as sent (with editor context).
     pub(super) current_user_content: Option<String>,
     pub(super) local_date: String,
@@ -237,7 +248,50 @@ impl<R: Runtime> Run<R> {
         let config = state.config();
         let mode = run_mode_for(&recent).or(request.mode.clone()).unwrap_or_else(|| "agent".into());
         let plan_mode = mode == "plan";
-        let root = request.root.clone().filter(|r| !r.trim().is_empty());
+        let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
+        // An isolated chat works in its overlay: the project with its own
+        // changes on top, mounted as a folder (src/overlay). Plan mode
+        // changes nothing, so it reads the project itself.
+        let mut isolation_problem = None;
+        let root = match &project_root {
+            Some(r) if !plan_mode && request.isolate.unwrap_or_else(crate::overlay::chats::enabled) => {
+                let app_ = app.clone();
+                let on_warn = Box::new(move |used: u64, limit: u64| {
+                    emit(
+                        &app_,
+                        AgentEvent::Notice {
+                            kind: "warning".into(),
+                            title: "This chat's changes are near their limit".into(),
+                            message: format!(
+                                "{} MB of {} MB. Past the limit, its writes fail until its changes land or are discarded.",
+                                used >> 20,
+                                limit >> 20
+                            ),
+                        },
+                    )
+                });
+                match crate::overlay::chats::open(&dialog_id, std::path::Path::new(r), on_warn) {
+                    Ok(o) => Some(o.view.to_string_lossy().into_owned()),
+                    Err(e) => {
+                        isolation_problem = Some(e);
+                        project_root.clone()
+                    }
+                }
+            }
+            _ => project_root.clone(),
+        };
+        if let Some(problem) = isolation_problem.filter(|_| crate::overlay::chats::tell_not_isolated(&dialog_id)) {
+            emit(
+                app,
+                AgentEvent::Notice {
+                    kind: "warning".into(),
+                    title: "This chat isn't isolated".into(),
+                    message: format!(
+                        "{problem}. It works in the project folder directly. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
+                    ),
+                },
+            );
+        }
         let is_send = matches!(request.start, StartKind::Send { .. });
         let is_continue_run = matches!(request.start, StartKind::ContinueRun);
         // Plan-implementation first turn forces the `todo` tool (named
@@ -483,12 +537,16 @@ impl<R: Runtime> Run<R> {
             app: app.clone(),
             state: state.clone(),
             db: db.clone(),
+            seen: crate::file_guard::Seen::new(dialog_id.clone()),
             dialog_id,
             profile: request.profile,
             options: request.options,
             plan_mode,
             context_mode: request.context_mode.unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
+            project_root,
+            merged_from_project: None,
+            landed: false,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
@@ -564,6 +622,8 @@ impl<R: Runtime> Run<R> {
                 "error".to_string()
             }
         };
+        // An isolated chat's changes land now, or say why they don't.
+        self.land_at_end(&outcome).await;
         // Ended before the message got any answer.
         self.settle(false).await;
         self.log_clm_compliance(&outcome).await;
@@ -707,9 +767,19 @@ impl<R: Runtime> Run<R> {
                         return Ok("unfinished-checklist".into());
                     }
                 }
+                // Isolated: the project's newer changes to the same files
+                // are merged in and checked before the run ends.
+                if let Some(next) = self.take_project_changes(&outcome).await? {
+                    if next == "continue" {
+                        continue;
+                    }
+                    return Ok(next);
+                }
                 return Ok(outcome);
             }
 
+            // Isolated: not while the project is mid-switch.
+            self.wait_while_project_busy().await;
             self.execute_tool_calls(&turn.tool_calls, None).await?;
             if self.stopped() {
                 return Ok("stopped".into());
