@@ -11,10 +11,12 @@ import ModelProvidersSettings, { type ProvidersSettingsController } from './Mode
 import PermissionsSettings from './PermissionsSettings';
 import ProjectChecksSettings from './ProjectChecksSettings';
 import VirtualFilesSettings from './VirtualFilesSettings';
+import BuildsSettings from './BuildsSettings';
 import EditorSettings from './EditorSettings';
 import { editorSettings, EDITOR_THEMES } from '../lib/editorSettings';
 
-export type AiSettingsPage = 'menu' | 'editor' | 'providers' | 'permissions' | 'project' | 'vfs';
+export type AiSettingsPage =
+  'menu' | 'editor' | 'providers' | 'permissions' | 'project' | 'builds' | 'vfs';
 
 interface AiSettingsModalProps {
   providers: Provider[];
@@ -33,6 +35,7 @@ const PAGE_TITLE: Record<AiSettingsPage, string> = {
   providers: 'Model providers',
   permissions: 'Permissions & Approval',
   project: 'Project checks',
+  builds: 'Builds & checks',
   vfs: 'Virtual files',
 };
 
@@ -91,9 +94,7 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
   };
 
   return (
-    <div
-      class="modal-overlay"
-    >
+    <div class="modal-overlay">
       <div
         class="modal model-settings ai-settings"
         // The providers page holds the models table: full names need room.
@@ -173,6 +174,17 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                     ›
                   </span>
                 </button>
+                <button class="settings-menu-item" onClick={() => setPage('builds')}>
+                  <span class="settings-menu-text">
+                    <span class="settings-menu-label">Builds &amp; checks</span>
+                    <span class="settings-menu-sub">
+                      How many builds and tests run at once, across chats
+                    </span>
+                  </span>
+                  <span class="settings-menu-chevron" aria-hidden="true">
+                    ›
+                  </span>
+                </button>
                 <button class="settings-menu-item" onClick={() => setPage('vfs')}>
                   <span class="settings-menu-text">
                     <span class="settings-menu-label">Virtual files</span>
@@ -210,6 +222,9 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                 onChange={setPermissions}
                 onOpenProviders={() => setPage('providers')}
               />
+            </Match>
+            <Match when={page() === 'builds'}>
+              <BuildsSettings />
             </Match>
             <Match when={page() === 'vfs'}>
               <VirtualFilesSettings />

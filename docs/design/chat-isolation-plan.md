@@ -941,3 +941,10 @@ once; they touch different files. Everything else is sequential.
     `ROVIK_CONFINE_COMMANDS=0`), and on macOS and Windows, such commands
     are refused by the textual check as before. The user's own terminal
     isn't confined.
+  - Settings → Builds & checks sets how many heavy commands run at once:
+    Auto (one, or two on a big machine with room) or a fixed number from
+    1 to 8, kept in the app's data folder (`workload-settings.json`) and
+    applied at start. The page shows what auto gives on this machine and
+    how many heavy commands run and wait right now.
+  - The conflict resolver names its sides after where they come from
+    (`ConflictSource.sideNames`): Project and Chat for a chat's conflicts.

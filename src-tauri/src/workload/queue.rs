@@ -298,6 +298,43 @@ pub fn set_manual_slots(slots: Option<usize>) {
     SHARED.changed.notify_all();
 }
 
+/// The slots now, for the settings page.
+pub struct Slots {
+    /// As the user set them; None: auto.
+    pub manual: Option<usize>,
+    /// What auto gives on this machine right now.
+    pub auto: usize,
+    /// Commands holding a slot, and heavy ones waiting for one.
+    pub busy: usize,
+    pub waiting: usize,
+    /// The machine, as last sampled (0: not yet).
+    pub cores: usize,
+    pub total_memory: u64,
+}
+
+pub fn slots() -> Slots {
+    let state = lock();
+    let manual = state.manual_slots;
+    let auto = {
+        let m = &state.machine;
+        let big = m.cores >= BIG_CORES && m.total_memory >= BIG_MEMORY;
+        let room = m.free_memory > ROOM_FREE_MEMORY && m.untracked_load < ROOM_UNTRACKED_LOAD;
+        if big && room {
+            2
+        } else {
+            1
+        }
+    };
+    Slots {
+        manual,
+        auto,
+        busy: state.jobs.values().filter(|j| j.has_slot || j.terminal_busy()).count(),
+        waiting: state.jobs.values().filter(|j| j.waiting.is_some()).count(),
+        cores: state.machine.cores,
+        total_memory: state.machine.total_memory,
+    }
+}
+
 impl Job {
     /// Waits until a slot is free when the command is predicted heavy;
     /// returns at once otherwise. `note` gets what it waits for while it

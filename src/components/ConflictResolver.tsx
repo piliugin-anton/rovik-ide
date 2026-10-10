@@ -48,6 +48,8 @@ export interface ConflictSource {
   doneHint: string;
   /** The finish button. */
   finishLabel: string;
+  /** What the two sides are called, capitalized (git's: Yours, Incoming). */
+  sideNames: { ours: string; theirs: string };
 }
 
 interface ConflictResolverProps {
@@ -316,6 +318,10 @@ export function ConflictResolver(props: ConflictResolverProps) {
     }
   };
 
+  const sideName = (side: Side) =>
+    props.source?.sideNames[side] ?? (side === 'ours' ? 'Yours' : 'Incoming');
+  const lower = (side: Side) => sideName(side).toLowerCase();
+
   const verb = () => (props.operation.kind === 'rebase' ? 'rebase' : props.operation.kind);
   const title = () => {
     if (props.source) return props.source.title;
@@ -381,7 +387,7 @@ export function ConflictResolver(props: ConflictResolverProps) {
     const order = () =>
       choice()?.sides.length === 2 && taken() ? choice()!.sides.indexOf(side) + 1 : null;
     const deleted = () => data()?.[side] === null;
-    const label = () => (side === 'ours' ? 'Yours' : 'Incoming');
+    const label = () => sideName(side);
     return (
       <div
         class={`cr-cell cr-side cr-${side}`}
@@ -446,7 +452,7 @@ export function ConflictResolver(props: ConflictResolverProps) {
       const c = choice();
       if (!isResolved(c)) return 'Unresolved';
       if (c!.custom !== undefined) return 'Edited';
-      return c!.sides.map((s) => (s === 'ours' ? 'Yours' : 'Incoming')).join(' + ');
+      return c!.sides.map(sideName).join(' + ');
     };
     return (
       <div class="cr-cell cr-result" classList={{ 'cr-unresolved': !isResolved(choice()) }}>
@@ -484,7 +490,11 @@ export function ConflictResolver(props: ConflictResolverProps) {
           fallback={
             <Show
               when={isResolved(choice())}
-              fallback={<div class="cr-empty-lines">Accept yours, incoming, or both — or edit</div>}
+              fallback={
+                <div class="cr-empty-lines">
+                  Accept {lower('ours')}, {lower('theirs')}, or both — or edit
+                </div>
+              }
             >
               <CodeLines
                 text={hunkText(seg, choice())}
@@ -624,14 +634,14 @@ export function ConflictResolver(props: ConflictResolverProps) {
                           class="cr-tool"
                           onClick={() => setAll(allTo(d().segments, 'ours'))}
                         >
-                          Accept all yours
+                          Accept all {lower('ours')}
                         </button>
                         <button
                           type="button"
                           class="cr-tool"
                           onClick={() => setAll(allTo(d().segments, 'theirs'))}
                         >
-                          Accept all incoming
+                          Accept all {lower('theirs')}
                         </button>
                         <button type="button" class="cr-tool" onClick={() => setAll([])}>
                           Reset

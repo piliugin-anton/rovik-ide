@@ -80,6 +80,7 @@ export default function IsolationBar(props: Props) {
     title: 'This chat’s changes and the project’s',
     doneHint: 'Land the chat’s changes to finish.',
     finishLabel: 'Land',
+    sideNames: { ours: 'Project', theirs: 'Chat' },
   };
 
   async function askChat() {

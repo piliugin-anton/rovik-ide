@@ -196,6 +196,7 @@ pub fn run() {
             overlay::chats::overlay_conflict_resolve,
             overlay::chats::overlay_conflicts_to_chat,
             workload::workload_set_slots,
+            workload::workload_status,
             outline::outline_symbols,
             vfs::vfs_status,
             vfs::vfs_install_driver,

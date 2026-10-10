@@ -21,9 +21,25 @@ mod tracker;
 
 pub use queue::{begin, set_focus, JobKind, Waited};
 
-/// Points history at the app's data folder.
+/// Points history at the app's data folder, and applies the slots the
+/// user set (Settings → Builds & checks), if they set any.
 pub fn init(data_dir: &std::path::Path) {
     history::init(data_dir);
+    let file = data_dir.join("workload-settings.json");
+    if let Some(slots) = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()).and_then(|s| s.slots) {
+        queue::set_manual_slots(Some(slots.clamp(1, MAX_SLOTS)));
+    }
+    *SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
+}
+
+/// The most slots the user can set.
+const MAX_SLOTS: usize = 8;
+
+static SETTINGS_FILE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Saved {
+    slots: Option<usize>,
 }
 
 /// "1 min 20 s", "45 s".
@@ -57,10 +73,56 @@ pub fn workload_focus(dialog_id: Option<String>) {
     set_focus(dialog_id);
 }
 
-/// `None`: auto. A number: that many slots, as the user set it.
+/// `None`: auto. A number: that many slots, as the user set it; kept for
+/// the next start.
 #[tauri::command]
-pub fn workload_set_slots(slots: Option<usize>) {
+pub fn workload_set_slots(slots: Option<usize>) -> Result<(), String> {
+    let slots = slots.map(|n| n.clamp(1, MAX_SLOTS));
     queue::set_manual_slots(slots);
+    let file = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(file) = file {
+        let bytes = serde_json::to_vec(&Saved { slots }).map_err(|e| e.to_string())?;
+        crate::atomic_file::write_atomic(&file, &bytes).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkloadStatus {
+    /// As the user set them; None: auto.
+    pub slots: Option<usize>,
+    /// What auto gives on this machine now.
+    pub auto_slots: usize,
+    pub max_slots: usize,
+    /// Commands holding a slot, and ones waiting for one.
+    pub busy: usize,
+    pub waiting: usize,
+    pub cores: usize,
+    pub memory_gb: u64,
+}
+
+/// For Settings → Builds & checks.
+#[tauri::command]
+pub fn workload_status() -> WorkloadStatus {
+    let s = queue::slots();
+    let cores = if s.cores > 0 { s.cores } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) };
+    let memory = if s.total_memory > 0 {
+        s.total_memory
+    } else {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        sys.total_memory()
+    };
+    WorkloadStatus {
+        slots: s.manual,
+        auto_slots: s.auto,
+        max_slots: MAX_SLOTS,
+        busy: s.busy,
+        waiting: s.waiting,
+        cores,
+        memory_gb: (memory + (1 << 29)) >> 30,
+    }
 }
 
 #[cfg(test)]
