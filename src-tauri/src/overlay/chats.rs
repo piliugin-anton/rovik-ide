@@ -385,11 +385,14 @@ const MANY: usize = 200;
 /// itself is merged with the new version right away, and a conflict is
 /// reported now instead of when the chat tries to land.
 pub fn project_changed(project: &Path, abs: &[PathBuf], everything: bool) -> Vec<(String, String)> {
+    // Open overlays keep the canonical spelling (`open`): one look at the
+    // disk per event, not two per overlay.
+    let canonical = project.canonicalize().ok();
     let overlays: Vec<Arc<ChatOverlay>> = OPEN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .values()
-        .filter(|o| same_folder(&o.project, project))
+        .filter(|o| o.project == project || canonical.as_deref() == Some(o.project.as_path()))
         .cloned()
         .collect();
     if everything || abs.len() > MANY {
