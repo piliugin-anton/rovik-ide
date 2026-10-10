@@ -43,7 +43,7 @@ describe('todo checklist parsing', () => {
     ];
     assert.deepEqual(
       latestChecklist(messages)?.map((i) => i.title),
-      ['new step'],
+      ['new step']
     );
   });
 
@@ -79,7 +79,7 @@ describe('todo checklist parsing', () => {
     });
     assert.deepEqual(
       latestChecklist([msg({ id: 'u1', role: 'user' }), m])?.map((i) => i.title),
-      ['old step'],
+      ['old step']
     );
   });
 });
