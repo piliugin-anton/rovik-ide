@@ -1,4 +1,5 @@
-//! The WinFsp driver (Windows): file system requests → [`VirtualFs`].
+//! The WinFsp driver (Windows): file system requests → a [`Backend`] (the
+//! app's [`VirtualFs`](super::store::VirtualFs), or a chat's overlay).
 //!
 //! WinFsp hands over full paths (`\dir\file`) and Windows semantics: names
 //! match regardless of case, deletion is "mark on open, delete on cleanup",
@@ -22,7 +23,8 @@ use winfsp::host::{FileSystemHost, VolumeParams};
 use winfsp::{FspError, U16CStr};
 use winfsp_sys::{FILE_ACCESS_RIGHTS, FILE_FLAGS_AND_ATTRIBUTES};
 
-use super::store::{Attr, Kind, RenameMode, SetAttr, VfsError, VirtualFs, ROOT};
+use super::backend::Backend;
+use super::store::{Attr, Kind, RenameMode, SetAttr, VfsError, ROOT};
 
 const STATUS_OBJECT_NAME_NOT_FOUND: u32 = 0xC000_0034;
 const STATUS_OBJECT_PATH_NOT_FOUND: u32 = 0xC000_003A;
@@ -151,7 +153,7 @@ pub struct WinFile {
 }
 
 pub struct WinFs {
-    vfs: Arc<VirtualFs>,
+    vfs: Arc<dyn Backend>,
     security: Vec<u8>,
 }
 
@@ -507,7 +509,7 @@ impl Drop for WinFspMount {
 
 /// Mounts on `mountpoint`, a folder that must not exist yet (WinFsp creates
 /// it as a reparse point) inside one that does.
-pub fn mount(vfs: Arc<VirtualFs>, mountpoint: &Path) -> Result<WinFspMount, String> {
+pub fn mount(vfs: Arc<dyn Backend>, mountpoint: &Path) -> Result<WinFspMount, String> {
     super::driver::load_winfsp()?;
     if let Some(parent) = mountpoint.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;

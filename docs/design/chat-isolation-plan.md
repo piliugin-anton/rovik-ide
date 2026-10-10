@@ -786,3 +786,14 @@ once; they touch different files. Everything else is sequential.
     newest child process.
   - Slots can be set by the `workload_set_slots` command; there is no
     settings screen for it yet.
+- **Milestone 3, revised: the overlay is served as a real folder.** Every
+  agent tool already takes the project root as a path, and FUSE mounts
+  work (also in the container this was built in). So a chat's overlay is
+  mounted through the existing drivers at its own folder, and the chat's
+  run simply uses that folder as its root: `read`, `write`, `search_code`,
+  the repository map, commands and checks all see the chat's view
+  without each going through a `Workspace` interface. That replaces
+  T11–T14 (a trait threaded through every tool) with T35 brought forward:
+  the drivers now take any `vfs::backend::Backend`, the in-memory
+  `VirtualFs` being one. Without a driver, the chat's view is the copied
+  tree of phase 4 at the same place, so tools don't care which it is.

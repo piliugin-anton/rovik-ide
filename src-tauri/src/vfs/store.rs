@@ -134,7 +134,7 @@ pub enum Change {
     Entry { parent: Ino, name: String },
 }
 
-type Listener = Box<dyn Fn(&[Change]) + Send + Sync>;
+pub type Listener = Box<dyn Fn(&[Change]) + Send + Sync>;
 
 #[derive(Clone, Debug)]
 pub struct Options {
