@@ -19,6 +19,9 @@ mod filesystem;
 mod formatter;
 mod git;
 mod git_sync;
+/// The agent without a window, for measuring it (G00): `rovik-headless`.
+#[cfg(any(test, feature = "headless"))]
+pub mod headless;
 mod lsp;
 mod merge;
 mod open_url;

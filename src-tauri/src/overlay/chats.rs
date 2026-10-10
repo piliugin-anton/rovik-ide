@@ -1458,9 +1458,19 @@ fn file_versions(dialog_id: String, path: String) -> Result<FileVersions, String
 
 /// Throws away the chat's changes (all of them).
 /// Refused while the chat's run is going: its files would go from under it.
+/// Its subagents run inside its run (agent_run/subagent_run.rs), so they
+/// count: Stop ends them with it (S15).
 fn not_running(agent: &crate::agent_run::AgentState, dialog_id: &str) -> Result<(), String> {
     if agent.is_running(dialog_id) {
-        return Err("this chat's run is still going: stop it first".into());
+        let helpers = agent.running_children(dialog_id);
+        return Err(if helpers == 0 {
+            "this chat's run is still going: stop it first".into()
+        } else {
+            format!(
+                "this chat's run is still going, with {helpers} subagent{} at work: stop it first",
+                if helpers == 1 { "" } else { "s" }
+            )
+        });
     }
     Ok(())
 }

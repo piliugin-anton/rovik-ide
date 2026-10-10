@@ -1276,3 +1276,380 @@ async fn a_rate_limited_model_runs_one_subagent_at_a_time() {
     );
     assert!(b_at.abs_diff(a_at) >= 300, "one at a time: {a_at} {b_at}");
 }
+
+/// S15: a chat's changes can't land or be discarded while its subagents
+/// work (they run inside its run); Stop ends them with it.
+#[tokio::test]
+async fn landing_and_discarding_wait_for_running_subagents() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![("MARK-LD", vec![Reply::Hang(None)])],
+        vec![task("t1", "MARK-LD: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    h.wait_for("subagentStarted", |e| e["type"] == "subagentStarted")
+        .await;
+    let app = h.app.handle().clone();
+    let refused = crate::overlay::chats::overlay_discard(app.state(), h.dialog_id.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        "this chat's run is still going, with 1 subagent at work: stop it first"
+    );
+    let refused = crate::overlay::chats::overlay_land(app.state(), h.dialog_id.clone(), false)
+        .await
+        .err()
+        .unwrap();
+    assert!(refused.contains("1 subagent at work"));
+    // Stop: the scout ends with the run, and nothing holds the chat.
+    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    assert_eq!(h.run_end().await, "stopped");
+    assert_eq!(app.state::<AgentState>().running_children(&h.dialog_id), 0);
+    assert!(
+        crate::overlay::chats::overlay_discard(app.state(), h.dialog_id.clone())
+            .await
+            .is_ok()
+    );
+}
+
+/// S16: Stop on one subagent stops only it; the others and the lead go on.
+#[tokio::test]
+async fn stopping_one_of_three_scouts_stops_only_it() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let slow = |text: &'static str| vec![Reply::Slow(600, Box::new(Reply::Text(text)))];
+    let (url, _) = model_routed(
+        vec![
+            ("MARK-SA", slow("## Answer\nfrom A")),
+            ("MARK-SB", vec![Reply::Hang(None)]),
+            ("MARK-SC", slow("## Answer\nfrom C")),
+        ],
+        vec![
+            Reply::Calls(vec![
+                task_call("t1", "MARK-SA: where?"),
+                task_call("t2", "MARK-SB: where?"),
+                task_call("t3", "MARK-SC: where?"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    let started = h
+        .wait_for("subagentStarted t2", |e| {
+            e["type"] == "subagentStarted" && e["toolCallId"] == "t2"
+        })
+        .await;
+    let b = started["childDialogId"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let app = h.app.handle().clone();
+    assert!(agent_stop(app.clone(), app.state(), b));
+    assert_eq!(h.run_end().await, "done");
+    let status = |c: &str, m: &MessageRow| {
+        m.meta.as_ref().unwrap()["subagent"]["status"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{c}"))
+            .to_string()
+    };
+    assert_eq!(status("t1", &h.task_result("t1").await), "done");
+    assert_eq!(status("t2", &h.task_result("t2").await), "stopped");
+    assert_eq!(status("t3", &h.task_result("t3").await), "done");
+    // The lead's turn went on with all three results.
+    assert_eq!(h.messages().await.last().unwrap().content, "Done.");
+}
+
+/// S14: a `task` call left unanswered when the app closed resumes its
+/// subagent's chat, with what it had done, instead of starting over.
+#[tokio::test]
+async fn a_restart_during_a_scout_resumes_its_chat() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let db = h.app.state::<DbState>().inner().clone();
+    // As the app left it: the lead's task call, no result; the scout's
+    // chat with its brief, one read done and one call that never ran.
+    let lead = h.dialog_id.clone();
+    let mut user = crate::agent_run::run::new_message("user", "Find it");
+    user.meta = Some(json!({ "mode": "agent" }));
+    let mut call = crate::agent_run::run::new_message("assistant", "");
+    call.tool_calls = Some(vec![store::ToolCall {
+        id: "t1".into(),
+        name: "task".into(),
+        arguments: json!({ "kind": "scout", "goal": "MARK-RS: where?" }).to_string(),
+        extra_content: None,
+    }]);
+    let child = uuid::Uuid::new_v4().to_string();
+    let brief =
+        crate::agent_run::run::new_message("user", "# Task from the lead agent\n\nMARK-RS: where?");
+    let mut read = crate::agent_run::run::new_message("assistant", "");
+    read.tool_calls = Some(vec![store::ToolCall {
+        id: "s1".into(),
+        name: "read".into(),
+        arguments: json!({ "path": "a.txt" }).to_string(),
+        extra_content: None,
+    }]);
+    let mut result = crate::agent_run::run::new_message("tool", "EARLIER-READ-RESULT");
+    result.tool_call_id = Some("s1".into());
+    let mut dangling = crate::agent_run::run::new_message("assistant", "");
+    dangling.tool_calls = Some(vec![store::ToolCall {
+        id: "s2".into(),
+        name: "outline".into(),
+        arguments: json!({ "path": "a.txt" }).to_string(),
+        extra_content: None,
+    }]);
+    let child_id = child.clone();
+    db.write(move |c| {
+        store::append_messages(c, &lead, &[user, call])?;
+        store::create_child_dialog(
+            c,
+            &store::NewChildDialog {
+                id: child_id.clone(),
+                parent_id: lead.clone(),
+                parent_call_id: "t1".into(),
+                kind: "scout".into(),
+                title: "Scout".into(),
+                created_at: store::now_ms(),
+            },
+        )?;
+        store::append_messages(c, &child_id, &[brief, read, result, dangling])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let (url, seen) = model_routed(
+        vec![("MARK-RS", vec![Reply::Text(REPORT)])],
+        vec![Reply::Text("Done.")],
+    )
+    .await;
+    let mut request = h.with_subagents(&url, "unused", quiet_permissions(), scouts_on(json!({})));
+    request.start = StartKind::Resume;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+
+    let result = h.task_result("t1").await;
+    let meta = &result.meta.as_ref().unwrap()["subagent"];
+    assert_eq!(meta["status"], "done");
+    assert_eq!(
+        meta["childDialogId"],
+        child.as_str(),
+        "the same chat, resumed"
+    );
+    // It picked up with its earlier work in its history.
+    let asked = requests_with(&seen, "MARK-RS");
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].to_string().contains("EARLIER-READ-RESULT"));
+    // Its call that never ran got a result first.
+    let work = h.messages_of(&child).await;
+    assert!(work
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("s2") && m.content.contains("interrupted")));
+}
+
+/// S17: each subagent's reported tokens are kept with its result, and past
+/// the run's limit no new subagent starts.
+#[tokio::test]
+async fn past_the_spend_limit_no_new_subagent_starts() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "MARK-U1",
+                vec![Reply::Usage(600, 100, Box::new(Reply::Text(REPORT)))],
+            ),
+            ("MARK-U2", vec![Reply::Text(REPORT)]),
+        ],
+        vec![
+            task("t1", "MARK-U1: where?"),
+            task("t2", "MARK-U2: where?"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let mut config = scouts_on(json!({}));
+    config.max_run_tokens = Some(500);
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let first = h.task_result("t1").await;
+    assert_eq!(
+        first.meta.unwrap()["subagent"]["usage"],
+        json!({ "inputTokens": 600, "outputTokens": 100 })
+    );
+    let second = h.task_result("t2").await.content;
+    assert!(
+        second
+            .starts_with("Error: this run's subagents have used 700 tokens, past the limit of 500"),
+        "{second}"
+    );
+    assert!(requests_with(&seen, "MARK-U2").is_empty());
+}
+
+/// S18: the reviewer's repository map is around the change and smaller
+/// than the lead's; a scout gets the lead's.
+#[tokio::test]
+async fn a_reviewer_gets_a_smaller_map_around_the_change() {
+    let sources: Vec<(String, String)> = (0..60)
+        .map(|i| {
+            (
+                format!("src/mod{i}.ts"),
+                format!(
+                    "export function handler{i}(input: string): number {{ return input.length + {i}; }}\nexport class Service{i} {{ run(x: number): number {{ return x * {i}; }} }}\n"
+                ),
+            )
+        })
+        .collect();
+    let mut files: Vec<(&str, &str)> = sources
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    files.push((
+        "src/changed.ts",
+        "export function target(): number { return 1; }\n",
+    ));
+    let h = harness(&files).await;
+    let (url, seen) = model_routed(
+        vec![
+            (REVIEW, vec![Reply::Text(NO_FINDINGS)]),
+            ("MARK-MAP", vec![Reply::Text(REPORT)]),
+        ],
+        vec![
+            task("t1", "MARK-MAP: where?"),
+            write_call(
+                "w1",
+                "src/changed.ts",
+                "export function target(): number { return 2; }\n",
+            ),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let mut config = reviewer_on(json!({}));
+    config
+        .kinds
+        .insert("scout".into(), scouts_on(json!({})).kinds["scout"].clone());
+    let request: String = format!(
+        "Change the target, the way {} do it.",
+        (0..60)
+            .map(|i| format!("handler{i} and Service{i}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    h.start(h.with_subagents(&url, &request, checks_on(), config))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+
+    fn map_of(body: &Value) -> String {
+        let prompt = system_prompt(body);
+        let Some(at) = prompt.find("## Repository map") else {
+            return String::new();
+        };
+        let rest = &prompt[at..];
+        let end = rest[3..].find("\n## ").map_or(rest.len(), |e| e + 3);
+        rest[..end].trim_end().to_string()
+    }
+    let lead = map_of(&seen.lock().unwrap()[0]);
+    let scout = map_of(&requests_with(&seen, "MARK-MAP")[0]);
+    let reviewer = map_of(&requests_with(&seen, REVIEW)[0]);
+    assert!(!lead.is_empty() && !reviewer.is_empty());
+    assert_eq!(scout, lead, "a scout gets the lead's map");
+    assert!(
+        reviewer.len() * 10 < lead.len() * 6,
+        "reviewer {} vs lead {}",
+        reviewer.len(),
+        lead.len()
+    );
+    assert!(reviewer.contains("changed.ts"), "{reviewer}");
+}
+
+/// A04: a follow-up to a finished scout goes on in its own chat, with what
+/// it found before; an unknown or running one is refused.
+#[tokio::test]
+async fn a_follow_up_resumes_a_finished_scout_with_its_context() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, seen) = model_routed(
+        vec![(
+            "MARK-FU",
+            vec![
+                Reply::Text("## Answer\nFIRST-ANSWER: in a.txt."),
+                Reply::Text("## Answer\nSECOND-ANSWER: nobody calls it."),
+            ],
+        )],
+        vec![
+            task("t1", "MARK-FU: where is it?"),
+            Reply::Call {
+                id: "t2",
+                name: "task",
+                args: json!({ "continue": "t1", "goal": "And who calls it?" }),
+            },
+            Reply::Call {
+                id: "t3",
+                name: "task",
+                args: json!({ "continue": "scout-ffffffff", "goal": "Anyone there?" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+
+    let first = h.task_result("t1").await;
+    let child = h.child_of("t1").await;
+    let handle = format!("scout-{}", &child.id[..8]);
+    assert!(
+        first
+            .content
+            .contains(&format!("Follow-up: call task with continue: \"{handle}\"")),
+        "{}",
+        first.content
+    );
+    let second = h.task_result("t2").await;
+    assert!(second.content.ends_with("SECOND-ANSWER: nobody calls it."));
+    let meta = &second.meta.unwrap()["subagent"];
+    assert_eq!(meta["childDialogId"], child.id.as_str(), "the same chat");
+    // Its second request had the first exchange in its history.
+    let asked = requests_with(&seen, "MARK-FU");
+    assert_eq!(asked.len(), 2);
+    let history = asked[1]["messages"].to_string();
+    assert!(history.contains("FIRST-ANSWER") && history.contains("And who calls it?"));
+    assert!(h
+        .task_result("t3")
+        .await
+        .content
+        .starts_with("Error: no subagent \"scout-ffffffff\" in this chat."));
+}
+
+#[tokio::test]
+async fn a_follow_up_to_a_scout_still_working_is_refused() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-FR",
+            vec![Reply::Slow(300, Box::new(Reply::Text(REPORT)))],
+        )],
+        vec![
+            Reply::Calls(vec![
+                task_call("t1", "MARK-FR: where?"),
+                (
+                    "t2",
+                    "task",
+                    json!({ "continue": "t1", "goal": "And then?" }),
+                ),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(h.task_result("t1").await.content.contains("Status: done"));
+    assert!(h
+        .task_result("t2")
+        .await
+        .content
+        .starts_with("Error: that subagent is still working"));
+}

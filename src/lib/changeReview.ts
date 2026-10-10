@@ -50,6 +50,7 @@ export interface ReviewMeta {
   ms?: number;
   /** Out of budget: what it found so far. */
   partial?: boolean;
+  usage?: import('./subagents').SubagentUsage;
 }
 
 /** The record's first line. */
@@ -85,6 +86,10 @@ export function reviewDetails(meta: ReviewMeta): string {
   if (meta.model) {
     const failed = (meta.modelsTried?.length ?? 1) - 1;
     parts.push(failed > 0 ? `${meta.model} (after ${failed} failed)` : meta.model);
+  }
+  if (meta.usage) {
+    const t = meta.usage.inputTokens + meta.usage.outputTokens;
+    parts.push(t >= 1000 ? `${(t / 1000).toFixed(1)}k tokens` : `${t} tokens`);
   }
   if (meta.partial) parts.push('out of budget');
   return parts.join(' · ');

@@ -70,12 +70,15 @@ export interface SubagentSettings {
   maxPerRun: number;
   /** The change reviewer runs on changes of at least this many lines. */
   reviewMinLines: number;
+  /** Tokens one run's subagents may use (as reported); undefined: no limit. */
+  maxRunTokens?: number;
 }
 
 export const LIMITS = {
   atOnce: { min: 1, max: 8, default: 3 },
   perRun: { min: 1, max: 50, default: 12 },
   reviewMinLines: { min: 1, max: 10_000, default: 10 },
+  runTokens: { min: 1_000, max: 100_000_000 },
   toolCalls: { min: 1, max: 200 },
   minutes: { min: 0.25, max: 120 },
 };
@@ -166,6 +169,13 @@ export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
       clampNumber(r.reviewMinLines, LIMITS.reviewMinLines.min, LIMITS.reviewMinLines.max) ??
         LIMITS.reviewMinLines.default
     ),
+    ...(typeof r.maxRunTokens === 'number' && Number.isFinite(r.maxRunTokens)
+      ? {
+          maxRunTokens: Math.round(
+            Math.min(LIMITS.runTokens.max, Math.max(LIMITS.runTokens.min, r.maxRunTokens))
+          ),
+        }
+      : {}),
   };
 }
 
@@ -192,6 +202,7 @@ export interface SubagentConfig {
   maxAtOnce: number;
   maxPerRun: number;
   reviewMinLines: number;
+  maxRunTokens?: number;
 }
 
 const CHAT = 'chat' as const;
@@ -272,6 +283,7 @@ export function resolveSubagentConfig(
     maxAtOnce: settings.maxAtOnce,
     maxPerRun: settings.maxPerRun,
     reviewMinLines: settings.reviewMinLines,
+    ...(settings.maxRunTokens !== undefined ? { maxRunTokens: settings.maxRunTokens } : {}),
   };
 }
 

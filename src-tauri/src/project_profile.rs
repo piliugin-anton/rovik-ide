@@ -699,6 +699,15 @@ pub fn save_project_settings(
 
 /// Agent diagnostics: one JSON object per line in agent-log.jsonl in the
 /// app's data folder. Rotated to agent-log.1.jsonl at 5 MB.
+/// Where the agent log goes instead of the app's data folder (the headless
+/// runner, headless.rs, keeps it with its report).
+static AGENT_LOG_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(any(test, feature = "headless"))]
+pub fn set_agent_log_dir(dir: Option<std::path::PathBuf>) {
+    *AGENT_LOG_DIR.lock().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
 pub fn append_agent_log<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     line: String,
@@ -706,7 +715,14 @@ pub fn append_agent_log<R: tauri::Runtime>(
     use std::io::Write;
     use tauri::Manager;
     const MAX_BYTES: u64 = 5 * 1024 * 1024;
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let chosen = AGENT_LOG_DIR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let dir = match chosen {
+        Some(dir) => dir,
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    };
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("agent-log.jsonl");
     if fs::metadata(&path)

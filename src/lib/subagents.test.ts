@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { ChatMessage } from '../types';
 import {
   isSubagentChat,
+  runUsage,
+  usageLabel,
   kindLabel,
   liveSubagent,
   noteSubagentEnded,
@@ -64,4 +67,49 @@ test('the block’s words', () => {
     '## Answer\nHere.'
   );
   assert.equal(reportBody('Error: subagents are turned off.'), 'Error: subagents are turned off.');
+});
+
+test('tokens on a block, and the latest request’s total', () => {
+  assert.equal(usageLabel(null), null);
+  assert.equal(usageLabel({ inputTokens: 900, outputTokens: 50 }), '950 tokens');
+  assert.equal(
+    usageLabel({ inputTokens: 12_000, outputTokens: 300, cost: 0.0123 }),
+    '12.3k tokens · $0.01'
+  );
+  assert.equal(usageLabel({ inputTokens: 1, outputTokens: 1, cost: 0.0004 }), '2 tokens · $0.0004');
+  const msg = (role: ChatMessage['role'], meta?: ChatMessage['meta']): ChatMessage => ({
+    id: Math.random().toString(),
+    role,
+    content: role === 'user' ? 'go' : '',
+    meta,
+  });
+  const used = (inputTokens: number, outputTokens: number, cost?: number) => ({
+    kind: 'scout',
+    status: 'done' as const,
+    childDialogId: null,
+    model: null,
+    modelsTried: [],
+    toolCalls: 1,
+    ms: 1,
+    usage: { inputTokens, outputTokens, ...(cost !== undefined ? { cost } : {}) },
+  });
+  const messages = [
+    msg('user'),
+    msg('tool', { subagent: used(1000, 0) }),
+    msg('user'),
+    msg('tool', { subagent: used(100, 10, 0.5) }),
+    msg('user', { harness: 'verification' }),
+    msg('tool', { subagent: used(200, 20) }),
+    msg('assistant', {
+      review: {
+        kind: 'change',
+        status: 'clean',
+        round: 1,
+        maxRounds: 3,
+        usage: { inputTokens: 5, outputTokens: 5 },
+      },
+    }),
+  ];
+  assert.deepEqual(runUsage(messages), { inputTokens: 305, outputTokens: 35, cost: 0.5 });
+  assert.equal(runUsage([msg('user')]), null);
 });

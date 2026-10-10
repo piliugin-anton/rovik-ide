@@ -38,6 +38,8 @@ enum Reply {
     Slow(u64, Box<Reply>),
     /// 429 with a Retry-After of this many seconds.
     RateLimited(u64),
+    /// The reply, then the usage the provider reports (prompt, completion).
+    Usage(u64, u64, Box<Reply>),
 }
 
 impl Reply {
@@ -87,6 +89,12 @@ impl Reply {
             }
             Reply::Slow(_, then) => then.sse(),
             Reply::RateLimited(_) => String::new(),
+            Reply::Usage(prompt, completion, then) => {
+                let usage = chunk(json!({ "choices": [], "usage": {
+                    "prompt_tokens": prompt, "completion_tokens": completion,
+                } }));
+                then.sse().replace("data: [DONE]\n\n", &format!("{usage}data: [DONE]\n\n"))
+            }
         }
     }
 
@@ -98,6 +106,10 @@ impl Reply {
                 body.len()
             ),
             Reply::Slow(_, then) => then.response(),
+            Reply::Usage(..) => format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
+                self.sse()
+            ),
             Reply::RateLimited(secs) => {
                 let body = r#"{"error":{"message":"rate limited"}}"#;
                 format!(
@@ -244,6 +256,10 @@ mod subagent_tests;
 #[cfg(test)]
 #[path = "repair_e2e_tests.rs"]
 mod repair_tests;
+
+#[cfg(test)]
+#[path = "headless_e2e_tests.rs"]
+mod headless_tests;
 
 /*
  * The app

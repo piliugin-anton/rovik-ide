@@ -43,6 +43,7 @@ import {
   reportBody,
   statusLabel,
   transcript,
+  usageLabel,
   workLabel,
 } from '../lib/subagents';
 import { stopRun } from '../lib/agentRuns';
@@ -638,7 +639,7 @@ function TaskBlock(props: ToolCallBlockProps) {
         d.modelsTried.length > 1
           ? `${d.model} (after ${d.modelsTried.length - 1} failed)`
           : d.model;
-      return [statusLabel(d.status), workLabel(d.toolCalls, d.ms), model]
+      return [statusLabel(d.status), workLabel(d.toolCalls, d.ms), usageLabel(d.usage), model]
         .filter(Boolean)
         .join(' · ');
     }
@@ -682,7 +683,10 @@ function TaskBlock(props: ToolCallBlockProps) {
       >
         <ChevronIcon />
         <span class="subagent-kind">{kindLabel(kind())}</span>
-        <span class="tool-call-title">{shortGoal(str(args().goal) ?? live()?.goal)}</span>
+        <span class="tool-call-title">
+          {str(args().continue) ? 'Follow-up: ' : ''}
+          {shortGoal(str(args().goal) ?? live()?.goal)}
+        </span>
         <Show when={meta()}>
           <span class="tool-call-meta">{meta()}</span>
         </Show>

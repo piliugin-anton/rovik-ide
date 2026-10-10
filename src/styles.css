@@ -7820,3 +7820,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .review-dropped summary {
   cursor: pointer;
 }
+
+.subagent-run-usage {
+  padding: 0 12px 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}

@@ -24,7 +24,9 @@
 use super::events::{emit, AgentEvent};
 use super::guard::FinishedCall;
 use super::run::{new_message, unanswered_tool_calls, Role, Run, IDE_NOTE};
-use super::subagent::{self, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig};
+use super::subagent::{
+    self, Brief, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig,
+};
 use super::{failure, log, permissions, tools, ModelProfile};
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewChildDialog, ToolCall};
@@ -70,6 +72,7 @@ pub(super) struct SubCtx {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub usage_seen: bool,
+    pub cost: Option<f64>,
 }
 
 impl SubCtx {
@@ -98,6 +101,10 @@ impl SubCtx {
         if let Some(o) = n(&["completion_tokens", "output_tokens"]) {
             self.tokens_out += o;
             self.usage_seen = true;
+        }
+        // OpenRouter and some others say what the request cost.
+        if let Some(c) = u.get("cost").and_then(|c| c.as_f64()) {
+            *self.cost.get_or_insert(0.0) += c;
         }
     }
 
@@ -256,6 +263,16 @@ impl<R: Runtime> Run<R> {
             );
         }
         let args = permissions::parse_args(&tc.arguments);
+        if let Some(handle) = args
+            .get("continue")
+            .and_then(|c| c.as_str())
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
+            return self
+                .start_follow_up(tc, config, &kinds, handle, &args)
+                .await;
+        }
         let brief = subagent::parse_brief(&args, &kinds)?;
         let kind = brief.kind;
 
@@ -271,6 +288,9 @@ impl<R: Runtime> Run<R> {
         let child_id = match &existing {
             Some(child) => child.id.clone(),
             None => {
+                if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
+                    return Err(why);
+                }
                 self.ledger.admit(&brief, config.max_per_run())?;
                 uuid::Uuid::new_v4().to_string()
             }
@@ -288,6 +308,79 @@ impl<R: Runtime> Run<R> {
         self.launch_child(child_id, &tc.id, &brief.goal, sub)
     }
 
+    /// A04: a follow-up question to a finished subagent, in its own chat
+    /// and context. Refused for one that's unknown here, still working, or
+    /// of a kind that's off.
+    async fn start_follow_up(
+        &mut self,
+        tc: &ToolCall,
+        config: &SubagentConfig,
+        kinds: &[Kind],
+        handle: &str,
+        args: &serde_json::Map<String, Value>,
+    ) -> Result<Run<R>, String> {
+        let goal = args
+            .get("goal")
+            .and_then(|g| g.as_str())
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .ok_or("Error: \"goal\" is required: the follow-up question.")?
+            .to_string();
+        let (parent, key) = (self.dialog_id.clone(), handle.to_string());
+        let Some(child) = self
+            .db
+            .read(move |c| store::child_by_handle(c, &parent, &key))
+            .await?
+        else {
+            return Err(format!(
+                "Error: no subagent \"{handle}\" in this chat. Use the handle from its report."
+            ));
+        };
+        let kind = Kind::parse(&child.kind)
+            .filter(|k| kinds.contains(k))
+            .ok_or_else(|| {
+                format!(
+                    "Error: {} subagents are turned off in the settings.",
+                    child.kind
+                )
+            })?;
+        if self.state.is_running(&child.id) {
+            return Err(
+                "Error: that subagent is still working: wait for its report before asking it more."
+                    .into(),
+            );
+        }
+        if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
+            return Err(why);
+        }
+        let brief = Brief {
+            kind,
+            goal: format!("follow-up to {handle}: {goal}"),
+            context: None,
+            paths: Vec::new(),
+            max_tool_calls: None,
+        };
+        self.ledger.admit(&brief, config.max_per_run())?;
+        let sub = self
+            .new_sub(kind, &tc.id, config.budget(kind), config)
+            .await?;
+        self.close_child_calls(&child.id).await?;
+        let mut message = new_message(
+            "user",
+            &format!(
+                "# Follow-up from the lead agent\n\n{goal}\n\nAnswer it in the same report format."
+            ),
+        );
+        message.meta = Some(json!({
+            "subagentBrief": { "kind": kind.id(), "parentCallId": tc.id, "followUp": true }
+        }));
+        let id = child.id.clone();
+        self.db
+            .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
+            .await?;
+        self.launch_child(child.id, &tc.id, &goal, sub)
+    }
+
     /// A subagent's context, before it has a run. Err: none of its models
     /// can be used (they kept failing in this run, S12).
     async fn new_sub(
@@ -297,6 +390,9 @@ impl<R: Runtime> Run<R> {
         budget: Budget,
         config: &SubagentConfig,
     ) -> Result<SubCtx, String> {
+        if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
+            return Err(why);
+        }
         let all = config.models(kind, &self.profile);
         let models: Vec<ModelProfile> = all
             .iter()
@@ -332,6 +428,7 @@ impl<R: Runtime> Run<R> {
             tokens_in: 0,
             tokens_out: 0,
             usage_seen: false,
+            cost: None,
         };
         #[cfg(test)]
         if let Some(k) = config.kinds.get(kind.id()) {
@@ -360,6 +457,7 @@ impl<R: Runtime> Run<R> {
             return Err("Error: that subagent is already running.".into());
         };
         sub.run_id = controls.run_id.clone();
+        let map = self.kind_map(sub.kind);
         emit(
             &self.app,
             AgentEvent::SubagentStarted {
@@ -371,7 +469,34 @@ impl<R: Runtime> Run<R> {
                 goal: goal.to_string(),
             },
         );
-        Ok(Run::prepare_child(self, child_id, sub, controls))
+        let mut child = Run::prepare_child(self, child_id, sub, controls);
+        if let Some((map, chars)) = map {
+            child.repo_map = map;
+            child.repo_map_chars = chars;
+            child.rebuild_project_context();
+        }
+        Ok(child)
+    }
+
+    /// S18: a kind's own repository map, when it isn't the lead's: around
+    /// the files this run changed, smaller. None: the lead's map.
+    fn kind_map(&self, kind: Kind) -> Option<(Option<String>, usize)> {
+        let subagent::MapScope::Changed { fraction_percent } = kind.map_scope() else {
+            return None;
+        };
+        let root = self.root.clone()?;
+        let chars = (self.repo_map_chars * fraction_percent / 100).max(500);
+        let touched: Vec<String> = self.touched_keys().into_iter().collect();
+        let root_path = std::path::Path::new(&root);
+        let focus = crate::repo_map::focus_from(root_path, "", &touched);
+        let options = crate::repo_map::Options {
+            max_chars: chars,
+            ..Default::default()
+        };
+        Some((
+            crate::repo_map::repo_map(root_path, &focus, &options),
+            chars,
+        ))
     }
 
     /// A subagent the IDE starts itself (a reviewer), for `call_id` (the
@@ -520,6 +645,11 @@ impl<R: Runtime> Run<R> {
             files_read,
             writes,
             failed_models: sub.failures.clone(),
+            usage: sub.usage_seen.then_some(subagent::Usage {
+                input_tokens: sub.tokens_in,
+                output_tokens: sub.tokens_out,
+                cost: sub.cost,
+            }),
             answered_by: (!matches!(status, SubStatus::Failed | SubStatus::Stopped))
                 .then(|| self.profile.id.clone()),
         };
@@ -977,6 +1107,7 @@ mod tests {
             tokens_in: 0,
             tokens_out: 0,
             usage_seen: false,
+            cost: None,
         }
     }
 
@@ -997,6 +1128,7 @@ mod tests {
             writes: vec![],
             failed_models: vec![],
             answered_by: None,
+            usage: None,
         };
         let line = subagent_log_line(&sub, "k", "m", &result);
         assert_eq!(line["event"], "subagent");

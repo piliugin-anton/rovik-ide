@@ -21,6 +21,14 @@ export interface SubagentMeta {
   toolCalls: number;
   ms: number;
   error?: string | null;
+  /** Tokens its providers reported, and the cost when they said (S17). */
+  usage?: SubagentUsage | null;
+}
+
+export interface SubagentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cost?: number;
 }
 
 /** A subagent while it runs, from the backend's events. */
@@ -201,6 +209,46 @@ export function workLabel(toolCalls: number, ms?: number): string {
   const s = Math.round(ms / 1000);
   const time = s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
   return `${calls} · ${time}`;
+}
+
+/** "12.3k tokens · $0.012" */
+export function usageLabel(u: SubagentUsage | null | undefined): string | null {
+  if (!u) return null;
+  const tokens = u.inputTokens + u.outputTokens;
+  const short =
+    tokens >= 1_000_000
+      ? `${(tokens / 1_000_000).toFixed(1)}M`
+      : tokens >= 1_000
+        ? `${(tokens / 1_000).toFixed(1)}k`
+        : String(tokens);
+  const cost =
+    u.cost !== undefined ? ` · $${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}` : '';
+  return `${short} tokens${cost}`;
+}
+
+/**
+ * What the subagents of the chat's latest request used (its `task` results
+ * and reviews), when their providers reported it; null for none.
+ */
+export function runUsage(messages: ChatMessage[]): SubagentUsage | null {
+  let from = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'user' && !m.meta?.harness && !m.failed) {
+      from = i;
+      break;
+    }
+  }
+  let total: SubagentUsage | null = null;
+  for (const m of messages.slice(from)) {
+    const u = m.meta?.subagent?.usage ?? m.meta?.review?.usage;
+    if (!u) continue;
+    total ??= { inputTokens: 0, outputTokens: 0 };
+    total.inputTokens += u.inputTokens;
+    total.outputTokens += u.outputTokens;
+    if (u.cost !== undefined) total.cost = (total.cost ?? 0) + u.cost;
+  }
+  return total;
 }
 
 /** The report, without the framing line the lead reads (subagent.rs `for_lead`). */

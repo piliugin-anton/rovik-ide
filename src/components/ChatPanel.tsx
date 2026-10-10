@@ -111,6 +111,7 @@ import {
 } from '../lib/composerDraft';
 import { toRelativePath } from '../lib/fileTools';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
+import { runUsage, usageLabel } from '../lib/subagents';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
   resolveSubagentConfig,
@@ -3038,6 +3039,14 @@ export default function ChatPanel(props: ChatProps) {
       {/* The agent's questions, one at a time, above the input. */}
       <Show when={waitingQuestion()} keyed>
         {(pending) => <QuestionPanel pending={pending} />}
+      </Show>
+      {/* What this request's subagents used, as their providers reported it. */}
+      <Show when={usageLabel(runUsage(messages()))}>
+        {(label) => (
+          <div class="subagent-run-usage" title="Tokens used by subagents for the latest request">
+            Subagents: {label()}
+          </div>
+        )}
       </Show>
       {/* In CLM mode the context row shows the size of the agent's own context. */}
       <Show when={contextModeFor(activeDialogId()) !== 'clm' && contextUsage()}>

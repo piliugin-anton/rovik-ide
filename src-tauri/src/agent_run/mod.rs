@@ -307,6 +307,15 @@ impl AgentState {
         }
     }
 
+    /// How many subagents are running for the chat.
+    pub fn running_children(&self, dialog_id: &str) -> usize {
+        self.lock()
+            .runs
+            .values()
+            .filter(|r| r.parent.as_deref() == Some(dialog_id))
+            .count()
+    }
+
     /// Whether the chat has a run going (a lead's subagents count as its own).
     pub fn is_running(&self, dialog_id: &str) -> bool {
         let inner = self.lock();

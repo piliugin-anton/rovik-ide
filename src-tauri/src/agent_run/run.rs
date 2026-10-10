@@ -1830,7 +1830,7 @@ impl<R: Runtime> Run<R> {
     }
 
     /// Recombines the fixed project section with the current map.
-    fn rebuild_project_context(&mut self) {
+    pub(super) fn rebuild_project_context(&mut self) {
         self.project_context = join_project_context(&self.base_project_context, &self.repo_map);
     }
 

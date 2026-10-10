@@ -212,6 +212,22 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
               }
             />
           </div>
+          <div class="subagent-limits">
+            <NumberInput
+              label="Tokens per run (empty: no limit)"
+              value={s().maxRunTokens}
+              placeholder={0}
+              min={LIMITS.runTokens.min}
+              max={LIMITS.runTokens.max}
+              step={1000}
+              disabled={off()}
+              onChange={(v) => patch({ maxRunTokens: v === undefined ? undefined : Math.round(v) })}
+            />
+          </div>
+          <p class="settings-hint">
+            Past it, no new subagent starts in that run and the agent goes on alone. It counts what
+            providers report: subagents on a provider that reports no usage aren’t limited.
+          </p>
           <For each={SUBAGENT_KINDS}>
             {(kind) => (
               <div class="subagent-limits">

@@ -630,6 +630,9 @@ impl<R: Runtime> Run<R> {
                 review["model"] = json!(r.model);
                 review["modelsTried"] = json!(r.models_tried);
                 review["toolCalls"] = json!(r.tool_calls);
+                if let Some(usage) = r.usage {
+                    review["usage"] = json!(usage);
+                }
                 match r.status {
                     SubStatus::Stopped => review["status"] = json!("stopped"),
                     SubStatus::Failed => skipped(

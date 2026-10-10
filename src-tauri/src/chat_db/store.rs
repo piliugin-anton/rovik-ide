@@ -346,6 +346,34 @@ pub fn child_for_call(
     .map_err(err)
 }
 
+/// A chat's subagent by the handle its report gave the lead
+/// ("scout-3f2a9c1d": the kind and the start of its id), or by the `task`
+/// call that started it.
+pub fn child_by_handle(
+    conn: &Connection,
+    parent_id: &str,
+    handle: &str,
+) -> DbResult<Option<ChildDialog>> {
+    let handle = handle.trim();
+    let prefix = handle
+        .split_once('-')
+        .map(|(_, rest)| rest)
+        .filter(|rest| rest.len() >= 6 && rest.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|rest| format!("{rest}%"))
+        .unwrap_or_else(|| "\u{0}".to_string());
+    conn.query_row(
+        &format!(
+            "SELECT {CHILD_COLUMNS} FROM dialogs WHERE parent_id = ?1
+               AND (parent_call_id = ?2 OR id LIKE ?3)
+             ORDER BY created_at DESC, id DESC LIMIT 1"
+        ),
+        params![parent_id, handle, prefix],
+        child_from_row,
+    )
+    .optional()
+    .map_err(err)
+}
+
 pub fn rename_dialog(conn: &mut Connection, id: &str, title: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     tx.execute(

@@ -460,6 +460,12 @@ fn child(conn: &mut Connection, id: &str, parent: &str, call: &str) {
     .unwrap();
 }
 
+fn create_found_child(conn: &mut Connection) -> String {
+    let id = "3f2a9c1d-0000-4000-8000-000000000000".to_string();
+    child(conn, &id, "p", "call-9");
+    id
+}
+
 #[test]
 fn subagent_chats_stay_out_of_lists_and_search() {
     let mut conn = db();
@@ -487,6 +493,19 @@ fn subagent_chats_stay_out_of_lists_and_search() {
     assert_eq!(found.kind, "scout");
     assert_eq!(found.parent_id, "p");
     assert_eq!(child_for_call(&conn, "p", "call-2").unwrap(), None);
+    // Found by the handle a report gives ("kind-" and the id's start) or the call.
+    let id = create_found_child(&mut conn);
+    let handle = format!("scout-{}", &id[..8]);
+    assert_eq!(
+        child_by_handle(&conn, "p", &handle).unwrap().unwrap().id,
+        id
+    );
+    assert_eq!(
+        child_by_handle(&conn, "p", "call-1").unwrap().unwrap().id,
+        "k"
+    );
+    assert_eq!(child_by_handle(&conn, "p", "scout-zzzzzzzz").unwrap(), None);
+    assert_eq!(child_by_handle(&conn, "other", &handle).unwrap(), None);
     assert!(
         create_child_dialog(
             &mut conn,
