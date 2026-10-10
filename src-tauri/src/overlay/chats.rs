@@ -1202,9 +1202,14 @@ async fn land_command(dialog_id: String, keep_chat: bool) -> LandResult {
 }
 
 /// Undoes a landing. Returns the files left as they are because they
-/// changed since.
+/// changed since. Refused while the chat's run is going, like landing.
 #[tauri::command]
-pub async fn overlay_undo(dialog_id: String, id: String) -> Result<Vec<super::land::Conflict>, String> {
+pub async fn overlay_undo(
+    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    dialog_id: String,
+    id: String,
+) -> Result<Vec<super::land::Conflict>, String> {
+    not_running(&agent, &dialog_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         if !valid_id(&dialog_id) {
             return Err("bad chat id".to_string());
