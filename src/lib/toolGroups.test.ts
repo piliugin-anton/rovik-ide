@@ -36,8 +36,14 @@ describe('groupToolCalls', () => {
       call('write', { path: 'b.ts', content: '' }),
     ]);
     assert.deepEqual(
-      runs.map((r) => r.calls.length),
-      [1, 1, 1, 1, 1]
+      runs.map((r) => [r.calls.length, !!r.alone]),
+      [
+        [1, true],
+        [1, true],
+        [1, false],
+        [1, true],
+        [1, false],
+      ]
     );
   });
 });

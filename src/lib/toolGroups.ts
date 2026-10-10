@@ -1,8 +1,9 @@
 // toolGroups.ts
 //
-// Consecutive calls to the same tool fold into one line in the chat
-// ("Read App.tsx, main.tsx", "Ran npm, git"), opened like the model's
-// thinking. Only the tool's name decides; the arguments only name the line.
+// Tool calls show in the chat as one line each ("Read App.tsx", "Ran npm"),
+// opened like the model's thinking, and consecutive calls to the same tool
+// fold into one ("Read App.tsx, main.tsx"). Only the tool's name decides;
+// the arguments only name the line.
 import type { ChatToolCall } from '../types';
 import { isLiveContextPath } from './contextDoc';
 import { parseArgsLenient, type Args } from './toolArgs';
@@ -11,6 +12,8 @@ import { parseArgsLenient, type Args } from './toolArgs';
 export interface ToolRun {
   name: string;
   calls: ChatToolCall[];
+  /** A call that keeps its own block (see standsAlone), never a line. */
+  alone?: boolean;
 }
 
 /**
@@ -31,9 +34,10 @@ export function groupToolCalls(calls: readonly ChatToolCall[]): ToolRun[] {
       open.calls.push(call);
       continue;
     }
-    open = { name: call.name, calls: [call] };
+    const alone = standsAlone(call);
+    open = alone ? { name: call.name, calls: [call], alone } : { name: call.name, calls: [call] };
     runs.push(open);
-    if (standsAlone(call)) open = null;
+    if (alone) open = null;
   }
   return runs;
 }
