@@ -11,7 +11,8 @@
 //     resends all of it to the worker, so a dev server rewriting dozens of
 //     files froze the app when each was its own update;
 //   - compiler options follow the project's tsconfig/jsconfig (baseUrl,
-//     paths, jsx), and JavaScript is understood too (allowJs);
+//     paths, jsx), with extends and references followed (lib/tsconfig.ts),
+//     and JavaScript is understood too (allowJs);
 //   - go-to-definition into another file opens it in a tab at that line
 //     (Monaco can't open other files by itself: registerEditorOpener).
 //
@@ -25,7 +26,8 @@
 import * as monaco from 'monaco-editor';
 import { invoke } from '@tauri-apps/api/core';
 import type { MonacoLibEntry } from '../types';
-import { readFileContent } from './commands';
+import { readDirEntries, readFileContent } from './commands';
+import { resolveTsOptions, type ResolvedTsOptions } from './tsconfig';
 import { requestOpenFile } from './editorBridge';
 
 const ts = monaco.typescript.typescriptDefaults;
@@ -524,7 +526,7 @@ export function restoreProjectSourceLibs(models: monaco.editor.ITextModel[]): vo
 }
 
 /* ---------------------------------------------------------------------------
- * tsconfig.json / jsconfig.json
+ * Compiler options from tsconfig.json / jsconfig.json
  * ------------------------------------------------------------------------- */
 
 const JSX: Record<string, monaco.typescript.JsxEmit> = {
@@ -564,78 +566,41 @@ function sanitizeCompilerOptions(
   return clean;
 }
 
-/** The options the project's config sets that matter for navigation. */
+/**
+ * The options the project's configs set that matter for navigation —
+ * tsconfig.json with its `extends` and `references` followed, so a solution
+ * config pointing at tsconfig.app.json / tsconfig.node.json works (see
+ * lib/tsconfig.ts).
+ */
 async function projectCompilerOptions(root: string): Promise<monaco.typescript.CompilerOptions> {
   const options = { ...BASE_OPTIONS };
-  const config = await readConfig(root);
-  const co = (config?.compilerOptions ?? {}) as Record<string, unknown>;
-  const join = (rel: string) => {
-    const clean = rel.replace(/^\.\/?/, '').replace(/[\\/]+$/, '');
-    return clean ? `${root.replace(/[\\/]+$/, '')}/${clean}` : root;
-  };
-  if (typeof co.baseUrl === 'string') {
-    options.baseUrl = modelUriFor(join(co.baseUrl)).toString();
-  }
-  if (co.paths && typeof co.paths === 'object') {
-    // tsconfig is untrusted JSON: only string-array entries may cross to
-    // the worker (anything else risks a DataCloneError for the whole send).
+  const resolved = await resolveTsOptions(root, readFileContent, async (dir) =>
+    (await readDirEntries(root, dir)).filter((e) => !e.is_dir).map((e) => e.name)
+  ).catch(() => ({}) as ResolvedTsOptions);
+  if (resolved.baseUrl) options.baseUrl = modelUriFor(resolved.baseUrl).toString();
+  if (resolved.paths && Object.keys(resolved.paths).length > 0) {
+    // Substitutions are absolute, so mappings from configs in different
+    // folders (tsconfig.app.json in the root, packages/x/tsconfig.json...)
+    // all hold under the one baseUrl the worker gets.
     const paths: Record<string, string[]> = {};
-    for (const [k, v] of Object.entries(co.paths as Record<string, unknown>)) {
-      if (Array.isArray(v)) {
-        const strs = v.filter((e): e is string => typeof e === 'string');
-        if (strs.length > 0) paths[k] = strs;
-      }
-    }
-    if (Object.keys(paths).length > 0) {
-      options.paths = paths;
-      // Since TS 4.1, paths resolve from the config's folder without a baseUrl.
-      options.baseUrl ??= modelUriFor(root).toString();
-    }
+    for (const [key, subs] of Object.entries(resolved.paths)) paths[key] = subs.map(pathUriFor);
+    options.paths = paths;
   }
-  if (typeof co.jsx === 'string' && JSX[co.jsx.toLowerCase()] !== undefined) {
-    options.jsx = JSX[co.jsx.toLowerCase()];
-  }
-  if (typeof co.jsxImportSource === 'string') options.jsxImportSource = co.jsxImportSource;
+  if (resolved.jsx && JSX[resolved.jsx] !== undefined) options.jsx = JSX[resolved.jsx];
+  if (resolved.jsxImportSource) options.jsxImportSource = resolved.jsxImportSource;
   return options;
 }
 
-async function readConfig(root: string): Promise<Record<string, unknown> | null> {
-  for (const name of ['tsconfig.json', 'jsconfig.json']) {
-    try {
-      const text = await readFileContent(`${root.replace(/[\\/]+$/, '')}/${name}`);
-      return JSON.parse(jsonc(text));
-    } catch {
-      // missing or unreadable: try the next
-    }
-  }
-  return null;
-}
-
-/** tsconfig files allow comments and trailing commas; JSON.parse doesn't. */
-export function jsonc(text: string): string {
-  let out = '';
-  let inString = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      out += ch;
-      if (ch === '\\') out += text[++i] ?? '';
-      else if (ch === '"') inString = false;
-    } else if (ch === '"') {
-      inString = true;
-      out += ch;
-    } else if (ch === '/' && text[i + 1] === '/') {
-      while (i < text.length && text[i] !== '\n') i++;
-      out += '\n';
-    } else if (ch === '/' && text[i + 1] === '*') {
-      i += 2;
-      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
-      i++;
-    } else {
-      out += ch;
-    }
-  }
-  return out.replace(/,(\s*[}\]])/g, '$1');
+/**
+ * A `paths` substitution as a file URI the worker matches against module
+ * URIs. The folder part goes through modelUriFor (encoded like models); the
+ * part from the `*` on stays raw, as libUriFor explains.
+ */
+function pathUriFor(path: string): string {
+  const star = path.indexOf('*');
+  if (star < 0) return modelUriFor(path).toString();
+  const slash = path.lastIndexOf('/', star);
+  return modelUriFor(path.slice(0, Math.max(slash, 0))).toString() + path.slice(Math.max(slash, 0));
 }
 
 /* ---------------------------------------------------------------------------

@@ -120,6 +120,140 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
  * JavaScript / TypeScript
  * ------------------------------------------------------------------------- */
 
+/// The `tsc` run that type-checks the project, and the config it came from.
+///
+/// tsconfig.json isn't always the config that holds the code: a "solution"
+/// tsconfig.json (`"files": []` + `references`, as Vite's templates write)
+/// covers nothing itself, so `tsc --noEmit` on it checks nothing and passes.
+/// Each referenced config is checked instead (`tsc -b` would emit their
+/// outputs). With no tsconfig.json at all, the root's tsconfig.*.json are.
+fn typecheck_command(root: &Path, exec: &dyn Fn(&str) -> String) -> Option<(String, String)> {
+    let check = |configs: &[String]| {
+        configs
+            .iter()
+            .map(|c| exec(&format!("tsc --noEmit -p {c}")))
+            .collect::<Vec<_>>()
+            .join(" && ")
+    };
+    if root.join("tsconfig.json").is_file() {
+        let config = read_jsonc(&root.join("tsconfig.json")).unwrap_or_default();
+        let refs = tsconfig_references(root, &config);
+        if refs.is_empty() {
+            return Some((exec("tsc --noEmit"), "tsconfig.json".into()));
+        }
+        let mut configs = refs;
+        if !is_solution_config(&config) {
+            configs.insert(0, "tsconfig.json".into());
+        }
+        return Some((check(&configs), "tsconfig.json references".into()));
+    }
+    let mut configs: Vec<String> = fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with("tsconfig.") && n.ends_with(".json") && n.len() > 14)
+        .collect();
+    if configs.is_empty() {
+        return None;
+    }
+    configs.sort();
+    let source = configs.join(", ");
+    Some((check(&configs), source))
+}
+
+/// Root-relative, forward-slash paths of the configs tsconfig.json
+/// references that exist; a reference may name a folder (its tsconfig.json).
+fn tsconfig_references(root: &Path, config: &serde_json::Value) -> Vec<String> {
+    let Some(refs) = config.get("references").and_then(|r| r.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for path in refs.iter().filter_map(|r| r.get("path")?.as_str()) {
+        let rel = path.replace('\\', "/");
+        let rel = rel.trim_start_matches("./").trim_end_matches('/');
+        let file = if root.join(rel).is_dir() {
+            format!("{rel}/tsconfig.json")
+        } else {
+            rel.to_string()
+        };
+        // A path with spaces or quotes would need shell quoting; skip it
+        // rather than build a command that breaks.
+        let safe = !file.is_empty()
+            && file
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-/@+".contains(c));
+        if safe && root.join(&file).is_file() && !out.contains(&file) {
+            out.push(file);
+        }
+    }
+    out
+}
+
+/// `"files": []` with no include (or `"include": []` with no files): the
+/// config only groups its references.
+fn is_solution_config(config: &serde_json::Value) -> bool {
+    let empty = |key: &str| {
+        config
+            .get(key)
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| a.is_empty())
+    };
+    let absent_or_empty = |key: &str| config.get(key).is_none() || empty(key);
+    (empty("files") && absent_or_empty("include")) || (empty("include") && absent_or_empty("files"))
+}
+
+/// tsconfig files allow comments and trailing commas; serde_json doesn't.
+fn read_jsonc(path: &Path) -> Option<serde_json::Value> {
+    serde_json::from_str(&strip_jsonc(&fs::read_to_string(path).ok()?)).ok()
+}
+
+fn strip_jsonc(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
+            out.push(c);
+        } else if c == '/' && chars.peek() == Some(&'/') {
+            for n in chars.by_ref() {
+                if n == '\n' {
+                    out.push('\n');
+                    break;
+                }
+            }
+        } else if c == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut prev = ' ';
+            for n in chars.by_ref() {
+                if prev == '*' && n == '/' {
+                    break;
+                }
+                prev = n;
+            }
+        } else if c == ',' {
+            // Trailing comma: the next non-space char closes the container.
+            let next = chars.clone().find(|n| !n.is_whitespace());
+            if !matches!(next, Some('}') | Some(']')) {
+                out.push(c);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn detect_node(root: &Path, profile: &mut ProjectProfile) {
     let Some(pkg) = read_json(&root.join("package.json")) else {
         return;
@@ -150,7 +284,8 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
             .iter()
             .any(|section| pkg.get(section).and_then(|d| d.get(name)).is_some())
     };
-    let typescript = root.join("tsconfig.json").exists() || has_dep("typescript");
+    let ts_check = typecheck_command(root, &exec);
+    let typescript = ts_check.is_some() || has_dep("typescript");
     push_stack(
         profile,
         if typescript {
@@ -195,13 +330,11 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
             run(&name),
             format!("package.json scripts.{name}"),
         ),
-        None if root.join("tsconfig.json").exists() => push_check(
-            profile,
-            "typecheck",
-            exec("tsc --noEmit"),
-            "tsconfig.json".into(),
-        ),
-        None => {}
+        None => {
+            if let Some((command, source)) = ts_check {
+                push_check(profile, "typecheck", command, source);
+            }
+        }
     }
     if let Some(name) = script(&["lint"]) {
         push_check(
@@ -616,6 +749,66 @@ mod tests {
             .iter()
             .map(|c| format!("{}: {}", c.kind, c.command))
             .collect()
+    }
+
+    #[test]
+    fn solution_tsconfig_checks_each_reference() {
+        let dir = project(&[
+            ("package.json", r#"{"devDependencies":{"typescript":"5"}}"#),
+            (
+                "tsconfig.json",
+                "{\n  // solution\n  \"files\": [],\n  \"references\": [\n    { \"path\": \"./tsconfig.app.json\" },\n    { \"path\": \"./tsconfig.node.json\" },\n    { \"path\": \"./missing.json\" },\n    { \"path\": \"packages/lib\" },\n  ],\n}",
+            ),
+            ("tsconfig.app.json", r#"{"include":["src"]}"#),
+            ("tsconfig.node.json", r#"{"include":["vite.config.ts"]}"#),
+            ("packages/lib/tsconfig.json", "{}"),
+        ]);
+        let p = detect(&dir);
+        assert_eq!(p.stack, ["TypeScript"]);
+        assert_eq!(
+            commands(&p),
+            ["typecheck: npx tsc --noEmit -p tsconfig.app.json && npx tsc --noEmit -p tsconfig.node.json && npx tsc --noEmit -p packages/lib/tsconfig.json"]
+        );
+        assert_eq!(p.checks[0].source, "tsconfig.json references");
+    }
+
+    #[test]
+    fn tsconfig_with_own_files_and_references_checks_both() {
+        let dir = project(&[
+            ("package.json", "{}"),
+            (
+                "tsconfig.json",
+                r#"{"include":["src"],"references":[{"path":"./tsconfig.node.json"}]}"#,
+            ),
+            ("tsconfig.node.json", "{}"),
+        ]);
+        assert_eq!(
+            commands(&detect(&dir)),
+            ["typecheck: npx tsc --noEmit -p tsconfig.json && npx tsc --noEmit -p tsconfig.node.json"]
+        );
+    }
+
+    #[test]
+    fn only_tsconfig_variants_without_tsconfig_json() {
+        let dir = project(&[
+            ("package.json", "{}"),
+            ("tsconfig.node.json", "{}"),
+            ("tsconfig.app.json", "{}"),
+        ]);
+        let p = detect(&dir);
+        assert_eq!(p.stack, ["TypeScript"]);
+        assert_eq!(
+            commands(&p),
+            ["typecheck: npx tsc --noEmit -p tsconfig.app.json && npx tsc --noEmit -p tsconfig.node.json"]
+        );
+    }
+
+    #[test]
+    fn jsonc_comments_and_trailing_commas() {
+        let v: serde_json::Value =
+            serde_json::from_str(&strip_jsonc("{ \"a\": \"//x,}\", /* c */ \"b\": [1, ], }"))
+                .unwrap();
+        assert_eq!(v, serde_json::json!({"a": "//x,}", "b": [1]}));
     }
 
     #[test]
