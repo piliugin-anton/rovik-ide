@@ -1,25 +1,26 @@
 // toolGroups.ts
 //
-// Tool calls show in the chat as one line each ("Read App.tsx", "Ran npm"),
-// opened like the model's thinking, and consecutive calls to the same tool
-// fold into one ("Read App.tsx, main.tsx"). Only the tool's name decides;
-// the arguments only name the line.
+// Every tool call shows in the chat as one line ("Read App.tsx", "Ran npm",
+// "Updated the checklist"), opened like the model's thinking, and
+// consecutive calls to the same tool fold into one ("Read App.tsx,
+// main.tsx"). Only the tool's name decides; the arguments only name the line.
 import type { ChatToolCall } from '../types';
 import { isLiveContextPath } from './contextDoc';
 import { parseArgsLenient, type Args } from './toolArgs';
+import { parseTodo, progressLabel } from './todo';
 
 /** Consecutive calls to one tool; a single call is a run of one. */
 export interface ToolRun {
   name: string;
   calls: ChatToolCall[];
-  /** A call that keeps its own block (see standsAlone), never a line. */
+  /** A call that never folds with the calls around it (see standsAlone). */
   alone?: boolean;
 }
 
 /**
- * Calls that keep their own block: the agent's questions and checklist
- * have cards of their own, the plan is read as it is, and a change to the
- * agent's context file says "its context", not a file name.
+ * Calls that keep a line of their own: each question, checklist update and
+ * plan is its own event, and a change to the agent's context file says
+ * "its context", not a file name.
  */
 function standsAlone(call: ChatToolCall): boolean {
   if (['ask_user', 'todo', 'submit_plan'].includes(call.name)) return true;
@@ -141,6 +142,12 @@ export function describeGroup(name: string, argsList: Args[], active: boolean): 
     case 'read':
       return label(verb('Reading', 'Read'), argsList.map(file));
     case 'write': {
+      const partial = (a: Args) => a.old_text !== undefined && a.old_text !== null;
+      if (argsList.length && argsList.every((a) => isLiveContextPath(str(a.path)))) {
+        return argsList.some(partial)
+          ? label(verb('Editing its context', 'Edited its context'), [])
+          : label(verb('Rewriting its context', 'Rewrote its context'), []);
+      }
       const edits = argsList.some((a) => a.old_text !== undefined && a.old_text !== null);
       return label(
         edits ? verb('Editing', 'Edited') : verb('Writing', 'Wrote'),
@@ -202,6 +209,36 @@ export function describeGroup(name: string, argsList: Args[], active: boolean): 
       return label(
         verb('Finding callers of', 'Found callers of'),
         argsList.map((a) => quoted(a.symbol))
+      );
+    case 'todo': {
+      const items = parseTodo(argsList[argsList.length - 1] ?? {});
+      const current = items.find((i) => i.status === 'in_progress');
+      return label(
+        verb('Updating the checklist', 'Updated the checklist'),
+        items.length
+          ? [{ text: `${progressLabel(items)}${current ? ` · ${short(current.title, 60)}` : ''}` }]
+          : []
+      );
+    }
+    case 'submit_plan':
+      return label(
+        verb('Saving the plan', 'Saved the plan'),
+        argsList.map((a) => {
+          const title = str(a.plan)
+            ?.match(/^#\s+(.+)$/m)?.[1]
+            ?.trim();
+          return title ? { text: short(title, 60), title } : undefined;
+        })
+      );
+    case 'ask_user':
+      return label(
+        verb('Asking', 'Asked'),
+        argsList.flatMap((a) =>
+          (Array.isArray(a.questions) ? a.questions : [a]).map((q) => {
+            const text = str((q as Args | null)?.question)?.trim();
+            return text ? { text: short(text, 60), title: text } : undefined;
+          })
+        )
       );
     case 'restore_context':
       return label(verb('Restoring its context', 'Restored its context'), []);

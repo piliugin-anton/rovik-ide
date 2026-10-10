@@ -1262,20 +1262,16 @@ export default function MessageList(props: {
                       {(key) => {
                         const run = () => runAt(m, key);
                         return (
-                          <Show
-                            when={run() && !run()!.alone}
-                            fallback={
-                              <Show when={run()?.calls[0]} keyed>
-                                {(tc) => renderCall(tc)}
-                              </Show>
-                            }
-                          >
+                          <Show when={run()}>
                             <ToolCallGroup
                               name={run()!.name}
                               calls={run()!.calls}
                               dialogId={props.dialogId}
                               result={(id) => toolResults().get(id)}
                               running={props.sending}
+                              superseded={run()!.calls.every((c) =>
+                                todoCallStates().superseded.has(c.id)
+                              )}
                               renderCall={renderCall}
                             />
                           </Show>
