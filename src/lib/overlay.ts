@@ -40,6 +40,8 @@ export interface OverlayStatus {
   files: ChangedFile[];
   used: number;
   limit: number;
+  /** Build output and dependencies in the chat's view (not landed). */
+  byProducts: number;
 }
 
 export interface FileVersions {

@@ -28,6 +28,14 @@ use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 const INTERVAL: Duration = Duration::from_millis(500);
+/// How often to sample when no chat command is running or waiting (only
+/// the terminal is watched): its heaviness matters less, so cheaper.
+const SLOW_INTERVAL: Duration = Duration::from_secs(2);
+/// A paused job resumes after this long whatever memory says, and isn't
+/// paused again for as long: a pause must not freeze it for good.
+const MAX_PAUSE: Duration = Duration::from_secs(180);
+/// Pausing does nothing on Windows (see `pause`): there it isn't counted.
+const CAN_PAUSE: bool = cfg!(unix);
 /// Averages are over this long.
 const WINDOW: Duration = Duration::from_secs(3);
 pub(super) const HEAVY_CORES: f64 = 1.5;
@@ -64,6 +72,8 @@ pub(super) struct Sampling {
     throttled: bool,
     paused_since: Option<Instant>,
     paused_ms: u64,
+    /// Resumed after MAX_PAUSE: not paused again before this.
+    no_pause_until: Option<Instant>,
     /// The tree at the last sample.
     pids: Vec<u32>,
 }
@@ -97,7 +107,11 @@ fn run() {
                 continue;
             }
         }
-        std::thread::sleep(INTERVAL);
+        let busy = {
+            let state = lock();
+            state.jobs.values().any(|j| (j.is_chat_work() && j.root_pid.is_some()) || j.waiting.is_some())
+        };
+        std::thread::sleep(if busy { INTERVAL } else { SLOW_INTERVAL });
         sample(&mut sys);
     }
 }
@@ -139,8 +153,23 @@ fn snapshot(sys: &mut System) -> (HashMap<u32, Proc>, HashMap<u32, Vec<u32>>) {
     (procs, children)
 }
 
+/// Processes by process group, looked up once per sample for all jobs.
+fn groups(procs: &HashMap<u32, Proc>) -> HashMap<u32, Vec<u32>> {
+    let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
+    #[cfg(unix)]
+    for pid in procs.keys() {
+        let pgid = unsafe { libc::getpgid(*pid as libc::pid_t) };
+        if pgid > 0 {
+            out.entry(pgid as u32).or_default().push(*pid);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = procs;
+    out
+}
+
 /// `root` and everything it started; on Unix also its process group.
-fn tree(root: u32, procs: &HashMap<u32, Proc>, children: &HashMap<u32, Vec<u32>>, group: bool) -> Vec<u32> {
+fn tree(root: u32, procs: &HashMap<u32, Proc>, children: &HashMap<u32, Vec<u32>>, group: Option<&HashMap<u32, Vec<u32>>>) -> Vec<u32> {
     let mut seen = HashSet::new();
     let mut stack = vec![root];
     while let Some(pid) = stack.pop() {
@@ -151,16 +180,9 @@ fn tree(root: u32, procs: &HashMap<u32, Proc>, children: &HashMap<u32, Vec<u32>>
             stack.extend(kids.iter().copied());
         }
     }
-    #[cfg(unix)]
-    if group {
-        for pid in procs.keys() {
-            if !seen.contains(pid) && unsafe { libc::getpgid(*pid as libc::pid_t) } == root as libc::pid_t {
-                seen.insert(*pid);
-            }
-        }
+    if let Some(members) = group.and_then(|g| g.get(&root)) {
+        seen.extend(members.iter().copied());
     }
-    #[cfg(not(unix))]
-    let _ = group;
     seen.into_iter().filter(|p| procs.contains_key(p)).collect()
 }
 
@@ -178,7 +200,15 @@ fn runs_a_compiler(p: &Proc) -> bool {
 }
 
 /// Updates one job's measurements from a new snapshot.
-fn measure(s: &mut Sampling, pids: Vec<u32>, procs: &HashMap<u32, Proc>, now: Instant, root: u32, terminal: bool) {
+#[allow(clippy::too_many_arguments)]
+fn measure(
+    s: &mut Sampling,
+    pids: Vec<u32>,
+    procs: &HashMap<u32, Proc>,
+    now: Instant,
+    terminal: bool,
+    shell_children: &[u32],
+) {
     let mut delta = 0;
     let mut memory = 0;
     let mut compiler = false;
@@ -203,25 +233,30 @@ fn measure(s: &mut Sampling, pids: Vec<u32>, procs: &HashMap<u32, Proc>, now: In
     s.memory = memory;
     s.peak_memory = s.peak_memory.max(memory);
     let full_window = s.window.front().is_some_and(|(t, _)| now.duration_since(*t) >= WINDOW - INTERVAL);
-    if s.cores < IDLE_CORES && !compiler {
-        s.idle_since.get_or_insert(now);
-    } else {
-        s.idle_since = None;
-    }
-    if compiler || memory > HEAVY_MEMORY || (full_window && s.cores >= HEAVY_CORES) {
-        s.heavy = true;
-    } else if s.idle_for(IDLE_RELEASE) {
-        s.heavy = false;
+    // A compiler counts only while it works: a watcher (`tsc -w`, Vite's
+    // esbuild service) sits idle most of the time and mustn't hold a slot.
+    let compiling = compiler && s.cores >= IDLE_CORES;
+    // Paused, it uses no CPU: that says nothing about the job, so its
+    // state stays as it was until it runs again.
+    if s.paused_since.is_none() {
+        if s.cores < IDLE_CORES {
+            s.idle_since.get_or_insert(now);
+        } else {
+            s.idle_since = None;
+        }
+        if compiling || memory > HEAVY_MEMORY || (full_window && s.cores >= HEAVY_CORES) {
+            s.heavy = true;
+        } else if s.idle_for(IDLE_RELEASE) {
+            s.heavy = false;
+        }
     }
     if terminal {
         // The shell's newest child is what the user ran last.
-        s.foreground = pids
+        s.foreground = shell_children
             .iter()
-            .filter(|p| **p != root)
-            .filter_map(|p| procs.get(p).map(|proc| (proc, *p)))
-            .filter(|(proc, _)| procs.get(&root).is_some_and(|r| proc.start >= r.start))
-            .min_by_key(|(proc, _)| proc.start)
-            .map(|(proc, _)| super::short_command(if proc.cmd.is_empty() { &proc.name } else { &proc.cmd }));
+            .filter_map(|p| procs.get(p))
+            .max_by_key(|proc| proc.start)
+            .map(|proc| super::short_command(if proc.cmd.is_empty() { &proc.name } else { &proc.cmd }));
     }
     s.pids = pids;
 }
@@ -233,11 +268,13 @@ fn sample(sys: &mut System) {
     let now = Instant::now();
     let mut state = lock();
     let mut tracked_cores = 0.0;
+    let groups = state.jobs.values().any(|j| j.root_pid.is_some() && j.kind != JobKind::Terminal).then(|| groups(&procs));
     for job in state.jobs.values_mut() {
         let Some(root) = job.root_pid else { continue };
         let terminal = job.kind == JobKind::Terminal;
-        let pids = tree(root, &procs, &children, !terminal);
-        measure(&mut job.sampling, pids, &procs, now, root, terminal);
+        let pids = tree(root, &procs, &children, if terminal { None } else { groups.as_ref() });
+        let shell_children = if terminal { children.get(&root).cloned().unwrap_or_default() } else { Vec::new() };
+        measure(&mut job.sampling, pids, &procs, now, terminal, &shell_children);
         tracked_cores += job.sampling.cores;
     }
     if !state.fixed_machine {
@@ -304,21 +341,33 @@ fn throttle(job: &mut JobState, slow: bool, low_memory: bool, memory_back: bool)
     } else {
         s.throttled = false;
     }
+    let may_pause = CAN_PAUSE && s.no_pause_until.is_none_or(|t| Instant::now() >= t);
     match s.paused_since {
-        None if slow && low_memory => {
+        None if slow && low_memory && may_pause => {
             for pid in &s.pids {
                 pause(*pid, true);
             }
             s.paused_since = Some(Instant::now());
         }
-        Some(since) if !slow || memory_back => {
+        Some(since) if !slow || memory_back || since.elapsed() >= MAX_PAUSE => {
             for pid in &s.pids {
                 pause(*pid, false);
+            }
+            if since.elapsed() >= MAX_PAUSE {
+                s.no_pause_until = Some(Instant::now() + MAX_PAUSE);
             }
             s.paused_ms += since.elapsed().as_millis() as u64;
             s.paused_since = None;
         }
         _ => {}
+    }
+}
+
+/// At exit: nothing stays paused (its commands run on, unwatched).
+pub(super) fn release_all() {
+    let state = lock();
+    for job in state.jobs.values() {
+        release(job);
     }
 }
 
@@ -367,6 +416,26 @@ mod tests {
     use super::super::queue::{self, test_support::SERIAL, test_reset, JobKind};
     use super::*;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn a_watching_compiler_is_heavy_only_while_it_works() {
+        let proc_with = |cpu_ms| Proc { name: "esbuild".into(), cmd: "esbuild --service".into(), cpu_ms, memory: 50 << 20, start: 1 };
+        let t0 = Instant::now();
+        // Idle: Vite's esbuild service between rebuilds.
+        let mut idle = Sampling::default();
+        for i in 0..10 {
+            let procs = HashMap::from([(10, proc_with(5))]);
+            measure(&mut idle, vec![10], &procs, t0 + INTERVAL * i, false, &[]);
+        }
+        assert!(!idle.heavy, "an idle watcher holds no slot");
+        // Working: a core's worth of CPU every interval.
+        let mut busy = Sampling::default();
+        for i in 0..10 {
+            let procs = HashMap::from([(10, proc_with(500 * i as u64))]);
+            measure(&mut busy, vec![10], &procs, t0 + INTERVAL * i, false, &[]);
+        }
+        assert!(busy.heavy, "a compiler at work is heavy at once");
+    }
 
     fn busy_loop() -> std::process::Child {
         let mut cmd = Command::new("sh");

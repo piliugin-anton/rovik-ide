@@ -34,8 +34,10 @@ interface Props {
   revision: number;
   /** A run is going: landing or discarding would pull files out from under it. */
   running: boolean;
-  /** Sends the chat a message (starting a run): handing it the conflicts. */
-  onAskChat: (request: string) => void;
+  /** A run could start in this chat now (a model is set, none is going). */
+  canAskChat: boolean;
+  /** Sends `dialogId` a message, starting a run; whether it started. */
+  onAskChat: (dialogId: string, request: string) => Promise<boolean>;
 }
 
 const LABEL: Record<ChangedFile['change'], string> = {
@@ -46,6 +48,11 @@ const LABEL: Record<ChangedFile['change'], string> = {
 };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** Build output is shown from this size, and warned about from the next. */
+const BY_PRODUCTS_SHOWN = 1 << 30;
+const BY_PRODUCTS_WARN = 5 * (1 << 30);
+const gb = (bytes: number) => `${(bytes / (1 << 30)).toFixed(1)} GB`;
 
 export default function IsolationBar(props: Props) {
   const [open, setOpen] = createSignal(false);
@@ -60,6 +67,11 @@ export default function IsolationBar(props: Props) {
   };
   const conflicted = (path: string) => !!status()?.pending?.conflicts.some((c) => c.path === path);
   const [resolving, setResolving] = createSignal<string | null>(null);
+  /** One round of conflicts: the resolver's saved choices belong to it. */
+  const roundKey = () => {
+    const p = status()?.pending;
+    return p ? `${p.reason}\u0000${p.conflicts.map((c) => c.path).join('\u0000')}` : '';
+  };
 
   /** The chat's conflicts, in the shape the resolver takes a git merge in. */
   const operation = (): GitOperation => ({
@@ -85,16 +97,29 @@ export default function IsolationBar(props: Props) {
   };
 
   async function askChat() {
+    // This chat, whichever is on screen by the time the markers are in.
+    const id = props.dialogId;
+    if (!props.canAskChat) {
+      notify({
+        kind: 'warning',
+        title: 'The chat can’t take it now',
+        message: 'Pick a model, and wait for its run to end, then ask again.',
+      });
+      return;
+    }
     setBusy(true);
     try {
-      const handed = await overlayConflictsToChat(props.dialogId);
-      if (handed.request) props.onAskChat(handed.request);
-      else
+      const handed = await overlayConflictsToChat(id);
+      if (!handed.request) {
         notify({
           kind: 'warning',
           title: 'Nothing to hand over',
           message: 'These conflicts aren’t in text files: resolve them here instead.',
         });
+      } else if (!(await props.onAskChat(id, handed.request))) {
+        // Nobody to resolve the markers: take them back out.
+        await overlayUndoMerge(id).catch(() => {});
+      }
     } catch (e) {
       notify({ kind: 'error', title: 'Couldn’t hand the conflicts over', message: String(e) });
     } finally {
@@ -134,7 +159,8 @@ export default function IsolationBar(props: Props) {
         confirmLabel: 'Land anyway',
         danger: true,
       });
-      if (!ok) return;
+      // A run may have started while the dialog was open.
+      if (!ok || props.running) return false;
     }
     setBusy(true);
     try {
@@ -145,9 +171,21 @@ export default function IsolationBar(props: Props) {
           title: 'Landed',
           message: `${plural(result.landed.paths.length, 'change')} from this chat are in the project.`,
         });
+        return true;
+      }
+      if (result.conflicts.length) {
+        notify({
+          kind: 'warning',
+          title: 'New conflicts',
+          message: `The project changed meanwhile: ${result.conflicts.map((c) => c.path).join(', ')}.`,
+        });
       } else if (result.error) {
         notify({ kind: 'error', title: 'Didn’t land', message: result.error });
       }
+      return false;
+    } catch (e) {
+      notify({ kind: 'error', title: 'Didn’t land', message: String(e) });
+      return false;
     } finally {
       setBusy(false);
       void refetch();
@@ -181,9 +219,16 @@ export default function IsolationBar(props: Props) {
       confirmLabel: 'Discard',
       danger: true,
     });
-    if (!ok) return;
-    await overlayDiscard(props.dialogId).catch((e) => window.alert(String(e)));
-    void refetch();
+    if (!ok || props.running) return;
+    setBusy(true);
+    try {
+      await overlayDiscard(props.dialogId);
+    } catch (e) {
+      notify({ kind: 'error', title: 'Couldn’t discard', message: String(e) });
+    } finally {
+      setBusy(false);
+      void refetch();
+    }
   }
 
   const disabled = () => props.running || busy();
@@ -211,8 +256,14 @@ export default function IsolationBar(props: Props) {
         {(s) => (
           <div class="isolation-bar">
             <div class="isolation-bar-head">
-              <button class="isolation-bar-toggle" onClick={() => setOpen(!open())}>
-                <span class="isolation-bar-caret">{open() ? '▾' : '▸'}</span>
+              <button
+                class="isolation-bar-toggle"
+                aria-expanded={open()}
+                onClick={() => setOpen(!open())}
+              >
+                <span class="isolation-bar-caret" aria-hidden="true">
+                  {open() ? '▾' : '▸'}
+                </span>
                 {plural(s().files.length, 'changed file')} in this chat, not in the project yet
               </button>
               <Show
@@ -263,6 +314,15 @@ export default function IsolationBar(props: Props) {
             <Show when={s().pending}>
               {(p) => <div class="isolation-bar-reason">{p().reason}</div>}
             </Show>
+            <Show when={s().byProducts >= BY_PRODUCTS_SHOWN}>
+              <div
+                class="isolation-bar-merged"
+                classList={{ 'isolation-bar-reason': s().byProducts >= BY_PRODUCTS_WARN }}
+              >
+                Build output and dependencies in this chat’s view: {gb(s().byProducts)} (not landed;
+                Discard frees it).
+              </div>
+            </Show>
             <Show when={s().mergedIn.length > 0}>
               <div class="isolation-bar-merged">
                 The project’s newer changes were merged into {plural(s().mergedIn.length, 'file')}{' '}
@@ -284,8 +344,13 @@ export default function IsolationBar(props: Props) {
                     <li>
                       <button
                         class="isolation-bar-file"
+                        title={
+                          conflicted(file.path) && !disabled()
+                            ? 'Resolve this file’s conflicts'
+                            : 'Compare with the project’s version'
+                        }
                         onClick={() =>
-                          conflicted(file.path) && !props.running
+                          conflicted(file.path) && !disabled()
                             ? setResolving(file.path)
                             : void compare(file)
                         }
@@ -311,14 +376,15 @@ export default function IsolationBar(props: Props) {
       </Show>
       <Show when={resolving() !== null}>
         <ConflictResolver
-          projectPath={`chat:${props.dialogId}`}
+          projectPath={`chat:${props.dialogId}:${roundKey()}`}
           source={source}
           operation={operation()}
+          disabled={props.running}
           initialFile={resolving() ?? undefined}
           onFileWritten={() => void refetch()}
           onContinue={async () => {
-            await land(false);
-            setResolving(null);
+            // Kept open when new conflicts came up meanwhile.
+            if (await land(false)) setResolving(null);
           }}
           onAbort={async () => {
             setResolving(null);

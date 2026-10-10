@@ -53,9 +53,17 @@ struct Store {
 struct History {
     file: Option<PathBuf>,
     store: Option<Store>,
+    /// When it was last written: at most every SAVE_EVERY.
+    saved_at: Option<std::time::Instant>,
 }
 
-static HISTORY: LazyLock<Mutex<History>> = LazyLock::new(|| Mutex::new(History { file: None, store: None }));
+static HISTORY: LazyLock<Mutex<History>> =
+    LazyLock::new(|| Mutex::new(History { file: None, store: None, saved_at: None }));
+
+/// History is written at most this often (and at exit).
+const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+/// Projects remembered; the least recently used go first.
+const PROJECTS: usize = 50;
 
 /// Where history is saved. Without it (tests), it's kept in memory only.
 pub fn init(data_dir: &Path) {
@@ -78,12 +86,21 @@ impl History {
         self.store.as_mut().unwrap()
     }
 
-    fn save(&self) {
+    fn save(&mut self) {
         if let (Some(file), Some(store)) = (&self.file, &self.store) {
             if let Ok(bytes) = serde_json::to_vec(store) {
                 let _ = crate::atomic_file::write_atomic(file, &bytes);
             }
         }
+        self.saved_at = Some(std::time::Instant::now());
+    }
+}
+
+/// Writes what isn't saved yet (at exit).
+pub fn flush() {
+    let mut h = HISTORY.lock().unwrap_or_else(|e| e.into_inner());
+    if h.store.is_some() {
+        h.save();
     }
 }
 
@@ -149,7 +166,15 @@ pub fn record(project: &str, fingerprint: &str, sample: Sample) {
             entries.remove(&oldest);
         }
     }
-    h.save();
+    if store.projects.len() > PROJECTS {
+        let last_used = |entries: &HashMap<String, Entry>| entries.values().map(|e| e.last_used).max().unwrap_or(0);
+        if let Some(oldest) = store.projects.iter().min_by_key(|(_, e)| last_used(e)).map(|(k, _)| k.clone()) {
+            store.projects.remove(&oldest);
+        }
+    }
+    if h.saved_at.is_none_or(|t| t.elapsed() >= SAVE_EVERY) {
+        h.save();
+    }
 }
 
 fn p75(mut values: Vec<f64>) -> f64 {

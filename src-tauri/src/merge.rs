@@ -120,6 +120,46 @@ pub fn parse_merged(text: &str) -> Vec<MergeSegment> {
     out
 }
 
+/// Merges three versions of a file as bytes: `Ok(Some(merged))` when both
+/// sides' changes apply, `Ok(None)` when they changed the same lines,
+/// `Err` when the file isn't text. Text needn't be UTF-8: other 8-bit
+/// encodings merge line by line as they are, and UTF-16 with a byte-order
+/// mark is decoded, merged and encoded back.
+pub fn merge_bytes(base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    let utf16 = |b: &[u8]| match b {
+        [0xFF, 0xFE, ..] => Some(false),
+        [0xFE, 0xFF, ..] => Some(true),
+        _ => None,
+    };
+    let order = utf16(ours);
+    if order.is_some() && utf16(theirs) == order && (base.is_empty() || utf16(base) == order) {
+        let big = order == Some(true);
+        let decode = |b: &[u8]| -> String {
+            let units: Vec<u16> = b[b.len().min(2)..]
+                .chunks_exact(2)
+                .map(|c| if big { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) })
+                .collect();
+            String::from_utf16_lossy(&units)
+        };
+        return match merge3(&decode(base), &decode(ours), &decode(theirs))? {
+            Merged::Clean(text) => {
+                let mut out = if big { vec![0xFE, 0xFF] } else { vec![0xFF, 0xFE] };
+                for u in text.encode_utf16() {
+                    out.extend(if big { u.to_be_bytes() } else { u.to_le_bytes() });
+                }
+                Ok(Some(out))
+            }
+            Merged::Conflict(_) => Ok(None),
+        };
+    }
+    let has_nul = |b: &[u8]| b.iter().take(8000).any(|&c| c == 0);
+    if has_nul(base) || has_nul(ours) || has_nul(theirs) {
+        return Err("not a text file".into());
+    }
+    let raw = merge3_raw(base, ours, theirs)?;
+    Ok(raw.automergeable.then_some(raw.content))
+}
+
 /// Not text: a NUL byte near the start, or not UTF-8.
 pub fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8000).any(|&b| b == 0) || std::str::from_utf8(bytes).is_err()
@@ -128,6 +168,28 @@ pub fn is_binary(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_that_isnt_utf8_merges() {
+        // Latin-1: é is one byte, not valid UTF-8.
+        let base = b"caf\xe9\n2\n3\n4\n5\n";
+        let ours = b"CAF\xc9\n2\n3\n4\n5\n";
+        let theirs = b"caf\xe9\n2\n3\n4\nFIVE\n";
+        assert_eq!(merge_bytes(base, ours, theirs).unwrap().unwrap(), b"CAF\xc9\n2\n3\n4\nFIVE\n");
+        // UTF-16 with a byte-order mark.
+        let enc = |t: &str| {
+            let mut v = vec![0xFF, 0xFE];
+            for u in t.encode_utf16() {
+                v.extend(u.to_le_bytes());
+            }
+            v
+        };
+        let merged = merge_bytes(&enc("1\n2\n3\n4\n5\n"), &enc("A\n2\n3\n4\n5\n"), &enc("1\n2\n3\n4\nE\n")).unwrap().unwrap();
+        assert_eq!(merged, enc("A\n2\n3\n4\nE\n"));
+        assert!(merge_bytes(&enc("1\n"), &enc("A\n"), &enc("B\n")).unwrap().is_none());
+        // Real binary: no merge.
+        assert!(merge_bytes(b"\0a", b"\0b", b"\0c").is_err());
+    }
 
     const BASE: &str = "one\ntwo\nthree\nfour\nfive\n";
 

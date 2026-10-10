@@ -236,6 +236,7 @@ pub fn run() {
                 // Unmount the virtual files, or the folder stays a dead mount.
                 let _ = app.state::<vfs::VfsState>().unmount();
                 overlay::chats::close_all();
+                workload::shutdown();
                 if let Some(db) = app.try_state::<chat_db::DbState>() {
                     db.mark_clean_exit();
                 }

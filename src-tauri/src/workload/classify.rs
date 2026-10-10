@@ -230,6 +230,9 @@ fn package_script(prog: &str, words: &[String], cwd: Option<&Path>, depth: usize
     }
     match cwd.and_then(|d| package_json_script(d, name)) {
         Some(body) => classify_at(&body, cwd.map(Path::to_path_buf), depth + 1),
+        // `bun test` (bun's own runner), or a test command with no script
+        // to look at: tests are heavy.
+        None if name == "test" => Class::Heavy,
         // `pnpm tsc`, `yarn vitest`: a binary, not a script.
         None if prog != "npm" => classify_words(&words[1..].iter().filter(|w| *w != "run").cloned().collect::<Vec<_>>(), cwd, depth + 1),
         None => Class::Unknown,

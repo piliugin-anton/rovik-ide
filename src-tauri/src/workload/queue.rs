@@ -77,8 +77,10 @@ pub(super) struct JobState {
     expected_peak: u64,
     pub(super) has_slot: bool,
     /// Waiting for a slot: its place in line.
-    waiting: Option<u64>,
+    pub(super) waiting: Option<u64>,
     pub(super) sampling: Sampling,
+    /// Exited on its own: a run worth remembering (not stopped or timed out).
+    completed: bool,
 }
 
 impl JobState {
@@ -254,7 +256,8 @@ pub struct Job {
 /// Registers a command. `project`: where it runs, for its class and history.
 pub fn begin(kind: JobKind, command: &str, project: Option<&Path>) -> Job {
     let fingerprint = history::fingerprint(command);
-    let project_key = project.map(|p| p.to_string_lossy().into_owned());
+    // An isolated chat runs in its view: history belongs to the project.
+    let project_key = project.map(|p| crate::overlay::chats::project_for(p).to_string_lossy().into_owned());
     let mut class = classify(command, project);
     let mut expected_peak = 0;
     if kind == JobKind::Terminal {
@@ -281,6 +284,7 @@ pub fn begin(kind: JobKind, command: &str, project: Option<&Path>) -> Job {
             started: None,
             expected_peak,
             has_slot: false,
+            completed: false,
             waiting: None,
             sampling: Sampling::default(),
         },
@@ -313,6 +317,19 @@ pub struct Slots {
 }
 
 pub fn slots() -> Slots {
+    // Not sampled yet (no command has run): read the machine now, so auto
+    // isn't judged from an all-zero machine.
+    if lock().machine.cores == 0 {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let mut state = lock();
+        if state.machine.cores == 0 && !state.fixed_machine {
+            state.machine.cores = cores;
+            state.machine.total_memory = sys.total_memory();
+            state.machine.free_memory = sys.available_memory();
+        }
+    }
     let state = lock();
     let manual = state.manual_slots;
     let auto = {
@@ -383,12 +400,24 @@ impl Job {
                 let why = state.blocker(self.id);
                 let secs = waited / 1000;
                 if last_note.as_ref().is_none_or(|(w, s)| *w != why || *s != secs) {
-                    note(Some(format!("Waiting for a CPU slot: {why} ({})", super::format_duration(waited))));
                     last_note = Some((why.clone(), secs));
+                    reason = Some(why.clone());
+                    // Told outside the lock: the note reaches the UI.
+                    drop(state);
+                    note(Some(format!("Waiting for a CPU slot: {why} ({})", super::format_duration(waited))));
+                    state = lock();
+                    continue;
                 }
                 reason = Some(why);
             }
             state = SHARED.changed.wait_timeout(state, Duration::from_millis(250)).unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+
+    /// The command exited on its own: its cost is remembered.
+    pub fn completed(&self) {
+        if let Some(job) = lock().jobs.get_mut(&self.id) {
+            job.completed = true;
         }
     }
 
@@ -432,6 +461,9 @@ impl Drop for Job {
         // Undo a pause or lowered priority on whatever is still running.
         tracker::release(&job);
         if !job.is_chat_work() {
+            return;
+        }
+        if !job.completed {
             return;
         }
         if let (Some(project), Some(started)) = (job.project, job.started) {

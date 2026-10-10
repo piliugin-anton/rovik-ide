@@ -526,3 +526,20 @@ and 4 for a while.
     chat's report shows a diff of what the project changed.
   - Without the driver, the first non-isolated chat to run a command that
     writes holds that right for the project until its run ends.
+- **Phase 2 (done).** As planned, except:
+  - A chat's own command changing a file it then writes from an older
+    read is still refused: that refusal is right (the write would undo
+    the command's change), and its message already names commands as a
+    possible cause and shows the file as it is.
+  - No extra cache folders are redirected: npm, pip, Go and Gradle keep
+    their caches outside the project already. Instead the bar shows how
+    much build output and dependencies a chat's view holds, from 1 GB, in
+    warning colour from 5 GB.
+  - Conflicts handed to the chat stay listed: the resolver shows them
+    with the chat's own version (kept before the markers went in), and
+    Undo the merge takes the markers back out and brings the conflicts
+    back.
+  - Compare after a refused save makes the version on disk the one the
+    tab is checked against, so a save after merging by hand goes through.
+- **Not planned any more:** CI (phase 6) and landing after each finished
+  step (phase 7), at the user's request.

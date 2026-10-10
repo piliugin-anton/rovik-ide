@@ -16,7 +16,6 @@
 //! Only one landing per project at a time.
 
 use super::fs::{DeletedBase, OverlayChange};
-use crate::merge::{is_binary, merge3, Merged};
 use crate::vfs::store::Kind;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -245,19 +244,11 @@ fn resolve(base: Option<&[u8]>, ours: &[u8], theirs: Option<&[u8]>) -> Resolved 
         (None, None) => Resolved::Take(ours.to_vec()),
         (Some(_), None) => Resolved::Conflict("the chat changed it, and it was deleted in the project".into()),
         (None, Some(_)) => Resolved::Conflict("the chat and the project both created it, differently".into()),
-        (Some(b), Some(t)) => {
-            if is_binary(b) || is_binary(ours) || is_binary(t) {
-                return Resolved::Conflict("a binary file changed in the chat and in the project".into());
-            }
-            let (b, o, t) = (String::from_utf8_lossy(b), String::from_utf8_lossy(ours), String::from_utf8_lossy(t));
-            match merge3(&b, &o, &t) {
-                Ok(Merged::Clean(text)) => Resolved::Merged(text.into_bytes()),
-                Ok(Merged::Conflict(_)) => {
-                    Resolved::Conflict("the chat and the project changed the same lines".into())
-                }
-                Err(e) => Resolved::Conflict(format!("couldn't merge: {e}")),
-            }
-        }
+        (Some(b), Some(t)) => match crate::merge::merge_bytes(b, ours, t) {
+            Ok(Some(bytes)) => Resolved::Merged(bytes),
+            Ok(None) => Resolved::Conflict("the chat and the project changed the same lines".into()),
+            Err(_) => Resolved::Conflict("a binary file changed in the chat and in the project".into()),
+        },
     }
 }
 
@@ -313,6 +304,9 @@ pub enum LandError {
     Conflicts(Vec<Conflict>),
     /// The project kept changing while the landing tried to write.
     Busy,
+    /// The project changed these files again after the merged result was
+    /// checked: what would land now wasn't.
+    Unchecked(Vec<String>),
     Failed(String),
 }
 
@@ -321,12 +315,16 @@ impl std::fmt::Display for LandError {
         match self {
             LandError::Conflicts(c) => write!(f, "{} file(s) changed in both the chat and the project", c.len()),
             LandError::Busy => write!(f, "the project kept changing while the changes were landing"),
+            LandError::Unchecked(p) => {
+                write!(f, "the project changed {} again after the checks ran on the merged result", p.join(", "))
+            }
             LandError::Failed(e) => f.write_str(e),
         }
     }
 }
 
 /// Lands the chat's changes in `project` (planning, journaling, writing).
+#[cfg_attr(not(test), allow(dead_code))]
 /// Replans when a file changes between planning and writing, up to three
 /// times.
 pub fn land(
@@ -336,12 +334,28 @@ pub fn land(
     changes: &[OverlayChange],
     keep_chat: bool,
 ) -> Result<Option<Landed>, LandError> {
+    land_checked(data_dir, dialog_id, project, changes, keep_chat, true)
+}
+
+/// [`land`]; with `allow_merge` false, refuses when any file would land
+/// merged with project changes (they came after the checks ran).
+pub fn land_checked(
+    data_dir: &Path,
+    dialog_id: &str,
+    project: &Path,
+    changes: &[OverlayChange],
+    keep_chat: bool,
+    allow_merge: bool,
+) -> Result<Option<Landed>, LandError> {
     let lock = project_lock(project);
     let _landing = lock.lock().unwrap_or_else(|e| e.into_inner());
     for _ in 0..3 {
         let plan = plan(project, changes, keep_chat);
         if !plan.conflicts.is_empty() {
             return Err(LandError::Conflicts(plan.conflicts));
+        }
+        if !allow_merge && plan.merged {
+            return Err(LandError::Unchecked(plan.merged_files().into_iter().map(|(p, _, _)| p).collect()));
         }
         if plan.is_empty() {
             return Ok(None);

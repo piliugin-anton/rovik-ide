@@ -415,6 +415,20 @@ impl OverlayFs {
         (self.lock().used, self.limit)
     }
 
+    /// Bytes of build output and dependencies the chat's commands wrote
+    /// (not limited, not landed: shown so it doesn't grow unnoticed).
+    pub fn by_product_bytes(&self) -> u64 {
+        self.lock()
+            .nodes
+            .values()
+            .filter(|n| n.by_product)
+            .map(|n| match &n.data {
+                Data::Upper { size, .. } => *size,
+                _ => 0,
+            })
+            .sum()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }

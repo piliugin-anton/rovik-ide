@@ -294,6 +294,11 @@ fn run_blocking(
     };
     let (out, out_cut) = join(stdout);
     let (err, err_cut) = join(stderr);
+    if !killed {
+        if let Some(job) = &job {
+            job.completed();
+        }
+    }
 
     Ok(CommandOutput {
         exit_code: status.and_then(|s| s.code()),

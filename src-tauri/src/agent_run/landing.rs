@@ -25,7 +25,10 @@ use tauri::Runtime;
 const MAX_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Run outcomes after which changes may land without asking.
-const LANDS_AFTER: &[&str] = &["done", "verified", "unverified"];
+const LANDS_AFTER: &[&str] = &["done", "verified", "unverified", "verify-unverified"];
+
+/// Outcomes that land without any check having run.
+const UNCHECKED: &[&str] = &["unverified", "verify-unverified"];
 
 impl<R: Runtime> Run<R> {
     pub(super) async fn land_at_end(&mut self, outcome: &str) {
@@ -41,7 +44,8 @@ impl<R: Runtime> Run<R> {
     /// Lands if it may; returns what happened and to how many files, for
     /// the log (None: nothing to land).
     async fn try_land(&mut self, outcome: &str) -> Option<(&'static str, usize)> {
-        if self.root == self.project_root {
+        // Plan mode only reads: what the chat changed before waits as it was.
+        if self.root == self.project_root || self.plan_mode {
             return None;
         }
         let overlay = chats::get(&self.dialog_id)?;
@@ -58,7 +62,9 @@ impl<R: Runtime> Run<R> {
         let count = changes.len();
         if !LANDS_AFTER.contains(&outcome) {
             let reason = match outcome {
-                "stopped" => "the run was stopped",
+                "stopped" | "verify-stopped" => "the run was stopped",
+                "repetition" => "the model kept repeating itself",
+                "error" => "the run ended with an error",
                 "verify-gave-up" | "verify-unresolved" => "the checks still fail",
                 "verify-needs-approval" => "the checks wait for your approval",
                 "unfinished-checklist" => "the checklist isn't finished",
@@ -92,6 +98,21 @@ impl<R: Runtime> Run<R> {
             self.notice("warning", "This chat's changes didn't land", "They conflict with changes in the project. Review them above the message box.");
             return Some(("waits: conflicts", count));
         }
+        let p = self.state.config().permissions;
+        let has_checks = p.verify_changes && self.checks.iter().any(|c| c.enabled && !c.command.trim().is_empty());
+        if plan.merged && has_checks && p.command_approval.required {
+            // The merged result's checks are commands too: not without the
+            // user's go. Land (in the bar) lands it as it is.
+            chats::set_pending(
+                &dialog_id,
+                Some(&Pending {
+                    reason: "Not landed: the project changed the same files meanwhile, and checking the merged result needs your approval. Land takes it as it is.".into(),
+                    conflicts: Vec::new(),
+                }),
+            );
+            self.notice("warning", "This chat's changes didn't land", "The merged result's checks wait for your approval.");
+            return Some(("waits: merged checks need approval", count));
+        }
         if plan.merged {
             if let Some(failed) = self.check_merged(&plan, &overlay.view).await {
                 chats::set_pending(
@@ -105,14 +126,20 @@ impl<R: Runtime> Run<R> {
                 return Some(("waits: merged checks fail", count));
             }
         }
-        let result = tauri::async_runtime::spawn_blocking(move || chats::land_now(&dialog_id, false)).await;
+        // With checks, only what they checked lands: a file the project
+        // changed again meanwhile waits.
+        let result = tauri::async_runtime::spawn_blocking(move || chats::land_now_with(&dialog_id, false, !has_checks)).await;
         match result {
             Ok(Ok(Some(landed))) => {
                 let n = landed.paths.len();
+                let unchecked = if UNCHECKED.contains(&outcome) { " No checks ran: none are set up or allowed." } else { "" };
                 self.notice(
                     "success",
                     "Landed",
-                    &format!("{n} change{} from this chat are in the project. Undo is above the message box.", if n == 1 { "" } else { "s" }),
+                    &format!(
+                        "{n} change{} from this chat are in the project.{unchecked} Undo is above the message box.",
+                        if n == 1 { "" } else { "s" }
+                    ),
                 );
                 // The project changed under the chat's view: the next run
                 // starts from it.
@@ -120,6 +147,12 @@ impl<R: Runtime> Run<R> {
                 Some(("landed", n))
             }
             Ok(Ok(None)) => Some(("nothing new", count)),
+            Ok(Err(e @ LandError::Unchecked(_))) => {
+                let reason = format!("Not landed: {e}. Land again (the checks run on the new result), or Land in the bar to take it as it is.");
+                chats::set_pending(&self.dialog_id, Some(&Pending { reason, conflicts: Vec::new() }));
+                self.notice("warning", "This chat's changes didn't land", "The project changed the same files again while the checks ran.");
+                Some(("waits: changed again", count))
+            }
             Ok(Err(LandError::Conflicts(_))) => {
                 self.notice("warning", "This chat's changes didn't land", "The project changed meanwhile. Review them above the message box.");
                 Some(("waits: conflicts", count))
@@ -181,7 +214,7 @@ impl<R: Runtime> Run<R> {
     /// "continue" when they failed and the chat got the failures to fix.
     /// None: nothing to merge (or the run won't land anyway).
     pub(super) async fn take_project_changes(&mut self, outcome: &str) -> Result<Option<String>, String> {
-        if !LANDS_AFTER.contains(&outcome) || self.root == self.project_root {
+        if !LANDS_AFTER.contains(&outcome) || self.root == self.project_root || self.plan_mode {
             return Ok(None);
         }
         let Some(overlay) = chats::get(&self.dialog_id) else { return Ok(None) };

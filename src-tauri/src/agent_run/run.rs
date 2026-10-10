@@ -251,10 +251,12 @@ impl<R: Runtime> Run<R> {
         let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
         // An isolated chat works in its overlay: the project with its own
         // changes on top, mounted as a folder (src/overlay). Plan mode
-        // changes nothing, so it reads the project itself.
+        // changes nothing, so it reads the project itself, unless the chat
+        // has changes that haven't landed: then it plans against those.
         let mut isolation_problem = None;
+        let isolate = request.isolate.unwrap_or_else(crate::overlay::chats::enabled);
         let root = match &project_root {
-            Some(r) if !plan_mode && request.isolate.unwrap_or_else(crate::overlay::chats::enabled) => {
+            Some(r) if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) => {
                 let app_ = app.clone();
                 let on_warn = Box::new(move |used: u64, limit: u64| {
                     emit(
@@ -462,8 +464,10 @@ impl<R: Runtime> Run<R> {
 
         let (checks, project_context) = match &root {
             Some(r) => {
+                // Settings are kept by the project's folder, not the view's.
+                let settings_root = project_root.clone().unwrap_or_else(|| r.clone());
                 let (app, r, verify) = (app.clone(), r.clone(), config.permissions.verify_changes);
-                tauri::async_runtime::spawn_blocking(move || project::load(&app, &r, verify))
+                tauri::async_runtime::spawn_blocking(move || project::load(&app, &r, &settings_root, verify))
                     .await
                     .unwrap_or_default()
             }
@@ -658,7 +662,13 @@ impl<R: Runtime> Run<R> {
                 // The waiting record becomes the running one, then the results.
                 let outcome = self.verify_at_end(true, Some(record_id)).await?;
                 if outcome != "continue" {
-                    return Ok(outcome);
+                    // As at any other end: the project's newer changes to
+                    // the same files are merged in and checked first.
+                    match self.take_project_changes(&outcome).await? {
+                        Some(next) if next == "continue" => {}
+                        Some(next) => return Ok(next),
+                        None => return Ok(outcome),
+                    }
                 }
             }
             Entry::Resume { calls } => {
