@@ -9017,3 +9017,185 @@ async fn stop_during_the_join_keeps_finished_copies() {
     let w2 = h.child_of("g1#w2").await;
     assert!(crate::overlay::chats::get(&w2.id).is_none(), "discarded");
 }
+
+/// A triage that names a folder among the files to fix doesn't break the
+/// fixer's snapshot; Redo then puts the fixed file back as the chat had it
+/// before the group (the lead's version).
+#[tokio::test]
+async fn a_folder_in_cause_files_doesnt_break_the_snapshot() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let Some(h) = repair_harness(false).await else {
+        return;
+    };
+    let triage = "## Root cause\n`p` is never declared in src/posts.rs:1.\n\n\
+        ## Files to fix\n- `src/posts.rs`: declare it\n- `src/`: the module\n\n\
+        ## Next step\nDeclare `p`.\n\n## Confidence\nhigh: the error says so.";
+    let (url, _) = model_routed(
+        vec![
+            ("# Triage this failure", vec![Reply::Text(triage)]),
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    write_call("w2f", "src/posts.rs", "posts, fixed\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            write_call("l1", "src/posts.rs", "posts by the lead\n"),
+            // A step of the lead's own left open: the chat doesn't land
+            // at the end, so its group can still be redone.
+            Reply::Call {
+                id: "t1",
+                name: "todo",
+                args: json!({ "items": [
+                    { "title": "Contract", "status": "done" },
+                    { "title": "Users", "status": "pending" },
+                    { "title": "Posts", "status": "pending" },
+                    { "title": "Docs", "status": "pending" },
+                ] }),
+            },
+            group_task("g1"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let mut request = h.implement_isolated(&url, true);
+    let mut config = groups_on();
+    config.kinds.insert(
+        "triage".into(),
+        serde_json::from_value(json!({ "enabled": true })).unwrap(),
+    );
+    request.config.as_mut().unwrap().subagents = config;
+    h.start(request).await;
+    h.run_end().await;
+    let records = end_records(&h.messages().await);
+    let fixer = &records[0]["repair"]["causes"][0]["fixer"];
+    assert_eq!(fixer["status"], "done", "{:#}", records[0]);
+    let groups = crate::overlay::chats::saved_groups(&h.dialog_id);
+    assert!(
+        groups[0].unavailable.is_none(),
+        "{:?}",
+        groups[0].unavailable
+    );
+    crate::overlay::chats::redo_group(&h.dialog_id, &groups[0].name).unwrap();
+    assert_eq!(
+        in_view(&h, "src/posts.rs").as_deref(),
+        Some("posts by the lead\n")
+    );
+}
+
+/// A fixer that also writes a file of its step outside its cause's files:
+/// Redo puts that file back as the chat had it (the lead's version).
+#[tokio::test]
+async fn a_fixer_writing_outside_paths_is_recorded_from_the_chats_own_version() {
+    if !crate::vfs::mount_works()
+        || std::process::Command::new("npm")
+            .arg("--version")
+            .output()
+            .is_err()
+    {
+        return;
+    }
+    let plan: &'static str = Box::leak(
+        GROUP_PLAN
+            .replace(
+                "   - `src/posts.rs`: implement the posts page with `fn posts()`.\n",
+                "   - `src/posts.rs`: implement the posts page with `fn posts()`.\n   - `src/extra.rs`: its helpers.\n",
+            )
+            .into_boxed_str(),
+    );
+    let h = group_harness_with_side_effect(
+        plan,
+        "true",
+        &[
+            ("src/extra.rs", "// extra\n"),
+            ("check.js", REPAIR_CHECK),
+            (
+                "package.json",
+                r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+            ),
+        ],
+    )
+    .await;
+    let triage = "## Root cause\n`p` is never declared in src/posts.rs:1.\n\n\
+        ## Files to fix\n- `src/posts.rs`: declare it\n\n\
+        ## Next step\nDeclare `p`.\n\n## Confidence\nhigh: the error says so.";
+    let (url, _) = model_routed(
+        vec![
+            ("# Triage this failure", vec![Reply::Text(triage)]),
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    write_call("w2f", "src/posts.rs", "posts, fixed\n"),
+                    write_call("w2g", "src/extra.rs", "extra by the fixer\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs", "src/extra.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            write_call("l1", "src/extra.rs", "extra by the lead\n"),
+            Reply::Call {
+                id: "t1",
+                name: "todo",
+                args: json!({ "items": [
+                    { "title": "Contract", "status": "done" },
+                    { "title": "Users", "status": "pending" },
+                    { "title": "Posts", "status": "pending" },
+                    { "title": "Docs", "status": "pending" },
+                ] }),
+            },
+            group_task("g1"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let mut request = h.implement_isolated(&url, true);
+    let mut config = groups_on();
+    config.kinds.insert(
+        "triage".into(),
+        serde_json::from_value(json!({ "enabled": true })).unwrap(),
+    );
+    request.config.as_mut().unwrap().subagents = config;
+    h.start(request).await;
+    h.run_end().await;
+    assert_eq!(
+        in_view(&h, "src/extra.rs").as_deref(),
+        Some("extra by the fixer\n")
+    );
+    let groups = crate::overlay::chats::saved_groups(&h.dialog_id);
+    assert!(
+        groups[0]
+            .before
+            .iter()
+            .any(|(p, b)| p == "src/extra.rs"
+                && matches!(b, crate::overlay::chats::Before::File { .. })),
+        "{:?}",
+        groups[0].before
+    );
+    crate::overlay::chats::redo_group(&h.dialog_id, &groups[0].name).unwrap();
+    assert_eq!(
+        in_view(&h, "src/extra.rs").as_deref(),
+        Some("extra by the lead\n")
+    );
+}
