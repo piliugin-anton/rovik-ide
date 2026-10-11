@@ -469,6 +469,7 @@ mod tests {
     fn scope(files: &[&str]) -> WriteScope {
         let step = super::super::plan::PlanStep {
             number: 0,
+            written: None,
             title: String::new(),
             files: files
                 .iter()

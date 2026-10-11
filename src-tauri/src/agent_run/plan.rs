@@ -397,8 +397,12 @@ pub struct PlanFile {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStep {
-    /// As numbered in the plan.
+    /// As numbered in the plan, or its place when the plan's numbers don't
+    /// go up one by one (P4.4).
     pub number: usize,
+    /// The number the plan shows, when it isn't `number` (`1. 2. 2. 3.`:
+    /// the last is step 4, written "3.").
+    pub written: Option<usize>,
     pub title: String,
     /// The files it names, each once, in order.
     pub files: Vec<PlanFile>,
@@ -406,6 +410,16 @@ pub struct PlanStep {
     pub body: String,
     /// `Group: <name>`: steps that may be built side by side (F03).
     pub group: Option<String>,
+}
+
+impl PlanStep {
+    /// "4", or "4 (numbered 3. in the plan)": how messages name it.
+    pub fn named(&self) -> String {
+        match self.written {
+            Some(w) => format!("{} (numbered {w}. in the plan)", self.number),
+            None => self.number.to_string(),
+        }
+    }
 }
 
 static STEP_NUMBER: LazyLock<Regex> =
@@ -749,6 +763,7 @@ pub fn steps(markdown: &str) -> Vec<PlanStep> {
             let files = step_files(raw);
             PlanStep {
                 number,
+                written: written[i].filter(|w| *w != number),
                 title: step_title(&rest),
                 files,
                 body: raw.trim_end().to_string(),
@@ -821,7 +836,7 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
                 missing.push(t.clone());
                 problems.push(format!(
                     "Step {} names `{t}`, which is outside the project: use a path inside it.",
-                    step.number
+                    step.named()
                 ));
             }
         }
@@ -833,14 +848,14 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
             match creator {
                 Some(n) if n > step.number && !exists(&file.path) => problems.push(format!(
                     "Step {} uses `{}`, which step {n} creates: put the steps in an order where a file is created before it's used.",
-                    step.number, file.path
+                    step.named(), file.path
                 )),
                 Some(_) => {}
                 None if !exists(&file.path) && !missing.contains(&file.path) => {
                     missing.push(file.path.clone());
                     problems.push(format!(
                         "Step {} names `{}`, which isn't in the project: fix the path, or mark it \"(new)\" if the step creates it.",
-                        step.number, file.path
+                        step.named(), file.path
                     ));
                 }
                 None => {}
@@ -1625,6 +1640,29 @@ mod tests {
         assert_eq!(s[2].group.as_deref(), Some("pages"));
         assert!(!s[0].body.contains('\r'));
         assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+    }
+
+    /// Round 2, P4.4: `1. 2. 2. 3.` is steps 1 to 4, and the last two say
+    /// what the plan numbers them, in messages too.
+    #[test]
+    fn duplicate_number_in_the_middle() {
+        let plan = "# P\n\n## Steps\n\n1. **A**\n   - `src/a.rs`: add a.\n\
+            2. **B**\n   - `src/b.rs`: add b.\n2. **C**\n   - `src/c.rs`: add c.\n\
+            3. **D**\n   - `src/gone.rs`: add d.\n\n## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.iter().map(|s| s.number).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert_eq!(
+            s.iter().map(|s| s.written).collect::<Vec<_>>(),
+            [None, None, Some(2), Some(3)]
+        );
+        let tree = Tree::new(&["src/a.rs", "src/b.rs", "src/c.rs"]);
+        let p = project_problems(plan, &tree.0);
+        assert!(
+            p[0].starts_with("Step 4 (numbered 3. in the plan) names `src/gone.rs`"),
+            "{p:?}"
+        );
+        // Numbers that go up one by one are as written.
+        assert!(steps(REAL_PLAN).iter().all(|s| s.written.is_none()));
     }
 
     #[test]

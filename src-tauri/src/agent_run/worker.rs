@@ -324,6 +324,12 @@ pub fn brief(p: &BriefParts) -> String {
         "# Your step: {}. {}\n\nYou carry out one step of the plan `{}`, \"{title}\".",
         p.step.number, p.step.title, p.plan_path
     );
+    if let Some(w) = p.step.written {
+        out.push_str(&format!(
+            " The plan numbers it \"{w}.\"; steps are counted in order, so it's step {} here.",
+            p.step.number
+        ));
+    }
     if !summary.is_empty() {
         out.push_str(&format!(
             "\n\n## The plan's summary\n\n{}",
