@@ -4283,7 +4283,13 @@ async fn a_conflict_in_the_only_landing_member_still_saves_the_group() {
             ("# Your step: 3.", vec![Reply::Text(blocked)]),
             ("# Your step: 4.", vec![Reply::Text(blocked)]),
         ],
-        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+        vec![
+            // The chat's own version of the file the group then lands.
+            write_call("l0", "src/api_users.rs", "// api users, by the lead\n"),
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Done."),
+        ],
     )
     .await;
     h.start(h.implement_isolated(&url, false)).await;
@@ -4307,7 +4313,18 @@ async fn a_conflict_in_the_only_landing_member_still_saves_the_group() {
         "{:?}",
         groups[0].before
     );
-    assert!(crate::overlay::chats::group_blob_count(&h.dialog_id) > 0);
+    // What api_users.rs was (the lead's version) is kept; nothing of the
+    // conflicting users.rs, which didn't land.
+    let referenced: usize = groups[0]
+        .before
+        .iter()
+        .map(|(_, b)| match b {
+            crate::overlay::chats::Before::File { base, .. } => 1 + usize::from(base.is_some()),
+            _ => 0,
+        })
+        .sum();
+    assert!(referenced > 0, "{:?}", groups[0].before);
+    assert_eq!(crate::overlay::chats::group_blob_count(&h.dialog_id), referenced);
 }
 
 /// P1.2: a conflict (the user edited the file meanwhile) lands the rest of
