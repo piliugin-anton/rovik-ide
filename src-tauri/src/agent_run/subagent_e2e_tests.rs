@@ -4013,3 +4013,137 @@ async fn a_workers_commands_run_under_the_chats_isolation() {
     }
     assert!(result("e3").starts_with("Error"), "{}", result("e3"));
 }
+
+/// A test writer asked more (A04) keeps its limits: test files only, the
+/// change's code hidden, checks only with bash.
+#[tokio::test]
+async fn a_test_writer_continued_keeps_its_limits() {
+    let h = harness(&[
+        (
+            "src/greet.ts",
+            "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n",
+        ),
+        ("src/main.ts", "console.log('hi');\n"),
+        (".rovik/plans/greeter.md", TEST_PLAN),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![
+                write_call("w1", "src/greet.test.ts", "test('greets', () => {});\n"),
+                Reply::Text(TEST_REPORT),
+            ],
+        )],
+        vec![test_task("tw"), Reply::Text("Tests are written.")],
+    )
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..quiet_permissions()
+    };
+    let mut request = h.request(&url, StartKind::Send { message }, permissions.clone());
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    h.run_end().await;
+    let child = h.child_of("tw").await;
+    let handle: &'static str =
+        Box::leak(subagent::handle(subagent::Kind::TestWriter, &child.id).into_boxed_str());
+
+    // Asked to "also fix the bug": it still can't touch or read the code.
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![
+                Reply::Calls(vec![
+                    (
+                        "f1",
+                        "write",
+                        json!({ "path": "src/greet.ts", "content": "fixed\n" }),
+                    ),
+                    ("f2", "read", json!({ "path": "src/greet.ts" })),
+                    ("f3", "bash", json!({ "command": "cat src/greet.ts" })),
+                ]),
+                Reply::Text(TEST_REPORT),
+            ],
+        )],
+        vec![
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": handle, "goal": "also fix the bug in greet" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    let mut request = h.request(&url, Harness::send("Fix greet"), permissions);
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    h.run_end().await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("no result for {id}"))
+            .content
+            .clone()
+    };
+    assert!(
+        result("f1").contains("isn't a test file"),
+        "{}",
+        result("f1")
+    );
+    assert!(
+        result("f2").contains("one of the files the change touches"),
+        "{}",
+        result("f2")
+    );
+    assert!(
+        result("f3").contains("The test writer runs only"),
+        "{}",
+        result("f3")
+    );
+    assert!(h.file("src/greet.ts").unwrap().contains("Hello"));
+}
+
+/// A worker whose report starts repeating itself is cut there, not taken
+/// as stopped by the user: its report stands and its changes are kept.
+#[tokio::test]
+async fn a_worker_cut_for_repeating_itself_keeps_its_work() {
+    let h = plan_harness(&[("a.txt", "old\n")]).await;
+    let looping: &'static str = Box::leak(
+        format!(
+            "## Summary\nReplaced the line with hello.\n\n## Changed files\n- `a.txt`: changed\n\n## Open questions\nNone\n\n{}",
+            "Sigh. I'll just output it. ".repeat(80)
+        )
+        .into_boxed_str(),
+    );
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            // Still streaming when it's cut: the request is cancelled.
+            vec![
+                write_call("w1", "a.txt", "hello\n"),
+                Reply::Hang(Some(looping)),
+            ],
+        )],
+        vec![step("s1", 1), Reply::Text("Stopping here.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let r = h.task_result("s1").await.content;
+    assert!(!r.contains("stopped"), "{r}");
+    assert!(r.contains("Status: done"), "{r}");
+    assert!(r.contains("Replaced the line with hello."), "{r}");
+    assert_eq!(h.file("a.txt").as_deref(), Some("hello\n"));
+}

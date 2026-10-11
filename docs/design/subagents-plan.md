@@ -1276,3 +1276,24 @@ fixes. This affected every run, with or without subagents.
 - Test: in Plan mode with every kind on, the schema offers scouts only.
   The three calls are refused, no file changes, and no subagent chat is
   started. The test fails without the fix.
+
+### Review fixes: a continued test writer, and a cut-off report
+
+- **A test writer asked more keeps its limits** (review item 7). A
+  follow-up (`task{continue}`) only re-applied a worker's scope, so a
+  continued test writer could write any file, read the code under test
+  and run builds. Now `start_follow_up` gives a test writer the same
+  limits as its first run (`limit_test_writer`): test files only, the
+  change's files hidden (`test_writer_hidden`, worked out again so that
+  files changed since are hidden too) and light commands only.
+- **A subagent cut for repeating itself isn't taken as stopped** (review
+  item 8). To cut the reply, the stream is cancelled, and `drive_sub`
+  read the cancelled request as the user's Stop. The worker's result said
+  "The user stopped it", and its changes were rolled back. Now a cut
+  reply is taken as the lead's loop takes it: what came before the
+  repetition is the report, and the format check decides the status.
+- Tests (each fails without its fix):
+  - a test writer continued in a later run still can't write
+    `src/greet.ts`, read it, or `cat` it;
+  - a worker whose report starts repeating while it streams ends as done,
+    with its report and its change kept.

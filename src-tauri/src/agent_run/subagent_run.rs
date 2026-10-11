@@ -450,6 +450,11 @@ impl<R: Runtime> Run<R> {
             sub.scope = Some(WriteScope::for_step(step));
             sub.step = Some(step.number);
         }
+        // A test writer asked more keeps its limits.
+        if kind == Kind::TestWriter {
+            let hidden = self.test_writer_hidden().await;
+            self.limit_test_writer(&mut sub, hidden);
+        }
         self.close_child_calls(&child.id).await?;
         let mut message = new_message(
             "user",
@@ -910,7 +915,10 @@ impl<R: Runtime> Run<R> {
             self.note_sub_progress("");
             let turn = self.model_turn().await?;
 
-            if let Some(error) = turn.failure {
+            // Cut for repeating itself: the stream was cancelled to cut it,
+            // which isn't a failure or the user's Stop (handled below).
+            let repeated = turn.repetition_cut.is_some() && !self.stopped();
+            if let Some(error) = turn.failure.filter(|_| !repeated) {
                 self.store_failed_turn(&turn.message_id, &turn.text, turn.reasoning, &error)
                     .await?;
                 if !turn.text.trim().is_empty() {
@@ -1257,23 +1265,7 @@ impl<R: Runtime> Run<R> {
     ) -> Result<Run<R>, String> {
         let plan = self.implementing_plan().await;
         let root = self.root.clone().unwrap_or_default();
-        let mut touched: Vec<String> = Vec::new();
-        if let Some((_, text)) = &plan {
-            for step in super::plan::steps(text) {
-                for f in step.files {
-                    let key = super::repair::rel_key(&root, &f.path);
-                    if !f.path.ends_with('/') && !touched.contains(&key) {
-                        touched.push(key);
-                    }
-                }
-            }
-        }
-        for key in self.touched_keys() {
-            if !touched.contains(&key) {
-                touched.push(key);
-            }
-        }
-        touched.retain(|k| !super::project::is_test_path(k));
+        let touched = self.test_writer_hidden().await;
         let outlines: Vec<(String, Option<String>)> = touched
             .iter()
             .map(|k| {
@@ -1325,9 +1317,7 @@ impl<R: Runtime> Run<R> {
         let mut sub = self
             .new_sub(Kind::TestWriter, &tc.id, budget, config)
             .await?;
-        sub.tests_only = true;
-        sub.hidden = touched;
-        sub.light_bash = true;
+        self.limit_test_writer(&mut sub, touched);
         let goal = brief.goal.clone();
         match &existing {
             Some(_) => self.close_child_calls(&child_id).await?,
@@ -1337,6 +1327,39 @@ impl<R: Runtime> Run<R> {
             }
         }
         self.launch_child(child_id, &tc.id, &goal, sub)
+    }
+
+    /// The files the test writer may not read (E02): those the plan names
+    /// and those this run changed, test files aside.
+    async fn test_writer_hidden(&self) -> Vec<String> {
+        let plan = self.implementing_plan().await;
+        let root = self.root.clone().unwrap_or_default();
+        let mut touched: Vec<String> = Vec::new();
+        if let Some((_, text)) = &plan {
+            for step in super::plan::steps(text) {
+                for f in step.files {
+                    let key = super::repair::rel_key(&root, &f.path);
+                    if !f.path.ends_with('/') && !touched.contains(&key) {
+                        touched.push(key);
+                    }
+                }
+            }
+        }
+        for key in self.touched_keys() {
+            if !touched.contains(&key) {
+                touched.push(key);
+            }
+        }
+        touched.retain(|k| !super::project::is_test_path(k));
+        touched
+    }
+
+    /// The test writer's limits (E02): test files only, the change's code
+    /// hidden, checks only with bash. Every run of it, follow-ups included.
+    fn limit_test_writer(&self, sub: &mut SubCtx, hidden: Vec<String>) {
+        sub.tests_only = true;
+        sub.hidden = hidden;
+        sub.light_bash = true;
     }
 
     /// The step's files as they changed in this run so far, for its brief.
