@@ -118,12 +118,10 @@ pub fn group_call(args_json: &str) -> Option<String> {
 impl GroupCtx {
     /// Who else owns something inside the folder `dir`: the contract, or a
     /// worker with a file or folder there.
+    /// Every spelling of `dir` (round 2), in any case: refusing a folder
+    /// that differs only in case is the safe side.
     pub fn owner_within(&self, dir: &str) -> Option<String> {
-        let dir = dir.trim_end_matches('/');
-        let inside = |p: &str| {
-            let p = p.trim_end_matches('/');
-            p == dir || p.starts_with(&format!("{dir}/"))
-        };
+        let inside = |p: &str| super::paths::under_as(dir, p, true);
         if self.contract.iter().any(|c| inside(c)) {
             return Some("the contract".into());
         }
@@ -140,9 +138,10 @@ pub fn refusal(ctx: &GroupCtx, paths: &[String]) -> Option<String> {
     let owned: Vec<String> = paths
         .iter()
         .filter_map(|p| {
-            let path = p.trim_end_matches('/');
+            let slashed = p.replace('\\', "/");
+            let path = slashed.trim_end_matches('/');
             ctx.owner_of(path)
-                .or_else(|| p.ends_with('/').then(|| ctx.owner_within(path)).flatten())
+                .or_else(|| slashed.ends_with('/').then(|| ctx.owner_within(path)).flatten())
                 .map(|o| format!("`{p}` ({o})"))
         })
         .collect();
@@ -1147,6 +1146,24 @@ mod tests {
             attribute("src/lib.rs:3", &owners, false),
             "seam: no worker owns it"
         );
+    }
+
+    /// Round 2, P0.1: a folder grant is refused however the folder is
+    /// spelled.
+    #[test]
+    fn owner_within_sees_every_spelling() {
+        let ctx = GroupCtx {
+            name: "pages".into(),
+            label: "w1".into(),
+            others: vec![("w2".into(), scope(&["src/pages/Users.tsx"]))],
+            contract: Vec::new(),
+            granted: GroupGrants::default(),
+        };
+        for folder in ["./src//pages/", "src\\pages\\", "SRC/", "src/./pages/"] {
+            assert!(refusal(&ctx, &[folder.into()]).is_some(), "{folder}");
+        }
+        assert!(refusal(&ctx, &["src/api/".into()]).is_none());
+        assert!(refusal(&ctx, &["src/pages2/".into()]).is_none());
     }
 
     #[test]
