@@ -124,8 +124,10 @@ impl Finding {
 }
 
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(step\s+\d+|\S+)\s*(?:[—–-]+\s*(.*))?$")
-        .unwrap()
+    Regex::new(
+        r"(?i)^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(`?step\s+\d+`?:?|\S+)\s*(?:[—–-]+\s*(.*))?$",
+    )
+    .unwrap()
 });
 // P4.5: `- **Scenario:**` and `- **Scenario**:` too.
 static FIELD: LazyLock<Regex> = LazyLock::new(|| {
@@ -152,7 +154,10 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
     let plain = body.trim().trim_end_matches('.').trim().to_lowercase();
     // P4.5: "None." with a reason after it is none too.
     let first_word: String = plain.chars().take_while(|c| c.is_alphabetic()).collect();
-    if first_word == "none" || plain.starts_with("no findings") {
+    // Round 2: "None of these break the build, but:" before findings isn't.
+    if (first_word == "none" || plain.starts_with("no findings"))
+        && !body.lines().any(|l| HEADER.is_match(l))
+    {
         return Ok(Vec::new());
     }
     #[derive(Default)]
@@ -161,6 +166,9 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
         fields: Vec<(String, String)>,
     }
     let mut drafts: Vec<Draft> = Vec::new();
+    // A line of prose before the first finding ("None of these break the
+    // build, but:") is the reviewer's lead-in, not a finding.
+    let has_header = body.lines().any(|l| HEADER.is_match(l));
     for line in body.lines() {
         if let Some(c) = HEADER.captures(line) {
             drafts.push(Draft {
@@ -178,7 +186,7 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             continue;
         }
         let Some(d) = drafts.last_mut() else {
-            if line.trim().is_empty() {
+            if line.trim().is_empty() || (has_header && !FIELD.is_match(line)) {
                 continue;
             }
             return Err(format!(
@@ -767,6 +775,36 @@ impl<R: Runtime> Run<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2, P4.5: "None of …" followed by findings isn't "none".
+    #[test]
+    fn none_followed_by_findings_is_not_none() {
+        let text = "## Findings\n\nNone of these break the build, but:\n\n\
+            1. [high] src/a.ts:3 — X\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        let found = parse_findings(text).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].path.as_deref(), Some("src/a.ts"));
+        // Alone, it still is.
+        assert!(
+            parse_findings("## Findings\n\nNone of the changes break anything.")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Round 2 (§4.2): a plan finding's step location with a colon after
+    /// it, or in backticks.
+    #[test]
+    fn step_location_with_colon_or_backticks() {
+        for location in ["Step 3:", "`Step 3`", "`Step 3`:", "step 3"] {
+            let text = format!(
+                "## Findings\n\n1. [medium] {location} — The order is wrong\n - Scenario: s\n - Fix: f\n - Confidence: plausible"
+            );
+            let found = parse_findings(&text).unwrap_or_else(|e| panic!("{location}: {e}"));
+            assert_eq!(found[0].step, Some(3), "{location}");
+            assert_eq!(found[0].title, "The order is wrong", "{location}");
+        }
+    }
 
     const GOOD: &str = "## Findings\n\n\
         1. [high] src/a.ts:42 — Off by one in the loop\n   \

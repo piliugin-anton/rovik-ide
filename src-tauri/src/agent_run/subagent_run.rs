@@ -566,12 +566,19 @@ impl<R: Runtime> Run<R> {
             let hidden = self.test_writer_hidden().await;
             self.limit_test_writer(&mut sub, hidden);
         }
-        // A group worker whose copy was kept goes on in it (P1.2, P1.3).
-        let kept_view = (kind == Kind::Worker
-            && crate::overlay::chats::parent_of(&child.id).as_deref()
-                == Some(self.dialog_id.as_str()))
-        .then(|| crate::overlay::chats::get(&child.id).map(|o| o.view.clone()))
-        .flatten();
+        // A group worker whose copy was kept goes on in it (P1.2, P1.3),
+        // opened again if the app closed since (round 2).
+        let kept_view = if kind == Kind::Worker {
+            let (parent, id) = (self.dialog_id.clone(), child.id.clone());
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::overlay::chats::reopen_child(&parent, &id).map(|o| o.view.clone())
+            })
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
         if kept_view.is_some() {
             sub.kept_copy = true;
             sub.light_bash = true;
@@ -994,17 +1001,8 @@ impl<R: Runtime> Run<R> {
                 .entry(w.path.clone())
                 .or_insert_with(|| w.original.clone());
             let abs = tools::to_absolute_path(&w.path, &root);
-            if let Some(cp) = self.checkpoint.as_mut().filter(|c| !c.too_big) {
-                // What the round started with: the subagent's own original
-                // when it's from within the round; an older one (the
-                // project's copy, the run's start) would undo earlier
-                // rounds, so then the file as it is now.
-                cp.files.entry(w.path.clone()).or_insert_with(|| {
-                    match w.original.source {
-                        subagent::Source::ViewAtRoundStart => w.original.bytes.clone(),
-                        _ => std::fs::read(&abs).ok(),
-                    }
-                });
+            if let Some(cp) = self.checkpoint.as_mut() {
+                note_round_start(cp, w);
             }
             if let Ok(now) = std::fs::read(&abs) {
                 self.seen.record(std::path::Path::new(&abs), &now);
@@ -1973,7 +1971,7 @@ fn subagent_log_line(sub: &SubCtx, dialog_id: &str, model: &str, result: &SubRes
 }
 
 /// The plan's steps other than `n`, with their scopes (P2.3).
-fn other_steps(steps: &[super::plan::PlanStep], n: usize) -> Vec<(usize, WriteScope)> {
+pub(super) fn other_steps(steps: &[super::plan::PlanStep], n: usize) -> Vec<(usize, WriteScope)> {
     steps
         .iter()
         .filter(|s| s.number != n)
@@ -1981,9 +1979,67 @@ fn other_steps(steps: &[super::plan::PlanStep], n: usize) -> Vec<(usize, WriteSc
         .collect()
 }
 
+/// What the round started with, for a file a subagent changed. The
+/// checkpoint holds every file the chat changed, so a path missing from it
+/// was never changed: an older original (the project's copy, the run's
+/// start) is still what the round started with, and the file as it is now
+/// is the subagent's write.
+fn note_round_start(cp: &mut super::repair::Checkpoint, w: &ChildWrite) {
+    if !cp.too_big {
+        cp.files
+            .entry(w.path.clone())
+            .or_insert_with(|| w.original.bytes.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2, P0.3: a project-copy original goes into the checkpoint as
+    /// it is, not the bytes the subagent wrote; a path the round already
+    /// has keeps its entry.
+    #[test]
+    fn absorb_keeps_a_project_copy_original_in_the_checkpoint() {
+        let mut cp = super::super::repair::Checkpoint::default();
+        cp.files.insert("b.bin".into(), Some(b"round".to_vec()));
+        let original = |bytes: &[u8], source| subagent::Original::new(Some(bytes.to_vec()), source);
+        for (path, source) in [
+            ("a.bin", subagent::Source::ProjectCopy),
+            ("b.bin", subagent::Source::ProjectCopy),
+            ("c.bin", subagent::Source::ViewAtRunStart),
+        ] {
+            let w = ChildWrite {
+                path: path.into(),
+                original: original(b"\xfe\x00old", source),
+            };
+            note_round_start(&mut cp, &w);
+        }
+        note_round_start(
+            &mut cp,
+            &ChildWrite {
+                path: "new.rs".into(),
+                original: subagent::Original::new(None, subagent::Source::ProjectCopy),
+            },
+        );
+        assert_eq!(cp.files["a.bin"].as_deref(), Some(&b"\xfe\x00old"[..]));
+        assert_eq!(cp.files["b.bin"].as_deref(), Some(&b"round"[..]));
+        assert_eq!(cp.files["c.bin"].as_deref(), Some(&b"\xfe\x00old"[..]));
+        assert_eq!(cp.files["new.rs"], None);
+        // Over the limit: no rollback, so nothing is noted.
+        let mut big = super::super::repair::Checkpoint {
+            too_big: true,
+            ..Default::default()
+        };
+        note_round_start(
+            &mut big,
+            &ChildWrite {
+                path: "a.bin".into(),
+                original: original(b"x", subagent::Source::ProjectCopy),
+            },
+        );
+        assert!(big.files.is_empty());
+    }
 
     fn ctx() -> SubCtx {
         let profile: ModelProfile = serde_json::from_value(json!({

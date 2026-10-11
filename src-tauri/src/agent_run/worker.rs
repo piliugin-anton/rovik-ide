@@ -675,12 +675,20 @@ pub fn writer_command_problem(
             "Error: `{command}` writes a file with a redirect. {why}."
         ));
     }
+    let is_file = |w: &str| root.is_some_and(|r| r.join(w).exists()) || Path::new(w).is_absolute();
+    // An option's value is a name too: `grep --file=src/lib.rs`.
     let names_file = |seg: &[String]| {
-        seg.iter()
-            .skip(1)
-            .filter(|w| !w.starts_with('-'))
-            .any(|w| root.is_some_and(|r| r.join(w).exists()) || Path::new(w).is_absolute())
+        seg.iter().skip(1).any(|w| match w.strip_prefix('-') {
+            Some(option) => option.split_once('=').is_some_and(|(_, v)| is_file(v)),
+            None => is_file(w),
+        })
     };
+    // Round 2, P2.5: `| head -c 99999 < src/lib.rs` reads the file.
+    if test_writer {
+        if let Some(file) = parsed.reads_from.iter().find(|f| f.as_str() != "/dev/null") {
+            return Some(format!("Error: `{command}` reads `{file}`. {why}."));
+        }
+    }
     let mut first = true;
     for (i, seg) in parsed.segments.iter().enumerate() {
         // P2.5: a filter's arguments the shell expands (`*`, `~`, `$PWD`)
@@ -700,6 +708,8 @@ pub fn writer_command_problem(
                 ||
             // `cargo test 2>&1 | tail -50`, not `cat src/lib.rs`.
             !first && FILTERS.contains(&program(head).as_str()) && program(head) != "tee" && !names_file(seg) && !expands
+                // Round 2, P2.5: and writes nothing (`sort -o`, `uniq in out`).
+                && super::permissions::segment_is_read_only(seg)
         } else {
             super::permissions::segment_is_read_only(seg)
         };
@@ -984,6 +994,60 @@ mod tests {
         ] {
             assert!(worker(bad).is_some(), "{bad}");
         }
+    }
+
+    fn tw_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("writer-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "x").unwrap();
+        dir
+    }
+
+    /// Round 2, P2.5: a filter after the check may not write a file.
+    #[test]
+    fn filters_that_write_files_are_refused() {
+        let dir = tw_dir("filters");
+        let tw = |c: &str| writer_command_problem(c, true, Some(&dir));
+        for bad in [
+            "cargo test | sort -o src/new.rs",
+            "cargo test | sort -osrc/new.rs",
+            "cargo test | sort -ro src/new.rs",
+            "cargo test | uniq - src/new.rs",
+            "cargo test | sort --output=src/new.rs",
+        ] {
+            assert!(tw(bad).is_some(), "{bad}");
+        }
+        for ok in [
+            "cargo test | sort",
+            "cargo test | uniq -c",
+            "cargo test | sort -r | uniq -c",
+        ] {
+            assert_eq!(tw(ok), None, "{ok}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round 2, P2.5: `<` reads a file, and a pattern file is a file.
+    #[test]
+    fn input_redirection_names_a_file() {
+        let dir = tw_dir("input");
+        let tw = |c: &str| writer_command_problem(c, true, Some(&dir));
+        for bad in [
+            "cargo test 2>&1 | head -c 99999 < src/lib.rs",
+            "cargo test | cat < ./src/lib.rs",
+            "cargo test | tr a b <src/lib.rs",
+            "cargo test | grep --file=src/lib.rs",
+            "cargo test | grep -f src/lib.rs",
+        ] {
+            assert!(tw(bad).is_some(), "{bad}");
+        }
+        assert_eq!(tw("cargo test < /dev/null | tail -5"), None);
+        // A heredoc is text, not a file.
+        assert_eq!(
+            super::super::permissions::parse_command("cat <<EOF").reads_from,
+            Vec::<String>::new()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

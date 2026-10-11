@@ -891,11 +891,16 @@ impl<R: Runtime> Run<R> {
         // cache race is possible across processes.
         // P3.5: outside an isolated chat, what a command changed can't be
         // rolled back; the round's rollback says which ran.
-        if tool_name == "bash" && auth.refusal.is_none() && !self.isolated() {
+        if tool_name == "bash" && auth.refusal.is_none() {
             let command = permissions::str_arg(&args_json, "command").unwrap_or_default();
-            if self.checkpoint.is_some() && permissions::command_modifies_files(&command) {
-                self.round_commands
-                    .push(crate::chat_db::store::char_prefix(&command, 120).to_string());
+            if permissions::command_modifies_files(&command) {
+                // Round 2, P3.6: a fix made with a command (`sed -i`) is a
+                // change the checks run on again before "verified".
+                self.writes_since_verify = true;
+                if self.checkpoint.is_some() && !self.isolated() {
+                    self.round_commands
+                        .push(crate::chat_db::store::char_prefix(&command, 120).to_string());
+                }
             }
         }
         if tool_name == "bash" && !failed {
@@ -1561,14 +1566,22 @@ impl<R: Runtime> Run<R> {
                 Vec::new(),
             );
         }
-        // Another step's files, in every mode.
+        // Another step's files, in every mode; a folder, when another
+        // step's file or folder is in it (round 2).
         if let Some((n, p)) = paths.iter().find_map(|p| {
             if scope.allows(p.trim_end_matches('/'), true) {
                 return None;
             }
             sub.other_steps
                 .iter()
-                .find(|(_, s)| s.allows(p.trim_end_matches('/'), true))
+                .find(|(_, s)| {
+                    s.allows(p.trim_end_matches('/'), true)
+                        || p.ends_with('/')
+                            && s.files
+                                .iter()
+                                .chain(&s.folders)
+                                .any(|f| super::paths::under(p, f))
+                })
                 .map(|(n, _)| (*n, p))
         }) {
             return (

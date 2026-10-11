@@ -636,3 +636,70 @@ async fn a_regression_past_the_checkpoint_limit_is_reported_not_rolled_back() {
         reports[1]
     );
 }
+
+/// Round 2, P3.2: a lint error the fix itself left in the file it wrote,
+/// printed with an absolute path as linters do, is reported with the
+/// failures; the fix stays (no rollback).
+#[tokio::test]
+async fn lint_slip_e2e_no_rollback() {
+    if !has_node() {
+        return;
+    }
+    const LINT: &str = r#"
+const fs = require('fs');
+if (fs.readFileSync('a.js', 'utf8').includes('require')) {
+  console.log(require('path').resolve('a.js') + ":1:7: error: 'path' is assigned a value but never used");
+  process.exit(1);
+}
+"#;
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "lint": "node lint.js", "test": "node run.js" } }"#,
+        ),
+        ("run.js", RUNNER),
+        ("lint.js", LINT),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+        ("a.js", "module.exports = 1;\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        write("w1", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        // Round 2 fixes the test, and leaves an unused import behind.
+        write("w2", "a.txt", "good\n"),
+        write(
+            "w3",
+            "a.js",
+            "const path = require('path');\nmodule.exports = 1;\n",
+        ),
+        Reply::Text("Done."),
+        // Round 3: the slip, tidied.
+        write("w4", "a.js", "module.exports = 1;\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let rounds = records(&h.messages().await);
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("failed"), &json!("failed"), &json!("passed")],
+        "{rounds:#?}"
+    );
+    assert_eq!(
+        rounds[1]["progress"]["verdict"], "progress",
+        "{:#}",
+        rounds[1]
+    );
+    assert!(rounds[1]["rolledBack"].is_null(), "{:#}", rounds[1]);
+    assert_eq!(
+        h.file("a.txt").as_deref(),
+        Some("good\n"),
+        "the fix is kept"
+    );
+}

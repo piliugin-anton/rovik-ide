@@ -308,6 +308,15 @@ impl<R: Runtime> Run<R> {
         // P6.8: copies kept from an earlier run of these steps (a conflict
         // or a stop left them) would land stale work over this run's:
         // they're discarded first, and the result says so.
+        // Round 2, P1.3: discarding a copy removes its landing journal, so
+        // a landing of one that stopped half way is finished first.
+        let id = self.dialog_id.clone();
+        tauri::async_runtime::spawn_blocking(move || chats::finish_landing_into(&id))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+            .map_err(|e| {
+                format!("Error: the group can't start: {e}. Tell the user; landing or discarding the chat's changes says what's wrong.")
+            })?;
         let mut stale = Vec::new();
         for child in chats::children_of(&self.dialog_id) {
             if let Some(step) = self.worker_step_of(&child).await {
@@ -396,7 +405,11 @@ impl<R: Runtime> Run<R> {
             match status {
                 Joined::Landed => landed_any = true,
                 Joined::Failed => retry.push(member),
-                Joined::Conflict(text) => conflict = Some(text),
+                Joined::Conflict(text, landed) => {
+                    // Round 2, P1.2: what of it landed is the group's too.
+                    landed_any |= landed;
+                    conflict = Some(text);
+                }
                 Joined::Skipped | Joined::Kept => {}
             }
             lines.push(entry.0);
@@ -443,7 +456,8 @@ impl<R: Runtime> Run<R> {
                 workers.push(entry.1);
                 match status {
                     Joined::Landed => landed_any = true,
-                    Joined::Conflict(text) => {
+                    Joined::Conflict(text, landed) => {
+                        landed_any |= landed;
                         conflict = Some(text);
                         break;
                     }
@@ -587,6 +601,9 @@ impl<R: Runtime> Run<R> {
         sub.scope = Some(scope);
         sub.step = Some(member.step.number);
         sub.light_bash = true;
+        // Round 2, P2.3: no grant of a step outside the group either.
+        sub.other_steps =
+            super::subagent_run::other_steps(&super::plan::steps(plan), member.step.number);
         sub.group = Some(GroupCtx {
             name: group.to_string(),
             label: member.label.clone(),
@@ -757,6 +774,7 @@ impl<R: Runtime> Run<R> {
                 // both versions saved for the lead, and its copy is kept.
                 let versions = self.save_conflict(&member.label, child_view.as_deref(), &conflicts);
                 let mut except: Vec<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+                chats::note_conflicts(&member.child_id, std::path::Path::new(&root), &except);
                 except.extend(outside.iter().cloned());
                 let rest = land_copy(&member.child_id, except).await;
                 let landed_paths = rest.as_ref().cloned().unwrap_or_default();
@@ -774,7 +792,7 @@ impl<R: Runtime> Run<R> {
                 text.push_str(&outside_note);
                 text.push_str("\n\nThe steps after this one are kept, not landed yet: each says how to land it.");
                 (
-                    Joined::Conflict(text),
+                    Joined::Conflict(text, !landed_paths.is_empty()),
                     (
                         format!("{head}\nNot all landed: a conflict (below)."),
                         entry("conflict", &landed_paths),
@@ -944,6 +962,22 @@ impl<R: Runtime> Run<R> {
                 outside.join(", ")
             ));
         }
+        // Round 2, P1.2: a file it conflicted on that the lead has written
+        // since (the merge) is the lead's now: its version would conflict
+        // again, for ever.
+        let merged = chats::merged_since(child, std::path::Path::new(&root));
+        if !merged.is_empty() {
+            result.notes.push(format!(
+                "Its version of {} isn't landed: the chat's file was merged since the conflict.",
+                merged
+                    .iter()
+                    .map(|p| format!("`{p}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let mut outside = outside;
+        outside.extend(merged);
         let landed_of = |landed: &[String]| -> Vec<subagent::ChildWrite> {
             before
                 .iter()
@@ -964,6 +998,7 @@ impl<R: Runtime> Run<R> {
             Err(LandError::Conflicts(conflicts)) => {
                 let versions = self.save_conflict(&handle, view.as_deref(), &conflicts);
                 let mut except: Vec<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+                chats::note_conflicts(child, std::path::Path::new(&root), &except);
                 except.extend(outside.iter().cloned());
                 let rest = land_copy(child, except).await.unwrap_or_default();
                 result.writes = landed_of(&rest);
@@ -1036,7 +1071,8 @@ struct Joins {
 enum Joined {
     Landed,
     Failed,
-    Conflict(String),
+    /// The lead's note, and whether any of its other files landed.
+    Conflict(String, bool),
     Skipped,
     /// Finished, but its landing failed: its copy is kept (P1.3).
     Kept,

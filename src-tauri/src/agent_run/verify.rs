@@ -722,8 +722,17 @@ impl<R: Runtime> Run<R> {
             judgement = judgement.without_regression_in(&self.integrity_open);
         }
         // P3.2: an error in what the round wrote is a slip, not a regression.
+        // This round's: the checkpoint's files that differ from it now (it
+        // also holds what earlier rounds changed).
         if let Some(cp) = &self.checkpoint {
-            let written: Vec<String> = cp.files.keys().cloned().collect();
+            let written: Vec<String> = cp
+                .files
+                .iter()
+                .filter(|(key, before)| {
+                    std::fs::read(super::tools::to_absolute_path(key, &root)).ok() != **before
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
             judgement = judgement.keeping_slips_in(&written);
         }
         // R05: what weakens the checks, and fewer tests than last round.

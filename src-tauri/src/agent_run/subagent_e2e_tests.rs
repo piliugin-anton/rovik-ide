@@ -2946,6 +2946,91 @@ async fn a_rolled_back_round_puts_a_workers_non_utf8_file_back_exactly() {
     assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
 }
 
+/// Round 2, P0.3: in an isolated chat a worker's original is the
+/// project's copy. For a file the chat never changed, that is what the
+/// round started with, so the round's rollback removes the file the
+/// worker created (it used to "restore" the worker's own write).
+#[tokio::test]
+async fn an_isolated_step_workers_new_file_is_removed_by_the_rounds_rollback() {
+    if !crate::vfs::mount_works()
+        || std::process::Command::new("npm")
+            .arg("--version")
+            .output()
+            .is_err()
+    {
+        return;
+    }
+    let plan = "# Extra\n\nFix the greeting.\n\n## Steps\n\n\
+        1. **Greeting**\n   - `a.txt`: say good.\n\
+        2. **Extra**\n   - `src/extra.rs` (new): add the helper.\n\n\
+        ## Validation\n- `npm test`\n";
+    let check = "const fs = require('fs');\n\
+        if (!fs.readFileSync('a.txt', 'utf8').includes('good')) { console.log('test t::one ... FAILED'); process.exit(1); }\n\
+        if (fs.existsSync('src/extra.rs')) { console.log('test t::one ... ok'); console.log('test t::two ... FAILED'); process.exit(1); }\n\
+        console.log('test t::one ... ok'); console.log('test t::two ... ok');\n";
+    let mut h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        ("check.js", check),
+        ("a.txt", "bad\n"),
+        ("src/lib.rs", "// lib\n"),
+        (".rovik/plans/greet.md", plan),
+    ])
+    .await;
+    h.isolate().await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 2.",
+            vec![
+                write_call("w1", "src/extra.rs", "pub fn extra() {}\n"),
+                worker_report("Added the helper.", &["src/extra.rs"]),
+            ],
+        )],
+        vec![
+            write_call("l1", "notes.txt", "looking\n"),
+            Reply::Text("Done."),
+            // The fix round: a worker, then the real fix.
+            step("s2", 2),
+            write_call("l2", "a.txt", "good\n"),
+            Reply::Text("Done."),
+            // Rolled back: the fix again, alone.
+            write_call("l3", "a.txt", "good\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let mut request = h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off);
+    request.isolate = Some(true);
+    request.config.as_mut().unwrap().permissions.verify_changes = true;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "verified");
+    let records: Vec<Value> = h
+        .messages()
+        .await
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .collect();
+    let rb = records
+        .iter()
+        .find(|r| r["status"] == "rolled-back")
+        .unwrap_or_else(|| panic!("{records:#?}"));
+    assert!(
+        rb["rolledBack"]["restored"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("src/extra.rs")),
+        "{rb:#}"
+    );
+    assert!(
+        !crate::overlay::chats::changes(&h.dialog_id)
+            .iter()
+            .any(|c| c.path() == "src/extra.rs"),
+        "the worker's file went with the round"
+    );
+}
+
 /// P2.3: extend_scope grants files, not folders beyond the step's own nor
 /// another step's files; a continued worker keeps what it was granted.
 #[tokio::test]
@@ -2997,6 +3082,59 @@ async fn scope_grants_are_bounded_and_kept_when_continued() {
     assert!(result("e3").starts_with("Granted"), "{}", result("e3"));
     assert!(!result("w2").starts_with("Error"), "{}", result("w2"));
     assert_eq!(h.file("c.txt").as_deref(), Some("two\n"));
+}
+
+/// Round 2, P2.3: a folder the step may create files in can't be granted
+/// when another step's file is in it.
+#[tokio::test]
+async fn a_folder_grant_cant_cover_another_steps_file() {
+    let plan = "# API\n\nUsers and posts.\n\n## Steps\n\n\
+        1. **Base**\n   - `src/lib.rs`: declare the api module.\n\
+        2. **Users**\n   - `src/api/users.rs` (new): add the users endpoint.\n\
+        3. **Posts**\n   - `src/api/posts.rs`: add the posts endpoint.\n\n\
+        ## Validation\n- `cargo test`\n";
+    let h = harness(&[
+        ("src/lib.rs", "// lib\n"),
+        ("src/api/posts.rs", "// posts\n"),
+        (".rovik/plans/greet.md", plan),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 2.",
+            vec![
+                Reply::Call {
+                    id: "e1",
+                    name: "extend_scope",
+                    args: json!({ "paths": ["src/api/"], "reason": "the whole module" }),
+                },
+                write_call("w1", "src/api/posts.rs", "// posts by step 2\n"),
+                write_call("w2", "src/api/users.rs", "// users\n"),
+                worker_report("Users.", &["src/api/users.rs"]),
+            ],
+        )],
+        vec![step("s2", 2), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let child = h.child_of("s2").await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    };
+    assert!(
+        result("e1").contains("is step 3's to change"),
+        "{}",
+        result("e1")
+    );
+    assert!(result("w1").starts_with("Error"), "{}", result("w1"));
+    assert!(!result("w2").starts_with("Error"), "{}", result("w2"));
+    assert_eq!(h.file("src/api/posts.rs").as_deref(), Some("// posts\n"));
 }
 
 /// P2.8: continuing a worker by the call that started it writes as much
@@ -3781,6 +3919,312 @@ const GROUP3_PLAN: &str = "# Three pages\n\nUsers, posts and a feed.\n\n## Steps
     4. **Feed**\n   - `src/feed.rs`: implement the feed with `fn posts()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\n\
     ## Validation\n- `npm test`\n";
 
+/// Round 2, P2.3: a group worker can't be granted the file of a step
+/// outside its group either.
+#[tokio::test]
+async fn a_group_worker_cant_be_granted_a_non_member_steps_file() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let plan = GROUP3_PLAN.replace(
+        "\n## Validation",
+        "5. **Second feed**\n   - `src/feed2.rs`: a second feed.\n\n## Validation",
+    );
+    let plan: &'static str = Box::leak(plan.into_boxed_str());
+    let mut h = harness(&[
+        ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
+        ("src/users.rs", "// users\n"),
+        ("src/posts.rs", "// posts\n"),
+        ("src/extra.rs", "// extra\n"),
+        ("src/feed.rs", "// feed\n"),
+        ("src/feed2.rs", "// feed2\n"),
+        (".rovik/plans/greet.md", plan),
+    ])
+    .await;
+    h.isolate().await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    Reply::Call {
+                        id: "e1",
+                        name: "extend_scope",
+                        args: json!({ "paths": ["src/feed2.rs"], "reason": "shared" }),
+                    },
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 4.",
+                vec![
+                    write_call("w3", "src/feed.rs", "feed\n"),
+                    worker_report("Feed.", &["src/feed.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    h.result_when_ready("g1").await;
+    h.run_end().await;
+    let w1 = h.child_of("g1#w1").await;
+    let granted = h
+        .messages_of(&w1.id)
+        .await
+        .into_iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("e1"))
+        .map(|m| m.content)
+        .unwrap_or_default();
+    assert!(granted.contains("is step 5's to change"), "{granted}");
+}
+
+/// Round 2, P1.2: the conflict of `a_conflict_lands_the_rest_and_keeps_every_copy`,
+/// the run over: w2's copy (its posts.rs) and w3's (feed.rs) are kept.
+async fn kept_after_a_conflict() -> Harness {
+    let mut h = harness(&[
+        ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
+        ("src/users.rs", "// users\n"),
+        ("src/posts.rs", "// posts\n"),
+        ("src/extra.rs", "// extra\n"),
+        ("src/feed.rs", "// feed\n"),
+        (".rovik/plans/greet.md", GROUP3_PLAN),
+    ])
+    .await;
+    h.isolate().await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "from w2\n"),
+                    write_call("w3", "src/extra.rs", "extra from w2\n"),
+                    Reply::Slow(
+                        1_500,
+                        Box::new(worker_report("Posts.", &["src/posts.rs", "src/extra.rs"])),
+                    ),
+                ],
+            ),
+            (
+                "# Your step: 4.",
+                vec![
+                    write_call("w4", "src/feed.rs", "feed from w3\n"),
+                    worker_report("Feed.", &["src/feed.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    edit_while_workers_run(&h, "src/posts.rs", "from w2\n", "from the user\n").await;
+    let result = h.result_when_ready("g1").await;
+    assert!(
+        result.content.contains("## The join stopped: a conflict"),
+        "{}",
+        result.content
+    );
+    h.run_end().await;
+    h
+}
+
+/// Round 2, P1.2: after the app restarts, `continue` on a kept copy goes
+/// on in that copy (opened again from disk) and lands it.
+#[tokio::test]
+async fn a_kept_copy_is_landed_by_continue_after_a_restart() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = kept_after_a_conflict().await;
+    let w3 = h.child_of("g1#w3").await;
+    crate::overlay::chats::forget_child_as_if_restarted(&w3.id);
+    assert!(crate::overlay::chats::get(&w3.id).is_none());
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 4.",
+            vec![worker_report("Nothing more to do.", &["src/feed.rs"])],
+        )],
+        vec![
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "g1#w3", "goal": "land it" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.implement_isolated(&url, false)).await;
+    let continued = h.result_when_ready("c1").await;
+    h.run_end().await;
+    assert!(
+        continued.content.contains("Its copy landed: src/feed.rs."),
+        "{}",
+        continued.content
+    );
+    let view = crate::overlay::chats::get(&h.dialog_id)
+        .unwrap()
+        .view
+        .clone();
+    assert_eq!(
+        std::fs::read_to_string(view.join("src/feed.rs"))
+            .ok()
+            .as_deref(),
+        Some("feed from w3\n")
+    );
+    assert!(!crate::overlay::chats::children_of(&h.dialog_id).contains(&w3.id));
+}
+
+/// Round 2, P1.2: once the lead has merged the conflicting file, "land it"
+/// lands the copy's other files and keeps the lead's merge, instead of
+/// conflicting again for ever.
+#[tokio::test]
+async fn a_kept_copy_lands_after_the_lead_merges_the_conflict() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = kept_after_a_conflict().await;
+    let w2 = h.child_of("g1#w2").await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 3.",
+            vec![worker_report(
+                "Nothing more to do.",
+                &["src/posts.rs", "src/extra.rs"],
+            )],
+        )],
+        vec![
+            write_call("l1", "src/posts.rs", "from the user\nfrom w2\n"),
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "g1#w2", "goal": "land it" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.implement_isolated(&url, false)).await;
+    let continued = h.result_when_ready("c1").await;
+    h.run_end().await;
+    assert!(
+        continued.content.contains("Its copy landed"),
+        "{}",
+        continued.content
+    );
+    assert!(
+        continued
+            .content
+            .contains("Its version of `src/posts.rs` isn't landed"),
+        "{}",
+        continued.content
+    );
+    let view = crate::overlay::chats::get(&h.dialog_id)
+        .unwrap()
+        .view
+        .clone();
+    assert_eq!(
+        std::fs::read_to_string(view.join("src/posts.rs"))
+            .ok()
+            .as_deref(),
+        Some("from the user\nfrom w2\n"),
+        "the lead's merge stays"
+    );
+    assert!(
+        crate::overlay::chats::get(&w2.id).is_none(),
+        "landed: the copy is gone"
+    );
+}
+
+/// Round 2, P1.2: the only member that landed anything conflicted on one
+/// file: the group is still saved (Redo, owners for the repair loop), with
+/// what its other file was.
+#[tokio::test]
+async fn a_conflict_in_the_only_landing_member_still_saves_the_group() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let plan = GROUP3_PLAN.replace(
+        "   - `src/users.rs`: implement the users page with `fn users()`.\n",
+        "   - `src/users.rs`: implement the users page with `fn users()`.\n   - `src/api_users.rs`: add its route.\n",
+    );
+    let plan: &'static str = Box::leak(plan.into_boxed_str());
+    let mut h = harness(&[
+        ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
+        ("src/users.rs", "// users\n"),
+        ("src/api_users.rs", "// api users\n"),
+        ("src/posts.rs", "// posts\n"),
+        ("src/extra.rs", "// extra\n"),
+        ("src/feed.rs", "// feed\n"),
+        (".rovik/plans/greet.md", plan),
+    ])
+    .await;
+    h.isolate().await;
+    let blocked = "## Summary\nStuck.\n\n## Changed files\nNone\n\n## Open questions\nNone\n\n## Blocked\nThe posts API isn't there.";
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users from w1\n"),
+                    write_call("w2", "src/api_users.rs", "route from w1\n"),
+                    Reply::Slow(
+                        1_000,
+                        Box::new(worker_report(
+                            "Users.",
+                            &["src/users.rs", "src/api_users.rs"],
+                        )),
+                    ),
+                ],
+            ),
+            ("# Your step: 3.", vec![Reply::Text(blocked)]),
+            ("# Your step: 4.", vec![Reply::Text(blocked)]),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    edit_while_workers_run(&h, "src/users.rs", "users from w1\n", "from the user\n").await;
+    let result = h.result_when_ready("g1").await;
+    h.run_end().await;
+    assert!(
+        result
+            .content
+            .contains("Its other files landed: src/api_users.rs."),
+        "{}",
+        result.content
+    );
+    let groups = crate::overlay::chats::saved_groups(&h.dialog_id);
+    assert_eq!(groups.len(), 1, "{}", result.content);
+    assert!(
+        groups[0]
+            .before
+            .iter()
+            .any(|(p, _)| p == "src/api_users.rs"),
+        "{:?}",
+        groups[0].before
+    );
+    assert!(crate::overlay::chats::group_blob_count(&h.dialog_id) > 0);
+}
+
 /// P1.2: a conflict (the user edited the file meanwhile) lands the rest of
 /// the worker, keeps its copy and the later workers' copies (none
 /// discarded), and saves both versions; a later worker lands when the
@@ -3911,17 +4355,14 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
     h.run_end().await;
 }
 
-/// P1.3: a worker's landing that fails half way keeps its copy and its
-/// journal; Land refuses until the landing is finished, then lands it.
-#[tokio::test]
-// The failure hooks are process-wide: held for the whole test on purpose.
+/// A group run whose step 3 (w2) fails half way through landing
+/// `src/extra.rs` into the chat's view, the failure still injected. The
+/// failure hooks are process-wide: the lock comes back with it, to hold
+/// for the whole test.
 #[allow(clippy::await_holding_lock)]
-async fn a_landing_that_fails_half_way_keeps_the_copy_and_holds_land() {
-    if !crate::vfs::mount_works() {
-        return;
-    }
+async fn half_landed_group() -> (Harness, std::sync::MutexGuard<'static, ()>) {
     use crate::overlay::land;
-    let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = harness(&[
         ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
         ("src/users.rs", "// users\n"),
@@ -3975,6 +4416,41 @@ async fn a_landing_that_fails_half_way_keeps_the_copy_and_holds_land() {
     };
     *land::FAIL_WRITING.lock().unwrap() = Some((view.clone(), "src/extra.rs".into()));
     land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+    (h, hook)
+}
+
+fn stop_failing_landings() {
+    use crate::overlay::land;
+    land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
+    *land::FAIL_WRITING.lock().unwrap() = None;
+}
+
+/// Whether a landing into the chat's view stopped half way (its journal).
+fn landing_interrupted(dialog_id: &str) -> bool {
+    let data = crate::overlay::chats::data_dir().unwrap();
+    crate::overlay::land::interrupted_into(
+        &data,
+        dialog_id,
+        &crate::overlay::chats::mountpoint(dialog_id),
+    )
+}
+
+fn land_refused_unfinished(dialog_id: &str) -> bool {
+    matches!(
+        crate::overlay::chats::land_now(dialog_id, false),
+        Err(crate::overlay::land::LandError::Failed(ref e)) if e.contains("couldn't be finished")
+    )
+}
+
+/// P1.3: a worker's landing that fails half way keeps its copy and its
+/// journal; Land refuses until the landing is finished, then lands it.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_landing_that_fails_half_way_keeps_the_copy_and_holds_land() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let (h, _hook) = half_landed_group().await;
     let result = h.result_when_ready("g1").await;
     h.run_end().await;
     let text = result.content.clone();
@@ -3983,16 +4459,51 @@ async fn a_landing_that_fails_half_way_keeps_the_copy_and_holds_land() {
     let w2 = h.child_of("g1#w2").await;
     assert!(crate::overlay::chats::get(&w2.id).is_some(), "the copy is kept");
     // Land waits for the landing to be finished.
-    let refused = crate::overlay::chats::land_now(&h.dialog_id, false);
-    assert!(
-        matches!(refused, Err(land::LandError::Failed(ref e)) if e.contains("couldn't be finished")),
-        "{refused:?}"
-    );
-    land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
-    *land::FAIL_WRITING.lock().unwrap() = None;
+    assert!(land_refused_unfinished(&h.dialog_id));
+    stop_failing_landings();
     crate::overlay::chats::land_now(&h.dialog_id, false).unwrap();
     assert_eq!(h.file("src/extra.rs").as_deref(), Some("extra from w2\n"));
     assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts from w2\n"));
+}
+
+/// Round 2, P1.3: running the group again discards the kept copies of
+/// its steps, and with them their landing journals: a landing that
+/// stopped half way is finished first, and while it can't be the group
+/// doesn't start, so Land still refuses.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_rerun_of_the_group_finishes_an_interrupted_landing_before_discarding_stale_copies() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let (h, _hook) = half_landed_group().await;
+    h.result_when_ready("g1").await;
+    h.run_end().await;
+    let w2 = h.child_of("g1#w2").await;
+    assert!(landing_interrupted(&h.dialog_id));
+    let (url, _) = model_routed(
+        Vec::new(),
+        vec![group_task("g2"), Reply::Text("Done again.")],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.implement_isolated(&url, false)).await;
+    let again = h.result_when_ready("g2").await;
+    h.run_end().await;
+    assert!(
+        again.content.starts_with("Error: the group can't start"),
+        "{}",
+        again.content
+    );
+    assert!(
+        crate::overlay::chats::get(&w2.id).is_some(),
+        "the copy is kept"
+    );
+    assert!(landing_interrupted(&h.dialog_id), "its journal is kept");
+    assert!(land_refused_unfinished(&h.dialog_id));
+    stop_failing_landings();
+    crate::overlay::chats::land_now(&h.dialog_id, false).unwrap();
+    assert_eq!(h.file("src/extra.rs").as_deref(), Some("extra from w2\n"));
 }
 
 #[tokio::test]
@@ -4730,6 +5241,93 @@ async fn high_confidence_causes_in_different_scopes_are_fixed_in_parallel() {
     assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts, fixed\n"));
 }
 
+/// Round 2, P1.3: a fixer whose landing fails half way keeps its copy
+/// and its landing journal, so Land refuses until it's finished instead
+/// of landing a half-fixed view.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_fixers_failed_landing_keeps_its_copy_and_journal() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    use crate::overlay::land;
+    let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(h) = repair_harness(true).await else {
+        return;
+    };
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Triage this failure",
+                vec![Reply::Text(TRIAGE_TWO_CAUSES)],
+            ),
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "bad users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                    write_call("w1f", "src/users.rs", "users, fixed\n"),
+                    worker_report("Fixed the users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    write_call("w2f", "src/posts.rs", "posts, fixed\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    let mut request = h.implement_isolated(&url, true);
+    let mut config = groups_on();
+    config.parallel_repair = true;
+    config.kinds.insert(
+        "triage".into(),
+        serde_json::from_value(json!({ "enabled": true })).unwrap(),
+    );
+    request.config.as_mut().unwrap().subagents = config;
+    h.start(request).await;
+    // Once the group has joined, posts.rs fails to land, and to go back.
+    h.result_when_ready("g1").await;
+    let view = crate::overlay::chats::get(&h.dialog_id)
+        .unwrap()
+        .view
+        .clone();
+    *land::FAIL_WRITING.lock().unwrap() = Some((view, "src/posts.rs".into()));
+    land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+    h.run_end().await;
+    let records = end_records(&h.messages().await);
+    let fixer = records
+        .iter()
+        .flat_map(|r| {
+            r["repair"]["causes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .map(|c| c["fixer"].clone())
+        .find(|f| f["status"] == "not landed")
+        .unwrap_or_else(|| panic!("{records:#?}"));
+    let said = fixer.to_string();
+    assert!(!said.contains("discarded"), "{said}");
+    assert!(said.contains("its copy is kept"), "{said}");
+    let child = fixer["childDialogId"].as_str().unwrap().to_string();
+    assert!(
+        crate::overlay::chats::get(&child).is_some(),
+        "the fixer's copy is kept"
+    );
+    assert!(landing_interrupted(&h.dialog_id), "its journal is kept");
+    assert!(land_refused_unfinished(&h.dialog_id));
+    stop_failing_landings();
+    crate::overlay::chats::land_now(&h.dialog_id, false).unwrap();
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts, fixed\n"));
+}
+
 #[tokio::test]
 async fn a_cause_the_lead_owns_is_never_fixed_in_parallel() {
     if !crate::vfs::mount_works() {
@@ -4870,6 +5468,79 @@ async fn the_fix_after_a_review_after_green_is_protected() {
             assert_eq!(end, "verified", "{statuses:?}");
         }
     }
+}
+
+/// Round 2, P3.6: findings after green answered with a command alone
+/// (`sed -i`, no write): the checks run again on the changed code before
+/// the run is verified.
+#[tokio::test]
+async fn a_bash_only_fix_after_green_reruns_the_checks() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); const a = fs.readFileSync('a.txt', 'utf8'); if (!a.includes('ok') || a.includes('broken')) { console.log('test t::greeting ... FAILED'); process.exit(1); } console.log('test t::greeting ... ok');",
+        ),
+        ("a.txt", "no\n"),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![Reply::Text(NO_FINDINGS), Reply::Text(FINDING_A)],
+        )],
+        vec![
+            write_call("w1", "a.txt", "nope\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "ok\n"),
+            Reply::Text("Fixed."),
+            // The findings' fix, by command only: it breaks the check.
+            Reply::Call {
+                id: "b1",
+                name: "bash",
+                args: json!({ "command": "sed -i 's/ok/ok broken/' a.txt" }),
+            },
+            Reply::Text("1: fixed."),
+            Reply::Text("I'll leave it."),
+        ],
+    )
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    h.start(h.with_subagents(&url, "Greet", permissions, reviewer_on(json!({}))))
+        .await;
+    let end = h.run_end().await;
+    let records: Vec<Value> = h
+        .messages()
+        .await
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .collect();
+    assert!(
+        records.len() >= 3,
+        "the checks ran after the command: {records:#?}"
+    );
+    // It broke the passing check: a regression (rolled back where it can
+    // be, the command's change listed as not undone).
+    assert_eq!(
+        records[2]["progress"]["verdict"], "regression",
+        "{:#}",
+        records[2]
+    );
+    assert_ne!(end, "verified");
 }
 
 #[tokio::test]

@@ -826,10 +826,15 @@ impl<R: Runtime> Run<R> {
                 })
                 .collect();
             let snapshot = self.redo_snapshot(&paths).await;
-            let id = child.clone();
-            let landed = tauri::async_runtime::spawn_blocking(move || chats::land_child(&id))
-                .await
-                .unwrap_or_else(|e| Err(crate::overlay::land::LandError::Failed(e.to_string())));
+            // Round 2, P1.3: landed with retries; on an error the copy and
+            // its landing journal stay, so a landing that stopped half way
+            // is finished (or refused) before the chat lands.
+            let landed = super::group::land_copy(&child, Vec::new()).await;
+            if landed.is_ok() {
+                let id = child.clone();
+                let _ =
+                    tauri::async_runtime::spawn_blocking(move || chats::discard_child(&id)).await;
+            }
             match landed {
                 Ok(paths) => {
                     result.writes = before
@@ -841,13 +846,12 @@ impl<R: Runtime> Run<R> {
                     out.push(fixed);
                 }
                 Err(e) => {
-                    chats::discard_child(&child);
                     self.note_models_of(&result);
                     out.push(Fixed {
                         status: "not landed".into(),
                         child: Some(child),
                         changed: Vec::new(),
-                        said: format!("its fix couldn't be joined ({e})"),
+                        said: format!("its fix couldn't be joined ({e}); its copy is kept"),
                     });
                 }
             }

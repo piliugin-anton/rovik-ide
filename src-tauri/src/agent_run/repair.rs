@@ -168,10 +168,12 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
     };
     // P3.3: a check that timed out (or said nothing to key) in either round
     // can't be compared: nothing of it counts as fixed or broken.
+    // Round 2: only a timeout; a check whose output had nothing to key
+    // (`test|failed`) still ran and failed.
     let blind = |r: &RoundFailures, kind: &str| {
         r.keys
             .iter()
-            .any(|k| kind_of(k) == kind && is_opaque(k) && !k.contains("|and "))
+            .any(|k| kind_of(k) == kind && k.ends_with("|timed out"))
     };
     let both: BTreeSet<&String> = prev
         .ran
@@ -222,13 +224,15 @@ impl Judgement {
     /// P3.2: a new error in a file the round itself wrote (`written`) is a
     /// slip in the fix (an unused import), reported with the failures; the
     /// fix stays. A regression is a test that fails now, or an error in a
-    /// file the round didn't touch.
+    /// file the round didn't touch. Tools print paths their own way
+    /// (absolute, from a subfolder): compared by their tail (round 2).
     pub fn keeping_slips_in(mut self, written: &[String]) -> Judgement {
+        use super::command_output::same_file_by_tail;
         self.broke.retain(|k| {
             is_test_key(k)
                 || k.split('|')
                     .nth(1)
-                    .is_none_or(|file| !written.iter().any(|w| super::paths::same(w, file)))
+                    .is_none_or(|file| !written.iter().any(|w| same_file_by_tail(file, w)))
         });
         if self.verdict == Verdict::Regression && self.broke.is_empty() {
             self.verdict = if self.fixed.is_empty() || self.back_and_forth {
@@ -418,6 +422,7 @@ fn check_relevant(path: &str, text: &str) -> String {
         ],
         "pyproject.toml" => &["[tool.pytest", "[tool.ruff", "[tool.mypy", "[tool.coverage"],
         "setup.cfg" => &["[tool:pytest]", "[flake8]", "[mypy", "[coverage"],
+        "conftest.py" => return conftest_relevant(text),
         _ => return text.to_string(),
     };
     let mut keep = false;
@@ -461,8 +466,9 @@ fn re(s: &str) -> Regex {
 
 static JS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"\b(?:it|test)(?:\.(?:each|concurrent|only|skip|todo|failing)\b[^(]*)?\s*\("),
-    // P3.8: a body that returns (or `if (false)`) first skips it too.
-    skips: re(r"\b(?:it|test|describe)\.(?:skip|todo)\b|\bx(?:it|test|describe)\s*\(|\b(?:it|test)\s*\([^,]*,\s*(?:async\s*)?(?:\(\s*\)|function\s*\w*\s*\(\s*\))\s*(?:=>\s*)?\{\s*(?:if\s*\(\s*false\s*\)|return\b)"),
+    // P3.8: a body that returns (or `if (false)`) first skips it too; a
+    // bare `return`, not `return request(app)…` (round 2).
+    skips: re(r"\b(?:it|test|describe)\.(?:skip|todo)\b|\bx(?:it|test|describe)\s*\(|\b(?:it|test)\s*\([^,]*,\s*(?:async\s*)?(?:\(\s*\)|function\s*\w*\s*\(\s*\))\s*(?:=>\s*)?\{\s*(?:if\s*\(\s*false\s*\)|return[ \t]*(?:;|\}|\r?\n))"),
     only: Some(re(
         r"\b(?:it|test|describe)\.only\b|\bf(?:it|describe)\s*\(",
     )),
@@ -512,6 +518,42 @@ pub fn count_tests(path: &str, content: &str) -> Option<TestCounts> {
     })
 }
 
+/// Round 2, P3.8: a file in a test folder that's code, in a language the
+/// IDE can't read the tests of (not a snapshot, fixture or readme).
+fn is_test_source(path: &str) -> bool {
+    const EXTS: &[&str] = &[
+        "rb", "java", "kt", "kts", "scala", "groovy", "cs", "fs", "vb", "php", "swift", "m", "mm",
+        "c", "cc", "cpp", "cxx", "h", "hpp", "ex", "exs", "erl", "hs", "ml", "clj", "cljs", "dart",
+        "lua", "pl", "pm", "t", "r", "jl", "zig", "nim", "cr", "d", "elm", "sh", "bash", "bats",
+        "ps1",
+    ];
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| EXTS.contains(&ext.to_lowercase().as_str()))
+}
+
+/// conftest.py's lines that decide what runs (round 2, P3.8): what it
+/// ignores, deselects or skips, and its collection hooks. A fixture isn't.
+fn conftest_relevant(text: &str) -> String {
+    static DECIDES: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"collect_ignore|pytest_collection_modifyitems|pytest_ignore_collect|pytest_runtest_setup|skip|deselect|addopts")
+            .unwrap()
+    });
+    let mut out = String::new();
+    let mut in_hook = false;
+    for line in text.lines() {
+        let indented = line.starts_with(char::is_whitespace);
+        if !indented && !line.trim().is_empty() {
+            in_hook = line.trim_start().starts_with("def pytest_");
+        }
+        if DECIDES.is_match(line) || (in_hook && indented) {
+            out.push_str(line.trim());
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// The scripts of a package.json (what `npm test` and the like run).
 fn package_scripts(text: &str) -> Option<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(text)
@@ -554,7 +596,12 @@ pub fn integrity_flags(path: &str, before: Option<&str>, after: Option<&str>) ->
     let test_file = is_test_path(path);
     // P3.8: a test file the IDE can't read the tests of: any change to it
     // is the user's to look at (closed, not open).
-    if test_file && patterns_for(path).is_none() && before.is_some() && before != after {
+    if test_file
+        && patterns_for(path).is_none()
+        && is_test_source(path)
+        && before.is_some()
+        && before != after
+    {
         flags.push(format!(
             "{path}: a test file the IDE can't check was {}",
             if after.is_none() { "deleted" } else { "changed" }
@@ -1059,6 +1106,41 @@ mod tests {
         assert_eq!(j.verdict, Verdict::Regression);
     }
 
+    /// Round 2, P3.3: output with nothing to key (mocha, `make test`, a
+    /// segfault) still says the tests ran and failed: after they passed,
+    /// that's a regression. Only a timeout is blind.
+    #[test]
+    fn an_unparsed_failure_after_green_is_still_a_regression() {
+        let r1 = round(&["lint|src/a.ts|no-unused-vars|x"], &["lint", "test"]);
+        let r2 = round(&["test|failed"], &["lint", "test"]);
+        let j = judge(std::slice::from_ref(&r1), &r2);
+        assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
+        assert_eq!(j.broke, ["test|failed"]);
+        assert_eq!(j.fixed, ["lint|src/a.ts|no-unused-vars|x"]);
+    }
+
+    /// Round 2, P3.2: linters print absolute paths, and cargo in src-tauri/
+    /// prints paths from there: an error in the file the round wrote is
+    /// still a slip, however it's printed.
+    #[test]
+    fn a_slip_in_an_absolute_or_subfolder_path_is_still_a_slip() {
+        let ran = ["test", "lint", "build"];
+        let r1 = round(&["test|test|t::one"], &ran);
+        for (key, written) in [
+            ("lint|/p/src/a.ts|rule|m", "src/a.ts"),
+            ("build|src/x.rs|E0308|m", "src-tauri/src/x.rs"),
+            ("lint|.\\src\\a.ts|rule|m", "src/a.ts"),
+        ] {
+            let r2 = round(&[key], &ran);
+            let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()]);
+            assert_eq!(j.verdict, Verdict::Progress, "{key}: {j:?}");
+            assert!(j.broke.is_empty(), "{key}");
+            // Another file of the same name elsewhere isn't the one written.
+            let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["lib/b.ts".into()]);
+            assert_eq!(j.verdict, Verdict::Regression, "{key}");
+        }
+    }
+
     /// P3.3: a round whose tests timed out says nothing about them: not
     /// progress, nothing resolved.
     #[test]
@@ -1126,6 +1208,37 @@ mod tests {
         // A test file in a language it can't count.
         let f = flagged("spec/add_spec.rb", "it 'adds' do\nend\n", "");
         assert!(f[0].contains("a test file the IDE can't check was changed"), "{f:?}");
+    }
+
+    /// Round 2, P3.8: ordinary test work isn't flagged: a snapshot, a
+    /// fixture or a readme in a test folder, a JS test that returns its
+    /// request, a plain fixture in conftest.py.
+    #[test]
+    fn legit_test_refactors_arent_flagged() {
+        let none = |path: &str, before: &str, after: &str| {
+            let f = integrity_flags(path, Some(before), Some(after));
+            assert!(f.is_empty(), "{path}: {f:?}");
+        };
+        none("__tests__/__snapshots__/a.snap", "exports[`a`] = `1`;\n", "exports[`a`] = `2`;\n");
+        none("tests/fixtures/x.json", "{\"a\": 1}\n", "{\"a\": 2}\n");
+        none("tests/README.md", "# Tests\n", "# Tests\n\nRun them.\n");
+        none("tests/fixtures/seed.sql", "insert 1;\n", "insert 2;\n");
+        let js = "test('lists', () => {\n  expect(1).toBe(1);\n});\n";
+        let added = format!("{js}test('serves', () => {{\n  return request(app).get('/').expect(200);\n}});\n");
+        none("src/app.test.js", js, &added);
+        none(
+            "tests/conftest.py",
+            "import pytest\n",
+            "import pytest\n\n@pytest.fixture\ndef user():\n    return {'name': 'Ann'}\n",
+        );
+        // What decides what runs still is.
+        assert!(!integrity_flags(
+            "tests/conftest.py",
+            Some("import pytest\n"),
+            Some("import pytest\n\ndef pytest_collection_modifyitems(items):\n    items[:] = []\n"),
+        )
+        .is_empty());
+        assert!(!integrity_flags("tests/add_test.rb", Some("x\n"), Some("y\n")).is_empty());
     }
 
     #[test]

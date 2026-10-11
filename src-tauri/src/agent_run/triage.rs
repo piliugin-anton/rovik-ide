@@ -134,7 +134,7 @@ fn confidence_word(text: &str) -> Option<String> {
 }
 
 /// Libraries named like files: `Node.js` in prose is not a path.
-const JS_NAMES: &[&str] = &[
+pub(super) const JS_NAMES: &[&str] = &[
     "node", "vue", "next", "nuxt", "express", "react", "angular", "ember", "three", "d3", "chart",
     "socket", "moment", "deno", "nest", "alpine", "backbone", "knockout",
 ];

@@ -306,7 +306,7 @@ pub fn tell_not_isolated(dialog_id: &str) -> bool {
         .insert(dialog_id.to_string())
 }
 
-fn data_dir() -> Option<PathBuf> {
+pub(crate) fn data_dir() -> Option<PathBuf> {
     DATA_DIR.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -325,7 +325,7 @@ fn store_dir(dialog_id: &str) -> Option<PathBuf> {
         .flatten()
 }
 
-fn mountpoint(dialog_id: &str) -> PathBuf {
+pub(crate) fn mountpoint(dialog_id: &str) -> PathBuf {
     #[cfg(target_os = "linux")]
     let base = match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| Path::new(d).is_dir()) {
         Some(dir) => PathBuf::from(dir).join("rovik-ide").join("chats"),
@@ -663,8 +663,9 @@ fn mount_on(
 }
 
 /// F02: lands a child's changes into its parent's view (merged three ways,
-/// journaled: land.rs), then removes the child. A conflict keeps it, for
-/// the lead to see. Returns the paths that landed.
+/// journaled: land.rs), then removes the child. The app lands with retries
+/// and keeps the copy on an error (`group::land_copy`).
+#[cfg(test)]
 pub fn land_child(child: &str) -> Result<Vec<String>, super::land::LandError> {
     let landed = land_child_paths(child, &[])?;
     discard_child(child);
@@ -723,6 +724,103 @@ fn land_child_paths(child: &str, except: &[String]) -> Result<Vec<String>, super
         parent.fs.flush();
     }
     Ok(landed.map(|l| l.paths).unwrap_or_default())
+}
+
+/// Round 2, P1.3: a child's landing into this chat's view that stopped
+/// half way is finished now, before anything removes its journal. Err: it
+/// couldn't be, so nothing may land into the view or discard its copies.
+pub fn finish_landing_into(dialog_id: &str) -> Result<(), String> {
+    let Some(data) = data_dir() else {
+        return Ok(());
+    };
+    if !super::land::interrupted_into(&data, dialog_id, &mountpoint(dialog_id)) {
+        return Ok(());
+    }
+    if let Some(o) = get(dialog_id) {
+        super::land::recover_into(&data, dialog_id, &o.view);
+    }
+    if super::land::interrupted_into(&data, dialog_id, &mountpoint(dialog_id)) {
+        return Err(
+            "a worker's landing into this chat's files stopped half way and couldn't be finished"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Round 2, P1.2: a kept copy conflicted on `paths`: the chat's version of
+/// each (in `view`) is noted by hash, to know later whether the lead has
+/// merged it since.
+pub fn note_conflicts(child: &str, view: &Path, paths: &[String]) {
+    let Some(store) = store_dir(child) else {
+        return;
+    };
+    let mut noted: HashMap<String, String> = std::fs::read(store.join(CONFLICTS))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    for p in paths {
+        noted.insert(p.clone(), content_hash(&view.join(p)));
+    }
+    if let Ok(json) = serde_json::to_vec(&noted) {
+        let _ = std::fs::write(store.join(CONFLICTS), json);
+    }
+}
+
+/// The paths a kept copy conflicted on whose version in `view` changed
+/// since (the lead merged them).
+pub fn merged_since(child: &str, view: &Path) -> Vec<String> {
+    let noted: HashMap<String, String> = store_dir(child)
+        .and_then(|s| std::fs::read(s.join(CONFLICTS)).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let mut merged: Vec<String> = noted
+        .into_iter()
+        .filter(|(p, hash)| content_hash(&view.join(p)) != *hash)
+        .map(|(p, _)| p)
+        .collect();
+    merged.sort();
+    merged
+}
+
+/// Where a kept copy's conflicts are noted, in its store.
+const CONFLICTS: &str = "conflicts.json";
+
+fn content_hash(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    match std::fs::read(path) {
+        Ok(bytes) => Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+        Err(_) => "absent".into(),
+    }
+}
+
+/// Round 2, P1.2: a kept copy of `parent`'s, opened again after the app
+/// closed (it was registered in memory only), so a follow-up goes on in it.
+/// None: `child` has no copy kept for `parent`.
+pub fn reopen_child(parent: &str, child: &str) -> Option<Arc<ChatOverlay>> {
+    if let Some(o) = get(child) {
+        return (parent_of(child).as_deref() == Some(parent)).then_some(o);
+    }
+    let store = store_dir(child)?;
+    let saved = std::fs::read_to_string(store.join("parent.txt")).ok()?;
+    if saved.trim() != parent {
+        return None;
+    }
+    open_child_shared(parent, child, 1).ok()
+}
+
+/// What an app restart does to an open child: unmounted, and its parent
+/// forgotten (only its store on disk is left).
+#[cfg(test)]
+pub fn forget_child_as_if_restarted(child: &str) {
+    close(child);
+    CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(child);
 }
 
 /// F02: a child's overlay, unmounted and removed with its landing journals.

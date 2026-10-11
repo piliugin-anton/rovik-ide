@@ -78,7 +78,7 @@ static CODE_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```.*?```
 /// A path with a folder (`src/a.rs`, `src/components/`) or a file name
 /// with an extension (`Cargo.toml`, `.env`).
 static PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:^|[\s`'"(\[*])(\.?[\w@~-][\w.@~-]*(?:/[\w.@~\[\]-]+)+/?|\.?[\w-]*[A-Za-z_][\w-]*\.[A-Za-z][\w]{0,9})"#).unwrap()
+    Regex::new(r#"(?:^|[\s`'"(\[*])(\.?[\w@~-][\w.@~-]*(?:/[\w.@~\[\]-]+)+/?|\.?[\w-]*[A-Za-z_][\w-]*(?:\.[\w-]+)*\.[A-Za-z][\w]{0,9})"#).unwrap()
 });
 /// File names without an extension that are still clearly files.
 static BARE_FILE: LazyLock<Regex> = LazyLock::new(|| {
@@ -427,8 +427,11 @@ pub(super) const FILE_EXTENSIONS: &[&str] = &[
     "jsx",
     "mjs",
     "cjs",
+    "mts",
+    "cts",
     "json",
     "jsonc",
+    "json5",
     "toml",
     "yaml",
     "yml",
@@ -448,6 +451,7 @@ pub(super) const FILE_EXTENSIONS: &[&str] = &[
     "go",
     "mod",
     "sum",
+    "work",
     "java",
     "kt",
     "kts",
@@ -547,13 +551,28 @@ fn as_path(token: &str) -> Option<String> {
     let folder = t.ends_with('/') || t.trim_end_matches('/').contains('/');
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
     let named_file = BARE_FILE.is_match(name) && name.len() == BARE_FILE.find(name)?.len();
-    // P4.3: in a folder, any short extension (`grammar.pest`, `x.snap`).
-    let in_folder_file = t.contains('/')
-        && ext.as_deref().is_some_and(|e| {
-            (1..=10).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric())
-        });
+    let short_ext = ext.as_deref().is_some_and(|e| {
+        (1..=10).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    // `Node.js` and its kind name a project, not a file.
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    if ext.as_deref() == Some("js")
+        && !t.contains('/')
+        && super::triage::JS_NAMES.contains(&stem.to_ascii_lowercase().as_str())
+    {
+        return None;
+    }
+    // P4.3: in a folder, any short extension (`grammar.pest`, `x.snap`); at
+    // the root one when the stem says it's a file name (`.env.local`,
+    // `Dockerfile.dev`, `docker-compose.override`), not `self.items`.
+    let in_folder_file = t.contains('/') && short_ext;
+    let root_file = short_ext
+        && (stem.starts_with('.')
+            || stem.contains('-')
+            || BARE_FILE.find(stem).is_some_and(|m| m.len() == stem.len()));
     let known = ext.as_deref().is_some_and(|e| FILE_EXTENSIONS.contains(&e))
         || in_folder_file
+        || root_file
         || named_file
         || (name.starts_with('.') && name.len() > 2 && !name[1..].contains('.'));
     // `a::b` paths, `x.y` member access: not files.
@@ -586,8 +605,10 @@ fn line_paths(line: &str) -> Vec<(String, usize)> {
             out.push((p, m.end()));
         }
     }
+    let mut tokens: Vec<(usize, usize)> = Vec::new();
     for c in PATH.captures_iter(line) {
         let m = c.get(1).expect("a group");
+        tokens.push((m.start(), m.end()));
         if ticked
             .iter()
             .any(|(a, b)| m.start() >= *a && m.start() < *b)
@@ -595,7 +616,7 @@ fn line_paths(line: &str) -> Vec<(String, usize)> {
             continue;
         }
         let token = m.as_str().trim_end_matches('.');
-        if !plain_path(token) {
+        if !plain_path(token) || !plain_file_shaped(token) {
             continue;
         }
         if let Some(p) = as_path(token) {
@@ -604,8 +625,10 @@ fn line_paths(line: &str) -> Vec<(String, usize)> {
     }
     // Bare file names: Dockerfile, Makefile.
     for m in BARE_FILE.find_iter(line) {
+        // Part of a longer name (`Dockerfile.dev`): that name's.
         if ticked
             .iter()
+            .chain(&tokens)
             .any(|(a, b)| m.start() >= *a && m.start() < *b)
         {
             continue;
@@ -634,6 +657,17 @@ fn plain_path(token: &str) -> bool {
     }
     let (name, ext) = token.rsplit_once('.').unwrap_or((token, ""));
     !(name.trim_start_matches('.').len() <= 2 && ext.len() <= 2) && token.len() >= 3
+}
+
+/// P4.3: written plainly, a path counts only with an extension or a
+/// closing `/` (`src/a.rs`, `src/api/`): "add/remove", "A/B" and
+/// "client/server" are prose.
+fn plain_file_shaped(token: &str) -> bool {
+    let name = token.rsplit('/').next().unwrap_or(token);
+    token.ends_with('/')
+        || name
+            .rsplit_once('.')
+            .is_some_and(|(stem, ext)| !ext.is_empty() && (!stem.is_empty() || name.len() > 2))
 }
 
 /// The files a step names (its raw text): one reading for the form check
@@ -1698,6 +1732,50 @@ mod tests {
         // With a project, plan_problems_in adds these to the form checks.
         assert_eq!(plan_problems_in(&missing, Some(&tree.0)).len(), 1);
         assert!(plan_problems_in(&missing, None).is_empty());
+    }
+
+    /// Round 2, P4.3: word pairs and project names in prose aren't step
+    /// files, so they don't stop the plan being saved.
+    #[test]
+    fn prose_word_pairs_are_not_files() {
+        let plan = "# UI\n\nTidy the toolbar.\n\n## Steps\n\n\
+            1. **Buttons**\n   - Change the add/remove buttons and an A/B test, bump Node.js in `src/ui.rs`.\n\
+            2. **Client**\n   - Keep the client/server split; update `src/ui.rs` docs.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        let files: Vec<&str> = s[0].files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(files, ["src/ui.rs"], "{s:#?}");
+        assert_eq!(s[1].files.len(), 1, "{s:#?}");
+        let tree = Tree::new(&["src/ui.rs"]);
+        assert_eq!(plan_problems_in(plan, Some(&tree.0)), Vec::<String>::new());
+        // Written plainly, a path still counts with an extension or a `/`.
+        let plain = plan.replace("`src/ui.rs`", "src/ui.rs");
+        assert_eq!(steps(&plain)[0].files[0].path, "src/ui.rs");
+        assert_eq!(
+            steps("## Steps\n1. change src/api/ here")[0].files[0].path,
+            "src/api/"
+        );
+    }
+
+    /// Round 2, P4.3: root files with extensions the list doesn't know.
+    #[test]
+    fn root_level_unknown_extensions_still_count() {
+        for name in [
+            ".env.local",
+            "vite.config.mts",
+            "Dockerfile.dev",
+            "go.work",
+            "renovate.json5",
+        ] {
+            for written in [format!("`{name}`"), name.to_string()] {
+                let step = format!("1. **Config**\n   - Change {written} to set the port.");
+                assert!(names_a_file(&step), "{written}");
+                let files: Vec<String> = step_files(&step).into_iter().map(|f| f.path).collect();
+                assert_eq!(files, [name], "{written}");
+            }
+        }
+        // Member access stays code.
+        assert!(step_files("1. Update `self.items` and `config.port`.").is_empty());
     }
 
     #[test]

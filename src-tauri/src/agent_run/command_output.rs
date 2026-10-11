@@ -235,19 +235,25 @@ pub fn split_by_changed(
     locations: &[String],
     changed_files: &[String],
 ) -> (Vec<String>, Vec<String>) {
+    locations
+        .iter()
+        .cloned()
+        .partition(|loc| changed_files.iter().any(|c| same_file_by_tail(loc, c)))
+}
+
+/// Whether a path a tool printed (absolute, or relative to where it ran)
+/// is a project file: compared by their tail (cargo in src-tauri/ prints
+/// "src/x.rs" for "src-tauri/src/x.rs"; eslint prints "/home/me/p/src/a.ts").
+pub fn same_file_by_tail(printed: &str, file: &str) -> bool {
     let norm = |p: &str| {
         let p = p.replace('\\', "/");
         let p = p.strip_prefix("./").unwrap_or(&p);
         p.trim_start_matches('/').to_string()
     };
-    let changed: Vec<String> = changed_files.iter().map(|c| norm(c)).collect();
-    let is_changed = |loc: &str| {
-        let l = norm(loc);
-        changed
-            .iter()
-            .any(|c| *c == l || c.ends_with(&format!("/{l}")) || l.ends_with(&format!("/{c}")))
-    };
-    locations.iter().cloned().partition(|loc| is_changed(loc))
+    let (l, c) = (norm(printed), norm(file));
+    !l.is_empty()
+        && !c.is_empty()
+        && (c == l || c.ends_with(&format!("/{l}")) || l.ends_with(&format!("/{c}")))
 }
 
 /*
