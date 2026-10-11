@@ -889,6 +889,15 @@ impl<R: Runtime> Run<R> {
         // formatters): mtime/size catches it on the next collect, so only
         // the refresh flag is needed — unlike the write tool, no same-tick
         // cache race is possible across processes.
+        // P3.5: outside an isolated chat, what a command changed can't be
+        // rolled back; the round's rollback says which ran.
+        if tool_name == "bash" && auth.refusal.is_none() && !self.isolated() {
+            let command = permissions::str_arg(&args_json, "command").unwrap_or_default();
+            if self.checkpoint.is_some() && permissions::command_modifies_files(&command) {
+                self.round_commands
+                    .push(crate::chat_db::store::char_prefix(&command, 120).to_string());
+            }
+        }
         if tool_name == "bash" && !failed {
             self.map_writes_since_refresh += 1;
             // A command on the context file's real path (sed, python3, …)
@@ -923,6 +932,7 @@ impl<R: Runtime> Run<R> {
                         before,
                         content: after.clone(),
                         reviewed,
+                        deleted: false,
                     },
                 );
             }
@@ -1673,6 +1683,7 @@ impl<R: Runtime> Run<R> {
                             before: None,
                             content: text,
                             reviewed: true,
+                        deleted: false,
                         },
                     );
                 }

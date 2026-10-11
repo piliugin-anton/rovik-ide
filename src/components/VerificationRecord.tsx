@@ -217,6 +217,12 @@ export default function VerificationRecord(props: {
         </Show>
       </div>
 
+      <Show when={props.meta.integrityChecked === false}>
+        <div class="chat-verify-progress">
+          Whether the change weakens tests couldn’t be checked: what the files were before the run
+          was lost when the app restarted. Review the changes before relying on them.
+        </div>
+      </Show>
       <Show when={props.meta.stateRestored === false}>
         <div class="chat-verify-progress">
           The earlier rounds’ state was gone (the app restarted, or it expired): these checks

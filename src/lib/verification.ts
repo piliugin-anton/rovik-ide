@@ -177,6 +177,9 @@ export interface VerificationMeta {
   reviewAfterGreen?: { status: 'findings' | 'done' | 'skipped'; reason?: string };
   /** False: started with none of the earlier rounds' state (P1.7). */
   stateRestored?: boolean;
+  /** False: what the files were before the run was lost, so whether the
+   * change weakens tests couldn't be checked (P3.9). */
+  integrityChecked?: boolean;
 }
 
 /** The repair round's one-line summary. */

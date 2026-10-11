@@ -140,6 +140,7 @@ async fn a_fix_that_breaks_a_passing_test_is_rolled_back() {
     .await;
     let (url, _) = model(vec![
         write("w1", "notes.txt", "looking\n"),
+        write("w0", "d.txt", "keep me\n"),
         Reply::Text("Done."),
         // Round 2 fixes `one` and breaks `two`; a.txt is then changed by a
         // command (as if by someone else): not this run's write to undo.
@@ -150,6 +151,12 @@ async fn a_fix_that_breaks_a_passing_test_is_rolled_back() {
             id: "b1",
             name: "bash",
             args: json!({ "command": "printf 'good, by hand\\n' > a.txt" }),
+        },
+        // P3.4: and deletes a file it wrote before the round.
+        Reply::Call {
+            id: "b2",
+            name: "bash",
+            args: json!({ "command": "rm d.txt" }),
         },
         Reply::Text("Done."),
         // Told what broke and what was left as it was, it looks, sees a.txt
@@ -181,7 +188,16 @@ async fn a_fix_that_breaks_a_passing_test_is_rolled_back() {
     );
     let rb = &rounds[1]["rolledBack"];
     assert_eq!(rb["broke"], json!(["test|test|t::two"]));
-    assert_eq!(rb["restored"], json!(["b.txt", "c.txt"]));
+    assert_eq!(rb["restored"], json!(["b.txt", "c.txt", "d.txt"]));
+    // P3.4: the deleted file is back, and the editor heard c.txt went.
+    assert_eq!(h.file("d.txt").as_deref(), Some("keep me\n"));
+    assert!(
+        h.events_of("fileWritten")
+            .iter()
+            .any(|e| e["deleted"] == true && e["absPath"].as_str().unwrap().ends_with("c.txt")),
+        "{:?}",
+        h.events_of("fileWritten")
+    );
     assert_eq!(rb["skipped"], json!(["a.txt"]));
     assert!(rb["diff"].as_str().unwrap().contains("broken"));
     assert_eq!(rounds[1]["progress"]["verdict"], "regression");
@@ -194,7 +210,14 @@ async fn a_fix_that_breaks_a_passing_test_is_rolled_back() {
         "{}",
         reports[1]
     );
-    assert!(reports[1].contains("b.txt, c.txt are as before that fix"));
+    assert!(reports[1].contains("b.txt, c.txt, d.txt are as before that fix"));
+    // P3.5: the commands of the fix weren't undone, and it says so.
+    assert_eq!(rb["commands"], json!(["printf 'good, by hand\\n' > a.txt", "rm d.txt"]));
+    assert!(
+        reports[1].contains("Commands ran in that fix (`printf 'good, by hand\\n' > a.txt`, `rm d.txt`); what they changed wasn't undone"),
+        "{}",
+        reports[1]
+    );
     assert!(reports[1]
         .contains("Left as they are, because they changed outside this chat meanwhile: a.txt."));
     assert!(reports[1].contains("the checks run again when you finish"));
@@ -241,7 +264,7 @@ async fn a_test_skipped_to_pass_is_not_reported_as_verified() {
         asked[0]
     );
     assert!(
-        asked[0].contains("fewer tests ran than in the last round (1 → 0)"),
+        asked[0].contains("fewer tests ran than before this run changed any test (1 → 0)"),
         "{}",
         asked[0]
     );
@@ -249,6 +272,93 @@ async fn a_test_skipped_to_pass_is_not_reported_as_verified() {
     let last = rounds.last().unwrap();
     assert_eq!(last["status"], "flagged");
     assert!(last["integrity"].as_array().unwrap().len() >= 2);
+}
+
+/// P3.7: the run adds two tests of its own, then removes one: fewer tests
+/// than the round before, but not fewer than before it touched any: no flag.
+#[tokio::test]
+async fn removing_a_test_the_run_added_isnt_flagged() {
+    if !has_node() {
+        return;
+    }
+    let tests = r#"test('adds', () => assert(require('../add.js')(1, 2) === 3, 'add is wrong'));
+"#;
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/add.test.js", tests),
+        ("add.js", "module.exports = (a, b) => a - b;\n"),
+    ])
+    .await;
+    let two = "test('zero', () => assert(require('../add.js')(0, 0) === 0));\ntest('one', () => assert(require('../add.js')(1, 0) === 1));\n";
+    let one = "test('zero', () => assert(require('../add.js')(0, 0) === 0));\n";
+    let (url, _) = model(vec![
+        write("w1", "tests/extra.test.js", two),
+        Reply::Text("Done."),
+        write("w2", "add.js", "module.exports = (a, b) => a + b;\n"),
+        write("w3", "tests/extra.test.js", one),
+        Reply::Text("Fixed, and dropped a redundant test of mine."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix add"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let rounds = records(&h.messages().await);
+    assert_eq!(rounds.last().unwrap()["testsRun"], 2);
+    assert!(rounds.last().unwrap().get("integrity").is_none());
+}
+
+/// P3.9: a test weakened before the checks waited for approval, then the
+/// app restarted (the carried state gone): the checks pass, but the run
+/// isn't verified; the record says integrity wasn't checked.
+#[tokio::test]
+async fn after_a_restart_lost_state_is_never_verified() {
+    if !has_node() {
+        return;
+    }
+    let tests = r#"test('adds', () => assert(require('../add.js')(1, 2) === 3, 'add is wrong'));
+"#;
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/add.test.js", tests),
+        ("add.js", "module.exports = (a, b) => a - b;\n"),
+    ])
+    .await;
+    let skipped: &'static str = Box::leak(tests.replace("test(", "test.skip(").into_boxed_str());
+    let (url, _) = model(vec![write("w1", "tests/add.test.js", skipped), Reply::Text("Done.")]).await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..checks_on()
+    };
+    h.start(h.request(&url, Harness::send("Fix add"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let waiting = h.messages().await.last().unwrap().id.clone();
+    // The restart: what the run carried is gone.
+    h.app.state::<AgentState>().drop_carry(&h.dialog_id);
+    h.events.lock().unwrap().clear();
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: waiting.clone(),
+        },
+        permissions,
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verify-unchecked");
+    let record = h
+        .messages()
+        .await
+        .into_iter()
+        .find(|m| m.id == waiting)
+        .unwrap();
+    let v = &record.meta.unwrap()["verification"];
+    assert_eq!(v["status"], "passed");
+    assert_eq!(v["integrityChecked"], false, "{v}");
 }
 
 #[tokio::test]

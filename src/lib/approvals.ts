@@ -275,3 +275,15 @@ export function onFileWritten(listener: (absPath: string, content: string) => vo
   writtenListeners.add(listener);
   return () => writtenListeners.delete(listener);
 }
+
+const deletedListeners = new Set<(absPath: string) => void>();
+
+/** The agent removed a file (a rollback of one it created, P3.4). */
+export function notifyFileDeleted(absPath: string) {
+  for (const listener of deletedListeners) listener(absPath);
+}
+
+export function onFileDeleted(listener: (absPath: string) => void): () => void {
+  deletedListeners.add(listener);
+  return () => deletedListeners.delete(listener);
+}

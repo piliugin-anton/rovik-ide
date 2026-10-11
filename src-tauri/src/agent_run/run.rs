@@ -265,6 +265,17 @@ pub struct Run<R: Runtime> {
     /// The checks were started from `record` with no carried state for it
     /// (P1.7): its record says so, and the agent is told once.
     pub(super) carry_lost: Option<String>,
+    /// Commands that may have changed files since the round's checkpoint
+    /// (P3.5): a rollback can't undo them, and says so.
+    pub(super) round_commands: Vec<String>,
+    /// How many check rounds had run when the run first wrote a test file
+    /// (P3.7: test counts are compared with the rounds before it).
+    pub(super) first_test_write_round: Option<usize>,
+    /// What files were before the run couldn't all be rebuilt after a
+    /// restart (P3.9): checks that pass aren't "verified".
+    pub(super) integrity_unchecked: bool,
+    /// Rounds checked again at once after fixers (P3.10, `MAX_RECHECKS`).
+    pub(super) rechecks: u32,
     pub(super) carry_lost_told: bool,
     pub(super) reviews_in_row: u32,
     /// The findings sent to the agent so far, and the note that sent the
@@ -759,6 +770,10 @@ impl<R: Runtime> Run<R> {
             reviews_total: 0,
             review_outcome: None,
             carry_lost: None,
+            round_commands: Vec::new(),
+            first_test_write_round: None,
+            integrity_unchecked: false,
+            rechecks: 0,
             carry_lost_told: false,
             reviews_in_row: 0,
             review_findings: Vec::new(),
@@ -877,6 +892,10 @@ impl<R: Runtime> Run<R> {
             reviews_total: 0,
             review_outcome: None,
             carry_lost: None,
+            round_commands: Vec::new(),
+            first_test_write_round: None,
+            integrity_unchecked: false,
+            rechecks: 0,
             carry_lost_told: false,
             reviews_in_row: 0,
             review_findings: Vec::new(),
@@ -1021,6 +1040,9 @@ impl<R: Runtime> Run<R> {
             Entry::Verify { record_id } => {
                 // What the last run's fix rounds knew (command approval on).
                 self.restore_verify_state(&record_id);
+                if self.carry_lost.is_some() {
+                    self.rebuild_baseline(&record_id).await;
+                }
                 // The waiting record becomes the running one, then the results.
                 let outcome = self.verify_at_end(true, Some(record_id)).await?;
                 if outcome != "continue" {
@@ -2186,11 +2208,14 @@ impl<R: Runtime> Run<R> {
     }
 
     pub(super) async fn update_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
-        let mut meta = meta;
+        let mut meta = self.with_max_rounds(meta);
         // P1.7: the record whose checks found no carried state says so.
         if self.carry_lost.as_deref() == Some(message_id) {
             if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
                 v.insert("stateRestored".into(), json!(false));
+                if self.integrity_unchecked {
+                    v.insert("integrityChecked".into(), json!(false));
+                }
             }
         }
         let id = message_id.to_string();

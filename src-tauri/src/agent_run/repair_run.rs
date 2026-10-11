@@ -31,6 +31,9 @@ use tauri::Runtime;
 const FIX_EXCERPT_CHARS: usize = 3_000;
 
 
+/// Rounds checked again at once after fixers fixed every cause, at most (P3.10).
+pub const MAX_RECHECKS: u32 = 2;
+
 /// A parallel group joined in this run: who owns what (R03), and each
 /// landed worker's chat, to resume for a fix (R04).
 #[derive(Debug, Clone)]
@@ -264,6 +267,9 @@ impl<R: Runtime> Run<R> {
         // that made no progress, the lead does it all.
         let lead_only = if judgement.verdict == Verdict::NoProgress {
             Some("the last round made no progress, so the lead fixes everything this round")
+        } else if self.rechecks >= MAX_RECHECKS {
+            // P3.10: an explicit bound, whatever the round count says.
+            Some("the fixers' rechecks are used up: the lead fixes everything")
         } else if round >= 2 {
             Some("a later round of the escalation ladder: the lead fixes everything")
         } else {
@@ -375,6 +381,7 @@ impl<R: Runtime> Run<R> {
             }),
         );
         if status == "recheck" {
+            self.rechecks += 1;
             return Ok(Repair::Recheck);
         }
         let mut note = format!(
@@ -470,18 +477,23 @@ impl<R: Runtime> Run<R> {
             max_tool_calls: None,
             step: Some(*step),
         };
-        self.ledger
-            .admit_worker(&brief, steps.len())
-            .map_err(|e| e.trim_start_matches("Error: ").to_string())?;
         let call_id = format!("{record_id}:fix:{label}");
         let mut sub = self
             .new_sub(Kind::Worker, &call_id, config.budget(Kind::Worker), &config)
             .await?;
+        // D11 (P3.10): fixers share the run's limit with scouts and test
+        // writers, not the plan's workers; counted once one can start.
+        self.ledger
+            .admit(&brief, config.max_per_run())
+            .map_err(|e| e.trim_start_matches("Error: ").to_string())?;
         sub.scope = Some(WriteScope::for_step(plan_step));
         sub.step = Some(*step);
         // The lead builds once, after the round's fixes (R04).
         sub.light_bash = true;
         self.close_child_calls(&child).await?;
+        // Launched first (P3.10): its chat gets the fix's brief only when
+        // the fixer really starts.
+        let mut run = self.launch_child(child.clone(), &call_id, &goal, sub)?;
         let mut message = new_message("user", &fixer_message(cause, round, results));
         message.meta = Some(json!({
             "subagentBrief": { "kind": "worker", "parentCallId": call_id, "followUp": true, "repair": true }
@@ -490,7 +502,6 @@ impl<R: Runtime> Run<R> {
         self.db
             .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
             .await?;
-        let mut run = self.launch_child(child.clone(), &call_id, &goal, sub)?;
         if let Some(root) = root {
             run.root = Some(root);
             // Its copy is discarded if it fails.

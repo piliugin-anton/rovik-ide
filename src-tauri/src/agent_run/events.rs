@@ -204,6 +204,10 @@ pub enum AgentEvent {
         before: Option<String>,
         content: String,
         reviewed: bool,
+        /// The file was removed (a rollback of a file the run created,
+        /// P3.4): an open tab for it goes, unless it has unsaved edits.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        deleted: bool,
     },
     /// What a reply showed about the model's reasoning support, to be kept
     /// with the model in the settings (src/lib/reasoning.ts).

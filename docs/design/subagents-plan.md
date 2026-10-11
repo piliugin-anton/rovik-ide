@@ -1738,3 +1738,62 @@ tasks first.
   (and the step-by-step test's mismatched step stays open). The
   conflict tests now make their conflict with an edit in the chat's view
   while the workers run, since side effects no longer land.
+
+### Review-fixes plan, phase 3: verification gate and repair loop
+
+- **P3.1** Failure keys: next to failing tests, `path:line: message`
+  lines (tracebacks, assertion lines) aren't keys of their own, and a
+  bare exception class never is; `N targets failed` is a summary; a
+  cargo workspace's test keys name the crate (`beta::tests::it`). So a
+  test that passed and now fails is a regression on pytest, Go and
+  cargo workspaces too. One change from the plan: `broke_passing` still
+  counts every error key as one that could hide tests (a Rust syntax
+  error has no code); the stray traceback keys no longer exist.
+- **P3.2** A new error in a file the round itself wrote (the
+  checkpoint's files) is a slip in the fix, reported with the failures;
+  the fix stays. A regression is a failing test, or an error in a file
+  the round didn't touch.
+- **P3.3** A check that timed out (or gave nothing to key) in either
+  round isn't compared: nothing of it counts as fixed or broken.
+- **P3.4** A rollback in a chat that isn't isolated also puts back a
+  file the run deleted (it last saw it as the checkpoint has it), and a
+  file it removes is told to the editor (`fileWritten` with `deleted`):
+  its tab closes unless it has unsaved edits.
+- **P3.5** Outside an isolated chat, a rollback names the round's
+  commands that may have changed files (they can't be undone), and the
+  checks run again when the agent finishes.
+- **P3.6** The fix for a review after green has its own checkpoint (a
+  fix that breaks what passed is rolled back), and a run whose last
+  round passed and that changed nothing since ends `verified`.
+- **P3.7** "Fewer tests ran" compares with the most tests a round ran
+  before the run first wrote a test file, and isn't flagged when the
+  run's test-file changes are all clean. Putting back a weakened test
+  forgives only failures tied to the flagged files. One change from the
+  plan: when the run wrote no test file, fewer tests is still flagged
+  (a command may have removed them).
+- **P3.8** Integrity rules also flag `conftest.py`, Cargo's
+  `autotests`/`autobins`, a module-wide `pytestmark` skip, a Rust test
+  module behind a feature, a test body that returns (or `if (false)`)
+  first in JS, Python, Go and Rust, and any change to a test file in a
+  language they can't count.
+- **P3.9** A record waiting for "Run checks" keeps the hash of what each
+  file was. Checks started with the state lost rebuild those that still
+  match a copy (the project's, in an isolated chat; the file as it is);
+  if any can't be, checks that pass end `verify-unchecked` (the record
+  says `integrityChecked: false`), never `verified`, and don't land.
+- **P3.10** Fixers count against the run's shared subagent limit (D11),
+  admitted once they can start; a fixer's brief is stored only after it
+  launches; the ledger and recheck count carry over an approval wait;
+  rechecks are capped at 2; a record's and the report's round limit is
+  the run's (bonus rounds counted).
+- Tests (each fails without its fix): regressions in pytest, Go and
+  cargo-workspace output; a slip in the fixed file; a timed-out round;
+  a rollback restoring a deleted file, telling the editor and naming
+  the commands; a review after green's fix rolled back, and a reply
+  without change verified; removing a test the run added; only the
+  flagged test forgiven; each bypass flagged; lost state after a
+  restart never verified; fixers refused by the shared limit (FUSE).
+- Seen once while testing: `a_scripted_task_runs_headless_and_reports`
+  failed in one full run under load and passed in every run after; P6.4
+  (the headless runner's 300 ms wait for its log line) is the likely
+  cause.

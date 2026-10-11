@@ -272,7 +272,7 @@ static RUST_ARROW: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*-->\s*(?P<file>[^\s:]+\.[A-Za-z0-9]+):\d+").unwrap());
 /// Summary lines that say it failed, not what did.
 static RUST_SUMMARY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(could not compile|aborting due to|test failed|\d+ previous errors?|build failed|failed to run|Some errors have detailed)").unwrap()
+    Regex::new(r"^(could not compile|aborting due to|test failed|\d+ previous errors?|build failed|failed to run|Some errors have detailed|\d+ targets? failed)").unwrap()
 });
 /// `path:12:5: error: msg` (gcc, clang), `path:12:5: F401 msg` (ruff),
 /// `./a.go:3:2: msg` (go vet).
@@ -301,6 +301,16 @@ static TEST_FAILS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .map(|r| Regex::new(r).unwrap())
     .collect()
 });
+/// cargo's `Running unittests src/lib.rs (target/debug/deps/alpha-1a2b)`:
+/// the crate the tests after it are in (P3.1: two crates' `tests::it`).
+static CARGO_RUNNING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*Running .*\((?:[^)]*[/\\])?deps[/\\](?P<krate>[A-Za-z0-9_]+)-[0-9a-f]+(?:\.exe)?\)\s*$").unwrap()
+});
+/// A message that's only an exception's class (`AssertionError`): a
+/// traceback's last line, not a failure of its own (P3.1).
+static BARE_EXCEPTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][\w.]*(?:Error|Exception|Failure)\s*$").unwrap());
+
 /// Line and column numbers inside a message, which move when code above
 /// them changes: `a.rs:12:5`, `(12,5)`, `line 12`.
 static MESSAGE_LOCATION: LazyLock<Regex> =
@@ -331,7 +341,16 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
         }
     };
     let mut eslint_file: Option<String> = None;
+    // Keys from the generic `path:line: msg` shape: tracebacks, assertion
+    // lines. Next to failing tests they're the same failures again (P3.1).
+    let mut generic: Vec<String> = Vec::new();
+    let mut tests = false;
+    let mut krate: Option<String> = None;
     for (i, line) in lines.iter().enumerate() {
+        if let Some(c) = CARGO_RUNNING.captures(line) {
+            krate = Some(c["krate"].to_string());
+            continue;
+        }
         if let Some(c) = TSC.captures(line) {
             push(
                 format!(
@@ -360,7 +379,14 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
             continue;
         }
         if let Some(c) = TEST_FAILS.iter().find_map(|r| r.captures(line)) {
-            push(format!("{kind}|test|{}", c["name"].trim()), &mut keys);
+            let name = c["name"].trim();
+            // In a cargo workspace, the crate too: `alpha::tests::it`.
+            let name = match &krate {
+                Some(k) if line.starts_with("test ") => format!("{k}::{name}"),
+                _ => name.to_string(),
+            };
+            push(format!("{kind}|test|{name}"), &mut keys);
+            tests = true;
             continue;
         }
         if let Some(c) = ESLINT_FILE.captures(line) {
@@ -388,11 +414,19 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
             {
                 continue;
             }
+            if BARE_EXCEPTION.is_match(c["msg"].trim()) {
+                continue;
+            }
             let code = c.name("code").map_or("", |m| m.as_str());
-            push(
-                format!("{kind}|{file}|{code}|{}", key_message(&c["msg"])),
-                &mut keys,
-            );
+            let key = format!("{kind}|{file}|{code}|{}", key_message(&c["msg"]));
+            if !generic.contains(&key) {
+                generic.push(key);
+            }
+        }
+    }
+    if !tests {
+        for k in generic {
+            push(k, &mut keys);
         }
     }
     if keys.is_empty() {

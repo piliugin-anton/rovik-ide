@@ -4282,6 +4282,61 @@ async fn two_causes_go_to_their_workers_in_order_then_one_check_run() {
     assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts, fixed\n"));
 }
 
+/// P3.10: fixers draw on the run's shared subagent limit (D11), not the
+/// plan's workers: with one place left, the second fixer doesn't start.
+#[tokio::test]
+#[ignore]
+async fn fixers_count_against_the_runs_subagent_limit() {
+    let Some(h) = repair_harness(false).await else {
+        return;
+    };
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "bad users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                    write_call("w1f", "src/users.rs", "users, fixed\n"),
+                    worker_report("Fixed the users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    write_call("w2f", "src/posts.rs", "posts, fixed\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Done."),
+            Reply::Text("I'll leave the rest."),
+        ],
+    )
+    .await;
+    let mut request = h.implement_isolated(&url, true);
+    request.config.as_mut().unwrap().subagents.max_per_run = Some(1);
+    h.start(request).await;
+    h.run_end().await;
+    let records = end_records(&h.messages().await);
+    let causes = records[0]["repair"]["causes"].as_array().unwrap().clone();
+    let fixers: Vec<&Value> = causes.iter().map(|c| &c["fixer"]).collect();
+    assert_eq!(fixers[0]["status"], "done", "{causes:?}");
+    assert_eq!(fixers[1]["status"], "not started", "{causes:?}");
+    assert!(
+        fixers[1]["said"]
+            .as_str()
+            .unwrap_or("")
+            .contains("this run has already started 1 subagents"),
+        "{causes:?}"
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
@@ -4601,6 +4656,76 @@ async fn a_cause_the_lead_owns_is_never_fixed_in_parallel() {
  */
 
 const FINDING_C: &str = "## Findings\n\n1. [high] b.txt:40 — The greeting has no name\n   - Scenario: the user is greeted as nobody.\n   - Fix: add the name.\n   - Confidence: confirmed";
+
+/// P3.6: the fix for a review after green is checkpointed (a fix that
+/// breaks what passes is rolled back), and a reply with no change after
+/// the findings ends verified.
+#[tokio::test]
+async fn the_fix_after_a_review_after_green_is_protected() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let files = [
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); if (!fs.readFileSync('a.txt', 'utf8').includes('ok')) { console.log('test t::greeting ... FAILED'); process.exit(1); } console.log('test t::greeting ... ok');",
+        ),
+        ("a.txt", "no\n"),
+    ];
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    for breaks in [true, false] {
+        let h = harness(&files).await;
+        let mut lead = vec![
+            write_call("w1", "a.txt", "nope\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "ok\n"),
+            Reply::Text("Fixed."),
+        ];
+        if breaks {
+            // The findings' fix breaks the check: rolled back; then it stops.
+            lead.push(write_call("w3", "a.txt", "fixed the greeting\n"));
+            lead.push(Reply::Text("1: fixed."));
+            lead.push(Reply::Text("I'll leave it."));
+        } else {
+            lead.push(Reply::Text("1: not a problem, the spelling is intended."));
+        }
+        let (url, _) = model_routed(
+            vec![(REVIEW, vec![Reply::Text(NO_FINDINGS), Reply::Text(FINDING_A)])],
+            lead,
+        )
+        .await;
+        h.start(h.with_subagents(&url, "Greet", permissions.clone(), reviewer_on(json!({}))))
+            .await;
+        let end = h.run_end().await;
+        let records: Vec<Value> = h
+            .messages()
+            .await
+            .iter()
+            .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+            .collect();
+        let statuses: Vec<&Value> = records.iter().map(|v| &v["status"]).collect();
+        if breaks {
+            // Rolled back (the round was the run's last: given up too).
+            let rb = records.iter().find(|r| r["rolledBack"].is_object());
+            assert!(rb.is_some(), "{records:?}");
+            assert_eq!(h.file("a.txt").as_deref(), Some("ok\n"));
+        } else {
+            assert_eq!(end, "verified", "{statuses:?}");
+        }
+    }
+}
 
 #[tokio::test]
 async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {

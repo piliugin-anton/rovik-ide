@@ -87,6 +87,9 @@ fn broke_passing(key: &str, prev: &RoundFailures) -> bool {
         return false;
     }
     let tests_before = before.iter().any(|p| is_test_key(p));
+    // Errors that can stop tests running. A traceback's `path:line: msg`
+    // lines next to failing tests aren't keys at all (failure_keys, P3.1),
+    // so a check with failing tests has test keys only.
     let errors_before = before.iter().any(|p| !is_test_key(p));
     if is_test_key(key) {
         tests_before && !errors_before
@@ -143,7 +146,18 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
             back_and_forth: false,
         };
     };
-    let both: BTreeSet<&String> = prev.ran.intersection(&now.ran).collect();
+    // P3.3: a check that timed out (or said nothing to key) in either round
+    // can't be compared: nothing of it counts as fixed or broken.
+    let blind = |r: &RoundFailures, kind: &str| {
+        r.keys
+            .iter()
+            .any(|k| kind_of(k) == kind && is_opaque(k) && !k.contains("|and "))
+    };
+    let both: BTreeSet<&String> = prev
+        .ran
+        .intersection(&now.ran)
+        .filter(|kind| !blind(prev, kind) && !blind(now, kind))
+        .collect();
     let comparable = |k: &&String| both.iter().any(|b| b.as_str() == kind_of(k));
     let new: Vec<String> = now
         .keys
@@ -185,9 +199,40 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
 }
 
 impl Judgement {
-    /// The same round with nothing counted as broken: after the agent was
-    /// asked to put back a weakened test, the test failing again is what
-    /// was asked for, not a regression (R05).
+    /// P3.2: a new error in a file the round itself wrote (`written`) is a
+    /// slip in the fix (an unused import), reported with the failures; the
+    /// fix stays. A regression is a test that fails now, or an error in a
+    /// file the round didn't touch.
+    pub fn keeping_slips_in(mut self, written: &[String]) -> Judgement {
+        self.broke.retain(|k| {
+            is_test_key(k)
+                || k.split('|')
+                    .nth(1)
+                    .is_none_or(|file| !written.iter().any(|w| super::paths::same(w, file)))
+        });
+        if self.verdict == Verdict::Regression && self.broke.is_empty() {
+            self.verdict = if self.fixed.is_empty() || self.back_and_forth {
+                Verdict::NoProgress
+            } else {
+                Verdict::Progress
+            };
+        }
+        self
+    }
+
+    /// The same round with the failures the integrity question was about
+    /// (`flags`, by file) not counted as broken: after the agent was asked
+    /// to put back a weakened test, that test failing again is what was
+    /// asked for, not a regression (R05). Others still are (P3.7).
+    pub fn without_regression_in(mut self, flags: &[String]) -> Judgement {
+        self.broke.retain(|k| !named_in(k, flags));
+        if self.broke.is_empty() {
+            self = self.without_regression();
+        }
+        self
+    }
+
+    /// The same round with nothing counted as broken.
     pub fn without_regression(mut self) -> Judgement {
         if self.verdict == Verdict::Regression {
             self.verdict = if self.fixed.is_empty() || self.back_and_forth {
@@ -199,6 +244,19 @@ impl Judgement {
         self.broke.clear();
         self
     }
+}
+
+/// Whether a failure key is about a file an integrity flag names
+/// (`path: …`): its file, or a test whose name has the file's stem
+/// (`posts > edits` for `posts.test.ts`, `tests/test_x.py::t`).
+fn named_in(key: &str, flags: &[String]) -> bool {
+    let detail = key.split_once('|').map_or(key, |(_, rest)| rest).to_lowercase();
+    flags.iter().any(|f| {
+        let path = f.split(": ").next().unwrap_or(f).to_lowercase();
+        let name = path.rsplit('/').next().unwrap_or(&path);
+        let stem = name.split('.').next().unwrap_or(name);
+        detail.contains(&path) || (stem.len() >= 3 && detail.contains(stem))
+    })
 }
 
 /// Keys as a list for the agent, without their check prefix.
@@ -296,6 +354,8 @@ pub fn is_check_setup(path: &str) -> bool {
         "setup.cfg",
         "tox.ini",
         "pytest.ini",
+        // P3.8: pytest's hooks and fixtures can skip or deselect anything.
+        "conftest.py",
         "ruff.toml",
         ".ruff.toml",
         "mypy.ini",
@@ -341,13 +401,17 @@ fn check_relevant(path: &str, text: &str) -> String {
         _ => return text.to_string(),
     };
     let mut keep = false;
+    let mut package = false;
     let mut out = String::new();
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with('[') {
             keep = sections.iter().any(|s| t.starts_with(s));
+            package = name == "cargo.toml" && t == "[package]";
         }
-        if keep && !t.is_empty() {
+        // P3.8: `autotests = false` (and the like) drops the tests folder.
+        let auto = package && t.starts_with("auto");
+        if (keep || auto) && !t.is_empty() {
             out.push_str(t);
             out.push('\n');
         }
@@ -377,7 +441,8 @@ fn re(s: &str) -> Regex {
 
 static JS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"\b(?:it|test)(?:\.(?:each|concurrent|only|skip|todo|failing)\b[^(]*)?\s*\("),
-    skips: re(r"\b(?:it|test|describe)\.(?:skip|todo)\b|\bx(?:it|test|describe)\s*\("),
+    // P3.8: a body that returns (or `if (false)`) first skips it too.
+    skips: re(r"\b(?:it|test|describe)\.(?:skip|todo)\b|\bx(?:it|test|describe)\s*\(|\b(?:it|test)\s*\([^,]*,\s*(?:async\s*)?(?:\(\s*\)|function\s*\w*\s*\(\s*\))\s*(?:=>\s*)?\{\s*(?:if\s*\(\s*false\s*\)|return\b)"),
     only: Some(re(
         r"\b(?:it|test|describe)\.only\b|\bf(?:it|describe)\s*\(",
     )),
@@ -385,19 +450,21 @@ static JS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
 });
 static RUST: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"#\[(?:tokio::)?test\b"),
-    skips: re(r"#\[ignore\b"),
+    // P3.8: a test module behind a feature, and a test that returns first.
+    skips: re(r"#\[ignore\b|#\[cfg\([^\]]*\bfeature\s*=[^\]]*\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w*test|#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+\w+\s*\(\s*\)\s*\{\s*(?:return\b|if\s+false\b)"),
     only: None,
     assertions: re(r"\b(?:assert|assert_eq|assert_ne|debug_assert)!\s*\("),
 });
 static PYTHON: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"(?m)^\s*(?:async\s+)?def\s+test_"),
-    skips: re(r"@pytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.skip|\bpytest\.skip\s*\("),
+    // P3.8: a module-wide `pytestmark`, and a test that returns first.
+    skips: re(r"@pytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.skip|\bpytest\.skip\s*\(|\bpytestmark\s*=.*\bpytest\.mark\.(?:skip|skipif|xfail)\b|(?m)^\s*(?:async\s+)?def\s+test_\w*\([^)]*\)\s*(?:->\s*\w+\s*)?:\s*\n\s*(?:return\b|if\s+False\s*:)"),
     only: None,
     assertions: re(r"(?m)^\s*assert\b|\bself\.assert\w+\s*\(|\bpytest\.raises\s*\("),
 });
 static GO: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"(?m)^func\s+Test\w*\s*\("),
-    skips: re(r"\bt\.Skip(?:f|Now)?\s*\("),
+    skips: re(r"\bt\.Skip(?:f|Now)?\s*\(|(?m)^func\s+Test\w*\s*\([^)]*\)\s*\{\s*(?:return\b|if\s+false\b)"),
     only: None,
     assertions: re(
         r"\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\s*\(|\b(?:assert|require)\.\w+\s*\(",
@@ -465,6 +532,15 @@ pub fn integrity_flags(path: &str, before: Option<&str>, after: Option<&str>) ->
         return flags;
     }
     let test_file = is_test_path(path);
+    // P3.8: a test file the IDE can't read the tests of: any change to it
+    // is the user's to look at (closed, not open).
+    if test_file && patterns_for(path).is_none() && before.is_some() && before != after {
+        flags.push(format!(
+            "{path}: a test file the IDE can't check was {}",
+            if after.is_none() { "deleted" } else { "changed" }
+        ));
+        return flags;
+    }
     let count = |text: Option<&str>| text.and_then(|t| count_tests(path, t));
     let (was, now) = (count(before), count(after));
     if let (Some(was), None) = (was, after) {
@@ -565,6 +641,10 @@ pub struct Rollback {
     pub broke: Vec<String>,
     /// The rolled-back attempt, as a diff.
     pub diff: String,
+    /// Not isolated: commands that may have changed files in the round
+    /// (P3.5). Their changes aren't known, so they weren't undone.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
 /// A path relative to the root, with forward slashes, whatever spelling the
@@ -623,6 +703,10 @@ impl<R: Runtime> Run<R> {
         {
             self.tests_changed.push(key.clone());
         }
+        // P3.7: the round before which tests were last counted as found.
+        if self.first_test_write_round.is_none() && super::project::is_test_path(&key) {
+            self.first_test_write_round = Some(self.verify_history.len());
+        }
         let needs_baseline = !self.baseline.contains_key(&key);
         let needs_checkpoint = self
             .checkpoint
@@ -663,6 +747,8 @@ impl<R: Runtime> Run<R> {
             changed_files: self.changed_files.clone(),
             ..Default::default()
         };
+        // A new round: its commands are counted afresh (P3.5).
+        self.round_commands.clear();
         let mut paths: BTreeSet<String> = self
             .changed_files
             .iter()
@@ -708,10 +794,15 @@ impl<R: Runtime> Run<R> {
         let seen = self.seen.clone();
         let mut result = Rollback {
             broke,
+            commands: if isolated {
+                Vec::new()
+            } else {
+                std::mem::take(&mut self.round_commands)
+            },
             ..Default::default()
         };
         let mut diffs: Vec<String> = Vec::new();
-        let mut written: Vec<(String, Option<String>, String)> = Vec::new();
+        let mut written: Vec<(String, Option<String>, String, bool)> = Vec::new();
         for (key, target) in &targets {
             let abs = tools::to_absolute_path(key, &root);
             let path = Path::new(&abs);
@@ -727,7 +818,11 @@ impl<R: Runtime> Run<R> {
             if !isolated {
                 let ours = match &current {
                     Some(bytes) => seen.get(path) == Some(crate::file_guard::hash(bytes)),
-                    None => false,
+                    // Gone since: the run's doing when it last saw the file
+                    // as the checkpoint has it (P3.4).
+                    None => target
+                        .as_ref()
+                        .is_some_and(|t| seen.get(path) == Some(crate::file_guard::hash(t))),
                 };
                 if !ours {
                     result.skipped.push(key.clone());
@@ -759,9 +854,18 @@ impl<R: Runtime> Run<R> {
             };
             match done {
                 Ok(()) => {
-                    if let Some(bytes) = target {
-                        seen.record(path, bytes);
-                        written.push((abs.clone(), current.as_ref().map(|_| now.clone()), was));
+                    match target {
+                        Some(bytes) => {
+                            seen.record(path, bytes);
+                            written.push((
+                                abs.clone(),
+                                current.as_ref().map(|_| now.clone()),
+                                was,
+                                false,
+                            ));
+                        }
+                        // P3.4: gone again: the editor is told too.
+                        None => written.push((abs.clone(), Some(now.clone()), String::new(), true)),
                     }
                     crate::outline::invalidate_path(path);
                     crate::repo_map::invalidate_path(Path::new(&root), path);
@@ -779,7 +883,7 @@ impl<R: Runtime> Run<R> {
             })
             .await;
         }
-        for (abs, before, content) in written {
+        for (abs, before, content, deleted) in written {
             super::events::emit(
                 &self.app,
                 super::events::AgentEvent::FileWritten {
@@ -787,6 +891,7 @@ impl<R: Runtime> Run<R> {
                     before,
                     content,
                     reviewed: true,
+                    deleted,
                 },
             );
         }
@@ -876,6 +981,131 @@ mod tests {
             ran: ran.iter().map(|k| k.to_string()).collect(),
             tests_ran: None,
         }
+    }
+
+    /// P3.1: a test that passed and now fails is a regression, in each
+    /// runner's real output: tracebacks and summaries aren't errors that
+    /// could have hidden it.
+    #[test]
+    fn regressions_are_found_in_pytest_go_and_cargo_workspaces() {
+        use super::super::command_output::failure_keys;
+        let of = |out: &str| {
+            let keys = failure_keys("test", out, false);
+            RoundFailures {
+                keys: keys.into_iter().collect(),
+                ran: ["test".to_string()].into_iter().collect(),
+                tests_ran: None,
+            }
+        };
+        let cases = [
+            (
+                "pytest",
+                "____ test_a ____\n\n    def test_a():\n>       assert 1 == 2\nE       AssertionError\n\ntests/test_x.py:5: AssertionError\nFAILED tests/test_x.py::test_a - AssertionError\n",
+                "____ test_b ____\n\n    def test_b():\n>       assert f() == 3\nE       AssertionError\n\ntests/test_x.py:9: AssertionError\nFAILED tests/test_x.py::test_b - AssertionError\n",
+            ),
+            (
+                "go",
+                "--- FAIL: TestA (0.00s)\n    a_test.go:10: want 1, got 2\nFAIL\nFAIL\texample.com/p\t0.01s\n",
+                "--- FAIL: TestB (0.00s)\n    a_test.go:20: want 3, got 4\nFAIL\nFAIL\texample.com/p\t0.01s\n",
+            ),
+            (
+                "cargo workspace",
+                "     Running unittests src/lib.rs (target/debug/deps/alpha-1a2b3c)\ntest tests::it ... FAILED\n\nerror: test failed, to rerun pass `-p alpha --lib`\nerror: 2 targets failed:\n    `-p alpha --lib`\n",
+                "     Running unittests src/lib.rs (target/debug/deps/alpha-1a2b3c)\ntest tests::it ... ok\n     Running unittests src/lib.rs (target/debug/deps/beta-4d5e6f)\ntest tests::it ... FAILED\n\nerror: test failed, to rerun pass `-p beta --lib`\n",
+            ),
+        ];
+        for (runner, before, after) in cases {
+            let j = judge(&[of(before)], &of(after));
+            assert_eq!(j.verdict, Verdict::Regression, "{runner}: {j:?}");
+        }
+        // Two crates' tests of one name are two tests.
+        let keys = failure_keys("test", cases[2].2, false);
+        assert_eq!(keys, ["test|test|beta::tests::it"]);
+    }
+
+    /// P3.2: the fix passes the test and leaves an unused import in the
+    /// file it wrote: progress, with the lint failure reported, no rollback.
+    #[test]
+    fn a_slip_in_the_fixed_file_isnt_a_regression() {
+        let ran = ["test", "lint"];
+        let r1 = round(&["test|test|t::one"], &ran);
+        let r2 = round(&["lint|src/a.ts|no-unused-vars|'x' is defined but never used."], &ran);
+        assert_eq!(judge(std::slice::from_ref(&r1), &r2).verdict, Verdict::Regression);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["./src/a.ts".into()]);
+        assert_eq!(j.verdict, Verdict::Progress);
+        assert!(j.broke.is_empty() && j.new.len() == 1);
+        // In a file it didn't write: still a regression.
+        let j = judge(&[r1], &r2).keeping_slips_in(&["src/b.ts".into()]);
+        assert_eq!(j.verdict, Verdict::Regression);
+    }
+
+    /// P3.3: a round whose tests timed out says nothing about them: not
+    /// progress, nothing resolved.
+    #[test]
+    fn a_timed_out_check_is_incomparable() {
+        let r1 = round(&["test|test|t::one", "test|test|t::two"], &["test"]);
+        let r2 = round(&["test|timed out"], &["test"]);
+        let j = judge(std::slice::from_ref(&r1), &r2);
+        assert_eq!(j.verdict, Verdict::First, "{j:?}");
+        assert!(j.fixed.is_empty() && j.new.is_empty());
+        assert!(progress_note(&j, 1).is_none());
+        // And back: the tests that fail after a timeout aren't "new".
+        let j = judge(&[r1.clone(), r2], &r1);
+        assert_eq!(j.verdict, Verdict::First, "{j:?}");
+    }
+
+    /// P3.7: putting a weakened test back forgives that test failing, not
+    /// another test breaking.
+    #[test]
+    fn only_the_flagged_tests_failure_is_forgiven() {
+        let ran = ["test"];
+        let r1 = round(&["test|test|other > x"], &ran);
+        let r2 = round(&["test|test|posts > edits", "test|test|feed > lists"], &ran);
+        let flags = ["src/posts.test.ts: skip markers added (0 → 1)".to_string()];
+        let j = judge(std::slice::from_ref(&r1), &r2).without_regression_in(&flags);
+        assert_eq!(j.verdict, Verdict::Regression);
+        assert_eq!(j.broke, ["test|test|feed > lists"]);
+        let r3 = round(&["test|test|posts > edits"], &ran);
+        let j = judge(&[r1], &r3).without_regression_in(&flags);
+        assert_ne!(j.verdict, Verdict::Regression);
+    }
+
+    /// P3.8: each common way round a test is flagged, and a test file the
+    /// IDE can't count is flagged on any change.
+    #[test]
+    fn the_common_bypasses_are_flagged() {
+        let flagged = |path: &str, before: &str, after: &str| {
+            let f = integrity_flags(path, Some(before), Some(after));
+            assert!(!f.is_empty(), "{path}: {after}");
+            f
+        };
+        // pytest's conftest and ini.
+        flagged("tests/conftest.py", "import pytest\n", "import pytest\ncollect_ignore = ['test_a.py']\n");
+        flagged("pytest.ini", "[pytest]\n", "[pytest]\naddopts = -k 'not slow'\n");
+        // Cargo: the tests folder turned off.
+        let cargo = "[package]\nname = \"a\"\nversion = \"0.1.0\"\n";
+        flagged("Cargo.toml", cargo, &format!("{cargo}autotests = false\n"));
+        assert!(
+            integrity_flags("Cargo.toml", Some(cargo), Some(&cargo.replace("0.1.0", "0.2.0"))).is_empty(),
+            "a version bump isn't"
+        );
+        // A module-wide pytest skip.
+        let py = "def test_a():\n    assert f() == 1\n";
+        flagged("tests/test_a.py", py, &format!("import pytest\npytestmark = pytest.mark.skip\n{py}"));
+        // A test that returns first.
+        flagged("tests/test_a.py", py, "def test_a():\n    return\n    assert f() == 1\n");
+        let js = "test('adds', () => {\n  expect(add(1, 2)).toBe(3);\n});\n";
+        flagged("src/add.test.ts", js, &js.replace("=> {\n", "=> {\n  if (false) "));
+        flagged("src/add.test.ts", js, &js.replace("=> {\n", "=> {\n  return;\n"));
+        let go = "func TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n";
+        flagged("add_test.go", go, &go.replace("{\n\tif Add", "{\n\treturn\n\tif Add"));
+        // A Rust test module behind a feature, and a test that returns.
+        let rs = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {\n        assert_eq!(add(1, 2), 3);\n    }\n}\n";
+        flagged("src/lib.rs", rs, &rs.replace("#[cfg(test)]", "#[cfg(feature = \"never\")]"));
+        flagged("src/lib.rs", rs, &rs.replace("fn adds() {\n", "fn adds() {\n        return;\n"));
+        // A test file in a language it can't count.
+        let f = flagged("spec/add_spec.rb", "it 'adds' do\nend\n", "");
+        assert!(f[0].contains("a test file the IDE can't check was changed"), "{f:?}");
     }
 
     #[test]

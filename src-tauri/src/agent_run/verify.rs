@@ -126,6 +126,10 @@ pub struct VerifyCarry {
     /// What the run last wrote or read: in a chat that isn't isolated, a
     /// rollback undoes only what's still the run's (K15).
     seen: std::sync::Arc<crate::file_guard::Seen>,
+    /// What the run's subagents used of their limits (P3.10): the next
+    /// rounds' fixers count on.
+    ledger: super::subagent::Ledger,
+    rechecks: u32,
     /// When it was kept: one older than `CARRY_TTL` is dropped (P1.8).
     pub stored: std::time::Instant,
     /// Baseline contents past `CARRY_MEMORY_BYTES`, on disk until taken up.
@@ -194,6 +198,14 @@ fn spill(
     spilled
 }
 
+/// A file's content hash as hex (P3.9).
+fn hex_hash(bytes: &[u8]) -> String {
+    crate::file_guard::hash(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// The record's meta: `{ verification: … }`.
 fn record(
     status: &str,
@@ -260,6 +272,15 @@ fn rollback_note(rb: &repair::Rollback) -> String {
         ));
     }
     note.push('.');
+    // P3.5: what commands changed isn't known, so it isn't undone.
+    if !rb.commands.is_empty() {
+        let shown: Vec<String> = rb.commands.iter().take(5).map(|c| format!("`{c}`")).collect();
+        note.push_str(&format!(
+            " Commands ran in that fix ({}{}); what they changed wasn't undone, and the checks run again when you finish.",
+            shown.join(", "),
+            if rb.commands.len() > 5 { ", …" } else { "" }
+        ));
+    }
     if rb.skipped.is_empty() {
         note.push_str(
             " The failures below are the ones from before that fix. Read the files again before editing them, and try a different fix.",
@@ -309,6 +330,7 @@ pub fn failure_report(
     results: &[CheckResult],
     changed_files: &[String],
     round: u32,
+    max_rounds: u32,
     notes: &[String],
 ) -> String {
     let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
@@ -320,7 +342,7 @@ pub fn failure_report(
     };
     let mut lines = vec![
         "[Automatic check by the IDE, not written by the user]".to_string(),
-        format!("Your changes are not done yet: {fail} (attempt {round} of {MAX_VERIFY_ROUNDS})."),
+        format!("Your changes are not done yet: {fail} (attempt {round} of {max_rounds})."),
     ];
     for note in notes {
         lines.push(String::new());
@@ -394,7 +416,7 @@ impl<R: Runtime> Run<R> {
     /// Appends a verification record; returns its id.
     async fn add_record(&self, meta: Value) -> Result<String, String> {
         let mut m = new_message("assistant", "");
-        m.meta = Some(meta);
+        m.meta = Some(self.with_max_rounds(meta));
         let id = m.id.clone();
         self.append(vec![m]).await?;
         Ok(id)
@@ -441,6 +463,8 @@ impl<R: Runtime> Run<R> {
             reviews_total: self.reviews_total,
             review_findings: take(&mut self.review_findings),
             seen: self.seen.clone(),
+            ledger: take(&mut self.ledger),
+            rechecks: self.rechecks,
             stored: std::time::Instant::now(),
             spilled: Spilled::default(),
         }
@@ -483,6 +507,72 @@ impl<R: Runtime> Run<R> {
         self.reviews_total = c.reviews_total;
         self.review_findings = c.review_findings;
         self.seen = c.seen;
+        self.ledger = c.ledger;
+        self.rechecks = c.rechecks;
+    }
+
+    /// P3.9: the carried state was lost (a restart): what each file was
+    /// before the run is rebuilt from the record's hashes, from a copy that
+    /// still matches (the project's copy in an isolated chat, the file as
+    /// it is). What can't be leaves the integrity check incomplete.
+    pub(super) async fn rebuild_baseline(&mut self, record_id: &str) {
+        let entries = self.recent().await.ok().and_then(|recent| {
+            recent
+                .iter()
+                .find(|m| m.id == record_id)?
+                .meta
+                .as_ref()?
+                .pointer("/verification/baselineHashes")?
+                .as_array()
+                .cloned()
+        });
+        let Some(entries) = entries else {
+            self.integrity_unchecked = true;
+            return;
+        };
+        let root = self.root.clone().unwrap_or_default();
+        let project = self.project_root.clone().filter(|_| self.isolated());
+        for e in entries {
+            let Some(path) = e["path"].as_str() else {
+                continue;
+            };
+            let rebuilt = match e["hash"].as_str() {
+                None => Some(super::subagent::Original::new(
+                    None,
+                    super::subagent::Source::ViewAtRunStart,
+                )),
+                Some(want) => {
+                    let copies = [
+                        project.as_ref().map(|p| std::path::Path::new(p).join(path)),
+                        Some(std::path::PathBuf::from(super::tools::to_absolute_path(path, &root))),
+                    ];
+                    copies
+                        .into_iter()
+                        .flatten()
+                        .find_map(|f| std::fs::read(f).ok().filter(|b| hex_hash(b) == want))
+                        .map(|b| {
+                            super::subagent::Original::new(
+                                Some(b),
+                                super::subagent::Source::ViewAtRunStart,
+                            )
+                        })
+                }
+            };
+            match rebuilt {
+                Some(o) => {
+                    self.baseline.entry(path.to_string()).or_insert(o);
+                }
+                None => self.integrity_unchecked = true,
+            }
+        }
+    }
+
+    /// P3.10: a record's round limit is the run's (bonus rounds counted).
+    pub(super) fn with_max_rounds(&self, mut meta: Value) -> Value {
+        if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
+            v.insert("maxRounds".into(), json!(self.max_rounds()));
+        }
+        meta
     }
 
     /// The round limit: MAX_VERIFY_ROUNDS, and one more for each review
@@ -538,7 +628,18 @@ impl<R: Runtime> Run<R> {
                 .await?;
                 return Ok("verify-unresolved".into());
             }
-            return Ok("done".into());
+            // P3.6: the last round passed and nothing changed since (the
+            // agent answered a review after green without a fix): verified.
+            let passed = self.verify_rounds > 0
+                && !self.last_verify_results.is_empty()
+                && self.last_verify_results.iter().all(|r| r.status != "failed")
+                && self.last_verify_results.iter().any(|r| r.status == "passed");
+            return Ok(match (passed, self.integrity_unchecked) {
+                (true, true) => "verify-unchecked",
+                (true, false) => "verified",
+                _ => "done",
+            }
+            .into());
         }
 
         let checks: Vec<ProjectCheck> = self
@@ -563,13 +664,17 @@ impl<R: Runtime> Run<R> {
         // Command approval is on: the gate's commands need the user's go too.
         if p.command_approval.required && !approved {
             let pending: Vec<CheckResult> = checks.iter().map(CheckResult::pending).collect();
+            // P3.9: what each file was, by hash, kept with the record: after
+            // a restart the checks rebuild what they can from it.
+            let hashes: Vec<Value> = self
+                .baseline
+                .iter()
+                .map(|(path, o)| json!({ "path": path, "hash": o.bytes.as_deref().map(hex_hash) }))
+                .collect();
             let record_id = self
-                .add_record(record(
-                    "needs-approval",
-                    self.verify_rounds,
-                    &pending,
-                    &changed,
-                    None,
+                .add_record(with(
+                    record("needs-approval", self.verify_rounds, &pending, &changed, None),
+                    json!({ "baselineHashes": hashes }),
                 ))
                 .await?;
             // The run ends here: what its fix rounds know waits for the
@@ -617,7 +722,12 @@ impl<R: Runtime> Run<R> {
         // R05: asked to put back a weakened test, the agent did, and it
         // fails: that's what was asked for, not a fix that broke something.
         if std::mem::take(&mut self.asked_integrity) {
-            judgement = judgement.without_regression();
+            judgement = judgement.without_regression_in(&self.integrity_open);
+        }
+        // P3.2: an error in what the round wrote is a slip, not a regression.
+        if let Some(cp) = &self.checkpoint {
+            let written: Vec<String> = cp.files.keys().cloned().collect();
+            judgement = judgement.keeping_slips_in(&written);
         }
         // R05: what weakens the checks, and fewer tests than last round.
         let mut flags = if ran {
@@ -625,13 +735,23 @@ impl<R: Runtime> Run<R> {
         } else {
             Vec::new()
         };
-        if let (Some(before), Some(after)) = (
-            self.verify_history.last().and_then(|r| r.tests_ran),
-            now.tests_ran,
-        ) {
-            if after < before {
+        // P3.7: against the most tests a round ran before the run first
+        // wrote a test file. Fewer is left unflagged when the run did write
+        // test files and none of them weakens anything (it removed tests of
+        // its own, say).
+        let upto = self
+            .first_test_write_round
+            .unwrap_or(self.verify_history.len())
+            .min(self.verify_history.len());
+        let reference = self.verify_history[..upto]
+            .iter()
+            .filter_map(|r| r.tests_ran)
+            .max();
+        if let (Some(before), Some(after)) = (reference, now.tests_ran) {
+            let explained = self.first_test_write_round.is_some() && flags.is_empty();
+            if after < before && !explained {
                 flags.push(format!(
-                    "fewer tests ran than in the last round ({before} → {after})"
+                    "fewer tests ran than before this run changed any test ({before} → {after})"
                 ));
             }
         }
@@ -690,10 +810,16 @@ impl<R: Runtime> Run<R> {
                 } else {
                     self.last_verify_results.clone()
                 };
-                let report = failure_report(&earlier, &changed, round, &[rollback_note(&rb)]);
+                let report = failure_report(
+                    &earlier,
+                    &changed,
+                    round,
+                    self.max_rounds(),
+                    &[rollback_note(&rb)],
+                );
                 self.add_harness(report, "verification").await?;
                 // Not all of it went back: the code is new, check it again.
-                self.writes_since_verify = !rb.skipped.is_empty();
+                self.writes_since_verify = !rb.skipped.is_empty() || !rb.commands.is_empty();
                 self.take_checkpoint();
                 return Ok("continue".into());
             }
@@ -750,12 +876,17 @@ impl<R: Runtime> Run<R> {
             && self.sub().is_none()
             && self.review_after_green(&record_id, &meta).await?
         {
-            self.checkpoint = None;
+            // P3.6: the fix for the findings is a round like any other: one
+            // that breaks what passes now is rolled back.
+            self.take_checkpoint();
             return Ok("continue".into());
         }
         if status != "failed" {
             self.checkpoint = None;
             return Ok(match status {
+                // P3.9: what the files were before was lost (a restart):
+                // passed, but whether tests were weakened isn't known.
+                "passed" if self.integrity_unchecked => "verify-unchecked".into(),
                 "passed" => "verified".into(),
                 _ => format!("verify-{status}"),
             });
@@ -833,7 +964,7 @@ impl<R: Runtime> Run<R> {
         if self.stopped() {
             return Ok("verify-stopped".into());
         }
-        let mut report = failure_report(&sent, &changed, round, &notes);
+        let mut report = failure_report(&sent, &changed, round, self.max_rounds(), &notes);
         if let Some(files) = &self.merged_from_project {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
             let diffs: String = files
@@ -1267,6 +1398,7 @@ mod tests {
             &results,
             &["src/a.ts".into()],
             1,
+            3,
             &["No progress: x".into()],
         );
         assert!(text.contains("(attempt 1 of 3).\n\nNo progress: x\n\nFiles you changed"));

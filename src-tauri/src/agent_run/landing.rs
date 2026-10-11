@@ -90,6 +90,9 @@ impl<R: Runtime> Run<R> {
                     "the change weakens tests or what the checks run: review it first"
                 }
                 "verify-needs-approval" => "the checks wait for your approval",
+                "verify-unchecked" => {
+                    "the checks pass, but whether the change weakens tests couldn't be checked (the app restarted): review it first"
+                }
                 "unfinished-checklist" => "the checklist isn't finished",
                 _ => "the run didn't finish",
             };

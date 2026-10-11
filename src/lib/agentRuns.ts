@@ -22,12 +22,13 @@ import { chatStore, type MessageRow } from './chatStore';
 import { noteChecklist, clearLiveChecklist, refreshChecklist } from './checklist';
 import {
   clearApproval,
+  notifyFileDeleted,
   notifyFileWritten,
   registerApproval,
   type ApprovalRequest,
 } from './approvals';
 import { clearQuestions, registerQuestions, type PendingQuestions } from './questions';
-import { recordAgentEdit } from './agentChanges';
+import { clearAgentChanges, recordAgentEdit } from './agentChanges';
 import { clearPendingDraft } from './pendingDraft';
 import { dismiss, notify } from './notifications';
 import { noteClmStatus, type ClmStatus } from './contextMode';
@@ -105,6 +106,8 @@ type AgentEvent =
       before: string | null;
       content: string;
       reviewed: boolean;
+      /** Removed: a rollback of a file the run created. */
+      deleted?: boolean;
     }
   | ({ type: 'reasoningLearned' } & ReasoningLearned)
   | { type: 'apiRouteLearned'; profileId: string; route: ApiRoute }
@@ -357,6 +360,11 @@ function handle(event: AgentEvent) {
       noteChecklist(event.dialogId, event.items);
       break;
     case 'fileWritten':
+      if (event.deleted) {
+        clearAgentChanges(event.absPath);
+        notifyFileDeleted(event.absPath);
+        break;
+      }
       // An edit the user didn't review shows in the editor until they save.
       if (!event.reviewed) recordAgentEdit(event.absPath, event.before, event.content);
       notifyFileWritten(event.absPath, event.content);

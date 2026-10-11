@@ -58,7 +58,7 @@ import { currentProject, projectList, refreshProjects, resolveProject } from './
 import { chatApi, type ProjectSummary } from './lib/chatApi';
 import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
-import { notifyFileWritten, onFileWritten, onRevealEdit } from './lib/approvals';
+import { notifyFileWritten, onFileDeleted, onFileWritten, onRevealEdit } from './lib/approvals';
 import { editorSettings } from './lib/editorSettings';
 import {
   onAddToChat,
@@ -487,6 +487,17 @@ export default function App() {
     }
     void openPath(path, { activate: activePath() === null });
   });
+  // A file the agent removed (a rolled-back creation, P3.4): its tab goes,
+  // unless it holds the user's unsaved text.
+  const stopDeleted = onFileDeleted((path) => {
+    const file = openFiles().find((f) => f.path === path);
+    if (!file || file.dirty) return;
+    const remaining = openFiles().filter((f) => f.path !== path);
+    setOpenFiles(remaining);
+    if (activePath() === path) {
+      setActivePath(remaining.length ? remaining[remaining.length - 1].path : null);
+    }
+  });
   // An unreviewed agent edit: when "Open files after agent edits" is on,
   // its file opens in a tab so the changes can be seen. In the background
   // while another file is being worked on, so a long run doesn't keep
@@ -601,6 +612,7 @@ export default function App() {
   onCleanup(() => {
     stopReveal();
     stopWritten();
+    stopDeleted();
     stopOpenRequests();
     stopAddToChat();
     stopAgentEdits();
