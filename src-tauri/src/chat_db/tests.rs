@@ -579,3 +579,63 @@ fn descendants_terminate_on_a_cycle() {
     found.sort();
     assert_eq!(found, ["g", "k1"]);
 }
+
+/// Round 2 (section 4.2): a handle shared by two subagents' ids finds the
+/// newest; another chat's call id finds nothing here; upper-case hex finds
+/// it too (SQLite's LIKE folds ASCII case).
+#[test]
+fn child_by_handle_prefers_the_newest_and_scopes_to_the_parent() {
+    let mut conn = db();
+    dialog(&mut conn, "p", "Pancakes", 0);
+    dialog(&mut conn, "q", "Quiche", 0);
+    let make = |conn: &mut Connection, id: &str, parent: &str, call: &str, at: i64| {
+        create_child_dialog(
+            conn,
+            &NewChildDialog {
+                id: id.into(),
+                parent_id: parent.into(),
+                parent_call_id: call.into(),
+                kind: "scout".into(),
+                title: "Scout".into(),
+                created_at: at,
+            },
+        )
+        .unwrap();
+    };
+    make(
+        &mut conn,
+        "abcdef12-0000-4000-8000-000000000001",
+        "p",
+        "call-1",
+        1_000,
+    );
+    make(
+        &mut conn,
+        "abcdef12-0000-4000-8000-000000000002",
+        "p",
+        "call-2",
+        2_000,
+    );
+    make(
+        &mut conn,
+        "99999999-0000-4000-8000-000000000003",
+        "q",
+        "call-q",
+        3_000,
+    );
+    let found = child_by_handle(&conn, "p", "scout-abcdef12")
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, "abcdef12-0000-4000-8000-000000000002");
+    assert!(child_by_handle(&conn, "p", "call-q").unwrap().is_none());
+    assert!(child_by_handle(&conn, "p", "scout-99999999")
+        .unwrap()
+        .is_none());
+    let upper = child_by_handle(&conn, "p", "scout-ABCDEF12")
+        .unwrap()
+        .unwrap();
+    assert_eq!(upper.id, found.id);
+    // By the call that started it, in this chat.
+    let by_call = child_by_handle(&conn, "p", "call-1").unwrap().unwrap();
+    assert_eq!(by_call.id, "abcdef12-0000-4000-8000-000000000001");
+}
