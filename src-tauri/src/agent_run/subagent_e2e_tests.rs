@@ -2694,6 +2694,12 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
                 write_call("w2", "src/greet.test.ts", "test('greets', () => {});\n"),
                 Reply::Call { id: "b1", name: "bash", args: json!({ "command": "cargo build" }) },
                 Reply::Call { id: "b2", name: "bash", args: json!({ "command": "ls src" }) },
+                // Bash can't read the code under test, or write a non-test file.
+                Reply::Call { id: "b3", name: "bash", args: json!({ "command": "cat src/greet.ts" }) },
+                Reply::Call { id: "b4", name: "bash", args: json!({ "command": "sed -i s/Hello/Bye/ src/greet.ts" }) },
+                // A light check that may write: it holds the project's
+                // commands for its lead, not for itself.
+                Reply::Call { id: "b5", name: "bash", args: json!({ "command": "ruff check src/x.py" }) },
                 Reply::Text(TEST_REPORT),
             ],
         )],
@@ -2770,6 +2776,20 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
         result("b1")
     );
     assert!(result("b2").contains("greet.ts"), "{}", result("b2"));
+    for id in ["b3", "b4"] {
+        assert!(
+            result(id).starts_with("Error: `") && result(id).contains("The test writer runs only"),
+            "{}",
+            result(id)
+        );
+    }
+    assert!(!result("b5").contains("another chat"), "{}", result("b5"));
+    // The run ended: its hold on the project's commands went with it.
+    assert_eq!(
+        crate::overlay::chats::claim_direct_writes(&h.project, "another-chat"),
+        Ok(())
+    );
+    crate::overlay::chats::release_direct_writes("another-chat");
     assert_eq!(
         h.file("src/greet.ts").as_deref(),
         Some("export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n")
@@ -3036,17 +3056,22 @@ async fn a_group_runs_in_parallel_and_joins_into_the_chat_not_the_project() {
 #[tokio::test]
 #[ignore]
 async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
-    let h = group_harness(&[]).await;
+    // A check w1 may run writes past its scope as a side effect (a test
+    // that writes a file): posts.rs too.
+    let h = group_harness(&[(
+        "scripts/side.test.js",
+        "require('fs').writeFileSync('src/posts.rs', 'from w1\\n');\n",
+    )])
+    .await;
     let (url, _) = model_routed(
         vec![
             (
                 "# Your step: 2.",
                 vec![
-                    // A command reaches past its scope (a bug): posts.rs too.
                     Reply::Call {
                         id: "b1",
                         name: "bash",
-                        args: json!({ "command": "printf 'from w1\\n' > src/posts.rs" }),
+                        args: json!({ "command": "node --test scripts/side.test.js" }),
                     },
                     worker_report("Users.", &["src/users.rs"]),
                 ],
@@ -3861,4 +3886,63 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
         .iter()
         .skip(1)
         .all(|r| r["afterGreen"] == true));
+}
+
+/*
+ * A sequential subagent in an isolated chat works under the chat's
+ * isolation: its commands get the chat's variables and confinement.
+ */
+
+#[tokio::test]
+#[ignore]
+async fn a_workers_commands_run_under_the_chats_isolation() {
+    let mut h = plan_harness(&[("a.txt", "old\n")]).await;
+    h.isolate().await;
+    let project = h.project.to_string_lossy().into_owned();
+    let read_real: &'static str = Box::leak(format!("cat {project}/a.txt").into_boxed_str());
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                write_call("w1", "a.txt", "hello\n"),
+                Reply::Calls(vec![
+                    (
+                        "e1",
+                        "bash",
+                        json!({ "command": "echo target=$CARGO_TARGET_DIR" }),
+                    ),
+                    ("e2", "bash", json!({ "command": read_real })),
+                    ("e3", "bash", json!({ "command": "git commit -am x" })),
+                ]),
+                worker_report("First greeting.", &["a.txt"]),
+            ],
+        )],
+        vec![step("s1", 1), Reply::Text("Stopping here.")],
+    )
+    .await;
+    let mut request = h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off);
+    request.isolate = Some(true);
+    h.start(request).await;
+    h.run_end().await;
+    let child = h.child_of("s1").await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("no result for {id}"))
+            .content
+            .clone()
+    };
+    // The chat's build folder, as the lead's commands get.
+    assert!(
+        result("e1").contains("overlays") && result("e1").contains("targets"),
+        "{}",
+        result("e1")
+    );
+    // Confined where the platform can: the project's path shows the
+    // chat's view, with the worker's change.
+    if crate::overlay::chats::get(&h.dialog_id).is_some_and(|o| o.confine().is_some()) {
+        assert!(result("e2").contains("hello"), "{}", result("e2"));
+    }
+    assert!(result("e3").starts_with("Error"), "{}", result("e3"));
 }

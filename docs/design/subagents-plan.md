@@ -1213,3 +1213,49 @@ fixes. This affected every run, with or without subagents.
 - Tests: unit (hidden failures; what passed and fails now) and e2e (a
   build fix that lets the tests run is kept; a weakened test put back and
   failing isn't rolled back).
+
+### Review fixes: what a writing subagent's commands can do
+
+- **bash no longer gets around the write scope, tests-only or the hidden
+  files** (`worker::writer_command_problem`, called in `execute.rs` for a
+  subagent with a scope or tests-only).
+  - A step worker (sequential, in a group, or as a repair fixer) runs only:
+    - read-only commands;
+    - the project's checks: builds, type checks, linters and test runners
+      (`worker::is_check_tool`), without `--fix`, `--write` or snapshot
+      updates.
+  - It can't use redirects to files, subshells, `sed -i`, `mv`, `rm`,
+    `git checkout`, formatters, `bash -c` or scripts. Every file change
+    goes through `write`, where the scope is checked.
+  - The test writer runs only checks, plus `ls`, `pwd` and `which`. Output
+    filters may follow a check (`… | tail`) if they name no file in the
+    project. So `cat`, `grep` and `git diff` can't show it the code under
+    test.
+  - **Deviation from D02** ("bash with the parent's permissions"): a check
+    can still change files as a side effect (a test that writes a file, an
+    npm script), so the join's conflict handling stays. Its test now makes
+    the conflict that way.
+- **A subagent works under its lead's isolation** (`Run::overlay_owner`).
+  A subagent without an overlay of its own (a sequential worker, the test
+  writer) used its own chat id for the overlay lookup and found none.
+  Now its calls use the lead's chat for that lookup, so its commands get
+  everything the lead's commands get:
+  - `command_problem`, which refuses commands that change the repository;
+  - the confinement: the project's path shows the chat's view;
+  - the shared build folder;
+  - in a chat that isn't isolated, the lead's hold on the project's
+    commands, released when the lead's run ends. Before, a subagent's hold
+    was never released, so other chats were refused until a restart.
+  - The overlay is also flushed, and checked for clashes, after the
+    subagent's writes.
+
+  Group workers and parallel fixers keep their own child overlays.
+
+- Tests:
+  - unit: which commands a worker and the test writer may run;
+  - e2e: the test writer's `cat` and `sed -i` are refused, and its hold on
+    the project's commands ends with the lead's run;
+  - FUSE: a sequential worker's commands get the chat's build folder and
+    confinement, and `git commit` is refused.
+
+  Both e2e tests fail without the fix.

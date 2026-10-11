@@ -487,6 +487,221 @@ pub fn plan_file_named(request: &str, base: Option<&str>) -> Option<String> {
     Some(Path::new(base?).join(p).to_string_lossy().into_owned())
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Commands a writing subagent may run
+ * ---------------------------------------------------------------------------
+ */
+
+/// The program's name: the file name, lower case, without `.exe`/`.cmd`.
+fn program(word: &str) -> String {
+    let name = word
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(word)
+        .to_lowercase();
+    for ext in [".exe", ".cmd", ".bat"] {
+        if let Some(n) = name.strip_suffix(ext) {
+            return n.to_string();
+        }
+    }
+    name
+}
+
+/// The words after wrappers that only run the rest: `env X=1`, `time`, `nice`.
+fn unwrapped(words: &[String]) -> &[String] {
+    let mut rest = words;
+    loop {
+        match rest.first().map(|w| program(w)).as_deref() {
+            Some("env") => {
+                let skip = 1 + rest[1..]
+                    .iter()
+                    .take_while(|w| w.contains('=') || w.starts_with('-'))
+                    .count();
+                rest = &rest[skip..];
+            }
+            Some("time" | "nice" | "timeout") => {
+                // `timeout 600 cargo test`: its duration too.
+                let skip = 1 + rest[1..]
+                    .iter()
+                    .take_while(|w| {
+                        w.starts_with('-')
+                            || w.chars()
+                                .all(|c| c.is_ascii_digit() || c == '.' || c == 's' || c == 'm')
+                    })
+                    .count();
+                rest = &rest[skip..];
+            }
+            _ => return rest,
+        }
+    }
+}
+
+/// Flags that make a check change the code it checks.
+fn fixes(words: &[String]) -> bool {
+    words.iter().any(|w| {
+        matches!(
+            w.as_str(),
+            "--fix"
+                | "--write"
+                | "-w"
+                | "--fix-dry-run=false"
+                | "-u"
+                | "--update"
+                | "--updateSnapshot"
+                | "--snapshot-update"
+        ) || w.starts_with("--fix=")
+    })
+}
+
+/// A check a writing subagent may run: a build, a type check, a linter or
+/// a test runner, without the flags that make it change the code
+/// (`--fix`, `--write`, snapshot updates).
+pub fn is_check_tool(words: &[String]) -> bool {
+    let words = unwrapped(words);
+    let Some(first) = words.first() else {
+        return false;
+    };
+    if fixes(words) {
+        return false;
+    }
+    let sub = words
+        .iter()
+        .skip(1)
+        .map(String::as_str)
+        .find(|w| !w.starts_with('-') && !w.starts_with('+'));
+    let script = |name: &str| {
+        let base = name.split(':').next().unwrap_or(name);
+        matches!(
+            base,
+            "test"
+                | "tests"
+                | "check"
+                | "lint"
+                | "typecheck"
+                | "type-check"
+                | "types"
+                | "build"
+                | "tsc"
+        )
+    };
+    match program(first).as_str() {
+        "cargo" => matches!(
+            sub,
+            Some("build" | "b" | "check" | "c" | "test" | "t" | "clippy" | "nextest" | "bench")
+        ),
+        "npm" | "pnpm" | "yarn" | "bun" => match sub {
+            Some("test" | "t") => true,
+            Some("run" | "run-script") => words
+                .iter()
+                .skip_while(|w| !matches!(w.as_str(), "run" | "run-script"))
+                .skip(1)
+                .find(|w| !w.starts_with('-'))
+                .is_some_and(|s| script(s)),
+            Some("exec" | "dlx") => {
+                let at = words
+                    .iter()
+                    .position(|w| matches!(w.as_str(), "exec" | "dlx"));
+                at.is_some_and(|i| is_check_tool(&words[i + 1..]))
+            }
+            Some(s) => program(first) == "yarn" && script(s),
+            None => false,
+        },
+        "npx" | "bunx" => {
+            let rest: Vec<String> = words[1..]
+                .iter()
+                .skip_while(|w| w.starts_with('-'))
+                .cloned()
+                .collect();
+            is_check_tool(&rest)
+        }
+        "tsc" | "vue-tsc" | "jest" | "mocha" | "eslint" | "pyright" | "mypy" | "pytest"
+        | "py.test" | "golangci-lint" | "clippy-driver" => true,
+        "vitest" => sub.is_none_or(|s| s == "run"),
+        "ruff" => sub.is_none_or(|s| s == "check"),
+        "python" | "python3" | "py" => {
+            let m = words.iter().position(|w| w == "-m");
+            m.and_then(|i| words.get(i + 1)).is_some_and(|m| {
+                matches!(
+                    m.as_str(),
+                    "pytest" | "unittest" | "mypy" | "pyright" | "compileall"
+                )
+            })
+        }
+        "go" => matches!(sub, Some("build" | "test" | "vet")),
+        "deno" => matches!(sub, Some("test" | "check" | "lint")),
+        "node" => words.iter().any(|w| w == "--test"),
+        _ => false,
+    }
+}
+
+/// Output filters after a check: `cargo test 2>&1 | tail -50`.
+const FILTERS: &[&str] = &[
+    "head", "tail", "grep", "rg", "wc", "sort", "uniq", "cut", "tr", "cat", "less", "more", "tee",
+];
+
+/// Why a writing subagent may not run `command`, if it may not. Its file
+/// changes go through `write`, where its scope is checked (D7, E02); bash
+/// is for reading (a worker only) and for the project's checks.
+/// `test_writer`: it mustn't read the code under test either, so it runs
+/// only checks, with output filters that name no file in the project.
+pub fn writer_command_problem(
+    command: &str,
+    test_writer: bool,
+    root: Option<&Path>,
+) -> Option<String> {
+    let parsed = super::permissions::parse_command(command);
+    let why = if test_writer {
+        "The test writer runs only the project's checks and test runners with bash (it reads with read and search_code, and writes tests with write)"
+    } else {
+        "A step worker changes files only with write, which checks its scope; with bash it runs read-only commands and the project's checks"
+    };
+    if parsed.opaque {
+        return Some(format!(
+            "Error: subshells and command substitution can't be checked. {why}. Run the parts as separate commands."
+        ));
+    }
+    if parsed.writes_via_redirect {
+        return Some(format!(
+            "Error: `{command}` writes a file with a redirect. {why}."
+        ));
+    }
+    let names_file = |seg: &[String]| {
+        seg.iter()
+            .skip(1)
+            .filter(|w| !w.starts_with('-'))
+            .any(|w| root.is_some_and(|r| r.join(w).exists()) || Path::new(w).is_absolute())
+    };
+    let mut first = true;
+    for seg in &parsed.segments {
+        let Some(head) = seg.first() else {
+            continue;
+        };
+        if program(head) == "cd" {
+            continue;
+        }
+        let ok = if is_check_tool(seg) {
+            true
+        } else if test_writer {
+            // Names, not contents: what list_dir shows too.
+            matches!(program(head).as_str(), "ls" | "pwd" | "which") && super::permissions::segment_is_read_only(seg)
+                ||
+            // `cargo test 2>&1 | tail -50`, not `cat src/lib.rs`.
+            !first && FILTERS.contains(&program(head).as_str()) && program(head) != "tee" && !names_file(seg)
+        } else {
+            super::permissions::segment_is_read_only(seg)
+        };
+        if !ok {
+            return Some(format!(
+                "Error: `{}` isn't allowed here. {why}.",
+                seg.join(" ")
+            ));
+        }
+        first = false;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,5 +869,70 @@ mod tests {
         assert!(extend_scope_paths(bad.as_object().unwrap()).is_err());
         let no_reason = json!({ "paths": ["a"] });
         assert!(extend_scope_paths(no_reason.as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn writers_change_files_only_with_write() {
+        let worker = |c: &str| writer_command_problem(c, false, None);
+        for ok in [
+            "cargo check",
+            "cargo test -p app 2>&1 | tail -50",
+            "npm test",
+            "npm run typecheck",
+            "pnpm exec tsc --noEmit",
+            "npx eslint src/a.ts",
+            "python -m pytest tests/test_a.py",
+            "go vet ./pkg",
+            "timeout 600 cargo test",
+            "cat src/lib.rs",
+            "git diff",
+            "grep -rn foo src",
+            "cd src-tauri && cargo check",
+        ] {
+            assert_eq!(worker(ok), None, "{ok}");
+        }
+        for bad in [
+            "sed -i s/a/b/ src/db.rs",
+            "echo x > src/db.rs",
+            "rm src/db.rs",
+            "mv a.rs b.rs",
+            "cp a.rs src/b.rs",
+            "git checkout -- .",
+            "cargo fmt",
+            "npx eslint --fix src",
+            "ruff format .",
+            "npm run dev",
+            "bash -c 'rm -rf src'",
+            "python script.py",
+            "$(echo rm) x",
+        ] {
+            assert!(worker(bad).is_some(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_test_writer_runs_only_checks() {
+        let dir = std::env::temp_dir().join(format!("writer-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "x").unwrap();
+        let tw = |c: &str| writer_command_problem(c, true, Some(&dir));
+        for ok in [
+            "cargo test",
+            "npm test 2>&1 | tail -40",
+            "npx vitest run src/a.test.ts | grep FAIL",
+            "ls src",
+        ] {
+            assert_eq!(tw(ok), None, "{ok}");
+        }
+        for bad in [
+            "cat src/lib.rs",
+            "git diff",
+            "grep -rn fn src",
+            "cargo test && grep fn src/lib.rs",
+            "cargo test | tee src/out.rs",
+        ] {
+            assert!(tw(bad).is_some(), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

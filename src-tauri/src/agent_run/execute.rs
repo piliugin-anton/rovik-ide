@@ -363,6 +363,22 @@ impl<R: Runtime> Run<R> {
                     .await;
             }
         }
+        // A writing subagent changes files only with write, where its scope
+        // is checked; the test writer doesn't read the code with bash either.
+        if tc.name == "bash" {
+            if let Some(sub) = self.sub().filter(|s| s.scope.is_some() || s.tests_only) {
+                let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                if let Some(content) = super::worker::writer_command_problem(
+                    command,
+                    sub.tests_only,
+                    self.root.as_deref().map(std::path::Path::new),
+                ) {
+                    return self
+                        .add_tool_result(&tc.id, content, None, Vec::new())
+                        .await;
+                }
+            }
+        }
         // Light commands only: builds and test runs are the lead's (E02, F05).
         if tc.name == "bash" && self.sub().is_some_and(|s| s.light_bash) {
             let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
@@ -661,8 +677,8 @@ impl<R: Runtime> Run<R> {
         // An isolated chat's changes are saved as they happen (overlay/fs.rs).
         // Then compared with the other open chats on the project, so a clash
         // on the same lines is told with this result.
-        if crate::overlay::chats::get(&self.dialog_id).is_some() {
-            let id = self.dialog_id.clone();
+        if crate::overlay::chats::get(&self.overlay_owner()).is_some() {
+            let id = self.overlay_owner();
             let _ = tauri::async_runtime::spawn_blocking(move || {
                 if let Some(o) = crate::overlay::chats::get(&id) {
                     o.fs.flush();
@@ -1316,6 +1332,20 @@ impl<R: Runtime> Run<R> {
         })
     }
 
+    /// The chat whose overlay this run's calls work in, and whose commands
+    /// they are: its own when it has one (a group worker's child overlay),
+    /// else, for a subagent, its lead's (a sequential worker, a test writer
+    /// or a scout works in the lead's view, under the lead's isolation and
+    /// its hold on the project's commands).
+    pub(super) fn overlay_owner(&self) -> String {
+        match self.sub() {
+            Some(sub) if crate::overlay::chats::get(&self.dialog_id).is_none() => {
+                sub.parent_dialog_id.clone()
+            }
+            _ => self.dialog_id.clone(),
+        }
+    }
+
     /// What a call runs with: the run's record of files it has seen, and
     /// its note on the tool block (a wait for a CPU slot shows there).
     fn call_context(&self, tool_call_id: &str) -> tools::CallContext {
@@ -1326,7 +1356,7 @@ impl<R: Runtime> Run<R> {
         );
         tools::CallContext {
             seen: self.seen.clone(),
-            owner: self.dialog_id.clone(),
+            owner: self.overlay_owner(),
             checks_owner: self
                 .sub()
                 .map_or_else(|| self.dialog_id.clone(), |s| s.parent_dialog_id.clone()),

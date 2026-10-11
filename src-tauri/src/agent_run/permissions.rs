@@ -447,7 +447,7 @@ static BRANCH_CHANGES: LazyLock<Regex> =
 static REWRITES_FILES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(--fix|--write|--in-place)\b").unwrap());
 
-fn segment_is_read_only(seg: &[String]) -> bool {
+pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
     let Some((cmd, rest)) = seg.split_first() else {
         return true;
     };
