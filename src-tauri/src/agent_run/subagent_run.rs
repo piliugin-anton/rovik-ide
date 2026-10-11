@@ -165,6 +165,10 @@ pub static PANIC_SUB: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(N
 #[cfg(test)]
 pub static FAIL_LAUNCH: std::sync::Mutex<std::collections::BTreeSet<String>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
+/// Tests: the brief for this `task` call can't be stored.
+#[cfg(test)]
+pub static FAIL_BRIEF: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
     // Unregistered however it ends, by the guard in its `SubCtx`: a child
@@ -830,11 +834,23 @@ impl<R: Runtime> Run<R> {
         let mut first = new_message("user", &message);
         first.meta =
             Some(json!({ "subagentBrief": { "kind": kind.id(), "parentCallId": call_id } }));
+        #[cfg(test)]
+        let fail = FAIL_BRIEF.lock().unwrap().contains(call_id);
+        #[cfg(not(test))]
+        let fail = false;
         self.db
             .write(move |c| {
                 store::create_child_dialog(c, &dialog)?;
-                store::append_messages(c, &dialog.id, &[first])?;
-                Ok(())
+                let stored = if fail {
+                    Err("the brief couldn't be stored".to_string())
+                } else {
+                    store::append_messages(c, &dialog.id, &[first]).map(|_| ())
+                };
+                // Round 2: no child chat without its brief.
+                if stored.is_err() {
+                    let _ = store::delete_dialog(c, &dialog.id);
+                }
+                stored
             })
             .await
     }

@@ -5096,6 +5096,169 @@ async fn fixers_count_against_the_runs_subagent_limit() {
     );
 }
 
+/// Round 2 (§4.2): fixers and scouts share the run's limit: with 3, two
+/// scouts leave one place, so the first fixer starts and the second
+/// doesn't.
+#[tokio::test]
+async fn fixers_share_the_limit_with_scouts() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let Some(h) = repair_harness(false).await else {
+        return;
+    };
+    let (url, _) = model_routed(
+        vec![
+            ("MARK-S1", vec![Reply::Text(REPORT)]),
+            ("MARK-S2", vec![Reply::Text(REPORT)]),
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "bad users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                    write_call("w1f", "src/users.rs", "users, fixed\n"),
+                    worker_report("Fixed the users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    write_call("w2f", "src/posts.rs", "posts, fixed\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            task("s1", "MARK-S1: where are the pages?"),
+            task("s2", "MARK-S2: where is the router?"),
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Done."),
+            Reply::Text("I'll leave the rest."),
+        ],
+    )
+    .await;
+    let mut request = h.implement_isolated(&url, true);
+    let subagents = &mut request.config.as_mut().unwrap().subagents;
+    subagents.max_per_run = Some(3);
+    subagents.kinds.insert(
+        "scout".into(),
+        serde_json::from_value(json!({ "enabled": true })).unwrap(),
+    );
+    h.start(request).await;
+    h.run_end().await;
+    let messages = h.messages().await;
+    for call in ["s1", "s2"] {
+        assert!(
+            !result_of(&messages, call).content.starts_with("Error"),
+            "{}",
+            result_of(&messages, call).content
+        );
+    }
+    let records = end_records(&messages);
+    let causes = records[0]["repair"]["causes"].as_array().unwrap().clone();
+    let fixers: Vec<&Value> = causes.iter().map(|c| &c["fixer"]).collect();
+    assert_eq!(fixers[0]["status"], "done", "{causes:?}");
+    assert_eq!(fixers[1]["status"], "not started", "{causes:?}");
+    assert!(
+        fixers[1]["said"]
+            .as_str()
+            .unwrap_or("")
+            .contains("this run has already started 3 subagents"),
+        "{causes:?}"
+    );
+}
+
+/// Round 2 (§4.2): the subagents a run started count on after its checks
+/// waited for approval: with 3 per run, two before the wait leave one.
+#[tokio::test]
+async fn the_ledger_survives_approval() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&[
+        ("a.txt", "x\n"),
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(require('fs').existsSync('ok.txt') ? 0 : 1)\"" } }"#,
+        ),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![
+            ("MARK-L1", vec![Reply::Text(REPORT)]),
+            ("MARK-L2", vec![Reply::Text(REPORT)]),
+            ("MARK-L3", vec![Reply::Text(REPORT)]),
+            ("MARK-L4", vec![Reply::Text(REPORT)]),
+        ],
+        vec![
+            task("s1", "MARK-L1: where?"),
+            task("s2", "MARK-L2: where?"),
+            write_call("w1", "x.txt", "x\n"),
+            Reply::Text("Done."),
+            // After "Run checks": the checks failed.
+            task("s3", "MARK-L3: why?"),
+            task("s4", "MARK-L4: and?"),
+            write_call("w2", "ok.txt", "ok\n"),
+            Reply::Text("Fixed."),
+        ],
+    )
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    let mut subagents = scouts_on(json!({}));
+    subagents.max_per_run = Some(3);
+    h.start(h.with_subagents(
+        &url,
+        "Look, then write",
+        permissions.clone(),
+        subagents.clone(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let mut outcome = String::new();
+    for _ in 0..2 {
+        let record = h.messages().await.last().unwrap().id.clone();
+        h.events.lock().unwrap().clear();
+        let mut request = h.request(
+            &url,
+            StartKind::RunChecks { record_id: record },
+            permissions.clone(),
+        );
+        request.config.as_mut().unwrap().subagents = subagents.clone();
+        h.start(request).await;
+        outcome = h.run_end().await;
+        if outcome != "verify-needs-approval" {
+            break;
+        }
+    }
+    assert_eq!(outcome, "verified");
+    let messages = h.messages().await;
+    for call in ["s1", "s2", "s3"] {
+        let r = &result_of(&messages, call).content;
+        assert!(!r.starts_with("Error"), "{call}: {r}");
+    }
+    assert!(
+        result_of(&messages, "s4")
+            .content
+            .contains("this run has already started 3 subagents"),
+        "{}",
+        result_of(&messages, "s4").content
+    );
+}
+
 #[tokio::test]
 async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
     if !crate::vfs::mount_works() {
@@ -7217,6 +7380,59 @@ async fn deleting_a_project_removes_its_subagents_chats_and_files() {
         .await
         .unwrap();
     assert_eq!(rows, 0);
+}
+
+/// Round 2 (§4.2): a brief that can't be stored leaves nothing behind:
+/// no child running or registered, no child chat, and its place back.
+#[tokio::test]
+async fn a_failed_brief_append_leaves_nothing_running() {
+    let h = harness(&[("a.txt", "a\n")]).await;
+    let (url, _) = model_routed(
+        vec![("MARK-FB", vec![Reply::Text(REPORT)])],
+        vec![
+            task("fb1", "MARK-FB: first"),
+            task("fb2", "MARK-FB: second"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    crate::agent_run::subagent_run::FAIL_BRIEF
+        .lock()
+        .unwrap()
+        .insert("fb1".into());
+    let mut config = scouts_on(json!({}));
+    config.max_per_run = Some(1);
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    let end = h.run_end().await;
+    crate::agent_run::subagent_run::FAIL_BRIEF
+        .lock()
+        .unwrap()
+        .remove("fb1");
+    assert_eq!(end, "done");
+    let messages = h.messages().await;
+    assert!(
+        result_of(&messages, "fb1")
+            .content
+            .contains("the brief couldn't be stored"),
+        "{}",
+        result_of(&messages, "fb1").content
+    );
+    let (id, call) = (h.dialog_id.clone(), "fb1".to_string());
+    let db = h.app.state::<DbState>().inner().clone();
+    let child = db
+        .read(move |c| store::child_for_call(c, &id, &call))
+        .await
+        .unwrap();
+    assert!(child.is_none(), "no child chat left: {child:?}");
+    assert_eq!(
+        h.app.state::<AgentState>().running_children(&h.dialog_id),
+        0
+    );
+    assert!(
+        h.task_result("fb2").await.content.contains("Status: done"),
+        "its place went back"
+    );
 }
 
 /// Round 2, P1.1: a subagent admitted but never launched gives its place
