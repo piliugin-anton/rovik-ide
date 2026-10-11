@@ -278,16 +278,7 @@ impl<R: Runtime> Run<R> {
         }
         // R06: the owners fix in the first round; then, or after a round
         // that made no progress, the lead does it all.
-        let lead_only = if judgement.verdict == Verdict::NoProgress {
-            Some("the last round made no progress, so the lead fixes everything this round")
-        } else if self.rechecks >= MAX_RECHECKS {
-            // P3.10: an explicit bound, whatever the round count says.
-            Some("the fixers' rechecks are used up: the lead fixes everything")
-        } else if round >= 2 {
-            Some("a later round of the escalation ladder: the lead fixes everything")
-        } else {
-            None
-        };
+        let lead_only = lead_only(judgement.verdict, self.rechecks, round);
         let config = self.state.config().subagents;
         let parallel: Vec<usize> = if lead_only.is_none() && config.parallel_repair {
             let set = causes::parallel_set(&found);
@@ -860,9 +851,58 @@ impl<R: Runtime> Run<R> {
     }
 }
 
+/// R06: whether the lead fixes everything this round (and why): after a
+/// round that made no progress, once the fixers' rechecks are used up (an
+/// explicit bound, P3.10), and from the escalation ladder's second round.
+/// None: the owners fix.
+fn lead_only(verdict: Verdict, rechecks: u32, round: u32) -> Option<&'static str> {
+    if verdict == Verdict::NoProgress {
+        Some("the last round made no progress, so the lead fixes everything this round")
+    } else if rechecks >= MAX_RECHECKS {
+        Some("the fixers' rechecks are used up: the lead fixes everything")
+    } else if round >= 2 {
+        Some("a later round of the escalation ladder: the lead fixes everything")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2 (§4.2): the recheck cap holds on its own, whatever the
+    /// round: two rechecks, and the lead fixes everything.
+    #[test]
+    fn recheck_cap_is_explicit() {
+        for v in [Verdict::First, Verdict::Progress, Verdict::Regression] {
+            assert_eq!(lead_only(v, 0, 1), None, "{v:?}");
+            assert_eq!(lead_only(v, MAX_RECHECKS - 1, 1), None);
+            assert!(lead_only(v, MAX_RECHECKS, 1)
+                .unwrap()
+                .contains("rechecks are used up"));
+            assert!(lead_only(v, 0, 2).unwrap().contains("escalation ladder"));
+        }
+        assert!(lead_only(Verdict::NoProgress, 0, 1)
+            .unwrap()
+            .contains("no progress"));
+    }
+
+    /// Round 2 (§4.2): fixers draw on the run's limit of subagents (12 by
+    /// default): the twelfth starts, the thirteenth is refused.
+    #[test]
+    fn the_thirteenth_fixer_is_refused_the_twelfth_starts() {
+        let mut ledger = subagent::Ledger::default();
+        let max = subagent::SubagentConfig::default().max_per_run();
+        assert_eq!(max, 12);
+        for n in 1..=12 {
+            ledger
+                .admit(&fixer_brief(n, &format!("cause {n}")), max)
+                .unwrap();
+        }
+        let e = ledger.admit(&fixer_brief(13, "cause 13"), max).unwrap_err();
+        assert!(e.contains("already started 12 subagents, the limit"), "{e}");
+    }
 
     /// The same cause sent to the same step's worker, round after round:
     /// the same brief, refused past `MAX_SAME_BRIEF` (a new cause isn't).
