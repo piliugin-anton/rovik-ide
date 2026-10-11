@@ -133,6 +133,12 @@ fn confidence_word(text: &str) -> Option<String> {
         .then_some(first)
 }
 
+/// Libraries named like files: `Node.js` in prose is not a path.
+const JS_NAMES: &[&str] = &[
+    "node", "vue", "next", "nuxt", "express", "react", "angular", "ember", "three", "d3", "chart",
+    "socket", "moment", "deno", "nest", "alpine", "backbone", "knockout",
+];
+
 /// The paths in a line of the report: in backticks, or the line's words
 /// that look like paths.
 pub fn paths_in(text: &str) -> Vec<String> {
@@ -145,8 +151,20 @@ pub fn paths_in(text: &str) -> Vec<String> {
         .collect();
     let found = if ticked.is_empty() {
         text.split([',', ' ', ':'])
-            .map(str::trim)
-            .filter(|w| w.contains('/') || w.contains('.') && !w.ends_with('.'))
+            .map(|w| {
+                w.trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(['.', ')', ';'])
+            })
+            // P4.8: a folder or a known extension: not `Node.js` or `e.g.`.
+            .filter(|w| {
+                w.contains('/') && w.len() > 1
+                    || w.rsplit_once('.').is_some_and(|(stem, ext)| {
+                        !stem.is_empty()
+                            && super::plan::FILE_EXTENSIONS.contains(&ext.to_lowercase().as_str())
+                            && !(ext == "js" && JS_NAMES.contains(&stem.to_lowercase().as_str()))
+                    })
+            })
             .map(str::to_string)
             .collect()
     } else {
@@ -283,7 +301,11 @@ pub fn brief(p: &BriefParts) -> String {
         Some((path, chars)) => out.push_str(&format!(
             "- Its whole output ({chars} characters) is saved as `{path}`: read it with read and start_line/end_line.\n"
         )),
-        None => out.push_str("- Its whole output is at the end of this brief.\n"),
+        // P4.8: unsaved, what it has is the focused part.
+        None => out.push_str(&format!(
+            "- The focused part of its output ({} characters; the whole output wasn't saved) is at the end of this brief.\n",
+            p.output.chars().count()
+        )),
     }
     let mut locations = error_locations(p.output);
     locations.dedup();
@@ -442,12 +464,15 @@ impl<R: Runtime> Run<R> {
             return Ok(None);
         };
         let check = &results[index];
-        let saved = check.saved_output.clone();
-        let whole = saved
-            .as_deref()
-            .and_then(|p| check_output::resolve(&self.dialog_id, p).ok())
-            .and_then(|f| std::fs::read(f).ok())
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
+        let read = check.saved_output.as_deref().and_then(|p| {
+            let f = check_output::resolve(&self.dialog_id, p).ok()?;
+            let b = std::fs::read(f).ok()?;
+            Some((p.to_string(), String::from_utf8_lossy(&b).into_owned()))
+        });
+        // P4.8: a saved path that can't be read is no saved output.
+        let saved = read.as_ref().map(|(p, _)| p.clone());
+        let whole = read
+            .map(|(_, w)| w)
             .unwrap_or_else(|| check.output.clone().unwrap_or_default());
         let changed = self.changed_files.clone();
         let earlier = self.last_triage.clone();
@@ -655,6 +680,23 @@ mod tests {
             "{small}"
         );
         assert!(!small.contains("@checks/"));
+        // P4.8: it says it has the focused part only.
+        assert!(
+            small.contains(
+                "The focused part of its output (16 characters; the whole output wasn't saved)"
+            ),
+            "{small}"
+        );
+    }
+
+    #[test]
+    fn only_paths_are_paths() {
+        assert_eq!(
+            paths_in("Node.js e.g. upgrade the lib, see src/a.rs:12 and main.py."),
+            ["src/a.rs", "main.py"]
+        );
+        assert_eq!(paths_in("`Node.js` stays"), ["Node.js"], "backticks decide");
+        assert!(paths_in("i.e. nothing, etc.").is_empty());
     }
 
     #[test]

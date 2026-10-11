@@ -127,8 +127,9 @@ static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(step\s+\d+|\S+)\s*(?:[—–-]+\s*(.*))?$")
         .unwrap()
 });
+// P4.5: `- **Scenario:**` and `- **Scenario**:` too.
 static FIELD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\s*[-*]\s*(scenario|fix|suggested fix|confidence|new evidence)\s*:\s*(.*)$")
+    Regex::new(r"(?i)^\s*[-*]\s*\**\s*(scenario|fix|suggested fix|confidence|new evidence)\s*\**\s*:\s*\**\s*(.*)$")
         .unwrap()
 });
 static STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^step\s+(\d+)$").unwrap());
@@ -149,7 +150,9 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
         return Err(format!("it has no \"## Findings\" section ({FORMAT_HINT})"));
     };
     let plain = body.trim().trim_end_matches('.').trim().to_lowercase();
-    if plain == "none" || plain == "no findings" {
+    // P4.5: "None." with a reason after it is none too.
+    let first_word: String = plain.chars().take_while(|c| c.is_alphabetic()).collect();
+    if first_word == "none" || plain.starts_with("no findings") {
         return Ok(Vec::new());
     }
     #[derive(Default)]
@@ -163,7 +166,11 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             drafts.push(Draft {
                 header: (
                     c[1].to_lowercase(),
-                    c[2].trim_end_matches([',', ';']).to_string(),
+                    // P4.5: `src/a.ts:42`, in backticks, with a colon after.
+                    c[2].trim_end_matches([',', ';', ':'])
+                        .trim_matches('`')
+                        .trim_end_matches(':')
+                        .to_string(),
                     c.get(3).map_or("", |m| m.as_str()).trim().to_string(),
                 ),
                 fields: Vec::new(),
@@ -217,8 +224,15 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             .ok_or_else(|| format!("finding {n} has no \"- Scenario:\" line ({FORMAT_HINT})"))?;
         let fix = field("fix")
             .ok_or_else(|| format!("finding {n} has no \"- Fix:\" line ({FORMAT_HINT})"))?;
+        // P4.5: its first word ("Confirmed — I ran it").
         let confidence = field("confidence")
-            .map(|c| c.trim_end_matches('.').to_lowercase())
+            .map(|c| {
+                c.to_lowercase()
+                    .chars()
+                    .skip_while(|ch| !ch.is_alphabetic())
+                    .take_while(|ch| ch.is_alphabetic())
+                    .collect::<String>()
+            })
             .filter(|c| c == "confirmed" || c == "plausible")
             .ok_or_else(|| {
                 format!("finding {n} has no \"- Confidence:\" line saying confirmed or plausible ({FORMAT_HINT})")
@@ -264,11 +278,19 @@ fn normalized(text: &str) -> String {
 fn same_finding(a: &Finding, b: &Finding) -> bool {
     let near = matches!((a.line, b.line), (Some(x), Some(y)) if x.abs_diff(y) <= 8);
     let same_title = !a.title.is_empty() && normalized(&a.title) == normalized(&b.title);
+    // P4.5: without lines to compare, or for one plan step, only the same
+    // title is the same finding (another problem in the step is new).
     match (&a.path, &b.path) {
         (Some(p), Some(q)) => {
             let (p, q) = (p.trim_start_matches("./"), q.trim_start_matches("./"));
-            p == q && (near || same_title || a.line.is_none() || b.line.is_none())
+            p == q
+                && if a.line.is_none() || b.line.is_none() {
+                    same_title
+                } else {
+                    near || same_title
+                }
         }
+        _ if a.step.is_some() && b.step.is_some() => a.step == b.step && same_title,
         _ => a.location == b.location || same_title,
     }
 }
@@ -826,6 +848,44 @@ mod tests {
             drop_repeats(parse_findings(other).unwrap(), &earlier)
                 .0
                 .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn reviewer_output_variants_parse_and_other_step_problems_are_new() {
+        let md = "## Findings\n\
+            1. [high] `src/a.ts:42`: — Off by one\n\
+            - **Scenario:** an empty list\n\
+            - **Fix**: start at 0\n\
+            - **Confidence:** Confirmed — I ran it";
+        let f = parse_findings(md).unwrap();
+        assert_eq!(f[0].path.as_deref(), Some("src/a.ts"));
+        assert_eq!(f[0].line, Some(42));
+        assert_eq!(f[0].scenario, "an empty list");
+        assert_eq!(f[0].confidence, "confirmed");
+        assert_eq!(
+            parse_findings("## Findings\nNone — the change is fine.").unwrap(),
+            vec![]
+        );
+        // Another problem in the same step is a new finding.
+        let one = "## Findings\n1. [high] step 2 — Misses the cache\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        let two = "## Findings\n1. [high] step 2 — Wrong order of steps\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        let earlier = parse_findings(one).unwrap();
+        assert_eq!(
+            drop_repeats(parse_findings(two).unwrap(), &earlier).0.len(),
+            1
+        );
+        assert_eq!(
+            drop_repeats(parse_findings(one).unwrap(), &earlier).0.len(),
+            0
+        );
+        // A file without lines: another title is another finding.
+        let a = "## Findings\n1. [low] src/b.ts — Unused import\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        let b = "## Findings\n1. [low] src/b.ts:9 — Leaks a handle\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        let earlier = parse_findings(a).unwrap();
+        assert_eq!(
+            drop_repeats(parse_findings(b).unwrap(), &earlier).0.len(),
             1
         );
     }

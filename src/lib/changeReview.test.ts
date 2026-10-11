@@ -80,3 +80,17 @@ test('a plan review’s headline says what happened to the plan', () => {
     'The plan reviewer found nothing to fix.'
   );
 });
+
+test('a plan saved past the review budget says so', () => {
+  const meta: ReviewMeta = {
+    kind: 'plan',
+    status: 'skipped',
+    maxRounds: 2,
+    reason: 'this run’s 2 plan reviews are used',
+  };
+  assert.equal(
+    reviewHeadline(meta, false),
+    'Plan review skipped: this run’s 2 plan reviews are used. The plan was saved as it was.'
+  );
+  assert.equal(reviewDetails(meta), 'No review: all 2 used');
+});

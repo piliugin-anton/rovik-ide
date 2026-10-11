@@ -37,7 +37,8 @@ export interface ReviewMeta {
   /** change: a finished change, before the checks; plan: a submitted plan (plan_review.rs). */
   kind: 'change' | 'plan';
   status: ReviewStatus;
-  round: number;
+  /** Absent when no review ran because the run's reviews were used. */
+  round?: number;
   maxRounds: number;
   files?: string[];
   changedLines?: number;
@@ -110,7 +111,11 @@ function planHeadline(meta: ReviewMeta): string {
 
 /** "Review 1 of at most 3 · 12 tool calls · 41 s · model" */
 export function reviewDetails(meta: ReviewMeta): string {
-  const parts = [`Review ${meta.round} of at most ${meta.maxRounds}`];
+  const parts = [
+    meta.round === undefined
+      ? `No review: all ${meta.maxRounds} used`
+      : `Review ${meta.round} of at most ${meta.maxRounds}`,
+  ];
   if (meta.toolCalls !== undefined) parts.push(`${meta.toolCalls} tool calls`);
   if (meta.ms !== undefined) parts.push(`${Math.round(meta.ms / 1000)} s`);
   if (meta.model) {

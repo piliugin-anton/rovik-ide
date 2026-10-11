@@ -284,13 +284,29 @@ impl<R: Runtime> Run<R> {
             return Ok(save(None));
         }
         let config = self.state.config().subagents;
-        if config.kind(Kind::PlanReviewer).is_none() || self.plan_reviews >= MAX_PLAN_REVIEW_ROUNDS
-        {
+        if config.kind(Kind::PlanReviewer).is_none() {
             return Ok(save(None));
         }
-        if let Some(before) = saved.and_then(|p| std::fs::read_to_string(p).ok()) {
-            if changed_lines(&before, plan) < MIN_REVISION_LINES {
-                return Ok(save(None));
+        // P4.6: a save past the budget says so, in the result and its record.
+        if self.plan_reviews >= MAX_PLAN_REVIEW_ROUNDS {
+            let reason = format!("this run's {MAX_PLAN_REVIEW_ROUNDS} plan reviews are used");
+            return Ok(Outcome {
+                record: Some(json!({
+                    "kind": "plan",
+                    "status": "skipped",
+                    "reason": reason,
+                    "maxRounds": MAX_PLAN_REVIEW_ROUNDS,
+                })),
+                ..save(Some(format!("Review skipped: {reason}.")))
+            });
+        }
+        // P4.6: while held findings are open, a revision of any size is
+        // reviewed (a small revert must not slip past them).
+        if self.plan_findings.is_empty() {
+            if let Some(before) = saved.and_then(|p| std::fs::read_to_string(p).ok()) {
+                if changed_lines(&before, plan) < MIN_REVISION_LINES {
+                    return Ok(save(None));
+                }
             }
         }
         self.plan_reviews += 1;

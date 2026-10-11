@@ -688,10 +688,6 @@ impl<R: Runtime> Run<R> {
         }
 
         self.verify_rounds += 1;
-        if self.verify_rounds == 1 {
-            // A run's first round: earlier runs' saved output goes.
-            super::check_output::clean(&self.dialog_id);
-        }
         self.writes_since_verify = false;
         // The checks run: the next change review isn't "in a row".
         self.reviews_in_row = 0;
@@ -708,6 +704,7 @@ impl<R: Runtime> Run<R> {
             }
         };
 
+        self.clean_earlier_output();
         let results = self
             .run_checks(&root, &checks, &p, &changed, &record_id, round, &format!("round-{round}"))
             .await?;
@@ -1097,6 +1094,7 @@ impl<R: Runtime> Run<R> {
         // Its own name: the round's checks, saved under `round-N`, still
         // stand (their paths are in the round's record and triage).
         let saved_as = format!("round-{round}-midrun-{}", &record_id[..8.min(record_id.len())]);
+        self.clean_earlier_output();
         let results = self
             .run_checks(&root, &checks, &p, &changed, &record_id, round, &saved_as)
             .await
@@ -1194,6 +1192,15 @@ impl<R: Runtime> Run<R> {
                 })).collect::<Vec<_>>(),
             }),
         );
+    }
+
+    /// The run's first checks, mid-run or at the end: earlier runs' saved
+    /// output goes, once (P4.7: never this run's).
+    fn clean_earlier_output(&mut self) {
+        if !self.cleaned_this_run {
+            self.cleaned_this_run = true;
+            super::check_output::clean(&self.dialog_id);
+        }
     }
 
     /// Runs the enabled checks in order (type check, lint, tests, build),

@@ -286,6 +286,8 @@ pub struct Run<R: Runtime> {
     pub(super) last_triage: Option<super::triage::Triage>,
     /// Plan reviews in this run, the findings that held a plan back, and
     /// the `submit_plan` call they answered (plan_review.rs).
+    /// P4.7: earlier runs' saved check output was removed.
+    pub(super) cleaned_this_run: bool,
     pub(super) plan_reviews: u32,
     pub(super) plan_findings: Vec<super::change_review::Finding>,
     pub(super) plan_review_call: Option<String>,
@@ -779,6 +781,7 @@ impl<R: Runtime> Run<R> {
             review_findings: Vec::new(),
             review_note_id: None,
             last_triage: None,
+            cleaned_this_run: false,
             plan_reviews: 0,
             plan_findings: Vec::new(),
             plan_review_call: None,
@@ -901,6 +904,7 @@ impl<R: Runtime> Run<R> {
             review_findings: Vec::new(),
             review_note_id: None,
             last_triage: None,
+            cleaned_this_run: false,
             plan_reviews: 0,
             plan_findings: Vec::new(),
             plan_review_call: None,

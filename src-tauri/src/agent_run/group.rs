@@ -63,7 +63,8 @@ pub fn group_call(args_json: &str) -> Option<String> {
             .and_then(|g| g.as_str())
             .unwrap_or("")
             .trim()
-            .to_string()
+            // Plans' group names are read in lower case (P4.4).
+            .to_lowercase()
     })
 }
 
@@ -107,6 +108,22 @@ pub fn refusal(ctx: &GroupCtx, paths: &[String]) -> Option<String> {
     })
 }
 
+/// The scopes of a group's steps (P4.1): as each step's own, except that
+/// a folder two members could add files to is neither's: each creates
+/// only the files its step names there.
+pub fn group_scopes(members: &[PlanStep]) -> Vec<WriteScope> {
+    let mut scopes: Vec<WriteScope> = members.iter().map(WriteScope::for_step).collect();
+    let all: Vec<Vec<String>> = scopes.iter().map(|s| s.new_in.clone()).collect();
+    for (i, scope) in scopes.iter_mut().enumerate() {
+        scope.new_in.retain(|d| {
+            !all.iter()
+                .enumerate()
+                .any(|(j, other)| j != i && other.iter().any(|o| super::paths::same(o, d)))
+        });
+    }
+    scopes
+}
+
 /// F06: the worker a failure's location belongs to, or a seam. `created`:
 /// files the run created (a new file belongs to the worker whose folder
 /// it's in, when only one worker's is).
@@ -145,6 +162,8 @@ struct Member {
     label: String,
     step: PlanStep,
     child_id: String,
+    /// Its step's scope, as the group adjusts it (P4.1).
+    scope: WriteScope,
 }
 
 impl<R: Runtime> Run<R> {
@@ -225,10 +244,10 @@ impl<R: Runtime> Run<R> {
         if let Some(o) = chats::get(&self.dialog_id) {
             o.fs.flush();
         }
-        let owners: Vec<(String, usize, WriteScope)> = members
-            .iter()
+        let owners: Vec<(String, usize, WriteScope)> = group_scopes(&members)
+            .into_iter()
             .enumerate()
-            .map(|(i, s)| (format!("w{}", i + 1), s.number, WriteScope::for_step(s)))
+            .map(|(i, scope)| (format!("w{}", i + 1), members[i].number, scope))
             .collect();
         let contract: Vec<String> = members
             .iter()
@@ -248,6 +267,7 @@ impl<R: Runtime> Run<R> {
                 label: label.clone(),
                 step: step.clone(),
                 child_id: uuid::Uuid::new_v4().to_string(),
+                scope: owners[i].2.clone(),
             };
             let child = self
                 .fork_worker(
@@ -326,6 +346,7 @@ impl<R: Runtime> Run<R> {
                     label: format!("{}'", member.label),
                     step: member.step.clone(),
                     child_id: uuid::Uuid::new_v4().to_string(),
+                    scope: member.scope.clone(),
                 };
                 let result = match self
                     .fork_worker(
@@ -454,7 +475,7 @@ impl<R: Runtime> Run<R> {
             .admit_worker(&brief, super::plan::steps(plan).len())?;
         // The group's workers share what's left of the chat's space.
         let overlay = chats::open_child_shared(&self.dialog_id, &member.child_id, owners.len())?;
-        let scope = WriteScope::for_step(&member.step);
+        let scope = member.scope.clone();
         let others: Vec<(String, usize, WriteScope)> = owners
             .iter()
             .filter(|(l, _, _)| *l != member.label.trim_end_matches('\''))
@@ -624,7 +645,7 @@ impl<R: Runtime> Run<R> {
         let handle = subagent::handle(Kind::Worker, &member.child_id);
         // P2.6: only what's in its scope lands; what else is in its copy
         // (a check's side effect, a sibling's file) stays out, named.
-        let mut scope = WriteScope::for_step(&member.step);
+        let mut scope = member.scope.clone();
         scope.grants = self.grants_of(&member.child_id).await;
         let outside = outside_scope(&paths, &scope, &root);
         let outside_note = if outside.is_empty() {
@@ -950,6 +971,28 @@ enum Joined {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P4.1: two steps creating files in one folder may each create only
+    /// the files they name there.
+    #[test]
+    fn a_shared_folder_for_new_files_is_neither_members() {
+        let plan = "# G\n\n## Steps\n\n\
+            1. **List**\n   - `src/api/users.rs` (new): list.\n   - Group: api\n\
+            2. **Add**\n   - `src/api/add.rs` (new): add.\n   - Group: api\n\n## Validation\n- `cargo test`\n";
+        let steps = super::super::plan::steps(plan);
+        let scopes = group_scopes(&steps);
+        assert!(scopes[0].allows("src/api/users.rs", false));
+        assert!(
+            !scopes[0].allows("src/api/other.rs", false),
+            "not a file it doesn't name"
+        );
+        assert!(
+            !scopes[0].allows("src/api/add.rs", false),
+            "not the other's"
+        );
+        // Alone, a step may add files beside its own.
+        assert!(WriteScope::for_step(&steps[0]).allows("src/api/other.rs", false));
+    }
 
     fn scope(files: &[&str]) -> WriteScope {
         WriteScope {

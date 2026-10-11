@@ -1797,3 +1797,44 @@ tasks first.
   failed in one full run under load and passed in every run after; P6.4
   (the headless runner's 300 ms wait for its log line) is the likely
   cause.
+
+### Review-fixes plan, phase 4: plan and reviewer-output parsing
+
+- **P4.1** A group's steps share no file, in either direction and through
+  folders: a file one step changes can't be in another step, even to read.
+  A folder a new file of the plan creates counts as there. One change from
+  the plan: a folder that two members both create new files in isn't
+  refused in the plan; `group_scopes` takes it out of both members' scopes,
+  so neither can write a new file there, and the lead does it after the
+  join.
+- **P4.2** A step's files come from backticked paths, plain paths and
+  named files (`Dockerfile`); a `(new)` mark belongs to the path it
+  directly follows, or to the line's only path.
+- **P4.3** `names_a_file` uses the same reading of a step; a path in a
+  folder with any short extension (`src/grammar.pest`), a plain path and a
+  Windows separator all count.
+- **P4.4** Steps parse with CRLF line ends, an exact `## Steps` heading,
+  written numbers only when they increase, and a Group line outside code
+  fences, compared without case; `none`, `-` and `n/a` are no group.
+- **P4.5** Reviewer reports parse with a backticked `path:line`, a colon
+  after it, `**Scenario:**` fields, a confidence with words after it and
+  "None — …". A repeat needs the same title when either finding has no
+  line, and for a plan step: another problem in the same step is new.
+- **P4.6** While held plan findings are open, a revision of any size is
+  reviewed. A plan saved because the run's reviews are used says so in
+  its result and record (`skipped`, with the reason); the review block
+  reads "No review: all 2 used".
+- **P4.7** Earlier runs' saved check output is removed once, at the run's
+  first checks, mid-run or at the end: never this run's.
+- **P4.8** Triage given only the focused part of an output says so, with
+  its length; a saved path that can't be read counts as unsaved. Words
+  outside backticks are paths only with a folder or a known extension
+  (`Node.js`, `e.g.` aren't).
+- **P4.9** A plan's display path is relative only at a separator (no
+  panic on a multi-byte character). A step naming a path out of the
+  project is a plan problem; nothing probes the disk for it.
+- Tests (each fails without its fix): shared files across group steps and
+  folders, marks on lines with several paths, robust step parsing,
+  reviewer-output variants and a second finding in one step, a small
+  revert after a Hold reviewed, mid-run output readable after the end's
+  checks, triage paths and its unsaved brief, an out-of-project path.

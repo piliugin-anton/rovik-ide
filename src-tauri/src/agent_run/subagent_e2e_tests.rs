@@ -2309,10 +2309,16 @@ async fn after_the_last_round_open_findings_go_in_the_plan_and_no_third_review()
         "{}",
         third.content
     );
-    assert!(
-        third.meta.as_ref().unwrap().get("review").is_none(),
-        "never reviewed"
-    );
+    // P4.6: not reviewed, and the record says why.
+    let review = &third.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["status"], "skipped");
+    assert!(review["reason"]
+        .as_str()
+        .unwrap()
+        .contains("plan reviews are used"));
+    assert!(third
+        .content
+        .contains("Review skipped: this run's 2 plan reviews are used"));
     assert_eq!(requests_with(&seen, PLAN_REVIEW).len(), 2);
     // The second round's open finding was saved with that version; the third
     // replaced the file.
@@ -2422,6 +2428,55 @@ async fn a_small_revision_is_saved_without_a_review_and_off_means_off() {
         .unwrap()
         .get("review")
         .is_none());
+}
+
+/// P4.6: after a Hold, a small revert of the plan is still reviewed and
+/// the held finding stays in front of the user.
+#[tokio::test]
+async fn a_small_revert_after_a_hold_is_still_reviewed() {
+    let h = plan_project().await;
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(NO_FINDINGS)])],
+        vec![submit("p0", users_plan("Users", 0)), Reply::Text("Saved.")],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let again = format!("{PLAN_FINDING}\n   - New evidence: the revision dropped the step again.");
+    let (url2, seen2) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![
+                Reply::Text(PLAN_FINDING),
+                Reply::Text(Box::leak(again.into_boxed_str())),
+            ],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 6)),
+            // Held; the agent reverts to (nearly) the saved plan.
+            submit("p2", users_plan("Users (again)", 0)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.plan_request(&url2, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let briefs = requests_with(&seen2, PLAN_REVIEW);
+    assert_eq!(briefs.len(), 2, "the revert was reviewed");
+    let messages = h.messages().await;
+    let second = result_of(&messages, "p2");
+    assert_eq!(second.meta.as_ref().unwrap()["review"]["round"], 2);
+    let files = h.plan_files();
+    assert!(files[0].starts_with("# Users (again)"), "{files:#?}");
+    assert!(
+        files[0].contains("## Open review findings")
+            && files[0].contains("`list_users` is also called"),
+        "{}",
+        files[0]
+    );
 }
 
 /*
@@ -3968,6 +4023,15 @@ async fn after_the_join_the_checks_run_once_and_name_the_worker() {
         .unwrap_or_default()
         .to_string();
     assert!(saved.starts_with("@checks/round-0-midrun-"), "{saved}");
+    // P4.7: the end's checks ran after it, and it's still readable.
+    assert!(messages.iter().any(|m| m.meta.as_ref().is_some_and(|m| {
+        m["verification"].is_object() && m["verification"]["midRun"] != true
+    })));
+    let path = crate::agent_run::check_output::resolve(&h.dialog_id, &saved).unwrap();
+    assert!(
+        std::fs::read_to_string(path).is_ok_and(|t| t.contains("error[E0425]")),
+        "the mid-run output was removed by the end's checks"
+    );
 }
 
 #[tokio::test]
