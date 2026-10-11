@@ -99,6 +99,7 @@ import {
 import { loadAiSettings, reconcileSelection, saveAiSettings } from './lib/aiSettings';
 import { DEFAULT_PERMISSIONS, type AgentPermissions } from './lib/permissions';
 import type { ModelSelection, Provider } from './types';
+import { dismissBootSplash } from './lib/bootSplash';
 
 let unlistenFSChanges: (() => void) | undefined;
 
@@ -129,6 +130,7 @@ export default function App() {
       }
     } finally {
       setRestoringProject(false);
+      dismissBootSplash();
     }
   });
   const [rootId, setRootId] = createSignal<string | null>(null);

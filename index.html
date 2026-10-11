@@ -4,8 +4,63 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Rovik IDE</title>
+    <style>
+      html,
+      body {
+        background: #1e1e1e;
+        margin: 0;
+      }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: #1e1e1e;
+        color: #d4d4d4;
+        font-family: -apple-system, 'Segoe UI', sans-serif;
+      }
+      #boot-splash.done {
+        opacity: 0;
+        transition: opacity 200ms;
+        pointer-events: none;
+      }
+      .boot-title {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .boot-spinner {
+        width: 28px;
+        height: 28px;
+        /* styles.css sets * { box-sizing: border-box }, which would shrink
+           the spinner by the border width the moment it loads. */
+        box-sizing: content-box;
+        border-radius: 50%;
+        border: 3px solid #2d2d2d;
+        border-top-color: #2b5adb;
+        animation: boot-spin 0.9s linear infinite;
+      }
+      .boot-hint {
+        font-size: 12px;
+        color: #8a8a8a;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="boot-splash">
+      <div class="boot-title">Rovik IDE</div>
+      <div class="boot-spinner"></div>
+      <div class="boot-hint">Loading…</div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
