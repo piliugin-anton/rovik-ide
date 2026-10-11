@@ -699,7 +699,9 @@ fn step_files(raw: &str) -> Vec<PlanFile> {
         let named = line_paths(line);
         let one = named.len() == 1;
         for (path, end) in named {
-            let next = line[end..].trim_start();
+            // Emphasis isn't a gap: `a.rs` **(new)**, **`a.rs`** (new).
+            let next =
+                line[end..].trim_start_matches(|c: char| c.is_whitespace() || c == '*' || c == '_');
             let adjacent = |mark: &Regex| {
                 next.starts_with('(') && mark.find(next).is_some_and(|m| m.start() == 0)
             };
@@ -2512,5 +2514,27 @@ mod tests {
         assert_eq!(scope, WriteScope::default());
         assert_eq!(scope.describe(), "nothing yet");
         assert!(!scope.allows("src/a.rs", true) && !scope.allows("new.rs", false));
+    }
+
+    /// Round 2 (§4.2), P4.2: a mark in bold or italics right after a path is
+    /// that path's, also on a line that names another path.
+    #[test]
+    fn bold_mark_after_path() {
+        for line in [
+            "`src/a.rs` **(new)**: register it in `src/mod.rs`.",
+            "**`src/a.rs`** (new): register it in `src/mod.rs`.",
+            "`src/a.rs` _(new)_: register it in `src/mod.rs`.",
+        ] {
+            let files = step_files(&format!("1. **A**\n   - {line}"));
+            let got: Vec<(&str, bool)> = files.iter().map(|f| (f.path.as_str(), f.new)).collect();
+            assert_eq!(got, [("src/a.rs", true), ("src/mod.rs", false)], "{line}");
+        }
+        let files =
+            step_files("1. **A**\n   - `src/types.rs` **(read)** for `src/a.rs`: the signature.");
+        let got: Vec<(&str, bool)> = files
+            .iter()
+            .map(|f| (f.path.as_str(), f.read_only))
+            .collect();
+        assert_eq!(got, [("src/types.rs", true), ("src/a.rs", false)]);
     }
 }
