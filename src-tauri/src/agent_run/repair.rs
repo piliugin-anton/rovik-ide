@@ -1421,6 +1421,137 @@ mod tests {
         assert!(!integrity_flags("tests/add_test.rb", Some("x\n"), Some("y\n")).is_empty());
     }
 
+    fn flagged_by(path: &str, before: &str, after: Option<&str>) -> Vec<String> {
+        integrity_flags(path, Some(before), after)
+    }
+
+    // Round 2 (§4.2): each way round a test, on its own.
+    #[test]
+    fn bypass_conftest_collect_ignore() {
+        assert!(!flagged_by(
+            "tests/conftest.py",
+            "import pytest\n",
+            Some("import pytest\ncollect_ignore = ['test_a.py']\n")
+        )
+        .is_empty());
+    }
+    #[test]
+    fn bypass_pytest_ini_addopts() {
+        assert!(!flagged_by(
+            "pytest.ini",
+            "[pytest]\n",
+            Some("[pytest]\naddopts = -k 'not slow'\n")
+        )
+        .is_empty());
+    }
+    #[test]
+    fn bypass_cargo_autotests_and_autobins() {
+        let cargo = "[package]\nname = \"a\"\nversion = \"0.1.0\"\n";
+        for line in ["autotests = false", "autobins = false"] {
+            assert!(
+                !flagged_by("Cargo.toml", cargo, Some(&format!("{cargo}{line}\n"))).is_empty(),
+                "{line}"
+            );
+        }
+    }
+    #[test]
+    fn bypass_pytestmark_list() {
+        let py = "def test_a():\n    assert f() == 1\n";
+        let after = format!("import pytest\npytestmark = [pytest.mark.skip]\n{py}");
+        assert!(!flagged_by("tests/test_a.py", py, Some(&after)).is_empty());
+    }
+    #[test]
+    fn bypass_python_early_return_and_if_false() {
+        let py = "def test_a():\n    assert f() == 1\n";
+        for body in ["    return\n", "    if False:\n"] {
+            let after = py.replace("):\n", &format!("):\n{body}"));
+            assert!(
+                !flagged_by("tests/test_a.py", py, Some(&after)).is_empty(),
+                "{body}"
+            );
+        }
+    }
+    #[test]
+    fn bypass_js_if_false_and_bare_return() {
+        let js = "test('adds', () => {\n  expect(add(1, 2)).toBe(3);\n});\n";
+        for first in ["  if (false) ", "  return;\n"] {
+            let after = js.replace("=> {\n", &format!("=> {{\n{first}"));
+            assert!(
+                !flagged_by("src/add.test.ts", js, Some(&after)).is_empty(),
+                "{first}"
+            );
+        }
+    }
+    #[test]
+    fn bypass_go_return() {
+        let go =
+            "func TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n";
+        let after = go.replace("{\n\tif Add", "{\n\treturn\n\tif Add");
+        assert!(!flagged_by("add_test.go", go, Some(&after)).is_empty());
+    }
+    #[test]
+    fn bypass_rust_feature_module_and_return() {
+        let rs = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {\n        assert_eq!(add(1, 2), 3);\n    }\n}\n";
+        let feature = rs.replace("#[cfg(test)]", "#[cfg(feature = \"never\")]");
+        let ret = rs.replace("fn adds() {\n", "fn adds() {\n        return;\n");
+        for after in [feature, ret] {
+            assert!(
+                !flagged_by("src/lib.rs", rs, Some(&after)).is_empty(),
+                "{after}"
+            );
+        }
+    }
+    #[test]
+    fn bypass_unsupported_language_changed_and_deleted() {
+        let rb = "it 'adds' do\n  expect(add(1, 2)).to eq(3)\nend\n";
+        let changed = flagged_by("spec/x_spec.rb", rb, Some("it 'adds' do\nend\n"));
+        assert!(
+            changed[0].contains("can't check was changed"),
+            "{changed:?}"
+        );
+        let deleted = flagged_by("spec/x_spec.rb", rb, None);
+        assert!(
+            deleted[0].contains("can't check was deleted"),
+            "{deleted:?}"
+        );
+    }
+
+    /// Round 2 (§4.2): ordinary changes aren't flagged; known gaps pinned.
+    #[test]
+    fn integrity_edges_pinned() {
+        // A dependency added to Cargo.toml.
+        let cargo = "[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[dependencies]\n";
+        assert!(flagged_by(
+            "Cargo.toml",
+            cargo,
+            Some(&format!("{cargo}serde = \"1\"\n"))
+        )
+        .is_empty());
+        // A test module behind a feature that was there before: unchanged.
+        let rs = "#[cfg(feature = \"slow\")]\nmod tests {\n    #[test]\n    fn adds() { assert!(true); }\n}\n";
+        assert!(flagged_by(
+            "src/lib.rs",
+            rs,
+            Some(&rs.replace("assert!(true)", "assert!(1 == 1)"))
+        )
+        .is_empty());
+        // A new test file in a language the IDE can't read: nothing to compare.
+        assert!(integrity_flags("spec/new_spec.rb", None, Some("it 'x' do\nend\n")).is_empty());
+        // Gap: swapping an assertion for one that always holds keeps the
+        // counts the same, so it isn't seen.
+        let js = "test('adds', () => {\n  expect(add(1, 2)).toBe(3);\n});\n";
+        assert!(flagged_by(
+            "src/add.test.ts",
+            js,
+            Some(&js.replace("toBe(3)", "toBeDefined()"))
+        )
+        .is_empty());
+        // Gap: a docstring before the early return hides it from the rule.
+        let py = "def test_a():\n    assert f() == 1\n";
+        let doc = py.replace("):\n", "):\n    \"\"\"Doc.\"\"\"\n    return\n");
+        assert!(flagged_by("tests/test_a.py", py, Some(&doc)).is_empty());
+    }
+
     #[test]
     fn progress_no_progress_and_regression_are_told_apart() {
         let r1 = round(
