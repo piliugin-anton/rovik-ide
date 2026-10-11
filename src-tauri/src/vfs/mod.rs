@@ -80,6 +80,37 @@ impl Mount {
 
 /// Mounts `fs` at `requested`, or the platform's default place; returns
 /// where. The virtual-files volume and chats' overlays both mount this way.
+/// Tests: whether a FUSE mount works here (the driver, the device and the
+/// right to mount), tried once. Tests that need one are skipped without it.
+#[cfg(test)]
+pub fn mount_works() -> bool {
+    static WORKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WORKS.get_or_init(|| {
+        #[cfg(not(unix))]
+        return false;
+        #[cfg(unix)]
+        {
+            let dir = std::env::temp_dir().join(format!("mount-probe-{}", std::process::id()));
+            let (base, store, at) = (dir.join("base"), dir.join("store"), dir.join("at"));
+            for d in [&base, &store] {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let works = crate::overlay::fs::OverlayFs::open(&base, &store, 1 << 20)
+                .ok()
+                .and_then(|fs| platform_mount(Arc::new(fs), Some(&at)).ok())
+                .map(|(mount, _)| {
+                    let _ = mount.unmount();
+                })
+                .is_some();
+            let _ = std::fs::remove_dir_all(&dir);
+            if !works {
+                eprintln!("FUSE mounts don't work here: the tests that need one are skipped");
+            }
+            works
+        }
+    })
+}
+
 pub fn platform_mount(
     fs: Arc<dyn backend::Backend>,
     requested: Option<&Path>,
@@ -665,8 +696,7 @@ mod tests {
 }
 
 /// Mounts for real and drives the volume with ordinary tools. Needs FUSE
-/// (`/dev/fuse` and `fusermount3`), so it's opt-in:
-/// `cargo test vfs -- --ignored`.
+/// (`/dev/fuse` and `fusermount3`): skipped where mounts don't work.
 #[cfg(all(test, target_os = "linux"))]
 mod mount_tests {
     use super::*;
@@ -687,8 +717,10 @@ mod mount_tests {
     }
 
     #[test]
-    #[ignore]
     fn common_tools_work_on_virtual_files() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
         let state = VfsState::default();
         let at = std::env::temp_dir().join(format!("rovik-vfs-test-{}", std::process::id()));
         // A failed attempt is kept, with what went wrong, until one works.

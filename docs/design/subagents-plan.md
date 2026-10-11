@@ -1939,3 +1939,67 @@ tasks first.
   the group runs again (FUSE); a child's landing found by its parent after
   the view moved; each spelling of `rm -rf`. The eval dry run passes with
   the copied `node_modules` and the read-only virtualenv.
+
+### Review-fixes plan, phase 7: tests to add
+
+Each behaviour below now has a test. Four of them found a gap, fixed here:
+
+- **A path granted to two group workers.** A path no worker owns could be
+  granted by `extend_scope` to two workers of one group; both copies then
+  merged at the join, with no line conflict, into a file neither saw
+  whole. A group's grants are now shared (`GroupGrants`): a path granted
+  to one worker is refused to the others, by name. The group refusal now
+  starts with `Error:` like the other `extend_scope` refusals.
+- **The same fix sent round after round.** A fixer's brief named its round
+  (`Fix round 2: …`), so `MAX_SAME_BRIEF` never applied across repair
+  rounds. The ledger now counts `Fix: <cause>` for the step, so the same
+  cause goes to the same worker at most twice in a run; a refused fixer is
+  "not started" and its cause stays with the lead.
+- **A fallback model got no trim.** `trimmed` stayed set when a subagent
+  moved to its next model, so a fallback whose request didn't fit failed
+  at once. It's reset on `next_model`.
+- **A regression that can't be undone.** With the checkpoint over its
+  limit (or none), the agent heard what its fix broke but not that it
+  stays. The report now says it couldn't be undone and why, and the record
+  has `notRolledBack`.
+
+Tests by phase:
+
+- **1** Stop on the lead while its scout waits for an approval (no approval
+  left waiting); a subagent that panics mid-batch (a test hook,
+  `PANIC_SUB`): its call answered, the others done, nothing registered as
+  running; a path granted to one group worker refused to another (FUSE).
+- **2** No subagent is offered `task`, on its request's tool list, even a
+  kind configured with it, and one that calls it starts nothing; the run's
+  subagent limit reached through the lead's own calls; the same fixer brief
+  refused a third time across rounds; a fallback model trimmed once of its
+  own; a report turn that errors keeps what the subagent had.
+- **3** A fixers' regression rolled back in the recheck round (a lint
+  cause for the worker, a test that passed before); a regression past the
+  checkpoint limit (a per-folder test limit, so other tests keep theirs);
+  Stop in the middle of a repair round (`verify-stopped`, the next fixer
+  never started, no recheck); the headless runner answering edit approvals
+  by its policy; `--timeout` stopping a run with outcome `timeout`.
+- **4** Plan checks in an isolated chat see a file only its view has (FUSE);
+  a plan review waiting for its reviewer's approval; a plan held in one
+  run reviewed afresh in the next.
+- **5** Component tests (`src/components/records.test.tsx`): a running
+  subagent offers its own Stop and a finished, stale (`notLive`) or ended
+  one doesn't; a review and a check record saved as running, with no run
+  going, read as interrupted. `npm test` now also runs `*.test.tsx`:
+  esbuild strips the types and `babel-preset-solid` compiles the JSX as
+  the app's build does; `src/test/dom.ts` installs a happy-dom window;
+  Monaco, its workers, stylesheets and fonts are stubbed in the test
+  bundle only. New dev dependencies: `happy-dom`, and `@babel/core` and
+  `babel-preset-solid` (already installed through `vite-plugin-solid`,
+  now listed).
+- **6** Deleting a project removes its subagents' chats (a grandchild
+  too), their copies and landing records, and their rows; the log
+  watcher's partial line and rotation were Phase 6's test.
+- **FUSE.** The repository has no CI configuration, so instead of a CI
+  flag the FUSE tests are no longer ignored: each checks once whether a
+  mount works here (`vfs::mount_works`, a real mount tried once) and is
+  skipped without one. `cargo test --lib` runs them where FUSE works
+  (68 s here, from 40 s; stable over three full runs). Still ignored: the
+  five tools that print a file's outline, map or search results (they
+  need environment variables) and the mount benchmark.

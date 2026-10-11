@@ -158,6 +158,10 @@ pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Sen
 
 /// A subagent's whole run as a boxed future: a run's future can't contain
 /// itself (a child's tool calls go through the same code as the lead's).
+/// Tests: the subagent answering this `task` call panics as it starts.
+#[cfg(test)]
+pub static PANIC_SUB: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
     // Unregistered however it ends, by the guard in its `SubCtx`: a child
     // that panicked would otherwise stay "running" and its chat couldn't be
@@ -882,6 +886,16 @@ impl<R: Runtime> Run<R> {
         // Its time starts now, not when it was prepared (it may have waited
         // for a free place).
         self.started_at = Instant::now();
+        #[cfg(test)]
+        if self.sub().is_some_and(|s| {
+            PANIC_SUB
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_deref()
+                == Some(s.parent_call_id.as_str())
+        }) {
+            panic!("a test's subagent panics");
+        }
         let (status, text, error) = match self.drive_sub().await {
             Ok(end) => end,
             Err(e) => {
@@ -1245,6 +1259,8 @@ impl<R: Runtime> Run<R> {
             return false;
         }
         sub.model_index += 1;
+        // Its own window: the trim the model before used isn't this one's.
+        sub.trimmed = false;
         let next = sub.models[sub.model_index].clone();
         sub.models_tried.push(next.label.clone());
         let options = sub.options_for(&next);

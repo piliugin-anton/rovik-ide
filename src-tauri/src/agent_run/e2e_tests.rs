@@ -877,10 +877,12 @@ async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
 }
 
 /// An isolated chat: its writes and commands change its overlay, not the
-/// project. Needs FUSE: cargo test -- --ignored.
+/// project. Needs FUSE (skipped without it).
 #[tokio::test]
-#[ignore]
 async fn an_isolated_chat_changes_only_its_overlay() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut h = harness(&[("src/a.txt", "one\ntwo\n"), ("README.md", "hi\n")]).await;
     h.isolate().await;
     let (url, _) = model(vec![
@@ -935,8 +937,10 @@ async fn an_isolated_chat_changes_only_its_overlay() {
 
 /// Changes that conflict with the project's own wait for the user.
 #[tokio::test]
-#[ignore]
 async fn an_isolated_chats_conflicting_changes_wait() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut h = harness(&[("a.txt", "one\n")]).await;
     h.isolate().await;
     let project_file = h.project.join("a.txt");
@@ -987,10 +991,12 @@ async fn an_isolated_chats_conflicting_changes_wait() {
 
 /// The project changed a file the chat changed too, and the merged result
 /// fails the checks: the chat gets the failures and fixes them before its
-/// changes land. Needs FUSE and npm: cargo test -- --ignored.
+/// changes land. Needs FUSE and npm (skipped without them).
 #[tokio::test]
-#[ignore]
 async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut h = harness(&[
         ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
         ("check.js", "if (require('fs').readFileSync('a.txt', 'utf8').includes('BAD')) { console.error('a.txt: BAD'); process.exit(1); }"),
@@ -1079,11 +1085,13 @@ async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
 }
 
 /// A conflict found while the chat runs goes to it: markers in its file and
-/// a note; it combines both changes and they land. Needs FUSE:
-/// cargo test -- --ignored.
+/// a note; it combines both changes and they land. Needs FUSE
+/// (skipped without it).
 #[tokio::test]
-#[ignore]
 async fn a_running_chat_resolves_its_own_conflict() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut h = harness(&[("a.txt", "one\n")]).await;
     h.isolate().await;
     crate::overlay::chats::set_chat_resolves(true);
@@ -1149,10 +1157,12 @@ async fn a_running_chat_resolves_its_own_conflict() {
 }
 
 /// While many files change in the project (a branch switch), an isolated
-/// run waits before its next step. Needs FUSE: cargo test -- --ignored.
+/// run waits before its next step. Needs FUSE (skipped without it).
 #[tokio::test]
-#[ignore]
 async fn an_isolated_run_waits_while_the_project_switches_branches() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut h = harness(&[("a.txt", "one\n")]).await;
     h.isolate().await;
     let (url, _) = model(vec![

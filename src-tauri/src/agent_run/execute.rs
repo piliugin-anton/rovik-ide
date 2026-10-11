@@ -1591,6 +1591,9 @@ impl<R: Runtime> Run<R> {
                 scope.grants.push(p.clone());
             }
         }
+        if let Some(g) = self.sub().and_then(|s| s.group.as_ref()) {
+            g.granted.record(&paths, &g.label);
+        }
         (
             format!(
                 "Granted: you may now write {}. The lead will see this in your result.",

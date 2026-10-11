@@ -3612,8 +3612,10 @@ mod hub_tests {
 
     /// Two isolated chats on one project; one lands. Needs FUSE.
     #[test]
-    #[ignore]
     fn a_landing_reaches_other_chats_at_once() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
         let root = std::env::temp_dir().join(format!("hub-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let project = root.join("project");
@@ -3710,8 +3712,8 @@ mod bench {
     }
 }
 
-/// F01–F02: child overlays stacked on a chat's view. Needs FUSE:
-/// cargo test -- --ignored child_overlays
+/// F01–F02: child overlays stacked on a chat's view. Needs FUSE (skipped
+/// where mounts don't work).
 #[cfg(test)]
 mod child_tests {
     use super::*;
@@ -3721,8 +3723,10 @@ mod child_tests {
     }
 
     #[test]
-    #[ignore]
     fn child_overlays_land_into_their_parent_not_the_project() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
         let root = std::env::temp_dir().join(format!("kids-{}", uuid::Uuid::new_v4()));
         let project = root.join("project");
         std::fs::create_dir_all(project.join("src")).unwrap();

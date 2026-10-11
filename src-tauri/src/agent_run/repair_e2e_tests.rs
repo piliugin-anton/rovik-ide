@@ -578,3 +578,61 @@ async fn with_approval_on_a_fix_that_breaks_a_test_is_still_rolled_back() {
     );
     assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
 }
+
+/// Files too big to keep a checkpoint of: a fix that breaks a passing test
+/// can't be undone. The round says so, and the agent hears what broke.
+#[tokio::test]
+async fn a_regression_past_the_checkpoint_limit_is_reported_not_rolled_back() {
+    if !has_node() {
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+    ])
+    .await;
+    *crate::agent_run::repair::CHECKPOINT_LIMIT_IN
+        .lock()
+        .unwrap() = Some((h.project.to_string_lossy().into_owned(), 1));
+    let (url, _) = model(vec![
+        write("w1", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        write("w2", "a.txt", "good\n"),
+        write("w3", "b.txt", "broken\n"),
+        Reply::Text("Done."),
+        write("w4", "b.txt", "fine\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+        .await;
+    let end = h.run_end().await;
+    *crate::agent_run::repair::CHECKPOINT_LIMIT_IN
+        .lock()
+        .unwrap() = None;
+    assert_eq!(end, "verified");
+    assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
+    let messages = h.messages().await;
+    let rounds = records(&messages);
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("failed"), &json!("failed"), &json!("passed")]
+    );
+    assert_eq!(rounds[1]["progress"]["verdict"], "regression");
+    assert!(rounds[1]["rolledBack"].is_null(), "{:#}", rounds[1]);
+    assert_eq!(
+        rounds[1]["notRolledBack"],
+        "the files it changed were too large to keep a copy of"
+    );
+    let reports = harness_texts(&messages, "verification");
+    assert!(reports[1].contains("t::two"), "{}", reports[1]);
+    assert!(
+        reports[1].contains("couldn't be undone"),
+        "the agent hears it broke something and that it stays: {}",
+        reports[1]
+    );
+}

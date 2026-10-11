@@ -770,6 +770,12 @@ impl<R: Runtime> Run<R> {
             })
         };
 
+        // Why a regression can't be undone, if it can't (no rollback below).
+        let cant_undo = match &self.checkpoint {
+            Some(cp) if cp.too_big => "the files it changed were too large to keep a copy of",
+            Some(_) => "",
+            None => "there's no copy of the files from before it",
+        };
         // R02: a fix that broke what didn't fail before is undone; the
         // agent hears what it broke and gets the earlier failures again.
         if failed && judgement.verdict == Progress::Regression && !self.stopped() {
@@ -848,6 +854,17 @@ impl<R: Runtime> Run<R> {
             let left: Vec<String> = now.keys.iter().cloned().collect();
             meta = with(meta, self.gave_up_facts(&left));
         }
+        // A regression that wasn't rolled back above: why not.
+        let not_rolled_back = (failed && judgement.verdict == Progress::Regression).then_some(
+            if cant_undo.is_empty() {
+                "it couldn't be put back"
+            } else {
+                cant_undo
+            },
+        );
+        if let Some(why) = not_rolled_back {
+            meta = with(meta, json!({ "notRolledBack": why }));
+        }
         self.update_meta(&record_id, meta.clone()).await?;
         self.log_round(round, status, &results, &judgement, &flags);
 
@@ -901,10 +918,10 @@ impl<R: Runtime> Run<R> {
         if let Some(note) = repair::progress_note(&judgement, now.keys.len()) {
             notes.push(note);
         }
-        if judgement.verdict == Progress::Regression {
+        if let Some(why) = not_rolled_back {
             // No checkpoint to go back to (too large, or the first round).
             notes.push(format!(
-                "Your last fix broke something that didn't fail before:\n{}",
+                "Your last fix broke something that didn't fail before:\n{}\nIt couldn't be undone ({why}): fix what it broke as the code is now.",
                 repair::key_list(&judgement.broke, 8)
             ));
         }
@@ -913,10 +930,7 @@ impl<R: Runtime> Run<R> {
         }
         // C03: a large or repeated failure goes to triage first; the agent
         // gets its diagnosis in place of that check's output.
-        let base = with(
-            record(status, round, &results, &changed, reason),
-            extra(None),
-        );
+        let base = meta.clone();
         let triage = self
             .triage_failure(&record_id, round, &results, &previous, |t| {
                 with(base.clone(), json!({ "triage": t }))

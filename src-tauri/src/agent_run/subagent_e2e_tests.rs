@@ -3359,7 +3359,7 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
 
 /*
  * Milestone F: parallel workers, in child overlays of an isolated chat.
- * They need FUSE: cargo test -- --ignored group
+ * They need FUSE: skipped where mounts don't work.
  */
 
 const GROUP_PLAN: &str = "# Two pages\n\nUsers and posts.\n\n## Steps\n\n\
@@ -3437,8 +3437,10 @@ impl Harness {
 }
 
 #[tokio::test]
-#[ignore]
 async fn a_group_runs_in_parallel_and_joins_into_the_chat_not_the_project() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let h = group_harness(&[]).await;
     let (url, seen) = model_routed(
         vec![
@@ -3582,8 +3584,10 @@ async fn a_group_runs_in_parallel_and_joins_into_the_chat_not_the_project() {
 /// P2.6: what a worker's copy has outside its scope (a light check's side
 /// effect on a sibling's file) doesn't land, and the lead is told.
 #[tokio::test]
-#[ignore]
 async fn a_side_effect_outside_a_workers_scope_doesnt_land() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let h = group_harness(&[
         (
             "node_modules/.bin/eslint",
@@ -3660,8 +3664,10 @@ async fn edit_while_workers_run(h: &Harness, path: &str, theirs: &str, ours: &st
 }
 
 #[tokio::test]
-#[ignore]
 async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let h = group_harness(&[]).await;
     let (url, _) = model_routed(
         vec![
@@ -3716,8 +3722,10 @@ async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
 /// P2.7: retries count against the run's workers: a group of six whose
 /// every worker fails once starts at most the steps plus two retries.
 #[tokio::test]
-#[ignore]
 async fn retried_workers_count_against_the_limit() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut steps = String::new();
     let mut files: Vec<(String, String)> = Vec::new();
     for n in 1..=6 {
@@ -3778,8 +3786,10 @@ const GROUP3_PLAN: &str = "# Three pages\n\nUsers, posts and a feed.\n\n## Steps
 /// discarded), and saves both versions; a later worker lands when the
 /// lead continues it.
 #[tokio::test]
-#[ignore]
 async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut h = harness(&[
         ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
         ("src/users.rs", "// users\n"),
@@ -3904,10 +3914,12 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
 /// P1.3: a worker's landing that fails half way keeps its copy and its
 /// journal; Land refuses until the landing is finished, then lands it.
 #[tokio::test]
-#[ignore]
 // The failure hooks are process-wide: held for the whole test on purpose.
 #[allow(clippy::await_holding_lock)]
 async fn a_landing_that_fails_half_way_keeps_the_copy_and_holds_land() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     use crate::overlay::land;
     let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = harness(&[
@@ -3984,8 +3996,10 @@ async fn a_landing_that_fails_half_way_keeps_the_copy_and_holds_land() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn after_the_join_the_checks_run_once_and_name_the_worker() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let check = "const fs = require('fs');\n\
         if (fs.readFileSync('src/posts.rs', 'utf8').includes('bad')) {\n\
           console.error('error[E0425]: cannot find value `x`\\n --> src/posts.rs:1:5');\n  console.error('noise\\n'.repeat(3000));\n  process.exit(1);\n}\n";
@@ -4080,8 +4094,10 @@ async fn after_the_join_the_checks_run_once_and_name_the_worker() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn a_step_that_fails_twice_goes_to_the_lead() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let h = group_harness(&[]).await;
     let (url, _) = model_routed(
         vec![
@@ -4111,8 +4127,10 @@ async fn a_step_that_fails_twice_goes_to_the_lead() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn a_group_worker_continued_works_in_the_chat_within_its_old_scope() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let h = group_harness(&[]).await;
     let (url, _) = model_routed(
         vec![
@@ -4213,8 +4231,10 @@ async fn a_group_worker_continued_works_in_the_chat_within_its_old_scope() {
  */
 
 #[tokio::test]
-#[ignore]
 async fn the_red_check_flags_a_test_that_passes_on_the_old_code() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     if std::process::Command::new("go")
         .arg("version")
         .output()
@@ -4332,8 +4352,10 @@ fn first_request_with(seen: &Arc<Mutex<Vec<Value>>>, parts: &[&str]) -> Option<u
 }
 
 #[tokio::test]
-#[ignore]
 async fn two_causes_go_to_their_workers_in_order_then_one_check_run() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let Some(h) = repair_harness(false).await else {
         return;
     };
@@ -4394,8 +4416,10 @@ async fn two_causes_go_to_their_workers_in_order_then_one_check_run() {
 /// P3.10: fixers draw on the run's shared subagent limit (D11), not the
 /// plan's workers: with one place left, the second fixer doesn't start.
 #[tokio::test]
-#[ignore]
 async fn fixers_count_against_the_runs_subagent_limit() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let Some(h) = repair_harness(false).await else {
         return;
     };
@@ -4447,8 +4471,10 @@ async fn fixers_count_against_the_runs_subagent_limit() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let Some(h) = repair_harness(false).await else {
         return;
     };
@@ -4640,8 +4666,10 @@ const TRIAGE_TWO_CAUSES: &str = "## Root cause\n`p` is never declared in src/pos
     ## Other causes\n- `src/users.rs` | high | `u` is never declared";
 
 #[tokio::test]
-#[ignore]
 async fn high_confidence_causes_in_different_scopes_are_fixed_in_parallel() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let Some(h) = repair_harness(true).await else {
         return;
     };
@@ -4703,8 +4731,10 @@ async fn high_confidence_causes_in_different_scopes_are_fixed_in_parallel() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn a_cause_the_lead_owns_is_never_fixed_in_parallel() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let Some(h) = repair_harness(true).await else {
         return;
     };
@@ -4992,8 +5022,10 @@ async fn a_review_after_green_that_couldnt_read_the_report_isnt_done() {
  */
 
 #[tokio::test]
-#[ignore]
 async fn a_workers_commands_run_under_the_chats_isolation() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut h = plan_harness(&[("a.txt", "old\n")]).await;
     h.isolate().await;
     let project = h.project.to_string_lossy().into_owned();
@@ -5293,8 +5325,10 @@ const REDO_PLAN: &str = "# Pages\n\nUsers and posts.\n\n## Steps\n\n\
     ## Validation\n- read the files\n";
 
 #[tokio::test]
-#[ignore]
 async fn redo_puts_each_path_back_as_the_chat_had_it() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let mut h = harness(&[
         ("src/api.rs", "pub fn pages() {}\n"),
         ("src/posts.rs", "// posts\n"),
@@ -5409,8 +5443,10 @@ async fn redo_puts_each_path_back_as_the_chat_had_it() {
 /// A fixer that fails is rolled back: it changed nothing, and the lead
 /// isn't told the workers' fixes are in.
 #[tokio::test]
-#[ignore]
 async fn a_failed_fixer_is_reported_as_having_changed_nothing() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let Some(h) = repair_harness(false).await else {
         return;
     };
@@ -5588,8 +5624,10 @@ async fn steps_started_together_brief_each_after_the_one_before() {
 
 /// Stop during a group: the stopped workers aren't retried as failures.
 #[tokio::test]
-#[ignore]
 async fn stop_during_a_group_retries_no_worker() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
     let h = group_harness(&[]).await;
     let (url, _) = model_routed(
         vec![
@@ -5620,4 +5658,690 @@ async fn stop_during_a_group_retries_no_worker() {
         "{result}"
     );
     assert!(!result.contains("failed twice"), "{result}");
+}
+
+/*
+ * Review-fixes Phase 7: behaviours that had no test.
+ */
+
+/// Stop on the lead while its scout waits for an approval: both end, and
+/// no approval is left waiting.
+#[tokio::test]
+async fn stop_on_the_lead_while_its_scout_waits_for_an_approval() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-W",
+            vec![
+                Reply::Call {
+                    id: "s1",
+                    name: "read",
+                    args: json!({ "path": "a.txt" }),
+                },
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![task("t1", "MARK-W: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    let permissions = Permissions {
+        tool_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..quiet_permissions()
+    };
+    h.start(h.with_subagents(&url, "Go", permissions, scouts_on(json!({}))))
+        .await;
+    let asked = h
+        .wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
+    let app = h.app.handle().clone();
+    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    assert_eq!(h.run_end().await, "stopped");
+    let result = h.task_result("t1").await;
+    assert!(
+        result.content.contains("Status: stopped"),
+        "{}",
+        result.content
+    );
+    let state = app.state::<AgentState>();
+    assert!(!state.is_running(&child) && !state.is_running(&h.dialog_id));
+    let status = serde_json::to_value(agent_status(app.state())).unwrap();
+    assert_eq!(status["approvals"], json!([]), "no approval left waiting");
+    assert_eq!(status["subagents"], json!([]));
+}
+
+/// A subagent that panics mid-batch: its call is answered, the others
+/// finish, and nothing stays registered as running.
+#[tokio::test]
+async fn a_subagent_that_panics_mid_batch_leaves_nothing_running() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-X",
+            (0..2)
+                .map(|_| Reply::Slow(200, Box::new(Reply::Text(REPORT))))
+                .collect(),
+        )],
+        vec![
+            Reply::Calls(vec![
+                task_call("x1", "MARK-X: one"),
+                task_call("x2", "MARK-X: two"),
+                task_call("x3", "MARK-X: three"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    *crate::agent_run::subagent_run::PANIC_SUB.lock().unwrap() = Some("x2".into());
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    let end = h.run_end().await;
+    *crate::agent_run::subagent_run::PANIC_SUB.lock().unwrap() = None;
+    assert_eq!(end, "done");
+    for ok in ["x1", "x3"] {
+        assert!(
+            h.task_result(ok).await.content.contains("Status: done"),
+            "{ok}"
+        );
+    }
+    let broken = h.task_result("x2").await;
+    assert!(broken.content.starts_with("Error"), "{}", broken.content);
+    let state = h.app.state::<AgentState>();
+    assert_eq!(state.running_children(&h.dialog_id), 0);
+    assert!(!state.is_running(&h.dialog_id));
+}
+
+/// A path no member owns, granted to one member, isn't granted to a
+/// second: two copies of it would merge silently at the join (no line
+/// conflict) into a file neither worker saw whole.
+#[tokio::test]
+async fn a_path_granted_to_one_group_member_isnt_granted_to_another() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = group_harness(&[("src/shared.rs", "a\nb\nc\nd\ne\n")]).await;
+    let extend = |id: &'static str| Reply::Call {
+        id,
+        name: "extend_scope",
+        args: json!({ "paths": ["src/shared.rs"], "reason": "a helper" }),
+    };
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    extend("e1"),
+                    write_call("w1", "src/shared.rs", "A\nb\nc\nd\ne\n"),
+                    write_call("w1b", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs", "src/shared.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    // After w1 has its grant.
+                    Reply::Slow(800, Box::new(extend("e2"))),
+                    write_call("w2", "src/shared.rs", "a\nb\nc\nd\nE\n"),
+                    write_call("w2b", "src/posts.rs", "posts\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 4.",
+                vec![
+                    write_call("w3", "src/feed.rs", "feed\n"),
+                    worker_report("Feed.", &["src/feed.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    h.result_when_ready("g1").await;
+    let view = crate::overlay::chats::get(&h.dialog_id)
+        .unwrap()
+        .view
+        .clone();
+    let shared = std::fs::read_to_string(view.join("src/shared.rs")).unwrap();
+    h.run_end().await;
+    let w2 = h.child_of("g1#w2").await;
+    let work = h.messages_of(&w2.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    };
+    assert!(
+        result("e2").starts_with("Error: not granted") && result("e2").contains("w1"),
+        "{}",
+        result("e2")
+    );
+    assert!(result("w2").starts_with("Error"), "{}", result("w2"));
+    assert_eq!(shared, "A\nb\nc\nd\ne\n", "only w1's change");
+}
+
+/// Depth one: no subagent is offered `task` (on the request's tool list,
+/// not only refused), even a kind configured with it, and one that calls
+/// it anyway starts nothing.
+#[tokio::test]
+async fn no_subagent_is_offered_task_even_when_configured_with_it() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, seen) = model_routed(
+        vec![(
+            "MARK-D",
+            vec![task("inner", "MARK-NESTED: go deeper"), Reply::Text(REPORT)],
+        )],
+        vec![task("t1", "MARK-D: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    let mut config = scouts_on(json!({}));
+    config.kinds.get_mut("scout").unwrap().extra_tools = vec!["task".into()];
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let scout = requests_with(&seen, "MARK-D");
+    assert!(!scout.is_empty());
+    for body in &scout {
+        assert!(
+            !tool_names(body).contains(&"task".to_string()),
+            "offered task"
+        );
+    }
+    let starts = h.events_of("subagentStarted");
+    assert_eq!(starts.len(), 1, "only the lead's scout: {starts:?}");
+    let child = h.child_of("t1").await;
+    let inner = h
+        .messages_of(&child.id)
+        .await
+        .into_iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("inner"))
+        .unwrap();
+    assert!(inner.content.starts_with("Error"), "{}", inner.content);
+}
+
+/// The run's subagent limit, reached through the lead's own calls: the
+/// call past it is refused, with nothing started, and the run goes on.
+#[tokio::test]
+async fn the_lead_is_refused_past_the_runs_subagent_limit() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![("MARK-L", vec![Reply::Text(REPORT), Reply::Text(REPORT)])],
+        vec![
+            task("l1", "MARK-L: one"),
+            task("l2", "MARK-L: two"),
+            task("l3", "MARK-L: three"),
+            Reply::Text("Done alone."),
+        ],
+    )
+    .await;
+    let mut config = scouts_on(json!({}));
+    config.max_per_run = Some(2);
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    for ok in ["l1", "l2"] {
+        assert!(
+            h.task_result(ok).await.content.contains("Status: done"),
+            "{ok}"
+        );
+    }
+    let third = h.task_result("l3").await;
+    assert!(
+        third
+            .content
+            .contains("already started 2 subagents, the limit"),
+        "{}",
+        third.content
+    );
+    assert_eq!(h.events_of("subagentStarted").len(), 2);
+}
+
+/// A fallback model whose request doesn't fit either gets its own trim:
+/// the first model's doesn't use it up.
+#[tokio::test]
+async fn a_fallback_model_gets_its_own_trim() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let overflow = r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#;
+    let (small, small_seen) = model(vec![
+        Reply::Status(400, overflow),
+        Reply::Status(400, overflow),
+    ])
+    .await;
+    let (url, seen) = model_routed(
+        vec![(
+            "MARK-FT",
+            vec![Reply::Status(400, overflow), Reply::Text(REPORT)],
+        )],
+        vec![task("t1", "MARK-FT: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    let config = scouts_on(json!({ "models": [profile("small", &small), { "chat": true }] }));
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let meta = &h.task_result("t1").await.meta.unwrap()["subagent"];
+    assert_eq!(meta["status"], "done", "{meta}");
+    assert_eq!(meta["modelsTried"], json!(["Other/small", "Test/m"]));
+    assert_eq!(
+        small_seen.lock().unwrap().len(),
+        2,
+        "trimmed once, then the next model"
+    );
+    assert_eq!(
+        requests_with(&seen, "MARK-FT").len(),
+        2,
+        "the fallback trimmed once too"
+    );
+}
+
+/// The repair turn for a report out of format fails (the provider errors):
+/// the subagent ends with what it had, and the lead is told.
+#[tokio::test]
+async fn an_error_on_the_report_turn_keeps_what_it_had() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-RT",
+            vec![
+                Reply::Text("I looked around; a.txt holds x."),
+                Reply::Status(400, r#"{"error":{"message":"bad request"}}"#),
+            ],
+        )],
+        vec![task("t1", "MARK-RT: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let result = h.task_result("t1").await;
+    let meta = &result.meta.as_ref().unwrap()["subagent"];
+    assert_ne!(meta["status"], "done", "{}", result.content);
+    assert!(
+        result.content.contains("a.txt holds x"),
+        "what it had reaches the lead: {}",
+        result.content
+    );
+    assert!(!h.app.state::<AgentState>().is_running(&h.dialog_id));
+}
+
+/// Stop while a repair round's fixer works: the run ends stopped, the next
+/// fixer never starts, no recheck runs, and nothing is left running.
+#[tokio::test]
+async fn stop_in_the_middle_of_a_repair_round() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let Some(h) = repair_harness(false).await else {
+        return;
+    };
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "bad users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                    write_call("w1f", "src/users.rs", "users, fixed\n"),
+                    worker_report("Fixed the users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    // The first fixer (posts) hangs until the Stop.
+                    Reply::Hang(None),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, true)).await;
+    let fixer = h
+        .wait_for("a fixer started", |e| {
+            e["type"] == "subagentStarted"
+                && e["toolCallId"]
+                    .as_str()
+                    .is_some_and(|c| c.contains(":fix:"))
+        })
+        .await;
+    let fixer_chat = fixer["childDialogId"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let app = h.app.handle().clone();
+    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    assert_eq!(h.run_end().await, "verify-stopped");
+    let state = app.state::<AgentState>();
+    assert!(!state.is_running(&fixer_chat) && !state.is_running(&h.dialog_id));
+    assert_eq!(state.running_children(&h.dialog_id), 0);
+    // The users fixer never started, and no recheck ran.
+    assert!(
+        first_request_with(&seen, &["# Fix from the lead's checks", "# Your step: 2."]).is_none(),
+        "the second fixer started"
+    );
+    let records = end_records(&h.messages().await);
+    assert_eq!(records.len(), 1, "no recheck: {records:#?}");
+    assert_ne!(records[0]["repair"]["status"], "recheck");
+}
+
+/// A fixer's change breaks what passed before: the recheck round is a
+/// regression, and the fixers' changes are rolled back like the lead's.
+#[tokio::test]
+async fn a_regression_from_the_fixers_is_rolled_back_in_the_recheck() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    // Lint finds posts.rs's error (a located cause: its worker fixes it);
+    // the test `users` fails when posts.rs says "v2", and passed before:
+    // the tests ran then, so it's a regression, not a hidden failure.
+    let lint = "const fs = require('fs');\n\
+        if (fs.readFileSync('src/posts.rs', 'utf8').includes('bad')) {\n\
+          console.error('src/posts.rs:1:1: error  no-undef  p is not defined');\n\
+          console.error('\\n1 problem (1 error, 0 warnings)'); process.exit(1);\n}\n";
+    let test = "const fs = require('fs');\n\
+        const broken = fs.readFileSync('src/posts.rs', 'utf8').includes('v2');\n\
+        console.log('test t::users ... ' + (broken ? 'FAILED' : 'ok'));\n\
+        console.log('test result: ' + (broken ? 'FAILED. 0 passed; 1 failed' : 'ok. 1 passed; 0 failed'));\n\
+        if (broken) process.exit(1);\n";
+    let h = group_harness(&[
+        ("lint.js", lint),
+        ("check.js", test),
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "lint": "node lint.js", "test": "node check.js" } }"#,
+        ),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    // Its fix: posts pass, users break.
+                    write_call("w2f", "src/posts.rs", "posts v2\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Done."),
+            // Told the fix was undone: the lead fixes posts itself.
+            write_call("l1", "src/posts.rs", "posts fixed\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, true)).await;
+    let end = h.run_end().await;
+    let messages = h.messages().await;
+    let records = end_records(&messages);
+    assert_eq!(end, "verified", "{:#?}", statuses(&records));
+    assert_eq!(statuses(&records), ["failed", "rolled-back", "passed"]);
+    let rb = &records[1]["rolledBack"];
+    assert_eq!(rb["restored"], json!(["src/posts.rs"]), "{rb}");
+    assert_eq!(rb["broke"], json!(["test|test|t::users"]), "{rb}");
+    assert!(messages.iter().any(|m| m
+        .content
+        .contains("Your last fix broke something that didn't fail before")));
+}
+
+/// B07 in an isolated chat: a file only the chat's view has (an earlier
+/// run made it, unlanded) is there for the plan's checks; one nowhere is
+/// still a problem.
+#[tokio::test]
+async fn plan_checks_see_the_chats_view_in_an_isolated_chat() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = plan_project().await;
+    h.isolate().await;
+    // Stopped after the write: a stopped run doesn't land.
+    let (url, _) = model(vec![
+        write_call("w1", "src/only_here.rs", "pub fn here() {}\n"),
+        Reply::Hang(None),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Make a file"), quiet_permissions());
+    request.isolate = Some(true);
+    h.start(request).await;
+    h.wait_for("the write", |e| e["type"] == "fileWritten")
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let app = h.app.handle().clone();
+    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    assert_eq!(h.run_end().await, "stopped");
+    assert!(h.file("src/only_here.rs").is_none(), "not in the project");
+
+    let plan = |extra: &str| {
+        format!(
+            "# Use it\n\nCall it.\n\n## Steps\n\n1. **Call**\n   - `src/api.rs`: call `here()` from `src/only_here.rs`.\n   - `src/only_here.rs`: export it.\n{extra}\n## Validation\n- `cargo test`\n"
+        )
+    };
+    let (url, _) = model(vec![
+        submit("p1", plan("2. **Gone**\n   - `src/missing.rs`: use it.\n")),
+        submit(
+            "p2",
+            plan("2. **Store**\n   - `src/db.rs`: keep what it returns.\n"),
+        ),
+        Reply::Text("Saved."),
+    ])
+    .await;
+    h.events.lock().unwrap().clear();
+    let mut request = h.plan_request(&url, subagent::SubagentConfig::default());
+    request.isolate = Some(true);
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let first = result_of(&messages, "p1").content.clone();
+    assert!(
+        first.contains("`src/missing.rs`, which isn't in the project"),
+        "{first}"
+    );
+    assert!(!first.contains("only_here"), "{first}");
+    let second = result_of(&messages, "p2").content.clone();
+    assert!(second.starts_with("Saved the plan"), "{second}");
+}
+
+/// The plan reviewer waits for an approval of its own read: the review
+/// goes on once it's answered, and the plan is saved with its record.
+#[tokio::test]
+async fn a_plan_review_waits_for_its_approval_and_goes_on() {
+    let h = plan_project().await;
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![
+                Reply::Call {
+                    id: "r1",
+                    name: "read",
+                    args: json!({ "path": "src/api.rs" }),
+                },
+                Reply::Text(NO_FINDINGS),
+            ],
+        )],
+        vec![submit("p1", users_plan("Users", 0)), Reply::Text("Saved.")],
+    )
+    .await;
+    let mut request = h.plan_request(&url, plan_reviewer_on(json!({})));
+    request.config.as_mut().unwrap().permissions.tool_approval = permissions::ApprovalRule {
+        required: true,
+        by: permissions::Approver::User,
+    };
+    h.start(request).await;
+    let asked = h
+        .wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    assert_eq!(asked["request"]["toolCallId"], "r1");
+    assert_eq!(asked["request"]["parentCallId"], "p1");
+    // Waiting: nothing saved yet.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(h.plan_files().is_empty());
+    let app = h.app.handle().clone();
+    let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
+    assert!(agent_resolve_approval(
+        app.clone(),
+        app.state(),
+        child,
+        "r1".into(),
+        ApprovalDecision::Allow
+    ));
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let saved = result_of(&messages, "p1");
+    assert!(
+        saved.content.starts_with("Saved the plan"),
+        "{}",
+        saved.content
+    );
+    assert_eq!(saved.meta.as_ref().unwrap()["review"]["status"], "clean");
+    assert_eq!(h.plan_files().len(), 1);
+}
+
+/// A plan held by its review, and the run ends: the next run's revision
+/// is reviewed afresh (its own rounds), not saved unreviewed.
+#[tokio::test]
+async fn a_plan_held_in_one_run_is_reviewed_in_the_next() {
+    let h = plan_project().await;
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(PLAN_FINDING)])],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            Reply::Text("I'll add the step next time."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(h.plan_files().is_empty(), "held, never saved");
+
+    let (url2, seen2) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(NO_FINDINGS)])],
+        vec![submit("p2", users_plan("Users", 1)), Reply::Text("Saved.")],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.plan_request(&url2, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(requests_with(&seen2, PLAN_REVIEW).len(), 1, "reviewed");
+    let messages = h.messages().await;
+    let second = result_of(&messages, "p2");
+    let review = &second.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (review["round"].as_u64(), review["status"].as_str()),
+        (Some(1), Some("clean"))
+    );
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].contains("**Caller 0**"));
+}
+
+/// Deleting a project removes its chats' subagents' files too (their
+/// copies and landing records), and their rows.
+#[tokio::test]
+async fn deleting_a_project_removes_its_subagents_chats_and_files() {
+    let mut h = harness(&[("a.txt", "x\n")]).await;
+    h.isolate().await;
+    let db = h.app.state::<DbState>().inner().clone();
+    let root = h.project.clone();
+    let project_id = db
+        .write(move |c| crate::chat_db::projects::open_project(c, &root))
+        .await
+        .unwrap()
+        .project
+        .id;
+    let (parent, pid) = (h.dialog_id.clone(), project_id.clone());
+    let kid = uuid::Uuid::new_v4().to_string();
+    let grandkid = uuid::Uuid::new_v4().to_string();
+    let (k, g) = (kid.clone(), grandkid.clone());
+    db.write(move |c| {
+        c.execute(
+            "UPDATE dialogs SET project_id = ?1 WHERE id = ?2",
+            rusqlite::params![pid, parent],
+        )
+        .map_err(|e| e.to_string())?;
+        for (id, of) in [(&k, &parent), (&g, &k)] {
+            store::create_child_dialog(
+                c,
+                &store::NewChildDialog {
+                    id: id.clone(),
+                    parent_id: of.clone(),
+                    parent_call_id: "c".into(),
+                    kind: "worker".into(),
+                    title: "Worker".into(),
+                    created_at: store::now_ms(),
+                },
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    // What a kept copy and a landing leave on disk.
+    let data = h._dir.0.join("data");
+    let left = |id: &str| {
+        [
+            data.join("overlays").join(id),
+            data.join("landings").join(id),
+        ]
+    };
+    for id in [&kid, &grandkid] {
+        for dir in left(id) {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("project.txt"), "x").unwrap();
+        }
+    }
+    let app = h.app.handle().clone();
+    crate::chat_db::commands::chat_delete_project(
+        app.clone(),
+        app.state::<AgentState>(),
+        app.state::<crate::vfs::VfsState>(),
+        app.state::<DbState>(),
+        project_id,
+    )
+    .await
+    .unwrap();
+    for id in [&kid, &grandkid] {
+        for dir in left(id) {
+            assert!(!dir.exists(), "{} left", dir.display());
+        }
+    }
+    let ids = [h.dialog_id.clone(), kid, grandkid];
+    let rows: i64 = db
+        .read(move |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM dialogs WHERE id IN (?1, ?2, ?3)",
+                rusqlite::params![ids[0], ids[1], ids[2]],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
 }

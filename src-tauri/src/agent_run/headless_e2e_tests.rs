@@ -370,3 +370,91 @@ async fn a_data_folder_it_made_goes_after_the_report() {
     let left: Vec<_> = ours().into_iter().filter(|p| !before.contains(p)).collect();
     assert!(left.is_empty(), "left behind: {left:?}");
 }
+
+fn settings_with(url: &str, permissions: Value) -> Value {
+    json!({
+        "profile": { "id": "p::m", "label": "Test/m", "model": "m", "baseUrl": url, "stream": true, "contextTokens": 100000 },
+        "mode": "agent",
+        "config": { "permissions": permissions },
+    })
+}
+
+/// Approvals the run asks for are answered by the policy, each recorded,
+/// and the run goes on with the answer.
+#[tokio::test]
+async fn approvals_are_answered_by_the_policy_end_to_end() {
+    let dir = temp_dir();
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("b.txt"), "b\n").unwrap();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "a.txt", "content": "new a\n" }),
+        },
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "b.txt", "content": "new b\n" }),
+        },
+        Reply::Text("Changed a.txt; b.txt was refused."),
+    ])
+    .await;
+    let report = headless(
+        &dir,
+        settings_with(
+            &url,
+            json!({
+                "editApproval": { "required": true, "by": "user" },
+                "verifyChanges": false,
+                "checklist": "off",
+            }),
+        ),
+        Some(json!({ "default": "allow", "rules": [{ "tool": "write", "contains": "b.txt", "decision": "deny" }] })),
+        "Change the files",
+        &[],
+    )
+    .await;
+    assert_eq!(report["outcome"], "done", "{report:#}");
+    let approvals = report["approvals"].as_array().unwrap();
+    assert_eq!(approvals.len(), 2, "{approvals:?}");
+    assert_eq!(approvals[0]["decision"], "allow");
+    assert_eq!(approvals[1]["decision"], "deny");
+    assert_eq!(report["interventions"], 2);
+    assert_eq!(
+        std::fs::read_to_string(project.join("a.txt")).unwrap(),
+        "new a\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("b.txt")).unwrap(),
+        "b\n"
+    );
+}
+
+/// `--timeout`: the run is stopped, ends, and the report says "timeout".
+#[tokio::test]
+async fn the_timeout_stops_the_run_and_the_report_says_so() {
+    let dir = temp_dir();
+    let (url, _) = model(vec![Reply::Hang(None)]).await;
+    let started = std::time::Instant::now();
+    let report = headless(
+        &dir,
+        settings_with(&url, json!({ "verifyChanges": false, "checklist": "off" })),
+        None,
+        "Wait",
+        &["--timeout", "1"],
+    )
+    .await;
+    assert_eq!(report["outcome"], "timeout", "{report:#}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(report["runLog"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l["event"] == "run" && l["outcome"] == "stopped"));
+}

@@ -23,8 +23,8 @@
 //! changed (not the write tool) have no checkpoint or baseline here, so
 //! they're neither rolled back nor compared.
 
-use super::subagent::{Original, Source};
 use super::run::Run;
+use super::subagent::{Original, Source};
 use super::tools;
 use regex::Regex;
 use serde::Serialize;
@@ -35,6 +35,26 @@ use tauri::Runtime;
 
 /// A checkpoint isn't taken of more than this (rollback then isn't offered).
 const MAX_CHECKPOINT_BYTES: usize = 64 << 20;
+
+/// Tests: a smaller checkpoint limit for runs in one folder (other tests
+/// running meanwhile keep theirs).
+#[cfg(test)]
+pub static CHECKPOINT_LIMIT_IN: std::sync::Mutex<Option<(String, usize)>> =
+    std::sync::Mutex::new(None);
+
+fn checkpoint_limit(_root: &str) -> usize {
+    #[cfg(test)]
+    if let Some((dir, limit)) = CHECKPOINT_LIMIT_IN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
+        if _root.starts_with(dir.as_str()) {
+            return *limit;
+        }
+    }
+    MAX_CHECKPOINT_BYTES
+}
 /// The rolled-back attempt's diff kept in the record, at most.
 const MAX_ROLLBACK_DIFF_CHARS: usize = 6_000;
 
@@ -762,7 +782,7 @@ impl<R: Runtime> Run<R> {
                 size += content.as_ref().map_or(0, Vec::len);
                 cp.files.insert(key, content);
             }
-            if size > MAX_CHECKPOINT_BYTES {
+            if size > checkpoint_limit(&root) {
                 cp.too_big = true;
                 cp.files.clear();
                 break;

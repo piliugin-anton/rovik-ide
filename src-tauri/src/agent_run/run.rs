@@ -286,6 +286,8 @@ pub struct Run<R: Runtime> {
     pub(super) last_triage: Option<super::triage::Triage>,
     /// Plan reviews in this run, the findings that held a plan back, and
     /// the `submit_plan` call they answered (plan_review.rs).
+    /// The running parallel group's extend_scope grants.
+    pub(super) group_grants: super::group::GroupGrants,
     /// P4.7: earlier runs' saved check output was removed.
     pub(super) cleaned_this_run: bool,
     pub(super) plan_reviews: u32,
@@ -782,6 +784,7 @@ impl<R: Runtime> Run<R> {
             review_note_id: None,
             last_triage: None,
             cleaned_this_run: false,
+            group_grants: Default::default(),
             plan_reviews: 0,
             plan_findings: Vec::new(),
             plan_review_call: None,
@@ -905,6 +908,7 @@ impl<R: Runtime> Run<R> {
             review_note_id: None,
             last_triage: None,
             cleaned_this_run: false,
+            group_grants: Default::default(),
             plan_reviews: 0,
             plan_findings: Vec::new(),
             plan_review_call: None,

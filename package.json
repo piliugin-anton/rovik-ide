@@ -28,9 +28,12 @@
     "solid-js": "^1.9.17"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
     "@tauri-apps/cli": "^2.12.1",
     "@types/node": "^26.6.5",
+    "babel-preset-solid": "^1.9.16",
     "esbuild": "^0.28.2",
+    "happy-dom": "^20.14.6",
     "prettier": "^3.9.10",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",

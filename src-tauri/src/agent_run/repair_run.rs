@@ -30,7 +30,6 @@ use tauri::Runtime;
 /// The part of a check's output a fixer gets, at most.
 const FIX_EXCERPT_CHARS: usize = 3_000;
 
-
 /// Rounds checked again at once after fixers fixed every cause, at most (P3.10).
 pub const MAX_RECHECKS: u32 = 2;
 
@@ -206,6 +205,20 @@ fn said(result: &SubResult) -> String {
         .unwrap_or("")
         .to_string();
     store::char_prefix(&line, 200).to_string()
+}
+
+/// A fixer's brief, as the run's ledger counts it: the same cause for the
+/// same step is the same brief whatever the round, so it's sent at most
+/// `MAX_SAME_BRIEF` times in a run.
+fn fixer_brief(step: usize, summary: &str) -> Brief {
+    Brief {
+        kind: Kind::Worker,
+        goal: format!("Fix: {summary}"),
+        context: None,
+        paths: Vec::new(),
+        max_tool_calls: None,
+        step: Some(step),
+    }
 }
 
 impl<R: Runtime> Run<R> {
@@ -469,14 +482,7 @@ impl<R: Runtime> Run<R> {
             .find(|s| s.number == *step)
             .ok_or_else(|| format!("step {step} isn't in the plan any more"))?;
         let goal = format!("Fix round {round}: {}", cause.summary);
-        let brief = Brief {
-            kind: Kind::Worker,
-            goal: goal.clone(),
-            context: None,
-            paths: Vec::new(),
-            max_tool_calls: None,
-            step: Some(*step),
-        };
+        let brief = fixer_brief(*step, &cause.summary);
         let call_id = format!("{record_id}:fix:{label}");
         let mut sub = self
             .new_sub(Kind::Worker, &call_id, config.budget(Kind::Worker), &config)
@@ -853,6 +859,24 @@ impl<R: Runtime> Run<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The same cause sent to the same step's worker, round after round:
+    /// the same brief, refused past `MAX_SAME_BRIEF` (a new cause isn't).
+    #[test]
+    fn the_same_fix_isnt_sent_a_third_time_in_a_run() {
+        let mut ledger = subagent::Ledger::default();
+        let cause = "E0308 in src/posts.rs";
+        for _round in 0..subagent::MAX_SAME_BRIEF {
+            ledger.admit(&fixer_brief(3, cause), 10).unwrap();
+        }
+        let refused = ledger.admit(&fixer_brief(3, cause), 10).unwrap_err();
+        assert!(refused.contains("already tried 2 times"), "{refused}");
+        assert!(ledger.admit(&fixer_brief(3, "another cause"), 10).is_ok());
+        assert!(
+            ledger.admit(&fixer_brief(2, cause), 10).is_ok(),
+            "another step's"
+        );
+    }
 
     #[test]
     fn a_fixer_gets_the_output_around_its_files() {

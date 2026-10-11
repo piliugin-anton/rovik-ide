@@ -39,6 +39,48 @@ pub struct GroupCtx {
     pub others: Vec<(String, WriteScope)>,
     /// Files the group's contract settles (read-only for its steps).
     pub contract: Vec<String>,
+    /// Paths extend_scope granted, and to which worker: shared by the
+    /// group's workers, so no path is granted to two of them (two copies
+    /// of it would merge at the join into a file neither saw whole).
+    pub granted: GroupGrants,
+}
+
+/// A group's grants, shared by its workers.
+#[derive(Debug, Clone, Default)]
+pub struct GroupGrants(std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>);
+
+impl PartialEq for GroupGrants {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl GroupGrants {
+    /// The worker other than `label` that was granted `rel` (or a folder
+    /// it's in, or a path inside it, for a folder).
+    pub fn holder(&self, rel: &str, label: &str) -> Option<String> {
+        let me = label.trim_end_matches('\'');
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(p, l)| {
+                l.trim_end_matches('\'') != me
+                    && (super::paths::same(p, rel)
+                        || super::paths::under(p.trim_end_matches('/'), rel)
+                        || super::paths::under(rel.trim_end_matches('/'), p))
+            })
+            .map(|(_, l)| l.clone())
+    }
+
+    pub fn record(&self, paths: &[String], label: &str) {
+        let mut all = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        for p in paths {
+            if !all.iter().any(|(q, l)| q == p && l == label) {
+                all.push((p.clone(), label.to_string()));
+            }
+        }
+    }
 }
 
 impl GroupCtx {
@@ -52,6 +94,11 @@ impl GroupCtx {
             .iter()
             .find(|(_, scope)| scope.allows(rel, true))
             .map(|(label, _)| label.clone())
+            .or_else(|| {
+                self.granted
+                    .holder(rel, &self.label)
+                    .map(|l| format!("{l}, granted it"))
+            })
     }
 }
 
@@ -101,7 +148,7 @@ pub fn refusal(ctx: &GroupCtx, paths: &[String]) -> Option<String> {
         .collect();
     (!owned.is_empty()).then(|| {
         format!(
-            "Not granted: {} {} another part of this parallel group. Leave this to the lead and list it under \"## Open questions\".",
+            "Error: not granted: {} {} another part of this parallel group. Leave this to the lead and list it under \"## Open questions\".",
             owned.join(", "),
             if owned.len() == 1 { "belongs to" } else { "belong to" }
         )
@@ -276,6 +323,8 @@ impl<R: Runtime> Run<R> {
                 }
             }
         }
+        // This run of the group's grants: none yet.
+        self.group_grants = GroupGrants::default();
         let started = std::time::Instant::now();
 
         let mut runs: Vec<(Member, Option<Run<R>>)> = Vec::new();
@@ -546,6 +595,7 @@ impl<R: Runtime> Run<R> {
                 .map(|(l, _, s)| (l.clone(), s.clone()))
                 .collect(),
             contract: contract.to_vec(),
+            granted: self.group_grants.clone(),
         });
         let goal = format!("Step {}: {}", member.step.number, member.step.title);
         self.store_child(&member.child_id, &call_id, Kind::Worker, &goal, message)
@@ -1070,6 +1120,7 @@ mod tests {
             label: "w1".into(),
             others: vec![("w2".into(), scope(&["src/pages/Users.tsx"]))],
             contract: vec!["src/api/mod.rs".into()],
+            granted: GroupGrants::default(),
         };
         assert_eq!(ctx.owner_of("src/pages/Users.tsx").as_deref(), Some("w2"));
         assert_eq!(
@@ -1084,6 +1135,15 @@ mod tests {
         );
         assert!(r.contains("Leave this to the lead and list it under \"## Open questions\""));
         assert!(refusal(&ctx, &["src/cli.rs".into()]).is_none());
+        // Granted to another worker of the group: not to this one, nor a
+        // folder it's in; this worker's own grant is still its own.
+        ctx.granted.record(&["src/cli.rs".into()], "w2");
+        assert!(refusal(&ctx, &["src/cli.rs".into()])
+            .unwrap()
+            .contains("(w2, granted it)"));
+        assert!(refusal(&ctx, &["src/".into()]).is_some());
+        ctx.granted.record(&["src/util.rs".into()], "w1");
+        assert!(refusal(&ctx, &["src/util.rs".into()]).is_none());
         // A folder with another's files, or the contract, in it.
         for folder in ["src/", "src/pages/", "src/api/"] {
             assert!(refusal(&ctx, &[folder.into()]).is_some(), "{folder}");

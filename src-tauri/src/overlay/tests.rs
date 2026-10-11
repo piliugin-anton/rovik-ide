@@ -368,8 +368,11 @@ mod mounted {
     }
 
     #[test]
-    #[ignore] // needs FUSE: cargo test -- --ignored
+    // Needs FUSE: skipped where mounts don't work.
     fn common_tools_change_only_the_overlay() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
         let d = setup(&[
             ("src/main.rs", "fn main() {}\n"),
             ("README.md", "hi\n"),
@@ -432,8 +435,11 @@ mod mounted {
     }
 
     #[test]
-    #[ignore] // needs FUSE
+    // Needs FUSE: skipped where mounts don't work.
     fn random_operations_match_a_plain_copy() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
         let files: Vec<(String, String)> = (0..6)
             .map(|i| (format!("d{}/f{i}.txt", i % 3), format!("content {i}\n")))
             .collect();
