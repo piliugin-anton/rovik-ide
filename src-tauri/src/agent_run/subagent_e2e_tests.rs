@@ -5747,6 +5747,93 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
         .all(|r| r["afterGreen"] == true));
 }
 
+/// Round 2 (§4.2): the third round is the first green; its review's fix
+/// gets a fourth round past the usual three, which passes: verified, at
+/// round 4 of 4. The notes before it said "of 3".
+#[tokio::test]
+async fn review_after_green_fix_that_passes_ends_verified_with_round_4_of_4() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); if (!fs.readFileSync('a.txt', 'utf8').includes('ok')) { console.error('a.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("a.txt", "no\n"),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![
+                Reply::Text(NO_FINDINGS),
+                Reply::Text(FINDING_A),
+                Reply::Text(NO_FINDINGS),
+            ],
+        )],
+        vec![
+            write_call("w1", "a.txt", "nope\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "still no\n"),
+            Reply::Text("Fixed."),
+            write_call("w3", "a.txt", "ok\n"),
+            Reply::Text("Fixed."),
+            write_call("w4", "a.txt", "ok hello\n"),
+            Reply::Text("1: fixed."),
+        ],
+    )
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    h.start(h.with_subagents(&url, "Greet", permissions, reviewer_on(json!({}))))
+        .await;
+    let end = h.run_end().await;
+    let messages = h.messages().await;
+    assert_eq!(end, "verified", "{:?}", record_order(&messages));
+    let records: Vec<Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .collect();
+    let rounds: Vec<(&Value, &Value)> = records
+        .iter()
+        .map(|r| (&r["round"], &r["status"]))
+        .collect();
+    assert_eq!(
+        rounds,
+        [
+            (&json!(1), &json!("failed")),
+            (&json!(2), &json!("failed")),
+            (&json!(3), &json!("passed")),
+            (&json!(4), &json!("passed")),
+        ]
+    );
+    assert_eq!(records[2]["reviewAfterGreen"]["status"], "findings");
+    assert_eq!(records[3]["maxRounds"], 4);
+    let notes: Vec<&str> = messages
+        .iter()
+        .filter(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|m| m["harness"] == "verification")
+        })
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(notes[0].contains("(attempt 1 of 3)"), "{}", notes[0]);
+    assert!(notes[1].contains("(attempt 2 of 3)"), "{}", notes[1]);
+}
+
 #[tokio::test]
 async fn a_review_after_green_that_couldnt_read_the_report_isnt_done() {
     if std::process::Command::new("npm")

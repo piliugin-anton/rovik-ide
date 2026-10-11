@@ -577,6 +577,61 @@ async fn rebuild_from_hashes_isolated_matches_project_copy() {
     assert_eq!(h.file("tests/add.test.js").as_deref(), Some(tests));
 }
 
+/// Round 2 (§4.2): a round whose check timed out says nothing was
+/// resolved: what it didn't get to isn't fixed.
+#[tokio::test]
+async fn a_timeout_round_doesnt_say_resolved_e2e() {
+    if !has_node() {
+        return;
+    }
+    let h = harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        (
+            "check.js",
+            "const fs = require('fs'); const a = fs.readFileSync('a.txt', 'utf8'); \
+             if (a.includes('slow')) { setInterval(() => {}, 1000); } \
+             else if (!a.includes('ok')) { console.error('a.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("a.txt", "no\n"),
+    ])
+    .await;
+    verify::CHECK_TIMEOUTS
+        .lock()
+        .unwrap()
+        .insert(h.dialog_id.clone(), 3000);
+    let (url, _) = model(vec![
+        write("w1", "a.txt", "nope\n"),
+        Reply::Text("Done."),
+        write("w2", "a.txt", "slow\n"),
+        Reply::Text("Fixed."),
+        write("w3", "a.txt", "ok\n"),
+        Reply::Text("Fixed."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix a"), checks_on()))
+        .await;
+    let end = h.run_end().await;
+    verify::CHECK_TIMEOUTS.lock().unwrap().remove(&h.dialog_id);
+    let messages = h.messages().await;
+    let rounds = records(&messages);
+    assert_eq!(end, "verified", "{rounds:#?}");
+    assert_eq!(rounds[1]["checks"][0]["timedOut"], true, "{}", rounds[1]);
+    assert_ne!(
+        rounds[1]["progress"]["verdict"], "progress",
+        "{}",
+        rounds[1]
+    );
+    assert!(
+        rounds[1]["progress"]["fixed"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "{}",
+        rounds[1]
+    );
+    let reports = harness_texts(&messages, "verification");
+    assert!(!reports[1].contains("resolved"), "{}", reports[1]);
+}
+
 #[tokio::test]
 async fn a_test_skipped_to_pass_is_not_reported_as_verified() {
     if !has_node() {

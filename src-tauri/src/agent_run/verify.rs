@@ -25,6 +25,23 @@ use tauri::Runtime;
 pub const MAX_VERIFY_ROUNDS: u32 = 3;
 /// Per check. Test suites can be slow; this is the bash maximum.
 const CHECK_TIMEOUT_MS: u64 = 600_000;
+
+/// Tests: a shorter limit for one chat's checks.
+#[cfg(test)]
+pub(super) static CHECK_TIMEOUTS: std::sync::Mutex<std::collections::BTreeMap<String, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn check_timeout_ms(_dialog_id: &str) -> u64 {
+    #[cfg(test)]
+    if let Some(ms) = CHECK_TIMEOUTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(_dialog_id)
+    {
+        return *ms;
+    }
+    CHECK_TIMEOUT_MS
+}
 /// A failing check's output the agent gets, at most; the whole of a longer
 /// one is saved (check_output.rs) and can go to triage (triage.rs).
 pub const FAILURE_OUTPUT_CHARS: usize = 8_000;
@@ -1360,7 +1377,7 @@ impl<R: Runtime> Run<R> {
             let run = crate::command_tool::run_command(
                 root.into(),
                 results[i].command.clone(),
-                Some(CHECK_TIMEOUT_MS),
+                Some(check_timeout_ms(&self.dialog_id)),
                 move || stop.is_set(),
                 Some(queued),
             );
