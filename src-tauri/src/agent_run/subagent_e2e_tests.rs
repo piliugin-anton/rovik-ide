@@ -3854,6 +3854,51 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
     assert_eq!(in_view("src/feed.rs").as_deref(), Some("feed from w3\n"));
     assert_eq!(in_view("src/posts.rs").as_deref(), Some("from the user\n"));
     h.run_end().await;
+    // P6.8: the next run runs the group again: w2's stale copy, still
+    // kept, is discarded first, never landed over the new work.
+    assert!(crate::overlay::chats::children_of(&h.dialog_id).contains(&w2.id));
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("v1", "src/users.rs", "users again\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("v2", "src/posts.rs", "posts again\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 4.",
+                vec![
+                    write_call("v3", "src/feed.rs", "feed again\n"),
+                    worker_report("Feed.", &["src/feed.rs"]),
+                ],
+            ),
+        ],
+        vec![group_task("g2"), Reply::Text("Done again.")],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.implement_isolated(&url, false)).await;
+    let again = h.result_when_ready("g2").await;
+    assert!(
+        again
+            .content
+            .contains("Copies kept from an earlier run of these steps were discarded, not landed:")
+            && again.content.contains("(step 3)"),
+        "{}",
+        again.content
+    );
+    assert!(crate::overlay::chats::get(&w2.id).is_none());
+    assert!(!crate::overlay::chats::children_of(&h.dialog_id).contains(&w2.id));
+    assert_eq!(in_view("src/posts.rs").as_deref(), Some("posts again\n"));
+    h.run_end().await;
 }
 
 /// P1.3: a worker's landing that fails half way keeps its copy and its
@@ -4505,8 +4550,14 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
     );
     let fixed = std::fs::read_to_string(chat.view.join("src/util.rs")).unwrap();
     assert_eq!(fixed, "util by the fixer\n", "the fixer changed it");
+    assert!(crate::overlay::chats::group_blob_count(&h.dialog_id) > 0);
     let request = crate::overlay::chats::redo_group(&h.dialog_id, "pages").unwrap();
     assert!(request.contains("Carry out its steps (2, 3)"), "{request}");
+    // P6.8: what the group's paths were is spent once it's redone.
+    assert_eq!(crate::overlay::chats::group_blob_count(&h.dialog_id), 0);
+    assert!(crate::overlay::chats::redo_group(&h.dialog_id, "pages")
+        .unwrap_err()
+        .contains("redone already"));
     // P1.4: the chat's own version from before the group, not the
     // project's (it had none).
     assert_eq!(

@@ -120,7 +120,7 @@ pub async fn chat_delete_project<R: tauri::Runtime>(
         .read(move |c| store::dialogs_in_project(c, Some(&id)))
         .await?;
     for chat in &chats {
-        remove_chat_files(&app, &agent, &vfs, chat).await?;
+        remove_chat_and_children_files(&app, &agent, &vfs, &db, chat).await?;
     }
     let data_dir = db.data_dir().to_path_buf();
     db.write(move |c| {
@@ -208,7 +208,7 @@ pub async fn chat_delete_dialog<R: tauri::Runtime>(
     dialog_id: String,
 ) -> Result<(), String> {
     let data_dir = db.data_dir().to_path_buf();
-    remove_chat_files(&app, &agent, &vfs, &dialog_id).await?;
+    remove_chat_and_children_files(&app, &agent, &vfs, &db, &dialog_id).await?;
     db.write(move |c| {
         store::delete_dialog(c, &dialog_id)?;
         // Best effort; anything missed is collected at the next start.
@@ -216,6 +216,23 @@ pub async fn chat_delete_dialog<R: tauri::Runtime>(
         Ok(())
     })
     .await
+}
+
+/// P6.7: a chat's files and its subagents' chats' files (their copies,
+/// landing records and context), the children's first.
+async fn remove_chat_and_children_files<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    agent: &crate::agent_run::AgentState,
+    vfs: &crate::vfs::VfsState,
+    db: &DbState,
+    dialog_id: &str,
+) -> Result<(), String> {
+    let id = dialog_id.to_string();
+    let children = db.read(move |c| store::descendants(c, &id)).await?;
+    for child in &children {
+        remove_chat_files(app, agent, vfs, child).await?;
+    }
+    remove_chat_files(app, agent, vfs, dialog_id).await
 }
 
 /// What a deleted chat leaves outside the database: its run (stopped

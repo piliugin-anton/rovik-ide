@@ -258,6 +258,24 @@ impl<R: Runtime> Run<R> {
                     .map(|f| f.path.clone())
             })
             .collect();
+        // P6.8: copies kept from an earlier run of these steps (a conflict
+        // or a stop left them) would land stale work over this run's:
+        // they're discarded first, and the result says so.
+        let mut stale = Vec::new();
+        for child in chats::children_of(&self.dialog_id) {
+            if let Some(step) = self.worker_step_of(&child).await {
+                if members.iter().any(|m| m.number == step.number) {
+                    let id = child.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || chats::discard_child(&id))
+                        .await;
+                    stale.push(format!(
+                        "{} (step {})",
+                        subagent::handle(Kind::Worker, &child),
+                        step.number
+                    ));
+                }
+            }
+        }
         let started = std::time::Instant::now();
 
         let mut runs: Vec<(Member, Option<Run<R>>)> = Vec::new();
@@ -395,6 +413,12 @@ impl<R: Runtime> Run<R> {
         );
         if let Some(c) = &conflict {
             text.push_str(&format!("\n\n{c}"));
+        }
+        if !stale.is_empty() {
+            text.push_str(&format!(
+                "\n\nCopies kept from an earlier run of these steps were discarded, not landed: {}.",
+                stale.join(", ")
+            ));
         }
         // R03/R06: who owns what, for the repair loop; what the files were
         // before, for Redo sequentially.

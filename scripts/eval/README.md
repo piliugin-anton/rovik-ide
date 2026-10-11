@@ -5,6 +5,9 @@ main agent's baseline on a fixed task set, before subagents change anything. The
 headless runner ([src-tauri/src/headless.rs](../../src-tauri/src/headless.rs))
 runs each task as the app would; the task's hidden tests then grade it.
 
+Linux and macOS only: the workspaces, caches and process handling use
+POSIX tools (`cp`, `chmod`, `tar`, process groups).
+
 ## Tasks
 
 30 tasks in `tasks/`, each a real change with tests, taken back to the commit
@@ -112,7 +115,11 @@ Other settings are the app's defaults: the checks run when a run ends, and so
 does the checklist. `policy.json` refuses `git push` and `sudo` whenever the
 agent runs them, written in any form (`git -C . push`, `env X=1 git push`,
 `bash -c 'git push'`), with no approval asked: its command deny rules become
-the run's denied commands. It allows everything else, and picks the
+the run's denied commands. A denied command is matched by its words: the
+program, then the entry's other words in order anywhere after it; a word of
+short options matches them however they're written (`rm -rf` also refuses
+`rm -r -f`, `rm -fr` and `rm --recursive --force`). Anything that runs the
+program by another name (a script, an alias) isn't caught. It allows everything else, and picks the
 recommended answer to questions. Each question answered (and each approval,
 when settings ask for them) counts as an intervention in the report.
 
@@ -133,6 +140,22 @@ The campaign directory also gets `summary.json` and `summary.md`. A campaign
 can be resumed: finished runs are kept. Caches (clones, node_modules, the
 virtualenv, cargo's target directory) are in `.eval-cache/`.
 `ROVIK_EVAL_CACHE` and `ROVIK_EVAL_RESULTS` move them.
+
+Caches are shared by every run, so no run may change them for the next:
+each run gets its own copy of `node_modules` (a copy-on-write clone where
+the file system can), and the virtualenv is read-only (as root that doesn't
+hold). A run that changed a shared cache anyway is reported with a warning
+and `changedCaches` in its `result.json`. Cargo's target directory is shared
+on purpose (building every commit from scratch costs too much): a task's
+own crate is pruned from it after each run.
+
+A run whose provider reports no usage has an unknown cost: it's left out of
+the mean costs (the summary says how many), and a pilot with one can't
+project the campaign's cost.
+
+Ctrl+C (or a kill of `eval.mjs`) ends the runs it started, and what they
+started, before it exits; the run that was going has no result and runs
+again when the campaign is resumed.
 
 The report, per task and overall:
 

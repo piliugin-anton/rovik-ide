@@ -712,9 +712,7 @@ pub fn append_agent_log<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     line: String,
 ) -> Result<(), String> {
-    use std::io::Write;
     use tauri::Manager;
-    const MAX_BYTES: u64 = 5 * 1024 * 1024;
     let chosen = AGENT_LOG_DIR
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -723,10 +721,20 @@ pub fn append_agent_log<R: tauri::Runtime>(
         Some(dir) => dir,
         None => app.path().app_data_dir().map_err(|e| e.to_string())?,
     };
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    append_log_line(&dir, &line, 5 * 1024 * 1024)
+}
+
+/// One line at the end of `dir`'s agent-log.jsonl, rotated past `max_bytes`.
+/// P6.3: one writer at a time, and each line in one write, so lines from
+/// runs side by side never interleave and rotation never splits one.
+fn append_log_line(dir: &std::path::Path, line: &str, max_bytes: u64) -> Result<(), String> {
+    use std::io::Write;
+    static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let path = dir.join("agent-log.jsonl");
+    let _one = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     if fs::metadata(&path)
-        .map(|m| m.len() > MAX_BYTES)
+        .map(|m| m.len() > max_bytes)
         .unwrap_or(false)
     {
         let _ = fs::rename(&path, dir.join("agent-log.1.jsonl"));
@@ -736,12 +744,45 @@ pub fn append_agent_log<R: tauri::Runtime>(
         .append(true)
         .open(&path)
         .map_err(|e| e.to_string())?;
-    writeln!(file, "{}", line.replace('\n', " ")).map_err(|e| e.to_string())
+    let mut text = line.replace('\n', " ");
+    text.push('\n');
+    file.write_all(text.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_lines_from_many_writers_stay_whole_across_rotations() {
+        let dir = std::env::temp_dir().join(format!("agent-log-{}", uuid::Uuid::new_v4()));
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        let line =
+                            format!("{{\"t\":{t},\"i\":{i},\"pad\":\"{}\"}}", "x".repeat(20_000));
+                        append_log_line(&dir, &line, 200_000).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        for name in ["agent-log.jsonl", "agent-log.1.jsonl"] {
+            let text = fs::read_to_string(dir.join(name)).unwrap();
+            assert!(text.ends_with('\n'));
+            for l in text.lines() {
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(l).is_ok(),
+                    "a torn line in {name}"
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     fn project(files: &[(&str, &str)]) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};

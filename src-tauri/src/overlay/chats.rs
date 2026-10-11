@@ -274,6 +274,7 @@ pub fn test_data(data_dir: &Path) -> tokio::sync::OwnedMutexGuard<()> {
 
 pub fn init(data_dir: &Path) {
     *DATA_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.to_path_buf());
+    sweep_scratch(data_dir);
     let finished = super::land::recover(data_dir);
     if !finished.is_empty() {
         eprintln!(
@@ -401,7 +402,7 @@ pub fn open(
         .insert(dialog_id.to_string(), overlay.clone());
     // A child's landing into this view that a crash interrupted (F01).
     if let Some(data) = data_dir() {
-        let finished = super::land::recover_into(&data, &overlay.view);
+        let finished = super::land::recover_into(&data, dialog_id, &overlay.view);
         if !finished.is_empty() {
             eprintln!(
                 "overlay: finished an interrupted landing into {dialog_id}: {}",
@@ -606,7 +607,27 @@ pub fn open_scratch(id: &str, base: &Path) -> Result<Arc<ChatOverlay>, String> {
     if !valid_id(id) {
         return Err("not a chat id".into());
     }
-    mount_on(id, base, DEFAULT_LIMIT, None)
+    let overlay = mount_on(id, base, DEFAULT_LIMIT, None)?;
+    // P6.8: marked, so one a crash left is swept at the next start.
+    if let Some(store) = store_dir(id) {
+        let _ = std::fs::write(store.join(SCRATCH_MARK), "");
+    }
+    Ok(overlay)
+}
+
+/// The file that marks a scratch overlay's store (never a chat's).
+const SCRATCH_MARK: &str = "scratch.txt";
+
+/// Scratch overlays a crash left: none is open at start.
+fn sweep_scratch(data_dir: &Path) {
+    let Ok(dirs) = std::fs::read_dir(data_dir.join("overlays")) else {
+        return;
+    };
+    for d in dirs.flatten() {
+        if d.path().join(SCRATCH_MARK).is_file() {
+            let _ = std::fs::remove_dir_all(d.path());
+        }
+    }
 }
 
 /// An overlay of `base`, mounted, registered as open.
@@ -666,26 +687,36 @@ fn land_child_paths(child: &str, except: &[String]) -> Result<Vec<String>, super
         .ok_or_else(|| LandError::Failed("the app's data folder isn't known yet".into()))?;
     // An earlier landing of it that stopped half way is finished first
     // (P1.3): landing again over it would leave the chat's view mixed.
-    if super::land::interrupted_into(&data, &o.project) {
-        super::land::recover_into(&data, &o.project);
-        if super::land::interrupted_into(&data, &o.project) {
+    let parent = parent_of(child)
+        .or_else(|| {
+            store_dir(child)
+                .and_then(|s| std::fs::read_to_string(s.join("parent.txt")).ok())
+                .map(|p| p.trim().to_string())
+        })
+        .unwrap_or_default();
+    if super::land::interrupted_into(&data, &parent, &o.project) {
+        super::land::recover_into(&data, &parent, &o.project);
+        if super::land::interrupted_into(&data, &parent, &o.project) {
             return Err(LandError::Failed(
                 "an earlier landing into the chat's view isn't finished".into(),
             ));
         }
     }
     o.fs.flush();
-    let changes: Vec<_> = o
-        .fs
-        .changes()
-        .into_iter()
-        .filter(|c| {
-            let path = c.path().replace('\\', "/");
-            !except
-                .iter()
-                .any(|e| crate::agent_run::paths::under(e, &path))
-        })
-        .collect();
+    let changes: Vec<_> =
+        o.fs.changes()
+            .into_iter()
+            .filter(|c| {
+                let path = c.path().replace('\\', "/");
+                !except
+                    .iter()
+                    .any(|e| crate::agent_run::paths::under(e, &path))
+            })
+            .collect();
+    // P6.9: before anything is written: recovery finds it by the parent.
+    if !parent.is_empty() {
+        super::land::mark_into_chat(&data, child, &parent).map_err(LandError::Failed)?;
+    }
     let landed = super::land::land(&data, child, &o.project, &changes, false)?;
     // The parent's overlay saves what came in.
     if let Some(parent) = parent_of(child).and_then(|p| get(&p)) {
@@ -1801,10 +1832,10 @@ pub fn land_now_with(
     // got in would put half a worker's step in the project.
     // P1.3: whether the view is open or not (a group's landing can fail
     // half way while the chat runs).
-    if super::land::interrupted_into(&data, &mountpoint(dialog_id)) {
+    if super::land::interrupted_into(&data, dialog_id, &mountpoint(dialog_id)) {
         match get(dialog_id) {
             Some(o) => {
-                super::land::recover_into(&data, &o.view);
+                super::land::recover_into(&data, dialog_id, &o.view);
             }
             None => {
                 open(dialog_id, &project, Box::new(|_, _| {})).map_err(|e| {
@@ -1814,7 +1845,7 @@ pub fn land_now_with(
                 })?;
             }
         }
-        if super::land::interrupted_into(&data, &mountpoint(dialog_id)) {
+        if super::land::interrupted_into(&data, dialog_id, &mountpoint(dialog_id)) {
             return Err(LandError::Failed(
                 "a step that was landing into this chat when the app closed couldn't be finished"
                     .into(),
@@ -2712,6 +2743,14 @@ fn group_blobs(dialog_id: &str) -> Option<PathBuf> {
     store_dir(dialog_id).map(|s| s.join("groups"))
 }
 
+/// How many saved versions the chat's groups keep (tests).
+#[cfg(test)]
+pub fn group_blob_count(dialog_id: &str) -> usize {
+    group_blobs(dialog_id)
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .map_or(0, |d| d.count())
+}
+
 pub fn saved_groups(dialog_id: &str) -> Vec<SavedGroup> {
     groups_file(dialog_id)
         .and_then(|f| std::fs::read(f).ok())
@@ -2851,12 +2890,19 @@ pub fn save_group(dialog_id: &str, group: SavedGroup) -> Result<(), String> {
     match all.iter_mut().find(|g| g.name == group.name) {
         Some(g) => {
             let mut before = g.before.clone();
+            let mut superseded = Vec::new();
             for (path, was) in group.before {
                 if !before.iter().any(|(p, _)| *p == path) {
                     before.push((path, was));
+                } else {
+                    superseded.push(was);
                 }
             }
             *g = SavedGroup { before, ..group };
+            write_groups(dialog_id, &all)?;
+            // P6.8: versions of a path the group already had aren't kept.
+            forget_snapshot(dialog_id, &superseded);
+            return Ok(());
         }
         None => all.push(group),
     }
@@ -2877,12 +2923,17 @@ pub fn add_group_paths(
     let Some(group) = all.iter_mut().find(|g| g.name == name) else {
         return Ok(());
     };
+    let mut superseded = Vec::new();
     for (path, was) in entries {
         if !group.before.iter().any(|(p, _)| *p == path) {
             group.before.push((path, was));
+        } else {
+            superseded.push(was);
         }
     }
-    write_groups(dialog_id, &all)
+    write_groups(dialog_id, &all)?;
+    forget_snapshot(dialog_id, &superseded);
+    Ok(())
 }
 
 /// Whether the group is being redone one step at a time.
@@ -3039,6 +3090,9 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
             "the group \"{name}\" can't be redone: what the chat had before it isn't known ({why})"
         ));
     }
+    if group.redone {
+        return Err(format!("the group \"{name}\" was redone already"));
+    }
     let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
     // Files before folders, deepest first: a folder the group made is
     // empty by the time it's removed.
@@ -3051,11 +3105,18 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
     });
     let mut notes = Vec::new();
     let mut failed = Vec::new();
-    for (path, was) in order {
+    for (path, _) in &order {
         check_rel(path)?;
-        match with_fs(dialog_id, |fs| {
-            restore_path(dialog_id, fs, &project, path, was)
-        })? {
+    }
+    // P6.8: the chat's overlay opened once for every path.
+    let restored = with_fs(dialog_id, |fs| {
+        order
+            .iter()
+            .map(|(path, was)| restore_path(dialog_id, fs, &project, path, was))
+            .collect::<Vec<_>>()
+    })?;
+    for r in restored {
+        match r {
             Ok(Some(note)) => notes.push(note),
             Ok(None) => {}
             Err(e) => failed.push(e),
@@ -3089,7 +3150,14 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
     if !notes.is_empty() {
         request.push_str(&format!(" Note: {}.", notes.join("; ")));
     }
+    // P6.8: what the group's paths were is spent: its saved versions go.
+    let spent: Vec<Before> = all
+        .iter()
+        .find(|g| g.name == name)
+        .map(|g| g.before.iter().map(|(_, b)| b.clone()).collect())
+        .unwrap_or_default();
     write_groups(dialog_id, &all)?;
+    forget_snapshot(dialog_id, &spent);
     set_pending(dialog_id, None);
     Ok(request)
 }
@@ -3495,6 +3563,53 @@ mod hub_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// P6.8: a version a group already has isn't kept twice; a scratch
+    /// overlay a crash left is swept at the next start.
+    #[test]
+    fn superseded_versions_and_left_scratch_overlays_go() {
+        let root = std::env::temp_dir().join(format!("group-blobs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data = root.join("data");
+        let _data = test_data(&data);
+        let id = "group-blobs-chat";
+        std::fs::create_dir_all(store_dir(id).unwrap()).unwrap();
+        let file = |text: &str| Before::File {
+            content: keep_blob(id, text.as_bytes()).unwrap(),
+            base: None,
+        };
+        let blobs = || std::fs::read_dir(group_blobs(id).unwrap()).unwrap().count();
+        let group = |before| SavedGroup {
+            name: "g".into(),
+            plan_path: "p.md".into(),
+            steps: vec![1, 2],
+            before,
+            redone: false,
+            unavailable: None,
+        };
+        save_group(id, group(vec![("a.rs".into(), file("first"))])).unwrap();
+        assert_eq!(blobs(), 1);
+        // A second join of the group: a.rs keeps its first version.
+        save_group(
+            id,
+            group(vec![
+                ("a.rs".into(), file("again")),
+                ("b.rs".into(), file("b")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(blobs(), 2, "the second a.rs version went");
+        add_group_paths(id, "g", vec![("b.rs".into(), file("b again"))]).unwrap();
+        assert_eq!(blobs(), 2);
+
+        let scratch = data.join("overlays").join("red-left");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join(SCRATCH_MARK), "").unwrap();
+        init(&data);
+        assert!(!scratch.exists(), "swept");
+        assert!(store_dir(id).unwrap().exists(), "a chat's store stays");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Two isolated chats on one project; one lands. Needs FUSE.
     #[test]
     #[ignore]
@@ -3712,7 +3827,7 @@ mod child_tests {
             super::super::land::recover(&data).is_empty(),
             "not into an unmounted view"
         );
-        let finished = super::super::land::recover_into(&data, &parent.view);
+        let finished = super::super::land::recover_into(&data, "kids-parent", &parent.view);
         assert_eq!(finished, ["src/new.rs"]);
         assert_eq!(
             read(&parent.view.join("src/new.rs")).as_deref(),
@@ -3746,6 +3861,7 @@ mod child_tests {
         close("kids-parent");
         assert!(super::super::land::interrupted_into(
             &data,
+            "kids-parent",
             &mountpoint("kids-parent")
         ));
         land_now("kids-parent", false).unwrap();
@@ -3759,6 +3875,7 @@ mod child_tests {
         );
         assert!(!super::super::land::interrupted_into(
             &data,
+            "kids-parent",
             &mountpoint("kids-parent")
         ));
         discard_child("kids-w6");

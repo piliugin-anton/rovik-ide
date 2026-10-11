@@ -385,6 +385,27 @@ pub fn rename_dialog(conn: &mut Connection, id: &str, title: &str) -> DbResult<(
     tx.commit().map_err(err)
 }
 
+/// P6.7: a chat's subagents' chats, theirs too, deepest first.
+pub fn descendants(conn: &Connection, id: &str) -> DbResult<Vec<String>> {
+    let mut out = Vec::new();
+    let children: Vec<String> = {
+        let mut stmt = conn
+            .prepare_cached("SELECT id FROM dialogs WHERE parent_id = ?1")
+            .map_err(err)?;
+        let ids = stmt
+            .query_map(params![id], |r| r.get(0))
+            .map_err(err)?
+            .collect::<Result<_, _>>()
+            .map_err(err)?;
+        ids
+    };
+    for child in children {
+        out.extend(descendants(conn, &child)?);
+        out.push(child);
+    }
+    Ok(out)
+}
+
 pub fn delete_dialog(conn: &mut Connection, id: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     delete_dialog_in(&tx, id)?;
@@ -683,7 +704,18 @@ fn finalize(conn: &Connection, message_id: &str) -> DbResult<()> {
         .map_err(err)?;
     }
 
-    let searchable = (role == "user" || role == "assistant") && error.is_none() && !failed;
+    // P6.7: a subagent's chat isn't in the chat list, nor in search.
+    let child: bool = conn
+        .query_row(
+            "SELECT parent_id IS NOT NULL FROM dialogs WHERE id = ?1",
+            params![dialog_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(err)?
+        .unwrap_or(false);
+    let searchable =
+        !child && (role == "user" || role == "assistant") && error.is_none() && !failed;
     if searchable && !content.trim().is_empty() {
         index_message(conn, &dialog_id, message_id, &content)?;
         let preview = collapse_whitespace(char_prefix(&content, DIALOG_PREVIEW_CHARS * 2));

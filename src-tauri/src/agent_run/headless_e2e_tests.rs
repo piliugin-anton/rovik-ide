@@ -312,3 +312,61 @@ async fn the_policys_denied_commands_are_refused_without_approvals() {
     }
     assert!(result("b5").contains("fine"), "{}", result("b5"));
 }
+
+/// P6.4: without `--data`, the folder it made for the run is gone once the
+/// report is written; the report still has the run's log, to its last line.
+#[tokio::test]
+async fn a_data_folder_it_made_goes_after_the_report() {
+    let dir = temp_dir();
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _) = model(vec![Reply::Text("Nothing to do.")]).await;
+    let settings = dir.0.join("settings.json");
+    std::fs::write(
+        &settings,
+        json!({
+            "profile": { "id": "p::m", "label": "Test/m", "model": "m", "baseUrl": url, "stream": true, "contextTokens": 100000 },
+            "mode": "agent",
+            "config": { "permissions": { "verifyChanges": false, "checklist": "off" } },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let ours = || -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("rovik-headless-"))
+            })
+            .collect()
+    };
+    let before = ours();
+    let out = dir.0.join("report.json");
+    let argv: Vec<String> = [
+        "--project",
+        project.to_str().unwrap(),
+        "--settings",
+        settings.to_str().unwrap(),
+        "--prompt",
+        "Look around",
+        "--out",
+        out.to_str().unwrap(),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let args = crate::headless::parse_args(&argv).unwrap();
+    let report = crate::headless::run(&args).await.unwrap();
+    assert_eq!(report["outcome"], "done");
+    assert!(report["runLog"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l["event"] == "run"));
+    let left: Vec<_> = ours().into_iter().filter(|p| !before.contains(p)).collect();
+    assert!(left.is_empty(), "left behind: {left:?}");
+}

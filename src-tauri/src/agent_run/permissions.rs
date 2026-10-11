@@ -474,10 +474,45 @@ fn segment_denied(segment: &[String], denied: &[Vec<String>], depth: usize) -> b
             if head.to_lowercase() != *program {
                 return false;
             }
+            // P6.10: a word of short options (`-rf`) is denied however
+            // they're written (`-r -f`, `-fr`, `--recursive --force`).
+            let given = short_options(program, args);
             let mut it = args.iter();
-            words.iter().all(|w| it.any(|a| a == w))
+            words.iter().all(|w| match short_cluster(w) {
+                Some(letters) => letters.iter().all(|l| given.contains(l)),
+                None => it.any(|a| a == w),
+            })
         })
     })
+}
+
+/// The letters of a word of short options (`-rf` → r, f).
+fn short_cluster(word: &str) -> Option<Vec<char>> {
+    let letters = word.strip_prefix('-').filter(|l| !l.starts_with('-'))?;
+    (!letters.is_empty() && letters.chars().all(|c| c.is_ascii_alphabetic()))
+        .then(|| letters.chars().collect())
+}
+
+/// Every short option a command was given, its long names (for `rm`) as
+/// their letters.
+fn short_options(program: &str, args: &[String]) -> Vec<char> {
+    let mut out = Vec::new();
+    for a in args {
+        if let Some(letters) = short_cluster(a) {
+            out.extend(letters);
+        } else if program == "rm" {
+            match a.as_str() {
+                "--recursive" => out.extend(['r', 'R']),
+                "--force" => out.push('f'),
+                _ => {}
+            }
+        }
+    }
+    // `rm -R` is `rm -r`.
+    if program == "rm" && out.contains(&'R') {
+        out.push('r');
+    }
+    out
 }
 
 fn command_denied(command: &str, denied: &[Vec<String>], depth: usize) -> bool {
@@ -1439,6 +1474,12 @@ mod tests {
             "echo $(git push)",
             "rm -rf build",
             "time git push",
+            // P6.10: however the options are written.
+            "rm -r -f build",
+            "rm -fr build",
+            "rm -Rf build",
+            "rm --recursive --force build",
+            "rm -r build -f",
         ] {
             assert!(refused(bad), "{bad}");
         }
@@ -1448,6 +1489,8 @@ mod tests {
             "echo git push",
             "ls sudo",
             "rm build",
+            "rm -r build",
+            "rm -f build",
         ] {
             assert!(!refused(ok), "{ok}");
         }

@@ -12,7 +12,7 @@
 //   node scripts/eval/eval.mjs compare [--out FILE]                     (G02, G03)
 //   node scripts/eval/eval.mjs apply-defaults [--comparison FILE]       (G03)
 //   node scripts/eval/eval.mjs dry-run-variants [--tasks a,b]
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -20,7 +20,6 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
   appendFileSync,
   copyFileSync,
@@ -46,6 +45,8 @@ import {
   validation,
   variantSettings,
 } from './lib.mjs';
+import { run, startServer } from './proc.mjs';
+import { copyTree, fingerprint, protect } from './caches.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -68,40 +69,6 @@ function sh(cmd, args, opts = {}) {
     );
   }
   return r;
-}
-
-/** Runs a command to its end without blocking the event loop (for long runs). */
-function run(cmd, args, { env = {}, cwd, timeoutMs, logFile } = {}) {
-  return new Promise((done) => {
-    const child = spawn(cmd, args, {
-      cwd,
-      env: { ...process.env, ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-    });
-    let out = '';
-    const take = (c) => {
-      out += c;
-      if (logFile) appendFileSync(logFile, c);
-    };
-    child.stdout.on('data', take);
-    child.stderr.on('data', take);
-    let timedOut = false;
-    const timer = timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          try {
-            process.kill(-child.pid, 'SIGKILL');
-          } catch {
-            // gone already
-          }
-        }, timeoutMs)
-      : null;
-    child.on('close', (status) => {
-      if (timer) clearTimeout(timer);
-      done({ status, out, timedOut });
-    });
-  });
 }
 
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'));
@@ -193,6 +160,9 @@ function pythonVenv() {
     sh('python3', ['-m', 'venv', dir]);
     sh(join(dir, 'bin', 'pip'), ['install', '-q', 'pytest']);
   }
+  // P6.5: shared by every run: no run may change it (one made before
+  // this was protected too).
+  protect(dir);
   return dir;
 }
 
@@ -214,11 +184,16 @@ function prepare(task, rev, ws) {
   git('commit', '-q', '--no-verify', '-m', 'Task start');
   const env = {};
   const exclude = [];
+  /** Shared caches the run uses, to check after it (P6.5). */
+  const caches = [];
   for (const s of task.setup ?? []) {
     if (s === 'node') {
       const nm = nodeModules(ws);
       if (nm) {
-        symlinkSync(nm, join(ws, 'node_modules'), 'dir');
+        // P6.5: its own copy (a clone where it can be): what the agent
+        // does to node_modules stays in this run.
+        copyTree(nm, join(ws, 'node_modules'));
+        caches.push({ dir: nm, print: fingerprint(nm) });
         exclude.push('node_modules');
       }
     } else if (s === 'cargo') {
@@ -227,6 +202,7 @@ function prepare(task, rev, ws) {
       env.CARGO_INCREMENTAL = '0';
     } else if (s === 'python') {
       const venv = pythonVenv();
+      caches.push({ dir: venv, print: fingerprint(venv) });
       env.VIRTUAL_ENV = venv;
       env.PATH = `${join(venv, 'bin')}:${process.env.PATH}`;
     } else if (s === 'go') {
@@ -235,7 +211,12 @@ function prepare(task, rev, ws) {
   }
   if (exclude.length)
     appendFileSync(join(ws, '.git', 'info', 'exclude'), exclude.join('\n') + '\n');
-  return { env, start: git('rev-parse', 'HEAD').stdout.trim() };
+  return { env, caches, start: git('rev-parse', 'HEAD').stdout.trim() };
+}
+
+/** Shared caches a run changed (P6.5): later runs would see its changes. */
+function changedCaches(caches) {
+  return caches.filter((c) => fingerprint(c.dir) !== c.print).map((c) => c.dir);
 }
 
 /** Puts the reference's version of the hidden test files in the workspace. */
@@ -396,7 +377,7 @@ async function runOne(task, rep, campaignDir, opts) {
     throw new Error(`${task.id} isn't validated: run \`eval.mjs validate --tasks ${task.id}\``);
   mkdirSync(dir, { recursive: true });
   const ws = join(CACHE, 'work', `run-${task.id}-${rep}`);
-  const { env, start } = prepare(task, task.base, ws);
+  const { env, caches, start } = prepare(task, task.base, ws);
   const report = join(dir, 'report.json');
   const args = [
     '--project',
@@ -429,6 +410,9 @@ async function runOne(task, rep, campaignDir, opts) {
   restoreHidden(task, ws);
   const results = await runChecks(task, ws, env, join(dir, 'checks.log'));
   rmSync(ws, { recursive: true, force: true });
+  const touched = changedCaches(caches);
+  for (const c of touched)
+    console.warn(`warning: ${task.id} #${rep} changed the shared cache ${c}; later runs see it.`);
   const g = grade(expected.required, results);
   const result = {
     task: task.id,
@@ -443,6 +427,7 @@ async function runOne(task, rep, campaignDir, opts) {
     interventions: rep_?.interventions ?? 0,
     toolCalls: rep_?.toolCalls ?? 0,
     grade: g,
+    ...(touched.length ? { changedCaches: touched } : {}),
   };
   writeJson(join(dir, 'grade.json'), { ...g, results });
   writeJson(resultFile, result);
@@ -574,9 +559,10 @@ async function baseline(flags) {
       readdirSync(join(pilotDir, d.name))
         .map((rep) => join(pilotDir, d.name, rep, 'result.json'))
         .filter(existsSync)
-        .map((f) => readJson(f).costUsd ?? 0)
+        .map((f) => readJson(f).costUsd ?? null)
     );
   const proj = projection(pilotCosts, tasks.length * repeats, b.capUsd);
+  if (!proj.ok && !proj.perRun) throw new Error(`not starting: ${proj.reason}`);
   console.log(
     `Pilot: $${proj.perRun.toFixed(3)} a run; ${tasks.length} tasks × ${repeats} = ` +
       `${tasks.length * repeats} runs ≈ $${proj.total.toFixed(2)} (cap $${b.capUsd}).`
@@ -631,7 +617,13 @@ async function variants(flags) {
   const baseTasks = [...new Set(baseResults.map((r) => r.task))].join(',');
   const tasks = usableTasks(flags.tasks ?? baseTasks);
   const repeats = Number(flags.repeats ?? v.repeats);
-  const perRun = summarize(baseResults).meanCostUsd;
+  const baseSummary = summarize(baseResults);
+  // P6.6: a budget from unknown costs would be made up.
+  if (baseSummary.unknownCosts || baseSummary.meanCostUsd === null)
+    throw new Error(
+      `${baseSummary.unknownCosts} baseline run(s) have no known cost: variants can't be budgeted`
+    );
+  const perRun = baseSummary.meanCostUsd;
   for (const kind of kindsWanted(flags)) {
     const name = `kind-${kind.id}`;
     const dir = resolve(join(RESULTS, name));
@@ -803,13 +795,7 @@ function referencePatch(task) {
 
 /** Starts fake-model.mjs; resolves to its URL and a stop function. */
 function fakeModel(args) {
-  return new Promise((done, fail) => {
-    const child = spawn(process.execPath, [join(EVAL, 'fake-model.mjs'), ...args], {
-      stdio: ['ignore', 'pipe', 'inherit'],
-    });
-    child.stdout.once('data', (c) => done({ url: String(c).trim(), stop: () => child.kill() }));
-    child.on('error', fail);
-  });
+  return startServer(join(EVAL, 'fake-model.mjs'), args);
 }
 
 /**

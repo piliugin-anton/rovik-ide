@@ -1877,3 +1877,65 @@ tasks first.
   P5.7's disabled options and P5.9's wording are component changes with
   no DOM test setup here: checked by `npm run typecheck` and `vite build`
   only. No Rust changed in this phase.
+
+### Review-fixes plan, phase 6: storage, headless runner, evaluation harness
+
+- **P6.1** The evaluation's child processes (`scripts/eval/proc.mjs`) are
+  tracked: Ctrl+C, a kill or an exit kills each run's process group, then
+  the signal is raised again. A command that can't start ends its run, not
+  the evaluation; the fake model fails if it exits before printing its URL.
+- **P6.2** A request asked again logs the usage it reported, and it counts
+  toward a subagent's spend. A usage object with no token counts is no
+  usage (`repliesWithoutUsage`). The asked-again log line has no test of
+  its own: a request is only asked again before any of its reply arrived,
+  and providers send usage at the end.
+- **P6.3** Agent-log lines are written under one lock, each in one write
+  with its newline. The runner's watcher reads only whole lines and
+  follows a rotation: the rest of `agent-log.1.jsonl`, then the new file.
+- **P6.4** The runner waits (up to 5 s) for the run's own `"event":"run"`
+  line instead of sleeping 300 ms; a subagent's line counts by its
+  `parentDialogId` even before its start event is seen; the log folder is
+  reset however the run ends; a `--data` folder it made itself is removed
+  once the report (which holds the run's log lines) is written.
+- **P6.5** Each run gets its own copy of `node_modules` (a copy-on-write
+  clone where the file system can); the shared virtualenv is read-only.
+  A shared cache that changed during a run is warned about and recorded
+  as `changedCaches`. Cargo's target directory stays shared, as before.
+  As root (this container), read-only doesn't hold: that test is skipped
+  here.
+- **P6.6** Unknown costs are left out of means and counted
+  (`unknownCosts`), shown as "unknown"; a pilot with one can't project, a
+  variant with one has no cost ratio (kept off), and variants aren't
+  budgeted from a baseline with one.
+- **P6.7** A subagent's chat's messages aren't indexed for search.
+  Deleting a chat or a project removes its subagents' chats' files
+  (copies, landing records, context) too, deepest first; the end-to-end
+  test of a project delete with child chats is Phase 7's.
+- **P6.8** A group's saved versions go once it's redone (and it can't be
+  redone twice), and a version of a path the group already has isn't kept
+  again. Redo opens the chat's overlay once. A scratch overlay (the red
+  check's) is marked and swept at the next start. Running a group again
+  discards copies kept from an earlier run of its steps first, and the
+  result says so. One change from the plan: the scratch marker is its own
+  file (`scratch.txt`), not `parent.txt`, which would make it a child the
+  landing code acts on.
+- **P6.9** A child's landing records its parent chat's id before anything
+  is written. Interrupted landings into a chat's view are found by that id
+  and finished into the view wherever it's mounted now; start-up recovery
+  leaves them alone. Older records without the id are matched by path as
+  before.
+- **P6.10** The eval README says Linux and macOS only, how denied commands
+  are matched (by words), and the cache, cost and Ctrl+C behaviour. A
+  denied entry's short options match however they're written (`rm -r -f`,
+  `rm -fr`, `rm -Rf`, `rm --recursive --force`).
+- Tests (each fails without its fix): a killed evaluation's run and its
+  grandchild ended, a command that can't start, a helper that dies early;
+  usage without token counts; whole lines across a rotation; torn lines
+  from many writers (intermittent without the lock: a race); a `--data`
+  folder removed; a cache copy and a changed cache; unknown costs in
+  means, projections and ratios; a child chat not indexed and its
+  descendants found; superseded versions and a left scratch overlay; a
+  redone group's versions gone (FUSE); a stale kept copy discarded when
+  the group runs again (FUSE); a child's landing found by its parent after
+  the view moved; each spelling of `rm -rf`. The eval dry run passes with
+  the copied `node_modules` and the read-only virtualenv.

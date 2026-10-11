@@ -1577,6 +1577,8 @@ impl<R: Runtime> Run<R> {
                     .is_some_and(|e| e.kind == ErrorKind::Cancelled);
             if asked_again {
                 let shown = s.shown_anything();
+                // P6.2: what the dropped request used, when it said.
+                let usage = s.usage.take();
                 for note in std::mem::take(&mut s.notes) {
                     if !carried_notes.contains(&note) {
                         carried_notes.push(note);
@@ -1587,6 +1589,9 @@ impl<R: Runtime> Run<R> {
                     self.drop_reasoning_formats(&rejected, &unresolved);
                 }
                 self.take_effort();
+                if let Some(sub) = self.sub_mut() {
+                    sub.note_usage(usage.as_ref());
+                }
                 log::write(
                     &self.app,
                     json!({
@@ -1594,6 +1599,7 @@ impl<R: Runtime> Run<R> {
                         "dialogId": self.dialog_id,
                         "model": self.profile.model,
                         "error": "asked-again",
+                        "usage": usage,
                         "ms": started.elapsed().as_millis() as u64,
                     }),
                 );

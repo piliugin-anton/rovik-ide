@@ -762,53 +762,83 @@ pub fn project_of(data_dir: &Path, dialog_id: &str) -> Option<PathBuf> {
         .map(|p| PathBuf::from(p.trim()))
 }
 
+/// P6.9: a child chat's landings go into its parent's view: the parent's
+/// id is recorded, so they're found by it, not by the view's path (which
+/// can change between sessions).
+pub fn mark_into_chat(data_dir: &Path, child: &str, parent: &str) -> Result<(), String> {
+    let dir = landings_dir(data_dir, child);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join(INTO_CHAT), parent).map_err(|e| e.to_string())
+}
+
+const INTO_CHAT: &str = "into-chat.txt";
+
+/// The chat whose view a chat's landings went into, if they did.
+fn into_chat(data_dir: &Path, dialog_id: &str) -> Option<String> {
+    fs::read_to_string(landings_dir(data_dir, dialog_id).join(INTO_CHAT))
+        .ok()
+        .map(|p| p.trim().to_string())
+}
+
 /// Finishes landings a crash interrupted: their journals say "applying".
 /// Returns the paths written.
 pub fn recover(data_dir: &Path) -> Vec<String> {
     // A child chat's landing went into its parent's view, which isn't
-    // mounted yet: it's finished when the parent's view is (F01).
-    recover_where(data_dir, |project| !super::chats::is_chat_view(project))
+    // mounted yet: it's finished when the parent's view is (F01). Older
+    // records without the parent's id: by the path's look.
+    recover_where(data_dir, |id, project| {
+        (into_chat(data_dir, id).is_none() && !super::chats::is_chat_view(project))
+            .then(|| project.to_path_buf())
+    })
 }
 
 /// Finishes the interrupted landings into one chat's view (its children's),
-/// once that view is mounted.
-pub fn recover_into(data_dir: &Path, view: &Path) -> Vec<String> {
-    recover_where(data_dir, |project| project == view)
+/// once that view (`view`) is mounted: into it, wherever it's mounted now.
+pub fn recover_into(data_dir: &Path, parent: &str, view: &Path) -> Vec<String> {
+    recover_where(data_dir, |id, project| {
+        into_chat(data_dir, id)
+            .map_or(project == view, |p| p == parent)
+            .then(|| view.to_path_buf())
+    })
 }
 
-/// Whether a landing into `view` (a chat's view) was interrupted and is
-/// still to be finished.
-pub fn interrupted_into(data_dir: &Path, view: &Path) -> bool {
+/// Whether a landing into `parent`'s view was interrupted and is still to
+/// be finished.
+pub fn interrupted_into(data_dir: &Path, parent: &str, view: &Path) -> bool {
     let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
         return false;
     };
     chats.flatten().any(|chat| {
         let id = chat.file_name().to_string_lossy().into_owned();
-        project_of(data_dir, &id).is_some_and(|p| p == view)
-            && fs::read_dir(chat.path()).is_ok_and(|landings| {
-                landings.flatten().any(|l| {
-                    fs::read(l.path().join("journal.json"))
-                        .ok()
-                        .and_then(|b| serde_json::from_slice::<Journal>(&b).ok())
-                        .is_some_and(|j| j.state == "applying")
-                })
+        let into = match into_chat(data_dir, &id) {
+            Some(p) => p == parent,
+            None => project_of(data_dir, &id).is_some_and(|p| p == view),
+        };
+        into && fs::read_dir(chat.path()).is_ok_and(|landings| {
+            landings.flatten().any(|l| {
+                fs::read(l.path().join("journal.json"))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Journal>(&b).ok())
+                    .is_some_and(|j| j.state == "applying")
             })
+        })
     })
 }
 
-fn recover_where(data_dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<String> {
+/// `wanted`: whether a chat's landings are finished here, and into where.
+fn recover_where(data_dir: &Path, wanted: impl Fn(&str, &Path) -> Option<PathBuf>) -> Vec<String> {
     let mut done = Vec::new();
     let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
         return done;
     };
     for chat in chats.flatten() {
         let dialog_id = chat.file_name().to_string_lossy().into_owned();
-        let Some(project) = project_of(data_dir, &dialog_id) else {
+        let Some(recorded) = project_of(data_dir, &dialog_id) else {
             continue;
         };
-        if !wanted(&project) {
+        let Some(project) = wanted(&dialog_id, &recorded) else {
             continue;
-        }
+        };
         let Ok(landings) = fs::read_dir(chat.path()) else {
             continue;
         };

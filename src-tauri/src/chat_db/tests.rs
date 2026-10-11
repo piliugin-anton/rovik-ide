@@ -487,6 +487,15 @@ fn subagent_chats_stay_out_of_lists_and_search() {
     assert!(!dialogs_in_project(&conn, None).unwrap().contains("k"));
     assert!(search(&conn, "blueberry", None, 10).unwrap().is_empty());
     assert!(search(&conn, "scout", None, 10).unwrap().is_empty());
+    // P6.7: not even indexed.
+    let rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM search_rows WHERE dialog_id = 'k'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0);
 
     let found = child_for_call(&conn, "p", "call-1").unwrap().unwrap();
     assert_eq!(found.id, "k");
@@ -539,4 +548,20 @@ fn deleting_a_chat_deletes_its_subagents_and_their_search_rows() {
     assert_eq!(count("SELECT COUNT(*) FROM dialogs"), 0);
     assert_eq!(count("SELECT COUNT(*) FROM messages"), 0);
     assert_eq!(count("SELECT COUNT(*) FROM search_rows"), 0);
+}
+
+#[test]
+fn a_chats_subagents_are_found_deepest_first() {
+    let mut conn = db();
+    dialog(&mut conn, "p", "Pancakes", 0);
+    child(&mut conn, "k1", "p", "call-1");
+    child(&mut conn, "k2", "p", "call-2");
+    child(&mut conn, "g", "k1", "call-3");
+    let mut found = descendants(&conn, "p").unwrap();
+    let g = found.iter().position(|c| c == "g").unwrap();
+    let k1 = found.iter().position(|c| c == "k1").unwrap();
+    assert!(g < k1, "a grandchild before its parent");
+    found.sort();
+    assert_eq!(found, ["g", "k1", "k2"]);
+    assert!(descendants(&conn, "k2").unwrap().is_empty());
 }

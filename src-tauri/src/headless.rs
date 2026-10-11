@@ -295,7 +295,18 @@ impl Totals {
         if line["event"] != "reply" {
             return;
         }
-        let Some(u) = line.get("usage").filter(|u| u.is_object()) else {
+        // P6.2: an object without token counts reports nothing either.
+        let counted = |u: &&Value| {
+            [
+                "prompt_tokens",
+                "input_tokens",
+                "completion_tokens",
+                "output_tokens",
+            ]
+            .iter()
+            .any(|k| u.get(*k).is_some_and(Value::is_u64))
+        };
+        let Some(u) = line.get("usage").filter(|u| u.is_object()).filter(counted) else {
             // A request that failed or was cut short may have none.
             if line.get("error").is_none() {
                 self.missing_usage += 1;
@@ -344,6 +355,29 @@ impl Totals {
 
 /// Reads the run log's new lines since `offset` (the log is appended to).
 fn new_log_lines(path: &Path, offset: &mut u64) -> Vec<Value> {
+    // P6.3: shorter than what was read: rotated (agent-log.jsonl went to
+    // agent-log.1.jsonl). Its rest first, then the new file from its start.
+    let len = std::fs::metadata(path).map_or(0, |m| m.len());
+    let mut lines = Vec::new();
+    if len < *offset {
+        let rotated = path.with_file_name(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map_or("agent-log.1.jsonl".into(), |n| {
+                    n.replace(".jsonl", ".1.jsonl")
+                }),
+        );
+        let mut old = *offset;
+        lines = whole_lines_from(&rotated, &mut old, true);
+        *offset = 0;
+    }
+    lines.extend(whole_lines_from(path, offset, false));
+    lines
+}
+
+/// The whole lines from `offset` on; `to_end`: the last one too (a file
+/// no one writes any more).
+fn whole_lines_from(path: &Path, offset: &mut u64, to_end: bool) -> Vec<Value> {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else {
         return Vec::new();
@@ -351,14 +385,18 @@ fn new_log_lines(path: &Path, offset: &mut u64) -> Vec<Value> {
     if f.seek(SeekFrom::Start(*offset)).is_err() {
         return Vec::new();
     }
-    let mut text = String::new();
-    if f.read_to_string(&mut text).is_err() {
+    let mut bytes = Vec::new();
+    if f.read_to_end(&mut bytes).is_err() {
         return Vec::new();
     }
     // Only whole lines: a line being written stays for next time.
-    let whole = text.rfind('\n').map_or(0, |i| i + 1);
+    let whole = if to_end {
+        bytes.len()
+    } else {
+        bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1)
+    };
     *offset += whole as u64;
-    text[..whole]
+    String::from_utf8_lossy(&bytes[..whole])
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect()
@@ -392,6 +430,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         Some(d) => d.clone(),
         None => std::env::temp_dir().join(format!("rovik-headless-{}", uuid::Uuid::new_v4())),
     };
+    // P6.4: a folder it made itself goes once the report is written (the
+    // report holds the run's log lines).
+    let own_data = args.data.is_none();
     std::fs::create_dir_all(&data).map_err(|e| e.to_string())?;
     let out_dir = args
         .out
@@ -403,6 +444,14 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     // The run log goes with the report.
     let log_dir = data.join("log");
     crate::project_profile::set_agent_log_dir(Some(log_dir.clone()));
+    // P6.4: reset however the run ends (an error return included).
+    struct LogDir;
+    impl Drop for LogDir {
+        fn drop(&mut self) {
+            crate::project_profile::set_agent_log_dir(None);
+        }
+    }
+    let log_dir_guard = LogDir;
 
     let db = DbState::open(&data).map_err(|e| e.to_string())?;
     let app = mock_builder()
@@ -484,7 +533,10 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             e = tokio::time::timeout_at(deadline, rx.recv()) => e,
             _ = tick.tick(), if args.max_tokens.is_some() => {
                 for line in new_log_lines(&log_file, &mut log_offset) {
+                    // P6.4: a subagent's line names its lead, even before
+                    // its start event is seen.
                     let of_run = line["dialogId"] == dialog_id.as_str()
+                        || line["parentDialogId"] == dialog_id.as_str()
                         || children.iter().any(|c| line["dialogId"] == c.as_str());
                     if of_run {
                         watched.add(&line, &dialog_id);
@@ -574,9 +626,14 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         }
     };
     let ms = started.elapsed().as_millis() as u64;
-    // The log is written off the run's threads: give the last lines a moment.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    crate::project_profile::set_agent_log_dir(None);
+    // P6.4: the log is written off the run's threads: wait for the run's own
+    // last line (bounded: a run that never started writes none).
+    let wait_until = Instant::now() + Duration::from_secs(5);
+    while !has_run_line(&log_dir.join("agent-log.jsonl"), &dialog_id) && Instant::now() < wait_until
+    {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    drop(log_dir_guard);
 
     let id = dialog_id.clone();
     let messages = db
@@ -596,7 +653,22 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     );
     let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&args.out, text).map_err(|e| format!("{}: {e}", args.out.display()))?;
+    drop(app);
+    if own_data {
+        let _ = std::fs::remove_dir_all(&data);
+    }
     Ok(report)
+}
+
+/// Whether the run's `"event":"run"` line (written as it ends) is in the log.
+fn has_run_line(log: &Path, dialog_id: &str) -> bool {
+    std::fs::read_to_string(log).is_ok_and(|text| {
+        text.lines().any(|l| {
+            l.contains("\"event\":\"run\"")
+                && serde_json::from_str::<Value>(l)
+                    .is_ok_and(|v| v["event"] == "run" && v["dialogId"] == dialog_id)
+        })
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -788,6 +860,27 @@ mod tests {
         );
         assert_eq!(t.missing_usage, 1);
         assert_eq!(t.cost(price), (None, "unknown"), "not free");
+        // P6.2: usage with no token counts in it is no usage.
+        for empty in [
+            json!({}),
+            json!({ "total_tokens": 9 }),
+            json!({ "cost": 0.1 }),
+        ] {
+            let mut t = Totals::default();
+            t.add(
+                &json!({ "event": "reply", "dialogId": "d", "usage": empty }),
+                "d",
+            );
+            assert_eq!((t.missing_usage, t.replies), (1, 0), "{empty}");
+        }
+        // An asked-again request that reported usage before it was cut: counted.
+        let mut t = Totals::default();
+        t.add(
+            &json!({ "event": "reply", "dialogId": "d", "error": "asked-again",
+                     "usage": { "prompt_tokens": 700, "completion_tokens": 0 } }),
+            "d",
+        );
+        assert_eq!((t.tokens(), t.missing_usage), (700, 0));
         // A request that failed or was stopped may have none: not counted.
         let mut t = Totals::default();
         t.add(
@@ -811,6 +904,34 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(policy.denied_commands(), ["git push", "sudo"]);
+    }
+
+    #[test]
+    fn the_log_watcher_reads_whole_lines_and_follows_a_rotation() {
+        let dir = std::env::temp_dir().join(format!("headless-log-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("agent-log.jsonl");
+        std::fs::write(&log, "{\"n\":1}\n{\"n\":2}\n{\"n\":").unwrap();
+        let mut offset = 0;
+        let got = new_log_lines(&log, &mut offset);
+        assert_eq!(
+            got,
+            [json!({ "n": 1 }), json!({ "n": 2 })],
+            "the partial line waits"
+        );
+        // It's finished, then the log rotates and a new line goes in the new file.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        std::io::Write::write_all(&mut f, b"3}\n{\"n\":4}\n").unwrap();
+        drop(f);
+        std::fs::rename(&log, dir.join("agent-log.1.jsonl")).unwrap();
+        std::fs::write(&log, "{\"n\":5}\n").unwrap();
+        let got = new_log_lines(&log, &mut offset);
+        assert_eq!(
+            got,
+            [json!({ "n": 3 }), json!({ "n": 4 }), json!({ "n": 5 })]
+        );
+        assert_eq!(offset, 8);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

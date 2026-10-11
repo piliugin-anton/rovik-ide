@@ -872,11 +872,46 @@ mod safety {
             matches!(result, Err(LandError::Failed(ref e)) if e.contains("couldn't be put back")),
             "{result:?}"
         );
-        assert!(land::interrupted_into(&data(&d), &d.project()));
-        land::recover_into(&data(&d), &d.project());
-        assert!(!land::interrupted_into(&data(&d), &d.project()));
+        assert!(land::interrupted_into(&data(&d), "", &d.project()));
+        land::recover_into(&data(&d), "", &d.project());
+        assert!(!land::interrupted_into(&data(&d), "", &d.project()));
         for f in ["a.txt", "b.txt"] {
             assert_eq!(project_file(&d, f).as_deref(), Some("CHAT\n"), "{f}");
+        }
+    }
+
+    /// P6.9: a child's landing into its parent's view is found by the
+    /// parent's id, never finished at start as if into a project, and
+    /// finished into the view wherever it's mounted now.
+    #[test]
+    fn a_childs_landing_is_found_by_its_parent_and_finished_where_the_view_is() {
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = setup(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        for f in ["a.txt", "b.txt"] {
+            write_all(&o, f, "CHILD\n");
+        }
+        land::mark_into_chat(&data(&d), "kid", "parent-p").unwrap();
+        *land::FAIL_WRITING.lock().unwrap() = Some((d.project(), "a.txt".into()));
+        land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = land::land(&data(&d), "kid", &d.project(), &landable(&o), false);
+        land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
+        *land::FAIL_WRITING.lock().unwrap() = None;
+        assert!(result.is_err());
+        // The parent's view is mounted somewhere else now.
+        let moved = d.root.join("view-now");
+        fs::rename(d.project(), &moved).unwrap();
+        assert!(land::interrupted_into(&data(&d), "parent-p", &moved));
+        assert!(!land::interrupted_into(&data(&d), "another", &d.project()));
+        assert!(land::recover(&data(&d)).is_empty(), "not at start");
+        land::recover_into(&data(&d), "parent-p", &moved);
+        assert!(!land::interrupted_into(&data(&d), "parent-p", &moved));
+        for f in ["a.txt", "b.txt"] {
+            assert_eq!(
+                fs::read_to_string(moved.join(f)).ok().as_deref(),
+                Some("CHILD\n"),
+                "{f}"
+            );
         }
     }
 

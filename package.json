@@ -13,7 +13,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node scripts/test.mjs",
-    "test:eval": "node --test scripts/eval/lib.test.mjs"
+    "test:eval": "node --test scripts/eval/lib.test.mjs scripts/eval/proc.test.mjs scripts/eval/caches.test.mjs"
   },
   "dependencies": {
     "@tanstack/solid-virtual": "^3.13.41",

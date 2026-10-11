@@ -125,6 +125,15 @@ export function budgetAllows({ cap, spent, costs, firstEstimate }) {
 /** The baseline's cost, projected from the pilot's mean cost per run. */
 export function projection(pilotCosts, runs, cap) {
   if (!pilotCosts.length) return { ok: false, perRun: 0, total: 0, reason: 'no pilot results' };
+  // P6.6: an unknown cost isn't free: no projection from it.
+  const unknown = pilotCosts.filter((c) => typeof c !== 'number').length;
+  if (unknown)
+    return {
+      ok: false,
+      perRun: 0,
+      total: 0,
+      reason: `${unknown} pilot run${unknown === 1 ? '’s' : 's’'} cost is unknown (no usage reported): the cost can’t be projected`,
+    };
   const perRun = pilotCosts.reduce((a, b) => a + b, 0) / pilotCosts.length;
   const total = perRun * runs;
   return {
@@ -149,6 +158,19 @@ const stdev = (xs) => {
  * The campaign's summary from its runs' results
  * ({task, rep, success, costUsd, tokens, peakLeadContext, ms, interventions, outcome}).
  */
+/**
+ * P6.6: the runs whose cost is known (a provider that reports no usage
+ * leaves it null): means are over these, and how many weren't is kept.
+ */
+const knownCosts = (runs) => runs.map((r) => r.costUsd).filter((c) => typeof c === 'number');
+const meanCost = (runs) => {
+  const known = knownCosts(runs);
+  return known.length ? mean(known) : null;
+};
+const unknownCosts = (runs) => runs.length - knownCosts(runs).length;
+/** "$0.123", or "unknown" with no known cost. */
+const money = (x, digits) => (typeof x === 'number' ? `$${x.toFixed(digits)}` : 'unknown');
+
 export function summarize(results) {
   const byTask = new Map();
   for (const r of results) {
@@ -162,7 +184,8 @@ export function summarize(results) {
       runs: runs.length,
       successes: runs.filter((r) => r.success).length,
       successRate: mean(runs.map((r) => (r.success ? 1 : 0))),
-      meanCostUsd: mean(runs.map((r) => r.costUsd ?? 0)),
+      meanCostUsd: meanCost(runs),
+      unknownCosts: unknownCosts(runs),
       meanTokens: mean(runs.map((r) => r.tokens ?? 0)),
       maxPeakLeadContext: Math.max(0, ...runs.map((r) => r.peakLeadContext ?? 0)),
       meanMinutes: mean(runs.map((r) => (r.ms ?? 0) / 60000)),
@@ -183,8 +206,9 @@ export function summarize(results) {
     perRep,
     successRateStdev: stdev(rates),
     successRateRange: rates.length ? [Math.min(...rates), Math.max(...rates)] : [0, 0],
-    totalCostUsd: results.reduce((a, r) => a + (r.costUsd ?? 0), 0),
-    meanCostUsd: mean(results.map((r) => r.costUsd ?? 0)),
+    totalCostUsd: knownCosts(results).reduce((a, c) => a + c, 0),
+    meanCostUsd: meanCost(results),
+    unknownCosts: unknownCosts(results),
     meanTokens: mean(results.map((r) => r.tokens ?? 0)),
     maxPeakLeadContext: Math.max(0, ...results.map((r) => r.peakLeadContext ?? 0)),
     meanMinutes: mean(results.map((r) => (r.ms ?? 0) / 60000)),
@@ -206,7 +230,10 @@ export function summaryMarkdown(s, title) {
         ? ` (per repetition: ${s.perRep.map((r) => pct(r.successRate)).join(', ')}; ` +
           `stdev ${pct(s.successRateStdev)})`
         : ''),
-    `- Cost: $${s.totalCostUsd.toFixed(2)} in all, $${s.meanCostUsd.toFixed(3)} a run`,
+    `- Cost: $${s.totalCostUsd.toFixed(2)} in all, ${money(s.meanCostUsd, 3)} a run` +
+      (s.unknownCosts
+        ? ` (${s.unknownCosts} run${s.unknownCosts === 1 ? '' : 's'} not counted: cost unknown)`
+        : ''),
     `- Tokens a run: ${Math.round(s.meanTokens).toLocaleString('en-US')}; ` +
       `peak main-agent context: ${s.maxPeakLeadContext.toLocaleString('en-US')}`,
     `- Time a run: ${s.meanMinutes.toFixed(1)} min; interventions a run: ${s.meanInterventions.toFixed(2)}`,
@@ -215,7 +242,7 @@ export function summaryMarkdown(s, title) {
     '| --- | --- | --- | --- | --- | --- | --- |',
     ...s.tasks.map(
       (t) =>
-        `| ${t.task} | ${t.successes}/${t.runs} | $${t.meanCostUsd.toFixed(3)} | ` +
+        `| ${t.task} | ${t.successes}/${t.runs} | ${money(t.meanCostUsd, 3)} | ` +
         `${Math.round(t.meanTokens).toLocaleString('en-US')} | ` +
         `${t.maxPeakLeadContext.toLocaleString('en-US')} | ${t.meanMinutes.toFixed(1)} | ` +
         `${t.outcomes.join(', ')} |`
@@ -297,7 +324,10 @@ export function compareVariant(base, variant, { costRatioMax, minTasks = 5, stop
     tasks ? 1 / tasks : 1
   );
   const successDiff = variant.successRate - base.successRate;
-  const costRatio = base.meanCostUsd > 0 ? variant.meanCostUsd / base.meanCostUsd : null;
+  // P6.6: with any run's cost unknown, the ratio isn't known either.
+  const costsKnown = !base.unknownCosts && !variant.unknownCosts && variant.meanCostUsd !== null;
+  const costRatio =
+    costsKnown && base.meanCostUsd > 0 ? variant.meanCostUsd / base.meanCostUsd : null;
   const basePeak = meanPeak(base);
   const contextRatio = basePeak > 0 ? meanPeak(variant) / basePeak : null;
   const numbers = {
@@ -325,7 +355,12 @@ export function compareVariant(base, variant, { costRatioMax, minTasks = 5, stop
   if (tasks < minTasks)
     return off(`not enough runs: ${tasks} tasks in both (at least ${minTasks})`);
   if (successDiff < -noise) return off('success is worse than the baseline beyond the noise');
-  if (costRatio === null) return off('the baseline’s cost is unknown');
+  if (costRatio === null)
+    return off(
+      costsKnown
+        ? 'the baseline’s cost is unknown'
+        : 'some runs’ cost is unknown (no usage reported)'
+    );
   if (costRatio > costRatioMax)
     return off(`it costs ${costRatio.toFixed(2)}× the baseline, over its ${costRatioMax}× budget`);
   if (successDiff > noise)
@@ -353,7 +388,7 @@ export function resultsMarkdown(c) {
     return (
       `| ${v.label} (${v.milestone}) | ${d.runs} | ${Math.round(d.successRate * 100)}% ` +
       `(${pctSigned(d.successDiff)}, noise ±${Math.round(d.noise * 100)}) | ` +
-      `$${d.meanCostUsd.toFixed(3)} (${ratio(d.costRatio)}) | ${ratio(d.contextRatio)} | ` +
+      `${money(d.meanCostUsd, 3)} (${ratio(d.costRatio)}) | ${ratio(d.contextRatio)} | ` +
       `${d.meanMinutes.toFixed(1)} (${d.baseMeanMinutes.toFixed(1)}) | ` +
       `${d.meanInterventions.toFixed(2)} (${d.baseMeanInterventions.toFixed(2)}) | ` +
       `${d.on ? '**on**' : 'off'}: ${d.reason} |`
@@ -375,7 +410,7 @@ export function resultsMarkdown(c) {
       (b.perRep.length > 1
         ? ` (per repetition: ${b.perRep.map((r) => `${Math.round(r.successRate * 100)}%`).join(', ')})`
         : ''),
-    `- Cost a run: $${b.meanCostUsd.toFixed(3)}; time a run: ${b.meanMinutes.toFixed(1)} min; ` +
+    `- Cost a run: ${money(b.meanCostUsd, 3)}; time a run: ${b.meanMinutes.toFixed(1)} min; ` +
       `interventions a run: ${b.meanInterventions.toFixed(2)}`,
     '',
     '## Each kind on by itself',

@@ -280,3 +280,29 @@ describe('G02 and G03', () => {
     assert.match(out, /scout: \{ \.\.\.DEFAULT_KIND, enabled: true \}/);
   });
 });
+
+describe('unknown costs (P6.6)', () => {
+  const run = (task, costUsd) => ({ task, rep: 1, success: true, costUsd, tokens: 0, ms: 0 });
+  it('are left out of means, counted, and shown as unknown', () => {
+    const s = summarize([run('a', 0.2), run('a', null), run('b', null)]);
+    assert.equal(s.meanCostUsd, 0.2);
+    assert.equal(s.totalCostUsd, 0.2);
+    assert.equal(s.unknownCosts, 2);
+    assert.equal(s.tasks.find((t) => t.task === 'b').meanCostUsd, null);
+    const md = summaryMarkdown(s, 'x');
+    assert.match(md, /\$0\.200 a run \(2 runs not counted: cost unknown\)/);
+    assert.match(md, /\| b \| 1\/1 \| unknown \|/);
+  });
+  it('stop a projection', () => {
+    const p = projection([0.5, null], 90, 75);
+    assert.equal(p.ok, false);
+    assert.match(p.reason, /cost is unknown/);
+  });
+  it('make a variant’s cost ratio unknown', () => {
+    const base = summarize([run('a', 0.2), run('b', 0.2)]);
+    const variant = summarize([run('a', null), run('b', 0.1)]);
+    const d = compareVariant(base, variant, { costRatioMax: 2, minTasks: 1 });
+    assert.equal(d.costRatio, null);
+    assert.equal(d.on, false);
+  });
+});
