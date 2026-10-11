@@ -1217,6 +1217,18 @@ mod tests {
         }
     }
 
+    /// Round 2 (§4.2): a slip in a file the round wrote doesn't excuse an
+    /// error in one it didn't touch: still a regression, for that one.
+    #[test]
+    fn a_slip_with_an_untouched_file_too_is_a_regression() {
+        let ran = ["test", "lint"];
+        let r1 = round(&["test|test|t::one"], &ran);
+        let r2 = round(&["lint|src/a.ts|rule|m", "lint|src/b.ts|rule|m"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()]);
+        assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
+        assert_eq!(j.broke, ["lint|src/b.ts|rule|m"]);
+    }
+
     /// Round 2 (§4.2): a timeout in either round makes that check blind,
     /// the others still compared.
     #[test]
