@@ -283,29 +283,50 @@ flowchart TD
 Every subagent gets the same kind of brief and returns the same kind of
 result.
 
-**Brief** (the lead writes it, through a tool call):
+**Brief** (the lead writes it, through the `task` tool):
 
 ```json
 {
-  "kind": "scout | reviewer | triage | worker | test_writer",
-  "goal": "One sentence: what to find out or do",
-  "context": "What the lead already knows that the subagent needs",
-  "scope": ["src-tauri/src/overlay/", "src/lib/overlay.ts"],
-  "out_of_scope": "What not to look at or change",
-  "output": "The required shape of the answer",
-  "budget": { "tool_calls": 20 }
+  "kind": "scout | worker | testWriter | workers",
+  "goal": "The one question or task, written like a ticket",
+  "context": "Optional: what the lead already knows, what's out of scope",
+  "paths": ["src-tauri/src/overlay/", "src/lib/overlay.ts"],
+  "max_tool_calls": 10,
+  "continue": "Optional: a finished subagent's handle, for a follow-up",
+  "step": 3,
+  "group": "pages"
 }
 ```
 
-**Result** (returned as the tool's output):
+`step` is for a worker (the plan step it carries out) and `group` for
+`workers` (a plan group, one worker per step). The harness, not the brief,
+sets each kind's tools and budget: `max_tool_calls` can only lower it.
+The reviewer, triage and the plan reviewer are started by the harness,
+not through `task`.
 
-```text
-## Answer / Summary            — 3–10 lines
-## Evidence                    — path:line references, one line each
-## Changes (workers only)      — files changed, one line per file
-## Open questions / risks      — what the subagent couldn't settle
-## Status                      — done | partial (budget) | blocked (why)
-```
+**Result** (returned as the tool's output). Each kind has its own `## `
+sections (`subagent.rs` `KindSpec`); a report must have the first ones
+(`required`), and the rest are optional:
+
+| Kind          | Sections (required first)                                  |
+| ------------- | ---------------------------------------------------------- |
+| scout         | `Answer`; `Evidence`, `Open questions`, `Web sources`      |
+| worker        | `Summary`; `Changed files`, `Open questions`               |
+| test writer   | `Summary`; `Test files`, `Assumptions`                     |
+| triage        | `Root cause`, `Files to fix`, `Next step`, `Confidence`    |
+| reviewer      | `Findings`: a numbered list (`change_review.rs`), or None. |
+| plan reviewer | `Findings`, the same list, with `Step N` for a location.   |
+
+There's no `## Status` section: the harness decides the status.
+
+- **done:** the report follows the format.
+- **blocked:** a non-empty `## Blocked` section (not "none" or "no"),
+  which alone is enough, whatever else is missing.
+- **partial:** the budget ran out (or it looped), and its report is what
+  it found.
+- **unformatted:** still out of format after one repair turn.
+- **failed:** every model failed.
+- **stopped:** the user stopped it.
 
 **Rules:**
 
