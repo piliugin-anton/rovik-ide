@@ -1567,16 +1567,17 @@ async fn a_lead_that_fails_mid_batch_leaves_no_subagent_running() {
         ])],
     )
     .await;
-    *crate::agent_run::run::FAIL_TOOL_RESULT.lock().unwrap() = Some("q11-1".into());
-    h.start(h.with_subagents(
-        &url,
-        "Go",
-        quiet_permissions(),
-        scouts_on(json!({})),
-    ))
-    .await;
+    crate::agent_run::run::FAIL_TOOL_RESULT
+        .lock()
+        .unwrap()
+        .insert("q11-1".into());
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
     let end = h.run_end().await;
-    *crate::agent_run::run::FAIL_TOOL_RESULT.lock().unwrap() = None;
+    crate::agent_run::run::FAIL_TOOL_RESULT
+        .lock()
+        .unwrap()
+        .remove("q11-1");
     assert_eq!(end, "error");
     let state = h.app.state::<AgentState>();
     assert_eq!(state.running_children(&h.dialog_id), 0);
@@ -7152,13 +7153,19 @@ async fn a_failed_launch_gives_its_slot_back() {
         ],
     )
     .await;
-    *crate::agent_run::subagent_run::FAIL_LAUNCH.lock().unwrap() = Some("f1".into());
+    crate::agent_run::subagent_run::FAIL_LAUNCH
+        .lock()
+        .unwrap()
+        .insert("f1".into());
     let mut config = scouts_on(json!({}));
     config.max_per_run = Some(1);
     h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
         .await;
     h.run_end().await;
-    *crate::agent_run::subagent_run::FAIL_LAUNCH.lock().unwrap() = None;
+    crate::agent_run::subagent_run::FAIL_LAUNCH
+        .lock()
+        .unwrap()
+        .remove("f1");
     let first = h.task_result("f1").await;
     assert!(
         first.content.contains("already running"),
@@ -7704,4 +7711,123 @@ async fn waiting_for_an_approval_doesnt_spend_the_wall() {
     let results = h.child_results("t1").await;
     assert!(results["s1"].contains('x'), "{}", results["s1"]);
     assert!(h.task_result("t1").await.content.contains("Status: done"));
+}
+
+/// A subagent of a batch that can't be launched gets an error; the others
+/// run, and none is left registered.
+#[tokio::test]
+async fn an_error_before_the_batch_starts_unregisters_launched_children() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![("MARK-EB", vec![Reply::Text(REPORT), Reply::Text(REPORT)])],
+        vec![
+            Reply::Calls(vec![
+                task_call("eb1", "MARK-EB: one"),
+                task_call("eb2", "MARK-EB: two"),
+                task_call("eb3", "MARK-EB: three"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    crate::agent_run::subagent_run::FAIL_LAUNCH
+        .lock()
+        .unwrap()
+        .insert("eb2".into());
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    let end = h.run_end().await;
+    crate::agent_run::subagent_run::FAIL_LAUNCH
+        .lock()
+        .unwrap()
+        .remove("eb2");
+    assert_eq!(end, "done");
+    assert!(h.task_result("eb2").await.content.starts_with("Error"));
+    for ok in ["eb1", "eb3"] {
+        assert!(
+            h.task_result(ok).await.content.contains("Status: done"),
+            "{ok}"
+        );
+    }
+    let state = h.app.state::<AgentState>();
+    assert_eq!(state.running_children(&h.dialog_id), 0);
+    let status = serde_json::to_value(agent_status(h.app.state())).unwrap();
+    assert_eq!(status["subagents"], json!([]), "{status}");
+}
+
+/// The lead failing while subagents wait for a place (more than
+/// maxAtOnce): every one started is ended, and the lead is free soon.
+#[tokio::test]
+async fn queued_children_past_max_at_once_are_stopped_with_the_lead() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-QM",
+            (0..5)
+                .map(|_| Reply::Slow(300, Box::new(Reply::Text(REPORT))))
+                .collect(),
+        )],
+        vec![Reply::Calls(vec![
+            task_call("qm-1", "MARK-QM: one"),
+            task_call("qm-2", "MARK-QM: two"),
+            task_call("qm-3", "MARK-QM: three"),
+            task_call("qm-4", "MARK-QM: four"),
+            task_call("qm-5", "MARK-QM: five"),
+        ])],
+    )
+    .await;
+    crate::agent_run::run::FAIL_TOOL_RESULT
+        .lock()
+        .unwrap()
+        .insert("qm-1".into());
+    let mut config = scouts_on(json!({}));
+    config.max_at_once = Some(2);
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    let end = h.run_end().await;
+    crate::agent_run::run::FAIL_TOOL_RESULT
+        .lock()
+        .unwrap()
+        .remove("qm-1");
+    assert_eq!(end, "error");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let state = h.app.state::<AgentState>();
+    while state.is_running(&h.dialog_id) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!state.is_running(&h.dialog_id));
+    assert_eq!(state.running_children(&h.dialog_id), 0);
+    let started = h.events_of("subagentStarted").len();
+    let ended = h.events_of("subagentEnded").len();
+    assert_eq!(started, ended, "every one started is ended");
+}
+
+/// After a batch whose lead failed, the next run in the chat starts.
+#[tokio::test]
+async fn a_second_run_in_the_same_chat_starts_after_a_failed_batch() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![("MARK-SR", vec![Reply::Text(REPORT), Reply::Text(REPORT)])],
+        vec![Reply::Calls(vec![
+            task_call("sr-1", "MARK-SR: one"),
+            task_call("sr-2", "MARK-SR: two"),
+        ])],
+    )
+    .await;
+    crate::agent_run::run::FAIL_TOOL_RESULT
+        .lock()
+        .unwrap()
+        .insert("sr-1".into());
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "error");
+    crate::agent_run::run::FAIL_TOOL_RESULT
+        .lock()
+        .unwrap()
+        .remove("sr-1");
+    let (url, _) = model(vec![Reply::Text("Second run.")]).await;
+    h.events.lock().unwrap().clear();
+    h.start(h.with_subagents(&url, "Again", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
 }

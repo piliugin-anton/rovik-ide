@@ -2150,7 +2150,7 @@ impl<R: Runtime> Run<R> {
         attachments: Vec<String>,
     ) -> Result<(), String> {
         #[cfg(test)]
-        if FAIL_TOOL_RESULT.lock().unwrap().as_deref() == Some(tool_call_id) {
+        if FAIL_TOOL_RESULT.lock().unwrap().contains(tool_call_id) {
             return Err("the database is gone (test)".into());
         }
         let mut m = new_message("tool", &content);
@@ -2793,7 +2793,8 @@ fn effort_label(options: &Option<OpenAIChatOptions>) -> &'static str {
 
 /// Tests: storing this call's result fails, as with a broken database.
 #[cfg(test)]
-pub(crate) static FAIL_TOOL_RESULT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub(crate) static FAIL_TOOL_RESULT: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 pub(super) fn new_message(role: &str, content: &str) -> NewMessage {
     NewMessage {

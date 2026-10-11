@@ -1032,4 +1032,18 @@ mod run_control_tests {
         // A new run in the chat can start.
         assert!(state.register_in("kid", None, "m", None).is_some());
     }
+
+    /// Round 2 (section 4.2): run A's guard, dropped after run B started in
+    /// the same chat, leaves B running.
+    #[test]
+    fn unregister_ignores_a_newer_run_with_the_same_dialog() {
+        let state = super::AgentState::default();
+        let a = state.register_in("chat", None, "m", None).unwrap();
+        let guard_a = state.registered("chat", &a.run_id);
+        state.unregister("chat", &a.run_id);
+        let b = state.register_in("chat", None, "m", None).unwrap();
+        drop(guard_a);
+        assert!(state.is_running("chat"));
+        assert_eq!(state.lock().runs["chat"].run_id, b.run_id);
+    }
 }

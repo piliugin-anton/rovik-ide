@@ -163,7 +163,8 @@ pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Sen
 pub static PANIC_SUB: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 /// Tests: the subagent for this `task` call can't be launched.
 #[cfg(test)]
-pub static FAIL_LAUNCH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub static FAIL_LAUNCH: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
     // Unregistered however it ends, by the guard in its `SubCtx`: a child
@@ -699,7 +700,7 @@ impl<R: Runtime> Run<R> {
         mut sub: SubCtx,
     ) -> Result<Run<R>, String> {
         #[cfg(test)]
-        if FAIL_LAUNCH.lock().unwrap().as_deref() == Some(call_id) {
+        if FAIL_LAUNCH.lock().unwrap().contains(call_id) {
             return Err("Error: that subagent is already running.".into());
         }
         let Some(controls) = self.state.register_child(
