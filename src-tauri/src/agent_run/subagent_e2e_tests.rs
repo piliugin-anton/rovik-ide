@@ -8787,3 +8787,169 @@ async fn a_busy_landing_is_retried_then_kept() {
         h.run_end().await;
     }
 }
+
+/// A conflict in one of a worker's three files names only that file; the
+/// other two land, and one pair of versions is saved.
+#[tokio::test]
+async fn a_conflict_in_one_of_n_files_names_only_that_file() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let plan: &'static str = Box::leak(
+        GROUP_PLAN
+            .replace(
+                "   - `src/posts.rs`: implement the posts page with `fn posts()`.\n",
+                "   - `src/posts.rs`: implement the posts page with `fn posts()`.\n   - `src/extra.rs`: its helpers.\n   - `src/extra2.rs`: more helpers.\n",
+            )
+            .into_boxed_str(),
+    );
+    let h = group_harness_with_side_effect(
+        plan,
+        "true",
+        &[
+            ("src/extra.rs", "// extra\n"),
+            ("src/extra2.rs", "// extra2\n"),
+        ],
+    )
+    .await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "from w2\n"),
+                    write_call("w3", "src/extra.rs", "extra\n"),
+                    write_call("w4", "src/extra2.rs", "extra2\n"),
+                    Reply::Slow(
+                        1_000,
+                        Box::new(worker_report(
+                            "Posts.",
+                            &["src/posts.rs", "src/extra.rs", "src/extra2.rs"],
+                        )),
+                    ),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    edit_while_workers_run(&h, "src/posts.rs", "from w2\n", "from the user\n").await;
+    let result = h.result_when_ready("g1").await;
+    let text = &result.content;
+    assert!(
+        text.contains("changed the same lines as the chat's view in `src/posts.rs`."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Its other files landed: src/extra.rs, src/extra2.rs."),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("@checks/conflict-").count(),
+        2,
+        "one pair: {text}"
+    );
+    let w2 = result.meta.as_ref().unwrap()["group"]["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["label"] == "w2")
+        .cloned()
+        .unwrap();
+    assert_eq!(w2["landed"].as_array().unwrap().len(), 2, "{w2}");
+    assert_eq!(in_view(&h, "src/extra2.rs").as_deref(), Some("extra2\n"));
+    assert_eq!(
+        in_view(&h, "src/posts.rs").as_deref(),
+        Some("from the user\n")
+    );
+    h.run_end().await;
+}
+
+/// The user's edit in Latin-1 conflicting with a worker's: the version
+/// saved for the lead is text (lossy), while the chat's file keeps its
+/// exact bytes and the worker's copy its own.
+#[tokio::test]
+async fn non_utf8_contents_land_and_roll_back_exactly() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = group_harness(&[]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts from w2\n"),
+                    Reply::Slow(1_000, Box::new(worker_report("Posts.", &["src/posts.rs"]))),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let latin1: Vec<u8> = b"caf\xe9 by the user\n".to_vec();
+    // As the user, once w2 has written its version.
+    for _ in 0..400 {
+        let written = crate::overlay::chats::children_of(&h.dialog_id)
+            .iter()
+            .filter_map(|c| crate::overlay::chats::get(c))
+            .any(|o| {
+                std::fs::read_to_string(o.view.join("src/posts.rs"))
+                    .ok()
+                    .as_deref()
+                    == Some("posts from w2\n")
+            });
+        if written {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let view = crate::overlay::chats::get(&h.dialog_id)
+        .unwrap()
+        .view
+        .clone();
+    std::fs::write(view.join("src/posts.rs"), &latin1).unwrap();
+    let result = h.result_when_ready("g1").await;
+    assert!(
+        result.content.contains("## The join stopped: a conflict"),
+        "{}",
+        result.content
+    );
+    assert_eq!(
+        std::fs::read(view.join("src/posts.rs")).unwrap(),
+        latin1,
+        "exact bytes"
+    );
+    let saved = crate::agent_run::check_output::resolve(
+        &h.dialog_id,
+        "@checks/conflict-w2-src-posts-rs-chat.log",
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(saved).unwrap(),
+        "caf\u{fffd} by the user\n"
+    );
+    let w2 = h.child_of("g1#w2").await;
+    let copy = crate::overlay::chats::get(&w2.id).unwrap().view.clone();
+    assert_eq!(
+        std::fs::read(copy.join("src/posts.rs")).unwrap(),
+        b"posts from w2\n"
+    );
+    h.run_end().await;
+}
