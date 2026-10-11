@@ -259,6 +259,19 @@ static DATA_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Where overlays are kept: the app's data folder. Landings a crash
 /// interrupted are finished first.
+/// Tests that use the overlays' data folder (the process's) take this, so
+/// they don't set it under each other.
+#[cfg(test)]
+pub static TEST_DATA: LazyLock<Arc<tokio::sync::Mutex<()>>> = LazyLock::new(Default::default);
+
+/// A test's data folder, held until the guard goes.
+#[cfg(test)]
+pub fn test_data(data_dir: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    let held = TEST_DATA.clone().blocking_lock_owned();
+    init(data_dir);
+    held
+}
+
 pub fn init(data_dir: &Path) {
     *DATA_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.to_path_buf());
     let finished = super::land::recover(data_dir);
@@ -549,8 +562,21 @@ pub fn parent_of(child: &str) -> Option<String> {
 
 /// F02: opens (and mounts) a child overlay of `parent`'s view. Its changes
 /// count inside the parent's limit: it gets what the parent and its other
-/// children leave of it.
+/// open children leave of it.
+#[cfg(test)]
 pub fn open_child(parent: &str, child: &str) -> Result<Arc<ChatOverlay>, String> {
+    open_child_shared(parent, child, 1)
+}
+
+/// [`open_child`] for one of `parts` children opened together (a parallel
+/// group's workers): each gets an equal part of what's left. The other
+/// open children's limits are taken as theirs, whatever they've used so
+/// far, so children opened before any of them writes don't each get it all.
+pub fn open_child_shared(
+    parent: &str,
+    child: &str,
+    parts: usize,
+) -> Result<Arc<ChatOverlay>, String> {
     if !valid_id(child) {
         return Err("not a chat id".into());
     }
@@ -559,15 +585,12 @@ pub fn open_child(parent: &str, child: &str) -> Result<Arc<ChatOverlay>, String>
         return Ok(o);
     }
     let (used, limit) = p.fs.used();
-    let siblings: u64 = children_of(parent)
-        .iter()
-        .filter_map(|c| get(c))
-        .map(|o| o.fs.used().0)
-        .sum();
-    let room = limit
-        .saturating_sub(used)
-        .saturating_sub(siblings)
-        .max(MIN_CHILD_LIMIT);
+    let siblings: Vec<Arc<ChatOverlay>> =
+        children_of(parent).iter().filter_map(|c| get(c)).collect();
+    let reserved: u64 = siblings.iter().map(|o| o.fs.used().1).sum();
+    // Of the parts, those not opened yet share what's left.
+    let left = parts.saturating_sub(siblings.len()).max(1) as u64;
+    let room = (limit.saturating_sub(used).saturating_sub(reserved) / left).max(MIN_CHILD_LIMIT);
     let overlay = mount_on(child, &p.view, room, Some(parent))?;
     CHILDREN
         .lock()
@@ -1738,6 +1761,22 @@ pub fn land_now_with(
         .ok_or_else(|| LandError::Failed("the app's data folder isn't known yet".into()))?;
     let project = project_of(dialog_id)
         .ok_or_else(|| LandError::Failed("this chat has no isolated changes".into()))?;
+    // A child's landing into this chat's view that a crash interrupted is
+    // finished first, which needs the view: landing the half of it that
+    // got in would put half a worker's step in the project.
+    if get(dialog_id).is_none() && super::land::interrupted_into(&data, &mountpoint(dialog_id)) {
+        open(dialog_id, &project, Box::new(|_, _| {})).map_err(|e| {
+            LandError::Failed(format!(
+                "a step that was landing into this chat when the app closed isn't finished, and the chat's view couldn't be opened to finish it ({e})"
+            ))
+        })?;
+        if super::land::interrupted_into(&data, &mountpoint(dialog_id)) {
+            return Err(LandError::Failed(
+                "a step that was landing into this chat when the app closed couldn't be finished"
+                    .into(),
+            ));
+        }
+    }
     if let Some(o) = get(dialog_id) {
         o.fs.flush();
     }
@@ -2730,6 +2769,28 @@ pub fn save_group(dialog_id: &str, group: SavedGroup) -> Result<(), String> {
     write_groups(dialog_id, &all)
 }
 
+/// Adds paths written after a group's join (by the repair loop's fixers)
+/// to what Redo sequentially puts back; a path it has already stays as
+/// it was before the group.
+pub fn add_group_paths(
+    dialog_id: &str,
+    name: &str,
+    entries: Vec<(String, Before)>,
+) -> Result<(), String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = saved_groups(dialog_id);
+    let Some(group) = all.iter_mut().find(|g| g.name == name) else {
+        return Ok(());
+    };
+    for (path, was) in entries {
+        if !group.before.iter().any(|(p, _)| *p == path) {
+            group.before.push((path, was));
+        }
+    }
+    write_groups(dialog_id, &all)
+}
+
 /// Whether the group is being redone one step at a time.
 pub fn group_redone(dialog_id: &str, name: &str) -> bool {
     saved_groups(dialog_id)
@@ -2955,13 +3016,13 @@ mod conflict_tests {
 
     /// A chat whose change to a.txt conflicts with the project's, saved
     /// (not mounted): as between runs.
-    fn conflicted(name: &str) -> (PathBuf, PathBuf, String) {
+    fn conflicted(name: &str) -> (PathBuf, PathBuf, String, tokio::sync::OwnedMutexGuard<()>) {
         let root = std::env::temp_dir().join(format!("conflicts-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let project = root.join("project");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\n5\n").unwrap();
-        init(&root.join("data"));
+        let held = test_data(&root.join("data"));
         let id = format!("conflict-chat-{name}");
         let store = store_dir(&id).unwrap();
         std::fs::create_dir_all(&store).unwrap();
@@ -2992,7 +3053,7 @@ mod conflict_tests {
                 conflicts: plan.conflicts,
             }),
         );
-        (root, project, id)
+        (root, project, id, held)
     }
 
     // One at a time: the data folder is the app's, one for all.
@@ -3001,7 +3062,7 @@ mod conflict_tests {
     #[test]
     fn a_conflict_resolved_in_the_resolver_lands() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("resolver");
+        let (root, project, id, _data) = conflicted("resolver");
         let file = conflict_file(&id, "a.txt").unwrap();
         assert_eq!(file.ours.as_deref(), Some("PROJECT\n2\n3\n4\n5\n"));
         assert_eq!(file.theirs.as_deref(), Some("CHAT\n2\n3\n4\n5\n"));
@@ -3029,7 +3090,7 @@ mod conflict_tests {
     #[test]
     fn a_conflict_handed_to_the_chat_lands_once_its_markers_are_gone() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("chat");
+        let (root, project, id, _data) = conflicted("chat");
         assert_eq!(mark_conflicts(&id).unwrap(), vec!["a.txt"]);
         let marked = String::from_utf8(current_version(&id, "a.txt").unwrap()).unwrap();
         // The resolver still sees the real conflict (the chat's own version).
@@ -3072,7 +3133,7 @@ mod conflict_tests {
     #[test]
     fn markers_handed_to_the_chat_can_be_taken_back() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, _project, id) = conflicted("unmark");
+        let (root, _project, id, _data) = conflicted("unmark");
         mark_conflicts(&id).unwrap();
         assert!(!markers_left(&id).is_empty());
         // Marking again leaves files already handed over as they are.
@@ -3095,7 +3156,7 @@ mod conflict_tests {
     #[test]
     fn merging_the_project_in_can_be_taken_back() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("undo-merge");
+        let (root, project, id, _data) = conflicted("undo-merge");
         // Not a conflict this time: the project changed another line.
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
         set_pending(&id, None);
@@ -3130,7 +3191,7 @@ mod conflict_tests {
     #[test]
     fn undoing_a_merge_keeps_what_the_chat_did_since() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("changed-since");
+        let (root, project, id, _data) = conflicted("changed-since");
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
         set_pending(&id, None);
         let plan = super::super::land::plan(&project, &changes(&id), false);
@@ -3157,7 +3218,7 @@ mod conflict_tests {
     #[test]
     fn kept_versions_never_share_a_file() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, _project, id) = conflicted("kept-names");
+        let (root, _project, id, _data) = conflicted("kept-names");
         let s = |chat: &str| Sides {
             base: Some(b"base".to_vec()),
             chat: Some(chat.as_bytes().to_vec()),
@@ -3314,7 +3375,7 @@ mod hub_tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\n5\n").unwrap();
         std::fs::write(project.join("b.txt"), "b\n").unwrap();
-        init(&root.join("data"));
+        let _data = test_data(&root.join("data"));
         let a = open("hub-chat-a", &project, Box::new(|_, _| {})).unwrap();
         let b = open("hub-chat-b", &project, Box::new(|_, _| {})).unwrap();
         // B looks at b.txt and changes line 1 of a.txt; A changes line 1 of
@@ -3422,7 +3483,7 @@ mod child_tests {
         std::fs::create_dir_all(project.join("src")).unwrap();
         std::fs::write(project.join("src/a.rs"), "a\n").unwrap();
         std::fs::write(project.join("src/b.rs"), "b\n").unwrap();
-        init(&root.join("data"));
+        let _data = test_data(&root.join("data"));
         let parent = open("kids-parent", &project, Box::new(|_, _| {})).unwrap();
         // The parent changed a file before the workers start.
         std::fs::write(parent.view.join("src/a.rs"), "a from the lead\n").unwrap();
@@ -3528,6 +3589,62 @@ mod child_tests {
             Some("new from w4\n")
         );
         discard_child("kids-w4");
+
+        // The same with the parent's view closed, then Land: the
+        // interrupted landing is finished first, so the whole of the
+        // worker's change lands, not the half that got in.
+        let w6 = open_child("kids-parent", "kids-w6").unwrap();
+        std::fs::write(w6.view.join("src/new.rs"), "new from w6\n").unwrap();
+        std::fs::write(w6.view.join("src/b.rs"), "b from w6\n").unwrap();
+        w6.fs.flush();
+        super::super::land::land(&data, "kids-w6", &w6.project, &w6.fs.changes(), false).unwrap();
+        let journals = data.join("landings").join("kids-w6");
+        let landing = std::fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .find(|d| d.path().is_dir())
+            .unwrap()
+            .path();
+        let journal = landing.join("journal.json");
+        let text = std::fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        std::fs::write(&journal, text).unwrap();
+        // Half of it got in: b.rs did, new.rs didn't.
+        std::fs::write(parent.view.join("src/new.rs"), "new from w4\n").unwrap();
+        close("kids-w6");
+        close("kids-parent");
+        assert!(super::super::land::interrupted_into(
+            &data,
+            &mountpoint("kids-parent")
+        ));
+        land_now("kids-parent", false).unwrap();
+        assert_eq!(
+            read(&project.join("src/new.rs")).as_deref(),
+            Some("new from w6\n")
+        );
+        assert_eq!(
+            read(&project.join("src/b.rs")).as_deref(),
+            Some("b from w6\n")
+        );
+        assert!(!super::super::land::interrupted_into(
+            &data,
+            &mountpoint("kids-parent")
+        ));
+        discard_child("kids-w6");
+        let _parent = open("kids-parent", &project, Box::new(|_, _| {})).unwrap();
+
+        // Two children opened together, before either writes, share
+        // what's left: together they can't pass the parent's limit.
+        let p = get("kids-parent").unwrap();
+        let (used, limit) = p.fs.used();
+        let s1 = open_child_shared("kids-parent", "kids-s1", 2).unwrap();
+        let s2 = open_child_shared("kids-parent", "kids-s2", 2).unwrap();
+        let (l1, l2) = (s1.fs.used().1, s2.fs.used().1);
+        assert!(l1 + l2 <= limit - used, "{l1} + {l2} > {}", limit - used);
+        assert!(l1.abs_diff(l2) <= 1, "{l1} vs {l2}");
+        discard_child("kids-s1");
+        discard_child("kids-s2");
 
         // Discarding the parent takes any child with it.
         open_child("kids-parent", "kids-w5").unwrap();

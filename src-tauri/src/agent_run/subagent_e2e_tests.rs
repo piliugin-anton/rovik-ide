@@ -3609,8 +3609,9 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
                 vec![
                     write_call("w2", "src/posts.rs", "bad posts\n"),
                     worker_report("Posts page.", &["src/posts.rs"]),
-                    // Its fix doesn't fix it.
+                    // Its fix doesn't fix it, and adds a file of its own.
                     write_call("w2f", "src/posts.rs", "still bad\n"),
+                    write_call("w2g", "src/posts_extra.rs", "extra\n"),
                     worker_report("Fixed, I think.", &["src/posts.rs"]),
                 ],
             ),
@@ -3670,8 +3671,23 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
     let saved = crate::overlay::chats::saved_groups(&h.dialog_id);
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].steps, vec![2, 3]);
+    // The fixer's own file is among what Redo puts back.
+    assert!(
+        saved[0]
+            .before
+            .iter()
+            .any(|(p, _)| p == "src/posts_extra.rs"),
+        "{:?}",
+        saved[0].before
+    );
     let request = crate::overlay::chats::redo_group(&h.dialog_id, "pages").unwrap();
     assert!(request.contains("Carry out its steps (2, 3)"), "{request}");
+    assert!(
+        !crate::overlay::chats::changes(&h.dialog_id)
+            .iter()
+            .any(|c| c.path() == "src/posts_extra.rs"),
+        "the fixer's file went with the group"
+    );
     let (url, seen) = model_routed(
         vec![
             (

@@ -437,7 +437,8 @@ impl<R: Runtime> Run<R> {
         group: &str,
         config: &SubagentConfig,
     ) -> Result<Run<R>, String> {
-        let overlay = chats::open_child(&self.dialog_id, &member.child_id)?;
+        // The group's workers share what's left of the chat's space.
+        let overlay = chats::open_child_shared(&self.dialog_id, &member.child_id, owners.len())?;
         let scope = WriteScope::for_step(&member.step);
         let others: Vec<(String, usize, WriteScope)> = owners
             .iter()

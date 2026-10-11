@@ -276,9 +276,6 @@ struct Harness {
     _isolated: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
-static ISOLATED: std::sync::LazyLock<Arc<tokio::sync::Mutex<()>>> =
-    std::sync::LazyLock::new(Default::default);
-
 struct TempDir(PathBuf);
 
 impl Drop for TempDir {
@@ -349,7 +346,7 @@ impl Harness {
     /// Isolated chats: the overlays' data folder is this test's, and no
     /// other isolated test runs meanwhile.
     async fn isolate(&mut self) {
-        self._isolated = Some(ISOLATED.clone().lock_owned().await);
+        self._isolated = Some(crate::overlay::chats::TEST_DATA.clone().lock_owned().await);
         crate::overlay::chats::init(&self._dir.0.join("data"));
     }
 }

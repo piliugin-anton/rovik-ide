@@ -141,7 +141,9 @@ impl StopSignal {
 
     pub(crate) fn set(&self) {
         self.flag.store(true, Ordering::SeqCst);
-        let _ = self.tx.send(true);
+        // Kept with no request listening too (`send` would drop it), so a
+        // request that subscribes later still sees it.
+        self.tx.send_replace(true);
     }
 
     pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
@@ -902,4 +904,16 @@ pub async fn chat_dismiss_checklist<R: Runtime>(
         },
     );
     chat_checklist(db, dialog_id).await
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::StopSignal;
+
+    #[test]
+    fn a_stop_set_before_anyone_listens_is_seen_by_later_listeners() {
+        let stop = StopSignal::new();
+        stop.set();
+        assert!(*stop.subscribe().borrow());
+    }
 }

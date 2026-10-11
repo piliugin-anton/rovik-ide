@@ -540,6 +540,16 @@ impl<R: Runtime> Run<R> {
         paths.extend(cause.files.iter().cloned());
         paths.sort();
         paths.dedup();
+        // R06: what they are in the chat, for Redo sequentially, should the
+        // fixer write them (or new files, which then go).
+        let snapshot = {
+            let (dialog, keep) = (self.dialog_id.clone(), paths.clone());
+            tauri::async_runtime::spawn_blocking(move || chats::snapshot(&dialog, &keep))
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or_default()
+        };
         let before: std::collections::HashMap<String, Option<Vec<u8>>> = paths
             .into_iter()
             .map(|p| {
@@ -551,7 +561,46 @@ impl<R: Runtime> Run<R> {
             .await
             .ok()
             .flatten();
-        self.fixer_done(child, result, Some(&before))
+        let fixed = self.fixer_done(child, result, Some(&before));
+        self.add_to_redo(group, &fixed.changed, &snapshot).await;
+        fixed
+    }
+
+    /// R06: a fixer's files join what Redo sequentially puts back, as they
+    /// were before it (a file not in `snapshot` didn't exist in the chat).
+    async fn add_to_redo(
+        &self,
+        group: &GroupRecord,
+        changed: &[String],
+        snapshot: &[(String, chats::Before)],
+    ) {
+        if changed.is_empty() {
+            return;
+        }
+        let entries: Vec<(String, chats::Before)> = changed
+            .iter()
+            .map(|p| {
+                let was = snapshot
+                    .iter()
+                    .find(|(q, _)| q == p)
+                    .map(|(_, b)| b.clone())
+                    .unwrap_or(chats::Before::Untouched);
+                (p.clone(), was)
+            })
+            .collect();
+        let (dialog, name) = (self.dialog_id.clone(), group.name.clone());
+        let saved = tauri::async_runtime::spawn_blocking(move || {
+            chats::add_group_paths(&dialog, &name, entries)
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+        if let Err(e) = saved {
+            log::write(
+                &self.app,
+                json!({ "event": "groupSave", "dialogId": self.dialog_id, "error": e }),
+            );
+        }
     }
 
     /// `before`: the files just before a fixer that worked in the chat's
@@ -632,7 +681,7 @@ impl<R: Runtime> Run<R> {
             let overlay = match child
                 .as_deref()
                 .ok_or_else(|| "its chat isn't known".to_string())
-                .and_then(|c| chats::open_child(&self.dialog_id, c))
+                .and_then(|c| chats::open_child_shared(&self.dialog_id, c, which.len()))
             {
                 Ok(o) => o,
                 Err(e) => {
@@ -718,6 +767,14 @@ impl<R: Runtime> Run<R> {
                         .map(|b| String::from_utf8_lossy(&b).into_owned()),
                 })
                 .collect();
+            let snapshot = {
+                let (dialog, keep) = (self.dialog_id.clone(), paths.clone());
+                tauri::async_runtime::spawn_blocking(move || chats::snapshot(&dialog, &keep))
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .unwrap_or_default()
+            };
             let id = child.clone();
             let landed = tauri::async_runtime::spawn_blocking(move || chats::land_child(&id))
                 .await
@@ -728,7 +785,9 @@ impl<R: Runtime> Run<R> {
                         .into_iter()
                         .filter(|w| paths.contains(&w.path))
                         .collect();
-                    out.push(self.fixer_done(child, Some(result), None));
+                    let fixed = self.fixer_done(child, Some(result), None);
+                    self.add_to_redo(group, &fixed.changed, &snapshot).await;
+                    out.push(fixed);
                 }
                 Err(e) => {
                     chats::discard_child(&child);

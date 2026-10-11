@@ -1511,3 +1511,36 @@ npm test` are refused; a scout with a budget of 3 that asks for 5 calls
   - two steps started together: step 2's brief has step 1's summary and
     change;
   - Stop during a group starts no third worker (FUSE).
+
+### Review fixes: overlays
+
+- **Child overlays share the parent's space**. `chats::open_child_shared`
+  takes the parent's space left, less what the open children already
+  hold, and splits it among the children still to open (a group's
+  workers, parallel fixers). Before, each child got all of the parent's
+  space left, so together they could go past the limit.
+- **An interrupted child landing is finished before Land**. When a
+  child's landing into its parent stopped half way and the parent's
+  overlay isn't open, Land opens it first (opening finishes the landing
+  from its journal). If that fails, or the landing is still unfinished,
+  Land refuses. Before, it was finished only when the parent's view was
+  next mounted, so Land could put half of it into the project.
+- **Redo sequentially restores the fixers' files too**. A fixer's
+  changes are added to the gave-up group's saved state (taken before
+  the fixer ran), so Redo puts back files only fixers touched. Before,
+  only the workers' files were saved.
+- **Stop reaches a run between requests**. `StopSignal::set` stores the
+  value even with no request listening (`send_replace`). Before, tokio's
+  `send` dropped it, so a run stopped before its next request subscribed
+  never saw Stop and waited on the model for ever. This was the
+  intermittent hang in the "Stop during a group" e2e test.
+- Tests that touch the process-wide overlay data folder take one lock
+  (`chats::TEST_DATA`), the overlay unit tests and the isolated e2e
+  harness alike.
+- Tests (each fails without its fix):
+  - two children opened to share the space together fit in what the
+    parent has left;
+  - a child landing interrupted with the parent closed reaches the
+    project whole on Land;
+  - a file only a fixer wrote is undone by Redo sequentially;
+  - a stop set before anyone listens is seen by later listeners.

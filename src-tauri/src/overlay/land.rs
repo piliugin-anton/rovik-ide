@@ -765,6 +765,26 @@ pub fn recover_into(data_dir: &Path, view: &Path) -> Vec<String> {
     recover_where(data_dir, |project| project == view)
 }
 
+/// Whether a landing into `view` (a chat's view) was interrupted and is
+/// still to be finished.
+pub fn interrupted_into(data_dir: &Path, view: &Path) -> bool {
+    let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
+        return false;
+    };
+    chats.flatten().any(|chat| {
+        let id = chat.file_name().to_string_lossy().into_owned();
+        project_of(data_dir, &id).is_some_and(|p| p == view)
+            && fs::read_dir(chat.path()).is_ok_and(|landings| {
+                landings.flatten().any(|l| {
+                    fs::read(l.path().join("journal.json"))
+                        .ok()
+                        .and_then(|b| serde_json::from_slice::<Journal>(&b).ok())
+                        .is_some_and(|j| j.state == "applying")
+                })
+            })
+    })
+}
+
 fn recover_where(data_dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<String> {
     let mut done = Vec::new();
     let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
