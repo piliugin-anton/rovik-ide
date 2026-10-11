@@ -273,6 +273,11 @@ pub struct Run<R: Runtime> {
     pub(super) plan_review_call: Option<String>,
     /// Plan steps step workers finished in this run (worker.rs, D03).
     pub(super) worker_steps: Vec<super::worker::DoneStep>,
+    /// Files the test writer wrote, those the lead changed after it, and
+    /// how many of those the final message listed already (E03).
+    pub(super) test_writer_files: Vec<String>,
+    pub(super) tests_changed: Vec<String>,
+    pub(super) tests_changed_listed: usize,
 }
 
 /// Who a run works for.
@@ -744,6 +749,9 @@ impl<R: Runtime> Run<R> {
             plan_findings: Vec::new(),
             plan_review_call: None,
             worker_steps: Vec::new(),
+            test_writer_files: Vec::new(),
+            tests_changed: Vec::new(),
+            tests_changed_listed: 0,
         };
         Ok(Some((run, entry)))
     }
@@ -852,6 +860,9 @@ impl<R: Runtime> Run<R> {
             plan_findings: Vec::new(),
             plan_review_call: None,
             worker_steps: Vec::new(),
+            test_writer_files: Vec::new(),
+            tests_changed: Vec::new(),
+            tests_changed_listed: 0,
         }
     }
 
@@ -1074,6 +1085,19 @@ impl<R: Runtime> Run<R> {
 
             // The model says it's done: the checks decide.
             if turn.tool_calls.is_empty() {
+                // E03: test-writer tests it changed are listed for the user.
+                if self.sub().is_none() && self.tests_changed.len() > self.tests_changed_listed {
+                    let line = super::test_writer::changed_tests_line(&self.tests_changed);
+                    self.tests_changed_listed = self.tests_changed.len();
+                    self.finalize(
+                        &turn.message_id,
+                        format!("{}{line}", turn.text.trim_end()),
+                        Vec::new(),
+                        None,
+                        None,
+                    )
+                    .await?;
+                }
                 if self.plan_mode {
                     if self.finish_plan_reply(&turn.message_id, &turn.text).await? {
                         continue;

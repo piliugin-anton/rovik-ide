@@ -14,7 +14,8 @@ import { formatsToSend, type Effort } from './reasoning';
 import { sameModel } from './permissions';
 
 /** The kinds built so far (agent_run/subagent.rs `Kind`). */
-export type SubagentKindId = 'scout' | 'reviewer' | 'triage' | 'planReviewer' | 'worker';
+export type SubagentKindId =
+  'scout' | 'reviewer' | 'triage' | 'planReviewer' | 'worker' | 'testWriter';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
@@ -65,6 +66,14 @@ export const SUBAGENT_KINDS: {
     when: 'The agent hands a plan’s steps to workers one at a time, for plans of at least the size set in Limits.',
     toolCalls: 60,
     minutes: 15,
+  },
+  {
+    id: 'testWriter',
+    label: 'Test writer',
+    hint: 'Writes tests from the request and the plan, without reading the changed code. Writes test files only.',
+    when: 'The agent can call it after implementing a change; its tests run with the project’s checks.',
+    toolCalls: 40,
+    minutes: 10,
   },
 ];
 
@@ -127,6 +136,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
     triage: { ...DEFAULT_KIND },
     planReviewer: { ...DEFAULT_KIND },
     worker: { ...DEFAULT_KIND },
+    testWriter: { ...DEFAULT_KIND },
   },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,

@@ -78,6 +78,12 @@ pub(super) struct SubCtx {
     pub scope: Option<WriteScope>,
     /// A step worker: its plan step.
     pub step: Option<usize>,
+    /// The test writer: it writes only test files, and can't read or
+    /// search these (the files the change touches, K11).
+    pub tests_only: bool,
+    pub hidden: Vec<String>,
+    /// Only light commands: no builds or test runs (E02, F05).
+    pub light_bash: bool,
 }
 
 impl SubCtx {
@@ -223,6 +229,13 @@ impl<R: Runtime> Run<R> {
                 (Some(text), _) => (text, None),
                 (None, Some(mut result)) => {
                     self.absorb_child_writes(&result.writes);
+                    if result.kind == Kind::TestWriter {
+                        for w in &result.writes {
+                            if !self.test_writer_files.contains(&w.path) {
+                                self.test_writer_files.push(w.path.clone());
+                            }
+                        }
+                    }
                     self.note_models(&result);
                     let update = self.after_worker(&mut result).await;
                     let mut meta = json!({ "subagent": result.meta() });
@@ -294,6 +307,9 @@ impl<R: Runtime> Run<R> {
         let kind = brief.kind;
         if kind == Kind::Worker {
             return self.start_worker(tc, config, brief, resumed).await;
+        }
+        if kind == Kind::TestWriter {
+            return self.start_test_writer(tc, config, brief, resumed).await;
         }
 
         // Started before the app closed: it goes on in its own chat.
@@ -473,6 +489,9 @@ impl<R: Runtime> Run<R> {
             cost: None,
             scope: None,
             step: None,
+            tests_only: false,
+            hidden: Vec::new(),
+            light_bash: false,
         };
         #[cfg(test)]
         if let Some(k) = config.kinds.get(kind.id()) {
@@ -1207,6 +1226,100 @@ impl<R: Runtime> Run<R> {
         self.launch_child(child_id, &tc.id, &goal, sub)
     }
 
+    /// E02: a `task{kind:"testWriter"}` call: the brief has the request,
+    /// the plan, and the outlines of the files the change touches, which it
+    /// can't read or search.
+    async fn start_test_writer(
+        &mut self,
+        tc: &ToolCall,
+        config: &SubagentConfig,
+        brief: Brief,
+        resumed: bool,
+    ) -> Result<Run<R>, String> {
+        let plan = self.implementing_plan().await;
+        let root = self.root.clone().unwrap_or_default();
+        let mut touched: Vec<String> = Vec::new();
+        if let Some((_, text)) = &plan {
+            for step in super::plan::steps(text) {
+                for f in step.files {
+                    let key = super::repair::rel_key(&root, &f.path);
+                    if !f.path.ends_with('/') && !touched.contains(&key) {
+                        touched.push(key);
+                    }
+                }
+            }
+        }
+        for key in self.touched_keys() {
+            if !touched.contains(&key) {
+                touched.push(key);
+            }
+        }
+        touched.retain(|k| !super::project::is_test_path(k));
+        let outlines: Vec<(String, Option<String>)> = touched
+            .iter()
+            .map(|k| {
+                let exists = std::path::Path::new(&tools::to_absolute_path(k, &root)).is_file();
+                let outline = exists
+                    .then(|| crate::agent_tools::tool_outline(root.clone(), k.clone()).ok())
+                    .flatten();
+                (k.clone(), outline)
+            })
+            .collect();
+        let existing = if resumed {
+            let (parent, call) = (self.dialog_id.clone(), tc.id.clone());
+            self.db
+                .read(move |c| store::child_for_call(c, &parent, &call))
+                .await?
+        } else {
+            None
+        };
+        let child_id = match &existing {
+            Some(child) => child.id.clone(),
+            None => {
+                if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
+                    return Err(why);
+                }
+                self.ledger.admit(&brief, config.max_per_run())?;
+                uuid::Uuid::new_v4().to_string()
+            }
+        };
+        let request = self.latest_user_request().await;
+        let test_check = self
+            .checks
+            .iter()
+            .find(|c| c.kind == "test" && c.enabled)
+            .map(|c| c.command.clone());
+        let note = (brief.goal != "Write tests for the change")
+            .then(|| brief.goal.clone())
+            .into_iter()
+            .chain(brief.context.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let message = super::test_writer::brief(&super::test_writer::BriefParts {
+            request: &request,
+            plan: plan.as_ref().map(|(p, t)| (p.as_str(), t.as_str())),
+            outlines: &outlines,
+            note: Some(note.as_str()).filter(|n| !n.is_empty()),
+            test_check: test_check.as_deref(),
+        });
+        let budget = brief.budget(config.budget(Kind::TestWriter));
+        let mut sub = self
+            .new_sub(Kind::TestWriter, &tc.id, budget, config)
+            .await?;
+        sub.tests_only = true;
+        sub.hidden = touched;
+        sub.light_bash = true;
+        let goal = brief.goal.clone();
+        match &existing {
+            Some(_) => self.close_child_calls(&child_id).await?,
+            None => {
+                self.store_child(&child_id, &tc.id, Kind::TestWriter, &goal, message)
+                    .await?
+            }
+        }
+        self.launch_child(child_id, &tc.id, &goal, sub)
+    }
+
     /// A worker's step when it's continued (A04): from its brief's heading.
     async fn worker_step_of(&self, child_id: &str) -> Option<super::plan::PlanStep> {
         let id = child_id.to_string();
@@ -1422,6 +1535,9 @@ mod tests {
             cost: None,
             scope: None,
             step: None,
+            tests_only: false,
+            hidden: Vec::new(),
+            light_bash: false,
         }
     }
 

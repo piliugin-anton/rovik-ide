@@ -2372,9 +2372,7 @@ async fn workers_carry_out_the_plan_step_by_step() {
     )
     .await;
     h.start(h.implement(&url, workers_on(json!({})))).await;
-    let end = h.run_end().await;
-    let messages = h.messages().await;
-    assert_eq!(end, "done");
+    assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("a.txt").as_deref(), Some("hello\nhello again\n"));
     assert_eq!(h.file("b.txt").as_deref(), Some("bye\n"));
     assert_eq!(h.file("notes/today.txt").as_deref(), Some("2026-10-06\n"));
@@ -2644,4 +2642,172 @@ async fn workers_need_a_plan_and_a_real_step() {
     h.run_end().await;
     let r = result_of(&h.messages().await, "s9").content.clone();
     assert!(r.contains("has no step 9; its steps are 1, 2, 3"), "{r}");
+}
+
+/*
+ * Milestone E: the test writer.
+ */
+
+const TEST_PLAN: &str = "# Greeter\n\nAdd a greeter.\n\n## Steps\n\n\
+    1. **Greeter**\n   - `src/greet.ts`: add `export function greet(name: string): string` returning `Hello, <name>!`.\n\
+    2. **Use it**\n   - `src/main.ts`: print `greet(\"you\")`.\n\n## Validation\n- `npm test`\n";
+
+fn test_writer_on() -> subagent::SubagentConfig {
+    serde_json::from_value(
+        json!({ "enabled": true, "kinds": { "testWriter": { "enabled": true } } }),
+    )
+    .unwrap()
+}
+
+fn test_task(id: &'static str) -> Reply {
+    Reply::Call {
+        id,
+        name: "task",
+        args: json!({ "kind": "testWriter" }),
+    }
+}
+
+const TEST_REPORT: &str = "## Summary\nTested greet.\n\n## Test files\n- `src/greet.test.ts`: greet's output\n\n## Assumptions\nNone";
+
+#[tokio::test]
+async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
+    let h = harness(&[
+        (
+            "src/greet.ts",
+            "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n",
+        ),
+        ("src/main.ts", "console.log('hi');\n"),
+        ("src/other.ts", "export const other = 1;\n"),
+        (".rovik/plans/greeter.md", TEST_PLAN),
+    ])
+    .await;
+    let (url, seen) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![
+                Reply::Calls(vec![
+                    ("r1", "read", json!({ "path": "src/greet.ts" })),
+                    ("o1", "outline", json!({ "path": "src/greet.ts" })),
+                    ("r2", "read", json!({ "path": "src/other.ts" })),
+                    ("s1", "search_code", json!({ "query": "greet" })),
+                ]),
+                write_call("w1", "src/greet.ts", "hacked\n"),
+                write_call("w2", "src/greet.test.ts", "test('greets', () => {});\n"),
+                Reply::Call { id: "b1", name: "bash", args: json!({ "command": "cargo build" }) },
+                Reply::Call { id: "b2", name: "bash", args: json!({ "command": "ls src" }) },
+                Reply::Text(TEST_REPORT),
+            ],
+        )],
+        vec![
+            Reply::Call {
+                id: "t1",
+                name: "todo",
+                args: json!({ "items": [{ "title": "Greeter", "status": "done" }, { "title": "Use it", "status": "done" }] }),
+            },
+            test_task("tw"),
+            // E03: the lead changes the test writer's test.
+            write_call("w9", "src/greet.test.ts", "test('greets politely', () => {});\n"),
+            Reply::Text("Implemented; the greeting test now follows the plan's wording."),
+        ],
+    )
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    let mut request = h.request(
+        &url,
+        StartKind::Send { message },
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+
+    let child = h.child_of("tw").await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("no result for {id}"))
+            .content
+            .clone()
+    };
+    assert!(
+        result("r1").starts_with("Error: `src/greet.ts` is one of the files the change touches"),
+        "{}",
+        result("r1")
+    );
+    assert!(result("r1").contains("Use outline on it"));
+    assert!(
+        result("o1").contains("greet"),
+        "outline works: {}",
+        result("o1")
+    );
+    assert!(
+        result("r2").contains("export const other"),
+        "other files can be read"
+    );
+    let search = result("s1");
+    assert!(!search.contains("src/greet.ts"), "{search}");
+    assert!(
+        search.contains("in the files the change touches left out"),
+        "{search}"
+    );
+    assert!(
+        result("w1").starts_with("Error: `src/greet.ts` isn't a test file"),
+        "{}",
+        result("w1")
+    );
+    assert!(result("w1").contains("`src/greet.test.ts`"));
+    assert!(!result("w2").starts_with("Error"), "{}", result("w2"));
+    assert!(
+        result("b1").starts_with("Error: `cargo build` is a heavy command"),
+        "{}",
+        result("b1")
+    );
+    assert!(result("b2").contains("greet.ts"), "{}", result("b2"));
+    assert_eq!(
+        h.file("src/greet.ts").as_deref(),
+        Some("export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n")
+    );
+
+    // Its brief: the plan and the outlines, never the code.
+    let brief = requests_with(&seen, "# Write tests for this change")[0]["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        brief.contains("## The plan (.rovik/plans/greeter.md)"),
+        "{brief}"
+    );
+    assert!(brief.contains("### `src/greet.ts`"), "{brief}");
+    assert!(!brief.contains("return `Hello"), "no code: {brief}");
+    assert!(
+        brief.contains("`src/greet.test.ts`"),
+        "where tests go: {brief}"
+    );
+
+    // E03: the lead's final message lists the test-writer test it changed.
+    let last = h
+        .messages()
+        .await
+        .into_iter()
+        .rev()
+        .find(|m| m.role == "assistant" && !m.content.is_empty())
+        .unwrap();
+    assert!(
+        last.content
+            .contains("Tests written by the test writer that I changed: `src/greet.test.ts`."),
+        "{}",
+        last.content
+    );
+    // The lead's prompt has the rule.
+    let lead = seen.lock().unwrap()[0].clone();
+    assert!(system_prompt(&lead)
+        .contains("Change a test-writer test only when it contradicts the request or the plan"));
 }

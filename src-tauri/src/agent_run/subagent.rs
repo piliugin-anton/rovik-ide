@@ -55,6 +55,8 @@ pub enum Kind {
     PlanReviewer,
     /// Carries out one step of the plan, writing within its scope (worker.rs).
     Worker,
+    /// Writes tests from the request and the plan (test_writer.rs).
+    TestWriter,
 }
 
 /// The repository map a kind gets (S18, K21): what it's about and its size.
@@ -73,7 +75,7 @@ impl Kind {
         match self {
             // A plan changes nothing yet: the whole project, ranked for it.
             Kind::Scout | Kind::PlanReviewer => MapScope::Lead,
-            Kind::Reviewer | Kind::Triage => MapScope::Changed {
+            Kind::Reviewer | Kind::Triage | Kind::TestWriter => MapScope::Changed {
                 fraction_percent: 50,
             },
             // Around its step's files (and the run's changes so far).
@@ -89,6 +91,7 @@ impl Kind {
         Kind::Triage,
         Kind::PlanReviewer,
         Kind::Worker,
+        Kind::TestWriter,
     ];
 
     pub fn id(self) -> &'static str {
@@ -98,13 +101,14 @@ impl Kind {
             Kind::Triage => "triage",
             Kind::PlanReviewer => "planReviewer",
             Kind::Worker => "worker",
+            Kind::TestWriter => "testWriter",
         }
     }
 
     /// Whether the lead starts it with `task`; the others the IDE starts
     /// itself, and they don't count against the run's limit (D11).
     pub fn lead_starts(self) -> bool {
-        matches!(self, Kind::Scout | Kind::Worker)
+        matches!(self, Kind::Scout | Kind::Worker | Kind::TestWriter)
     }
 
     pub fn parse(s: &str) -> Option<Kind> {
@@ -118,12 +122,13 @@ impl Kind {
             Kind::Triage => &super::triage::TRIAGE,
             Kind::PlanReviewer => &super::plan_review::PLAN_REVIEWER,
             Kind::Worker => &super::worker::WORKER,
+            Kind::TestWriter => &super::test_writer::TEST_WRITER,
         }
     }
 
     /// Kinds that change files: they get a write scope (D7).
     pub fn writes(self) -> bool {
-        matches!(self, Kind::Worker)
+        matches!(self, Kind::Worker | Kind::TestWriter)
     }
 }
 
@@ -442,6 +447,7 @@ pub fn parse_brief(args: &Map<String, Value>, enabled: &[Kind]) -> Result<Brief,
             step.filter(|_| kind == Kind::Worker)
                 .map(|n| format!("Carry out step {n} of the plan"))
         })
+        .or_else(|| (kind == Kind::TestWriter).then(|| "Write tests for the change".to_string()))
         .unwrap_or_default();
     let goal = goal.as_str();
     if goal.is_empty() {
@@ -829,6 +835,9 @@ pub fn task_schema(kinds: &[Kind]) -> Value {
     if kinds.contains(&Kind::Scout) {
         lines.push("- scout: explores the project read-only (search, read, outline, callers, neighbours, web) to answer one question, and reports the answer with `path:line` evidence. Several scouts in one turn run at the same time.".into());
     }
+    if kinds.contains(&Kind::TestWriter) {
+        lines.push("- testWriter: writes tests for your change from the request and the plan, without reading the files the change touches (only their outlines). It writes only test files; goal is optional.".into());
+    }
     if kinds.contains(&Kind::Worker) {
         lines.push("- worker: carries out one step of the plan you're implementing (give its number as step; goal is optional). It writes only the step's files and new files in their folders, then reports what it changed. Workers run one at a time.".into());
     }
@@ -881,6 +890,9 @@ pub fn lead_prompt(kinds: &[Kind], worker_min_steps: usize) -> Option<String> {
              - A worker that failed or was stopped has its changes undone; one out of budget keeps them, listed in its report.\n\
              - Do small or tightly connected steps yourself, and fix what spans several steps after the workers are done. The project's checks run when you finish, as always."
         ));
+    }
+    if kinds.contains(&Kind::TestWriter) {
+        parts.push(super::test_writer::LEAD_RULE.to_string());
     }
     if parts.is_empty() {
         return None;

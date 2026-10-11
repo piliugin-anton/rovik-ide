@@ -529,6 +529,13 @@ impl<R: Runtime> Run<R> {
             return;
         };
         let key = rel_key(&root, path);
+        // E03: the lead changes a test the test writer wrote.
+        if self.sub().is_none()
+            && self.test_writer_files.contains(&key)
+            && !self.tests_changed.contains(&key)
+        {
+            self.tests_changed.push(key.clone());
+        }
         let needs_baseline = !self.baseline.contains_key(&key);
         let needs_checkpoint = self
             .checkpoint

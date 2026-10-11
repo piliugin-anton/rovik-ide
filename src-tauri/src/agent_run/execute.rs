@@ -349,6 +349,40 @@ impl<R: Runtime> Run<R> {
                 .add_tool_result(&tc.id, content, None, Vec::new())
                 .await;
         }
+        // The test writer writes test files only (E02).
+        if let (true, Some(path), Some(root)) = (
+            tc.name == "write" && self.sub().is_some_and(|s| s.tests_only),
+            path_arg,
+            self.root.as_deref(),
+        ) {
+            let key = super::repair::rel_key(root, path);
+            if !super::project::is_test_path(&key) {
+                let content = super::test_writer::not_a_test_file(&key);
+                return self
+                    .add_tool_result(&tc.id, content, None, Vec::new())
+                    .await;
+            }
+        }
+        // Light commands only: builds and test runs are the lead's (E02, F05).
+        if tc.name == "bash" && self.sub().is_some_and(|s| s.light_bash) {
+            let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
+            let class = crate::workload::classify::classify(
+                command,
+                self.root.as_deref().map(std::path::Path::new),
+            );
+            if matches!(
+                class,
+                crate::workload::classify::Class::Heavy
+                    | crate::workload::classify::Class::LongRunning
+            ) {
+                let content = format!(
+                    "Error: `{command}` is a heavy command (a build, a test run or a server). The lead runs those after merging your work; use diagnostics, or a light check on one file."
+                );
+                return self
+                    .add_tool_result(&tc.id, content, None, Vec::new())
+                    .await;
+            }
+        }
         if tc.name == "write" {
             if let (Some(scope), Some(path), Some(root)) = (
                 self.sub().and_then(|s| s.scope.as_ref()),
@@ -1296,6 +1330,7 @@ impl<R: Runtime> Run<R> {
             checks_owner: self
                 .sub()
                 .map_or_else(|| self.dialog_id.clone(), |s| s.parent_dialog_id.clone()),
+            hidden: self.sub().map(|s| s.hidden.clone()).unwrap_or_default(),
             note: std::sync::Arc::new(move |note| {
                 emit(
                     &app,

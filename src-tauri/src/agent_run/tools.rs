@@ -577,6 +577,8 @@ pub struct CallContext {
     /// The chat whose saved check output `@checks/…` reads: the lead's,
     /// for a subagent (check_output.rs).
     pub checks_owner: String,
+    /// Files this call may not read or search (the test writer's, K11).
+    pub hidden: Vec<String>,
     /// A note on the call while it runs ("Waiting for a CPU slot: …");
     /// `None` clears it.
     pub note: Arc<dyn Fn(Option<String>) + Send + Sync>,
@@ -634,6 +636,14 @@ async fn run<R: Runtime>(
                 uint(args, "end_line"),
             )
             .map(ToolResult::text);
+        }
+    }
+    if !ctx.hidden.is_empty() && name == "read" {
+        if let (Some(path), Some(root)) = (text(args, "path"), root) {
+            let key = super::repair::rel_key(root, path);
+            if super::test_writer::is_hidden(&ctx.hidden, &key) {
+                return Ok(ToolResult::text(super::test_writer::hidden_file(&key)));
+            }
         }
     }
     match name {
@@ -890,6 +900,24 @@ async fn run<R: Runtime>(
                     result = retried;
                 }
             }
+            // The test writer doesn't see the files the change touches.
+            let mut left_out = 0usize;
+            if !ctx.hidden.is_empty() {
+                let before = result.lines.iter().filter(|l| l.is_match).count();
+                result
+                    .lines
+                    .retain(|l| !super::test_writer::is_hidden(&ctx.hidden, &l.path));
+                let after = result.lines.iter().filter(|l| l.is_match).count();
+                left_out = before - after;
+                if left_out > 0 {
+                    let mut files: Vec<&str> =
+                        result.lines.iter().map(|l| l.path.as_str()).collect();
+                    files.dedup();
+                    result.match_count = after;
+                    result.file_count = files.len();
+                    result.total_matches = result.total_matches.saturating_sub(left_out);
+                }
+            }
             // The declaration each line is in: the files' outlines, briefly.
             let root = root_owned;
             let outlines = tauri::async_runtime::spawn_blocking(move || {
@@ -900,13 +928,21 @@ async fn run<R: Runtime>(
             .await
             .map_err(|e| e.to_string())?;
             let shown = format_search_result(&outlines.0, &outlines.1);
-            match as_regex {
+            let shown = match as_regex {
                 Some(true) => format!(
                     "{shown}\n[The literal text had no matches, so the query was searched as a regular expression. \
                      Pass regex: true for patterns.]"
                 ),
                 Some(false) => format!("{shown}\n[No matches as a regular expression either.]"),
                 None => shown,
+            };
+            if left_out > 0 {
+                format!(
+                    "{shown}\n[{left_out} match{} in the files the change touches left out: you write tests from the specification. Use outline on those files.]",
+                    if left_out == 1 { "" } else { "es" }
+                )
+            } else {
+                shown
             }
         }
         "neighbours" => {

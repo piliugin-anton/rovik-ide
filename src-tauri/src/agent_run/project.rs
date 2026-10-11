@@ -192,10 +192,348 @@ pub fn cached_context<R: tauri::Runtime>(
     text
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Test files (E01): where a stack keeps its tests, and how to run some
+ * ---------------------------------------------------------------------------
+ */
+
+/// Whether `path` is a test file by its stack's conventions (`*.test.ts`,
+/// `__tests__/`, `tests/`, `*_test.go`, `test_*.py`, Rust `tests.rs`
+/// modules…).
+pub fn is_test_path(path: &str) -> bool {
+    super::repair::is_test_path(path)
+}
+
+fn split_ext(path: &str) -> (&str, &str) {
+    let name_at = path.rfind('/').map_or(0, |i| i + 1);
+    match path[name_at..].rfind('.') {
+        Some(dot) if dot > 0 => (&path[..name_at + dot], &path[name_at + dot + 1..]),
+        _ => (path, ""),
+    }
+}
+
+/// Where a test for `source` (repo-relative) goes by its stack's
+/// conventions, most usual first. Empty for files that aren't code.
+pub fn test_paths_for(source: &str) -> Vec<String> {
+    let p = source.replace('\\', "/");
+    if is_test_path(&p) {
+        return vec![p];
+    }
+    let (stem, ext) = split_ext(&p);
+    let dir = p
+        .rsplit_once('/')
+        .map(|(d, _)| d.to_string())
+        .unwrap_or_default();
+    let name = stem.rsplit('/').next().unwrap_or(stem);
+    let in_dir = |f: &str| {
+        if dir.is_empty() {
+            f.to_string()
+        } else {
+            format!("{dir}/{f}")
+        }
+    };
+    match ext {
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts" => vec![
+            format!("{stem}.test.{ext}"),
+            in_dir(&format!("__tests__/{name}.test.{ext}")),
+        ],
+        "go" => vec![format!("{stem}_test.go")],
+        "py" => {
+            let mut out = vec![
+                format!("tests/test_{name}.py"),
+                in_dir(&format!("test_{name}.py")),
+            ];
+            out.dedup();
+            out
+        }
+        "rs" => {
+            // A module's tests in a `tests.rs` beside it (this repository's
+            // way), or an integration test in the crate's `tests/`.
+            let module_dir = if name == "mod" || name == "lib" || name == "main" {
+                dir.clone()
+            } else {
+                stem.to_string()
+            };
+            let crate_root = p
+                .find("src/")
+                .map(|i| p[..i].to_string())
+                .unwrap_or_default();
+            vec![
+                format!("{module_dir}/tests.rs"),
+                format!("{crate_root}tests/{name}.rs"),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The JavaScript test runner the project uses, from its package.json.
+fn js_runner(root: &Path) -> Option<&'static str> {
+    let text = std::fs::read_to_string(root.join("package.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let has = |name: &str| {
+        ["dependencies", "devDependencies"]
+            .iter()
+            .any(|k| v.get(k).and_then(|d| d.get(name)).is_some())
+    };
+    if has("vitest") {
+        Some("npx vitest run")
+    } else if has("jest") {
+        Some("npx jest")
+    } else {
+        None
+    }
+}
+
+/// The nearest folder above `rel` (or the root) with `marker` in it.
+fn crate_dir(root: &Path, rel: &str, marker: &str) -> Option<String> {
+    let mut dir = Path::new(rel).parent();
+    while let Some(d) = dir {
+        if root.join(d).join(marker).is_file() {
+            return Some(d.to_string_lossy().replace('\\', "/"));
+        }
+        dir = d.parent();
+    }
+    root.join(marker).is_file().then(String::new)
+}
+
+/// A Rust test file's filter: `tests/x.rs` is `--test x`; a module file
+/// under `src/` is its module path (`src/a/b/tests.rs` → `a::b::tests`).
+fn rust_filter(rel_to_crate: &str) -> Option<String> {
+    if let Some(name) = rel_to_crate.strip_prefix("tests/") {
+        return Some(format!("--test {}", name.trim_end_matches(".rs")));
+    }
+    let module = rel_to_crate.strip_prefix("src/")?.trim_end_matches(".rs");
+    let module = module
+        .trim_end_matches("/mod")
+        .trim_start_matches("lib")
+        .trim_start_matches("main")
+        .trim_start_matches('/');
+    (!module.is_empty()).then(|| module.replace('/', "::"))
+}
+
+/// E01: a command that runs just `files` (test files, repo-relative):
+/// vitest or jest by path, `cargo test` by test target or module, pytest by
+/// path, `go test` by package. Anything else, or several stacks at once,
+/// falls back to the project's whole test check (`test_check`).
+pub fn test_command_for(root: &Path, files: &[String], test_check: Option<&str>) -> Option<String> {
+    let fallback = || {
+        test_check
+            .map(str::to_string)
+            .filter(|c| !c.trim().is_empty())
+    };
+    let files: Vec<String> = files.iter().map(|f| f.replace('\\', "/")).collect();
+    if files.is_empty() {
+        return fallback();
+    }
+    let ext = |f: &String| split_ext(f).1.to_string();
+    let exts: std::collections::BTreeSet<String> = files.iter().map(ext).collect();
+    let quote = |f: &str| {
+        if f.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
+        {
+            f.to_string()
+        } else {
+            format!("'{}'", f.replace('\'', "'\\''"))
+        }
+    };
+    let all = |pred: &dyn Fn(&str) -> bool| exts.iter().all(|e| pred(e));
+    if all(&|e| ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"].contains(&e)) {
+        return match js_runner(root) {
+            Some(runner) => Some(format!(
+                "{runner} {}",
+                files.iter().map(|f| quote(f)).collect::<Vec<_>>().join(" ")
+            )),
+            None => fallback(),
+        };
+    }
+    if all(&|e| e == "py") {
+        return Some(format!(
+            "python -m pytest {}",
+            files.iter().map(|f| quote(f)).collect::<Vec<_>>().join(" ")
+        ));
+    }
+    if all(&|e| e == "go") {
+        let mut pkgs: Vec<String> = files
+            .iter()
+            .map(|f| match f.rsplit_once('/') {
+                Some((d, _)) => format!("./{d}"),
+                None => ".".into(),
+            })
+            .collect();
+        pkgs.dedup();
+        return Some(format!("go test {}", pkgs.join(" ")));
+    }
+    if all(&|e| e == "rs") {
+        let mut parts: Vec<(String, String)> = Vec::new();
+        for f in &files {
+            let dir = crate_dir(root, f, "Cargo.toml")?;
+            let rel = if dir.is_empty() {
+                f.clone()
+            } else {
+                f.strip_prefix(&format!("{dir}/")).unwrap_or(f).to_string()
+            };
+            parts.push((dir, rust_filter(&rel)?));
+        }
+        let dirs: std::collections::BTreeSet<&String> = parts.iter().map(|(d, _)| d).collect();
+        if dirs.len() != 1 || parts.len() != 1 {
+            // cargo takes one filter (or test target) at a time.
+            return match (dirs.len(), parts.first()) {
+                (1, Some((dir, _))) if parts.iter().all(|(_, f)| !f.starts_with("--test")) => {
+                    let common = common_module(parts.iter().map(|(_, f)| f.as_str()));
+                    Some(cargo(dir, &common))
+                }
+                _ => fallback(),
+            };
+        }
+        let (dir, filter) = &parts[0];
+        return Some(cargo(dir, filter));
+    }
+    fallback()
+}
+
+fn cargo(dir: &str, filter: &str) -> String {
+    let manifest = if dir.is_empty() {
+        String::new()
+    } else {
+        format!(" --manifest-path {dir}/Cargo.toml")
+    };
+    if filter.is_empty() {
+        format!("cargo test{manifest}")
+    } else {
+        format!("cargo test{manifest} {filter}")
+    }
+}
+
+/// The module path several filters share (`a::b::x`, `a::b::y` → `a::b`).
+fn common_module<'a>(filters: impl Iterator<Item = &'a str>) -> String {
+    let mut common: Option<Vec<&str>> = None;
+    for f in filters {
+        let parts: Vec<&str> = f.split("::").collect();
+        common = Some(match common {
+            None => parts,
+            Some(c) => c
+                .iter()
+                .zip(&parts)
+                .take_while(|(a, b)| a == b)
+                .map(|(a, _)| *a)
+                .collect(),
+        });
+    }
+    common.unwrap_or_default().join("::")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::project_profile::{DetectedCheck, ProjectInstructions};
+
+    #[test]
+    fn test_paths_follow_each_stacks_conventions() {
+        assert_eq!(
+            test_paths_for("src/lib/plan.ts"),
+            ["src/lib/plan.test.ts", "src/lib/__tests__/plan.test.ts"]
+        );
+        assert_eq!(
+            test_paths_for("App.tsx"),
+            ["App.test.tsx", "__tests__/App.test.tsx"]
+        );
+        assert_eq!(
+            test_paths_for("pkg/util/strings.go"),
+            ["pkg/util/strings_test.go"]
+        );
+        assert_eq!(
+            test_paths_for("more_itertools/more.py"),
+            ["tests/test_more.py", "more_itertools/test_more.py"]
+        );
+        assert_eq!(
+            test_paths_for("src-tauri/src/agent_run/plan.rs"),
+            [
+                "src-tauri/src/agent_run/plan/tests.rs",
+                "src-tauri/tests/plan.rs"
+            ]
+        );
+        assert_eq!(
+            test_paths_for("src/overlay/mod.rs"),
+            ["src/overlay/tests.rs", "tests/mod.rs"]
+        );
+        assert_eq!(
+            test_paths_for("src/a.test.ts"),
+            ["src/a.test.ts"],
+            "already a test"
+        );
+        assert!(test_paths_for("README.md").is_empty());
+        for t in [
+            "src/a.test.ts",
+            "src/__tests__/a.ts",
+            "tests/test_x.py",
+            "x_test.go",
+            "src/plan/tests.rs",
+            "tests/api.rs",
+        ] {
+            assert!(is_test_path(t), "{t}");
+        }
+        for t in ["src/a.ts", "src/testing.rs", "x.go"] {
+            assert!(!is_test_path(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn test_commands_for_files_by_stack() {
+        let dir = std::env::temp_dir().join(format!("project-tests-{}", uuid::Uuid::new_v4()));
+        let put = |rel: &str, text: &str| {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        put(
+            "package.json",
+            r#"{ "devDependencies": { "vitest": "1" } }"#,
+        );
+        put("src-tauri/Cargo.toml", "[package]\nname = \"x\"\n");
+        let run = |files: &[&str]| {
+            let files: Vec<String> = files.iter().map(|f| f.to_string()).collect();
+            test_command_for(&dir, &files, Some("npm test"))
+        };
+        assert_eq!(
+            run(&["src/a.test.ts", "src/b c.test.ts"]).as_deref(),
+            Some("npx vitest run src/a.test.ts 'src/b c.test.ts'")
+        );
+        assert_eq!(
+            run(&["tests/test_x.py"]).as_deref(),
+            Some("python -m pytest tests/test_x.py")
+        );
+        assert_eq!(
+            run(&["pkg/a_test.go", "pkg/b_test.go"]).as_deref(),
+            Some("go test ./pkg")
+        );
+        assert_eq!(
+            run(&["src-tauri/src/agent_run/plan/tests.rs"]).as_deref(),
+            Some("cargo test --manifest-path src-tauri/Cargo.toml agent_run::plan::tests")
+        );
+        assert_eq!(
+            run(&["src-tauri/tests/api.rs"]).as_deref(),
+            Some("cargo test --manifest-path src-tauri/Cargo.toml --test api")
+        );
+        assert_eq!(
+            run(&["src-tauri/src/a/x/tests.rs", "src-tauri/src/a/y/tests.rs"]).as_deref(),
+            Some("cargo test --manifest-path src-tauri/Cargo.toml a")
+        );
+        // Mixed stacks, or no runner known: the whole test check.
+        assert_eq!(
+            run(&["src/a.test.ts", "tests/test_x.py"]).as_deref(),
+            Some("npm test")
+        );
+        assert_eq!(run(&[]).as_deref(), Some("npm test"));
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        assert_eq!(run(&["src/a.test.ts"]).as_deref(), Some("npm test"));
+        assert_eq!(
+            test_command_for(&dir, &["src/a.test.ts".into()], None),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_project_section() {
