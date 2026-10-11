@@ -1172,10 +1172,10 @@ mod tests {
     #[test]
     fn format_problem_rejects_blocked_none() {
         let scout = Kind::Scout.spec();
-        assert!(format_problem(&scout, "## Blocked\nNone.").is_some());
-        assert!(format_problem(&scout, "## Blocked\nno").is_some());
+        assert!(format_problem(scout, "## Blocked\nNone.").is_some());
+        assert!(format_problem(scout, "## Blocked\nno").is_some());
         assert_eq!(
-            format_problem(&scout, "## Blocked\nThe repo is empty."),
+            format_problem(scout, "## Blocked\nThe repo is empty."),
             None
         );
     }
