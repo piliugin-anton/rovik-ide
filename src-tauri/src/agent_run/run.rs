@@ -2211,7 +2211,8 @@ impl<R: Runtime> Run<R> {
                 == Some("needs-approval");
             if waiting {
                 meta["verification"]["status"] = json!("superseded");
-                let _ = self.update_meta(&m.id, meta).await;
+                // Its own round limit stays (round 2): not this run's.
+                let _ = self.store_meta(&m.id, meta).await;
             }
         }
     }
@@ -2227,6 +2228,11 @@ impl<R: Runtime> Run<R> {
                 }
             }
         }
+        self.store_meta(message_id, meta).await
+    }
+
+    /// Stores a message's meta as given and shows it.
+    async fn store_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
         let id = message_id.to_string();
         let patch = MessagePatch {
             meta: Some(meta.clone()),

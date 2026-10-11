@@ -3763,6 +3763,205 @@ async fn an_older_waiting_check_is_superseded_and_carries_are_freed() {
     assert!(!state.has_carry(&h.dialog_id));
 }
 
+/// Stores verification records as earlier runs left them; their ids, in
+/// order.
+async fn store_records(h: &Harness, records: &[Value]) -> Vec<String> {
+    let id = h.dialog_id.clone();
+    let db = h.app.state::<DbState>().inner().clone();
+    let mut stored = vec![run::new_message("user", "Earlier")];
+    for r in records {
+        stored.push(store::NewMessage {
+            meta: Some(json!({ "verification": r })),
+            ..run::new_message("assistant", "")
+        });
+    }
+    let ids: Vec<String> = stored[1..].iter().map(|m| m.id.clone()).collect();
+    db.write(move |c| store::append_messages(c, &id, &stored))
+        .await
+        .unwrap();
+    ids
+}
+
+fn verification_of(messages: &[MessageRow], id: &str) -> Value {
+    messages
+        .iter()
+        .find(|m| m.id == id)
+        .and_then(|m| m.meta.as_ref())
+        .map(|m| m["verification"].clone())
+        .unwrap()
+}
+
+/// Round 2 (§4.2): a new run supersedes only records waiting for "Run
+/// checks"; results stay as they were, and the superseded record keeps
+/// its own round limit (not the new run's).
+#[tokio::test]
+async fn superseding_marks_only_waiting_records() {
+    let h = harness(&[]).await;
+    let ids = store_records(
+        &h,
+        &[
+            json!({ "status": "passed", "maxRounds": 4 }),
+            json!({ "status": "failed", "maxRounds": 4 }),
+            json!({ "status": "flagged", "maxRounds": 4 }),
+            json!({ "status": "needs-approval", "maxRounds": 4, "changedFiles": ["a.txt"] }),
+        ],
+    )
+    .await;
+    let (url, _) = model(vec![Reply::Text("Hi.")]).await;
+    h.start(h.request(&url, Harness::send("Hello"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    for (id, status) in ids
+        .iter()
+        .zip(["passed", "failed", "flagged", "superseded"])
+    {
+        let v = verification_of(&messages, id);
+        assert_eq!(v["status"], status, "{v}");
+        assert_eq!(v["maxRounds"], 4, "{v}");
+    }
+
+    // Its checks don't start any more: no run.
+    h.events.lock().unwrap().clear();
+    let none = h
+        .start(h.request(
+            &url,
+            StartKind::RunChecks {
+                record_id: ids[3].clone(),
+            },
+            quiet_permissions(),
+        ))
+        .await;
+    assert!(none.is_none());
+    assert!(h.events_of("runStarted").is_empty());
+}
+
+/// Round 2 (§4.2): a chat resumed after a restart is a new run too: the
+/// checks it left waiting are superseded.
+#[tokio::test]
+async fn a_resume_after_restart_supersedes_waiting_checks() {
+    let h = harness(&[]).await;
+    let ids = store_records(
+        &h,
+        &[json!({ "status": "needs-approval", "changedFiles": ["a.txt"] })],
+    )
+    .await;
+    let id = h.dialog_id.clone();
+    let db = h.app.state::<DbState>().inner().clone();
+    let stored = vec![store::NewMessage {
+        tool_calls: Some(vec![store::ToolCall {
+            id: "l1".into(),
+            name: "list_dir".into(),
+            arguments: "{}".into(),
+            extra_content: None,
+        }]),
+        ..run::new_message("assistant", "")
+    }];
+    db.write(move |c| store::append_messages(c, &id, &stored))
+        .await
+        .unwrap();
+    let (url, _) = model(vec![Reply::Text("Nothing there.")]).await;
+    assert!(h
+        .start(h.request(&url, StartKind::Resume, quiet_permissions()))
+        .await
+        .is_some());
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    let app = h.app.handle().clone();
+    agent_resolve_approval(
+        app.clone(),
+        app.state(),
+        h.dialog_id.clone(),
+        "l1".into(),
+        ApprovalDecision::Allow,
+    );
+    assert_eq!(h.run_end().await, "done");
+    let v = verification_of(&h.messages().await, &ids[0]);
+    assert_eq!(v["status"], "superseded", "{v}");
+}
+
+/// Round 2 (§4.2): checks started with their state lost tell the agent so
+/// once, in the first round's note, not in every round after.
+#[tokio::test]
+async fn the_lead_is_told_once_that_state_was_lost() {
+    let h = harness(&[(
+        "package.json",
+        r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(require('fs').existsSync('ok.txt') ? 0 : 1)\"" } }"#,
+    )])
+    .await;
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+        // The checks' rounds, after "Run checks".
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "not-yet.txt", "content": "y" }),
+        },
+        Reply::Text("Fixed."),
+        Reply::Call {
+            id: "w3",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok" }),
+        },
+        Reply::Text("Fixed."),
+    ])
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Write x"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let record = h.messages().await.last().unwrap().id.clone();
+    // As after a restart.
+    h.app.state::<AgentState>().drop_carry(&h.dialog_id);
+    // Each fix waits for approval again: "Run checks" until they pass.
+    let mut record = record;
+    let mut runs = 0;
+    loop {
+        runs += 1;
+        h.events.lock().unwrap().clear();
+        h.start(h.request(
+            &url,
+            StartKind::RunChecks { record_id: record },
+            permissions.clone(),
+        ))
+        .await;
+        match h.run_end().await.as_str() {
+            "verified" => break,
+            "verify-needs-approval" if runs < 4 => {
+                record = h.messages().await.last().unwrap().id.clone();
+            }
+            other => panic!("{other}"),
+        }
+    }
+    assert_eq!(runs, 3, "two failed rounds went back to the agent");
+    let lost = "didn't carry over to these";
+    let messages = h.messages().await;
+    let told: Vec<bool> = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.content.contains(lost))
+        .collect();
+    assert_eq!(told.iter().filter(|t| **t).count(), 1, "{told:?}");
+}
+
 #[tokio::test]
 async fn checks_wait_for_approval_then_run_when_started() {
     let h = harness(&[(
