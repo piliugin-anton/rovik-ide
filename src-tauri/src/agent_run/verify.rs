@@ -1420,7 +1420,10 @@ mod tests {
         let mut baseline = std::collections::HashMap::new();
         baseline.insert(
             "big.bin".to_string(),
-            Original::new(Some(vec![1u8; CARRY_MEMORY_BYTES + 1]), Source::ViewAtRunStart),
+            Original::new(
+                Some(vec![1u8; CARRY_MEMORY_BYTES + 1]),
+                Source::ViewAtRunStart,
+            ),
         );
         let spilled = spill(&chat, &mut baseline);
         let mut kept = baseline.clone();

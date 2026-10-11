@@ -264,7 +264,8 @@ async fn a_test_skipped_to_pass_is_not_reported_as_verified() {
         asked[0]
     );
     assert!(
-        asked[0].contains("fewer tests ran than before, not counting the run's own test files (1 → 0)"),
+        asked[0]
+            .contains("fewer tests ran than before, not counting the run's own test files (1 → 0)"),
         "{}",
         asked[0]
     );
@@ -753,7 +754,8 @@ async fn fewer_tests_after_a_bash_deletion_is_flagged_in_direct_mode() {
     assert_eq!(end, "verify-flagged");
     let asked = harness_texts(&h.messages().await, "integrity");
     assert!(
-        asked[0].contains("fewer tests ran than before, not counting the run's own test files (2 → 0)"),
+        asked[0]
+            .contains("fewer tests ran than before, not counting the run's own test files (2 → 0)"),
         "{asked:?}"
     );
 }

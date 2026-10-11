@@ -141,7 +141,12 @@ pub fn refusal(ctx: &GroupCtx, paths: &[String]) -> Option<String> {
             let slashed = p.replace('\\', "/");
             let path = slashed.trim_end_matches('/');
             ctx.owner_of(path)
-                .or_else(|| slashed.ends_with('/').then(|| ctx.owner_within(path)).flatten())
+                .or_else(|| {
+                    slashed
+                        .ends_with('/')
+                        .then(|| ctx.owner_within(path))
+                        .flatten()
+                })
                 .map(|o| format!("`{p}` ({o})"))
         })
         .collect();

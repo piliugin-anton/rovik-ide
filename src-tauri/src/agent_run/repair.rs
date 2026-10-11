@@ -484,7 +484,9 @@ static JS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"\b(?:it|test)(?:\.(?:each|concurrent|only|skip|todo|failing)\b[^(]*)?\s*\("),
     // P3.8: a body that returns (or `if (false)`) first skips it too; a
     // bare `return`, not `return request(app)…` (round 2).
-    skips: re(r"\b(?:it|test|describe)\.(?:skip|todo)\b|\bx(?:it|test|describe)\s*\(|\b(?:it|test)\s*\([^,]*,\s*(?:async\s*)?(?:\(\s*\)|function\s*\w*\s*\(\s*\))\s*(?:=>\s*)?\{\s*(?:if\s*\(\s*false\s*\)|return[ \t]*(?:;|\}|\r?\n))"),
+    skips: re(
+        r"\b(?:it|test|describe)\.(?:skip|todo)\b|\bx(?:it|test|describe)\s*\(|\b(?:it|test)\s*\([^,]*,\s*(?:async\s*)?(?:\(\s*\)|function\s*\w*\s*\(\s*\))\s*(?:=>\s*)?\{\s*(?:if\s*\(\s*false\s*\)|return[ \t]*(?:;|\}|\r?\n))",
+    ),
     only: Some(re(
         r"\b(?:it|test|describe)\.only\b|\bf(?:it|describe)\s*\(",
     )),
@@ -1250,12 +1252,18 @@ mod tests {
             let f = integrity_flags(path, Some(before), Some(after));
             assert!(f.is_empty(), "{path}: {f:?}");
         };
-        none("__tests__/__snapshots__/a.snap", "exports[`a`] = `1`;\n", "exports[`a`] = `2`;\n");
+        none(
+            "__tests__/__snapshots__/a.snap",
+            "exports[`a`] = `1`;\n",
+            "exports[`a`] = `2`;\n",
+        );
         none("tests/fixtures/x.json", "{\"a\": 1}\n", "{\"a\": 2}\n");
         none("tests/README.md", "# Tests\n", "# Tests\n\nRun them.\n");
         none("tests/fixtures/seed.sql", "insert 1;\n", "insert 2;\n");
         let js = "test('lists', () => {\n  expect(1).toBe(1);\n});\n";
-        let added = format!("{js}test('serves', () => {{\n  return request(app).get('/').expect(200);\n}});\n");
+        let added = format!(
+            "{js}test('serves', () => {{\n  return request(app).get('/').expect(200);\n}});\n"
+        );
         none("src/app.test.js", js, &added);
         none(
             "tests/conftest.py",

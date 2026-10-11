@@ -1454,7 +1454,15 @@ impl<R: Runtime> Run<R> {
         let message = existing.is_none().then_some(message);
         let admitted = existing.is_none().then_some(&brief);
         let mut child = self
-            .store_and_launch(&child_id, &tc.id, Kind::Worker, &goal, message, sub, admitted)
+            .store_and_launch(
+                &child_id,
+                &tc.id,
+                Kind::Worker,
+                &goal,
+                message,
+                sub,
+                admitted,
+            )
             .await?;
         if existing.is_some() {
             self.resume_child_writes(&mut child, &child_id).await;
@@ -1606,7 +1614,15 @@ impl<R: Runtime> Run<R> {
         let message = existing.is_none().then_some(message);
         let admitted = existing.is_none().then_some(&brief);
         let mut child = self
-            .store_and_launch(&child_id, &tc.id, Kind::TestWriter, &goal, message, sub, admitted)
+            .store_and_launch(
+                &child_id,
+                &tc.id,
+                Kind::TestWriter,
+                &goal,
+                message,
+                sub,
+                admitted,
+            )
             .await?;
         if existing.is_some() {
             self.resume_child_writes(&mut child, &child_id).await;

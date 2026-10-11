@@ -3872,8 +3872,13 @@ async fn retried_workers_count_against_the_limit() {
         ));
         files.push((format!("src/part{n}.rs"), format!("// part {n}\n")));
     }
-    let plan = format!("# Six parts\n\nSix parts at once.\n\n## Steps\n\n{steps}\n## Validation\n- `npm test`\n");
-    let mut all: Vec<(&str, &str)> = files.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+    let plan = format!(
+        "# Six parts\n\nSix parts at once.\n\n## Steps\n\n{steps}\n## Validation\n- `npm test`\n"
+    );
+    let mut all: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
     all.push((".rovik/plans/greet.md", plan.as_str()));
     let mut h = harness(&all).await;
     h.isolate().await;
@@ -3885,7 +3890,12 @@ async fn retried_workers_count_against_the_limit() {
                 marker,
                 // Too long for the model, twice (trimmed once): it fails,
                 // without counting against the model (S12's breaker).
-                vec![too_long(), too_long(), write_call("w", path, "done\n"), worker_report("Done.", &[path])],
+                vec![
+                    too_long(),
+                    too_long(),
+                    write_call("w", path, "done\n"),
+                    worker_report("Done.", &[path]),
+                ],
             )
         })
         .collect();
@@ -4101,8 +4111,8 @@ async fn a_kept_copy_whose_step_cant_be_read_doesnt_land_everything() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let cut = GROUP3_PLAN.split("4. **Feed**").next().unwrap().to_string()
         + "\n## Validation\n- `npm test`\n";
-    let plan_in_view = crate::overlay::chats::get(&h.dialog_id)
-        .map(|o| o.view.join(".rovik/plans/greet.md"));
+    let plan_in_view =
+        crate::overlay::chats::get(&h.dialog_id).map(|o| o.view.join(".rovik/plans/greet.md"));
     std::fs::write(h.project.join(".rovik/plans/greet.md"), &cut).unwrap();
     if let Some(p) = plan_in_view {
         let _ = std::fs::write(p, &cut);
@@ -4110,7 +4120,9 @@ async fn a_kept_copy_whose_step_cant_be_read_doesnt_land_everything() {
     let continued = h.result_when_ready("c1").await;
     h.run_end().await;
     assert!(
-        continued.content.contains("the scope it may land in can't be determined"),
+        continued
+            .content
+            .contains("the scope it may land in can't be determined"),
         "{}",
         continued.content
     );
@@ -4119,14 +4131,18 @@ async fn a_kept_copy_whose_step_cant_be_read_doesnt_land_everything() {
     let view = crate::overlay::chats::mountpoint(&h.dialog_id);
     for root in [view, h.project.clone()] {
         assert_ne!(
-            std::fs::read_to_string(root.join("src/feed.rs")).ok().as_deref(),
+            std::fs::read_to_string(root.join("src/feed.rs"))
+                .ok()
+                .as_deref(),
             Some("feed from w3\n"),
             "{}",
             root.display()
         );
     }
     assert!(continued.content.contains("Its copy is kept"));
-    assert!(continued.content.contains(&subagent::handle(subagent::Kind::Worker, &w3.id)));
+    assert!(continued
+        .content
+        .contains(&subagent::handle(subagent::Kind::Worker, &w3.id)));
 }
 
 /// Round 2, P1.2: after the app restarts, `continue` on a kept copy goes
@@ -4324,7 +4340,10 @@ async fn a_conflict_in_the_only_landing_member_still_saves_the_group() {
         })
         .sum();
     assert!(referenced > 0, "{:?}", groups[0].before);
-    assert_eq!(crate::overlay::chats::group_blob_count(&h.dialog_id), referenced);
+    assert_eq!(
+        crate::overlay::chats::group_blob_count(&h.dialog_id),
+        referenced
+    );
 }
 
 /// P1.2: a conflict (the user edited the file meanwhile) lands the rest of
@@ -7141,7 +7160,15 @@ async fn a_failed_launch_gives_its_slot_back() {
     h.run_end().await;
     *crate::agent_run::subagent_run::FAIL_LAUNCH.lock().unwrap() = None;
     let first = h.task_result("f1").await;
-    assert!(first.content.contains("already running"), "{}", first.content);
+    assert!(
+        first.content.contains("already running"),
+        "{}",
+        first.content
+    );
     let second = h.task_result("f2").await;
-    assert!(second.content.contains("Status: done"), "{}", second.content);
+    assert!(
+        second.content.contains("Status: done"),
+        "{}",
+        second.content
+    );
 }
