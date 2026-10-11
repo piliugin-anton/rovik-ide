@@ -898,12 +898,7 @@ impl<R: Runtime> Run<R> {
                 .and_then(|v| std::fs::read(v.join(&c.path)).ok())
                 .map(|b| String::from_utf8_lossy(&b).into_owned())
                 .unwrap_or_default();
-            let name: String = c
-                .path
-                .chars()
-                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-                .collect();
-            let stem = format!("conflict-{label}-{name}");
+            let stem = conflict_stem(label, &c.path);
             let saved = (
                 super::check_output::save(&self.dialog_id, &stem, "chat", &ours),
                 super::check_output::save(&self.dialog_id, &stem, "worker", &theirs),
@@ -1047,6 +1042,18 @@ impl<R: Runtime> Run<R> {
     }
 }
 
+/// The file stem both versions of a conflict are saved under: the
+/// worker's label and the path, each as letters, digits and `-` (a retry's
+/// `w2'` or a handle has none of a shell's quotes; round 2).
+fn conflict_stem(label: &str, path: &str) -> String {
+    let plain = |s: &str| -> String {
+        s.chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+            .collect()
+    };
+    format!("conflict-{}-{}", plain(label), plain(path))
+}
+
 /// P2.6: the paths of a worker's copy outside its scope (with its grants).
 /// A folder that holds an in-scope path isn't outside (it's made for it).
 fn outside_scope(paths: &[String], scope: &WriteScope, root: &str) -> Vec<String> {
@@ -1173,6 +1180,24 @@ mod tests {
             attribute("src/lib.rs:3", &owners, false),
             "seam: no worker owns it"
         );
+    }
+
+    /// Round 2 (section 4.2): a conflict's saved file names have no
+    /// quotes or other shell characters, whatever the label.
+    #[test]
+    fn save_conflict_sanitises_the_label() {
+        assert_eq!(
+            conflict_stem("w2", "src/posts.rs"),
+            "conflict-w2-src-posts-rs"
+        );
+        for label in ["w2'", "g1#w2", "worker-ab12cd34", "w\"x"] {
+            let stem = conflict_stem(label, "src/a b.rs");
+            assert!(
+                stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+                "{label}: {stem}"
+            );
+        }
+        assert_ne!(conflict_stem("w2'", "a.rs"), conflict_stem("w3'", "a.rs"));
     }
 
     /// Round 2 (section 4.2): a grant's holder is found however the path
