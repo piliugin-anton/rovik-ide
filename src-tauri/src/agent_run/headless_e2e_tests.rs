@@ -564,3 +564,41 @@ async fn a_data_folder_given_is_kept() {
         "{log}"
     );
 }
+
+/// Round 2 (section 4.2), P6.2: a provider that sends `usage: {}` (no
+/// token counts) reports no usage: a run with a token cap stops, `no-usage`.
+#[tokio::test]
+async fn an_empty_usage_with_a_token_cap_ends_no_usage() {
+    let dir = temp_dir();
+    let read = |id: &'static str| Reply::Call {
+        id,
+        name: "read",
+        args: json!({ "path": "a.txt" }),
+    };
+    let (url, _) = model(vec![
+        Reply::UsageAs(json!({}), Box::new(read("r1"))),
+        Reply::Slow(30_000, Box::new(read("r2"))),
+        Reply::Hang(None),
+    ])
+    .await;
+    let report = headless(
+        &dir,
+        settings_with(&url, json!({ "verifyChanges": false, "checklist": "off" })),
+        None,
+        "Read a.txt",
+        &["--max-tokens", "1000000"],
+    )
+    .await;
+    assert_eq!(report["outcome"], "no-usage", "{report:#}");
+    assert_eq!(report["costUsd"], Value::Null);
+    assert_eq!(report["costSource"], "unknown");
+    assert_eq!(report["usage"]["replies"], 0);
+    assert!(
+        report["runLog"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["event"] == "reply" && l["usage"] == json!({})),
+        "{report:#}"
+    );
+}

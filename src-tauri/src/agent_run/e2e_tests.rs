@@ -38,8 +38,11 @@ enum Reply {
     Slow(u64, Box<Reply>),
     /// 429 with a Retry-After of this many seconds.
     RateLimited(u64),
-    /// The reply, then the usage the provider reports (prompt, completion).
+    /// The reply, then the usage the provider reports (prompt, completion);
+    /// before a reply that hangs, its usage, then silence.
     Usage(u64, u64, Box<Reply>),
+    /// The reply, then this usage object, as the provider sends it.
+    UsageAs(Value, Box<Reply>),
 }
 
 impl Reply {
@@ -89,12 +92,11 @@ impl Reply {
             }
             Reply::Slow(_, then) => then.sse(),
             Reply::RateLimited(_) => String::new(),
-            Reply::Usage(prompt, completion, then) => {
-                let usage = chunk(json!({ "choices": [], "usage": {
-                    "prompt_tokens": prompt, "completion_tokens": completion,
-                } }));
-                then.sse().replace("data: [DONE]\n\n", &format!("{usage}data: [DONE]\n\n"))
-            }
+            Reply::Usage(prompt, completion, then) => Reply::usage_sse(
+                json!({ "prompt_tokens": prompt, "completion_tokens": completion }),
+                then,
+            ),
+            Reply::UsageAs(usage, then) => Reply::usage_sse(usage.clone(), then),
         }
     }
 
@@ -128,6 +130,7 @@ impl Reply {
         match self {
             Reply::Hang(_) => true,
             Reply::Slow(_, then) => then.hangs(),
+            Reply::Usage(_, _, then) | Reply::UsageAs(_, then) => then.hangs(),
             _ => false,
         }
     }
@@ -137,6 +140,17 @@ impl Reply {
             Reply::Slow(ms, _) => Duration::from_millis(*ms),
             _ => Duration::ZERO,
         }
+    }
+
+    /// The usage in a chunk of its own, as providers send it: just before
+    /// [DONE]; for a reply that hangs, after what it sends.
+    fn usage_sse(usage: Value, then: &Reply) -> String {
+        let usage = format!("data: {}\n\n", json!({ "choices": [], "usage": usage }));
+        if then.hangs() {
+            return then.sse() + &usage;
+        }
+        then.sse()
+            .replace("data: [DONE]\n\n", &format!("{usage}data: [DONE]\n\n"))
     }
 }
 
