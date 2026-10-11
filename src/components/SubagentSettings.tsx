@@ -11,6 +11,7 @@ import ModelWithFallbacks from './ModelWithFallbacks';
 import { EFFORTS, type Effort } from '../lib/reasoning';
 import {
   LIMITS,
+  numberFieldValue,
   otherProviders,
   SUBAGENT_KINDS,
   type KindModel,
@@ -51,13 +52,16 @@ function NumberInput(props: {
         placeholder={String(props.placeholder)}
         disabled={props.disabled}
         onChange={(e) => {
-          const raw = e.currentTarget.value.trim();
-          const n = Number(raw);
-          props.onChange(
-            raw === '' || !Number.isFinite(n)
-              ? undefined
-              : Math.min(props.max, Math.max(props.min, n))
+          const value = numberFieldValue(
+            e.currentTarget.value,
+            props.min,
+            props.max,
+            props.step ?? 1
           );
+          // Shows what is saved: when that is the value it had already, the
+          // field wouldn't be redrawn and would keep the text typed.
+          e.currentTarget.value = value === undefined ? '' : String(value);
+          props.onChange(value);
         }}
       />
     </label>

@@ -381,6 +381,23 @@ export function otherProviders(
   return names;
 }
 
+/**
+ * What a number field's text saves as: unset when empty or not a number,
+ * else within `min`..`max`, and whole when the field's step is.
+ */
+export function numberFieldValue(
+  raw: string,
+  min: number,
+  max: number,
+  step = 1
+): number | undefined {
+  const text = raw.trim();
+  const n = Number(text);
+  if (text === '' || !Number.isFinite(n)) return undefined;
+  const whole = Number.isInteger(step) ? Math.round(n) : n;
+  return Math.min(max, Math.max(min, whole));
+}
+
 /** One line for the Settings menu. */
 export function subagentSummary(settings: SubagentSettings): string {
   if (!settings.enabled) return 'Off: the agent works alone';

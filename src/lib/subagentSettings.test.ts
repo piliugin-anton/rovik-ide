@@ -5,6 +5,7 @@ import {
   DEFAULT_SUBAGENT_SETTINGS,
   kindChain,
   normalizeSubagentSettings,
+  numberFieldValue,
   otherProviders,
   resolveSubagentConfig,
   subagentSummary,
@@ -223,4 +224,13 @@ test('parallel groups, the red check and parallel repair are off until turned on
   assert.equal(config.parallelRepair, true);
   assert.equal(config.workerMinSteps, 4);
   assert.equal(normalizeSubagentSettings({ parallelWorkers: 'yes' }).parallelWorkers, false);
+});
+
+test('a number field saves what it shows: unset, clamped, whole', () => {
+  assert.equal(numberFieldValue('', 1, 10), undefined);
+  assert.equal(numberFieldValue('abc', 1, 10), undefined);
+  assert.equal(numberFieldValue(' 999 ', 1, 10), 10);
+  assert.equal(numberFieldValue('-3', 1, 10), 1);
+  assert.equal(numberFieldValue('2.6', 1, 10), 3);
+  assert.equal(numberFieldValue('2.6', 0, 10, 0.5), 2.6);
 });

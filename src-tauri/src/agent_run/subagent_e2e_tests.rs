@@ -1513,6 +1513,78 @@ async fn a_restart_during_a_scout_resumes_its_chat() {
         .any(|m| m.tool_call_id.as_deref() == Some("s2") && m.content.contains("interrupted")));
 }
 
+/// A follow-up asked just before the app closed is asked once: resumed,
+/// the subagent goes on from the question already in its chat.
+#[tokio::test]
+async fn a_follow_up_resumed_after_a_restart_is_asked_once() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let db = h.app.state::<DbState>().inner().clone();
+    let lead = h.dialog_id.clone();
+    let mut user = crate::agent_run::run::new_message("user", "Find it");
+    user.meta = Some(json!({ "mode": "agent" }));
+    let call = |id: &str, args: Value| {
+        let mut m = crate::agent_run::run::new_message("assistant", "");
+        m.tool_calls = Some(vec![store::ToolCall {
+            id: id.into(),
+            name: "task".into(),
+            arguments: args.to_string(),
+            extra_content: None,
+        }]);
+        m
+    };
+    let first = call("t1", json!({ "kind": "scout", "goal": "MARK-RF: where?" }));
+    let mut answered = crate::agent_run::run::new_message("tool", "FIRST-ANSWER");
+    answered.tool_call_id = Some("t1".into());
+    let again = call("t2", json!({ "continue": "t1", "goal": "And who calls it?" }));
+    let child = uuid::Uuid::new_v4().to_string();
+    let brief =
+        crate::agent_run::run::new_message("user", "# Task from the lead agent\n\nMARK-RF: where?");
+    let report = crate::agent_run::run::new_message("assistant", "## Answer\nFIRST-ANSWER");
+    let mut asked = crate::agent_run::run::new_message(
+        "user",
+        "# Follow-up from the lead agent\n\nAnd who calls it?\n\nAnswer it in the same report format.",
+    );
+    asked.meta = Some(json!({
+        "subagentBrief": { "kind": "scout", "parentCallId": "t2", "followUp": true }
+    }));
+    let child_id = child.clone();
+    db.write(move |c| {
+        store::append_messages(c, &lead, &[user, first, answered, again])?;
+        store::create_child_dialog(
+            c,
+            &store::NewChildDialog {
+                id: child_id.clone(),
+                parent_id: lead.clone(),
+                parent_call_id: "t1".into(),
+                kind: "scout".into(),
+                title: "Scout".into(),
+                created_at: store::now_ms(),
+            },
+        )?;
+        store::append_messages(c, &child_id, &[brief, report, asked])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let (url, _) = model_routed(
+        vec![("MARK-RF", vec![Reply::Text("## Answer\nSECOND-ANSWER")])],
+        vec![Reply::Text("Done.")],
+    )
+    .await;
+    let mut request = h.with_subagents(&url, "unused", quiet_permissions(), scouts_on(json!({})));
+    request.start = StartKind::Resume;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(h.task_result("t2").await.content.ends_with("SECOND-ANSWER"));
+    let work = h.messages_of(&child).await;
+    let questions = work
+        .iter()
+        .filter(|m| m.content.starts_with("# Follow-up from the lead agent"))
+        .count();
+    assert_eq!(questions, 1, "asked once");
+}
+
 /// S17: each subagent's reported tokens are kept with its result, and past
 /// the run's limit no new subagent starts.
 #[tokio::test]
@@ -3201,7 +3273,7 @@ async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
 async fn after_the_join_the_checks_run_once_and_name_the_worker() {
     let check = "const fs = require('fs');\n\
         if (fs.readFileSync('src/posts.rs', 'utf8').includes('bad')) {\n\
-          console.error('error[E0425]: cannot find value `x`\\n --> src/posts.rs:1:5');\n  process.exit(1);\n}\n";
+          console.error('error[E0425]: cannot find value `x`\\n --> src/posts.rs:1:5');\n  console.error('noise\\n'.repeat(3000));\n  process.exit(1);\n}\n";
     let h = group_harness(&[
         ("check.js", check),
         (
@@ -3275,6 +3347,12 @@ async fn after_the_join_the_checks_run_once_and_name_the_worker() {
         mid[0].meta.as_ref().unwrap()["verification"]["attribution"][0]["owner"],
         "step 3, worker w2"
     );
+    // Its whole output is saved under its own name, not the round's.
+    let saved = mid[0].meta.as_ref().unwrap()["verification"]["checks"][0]["savedOutput"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(saved.starts_with("@checks/round-0-midrun-"), "{saved}");
 }
 
 #[tokio::test]
@@ -3977,6 +4055,61 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
         .iter()
         .skip(1)
         .all(|r| r["afterGreen"] == true));
+}
+
+#[tokio::test]
+async fn a_review_after_green_that_couldnt_read_the_report_isnt_done() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); if (!fs.readFileSync('a.txt', 'utf8').includes('ok')) { console.error('a.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("a.txt", "no\n"),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![Reply::Text(NO_FINDINGS), Reply::Text("Looks fine to me.")],
+        )],
+        vec![
+            write_call("w1", "a.txt", "nope\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "ok\n"),
+            Reply::Text("Fixed."),
+        ],
+    )
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    h.start(h.with_subagents(&url, "Greet", permissions, reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let last = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .next_back()
+        .unwrap();
+    assert_eq!(last["reviewAfterGreen"]["status"], "skipped", "{last}");
+    assert_eq!(
+        last["reviewAfterGreen"]["reason"],
+        "its report didn't follow the format"
+    );
 }
 
 /*

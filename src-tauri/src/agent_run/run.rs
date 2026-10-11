@@ -259,6 +259,9 @@ pub struct Run<R: Runtime> {
     pub(super) writes_since_review: bool,
     /// Change reviews in this run, and since the checks last ran.
     pub(super) reviews_total: u32,
+    /// How the last change review went: its status and why it was skipped.
+    /// None when it didn't start.
+    pub(super) review_outcome: Option<(String, Option<String>)>,
     pub(super) reviews_in_row: u32,
     /// The findings sent to the agent so far, and the note that sent the
     /// latest (its answers follow it).
@@ -750,6 +753,7 @@ impl<R: Runtime> Run<R> {
             integrity_open: Vec::new(),
             writes_since_review: false,
             reviews_total: 0,
+            review_outcome: None,
             reviews_in_row: 0,
             review_findings: Vec::new(),
             review_note_id: None,
@@ -865,6 +869,7 @@ impl<R: Runtime> Run<R> {
             integrity_open: Vec::new(),
             writes_since_review: false,
             reviews_total: 0,
+            review_outcome: None,
             reviews_in_row: 0,
             review_findings: Vec::new(),
             review_note_id: None,

@@ -29,15 +29,16 @@ pub fn is_checks_path(path: &str) -> bool {
     path.trim().starts_with(PREFIX)
 }
 
-/// Saves a check's whole output; returns the path the agent reads it at.
-pub fn save(dialog_id: &str, round: u32, kind: &str, text: &str) -> Option<String> {
+/// Saves a check's whole output under `<stem>-<kind>.log` (`stem`: which
+/// checks, e.g. `round-2`); returns the path the agent reads it at.
+pub fn save(dialog_id: &str, stem: &str, kind: &str, text: &str) -> Option<String> {
     let dir = dir(dialog_id)?;
     std::fs::create_dir_all(&dir).ok()?;
     let kind: String = kind
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    let name = format!("round-{round}-{kind}.log");
+    let name = format!("{stem}-{kind}.log");
     std::fs::write(dir.join(&name), text).ok()?;
     Some(format!("{PREFIX}{name}"))
 }
@@ -102,7 +103,7 @@ mod tests {
             .map(|i| format!("line {i}: error[E0308]\n"))
             .collect();
         assert!(text.len() > 8_000);
-        let path = save(&chat, 2, "test", &text).unwrap();
+        let path = save(&chat, "round-2", "test", &text).unwrap();
         assert_eq!(path, "@checks/round-2-test.log");
         assert!(is_checks_path(&path) && !is_checks_path("src/a.rs"));
         let saved = std::fs::read_to_string(resolve(&chat, &path).unwrap()).unwrap();
@@ -137,7 +138,7 @@ mod tests {
         // project (overlay::chats::land_now_with): one hook covers both,
         // and deleting a chat too (`forget`).
         let chat = format!("checks-test-{}", uuid::Uuid::new_v4());
-        let path = save(&chat, 1, "lint", "x").unwrap();
+        let path = save(&chat, "round-1", "lint", "x").unwrap();
         assert!(resolve(&chat, &path).is_ok());
         crate::overlay::chats::discard(&chat).unwrap();
         assert!(resolve(&chat, &path).is_err());

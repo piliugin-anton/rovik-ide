@@ -572,6 +572,13 @@ impl<R: Runtime> Run<R> {
         let changes = self.change_set();
         let rendered = render_diff(&changes, budget);
         if rendered.changed_lines < config.review_min_lines().max(1) {
+            self.review_outcome = Some((
+                "skipped".into(),
+                Some(format!(
+                    "the change is under the review's {} lines",
+                    config.review_min_lines().max(1)
+                )),
+            ));
             return Ok(false);
         }
         self.writes_since_review = false;
@@ -704,6 +711,10 @@ impl<R: Runtime> Run<R> {
             }
         }
         self.review_record(&record_id, review.clone()).await?;
+        self.review_outcome = Some((
+            review["status"].as_str().unwrap_or("").to_string(),
+            review["reason"].as_str().map(str::to_string),
+        ));
         log::write(
             &self.app,
             json!({

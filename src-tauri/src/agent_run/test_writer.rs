@@ -90,11 +90,28 @@ pub fn hidden_file(path: &str) -> String {
     )
 }
 
-/// Whether `rel` (repo-relative) is one of `hidden`.
+/// Whether `rel` (repo-relative) is one of `hidden`. On macOS and Windows
+/// any case names the same file.
 pub fn is_hidden(hidden: &[String], rel: &str) -> bool {
-    let rel = rel.replace('\\', "/");
-    let rel = rel.trim_start_matches("./");
-    hidden.iter().any(|h| h == rel)
+    is_hidden_as(
+        hidden,
+        rel,
+        cfg!(any(target_os = "macos", target_os = "windows")),
+    )
+}
+
+fn is_hidden_as(hidden: &[String], rel: &str, any_case: bool) -> bool {
+    let norm = |p: &str| {
+        let p = p.replace('\\', "/");
+        let p = p.trim_start_matches("./").to_string();
+        if any_case {
+            p.to_lowercase()
+        } else {
+            p
+        }
+    };
+    let rel = norm(rel);
+    hidden.iter().any(|h| norm(h) == rel)
 }
 
 pub struct BriefParts<'a> {
@@ -331,6 +348,9 @@ mod tests {
         assert!(hidden_file("src/x.ts").contains("Use outline on it"));
         let hidden = vec!["src/x.ts".to_string()];
         assert!(is_hidden(&hidden, "./src/x.ts") && !is_hidden(&hidden, "src/y.ts"));
+        // Where any case names the same file, any case is hidden.
+        assert!(is_hidden_as(&hidden, "SRC/X.ts", true));
+        assert!(!is_hidden_as(&hidden, "SRC/X.ts", false));
         assert_eq!(
             changed_tests_line(&["src/x.test.ts".into()]),
             "\n\n*Tests written by the test writer that I changed: `src/x.test.ts`.*"

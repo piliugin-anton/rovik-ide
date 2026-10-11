@@ -1544,3 +1544,44 @@ npm test` are refused; a scout with a budget of 3 that asks for 5 calls
     project whole on Land;
   - a file only a fixer wrote is undone by Redo sequentially;
   - a stop set before anyone listens is seen by later listeners.
+
+### Review fixes: low-severity items
+
+- **Triage confidence with odd text**. The first word is cut at its
+  place in the text itself. Before, it was found in the lowercased text,
+  whose length can differ ("İ"), so the note was cut wrong or the slice
+  panicked.
+- **Test names with `|`**. A `check|test|name` key keeps the whole rest
+  as the name. Before, a name with `|` was read as an error with the
+  file "test".
+- **Review after green says what happened**. "done" only when a
+  reviewer read the change and reported; otherwise "skipped" with the
+  reason (too small, the reviewer failed, its report couldn't be read,
+  the run was stopped). Before, any review that didn't send findings
+  was "done".
+- **Mid-run checks keep their own output**. After a group join, the
+  saved output is `round-N-midrun-<record>-<kind>.log`. Before, it was
+  `round-N-<kind>.log`, over the last round's, whose record and triage
+  still pointed at it.
+- **A child that panics is unregistered**. `go_sub` holds a guard that
+  unregisters the run when dropped. Before, a panic left it "running"
+  for good, so its chat couldn't be deleted.
+- **Hidden files on macOS and Windows** are matched in any case (the
+  test writer can't read `SRC/X.ts` for `src/x.ts` there).
+- **Rust test filters**. Only `src/lib.rs` and `src/main.rs` are the
+  crate root. Before, a leading "lib" or "main" was cut off any module
+  (`library` → `rary`, `maintenance` → `tenance`), so the red check ran
+  no tests and flagged them as not running.
+- **Settings warning uses the current chat model**. The dialog reads it
+  again each time it opens. Before, it was read once when the app
+  started.
+- **Number fields show what's saved**. The field is set to the saved
+  value (clamped, whole when the step is). Before, a value clamped to
+  the one already saved left the typed text showing.
+- **A resumed follow-up is asked once**. On resume, a follow-up already
+  in the subagent's chat isn't added again.
+- Tests (each fails without its fix): triage with "İİİ high", a test
+  name with `|`, a review after green whose report can't be read, the
+  mid-run output name (FUSE), a panicking run's registration, hidden
+  files in any case, `library.rs` and `maintenance/mod.rs` filters,
+  number field values, a follow-up resumed after a restart.

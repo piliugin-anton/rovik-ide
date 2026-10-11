@@ -172,6 +172,21 @@ export default function App() {
       console.error('Failed to load AI settings for Settings dialog:', err);
     }
   });
+  // The chat's model may have been switched since: read it again each time
+  // the dialog opens (the "code will also be sent to …" warning uses it).
+  createEffect(
+    on(
+      () => appSettingsPage() !== null,
+      (open) => {
+        if (!open) return;
+        loadAiSettings()
+          .then((settings) =>
+            setSettingsChatModel(reconcileSelection(settings.providers, settings.active))
+          )
+          .catch((err) => console.error('Failed to reload the chat model for Settings:', err));
+      }
+    )
+  );
   function handleAppSettingsSaved(changes: {
     providers: Provider[];
     permissions: AgentPermissions;
@@ -189,6 +204,7 @@ export default function App() {
           changes.providers,
           current?.active ?? null
         );
+        setSettingsChatModel(active);
         return saveAiSettings({
           version: 2,
           providers: changes.providers,

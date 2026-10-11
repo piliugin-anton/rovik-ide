@@ -201,6 +201,19 @@ struct Inner {
     carries: HashMap<String, verify::VerifyCarry>,
 }
 
+/// See `AgentState::registered`.
+pub(super) struct Registered {
+    state: AgentState,
+    dialog_id: String,
+    run_id: String,
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        self.state.unregister(&self.dialog_id, &self.run_id);
+    }
+}
+
 /// Runs in progress (one per chat at most), what they wait on, and the settings.
 #[derive(Clone, Default)]
 pub struct AgentState(Arc<Mutex<Inner>>);
@@ -330,6 +343,16 @@ impl AgentState {
             .is_some_and(|r| r.run_id == run_id)
         {
             inner.runs.remove(dialog_id);
+        }
+    }
+
+    /// A guard that unregisters the run when dropped, however its task
+    /// ends: a panic or an aborted future too.
+    pub(super) fn registered(&self, dialog_id: &str, run_id: &str) -> Registered {
+        Registered {
+            state: self.clone(),
+            dialog_id: dialog_id.to_string(),
+            run_id: run_id.to_string(),
         }
     }
 
@@ -907,7 +930,7 @@ pub async fn chat_dismiss_checklist<R: Runtime>(
 }
 
 #[cfg(test)]
-mod stop_tests {
+mod run_control_tests {
     use super::StopSignal;
 
     #[test]
@@ -915,5 +938,20 @@ mod stop_tests {
         let stop = StopSignal::new();
         stop.set();
         assert!(*stop.subscribe().borrow());
+    }
+
+    #[tokio::test]
+    async fn a_run_that_panics_is_unregistered() {
+        let state = super::AgentState::default();
+        let controls = state.register_in("kid", None, "m", None).unwrap();
+        let guard = state.registered("kid", &controls.run_id);
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            panic!("the run broke");
+        });
+        assert!(task.await.is_err());
+        assert!(!state.lock().runs.contains_key("kid"));
+        // A new run in the chat can start.
+        assert!(state.register_in("kid", None, "m", None).is_some());
     }
 }

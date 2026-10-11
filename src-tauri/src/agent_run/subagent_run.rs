@@ -151,6 +151,12 @@ pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Sen
 pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
     Box::pin(async move {
         let mut run = run;
+        // Unregistered however it ends: a child that panicked would
+        // otherwise stay "running" and its chat couldn't be deleted.
+        let _registered = match &run.role {
+            Role::Sub(sub) => Some(run.state.registered(&run.dialog_id, &sub.run_id)),
+            _ => None,
+        };
         Some(run.go_sub().await)
     })
 }
@@ -330,7 +336,7 @@ impl<R: Runtime> Run<R> {
             .filter(|c| !c.is_empty())
         {
             return self
-                .start_follow_up(tc, config, &kinds, handle, &args)
+                .start_follow_up(tc, config, &kinds, handle, &args, resumed)
                 .await;
         }
         if let Some(kind) = args
@@ -392,6 +398,7 @@ impl<R: Runtime> Run<R> {
         kinds: &[Kind],
         handle: &str,
         args: &serde_json::Map<String, Value>,
+        resumed: bool,
     ) -> Result<Run<R>, String> {
         let goal = args
             .get("goal")
@@ -469,19 +476,38 @@ impl<R: Runtime> Run<R> {
             self.limit_test_writer(&mut sub, hidden);
         }
         self.close_child_calls(&child.id).await?;
-        let mut message = new_message(
-            "user",
-            &format!(
-                "# Follow-up from the lead agent\n\n{goal}\n\nAnswer it in the same report format."
-            ),
-        );
-        message.meta = Some(json!({
-            "subagentBrief": { "kind": kind.id(), "parentCallId": tc.id, "followUp": true }
-        }));
-        let id = child.id.clone();
-        self.db
-            .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
-            .await?;
+        // Resumed after the app closed: the question may be in its chat
+        // already, and it goes on from there.
+        let (id, call) = (child.id.clone(), tc.id.clone());
+        let asked = resumed
+            && self
+                .db
+                .read(move |c| {
+                    Ok(store::get_messages(c, &id, None, 500)?
+                        .messages
+                        .iter()
+                        .any(|m| {
+                            m.meta.as_ref().is_some_and(|meta| {
+                                meta["subagentBrief"]["parentCallId"] == call.as_str()
+                            })
+                        }))
+                })
+                .await?;
+        if !asked {
+            let mut message = new_message(
+                "user",
+                &format!(
+                    "# Follow-up from the lead agent\n\n{goal}\n\nAnswer it in the same report format."
+                ),
+            );
+            message.meta = Some(json!({
+                "subagentBrief": { "kind": kind.id(), "parentCallId": tc.id, "followUp": true }
+            }));
+            let id = child.id.clone();
+            self.db
+                .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
+                .await?;
+        }
         self.launch_child(child.id, &tc.id, &goal, sub)
     }
 

@@ -305,12 +305,12 @@ fn rust_filter(rel_to_crate: &str) -> Option<String> {
         return Some(format!("--test {}", name.trim_end_matches(".rs")));
     }
     let module = rel_to_crate.strip_prefix("src/")?.trim_end_matches(".rs");
-    let module = module
-        .trim_end_matches("/mod")
-        .trim_start_matches("lib")
-        .trim_start_matches("main")
-        .trim_start_matches('/');
-    (!module.is_empty()).then(|| module.replace('/', "::"))
+    let module = module.strip_suffix("/mod").unwrap_or(module);
+    // The crate root is no module (`src/library.rs` is `library`).
+    if matches!(module, "lib" | "main") {
+        return None;
+    }
+    Some(module.replace('/', "::"))
 }
 
 /// E01: a command that runs just `files` (test files, repo-relative):
@@ -582,6 +582,15 @@ mod tests {
         assert_eq!(
             run(&["src-tauri/src/agent_run/plan/tests.rs"]).as_deref(),
             Some("cargo test --manifest-path src-tauri/Cargo.toml agent_run::plan::tests")
+        );
+        // A module whose name starts like the crate root's file.
+        assert_eq!(
+            run(&["src-tauri/src/library.rs"]).as_deref(),
+            Some("cargo test --manifest-path src-tauri/Cargo.toml library")
+        );
+        assert_eq!(
+            run(&["src-tauri/src/maintenance/mod.rs"]).as_deref(),
+            Some("cargo test --manifest-path src-tauri/Cargo.toml maintenance")
         );
         assert_eq!(
             run(&["src-tauri/tests/api.rs"]).as_deref(),

@@ -201,13 +201,17 @@ pub fn parse_report(check: &str, text: &str) -> Option<Triage> {
         .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect();
-    let first = confidence
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .find(|w| !w.is_empty())
-        .unwrap_or("")
-        .to_lowercase();
+    // The first word, by where it is in the text itself: lowercasing can
+    // change other characters' lengths.
+    let start = confidence
+        .find(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(confidence.len());
+    let end = confidence[start..]
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .map_or(confidence.len(), |n| start + n);
+    let first = confidence[start..end].to_lowercase();
     let (confidence, note) = if ["high", "medium", "low"].contains(&first.as_str()) {
-        let rest = confidence[confidence.to_lowercase().find(&first).unwrap_or(0) + first.len()..]
+        let rest = confidence[end..]
             .trim_start_matches(|c: char| !c.is_alphanumeric())
             .trim();
         (first, rest.to_string())
@@ -593,6 +597,11 @@ mod tests {
             "every error is E0061 at a call of `parse`."
         );
         assert!(parse_report("test", "## Root cause\nx\n\n## Files to fix\n- a").is_none());
+        // Text whose lowercase is longer than it is.
+        let odd = REPORT.replace("High — every", "İİİ high x");
+        let t = parse_report("test", &odd).unwrap();
+        assert_eq!(t.confidence, "high");
+        assert_eq!(t.confidence_note, "x error is E0061 at a call of `parse`.");
         assert!(subagent::format_problem(&TRIAGE, REPORT).is_none());
         assert!(subagent::format_problem(&TRIAGE, "## Root cause\nx").is_some());
         assert!(subagent::format_problem(&TRIAGE, "## Blocked\nno output").is_none());

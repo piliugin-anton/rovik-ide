@@ -523,7 +523,7 @@ impl<R: Runtime> Run<R> {
         };
 
         let results = self
-            .run_checks(&root, &checks, &p, &changed, &record_id, round)
+            .run_checks(&root, &checks, &p, &changed, &record_id, round, &format!("round-{round}"))
             .await?;
 
         let failed = results.iter().any(|r| r.status == "failed");
@@ -810,15 +810,24 @@ impl<R: Runtime> Run<R> {
         }
         // The fixes are new to the reviewer, whatever came before.
         self.writes_since_review = true;
+        self.review_outcome = None;
         let sent = self.review_change_as(true).await?;
+        // "done" only when a reviewer read the change and reported.
+        let line = match self.review_outcome.take() {
+            _ if sent => json!({ "status": "findings" }),
+            Some((status, _)) if status == "clean" || status == "findings" => {
+                json!({ "status": "done" })
+            }
+            Some((status, _)) if status == "stopped" => {
+                json!({ "status": "skipped", "reason": "the run was stopped" })
+            }
+            Some((_, Some(reason))) => json!({ "status": "skipped", "reason": reason }),
+            _ if self.stopped() => json!({ "status": "skipped", "reason": "the run was stopped" }),
+            _ => json!({ "status": "skipped", "reason": "the reviewer didn't run" }),
+        };
         self.update_meta(
             record_id,
-            with(
-                meta.clone(),
-                json!({ "reviewAfterGreen": {
-                    "status": if sent { "findings" } else { "done" },
-                } }),
-            ),
+            with(meta.clone(), json!({ "reviewAfterGreen": line })),
         )
         .await?;
         if sent {
@@ -868,8 +877,11 @@ impl<R: Runtime> Run<R> {
             ))
             .await
             .ok()?;
+        // Its own name: the round's checks, saved under `round-N`, still
+        // stand (their paths are in the round's record and triage).
+        let saved_as = format!("round-{round}-midrun-{}", &record_id[..8.min(record_id.len())]);
         let results = self
-            .run_checks(&root, &checks, &p, &changed, &record_id, round)
+            .run_checks(&root, &checks, &p, &changed, &record_id, round, &saved_as)
             .await
             .ok()?;
         let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
@@ -972,6 +984,7 @@ impl<R: Runtime> Run<R> {
     /// permissions don't allow is skipped, not run: the gate is held to the
     /// same rules as the agent. Tests are skipped when the type check
     /// failed: its errors would only reappear as test failures.
+    #[allow(clippy::too_many_arguments)]
     async fn run_checks(
         &self,
         root: &str,
@@ -980,6 +993,7 @@ impl<R: Runtime> Run<R> {
         changed: &[String],
         record_id: &str,
         round: u32,
+        saved_as: &str,
     ) -> Result<Vec<CheckResult>, String> {
         let mut results: Vec<CheckResult> = ordered_checks(checks)
             .iter()
@@ -1096,7 +1110,7 @@ impl<R: Runtime> Run<R> {
                         if combined.chars().count() > FAILURE_OUTPUT_CHARS {
                             r.saved_output = super::check_output::save(
                                 &self.dialog_id,
-                                round,
+                                saved_as,
                                 &r.kind,
                                 &combined,
                             );

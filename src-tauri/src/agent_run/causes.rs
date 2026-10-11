@@ -117,15 +117,18 @@ struct Failure {
 }
 
 fn parse_key(key: &str) -> Failure {
+    // A test's name is the rest of the key, `|` and all.
+    if let [check, "test", name] = key.splitn(3, '|').collect::<Vec<_>>()[..] {
+        return Failure {
+            key: key.into(),
+            check: check.to_string(),
+            file: None,
+            what: format!("test|{name}"),
+        };
+    }
     let parts: Vec<&str> = key.splitn(4, '|').collect();
     let check = parts[0].to_string();
     match parts.as_slice() {
-        [_, "test", name] => Failure {
-            key: key.into(),
-            check,
-            file: None,
-            what: format!("test|{name}"),
-        },
         [_, file, code, msg] => Failure {
             key: key.into(),
             check,
@@ -677,6 +680,17 @@ mod tests {
         assert!(found.contains(&&Owner::Lead {
             reason: LeadReason::Unlocated
         }));
+    }
+
+    #[test]
+    fn a_test_name_with_a_bar_stays_a_test() {
+        let f = parse_key("test|test|parses a | b");
+        assert_eq!(f.file, None);
+        assert_eq!(f.what, "test|parses a | b");
+        assert_eq!(summary_of(&[f]), "test parses a | b fails");
+        let e = parse_key("lint|src/a.ts|rule|x | y");
+        assert_eq!(e.file.as_deref(), Some("src/a.ts"));
+        assert_eq!(e.what, "rule|x | y");
     }
 
     #[test]
