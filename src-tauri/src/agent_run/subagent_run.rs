@@ -93,6 +93,10 @@ pub(super) struct SubCtx {
     /// Its registration, from `launch_child` on (P1.1): dropping a child
     /// that never started (or panicked) unregisters it.
     pub registered: Option<super::Registered>,
+    /// A group worker continued in the copy it kept (a conflict, or a
+    /// landing that waits or failed): what it changes there lands when it
+    /// ends (P1.2, P1.3).
+    pub kept_copy: bool,
 }
 
 impl SubCtx {
@@ -222,6 +226,17 @@ impl<R: Runtime> Run<R> {
             self.dialog_id.clone(),
             calls.iter().map(|c| c.id.clone()).collect(),
         ));
+        // Workers continued in a kept copy: it lands when they end.
+        let kept: Vec<Option<String>> = jobs
+            .iter()
+            .map(|j| match j {
+                Job::Run(child) => child
+                    .sub()
+                    .is_some_and(|s| s.kept_copy)
+                    .then(|| child.dialog_id.clone()),
+                Job::Answered(..) => None,
+            })
+            .collect();
         let mut answered: Vec<Option<(String, Option<Value>)>> = Vec::with_capacity(jobs.len());
         let futures: Vec<SubFuture> = jobs
             .into_iter()
@@ -253,11 +268,14 @@ impl<R: Runtime> Run<R> {
             config.max_at_once()
         };
         let mut results = stream::iter(futures).buffered(limit);
-        for (tc, refusal) in calls.iter().zip(answered) {
+        for ((tc, refusal), kept) in calls.iter().zip(answered).zip(kept) {
             let result = results.next().await.flatten();
             let (content, meta): (String, Option<Value>) = match (refusal, result) {
                 (Some((text, meta)), _) => (text, meta),
                 (None, Some(mut result)) => {
+                    if let Some(child) = kept {
+                        self.land_kept(&child, &mut result).await;
+                    }
                     self.absorb_child_writes(&result.writes);
                     if result.kind == Kind::TestWriter {
                         for w in &result.writes {
@@ -483,6 +501,16 @@ impl<R: Runtime> Run<R> {
             let hidden = self.test_writer_hidden().await;
             self.limit_test_writer(&mut sub, hidden);
         }
+        // A group worker whose copy was kept goes on in it (P1.2, P1.3).
+        let kept_view = (kind == Kind::Worker
+            && crate::overlay::chats::parent_of(&child.id).as_deref()
+                == Some(self.dialog_id.as_str()))
+        .then(|| crate::overlay::chats::get(&child.id).map(|o| o.view.clone()))
+        .flatten();
+        if kept_view.is_some() {
+            sub.kept_copy = true;
+            sub.light_bash = true;
+        }
         self.close_child_calls(&child.id).await?;
         // Resumed after the app closed: the question may be in its chat
         // already, and it goes on from there.
@@ -516,7 +544,12 @@ impl<R: Runtime> Run<R> {
                 .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
                 .await?;
         }
-        self.launch_child(child.id, &tc.id, &goal, sub)
+        let mut run = self.launch_child(child.id, &tc.id, &goal, sub)?;
+        if let Some(view) = kept_view {
+            run.root = Some(view.to_string_lossy().into_owned());
+            run.checkpoint = None;
+        }
+        Ok(run)
     }
 
     /// A subagent's context, before it has a run. Err: none of its models
@@ -575,6 +608,7 @@ impl<R: Runtime> Run<R> {
             light_bash: false,
             resumed_writes: Vec::new(),
             registered: None,
+            kept_copy: false,
         };
         #[cfg(test)]
         if let Some(k) = config.kinds.get(kind.id()) {
@@ -1802,6 +1836,7 @@ mod tests {
             light_bash: false,
             resumed_writes: Vec::new(),
             registered: None,
+            kept_copy: false,
         }
     }
 

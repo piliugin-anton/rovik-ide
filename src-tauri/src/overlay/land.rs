@@ -577,6 +577,13 @@ fn set_perm(_path: &Path, _perm: u16) {}
 #[cfg(test)]
 /// Fails once, for that project's path.
 pub(crate) static FAIL_WRITING: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+/// Tests that inject failures hold this: the hooks are process-wide.
+#[cfg(test)]
+pub(crate) static FAIL_LOCK: Mutex<()> = Mutex::new(());
+/// Tests: FAIL_WRITING fails every time (putting it back too), not once.
+#[cfg(test)]
+pub(crate) static FAIL_WRITING_ALWAYS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn write_content(
     project: &Path,
@@ -588,7 +595,9 @@ fn write_content(
     {
         let mut fail = FAIL_WRITING.lock().unwrap();
         if fail.as_ref().is_some_and(|(p, r)| p == project && r == rel) {
-            *fail = None;
+            if !FAIL_WRITING_ALWAYS.load(std::sync::atomic::Ordering::SeqCst) {
+                *fail = None;
+            }
             return Err(format!("{rel}: injected failure"));
         }
         let _ = content;
@@ -727,7 +736,9 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
                     left.push(done.path.clone());
                 }
             }
-            journal.state = "failed".into();
+            // P1.3: put back whole, it failed; half put back, it's still
+            // applying: recovery finishes it, and Land waits for that.
+            journal.state = if left.is_empty() { "failed" } else { "applying" }.into();
             let _ = save_journal(&dir, &journal);
             return Err(if left.is_empty() {
                 format!("{err} (nothing landed)")
@@ -826,6 +837,9 @@ fn recover_where(data_dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<String>
                 by_path.entry(&e.path).or_default().push(e);
             }
             let mut skipped = Vec::new();
+            // A write that failed (not a path changed since): the landing
+            // stays to finish, tried again next time (P1.3).
+            let mut unwritten = Vec::new();
             for path in order {
                 let group = &by_path[path];
                 if group
@@ -840,18 +854,27 @@ fn recover_where(data_dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<String>
                         continue;
                     }
                     let before = if k == 0 { &e.old } else { &group[k - 1].new };
-                    if !is_content(&project, path, before)
-                        || write_content(&project, path, &e.new, &dialog_id).is_err()
-                    {
+                    if !is_content(&project, path, before) {
+                        ok = false;
+                        break;
+                    }
+                    if write_content(&project, path, &e.new, &dialog_id).is_err() {
+                        unwritten.push(path.to_string());
                         ok = false;
                         break;
                     }
                 }
                 if ok {
                     done.push(path.to_string());
-                } else {
+                } else if !unwritten.iter().any(|u| u == path) {
                     skipped.push(path.to_string());
                 }
+            }
+            if !unwritten.is_empty() {
+                for p in unwritten {
+                    done.push(format!("{p} (not finished: it couldn't be written)"));
+                }
+                continue;
             }
             journal.state = if skipped.is_empty() {
                 "done".into()

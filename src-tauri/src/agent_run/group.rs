@@ -19,6 +19,7 @@ use super::worker::{self, WriteScope};
 use super::{log, permissions, tools};
 use crate::chat_db::store::ToolCall;
 use crate::overlay::chats;
+use crate::overlay::land::LandError;
 use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
 use tauri::Runtime;
@@ -317,7 +318,7 @@ impl<R: Runtime> Run<R> {
                 Joined::Landed => landed_any = true,
                 Joined::Failed => retry.push(member),
                 Joined::Conflict(text) => conflict = Some(text),
-                Joined::Skipped => {}
+                Joined::Skipped | Joined::Kept => {}
             }
             lines.push(entry.0);
             workers.push(entry.1);
@@ -357,6 +358,7 @@ impl<R: Runtime> Run<R> {
                         conflict = Some(text);
                         break;
                     }
+                    Joined::Kept => {}
                     _ => lines.push(format!(
                         "Step {} failed twice: do it yourself, or carry out the group's steps one at a time with kind \"worker\".",
                         again.step.number
@@ -387,6 +389,7 @@ impl<R: Runtime> Run<R> {
                 steps: members.iter().map(|s| s.number).collect(),
                 before: joins.before.clone(),
                 redone: false,
+                unavailable: None,
             };
             let saved_or = match &joins.snapshot_failed {
                 Some(e) => Err(format!("no snapshot: {e}")),
@@ -542,12 +545,16 @@ impl<R: Runtime> Run<R> {
             );
         }
         if stopped_join {
-            chats::discard_child(&member.child_id);
+            // P1.2: kept, not discarded: it lands once the conflict is
+            // resolved, when the lead continues it.
             return (
                 Joined::Skipped,
                 (
-                    format!("{head}\nNot landed: the join stopped at the conflict below. Carry out this step again after resolving it."),
-                    entry("not landed", &[]),
+                    format!(
+                        "{head}\nNot landed yet: the join stopped at the conflict below. Its copy is kept; once that's resolved, call task with continue: \"{}\" to land it (its goal: what else it should do first, or just \"land it\").",
+                        subagent::handle(Kind::Worker, &member.child_id)
+                    ),
+                    entry("waiting", &[]),
                 ),
             );
         }
@@ -586,39 +593,11 @@ impl<R: Runtime> Run<R> {
                 .map_err(|e| e.to_string())
                 .and_then(|r| r);
         let child_view = chats::get(&member.child_id).map(|o| o.view.clone());
-        let id = member.child_id.clone();
-        let landed = tauri::async_runtime::spawn_blocking(move || chats::land_child(&id))
-            .await
-            .unwrap_or_else(|e| Err(crate::overlay::land::LandError::Failed(e.to_string())));
-        match landed {
+        let handle = subagent::handle(Kind::Worker, &member.child_id);
+        match land_copy(&member.child_id, Vec::new()).await {
             Ok(landed_paths) => {
-                let writes: Vec<subagent::ChildWrite> = before
-                    .into_iter()
-                    .filter(|w| landed_paths.contains(&w.path))
-                    .collect();
-                // R06: what the landed paths were before the group, for
-                // Redo sequentially (none offered if that couldn't be read);
-                // R04: whose chat to resume for a fix.
-                match &snapshot {
-                    Ok(entries) => joined.before.extend(
-                        entries
-                            .iter()
-                            .filter(|(p, _)| landed_paths.contains(p))
-                            .cloned(),
-                    ),
-                    Err(e) => joined.snapshot_failed = Some(e.clone()),
-                }
-                joined.children.push((
-                    member.label.clone(),
-                    member.step.number,
-                    result
-                        .child_dialog_id
-                        .clone()
-                        .unwrap_or_else(|| member.child_id.clone()),
-                ));
-                self.absorb_child_writes(&writes);
-                // The worker's files, as landed, for D04.
-                result.writes = writes.clone();
+                chats::discard_child(&member.child_id);
+                self.take_landed(member, &mut result, &before, &snapshot, &landed_paths, joined);
                 let so_far = checklist.clone();
                 if let Some(items) = self.after_worker(&mut result, so_far.as_deref()).await {
                     *checklist = Some(items);
@@ -637,48 +616,239 @@ impl<R: Runtime> Run<R> {
                     (text, entry(result.status.id(), &landed_paths)),
                 )
             }
-            Err(crate::overlay::land::LandError::Conflicts(conflicts)) => {
+            Err(LandError::Conflicts(conflicts)) => {
+                // P1.2: the rest of it lands; the conflicting files wait,
+                // both versions saved for the lead, and its copy is kept.
+                let versions = self.save_conflict(&member.label, child_view.as_deref(), &conflicts);
+                let except: Vec<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+                let rest = land_copy(&member.child_id, except).await;
+                let landed_paths = rest.as_ref().cloned().unwrap_or_default();
+                self.take_landed(member, &mut result, &before, &snapshot, &landed_paths, joined);
                 let mut text = format!(
-                    "## The join stopped: a conflict\n\nWorker {} (step {n}) changed the same lines as the chat's view in {}. Nothing of it landed. Both versions:",
+                    "## The join stopped: a conflict\n\nWorker {} (step {n}) changed the same lines as the chat's view in {}. {}\n\nBoth versions of each are saved (read them with read):\n{versions}\n\nMerge them into the chat's file yourself (write it), then go on. The worker's copy is kept: call task with continue: \"{handle}\" to have it carry on in its copy; what it changes lands then, merged again.",
                     member.label,
-                    conflicts.iter().map(|c| format!("`{}`", c.path)).collect::<Vec<_>>().join(", ")
+                    conflicts.iter().map(|c| format!("`{}`", c.path)).collect::<Vec<_>>().join(", "),
+                    match &rest {
+                        Ok(p) if p.is_empty() => "Nothing else of it landed.".to_string(),
+                        Ok(p) => format!("Its other files landed: {}.", p.join(", ")),
+                        Err(e) => format!("Its other files couldn't land either ({e})."),
+                    }
                 );
-                for c in &conflicts {
-                    let ours = std::fs::read_to_string(tools::to_absolute_path(&c.path, &root))
-                        .unwrap_or_default();
-                    let theirs = child_view
-                        .as_ref()
-                        .and_then(|v| std::fs::read_to_string(v.join(&c.path)).ok())
-                        .unwrap_or_default();
-                    text.push_str(&format!(
-                        "\n\n`{}` ({}):\n\nIn the chat now:\n```\n{}\n```\n\nWorker {}'s version:\n```\n{}\n```",
-                        c.path,
-                        c.reason,
-                        cap(&ours, CONFLICT_CHARS),
-                        member.label,
-                        cap(&theirs, CONFLICT_CHARS)
-                    ));
-                }
-                text.push_str("\n\nMerge them yourself (write the file), then go on; the steps after this one didn't land either.");
-                chats::discard_child(&member.child_id);
+                text.push_str("\n\nThe steps after this one are kept, not landed yet: each says how to land it.");
                 (
                     Joined::Conflict(text),
                     (
-                        format!("{head}\nNot landed: a conflict (below)."),
-                        entry("conflict", &[]),
+                        format!("{head}\nNot all landed: a conflict (below)."),
+                        entry("conflict", &landed_paths),
                     ),
                 )
             }
             Err(e) => {
-                chats::discard_child(&member.child_id);
+                // P1.3: a landing that failed keeps the worker's copy (and,
+                // stopped half way, its journal: Land waits until it's
+                // finished); its finished work isn't thrown away.
+                let busy = matches!(e, LandError::Busy);
                 (
-                    Joined::Failed,
+                    Joined::Kept,
                     (
-                        format!("{head}\nIt couldn't land ({e}); its copy was discarded."),
-                        entry("failed", &[]),
+                        format!(
+                            "{head}\nIt couldn't land ({}). Its copy is kept: call task with continue: \"{handle}\" and the goal \"land it\" to try again.",
+                            if busy {
+                                "the chat's files kept changing under it".to_string()
+                            } else {
+                                e.to_string()
+                            }
+                        ),
+                        entry(if busy { "busy" } else { "interrupted" }, &[]),
                     ),
                 )
             }
+        }
+    }
+
+    /// What a landed worker's files were (for its writes, S03b), and
+    /// before the group (for Redo sequentially, R06), with whose chat to
+    /// resume for a fix (R04).
+    fn take_landed(
+        &mut self,
+        member: &Member,
+        result: &mut SubResult,
+        before: &[subagent::ChildWrite],
+        snapshot: &Result<Vec<(String, chats::Before)>, String>,
+        landed_paths: &[String],
+        joined: &mut Joins,
+    ) {
+        let writes: Vec<subagent::ChildWrite> = before
+            .iter()
+            .filter(|w| landed_paths.contains(&w.path))
+            .cloned()
+            .collect();
+        match snapshot {
+            Ok(entries) => joined.before.extend(
+                entries
+                    .iter()
+                    .filter(|(p, _)| landed_paths.contains(p))
+                    .cloned(),
+            ),
+            Err(e) => joined.snapshot_failed = Some(e.clone()),
+        }
+        if !landed_paths.is_empty() {
+            joined.children.push((
+                member.label.clone(),
+                member.step.number,
+                result
+                    .child_dialog_id
+                    .clone()
+                    .unwrap_or_else(|| member.child_id.clone()),
+            ));
+        }
+        self.absorb_child_writes(&writes);
+        result.writes = writes;
+    }
+
+    /// P1.2: both versions of each conflicting file, saved with the chat's
+    /// check output for the lead to read; one line each.
+    pub(super) fn save_conflict(
+        &self,
+        label: &str,
+        child_view: Option<&std::path::Path>,
+        conflicts: &[crate::overlay::land::Conflict],
+    ) -> String {
+        let root = self.root.clone().unwrap_or_default();
+        let mut lines = Vec::new();
+        for c in conflicts {
+            let ours = std::fs::read(tools::to_absolute_path(&c.path, &root))
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default();
+            let theirs = child_view
+                .and_then(|v| std::fs::read(v.join(&c.path)).ok())
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default();
+            let name: String = c
+                .path
+                .chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+                .collect();
+            let stem = format!("conflict-{label}-{name}");
+            let saved = (
+                super::check_output::save(&self.dialog_id, &stem, "chat", &ours),
+                super::check_output::save(&self.dialog_id, &stem, "worker", &theirs),
+            );
+            lines.push(match saved {
+                (Some(a), Some(b)) => format!(
+                    "- `{}` ({}): the chat's version `{a}`, worker {label}'s `{b}`",
+                    c.path, c.reason
+                ),
+                // Couldn't be saved: shown, cut.
+                _ => format!(
+                    "- `{}` ({}):\n\nIn the chat now:\n```\n{}\n```\n\nWorker {label}'s version:\n```\n{}\n```",
+                    c.path,
+                    c.reason,
+                    cap(&ours, CONFLICT_CHARS),
+                    cap(&theirs, CONFLICT_CHARS)
+                ),
+            });
+        }
+        lines.join("\n")
+    }
+}
+
+impl<R: Runtime> Run<R> {
+    /// A group worker continued in its kept copy has ended (P1.2, P1.3):
+    /// its copy lands now, merged with the chat's view; a conflict again
+    /// lands the rest and keeps the copy, as at the join.
+    pub(super) async fn land_kept(&mut self, child: &str, result: &mut SubResult) {
+        let handle = subagent::handle(Kind::Worker, child);
+        if matches!(result.status, SubStatus::Failed | SubStatus::Stopped) {
+            result.writes.clear();
+            result.notes.push(format!(
+                "Its copy is kept, not landed (it {}). Continue it again (\"{handle}\") to finish, or do the rest yourself.",
+                if result.status == SubStatus::Stopped { "was stopped" } else { "failed" }
+            ));
+            return;
+        }
+        let root = self.root.clone().unwrap_or_default();
+        let view = chats::get(child).map(|o| {
+            o.fs.flush();
+            o.view.clone()
+        });
+        let paths: Vec<String> = chats::get(child)
+            .map(|o| {
+                o.fs.changes()
+                    .iter()
+                    .filter(|c| !c.by_product())
+                    .map(|c| c.path().replace('\\', "/"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let before: Vec<subagent::ChildWrite> = paths
+            .iter()
+            .map(|p| subagent::ChildWrite {
+                path: p.clone(),
+                original: subagent::Original::new(
+                    std::fs::read(tools::to_absolute_path(p, &root)).ok(),
+                    subagent::Source::ViewAtRoundStart,
+                ),
+            })
+            .collect();
+        let landed_of = |landed: &[String]| -> Vec<subagent::ChildWrite> {
+            before
+                .iter()
+                .filter(|w| landed.contains(&w.path))
+                .cloned()
+                .collect()
+        };
+        match land_copy(child, Vec::new()).await {
+            Ok(landed) => {
+                chats::discard_child(child);
+                result.writes = landed_of(&landed);
+                result.notes.push(if landed.is_empty() {
+                    "Its copy landed: nothing in it differs from the chat's files.".into()
+                } else {
+                    format!("Its copy landed: {}.", landed.join(", "))
+                });
+            }
+            Err(LandError::Conflicts(conflicts)) => {
+                let versions = self.save_conflict(&handle, view.as_deref(), &conflicts);
+                let except: Vec<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+                let rest = land_copy(child, except).await.unwrap_or_default();
+                result.writes = landed_of(&rest);
+                result.notes.push(format!(
+                    "Its copy still conflicts with the chat's files; {}. Both versions:\n{versions}\nIts copy is kept.",
+                    if rest.is_empty() {
+                        "nothing else of it landed".to_string()
+                    } else {
+                        format!("its other files landed: {}", rest.join(", "))
+                    }
+                ));
+            }
+            Err(e) => {
+                result.writes.clear();
+                result.notes.push(format!(
+                    "Its copy couldn't land ({e}); it's kept: continue it again (\"{handle}\") to try again."
+                ));
+            }
+        }
+    }
+}
+
+/// P1.3: lands a worker's copy (except `except`), trying again a few
+/// times while the chat's view changes under it (Busy). The copy stays.
+pub(super) async fn land_copy(child: &str, except: Vec<String>) -> Result<Vec<String>, LandError> {
+    let mut wait = std::time::Duration::from_millis(200);
+    let mut tries = 0;
+    loop {
+        let (id, ex) = (child.to_string(), except.clone());
+        let r = tauri::async_runtime::spawn_blocking(move || chats::land_child_except(&id, &ex))
+            .await
+            .unwrap_or_else(|e| Err(LandError::Failed(e.to_string())));
+        match r {
+            Err(LandError::Busy) if tries < 3 => {
+                tries += 1;
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+            }
+            r => return r,
         }
     }
 }
@@ -699,6 +869,8 @@ enum Joined {
     Failed,
     Conflict(String),
     Skipped,
+    /// Finished, but its landing failed: its copy is kept (P1.3).
+    Kept,
 }
 
 #[cfg(test)]

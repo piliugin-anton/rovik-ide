@@ -1655,3 +1655,35 @@ tasks first.
   superseded, the newer carry survives it, lost state is recorded, and
   deleting the chat frees the carry; a large baseline spills and comes
   back.
+
+### Review-fixes plan, phase 1 (part 2): joins and Redo
+
+- **P1.2 A conflict at a join keeps the work.** The worker's other files
+  land (`chats::land_child_except`); both versions of each conflicting
+  file are saved with the chat's check output (`@checks/conflict-…`), and
+  the result names them instead of quoting cut excerpts. The worker's
+  copy is kept, and so are the later members' (status `waiting`, none
+  discarded). `task{continue}` on such a worker runs it in its kept copy;
+  when it ends, its copy lands (a conflict again: the rest lands, the
+  copy stays). Continuing a waiting worker with "land it" lands it.
+- **P1.3 A landing that fails keeps the work.** `Busy` is tried again
+  three times (200, 400, 800 ms); a failed landing keeps the worker's
+  copy and its journal (status `interrupted`, continue it to try
+  again). A landing that fails and can't put everything back stays
+  `applying`, and recovery that can't write a path leaves it so, rather
+  than calling it partial. Land finishes an interrupted landing into the
+  chat's view whether the view is open or not, and refuses while it
+  can't; a child's next landing finishes its earlier one first.
+- **P1.4 Redo never takes an unread path for untouched.** Snapshots are
+  per path (`chats::snapshot_each`); before a fixer, every path the chat
+  has changed is snapshotted too, so a file an earlier run changed comes
+  back as the chat had it. A path that couldn't be read (or no snapshot)
+  marks the group's Redo unavailable with the reason; it isn't offered,
+  and `redo_group` refuses. Snapshot versions not kept are deleted.
+- Tests (each fails without its fix): a conflict lands the rest, saves
+  both versions, keeps every copy, and a waiting worker lands when
+  continued (FUSE); a landing failing half way keeps the copy and holds
+  Land until it's finished (FUSE); a landing that can't be put back is
+  finished by recovery; Redo puts back a file the chat changed in an
+  earlier run and a fixer changed (FUSE); a group whose snapshot failed
+  isn't redone.

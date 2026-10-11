@@ -30,6 +30,7 @@ use tauri::Runtime;
 /// The part of a check's output a fixer gets, at most.
 const FIX_EXCERPT_CHARS: usize = 3_000;
 
+
 /// A parallel group joined in this run: who owns what (R03), and each
 /// landed worker's chat, to resume for a fix (R04).
 #[derive(Debug, Clone)]
@@ -541,15 +542,10 @@ impl<R: Runtime> Run<R> {
         paths.sort();
         paths.dedup();
         // R06: what they are in the chat, for Redo sequentially, should the
-        // fixer write them (or new files, which then go).
-        let snapshot = {
-            let (dialog, keep) = (self.dialog_id.clone(), paths.clone());
-            tauri::async_runtime::spawn_blocking(move || chats::snapshot(&dialog, &keep))
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                .unwrap_or_default()
-        };
+        // fixer write them (or new files, which then go); and every path the
+        // chat has changed so far (P1.4), so a file it changed in an earlier
+        // run is never taken for untouched.
+        let snapshot = self.redo_snapshot(&paths).await;
         let before: std::collections::HashMap<String, Option<Vec<u8>>> = paths
             .into_iter()
             .map(|p| {
@@ -566,31 +562,75 @@ impl<R: Runtime> Run<R> {
         fixed
     }
 
+    /// What `paths` and every path the chat changed are in the chat, each
+    /// on its own (P1.4); Err: none could be taken.
+    async fn redo_snapshot(&self, paths: &[String]) -> Result<chats::PathSnapshots, String> {
+        let mut keep = paths.to_vec();
+        keep.extend(self.overlay_paths());
+        keep.sort();
+        keep.dedup();
+        let dialog = self.dialog_id.clone();
+        tauri::async_runtime::spawn_blocking(move || chats::snapshot_each(&dialog, &keep))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r)
+    }
+
     /// R06: a fixer's files join what Redo sequentially puts back, as they
-    /// were before it (a file not in `snapshot` didn't exist in the chat).
+    /// were before it. A path the snapshot doesn't have wasn't changed by
+    /// the chat (every path it had changed is in it), so it's untouched;
+    /// one that couldn't be read, or no snapshot at all, makes the group's
+    /// Redo unavailable, with the reason (P1.4), never "untouched".
     async fn add_to_redo(
         &self,
         group: &GroupRecord,
         changed: &[String],
-        snapshot: &[(String, chats::Before)],
+        snapshot: &Result<chats::PathSnapshots, String>,
     ) {
+        // What the snapshot saved for paths the fixer didn't change goes.
+        let unused: Vec<chats::Before> = snapshot
+            .as_ref()
+            .map(|taken| {
+                taken
+                    .iter()
+                    .filter(|(p, _)| !changed.contains(p))
+                    .filter_map(|(_, b)| b.as_ref().ok().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !unused.is_empty() {
+            let dialog = self.dialog_id.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                chats::forget_snapshot(&dialog, &unused)
+            })
+            .await;
+        }
         if changed.is_empty() {
             return;
         }
-        let entries: Vec<(String, chats::Before)> = changed
-            .iter()
-            .map(|p| {
-                let was = snapshot
-                    .iter()
-                    .find(|(q, _)| q == p)
-                    .map(|(_, b)| b.clone())
-                    .unwrap_or(chats::Before::Untouched);
-                (p.clone(), was)
-            })
-            .collect();
+        let mut entries: Vec<(String, chats::Before)> = Vec::new();
+        let mut unknown: Option<String> = None;
+        match snapshot {
+            Err(e) => unknown = Some(e.clone()),
+            Ok(taken) => {
+                for p in changed {
+                    match taken.iter().find(|(q, _)| q == p).map(|(_, b)| b) {
+                        Some(Ok(b)) => entries.push((p.clone(), b.clone())),
+                        Some(Err(e)) => {
+                            unknown.get_or_insert_with(|| e.clone());
+                        }
+                        None => entries.push((p.clone(), chats::Before::Untouched)),
+                    }
+                }
+            }
+        }
         let (dialog, name) = (self.dialog_id.clone(), group.name.clone());
         let saved = tauri::async_runtime::spawn_blocking(move || {
-            chats::add_group_paths(&dialog, &name, entries)
+            chats::add_group_paths(&dialog, &name, entries)?;
+            match unknown {
+                Some(why) => chats::mark_redo_unavailable(&dialog, &name, &why),
+                None => Ok(()),
+            }
         })
         .await
         .map_err(|e| e.to_string())
@@ -768,14 +808,7 @@ impl<R: Runtime> Run<R> {
                     ),
                 })
                 .collect();
-            let snapshot = {
-                let (dialog, keep) = (self.dialog_id.clone(), paths.clone());
-                tauri::async_runtime::spawn_blocking(move || chats::snapshot(&dialog, &keep))
-                    .await
-                    .ok()
-                    .and_then(|r| r.ok())
-                    .unwrap_or_default()
-            };
+            let snapshot = self.redo_snapshot(&paths).await;
             let id = child.clone();
             let landed = tauri::async_runtime::spawn_blocking(move || chats::land_child(&id))
                 .await

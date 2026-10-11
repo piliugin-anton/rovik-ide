@@ -598,7 +598,7 @@ impl<R: Runtime> Run<R> {
     }
 
     /// The files the chat's overlay changed (project-relative), when it has one.
-    fn overlay_paths(&self) -> Vec<String> {
+    pub(super) fn overlay_paths(&self) -> Vec<String> {
         if !self.isolated() {
             return Vec::new();
         }

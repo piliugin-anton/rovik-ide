@@ -828,6 +828,7 @@ mod safety {
 
     #[test]
     fn a_landing_that_fails_partway_puts_everything_back() {
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let d = setup(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
         let o = overlay(&d);
         for f in ["a.txt", "b.txt", "c.txt"] {
@@ -849,6 +850,34 @@ mod safety {
         );
         // Nothing for recovery to finish either.
         assert!(land::recover(&data(&d)).is_empty());
+    }
+
+    /// P1.3: a landing that fails and can't put everything back stays
+    /// "applying": it's interrupted until recovery finishes it.
+    #[test]
+    fn a_landing_that_cant_be_put_back_is_finished_by_recovery() {
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = setup(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        for f in ["a.txt", "b.txt"] {
+            write_all(&o, f, "CHAT\n");
+        }
+        // a.txt fails, and so does putting it back.
+        *land::FAIL_WRITING.lock().unwrap() = Some((d.project(), "a.txt".into()));
+        land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = land::land(&data(&d), "chat-half", &d.project(), &landable(&o), false);
+        land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
+        *land::FAIL_WRITING.lock().unwrap() = None;
+        assert!(
+            matches!(result, Err(LandError::Failed(ref e)) if e.contains("couldn't be put back")),
+            "{result:?}"
+        );
+        assert!(land::interrupted_into(&data(&d), &d.project()));
+        land::recover_into(&data(&d), &d.project());
+        assert!(!land::interrupted_into(&data(&d), &d.project()));
+        for f in ["a.txt", "b.txt"] {
+            assert_eq!(project_file(&d, f).as_deref(), Some("CHAT\n"), "{f}");
+        }
     }
 
     #[test]

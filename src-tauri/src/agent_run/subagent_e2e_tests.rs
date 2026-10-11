@@ -3361,20 +3361,199 @@ async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
         "{}",
         result.content
     );
-    assert!(
-        result.content.contains("In the chat now:\n```\nfrom w1"),
-        "{}",
-        result.content
-    );
-    assert!(
-        result
-            .content
-            .contains("Worker w2's version:\n```\nfrom w2"),
-        "{}",
-        result.content
-    );
+    // Both versions are saved for the lead to read.
+    for (file, want) in [("chat", "from w1\n"), ("worker", "from w2\n")] {
+        let path = format!("@checks/conflict-w2-src-posts-rs-{file}.log");
+        assert!(result.content.contains(&path), "{}", result.content);
+        let saved = crate::agent_run::check_output::resolve(&h.dialog_id, &path).unwrap();
+        assert_eq!(std::fs::read_to_string(saved).unwrap(), want);
+    }
     assert_eq!(result.meta.as_ref().unwrap()["group"]["conflict"], true);
     h.run_end().await;
+}
+
+const GROUP3_PLAN: &str = "# Three pages\n\nUsers, posts and a feed.\n\n## Steps\n\n\
+    1. **Contract**\n   - `src/api.rs`: declare `fn users()` and `fn posts()` with stub bodies.\n\
+    2. **Users**\n   - `src/users.rs`: implement the users page with `fn users()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\
+    3. **Posts**\n   - `src/posts.rs`: implement the posts page with `fn posts()`.\n   - `src/extra.rs`: helpers for the posts page.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\
+    4. **Feed**\n   - `src/feed.rs`: implement the feed with `fn posts()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\n\
+    ## Validation\n- `npm test`\n";
+
+/// P1.2: a conflict lands the rest of the worker, keeps its copy and the
+/// later workers' copies (none discarded), and saves both versions; a
+/// later worker lands when the lead continues it.
+#[tokio::test]
+#[ignore]
+async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
+    let mut h = harness(&[
+        ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
+        ("src/users.rs", "// users\n"),
+        ("src/posts.rs", "// posts\n"),
+        ("src/extra.rs", "// extra\n"),
+        ("src/feed.rs", "// feed\n"),
+        (".rovik/plans/greet.md", GROUP3_PLAN),
+        (
+            "node_modules/.bin/eslint",
+            "#!/bin/sh\nprintf 'from w1\\n' > src/posts.rs\n",
+        ),
+        ("scripts/side.js", "x\n"),
+    ])
+    .await;
+    h.isolate().await;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = h.project.join("node_modules/.bin/eslint");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    Reply::Call {
+                        id: "b1",
+                        name: "bash",
+                        args: json!({ "command": "npx eslint scripts/side.js" }),
+                    },
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "from w2\n"),
+                    write_call("w3", "src/extra.rs", "extra from w2\n"),
+                    worker_report("Posts.", &["src/posts.rs", "src/extra.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 4.",
+                vec![
+                    write_call("w4", "src/feed.rs", "feed from w3\n"),
+                    worker_report("Feed.", &["src/feed.rs"]),
+                    // Continued once the conflict is resolved: it lands.
+                    worker_report("Nothing more to do.", &["src/feed.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "g1#w3", "goal": "land it" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let result = h.result_when_ready("g1").await;
+    let text = result.content.clone();
+    assert!(text.contains("Its other files landed: src/extra.rs."), "{text}");
+    assert!(
+        text.contains("@checks/conflict-w2-src-posts-rs-chat.log")
+            && text.contains("@checks/conflict-w2-src-posts-rs-worker.log"),
+        "{text}"
+    );
+    assert!(text.contains("Not landed yet: the join stopped at the conflict below. Its copy is kept"), "{text}");
+    let saved = crate::agent_run::check_output::resolve(&h.dialog_id, "@checks/conflict-w2-src-posts-rs-worker.log").unwrap();
+    assert_eq!(std::fs::read_to_string(saved).unwrap(), "from w2\n");
+    // w2's copy is kept (its posts.rs waits there).
+    let w2 = h.child_of("g1#w2").await;
+    assert!(crate::overlay::chats::get(&w2.id).is_some(), "w2's copy is kept");
+    let continued = h.result_when_ready("c1").await;
+    assert!(continued.content.contains("Its copy landed: src/feed.rs."), "{}", continued.content);
+    // In the chat's view (the run ends with its checklist open, unlanded).
+    let view = crate::overlay::chats::get(&h.dialog_id).unwrap().view.clone();
+    let in_view = |p: &str| std::fs::read_to_string(view.join(p)).ok();
+    assert_eq!(in_view("src/extra.rs").as_deref(), Some("extra from w2\n"));
+    assert_eq!(in_view("src/feed.rs").as_deref(), Some("feed from w3\n"));
+    assert_eq!(in_view("src/posts.rs").as_deref(), Some("from w1\n"));
+    h.run_end().await;
+}
+
+/// P1.3: a worker's landing that fails half way keeps its copy and its
+/// journal; Land refuses until the landing is finished, then lands it.
+#[tokio::test]
+#[ignore]
+// The failure hooks are process-wide: held for the whole test on purpose.
+#[allow(clippy::await_holding_lock)]
+async fn a_landing_that_fails_half_way_keeps_the_copy_and_holds_land() {
+    use crate::overlay::land;
+    let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = harness(&[
+        ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
+        ("src/users.rs", "// users\n"),
+        ("src/posts.rs", "// posts\n"),
+        ("src/extra.rs", "// extra\n"),
+        ("src/feed.rs", "// feed\n"),
+        (".rovik/plans/greet.md", GROUP3_PLAN),
+    ])
+    .await;
+    h.isolate().await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts from w2\n"),
+                    write_call("w3", "src/extra.rs", "extra from w2\n"),
+                    worker_report("Posts.", &["src/posts.rs", "src/extra.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 4.",
+                vec![
+                    write_call("w4", "src/feed.rs", "feed\n"),
+                    worker_report("Feed.", &["src/feed.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            Reply::Slow(800, Box::new(all_done())),
+            group_task("g1"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    // The chat's view is open now: w2's extra.rs fails to land, and so
+    // does putting it back.
+    let view = loop {
+        if let Some(o) = crate::overlay::chats::get(&h.dialog_id) {
+            break o.view.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    *land::FAIL_WRITING.lock().unwrap() = Some((view.clone(), "src/extra.rs".into()));
+    land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+    let result = h.result_when_ready("g1").await;
+    h.run_end().await;
+    let text = result.content.clone();
+    assert!(text.contains("### Step 3 (w2): Posts\nIt couldn't land ("), "{text}");
+    assert!(text.contains("Its copy is kept"), "{text}");
+    let w2 = h.child_of("g1#w2").await;
+    assert!(crate::overlay::chats::get(&w2.id).is_some(), "the copy is kept");
+    // Land waits for the landing to be finished.
+    let refused = crate::overlay::chats::land_now(&h.dialog_id, false);
+    assert!(
+        matches!(refused, Err(land::LandError::Failed(ref e)) if e.contains("couldn't be finished")),
+        "{refused:?}"
+    );
+    land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
+    *land::FAIL_WRITING.lock().unwrap() = None;
+    crate::overlay::chats::land_now(&h.dialog_id, false).unwrap();
+    assert_eq!(h.file("src/extra.rs").as_deref(), Some("extra from w2\n"));
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts from w2\n"));
 }
 
 #[tokio::test]
@@ -3796,9 +3975,16 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
                 vec![
                     write_call("w2", "src/posts.rs", "bad posts\n"),
                     worker_report("Posts page.", &["src/posts.rs"]),
-                    // Its fix doesn't fix it, and adds a file of its own.
+                    // Its fix doesn't fix it, and adds a file of its own;
+                    // and changes one the chat changed in an earlier run.
                     write_call("w2f", "src/posts.rs", "still bad\n"),
                     write_call("w2g", "src/posts_extra.rs", "extra\n"),
+                    Reply::Call {
+                        id: "w2e",
+                        name: "extend_scope",
+                        args: json!({ "paths": ["src/util.rs"], "reason": "a helper" }),
+                    },
+                    write_call("w2h", "src/util.rs", "util by the fixer\n"),
                     worker_report("Fixed, I think.", &["src/posts.rs"]),
                 ],
             ),
@@ -3813,6 +3999,10 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
         ],
     )
     .await;
+    // P1.4: an earlier run of the chat changed src/util.rs (new in its view).
+    let chat = crate::overlay::chats::open(&h.dialog_id, &h.project, Box::new(|_, _| {})).unwrap();
+    std::fs::write(chat.view.join("src/util.rs"), "util from run 1\n").unwrap();
+    chat.fs.flush();
     h.start(h.implement_isolated(&url, true)).await;
     assert_eq!(h.run_end().await, "verify-gave-up");
     let messages = h.messages().await;
@@ -3867,8 +4057,16 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
         "{:?}",
         saved[0].before
     );
+    let fixed = std::fs::read_to_string(chat.view.join("src/util.rs")).unwrap();
+    assert_eq!(fixed, "util by the fixer\n", "the fixer changed it");
     let request = crate::overlay::chats::redo_group(&h.dialog_id, "pages").unwrap();
     assert!(request.contains("Carry out its steps (2, 3)"), "{request}");
+    // P1.4: the chat's own version from before the group, not the
+    // project's (it had none).
+    assert_eq!(
+        std::fs::read_to_string(chat.view.join("src/util.rs")).ok().as_deref(),
+        Some("util from run 1\n")
+    );
     assert!(
         !crate::overlay::chats::changes(&h.dialog_id)
             .iter()

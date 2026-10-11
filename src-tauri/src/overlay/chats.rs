@@ -645,18 +645,52 @@ fn mount_on(
 /// journaled: land.rs), then removes the child. A conflict keeps it, for
 /// the lead to see. Returns the paths that landed.
 pub fn land_child(child: &str) -> Result<Vec<String>, super::land::LandError> {
+    let landed = land_child_paths(child, &[])?;
+    discard_child(child);
+    Ok(landed)
+}
+
+/// P1.2: lands a child's changes except at `except` (paths that conflict),
+/// and keeps the child: what's left of it can land later, merged again.
+pub fn land_child_except(
+    child: &str,
+    except: &[String],
+) -> Result<Vec<String>, super::land::LandError> {
+    land_child_paths(child, except)
+}
+
+fn land_child_paths(child: &str, except: &[String]) -> Result<Vec<String>, super::land::LandError> {
     use super::land::LandError;
     let o = get(child).ok_or_else(|| LandError::Failed("the worker's view isn't open".into()))?;
     let data = data_dir()
         .ok_or_else(|| LandError::Failed("the app's data folder isn't known yet".into()))?;
+    // An earlier landing of it that stopped half way is finished first
+    // (P1.3): landing again over it would leave the chat's view mixed.
+    if super::land::interrupted_into(&data, &o.project) {
+        super::land::recover_into(&data, &o.project);
+        if super::land::interrupted_into(&data, &o.project) {
+            return Err(LandError::Failed(
+                "an earlier landing into the chat's view isn't finished".into(),
+            ));
+        }
+    }
     o.fs.flush();
-    let changes = o.fs.changes();
+    let changes: Vec<_> = o
+        .fs
+        .changes()
+        .into_iter()
+        .filter(|c| {
+            let path = c.path().replace('\\', "/");
+            !except
+                .iter()
+                .any(|e| crate::agent_run::paths::under(e, &path))
+        })
+        .collect();
     let landed = super::land::land(&data, child, &o.project, &changes, false)?;
     // The parent's overlay saves what came in.
     if let Some(parent) = parent_of(child).and_then(|p| get(&p)) {
         parent.fs.flush();
     }
-    discard_child(child);
     Ok(landed.map(|l| l.paths).unwrap_or_default())
 }
 
@@ -1608,7 +1642,7 @@ fn status(dialog_id: String) -> OverlayStatus {
         redo_groups: if isolated && pending(&dialog_id).is_some() {
             saved_groups(&dialog_id)
                 .into_iter()
-                .filter(|g| !g.redone)
+                .filter(|g| !g.redone && g.unavailable.is_none())
                 .map(|g| g.name)
                 .collect()
         } else {
@@ -1765,12 +1799,21 @@ pub fn land_now_with(
     // A child's landing into this chat's view that a crash interrupted is
     // finished first, which needs the view: landing the half of it that
     // got in would put half a worker's step in the project.
-    if get(dialog_id).is_none() && super::land::interrupted_into(&data, &mountpoint(dialog_id)) {
-        open(dialog_id, &project, Box::new(|_, _| {})).map_err(|e| {
-            LandError::Failed(format!(
-                "a step that was landing into this chat when the app closed isn't finished, and the chat's view couldn't be opened to finish it ({e})"
-            ))
-        })?;
+    // P1.3: whether the view is open or not (a group's landing can fail
+    // half way while the chat runs).
+    if super::land::interrupted_into(&data, &mountpoint(dialog_id)) {
+        match get(dialog_id) {
+            Some(o) => {
+                super::land::recover_into(&data, &o.view);
+            }
+            None => {
+                open(dialog_id, &project, Box::new(|_, _| {})).map_err(|e| {
+                    LandError::Failed(format!(
+                        "a step that was landing into this chat when the app closed isn't finished, and the chat's view couldn't be opened to finish it ({e})"
+                    ))
+                })?;
+            }
+        }
         if super::land::interrupted_into(&data, &mountpoint(dialog_id)) {
             return Err(LandError::Failed(
                 "a step that was landing into this chat when the app closed couldn't be finished"
@@ -2654,6 +2697,10 @@ pub struct SavedGroup {
     pub before: Vec<(String, Before)>,
     /// Redo sequentially was used: the group's steps run one at a time now.
     pub redone: bool,
+    /// Why Redo sequentially can't be offered (P1.4): what a path was before
+    /// couldn't be read. Never recorded as untouched instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
 }
 
 fn groups_file(dialog_id: &str) -> Option<PathBuf> {
@@ -2698,55 +2745,101 @@ fn read_blob(dialog_id: &str, name: &str) -> Result<Vec<u8>, String> {
 /// What `paths` are in the chat now, before a join writes them (R06).
 /// Call it before each worker's copy lands.
 pub fn snapshot(dialog_id: &str, paths: &[String]) -> Result<Vec<(String, Before)>, String> {
+    snapshot_each(dialog_id, paths)?
+        .into_iter()
+        .map(|(p, b)| b.map(|b| (p, b)))
+        .collect()
+}
+
+/// Each path with what it was, or why that couldn't be read.
+pub type PathSnapshots = Vec<(String, Result<Before, String>)>;
+
+/// `snapshot`, path by path (P1.4): one that can't be read is its own
+/// error, not the whole snapshot's.
+pub fn snapshot_each(dialog_id: &str, paths: &[String]) -> Result<PathSnapshots, String> {
     let lock = state_lock(dialog_id);
     let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
     let changes = changes(dialog_id);
     let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
     let mut out = Vec::new();
     for path in paths {
-        check_rel(path)?;
-        let own = changes.iter().rev().find(|c| c.path() == path);
-        // Inside a folder the chat deleted (and not written since): gone.
-        let under_deleted = || {
-            changes.iter().any(|c| {
-                matches!(c, OverlayChange::Delete { path: d, .. } if path.starts_with(&format!("{d}/")))
-            })
-        };
-        let before = match own {
-            Some(OverlayChange::Delete { .. }) => Before::Absent,
-            Some(OverlayChange::Write {
-                kind,
-                upper,
-                origin,
-                ..
-            }) => match kind {
-                crate::vfs::store::Kind::Dir => Before::Dir,
-                crate::vfs::store::Kind::Symlink => Before::Other,
-                crate::vfs::store::Kind::File => {
-                    let bytes = match (upper, origin) {
-                        (Some(file), _) => {
-                            std::fs::read(file).map_err(|e| format!("{path}: {e}"))?
+        let before = (|| -> Result<Before, String> {
+            check_rel(path)?;
+            let own = changes.iter().rev().find(|c| c.path() == path);
+            // Inside a folder the chat deleted (and not written since): gone.
+            let under_deleted = || {
+                changes.iter().any(|c| {
+                    matches!(c, OverlayChange::Delete { path: d, .. } if path.starts_with(&format!("{d}/")))
+                })
+            };
+            Ok(match own {
+                Some(OverlayChange::Delete { .. }) => Before::Absent,
+                Some(OverlayChange::Write {
+                    kind,
+                    upper,
+                    origin,
+                    ..
+                }) => match kind {
+                    crate::vfs::store::Kind::Dir => Before::Dir,
+                    crate::vfs::store::Kind::Symlink => Before::Other,
+                    crate::vfs::store::Kind::File => {
+                        let bytes = match (upper, origin) {
+                            (Some(file), _) => {
+                                std::fs::read(file).map_err(|e| format!("{path}: {e}"))?
+                            }
+                            (None, Some(o)) => std::fs::read(project.join(o))
+                                .map_err(|e| format!("{path}: {e}"))?,
+                            (None, None) => Vec::new(),
+                        };
+                        let base = with_fs(dialog_id, |fs| fs.versions(path))?
+                            .map(|(_, base)| {
+                                std::fs::read(base).map_err(|e| format!("{path}: {e}"))
+                            })
+                            .transpose()?;
+                        Before::File {
+                            content: keep_blob(dialog_id, &bytes)?,
+                            base: base.map(|b| keep_blob(dialog_id, &b)).transpose()?,
                         }
-                        (None, Some(o)) => {
-                            std::fs::read(project.join(o)).map_err(|e| format!("{path}: {e}"))?
-                        }
-                        (None, None) => Vec::new(),
-                    };
-                    let base = with_fs(dialog_id, |fs| fs.versions(path))?
-                        .map(|(_, base)| std::fs::read(base).map_err(|e| format!("{path}: {e}")))
-                        .transpose()?;
-                    Before::File {
-                        content: keep_blob(dialog_id, &bytes)?,
-                        base: base.map(|b| keep_blob(dialog_id, &b)).transpose()?,
                     }
-                }
-            },
-            None if under_deleted() => Before::Absent,
-            None => Before::Untouched,
-        };
+                },
+                None if under_deleted() => Before::Absent,
+                None => Before::Untouched,
+            })
+        })();
         out.push((path.clone(), before));
     }
     Ok(out)
+}
+
+/// A snapshot's saved versions that weren't kept for a group: they go.
+pub fn forget_snapshot(dialog_id: &str, unused: &[Before]) {
+    let Some(dir) = group_blobs(dialog_id) else {
+        return;
+    };
+    for b in unused {
+        if let Before::File { content, base } = b {
+            for name in std::iter::once(content).chain(base.iter()) {
+                if valid_id(name) {
+                    let _ = std::fs::remove_file(dir.join(name));
+                }
+            }
+        }
+    }
+}
+
+/// P1.4: Redo sequentially can't put the group back as the chat had it
+/// (what a path was couldn't be read): it isn't offered, and says why.
+pub fn mark_redo_unavailable(dialog_id: &str, name: &str, reason: &str) -> Result<(), String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = saved_groups(dialog_id);
+    let Some(group) = all.iter_mut().find(|g| g.name == name) else {
+        return Ok(());
+    };
+    if group.unavailable.is_none() {
+        group.unavailable = Some(reason.to_string());
+    }
+    write_groups(dialog_id, &all)
 }
 
 /// Keeps a joined group. A later join of the same name adds the paths it
@@ -2941,6 +3034,11 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
         .iter_mut()
         .find(|g| g.name == name)
         .ok_or_else(|| format!("no parallel group \"{name}\" in this chat"))?;
+    if let Some(why) = &group.unavailable {
+        return Err(format!(
+            "the group \"{name}\" can't be redone: what the chat had before it isn't known ({why})"
+        ));
+    }
     let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
     // Files before folders, deepest first: a folder the group made is
     // empty by the time it's removed.
@@ -3364,6 +3462,37 @@ mod hub_tests {
         )
         .unwrap();
         o.fs.write(ino, 0, content.as_bytes()).unwrap();
+    }
+
+    /// P1.4: a group whose snapshot failed isn't offered for Redo, and
+    /// says why, rather than putting paths back as if untouched.
+    #[test]
+    fn a_group_whose_snapshot_failed_isnt_redone() {
+        let root = std::env::temp_dir().join(format!("redo-unknown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _data = test_data(&root.join("data"));
+        let id = "redo-unknown-chat";
+        std::fs::create_dir_all(store_dir(id).unwrap()).unwrap();
+        save_group(
+            id,
+            SavedGroup {
+                name: "g".into(),
+                plan_path: "p.md".into(),
+                steps: vec![1, 2],
+                before: Vec::new(),
+                redone: false,
+                unavailable: None,
+            },
+        )
+        .unwrap();
+        mark_redo_unavailable(id, "g", "src/a.rs: permission denied").unwrap();
+        let e = redo_group(id, "g").unwrap_err();
+        assert!(
+            e.contains("can't be redone") && e.contains("permission denied"),
+            "{e}"
+        );
+        assert!(saved_groups(id)[0].unavailable.is_some());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Two isolated chats on one project; one lands. Needs FUSE.
