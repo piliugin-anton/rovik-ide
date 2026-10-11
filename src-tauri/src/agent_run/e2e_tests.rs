@@ -271,7 +271,13 @@ struct Harness {
     events: Arc<Mutex<Vec<Value>>>,
     dialog_id: String,
     _dir: TempDir,
+    /// An isolated chat's tests hold this: the overlays' data folder is
+    /// the process's, so they run one at a time.
+    _isolated: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
+
+static ISOLATED: std::sync::LazyLock<Arc<tokio::sync::Mutex<()>>> =
+    std::sync::LazyLock::new(Default::default);
 
 struct TempDir(PathBuf);
 
@@ -335,6 +341,16 @@ async fn harness(files: &[(&str, &str)]) -> Harness {
         events,
         dialog_id,
         _dir: dir,
+        _isolated: None,
+    }
+}
+
+impl Harness {
+    /// Isolated chats: the overlays' data folder is this test's, and no
+    /// other isolated test runs meanwhile.
+    async fn isolate(&mut self) {
+        self._isolated = Some(ISOLATED.clone().lock_owned().await);
+        crate::overlay::chats::init(&self._dir.0.join("data"));
     }
 }
 
@@ -868,8 +884,8 @@ async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
 #[tokio::test]
 #[ignore]
 async fn an_isolated_chat_changes_only_its_overlay() {
-    let h = harness(&[("src/a.txt", "one\ntwo\n"), ("README.md", "hi\n")]).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let mut h = harness(&[("src/a.txt", "one\ntwo\n"), ("README.md", "hi\n")]).await;
+    h.isolate().await;
     let (url, _) = model(vec![
         Reply::Call { id: "w1", name: "write", args: json!({ "path": "src/a.txt", "old_text": "one", "content": "ONE" }) },
         Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sed -i 's/hi/hello/' README.md && cat README.md && echo new > new.txt" }) },
@@ -924,8 +940,8 @@ async fn an_isolated_chat_changes_only_its_overlay() {
 #[tokio::test]
 #[ignore]
 async fn an_isolated_chats_conflicting_changes_wait() {
-    let h = harness(&[("a.txt", "one\n")]).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let mut h = harness(&[("a.txt", "one\n")]).await;
+    h.isolate().await;
     let project_file = h.project.join("a.txt");
     let (url, _) = model(vec![
         Reply::Call {
@@ -978,7 +994,7 @@ async fn an_isolated_chats_conflicting_changes_wait() {
 #[tokio::test]
 #[ignore]
 async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
-    let h = harness(&[
+    let mut h = harness(&[
         ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
         ("check.js", "if (require('fs').readFileSync('a.txt', 'utf8').includes('BAD')) { console.error('a.txt: BAD'); process.exit(1); }"),
         ("a.txt", "1\n2\n3\n4\n5\n"),
@@ -992,7 +1008,7 @@ async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
         eprintln!("npm isn't installed: skipped");
         return;
     }
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    h.isolate().await;
     let (url, _) = model(vec![
         Reply::Call {
             id: "w1",
@@ -1071,8 +1087,8 @@ async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
 #[tokio::test]
 #[ignore]
 async fn a_running_chat_resolves_its_own_conflict() {
-    let h = harness(&[("a.txt", "one\n")]).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let mut h = harness(&[("a.txt", "one\n")]).await;
+    h.isolate().await;
     crate::overlay::chats::set_chat_resolves(true);
     let (url, _) = model(vec![
         Reply::Call {
@@ -1140,8 +1156,8 @@ async fn a_running_chat_resolves_its_own_conflict() {
 #[tokio::test]
 #[ignore]
 async fn an_isolated_run_waits_while_the_project_switches_branches() {
-    let h = harness(&[("a.txt", "one\n")]).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let mut h = harness(&[("a.txt", "one\n")]).await;
+    h.isolate().await;
     let (url, _) = model(vec![
         Reply::Call {
             id: "b1",

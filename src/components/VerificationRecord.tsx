@@ -7,8 +7,11 @@ import { createSignal, For, Match, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
 import { liveSubagent, openTranscript, workLabel } from '../lib/subagents';
 import {
+  causeLine,
   describeFailure,
   progressLine,
+  repairHeadline,
+  reviewAfterGreenLine,
   triageHeadline,
   type CheckResult,
   type TriageMeta,
@@ -36,6 +39,10 @@ function headline(meta: VerificationMeta, interrupted: boolean): string {
     case 'passed':
       return 'Checks passed.';
     case 'failed':
+      if (meta.repair?.status === 'recheck')
+        return `Checks failed (attempt ${meta.round} of ${meta.maxRounds}): the workers that own the failures fixed them.`;
+      if (meta.repair?.status === 'fixing')
+        return `Checks failed (attempt ${meta.round} of ${meta.maxRounds}): the workers that own the failures are fixing them.`;
       return `Checks failed: sent to the agent to fix (attempt ${meta.round} of ${meta.maxRounds}).`;
     case 'gave-up':
       return meta.rolledBack
@@ -296,6 +303,51 @@ export default function VerificationRecord(props: {
             live={props.live}
           />
         )}
+      </Show>
+
+      <Show when={props.meta.repair}>
+        {(r) => (
+          <div class="chat-verify-repair">
+            <div class="chat-verify-progress">{repairHeadline(r())}</div>
+            <ul class="chat-verify-flags">
+              <For each={r().causes}>{(c) => <li>{causeLine(c)}</li>}</For>
+            </ul>
+          </div>
+        )}
+      </Show>
+
+      <Show when={props.meta.status === 'gave-up' && props.meta.remaining?.length}>
+        <details class="chat-verify-rollback">
+          <summary>
+            Still failing: {props.meta.remaining!.length}
+            {props.meta.attempts?.length
+              ? ` · ${props.meta.attempts.length} fix attempt${props.meta.attempts.length === 1 ? '' : 's'} rolled back`
+              : ''}
+          </summary>
+          <ul class="chat-verify-flags">
+            <For each={props.meta.remaining}>{(k) => <li>{describeFailure(k)}</li>}</For>
+          </ul>
+          <Show when={props.meta.triageSummary}>
+            <div>
+              <span class="review-label">Last triage:</span> {props.meta.triageSummary}
+            </div>
+          </Show>
+          <For each={props.meta.attempts ?? []}>
+            {(rb) => (
+              <div>
+                <span class="review-label">Rolled back:</span>{' '}
+                {rb.broke.map(describeFailure).join(', ')}
+                <Show when={rb.diff}>
+                  <pre class="chat-verify-output">{rb.diff}</pre>
+                </Show>
+              </div>
+            )}
+          </For>
+        </details>
+      </Show>
+
+      <Show when={reviewAfterGreenLine(props.meta)}>
+        {(line) => <div class="chat-verify-progress">{line()}</div>}
       </Show>
 
       <Show when={props.meta.attribution?.length}>

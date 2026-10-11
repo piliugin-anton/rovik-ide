@@ -980,8 +980,7 @@ async fn no_run_gets_more_than_three_reviews() {
             "note",
             "review:clean",
             "verification:failed",
-            // The checks ran in between: a review again, the third and last.
-            "review:clean",
+            // While the checks fail, the review waits for green (R08).
             "verification:failed",
             "verification:gave-up",
         ]
@@ -2861,8 +2860,8 @@ async fn group_harness(extra: &[(&str, &str)]) -> Harness {
         (".rovik/plans/greet.md", GROUP_PLAN),
     ];
     files.extend_from_slice(extra);
-    let h = harness(&files).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let mut h = harness(&files).await;
+    h.isolate().await;
     h
 }
 
@@ -3321,13 +3320,13 @@ async fn the_red_check_flags_a_test_that_passes_on_the_old_code() {
     {
         return;
     }
-    let h = harness(&[
+    let mut h = harness(&[
         ("go.mod", "module x\n\ngo 1.21\n"),
         ("a/a.go", "package a\n\nfunc A() int { return 1 }\n"),
         ("b/b.go", "package b\n\nfunc B() int { return 1 }\n"),
     ])
     .await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    h.isolate().await;
     let (url, _) = model_routed(
         vec![(
             "# Write tests for this change",
@@ -3369,4 +3368,497 @@ async fn the_red_check_flags_a_test_that_passes_on_the_old_code() {
         "{r}"
     );
     assert!(!r.contains("`b/b_test.go` already"), "{r}");
+}
+
+/*
+ * R04–R07: the repair loop after a parallel group. The check fails on
+ * "bad" in a page, with errors pointing at it: one for users.rs, two for
+ * posts.rs (so posts' cause explains more), one for api.rs.
+ */
+
+const REPAIR_CHECK: &str = "const fs = require('fs');\n\
+    let failed = false;\n\
+    if (process.env.NOISE) { console.log('noise line for the saved output\\n'.repeat(400)); }\n\
+    if (fs.readFileSync('src/api.rs', 'utf8').includes('bad')) {\n\
+      console.error('error[E0412]: cannot find type `Api`\\n --> src/api.rs:1:1\\n'); failed = true;\n}\n\
+    if (fs.readFileSync('src/users.rs', 'utf8').includes('bad')) {\n\
+      console.error('error[E0425]: cannot find value `u`\\n --> src/users.rs:1:1\\n'); failed = true;\n}\n\
+    if (fs.readFileSync('src/posts.rs', 'utf8').includes('bad')) {\n\
+      console.error('error[E0425]: cannot find value `p`\\n --> src/posts.rs:1:1\\n');\n\
+      console.error('error[E0308]: mismatched types\\n --> src/posts.rs:2:1\\n'); failed = true;\n}\n\
+    if (failed) process.exit(1);\n";
+
+async fn repair_harness(noise: bool) -> Option<Harness> {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("npm isn't installed: skipped");
+        return None;
+    }
+    let script = if noise {
+        r#"{ "name": "t", "scripts": { "test": "NOISE=1 node check.js" } }"#
+    } else {
+        r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#
+    };
+    Some(group_harness(&[("check.js", REPAIR_CHECK), ("package.json", script)]).await)
+}
+
+/// The end-of-run verification records (not F06's mid-run one).
+fn end_records(messages: &[MessageRow]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .filter(|v| v["midRun"] != true)
+        .collect()
+}
+
+fn statuses(records: &[Value]) -> Vec<String> {
+    records
+        .iter()
+        .map(|r| r["status"].as_str().unwrap_or("").to_string())
+        .collect()
+}
+
+/// The first request whose body has all of `parts`.
+fn first_request_with(seen: &Arc<Mutex<Vec<Value>>>, parts: &[&str]) -> Option<usize> {
+    seen.lock().unwrap().iter().position(|b| {
+        let text = b.to_string();
+        parts.iter().all(|p| text.contains(p))
+    })
+}
+
+#[tokio::test]
+#[ignore]
+async fn two_causes_go_to_their_workers_in_order_then_one_check_run() {
+    let Some(h) = repair_harness(false).await else {
+        return;
+    };
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "bad users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                    // R04: resumed to fix its cause.
+                    write_call("w1f", "src/users.rs", "users, fixed\n"),
+                    worker_report("Fixed the users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    write_call("w2f", "src/posts.rs", "posts, fixed\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, true)).await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let records = end_records(&messages);
+    // One failing round, the workers' fixes, one check run: green.
+    assert_eq!(statuses(&records), ["failed", "passed"]);
+    let repair = &records[0]["repair"];
+    assert_eq!(repair["status"], "recheck", "{repair}");
+    assert_eq!(repair["parallel"], false);
+    let causes = repair["causes"].as_array().unwrap();
+    assert_eq!(causes.len(), 2, "{repair}");
+    // Most failures first: posts (two), then users (one).
+    assert_eq!(causes[0]["owner"]["label"], "w2");
+    assert_eq!(causes[1]["owner"]["label"], "w1");
+    for c in causes {
+        assert_eq!(c["fixer"]["status"], "done", "{c}");
+    }
+    let w2 =
+        first_request_with(&seen, &["# Fix from the lead's checks", "# Your step: 3."]).unwrap();
+    let w1 =
+        first_request_with(&seen, &["# Fix from the lead's checks", "# Your step: 2."]).unwrap();
+    assert!(w2 < w1, "the fixers run in order, one at a time");
+    // The lead never got a failure report: the owners fixed it all.
+    assert!(!messages
+        .iter()
+        .any(|m| m.content.contains("Your changes are not done yet")));
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts, fixed\n"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
+    let Some(h) = repair_harness(false).await else {
+        return;
+    };
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    // Its fix doesn't fix it.
+                    write_call("w2f", "src/posts.rs", "still bad\n"),
+                    worker_report("Fixed, I think.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Done."),
+            // Round 2 made no progress: the lead's alone now.
+            write_call("l1", "src/posts.rs", "bad again\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, true)).await;
+    assert_eq!(h.run_end().await, "verify-gave-up");
+    let messages = h.messages().await;
+    let records = end_records(&messages);
+    assert_eq!(statuses(&records), ["failed", "failed", "gave-up"]);
+    assert_eq!(records[0]["repair"]["status"], "recheck");
+    // R06: after no progress, no worker is resumed: the lead fixes it all.
+    let second = &records[1]["repair"];
+    assert!(second["leadOnly"].is_string(), "{second}");
+    assert!(second["causes"][0].get("fixer").is_none(), "{second}");
+    let report = messages
+        .iter()
+        .find(|m| m.content.contains("## Root causes"))
+        .expect("the lead's report names the causes");
+    assert!(
+        report.content.contains("the lead fixes everything"),
+        "{}",
+        report.content
+    );
+    assert!(
+        first_request_with(&seen, &["Fix from the lead's checks (round 2"]).is_none()
+            && !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|b| b.to_string().contains("round 2). These failures")),
+        "no fixer in round 2"
+    );
+    // The gave-up record: what's left.
+    let last = &records[2];
+    assert!(
+        last["remaining"].as_array().is_some_and(|r| r
+            .iter()
+            .any(|k| k.as_str().unwrap().contains("src/posts.rs"))),
+        "{last}"
+    );
+    // Nothing landed.
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("// posts\n"));
+    assert_eq!(h.file("src/users.rs").as_deref(), Some("// users\n"));
+
+    // Redo sequentially: the merge is thrown away; the steps run one at a
+    // time, by step workers.
+    let saved = crate::overlay::chats::saved_groups(&h.dialog_id);
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].steps, vec![2, 3]);
+    let request = crate::overlay::chats::redo_group(&h.dialog_id, "pages").unwrap();
+    assert!(request.contains("Carry out its steps (2, 3)"), "{request}");
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("s2w", "src/users.rs", "users, again\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("s3w", "src/posts.rs", "posts, again\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            group_task("g2"),
+            step("s2", 2),
+            step("s3", 3),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    let mut next = h.request(
+        &url,
+        Harness::send(&request),
+        Permissions {
+            allow_any_command: true,
+            checklist: ChecklistMode::Off,
+            ..quiet_permissions()
+        },
+    );
+    next.config.as_mut().unwrap().subagents = groups_on();
+    next.isolate = Some(true);
+    h.start(next).await;
+    h.run_end().await;
+    let messages = h.messages().await;
+    assert!(
+        result_of(&messages, "g2")
+            .content
+            .contains("being redone one step at a time"),
+        "{}",
+        result_of(&messages, "g2").content
+    );
+    for call in ["s2", "s3"] {
+        let r = &result_of(&messages, call).content;
+        assert!(!r.starts_with("Error"), "{r}");
+    }
+    // The workers started from the code before the group.
+    let brief = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|b| b.to_string())
+        .find(|b| b.contains("# Your step: 3."))
+        .unwrap();
+    assert!(!brief.contains("still bad") && !brief.contains("bad again"));
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts, again\n"));
+}
+
+const TRIAGE_TWO_CAUSES: &str = "## Root cause\n`p` is never declared in src/posts.rs:1.\n\n\
+    ## Files to fix\n- `src/posts.rs`: declare it\n\n\
+    ## Next step\nDeclare `p`.\n\n\
+    ## Confidence\nhigh: the error says so.\n\n\
+    ## Other causes\n- `src/users.rs` | high | `u` is never declared";
+
+#[tokio::test]
+#[ignore]
+async fn high_confidence_causes_in_different_scopes_are_fixed_in_parallel() {
+    let Some(h) = repair_harness(true).await else {
+        return;
+    };
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Triage this failure",
+                vec![Reply::Text(TRIAGE_TWO_CAUSES)],
+            ),
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "bad users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                    write_call("w1f", "src/users.rs", "users, fixed\n"),
+                    worker_report("Fixed the users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    write_call("w2f", "src/posts.rs", "posts, fixed\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    let mut request = h.implement_isolated(&url, true);
+    let mut config = groups_on();
+    config.parallel_repair = true;
+    config.kinds.insert(
+        "triage".into(),
+        serde_json::from_value(json!({ "enabled": true })).unwrap(),
+    );
+    request.config.as_mut().unwrap().subagents = config;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "verified");
+    let records = end_records(&h.messages().await);
+    assert_eq!(
+        statuses(&records),
+        ["failed", "passed"],
+        "one check run after the fixes"
+    );
+    let repair = &records[0]["repair"];
+    assert_eq!(repair["parallel"], true, "{repair}");
+    let causes = repair["causes"].as_array().unwrap();
+    assert_eq!(causes.len(), 2);
+    for c in causes {
+        assert_eq!(c["confidence"], "high");
+        assert_eq!(c["fixer"]["status"], "done", "{c}");
+        assert_eq!(c["fixer"]["parallel"], true);
+    }
+    assert_eq!(h.file("src/users.rs").as_deref(), Some("users, fixed\n"));
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts, fixed\n"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_cause_the_lead_owns_is_never_fixed_in_parallel() {
+    let Some(h) = repair_harness(true).await else {
+        return;
+    };
+    let triage: &'static str = Box::leak(
+        TRIAGE_TWO_CAUSES
+            .replace("`src/users.rs` | high | `u`", "`src/api.rs` | high | `Api`")
+            .into_boxed_str(),
+    );
+    let (url, _) = model_routed(
+        vec![
+            ("# Triage this failure", vec![Reply::Text(triage)]),
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    write_call("w2f", "src/posts.rs", "posts, fixed\n"),
+                    worker_report("Fixed the posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            // The contract step breaks the contract.
+            write_call("l0", "src/api.rs", "bad api\n"),
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Done."),
+            write_call("l1", "src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
+            Reply::Text("Fixed the contract."),
+        ],
+    )
+    .await;
+    let mut request = h.implement_isolated(&url, true);
+    let mut config = groups_on();
+    config.parallel_repair = true;
+    config.kinds.insert(
+        "triage".into(),
+        serde_json::from_value(json!({ "enabled": true })).unwrap(),
+    );
+    request.config.as_mut().unwrap().subagents = config;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "verified");
+    let records = end_records(&h.messages().await);
+    let repair = &records[0]["repair"];
+    assert_eq!(repair["parallel"], false, "{repair}");
+    let causes = repair["causes"].as_array().unwrap();
+    // w2's cause (two failures) first, by itself; then the lead's.
+    assert_eq!(causes[0]["owner"]["label"], "w2");
+    assert_eq!(causes[0]["fixer"]["parallel"], false);
+    assert_eq!(causes[1]["owner"]["kind"], "lead");
+    assert!(causes[1].get("fixer").is_none());
+    assert_eq!(statuses(&records), ["failed", "passed"]);
+}
+
+/*
+ * R08: a review after green, within the run's change-review budget.
+ */
+
+const FINDING_C: &str = "## Findings\n\n1. [high] b.txt:40 — The greeting has no name\n   - Scenario: the user is greeted as nobody.\n   - Fix: add the name.\n   - Confidence: confirmed";
+
+#[tokio::test]
+async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); if (!fs.readFileSync('a.txt', 'utf8').includes('ok')) { console.error('a.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("a.txt", "no\n"),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![
+                // B03, before the first checks.
+                Reply::Text(NO_FINDINGS),
+                // R08, after each green that followed a fix.
+                Reply::Text(FINDING_A),
+                Reply::Text(FINDING_C),
+            ],
+        )],
+        vec![
+            write_call("w1", "a.txt", "nope\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "ok\n"),
+            Reply::Text("Fixed."),
+            write_call("w3", "a.txt", "ok hello\n"),
+            Reply::Text("1: fixed."),
+            write_call("w4", "a.txt", "ok hello, Ann\n"),
+            Reply::Text("1: fixed."),
+        ],
+    )
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..Permissions::default()
+    };
+    h.start(h.with_subagents(&url, "Greet", permissions, reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    assert_eq!(
+        record_order(&messages),
+        [
+            "review:clean",
+            "verification:failed",
+            "verification:passed",
+            "review:findings",
+            "note",
+            "verification:passed",
+            "review:findings",
+            "note",
+            "verification:passed",
+        ]
+    );
+    let records: Vec<Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .collect();
+    assert_eq!(records[1]["reviewAfterGreen"]["status"], "findings");
+    // The third review was the run's last: the fourth green isn't reviewed,
+    // and its record says why.
+    let last = records.last().unwrap();
+    assert_eq!(last["reviewAfterGreen"]["status"], "skipped", "{last}");
+    assert!(last["reviewAfterGreen"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("used up"));
+    // The extra round after the last review went past the usual three.
+    assert_eq!(last["round"], 4);
+    assert_eq!(last["maxRounds"], 4);
+    assert!(reviews(&messages)
+        .iter()
+        .skip(1)
+        .all(|r| r["afterGreen"] == true));
 }

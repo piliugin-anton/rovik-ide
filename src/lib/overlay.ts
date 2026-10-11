@@ -52,6 +52,8 @@ export interface OverlayStatus {
   limit: number;
   /** Build output and dependencies in the chat's view (not landed). */
   byProducts: number;
+  /** Parallel groups whose merge can be thrown away and redone one step at a time. */
+  redoGroups?: string[];
 }
 
 export interface FileVersions {
@@ -111,6 +113,11 @@ export function overlayConflictResolve(
  * Hands the conflicts to the chat: markers go into its files. Returns the
  * files and the message to send it (empty when nothing could be handed over).
  */
+/** Redo sequentially: the group's merge is thrown away; returns the message to send the chat. */
+export function overlayRedoGroup(dialogId: string, group: string): Promise<string> {
+  return invoke<string>('overlay_redo_group', { dialogId, group });
+}
+
 export function overlayConflictsToChat(
   dialogId: string
 ): Promise<{ files: string[]; request: string }> {

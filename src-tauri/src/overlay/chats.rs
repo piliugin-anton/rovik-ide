@@ -1492,6 +1492,9 @@ pub struct OverlayStatus {
     pub limit: u64,
     /// Build output and dependencies in the chat's view (not landed).
     pub by_products: u64,
+    /// Parallel groups whose merge can be thrown away and redone one step
+    /// at a time (R06), while the chat's changes wait to land.
+    pub redo_groups: Vec<String>,
 }
 
 fn summarize(changes: &[OverlayChange]) -> Vec<ChangedFile> {
@@ -1579,6 +1582,15 @@ fn status(dialog_id: String) -> OverlayStatus {
         used,
         limit,
         by_products,
+        redo_groups: if isolated && pending(&dialog_id).is_some() {
+            saved_groups(&dialog_id)
+                .into_iter()
+                .filter(|g| !g.redone)
+                .map(|g| g.name)
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -2562,6 +2574,126 @@ pub async fn overlay_conflicts_to_chat(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ---------------------------------------------------------------------------
+// Redo sequentially (R06)
+// ---------------------------------------------------------------------------
+
+/// A parallel group joined into the chat: what its files were before the
+/// join, so the merge can be thrown away and its steps redone one at a time.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedGroup {
+    pub name: String,
+    pub plan_path: String,
+    pub steps: Vec<usize>,
+    /// Each file the join wrote, as it was before (None: it wasn't there).
+    pub before: Vec<(String, Option<String>)>,
+    /// Redo sequentially was used: the group's steps run one at a time now.
+    pub redone: bool,
+}
+
+fn groups_file(dialog_id: &str) -> Option<PathBuf> {
+    store_dir(dialog_id).map(|s| s.join("groups.json"))
+}
+
+pub fn saved_groups(dialog_id: &str) -> Vec<SavedGroup> {
+    groups_file(dialog_id)
+        .and_then(|f| std::fs::read(f).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn write_groups(dialog_id: &str, groups: &[SavedGroup]) -> Result<(), String> {
+    let file = groups_file(dialog_id).ok_or("this chat has no isolated changes")?;
+    let bytes = serde_json::to_vec(groups).map_err(|e| e.to_string())?;
+    crate::atomic_file::write_atomic(&file, &bytes).map_err(|e| e.to_string())
+}
+
+/// Keeps a joined group (a later join of the same name replaces it; what
+/// its files were before the first join stays).
+pub fn save_group(dialog_id: &str, group: SavedGroup) -> Result<(), String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = saved_groups(dialog_id);
+    match all.iter_mut().find(|g| g.name == group.name) {
+        Some(g) => {
+            let mut before = g.before.clone();
+            for (path, original) in group.before {
+                if !before.iter().any(|(p, _)| *p == path) {
+                    before.push((path, original));
+                }
+            }
+            *g = SavedGroup { before, ..group };
+        }
+        None => all.push(group),
+    }
+    write_groups(dialog_id, &all)
+}
+
+/// Whether the group is being redone one step at a time.
+pub fn group_redone(dialog_id: &str, name: &str) -> bool {
+    saved_groups(dialog_id)
+        .iter()
+        .any(|g| g.name == name && g.redone)
+}
+
+/// Throws the group's merge away (its files go back to what they were
+/// before the join) and returns the request that has its steps redone by
+/// step workers, one at a time.
+pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = saved_groups(dialog_id);
+    let group = all
+        .iter_mut()
+        .find(|g| g.name == name)
+        .ok_or_else(|| format!("no parallel group \"{name}\" in this chat"))?;
+    let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    for (path, original) in &group.before {
+        check_rel(path)?;
+        let now = std::fs::read(project.join(path)).ok();
+        with_fs(dialog_id, |fs| {
+            fs.rebase_file(path, original.as_deref().map(str::as_bytes), now.as_deref())
+        })?
+        .map_err(|e| format!("{path}: {e:?}"))?;
+    }
+    group.redone = true;
+    let steps = group
+        .steps
+        .iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let files = group
+        .before
+        .iter()
+        .map(|(p, _)| format!("`{p}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let request = format!(
+        "Redo sequentially: the parallel group \"{name}\" didn't pass its checks, so its merged changes were thrown away \
+         ({files} are back as they were before it). Carry out its steps ({steps}) of the plan in `{}` again, one at a time, \
+         each with a step worker (task with kind \"worker\" and its step), not as a parallel group.",
+        group.plan_path
+    );
+    write_groups(dialog_id, &all)?;
+    set_pending(dialog_id, None);
+    Ok(request)
+}
+
+/// The Redo sequentially button: returns the message to send the chat.
+#[tauri::command]
+pub async fn overlay_redo_group(
+    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    dialog_id: String,
+    group: String,
+) -> Result<String, String> {
+    not_running(&agent, &dialog_id)?;
+    tauri::async_runtime::spawn_blocking(move || redo_group(&dialog_id, &group))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

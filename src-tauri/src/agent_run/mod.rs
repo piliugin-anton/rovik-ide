@@ -21,6 +21,7 @@
 //!   command_output.rs: the rules and text they use
 
 pub mod change_review;
+pub mod causes;
 pub mod check_output;
 pub mod command_output;
 pub mod diff;
@@ -39,6 +40,7 @@ pub mod plan;
 pub mod plan_review;
 pub mod project;
 pub mod repair;
+mod repair_run;
 pub mod repetition;
 pub mod review;
 mod run;

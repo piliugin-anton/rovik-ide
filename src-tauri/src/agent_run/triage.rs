@@ -59,6 +59,11 @@ The smallest change that would make progress: one concrete step.
 ## Confidence
 high, medium or low, and in a few words why.
 
+Only if the failures have more than one independent cause, add after it:
+
+## Other causes
+- `path`, `path` | high, medium or low | what is wrong there
+
 Add "## Blocked" with the reason only if you couldn't triage it."###;
 
 pub static TRIAGE: KindSpec = KindSpec {
@@ -102,6 +107,82 @@ pub struct Triage {
     pub confidence: String,
     /// The reason it gave for its confidence.
     pub confidence_note: String,
+    /// Independent causes besides the root cause ("## Other causes"), for
+    /// grouping the failures (R03).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub other_causes: Vec<OtherCause>,
+}
+
+/// One line of "## Other causes".
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherCause {
+    pub files: Vec<String>,
+    pub confidence: String,
+    pub cause: String,
+}
+
+/// The first word of a confidence, when it's high, medium or low.
+fn confidence_word(text: &str) -> Option<String> {
+    let first = text
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .find(|w| !w.is_empty())?
+        .to_lowercase();
+    ["high", "medium", "low"]
+        .contains(&first.as_str())
+        .then_some(first)
+}
+
+/// The paths in a line of the report: in backticks, or the line's words
+/// that look like paths.
+pub fn paths_in(text: &str) -> Vec<String> {
+    let ticked: Vec<String> = text
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty() && !p.contains(' '))
+        .collect();
+    let found = if ticked.is_empty() {
+        text.split([',', ' ', ':'])
+            .map(str::trim)
+            .filter(|w| w.contains('/') || w.contains('.') && !w.ends_with('.'))
+            .map(str::to_string)
+            .collect()
+    } else {
+        ticked
+    };
+    found
+        .into_iter()
+        .map(|p| {
+            // `src/a.rs:12` → src/a.rs
+            let p = p.trim_start_matches("./").replace('\\', "/");
+            match p.split_once(':') {
+                Some((file, rest)) if rest.chars().all(|c| c.is_ascii_digit() || c == ':') => {
+                    file.to_string()
+                }
+                _ => p,
+            }
+        })
+        .collect()
+}
+
+fn parse_other_causes(text: &str) -> Vec<OtherCause> {
+    text.lines()
+        .map(|l| l.trim().trim_start_matches(['-', '*']).trim())
+        .filter_map(|l| {
+            let parts: Vec<&str> = l.splitn(3, '|').map(str::trim).collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            let files = paths_in(parts[0]);
+            (!files.is_empty()).then(|| OtherCause {
+                files,
+                confidence: confidence_word(parts[1]).unwrap_or_else(|| parts[1].to_lowercase()),
+                cause: parts[2].to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Reads a triage report; None when a section is missing or empty.
@@ -140,6 +221,9 @@ pub fn parse_report(check: &str, text: &str) -> Option<Triage> {
         next_step: next_step.to_string(),
         confidence,
         confidence_note: note,
+        other_causes: get("Other causes")
+            .map(parse_other_causes)
+            .unwrap_or_default(),
     })
 }
 
@@ -277,6 +361,17 @@ pub fn for_agent(t: &Triage, output: &str, saved: Option<&str>) -> String {
             format!(" ({})", t.confidence_note)
         }
     ));
+    if !t.other_causes.is_empty() {
+        out.push_str("\n**Other causes:**\n");
+        for c in &t.other_causes {
+            out.push_str(&format!(
+                "- {} ({}): {}\n",
+                c.files.join(", "),
+                c.confidence,
+                c.cause
+            ));
+        }
+    }
     out.push_str(&format!(
         "\nExcerpt of the output:\n\n```\n{}\n```",
         focus_failures(output, EXCERPT_CHARS)
@@ -302,6 +397,8 @@ pub struct Outcome {
     /// Its part of the agent's message (replaces the check's output);
     /// None when it was skipped (the record says why).
     pub section: Option<String>,
+    /// Its record (`verification.triage`), as last written.
+    pub record: Value,
 }
 
 /// The check to triage: the first failed one whose output was too long to
@@ -450,7 +547,11 @@ impl<R: Runtime> Run<R> {
         if found.is_some() {
             self.last_triage = found;
         }
-        Ok(Some(Outcome { index, section }))
+        Ok(Some(Outcome {
+            index,
+            section,
+            record,
+        }))
     }
 }
 
@@ -573,5 +674,24 @@ mod tests {
         assert!(text.contains("error: boom"));
         assert!(text.contains("saved as `@checks/round-1-test.log`"));
         assert!(text.len() < EXCERPT_CHARS + 1_500, "{}", text.len());
+    }
+
+    #[test]
+    fn other_causes_are_read_with_their_files_and_confidence() {
+        let text = format!(
+            "{REPORT}\n\n## Other causes\n- `src/feed.rs`, `src/feed_item.rs:4` | high — the import | `Item` isn't imported\n- no files here | low | ignored"
+        );
+        let t = parse_report("typecheck", &text).unwrap();
+        assert_eq!(t.other_causes.len(), 1);
+        assert_eq!(
+            t.other_causes[0].files,
+            vec!["src/feed.rs", "src/feed_item.rs"]
+        );
+        assert_eq!(t.other_causes[0].confidence, "high");
+        assert_eq!(t.other_causes[0].cause, "`Item` isn't imported");
+        assert!(parse_report("typecheck", REPORT)
+            .unwrap()
+            .other_causes
+            .is_empty());
     }
 }

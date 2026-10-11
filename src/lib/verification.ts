@@ -41,6 +41,8 @@ export interface TriageResult {
   /** high, medium or low (as written otherwise). */
   confidence: string;
   confidenceNote: string;
+  /** Independent causes besides the root cause. */
+  otherCauses?: { files: string[]; confidence: string; cause: string }[];
 }
 
 /** A round's failure triage: a subagent that read a large or repeated failure. */
@@ -100,6 +102,45 @@ export interface RolledBack {
   diff: string;
 }
 
+/** Who fixes a cause (src-tauri/src/agent_run/causes.rs). */
+export type CauseOwner =
+  | { kind: 'worker'; label: string; step: number; describe: string }
+  | {
+      kind: 'lead';
+      reason: 'contract' | 'acrossScopes' | 'unowned' | 'unlocated';
+      describe: string;
+    }
+  | { kind: 'testRule'; file: string; describe: string };
+
+/** One root cause of a failed round, and its fixer if one ran. */
+export interface RepairCause {
+  owner: CauseOwner;
+  keys: string[];
+  files: string[];
+  summary: string;
+  confidence?: string;
+  fixer?: {
+    /** done, partial, failed, not started, not landed, … */
+    status: string;
+    childDialogId?: string | null;
+    changed: string[];
+    said: string;
+    parallel: boolean;
+  };
+}
+
+/** The repair loop's round after a parallel group (R03–R07). */
+export interface RepairMeta {
+  group: string;
+  round: number;
+  /** fixing: workers are at it; recheck: they fixed it all, the checks run again; lead: the lead fixes (the rest). */
+  status: 'fixing' | 'recheck' | 'lead' | 'stopped';
+  /** Why the lead fixes everything this round (the escalation ladder). */
+  leadOnly?: string | null;
+  parallel: boolean;
+  causes: RepairCause[];
+}
+
 /** Stored in a message's meta: shown in the chat by MessageList. */
 export interface VerificationMeta {
   status: VerificationStatus;
@@ -122,6 +163,61 @@ export interface VerificationMeta {
   midRun?: boolean;
   /** midRun: each error's location and the worker (or seam) it's put down to. */
   attribution?: { location: string; owner: string }[];
+  /** After a parallel group: the round's causes and who fixed them. */
+  repair?: RepairMeta;
+  /** gave-up: the failures left, the fix attempts rolled back, the last triage's diagnosis. */
+  remaining?: string[];
+  attempts?: RolledBack[];
+  triageSummary?: string | null;
+  /** passed after a fix round: the change review that followed (R08). */
+  reviewAfterGreen?: { status: 'findings' | 'done' | 'skipped'; reason?: string };
+}
+
+/** The repair round's one-line summary. */
+export function repairHeadline(r: RepairMeta): string {
+  const n = r.causes.length;
+  const causes = `${n} cause${n === 1 ? '' : 's'}`;
+  if (r.leadOnly) return `${causes}: the agent fixes them all (${r.leadOnly}).`;
+  const fixers = r.causes.filter((c) => c.owner.kind === 'worker').length;
+  switch (r.status) {
+    case 'fixing':
+      return `${causes}: the workers that own them are fixing them${r.parallel ? ' at the same time' : ', one at a time'}…`;
+    case 'recheck':
+      return `${causes}: the workers fixed them${r.parallel ? ' at the same time' : ''}; the checks run again.`;
+    case 'stopped':
+      return `${causes}: stopped while they were being fixed.`;
+    case 'lead':
+      return fixers && r.causes.some((c) => c.fixer)
+        ? `${causes}: the workers fixed theirs; the agent fixes the rest.`
+        : `${causes}: the agent fixes them.`;
+  }
+}
+
+/** A cause's line: what, how many failures, who, and how the fix went. */
+export function causeLine(c: RepairCause): string {
+  const count = `${c.keys.length} failure${c.keys.length === 1 ? '' : 's'}`;
+  let fix = '';
+  if (c.fixer) {
+    fix =
+      c.fixer.status === 'done' && c.fixer.changed.length
+        ? ` — fixed (${c.fixer.changed.join(', ')})`
+        : ` — not fixed (${c.fixer.status}${c.fixer.said ? `: ${c.fixer.said}` : ''})`;
+  }
+  return `${c.summary} (${count}) · ${c.owner.describe}${fix}`;
+}
+
+/** The review after green, in a line; null when none ran or was due. */
+export function reviewAfterGreenLine(meta: VerificationMeta): string | null {
+  const r = meta.reviewAfterGreen;
+  if (!r) return null;
+  switch (r.status) {
+    case 'findings':
+      return 'A fresh review of the whole change found something serious: sent to the agent, and the checks run again after its fix.';
+    case 'done':
+      return 'A fresh review of the whole change found nothing serious.';
+    case 'skipped':
+      return `No review after the fix: ${r.reason ?? 'it couldn’t run'}.`;
+  }
 }
 
 /** The triage's one-line summary in the record. */

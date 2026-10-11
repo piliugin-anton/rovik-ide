@@ -7,6 +7,9 @@
 // Discard throws them away; after a landing, Undo takes it back. Conflicts
 // are resolved in the conflict resolver (Resolve…), or handed to the chat
 // (Ask the chat): markers go into its files and it's asked to settle them.
+// A parallel group whose checks gave up can be redone one step at a time
+// (Redo sequentially): its merge is thrown away and the chat is asked to
+// carry out its steps with step workers.
 
 import { createEffect, createResource, createSignal, For, Show, untrack } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
@@ -21,6 +24,7 @@ import {
   overlayDiscard,
   overlayFile,
   overlayLand,
+  overlayRedoGroup,
   overlayStatus,
   overlayUndo,
   overlayUndoMerge,
@@ -127,6 +131,34 @@ export default function IsolationBar(props: Props) {
     finishLabel: 'Land',
     sideNames: { ours: 'Project', theirs: 'Chat' },
   };
+
+  async function redoGroup(group: string) {
+    const id = props.dialogId;
+    if (!props.canAskChat) {
+      notify({
+        kind: 'warning',
+        title: 'The chat can’t take it now',
+        message: 'Pick a model, and wait for its run to end, then try again.',
+      });
+      return;
+    }
+    const ok = await confirmDialog({
+      title: 'Redo sequentially?',
+      message: `The parallel group “${group}” is thrown away: its files go back to what they were before it. Then the chat carries out its steps again, one at a time, with step workers.`,
+      confirmLabel: 'Redo sequentially',
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const request = await overlayRedoGroup(id, group);
+      await props.onAskChat(id, request);
+    } catch (e) {
+      notify({ kind: 'error', title: 'Couldn’t redo the group', message: String(e) });
+    } finally {
+      setBusy(false);
+      void refetch();
+    }
+  }
 
   async function askChat() {
     // This chat, whichever is on screen by the time the markers are in.
@@ -363,12 +395,28 @@ export default function IsolationBar(props: Props) {
             <Show when={s().pending}>
               {(p) => <div class="isolation-bar-reason">{p().reason}</div>}
             </Show>
+            <For each={s().redoGroups ?? []}>
+              {(group) => (
+                <div class="isolation-bar-merged">
+                  The parallel group “{group}” is in these changes.
+                  <button
+                    class="isolation-bar-action"
+                    disabled={disabled()}
+                    title="Throw the group’s merged changes away and carry out its steps one at a time"
+                    onClick={() => void redoGroup(group)}
+                  >
+                    Redo sequentially
+                  </button>
+                </div>
+              )}
+            </For>
             <Show when={s().peerConflicts.length > 0}>
               <div class="isolation-bar-reason">
                 {peerNames(s())} changing{' '}
                 {s().peerConflicts.length === 1 ? 'this file' : 'these files'} too:{' '}
-                {listPaths(s().peerConflicts.map((c) => c.path))}. Only one version of {s().peerConflicts.length === 1 ? 'it' : 'them'} lands as it
-                is; the other then has to be resolved.
+                {listPaths(s().peerConflicts.map((c) => c.path))}. Only one version of{' '}
+                {s().peerConflicts.length === 1 ? 'it' : 'them'} lands as it is; the other then has
+                to be resolved.
               </div>
             </Show>
             <Show when={s().byProducts >= BY_PRODUCTS_SHOWN}>

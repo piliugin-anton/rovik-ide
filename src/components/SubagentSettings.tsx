@@ -254,6 +254,22 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
               </span>
             </span>
           </label>
+          <label class="setting-checkbox">
+            <input
+              type="checkbox"
+              checked={s().parallelRepair}
+              disabled={off()}
+              onChange={(e) => patch({ parallelRepair: e.currentTarget.checked })}
+            />
+            <span>
+              Fix a parallel group’s failures in parallel
+              <span class="setting-checkbox-sub">
+                When the checks fail after a group is joined, causes in different workers’ files
+                that the failure triage rates high confidence are fixed by those workers at the same
+                time, then checked once. Anything the lead owns is fixed by the lead, one at a time.
+              </span>
+            </span>
+          </label>
           <div class="subagent-limits">
             <NumberInput
               label="Tokens per run (empty: no limit)"

@@ -912,7 +912,7 @@ switch; the reviewer's own model and fallback), unit tests in
   land. Its step is retried once as a fresh worker (`w1'`), then the
   merged checks run once. A second failure goes to the lead: "do it
   yourself, or carry out the steps one at a time".
-  - **Deviation:** there is no "Redo sequentially" button yet (R06).
+  - Redo sequentially came with R06 (below).
 - **UI:** the `task` block of a group lists its workers. The mid-run
   record has its own headlines and the attribution list. Settings have
   the two switches.
@@ -930,6 +930,130 @@ switch; the reviewer's own model and fallback), unit tests in
       retried;
     - a step that fails twice goes to the lead;
     - a continued group worker writes into the chat within its old scope.
+
+### R03, R04, R06–R08: the repair loop
+
+- **R03** (`causes.rs`). `causes::group` turns a round's failure keys
+  into root causes, each with an owner.
+  - When a triage ran in this round, its causes come first. Each takes
+    the failures in its files, and its root cause also takes the rest of
+    the check it read.
+  - The other failures are grouped by check, code and message, wherever
+    they point. So a changed signature that fails at twenty call sites
+    is one cause.
+  - Owners:
+    - all files in one worker's scope: that worker (`worker_of`, the
+      same rule as F06's attribution, which now uses it);
+    - a test file the test writer wrote, or a failing test whose name
+      contains its stem: the lead, under the rule for changing tests;
+    - a contract file, or the same failure in several workers' files
+      when the group has a contract: the lead (contract);
+    - several workers' files with no contract: the lead (across scopes);
+    - a file no worker owns: the lead (seam);
+    - no file at all: the lead (unlocated).
+  - Causes with the same owner are merged into one (one fixer per
+    owner). They are ordered by how many failures each explains.
+  - Triage (C02) gained an optional "## Other causes" section: one line
+    per independent cause, with its files and confidence. R07 needs
+    several rated causes, and a triage otherwise gives only one.
+  - **Deviation:** the group's owners come from `Run.groups`, which
+    `try_group` fills when at least one worker landed. Sequential step
+    workers (D) aren't owners: their failures stay with the lead.
+- **R04** (`repair_run.rs`, hooked into `verify.rs`). In a failed round
+  after a parallel group, before the report goes to the lead:
+  - the workers' causes are fixed one at a time, most failures first, up
+    to the first cause the lead owns (it may explain the rest);
+  - a fixer is the owning worker's chat, resumed (as F07 does) with a
+    "# Fix from the lead's checks" message. It holds the cause's keys and
+    the lines of the output around its files. It works in the chat's
+    view, keeps its step's scope, gets only light commands, and counts
+    against the ledger (`admit_worker`);
+  - the round's checkpoint (R02) is taken before the fixers, so a
+    regression rolls their changes back too;
+  - if the workers fixed every cause and changed files, the checks run
+    again at once, without a turn of the lead's. `verify_at_end` now
+    loops over `verify_round`, which returns "repaired" for this.
+    Otherwise the lead gets the usual report with a "## Root causes"
+    section: who owns each cause, and what each fixer did;
+  - the round's record gets `repair`: the causes, their owners, each
+    fixer's status, its chat and the files it changed.
+- **R06.**
+  - The escalation ladder: from round 2, or after a round with no
+    progress, no worker is resumed. The lead gets every cause, and the
+    record says why (`leadOnly`).
+  - The gave-up record adds `remaining` (the failure keys left),
+    `attempts` (every rollback in the run, with its diff) and
+    `triageSummary`. An isolated chat that gave up doesn't land, as
+    before.
+  - Redo sequentially:
+    - `try_group` saves what the group's files were before the join, in
+      the chat overlay's `groups.json` (`chats::save_group`);
+    - the isolation bar shows "Redo sequentially" for each saved group
+      while the chat's changes wait to land;
+    - `overlay_redo_group` puts the group's files back as they were
+      before it (`rebase_file`, against the project as it is now), marks
+      the group redone, clears the pending reason, and returns a request
+      that the bar sends to the chat;
+    - the request asks for the group's steps one at a time, with step
+      workers. `task{kind:"workers"}` for a redone group is refused.
+  - **Deviation:** Redo sequentially throws away every change the
+    group's files got after the join too (the lead's fixes included):
+    the files go back to what they were before the group.
+- **R07.** The `parallelRepair` setting (off by default) lets several
+  causes be fixed at the same time. That happens only when every cause
+  is a worker's, the workers are all different, there are two or more,
+  and triage rated each one high (`causes::parallel_set`). A cause the
+  lead owns means none of them runs in parallel. Each fixer works in a
+  child overlay (F02) opened under its worker's chat id. They are joined
+  one at a time; a conflict or a failure discards that fixer's copy and
+  leaves its cause to the lead. Then the checks run once.
+- **R08.**
+  - Once the checks pass after a failed round, the change reviewer reads
+    the whole diff (`review_change_as(after_green)`). Only its high
+    findings go to the lead.
+  - The review counts against `MAX_CHANGE_REVIEWS_PER_RUN`, shared with
+    B03. When the budget is used up, the record's `reviewAfterGreen`
+    says so.
+  - Findings that went back allow one more check round past
+    `MAX_VERIFY_ROUNDS` (`bonus_rounds`; the record's `maxRounds` shows
+    it). The next review is put off until those checks run.
+  - **Deviation (affects B03):** while fix rounds are under way (the
+    last checks failed), B03's review before the checks is skipped. The
+    review waits for green, so a fix round never gets two reviews. The
+    B03 budget test was updated for this. This holds in every run, with
+    or without a group.
+- **UI:**
+  - the verification record shows the repair round (a headline and one
+    line per cause), the gave-up details (failures left, rolled-back
+    attempts with their diffs, the last triage), and the review after
+    green;
+  - Settings → Subagents has the "Fix a parallel group's failures in
+    parallel" switch;
+  - the isolation bar has Redo sequentially.
+- **Tests:**
+  - Unit: causes (twenty errors from one changed signature → one cause,
+    the lead's (contract); errors only in w2's files → w2; ordering;
+    across scopes; the test rule; new files; triage causes and the
+    parallel set), triage's "Other causes", the fixer's excerpt, and
+    frontend helpers.
+  - e2e:
+    - green → review → a high finding → fix → checks again, until the
+      third review of the run; the fourth green isn't reviewed, and its
+      record says why.
+  - FUSE (`#[ignore]`, run with `--ignored`; all pass here):
+    - two causes → w2 then w1 → one check run, green, and the lead gets
+      no failure report;
+    - three failing rounds (the second with no progress, so the lead's
+      alone) → gave-up with the failures left, nothing landed; then Redo
+      sequentially → the group call is refused, and step workers carry
+      out steps 2 and 3 from the code before the group;
+    - two high-confidence causes in different scopes → fixed in
+      parallel → one check run;
+    - a cause the lead owns → nothing in parallel, w2's cause fixed
+      alone, then the lead's.
+  - The isolated e2e tests now hold one lock (`Harness::isolate`): the
+    overlays' data folder belongs to the process, and tests running at
+    the same time were overwriting each other's.
 
 ### G00: the headless runner
 

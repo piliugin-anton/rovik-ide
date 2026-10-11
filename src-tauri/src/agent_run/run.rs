@@ -278,6 +278,12 @@ pub struct Run<R: Runtime> {
     pub(super) test_writer_files: Vec<String>,
     pub(super) tests_changed: Vec<String>,
     pub(super) tests_changed_listed: usize,
+    /// Parallel groups joined in this run, for the repair loop (R03).
+    pub(super) groups: Vec<super::repair_run::GroupRecord>,
+    /// Fix attempts rolled back in this run, for a gave-up record (R06).
+    pub(super) rolled_back_attempts: Vec<super::repair::Rollback>,
+    /// Fix rounds beyond MAX_VERIFY_ROUNDS a review after green granted (R08).
+    pub(super) bonus_rounds: u32,
 }
 
 /// Who a run works for.
@@ -752,6 +758,9 @@ impl<R: Runtime> Run<R> {
             test_writer_files: Vec::new(),
             tests_changed: Vec::new(),
             tests_changed_listed: 0,
+            groups: Vec::new(),
+            rolled_back_attempts: Vec::new(),
+            bonus_rounds: 0,
         };
         Ok(Some((run, entry)))
     }
@@ -863,6 +872,9 @@ impl<R: Runtime> Run<R> {
             test_writer_files: Vec::new(),
             tests_changed: Vec::new(),
             tests_changed_listed: 0,
+            groups: Vec::new(),
+            rolled_back_attempts: Vec::new(),
+            bonus_rounds: 0,
         }
     }
 

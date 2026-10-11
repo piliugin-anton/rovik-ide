@@ -109,6 +109,8 @@ export interface SubagentSettings {
   parallelWorkers: boolean;
   /** The test writer's tests also run on the code before the change. */
   redCheck: boolean;
+  /** The repair loop fixes high-confidence causes in different workers' files at once. */
+  parallelRepair: boolean;
   /** Tokens one run's subagents may use (as reported); undefined: no limit. */
   maxRunTokens?: number;
 }
@@ -148,6 +150,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   workerMinSteps: LIMITS.workerMinSteps.default,
   parallelWorkers: false,
   redCheck: false,
+  parallelRepair: false,
 };
 
 const EFFORT_IDS: Effort[] = ['default', 'none', 'low', 'medium', 'high'];
@@ -225,6 +228,7 @@ export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
     ),
     parallelWorkers: r.parallelWorkers === true,
     redCheck: r.redCheck === true,
+    parallelRepair: r.parallelRepair === true,
     ...(typeof r.maxRunTokens === 'number' && Number.isFinite(r.maxRunTokens)
       ? {
           maxRunTokens: Math.round(
@@ -261,6 +265,7 @@ export interface SubagentConfig {
   workerMinSteps: number;
   parallelWorkers: boolean;
   redCheck: boolean;
+  parallelRepair: boolean;
   maxRunTokens?: number;
 }
 
@@ -345,6 +350,7 @@ export function resolveSubagentConfig(
     workerMinSteps: settings.workerMinSteps,
     parallelWorkers: settings.parallelWorkers,
     redCheck: settings.redCheck,
+    parallelRepair: settings.parallelRepair,
     ...(settings.maxRunTokens !== undefined ? { maxRunTokens: settings.maxRunTokens } : {}),
   };
 }

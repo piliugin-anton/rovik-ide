@@ -539,6 +539,16 @@ impl<R: Runtime> Run<R> {
     /// checks and before the verification gate. True: findings went to the
     /// agent, the run goes on.
     pub(super) async fn review_change(&mut self) -> Result<bool, String> {
+        // While fix rounds are under way, the review waits for green (R08).
+        if self.last_verify_failed {
+            return Ok(false);
+        }
+        self.review_change_as(false).await
+    }
+
+    /// `after_green`: R08's review once the checks pass after a repair;
+    /// only its high findings go to the agent.
+    pub(super) async fn review_change_as(&mut self, after_green: bool) -> Result<bool, String> {
         if self.sub().is_some() || self.plan_mode || self.stopped() || self.profile.no_tools {
             return Ok(false);
         }
@@ -578,6 +588,7 @@ impl<R: Runtime> Run<R> {
             "maxRounds": MAX_CHANGE_REVIEWS_PER_RUN,
             "files": rendered.files,
             "changedLines": rendered.changed_lines,
+            "afterGreen": after_green,
         });
         record.meta = Some(json!({ "review": review }));
         self.append(vec![record]).await?;
@@ -667,7 +678,17 @@ impl<R: Runtime> Run<R> {
                         Err(e) => skipped(&mut review, format!("its report couldn't be read: {e}")),
                         Ok(found) => {
                             let (kept, dropped) = drop_repeats(found, &earlier);
-                            serious = kept.iter().filter(|f| f.serious()).cloned().collect();
+                            serious = kept
+                                .iter()
+                                .filter(|f| {
+                                    if after_green {
+                                        f.severity == "high"
+                                    } else {
+                                        f.serious()
+                                    }
+                                })
+                                .cloned()
+                                .collect();
                             review["status"] =
                                 json!(if kept.is_empty() { "clean" } else { "findings" });
                             review["findings"] = json!(kept);

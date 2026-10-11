@@ -653,7 +653,7 @@ impl<R: Runtime> Run<R> {
 
     /// A resumed child's own tool calls that never ran get a result, so its
     /// history is whole again before it goes on.
-    async fn close_child_calls(&self, child_id: &str) -> Result<(), String> {
+    pub(super) async fn close_child_calls(&self, child_id: &str) -> Result<(), String> {
         let id = child_id.to_string();
         let recent = self
             .db

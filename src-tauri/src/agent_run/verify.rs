@@ -122,7 +122,7 @@ fn record(
 }
 
 /// A record with more facts: the round's progress, a rollback, flags.
-fn with(mut meta: Value, extra: Value) -> Value {
+pub(super) fn with(mut meta: Value, extra: Value) -> Value {
     if let (Some(v), Value::Object(extra)) = (meta.get_mut("verification"), extra) {
         if let Some(v) = v.as_object_mut() {
             v.extend(extra.into_iter().filter(|(_, x)| !x.is_null()));
@@ -315,6 +315,29 @@ impl<R: Runtime> Run<R> {
         approved: bool,
         record_id: Option<String>,
     ) -> Result<String, String> {
+        let mut record_id = record_id;
+        loop {
+            let outcome = self.verify_round(approved, record_id.take()).await?;
+            // R04: the workers fixed every cause: the checks run again now.
+            if outcome != "repaired" {
+                return Ok(outcome);
+            }
+        }
+    }
+
+    /// The round limit: MAX_VERIFY_ROUNDS, and one more for each review
+    /// after green whose findings went back (R08).
+    fn max_rounds(&self) -> u32 {
+        MAX_VERIFY_ROUNDS + self.bonus_rounds
+    }
+
+    /// One round of the gate; "repaired": the workers fixed this round's
+    /// failures, and the checks should run again at once.
+    async fn verify_round(
+        &mut self,
+        approved: bool,
+        record_id: Option<String>,
+    ) -> Result<String, String> {
         let p = self.state.config().permissions;
         let Some(root) = self.root.clone() else {
             return Ok("done".into());
@@ -440,8 +463,10 @@ impl<R: Runtime> Run<R> {
             }
         }
         let tests_before = self.verify_history.last().and_then(|r| r.tests_ran);
+        let max_rounds = self.max_rounds();
         let extra = |rolled_back: Option<&repair::Rollback>| {
             json!({
+                "maxRounds": max_rounds,
                 "progress": (judgement.verdict != Progress::First).then_some(&judgement),
                 "failureCount": now.keys.len(),
                 "testsRun": now.tests_ran,
@@ -455,20 +480,21 @@ impl<R: Runtime> Run<R> {
         // agent hears what it broke and gets the earlier failures again.
         if failed && judgement.verdict == Progress::Regression && !self.stopped() {
             if let Some(rb) = self.roll_back(judgement.new.clone()).await {
-                let status = if round >= MAX_VERIFY_ROUNDS {
+                self.rolled_back_attempts.push(rb.clone());
+                let status = if round >= max_rounds {
                     "gave-up"
                 } else {
                     "rolled-back"
                 };
                 let changed = self.changed_files.clone();
-                self.update_meta(
-                    &record_id,
-                    with(
-                        record(status, round, &results, &changed, None),
-                        extra(Some(&rb)),
-                    ),
-                )
-                .await?;
+                let mut meta = with(
+                    record(status, round, &results, &changed, None),
+                    extra(Some(&rb)),
+                );
+                if status == "gave-up" {
+                    meta = with(meta, self.gave_up_facts(&judgement.new));
+                }
+                self.update_meta(&record_id, meta).await?;
                 self.log_round(round, status, &results, &judgement, &flags);
                 self.last_verify_failed = true;
                 if status == "gave-up" {
@@ -501,20 +527,22 @@ impl<R: Runtime> Run<R> {
             "flagged"
         } else if !failed {
             "passed"
-        } else if round >= MAX_VERIFY_ROUNDS {
+        } else if round >= max_rounds {
             "gave-up"
         } else {
             "failed"
         };
         let reason = (status == "unverified").then_some("none of the checks were allowed to run");
-        self.update_meta(
-            &record_id,
-            with(
-                record(status, round, &results, &changed, reason),
-                extra(None),
-            ),
-        )
-        .await?;
+        let mut meta = with(
+            record(status, round, &results, &changed, reason),
+            extra(None),
+        );
+        if status == "gave-up" {
+            // R06: what's left, and what was tried and undone.
+            let left: Vec<String> = now.keys.iter().cloned().collect();
+            meta = with(meta, self.gave_up_facts(&left));
+        }
+        self.update_meta(&record_id, meta.clone()).await?;
         self.log_round(round, status, &results, &judgement, &flags);
 
         self.last_verify_failed = failed;
@@ -526,6 +554,19 @@ impl<R: Runtime> Run<R> {
             self.take_checkpoint();
             self.add_harness(repair::integrity_note(&flags, true), "integrity")
                 .await?;
+            return Ok("continue".into());
+        }
+        // R08: green after a fix round: a fresh review of the whole change.
+        let repaired = self.verify_history.len() > 1
+            && self.verify_history[..self.verify_history.len() - 1]
+                .iter()
+                .any(|r| !r.keys.is_empty());
+        if status == "passed"
+            && repaired
+            && self.sub().is_none()
+            && self.review_after_green(&record_id, &meta).await?
+        {
+            self.checkpoint = None;
             return Ok("continue".into());
         }
         if status != "failed" {
@@ -574,6 +615,35 @@ impl<R: Runtime> Run<R> {
         if self.stopped() {
             return Ok("verify-stopped".into());
         }
+        // R03/R04: after a parallel group, the causes go to their owners
+        // first; the lead hears what's left.
+        let with_triage = match &triage {
+            Some(t) => with(base.clone(), json!({ "triage": t.record })),
+            None => base.clone(),
+        };
+        let triaged = triage.as_ref().is_some_and(|t| t.section.is_some());
+        let mut fixers_ran = false;
+        match self
+            .repair_by_owners(
+                &record_id,
+                round,
+                &results,
+                &judgement,
+                triaged,
+                &with_triage,
+            )
+            .await?
+        {
+            super::repair_run::Repair::None => {}
+            super::repair_run::Repair::Recheck => return Ok("repaired".into()),
+            super::repair_run::Repair::Lead { note, fixed } => {
+                notes.push(note);
+                fixers_ran = fixed;
+            }
+        }
+        if self.stopped() {
+            return Ok("verify-stopped".into());
+        }
         let mut report = failure_report(&sent, &changed, round, &notes);
         if let Some(files) = &self.merged_from_project {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
@@ -592,9 +662,72 @@ impl<R: Runtime> Run<R> {
             );
         }
         self.add_harness(report, "verification").await?;
-        // R02: what the next fix round can be rolled back to.
-        self.take_checkpoint();
+        // R02: what the next fix round can be rolled back to (taken before
+        // the workers' fixes, when they ran).
+        if !fixers_ran {
+            self.take_checkpoint();
+        }
         Ok("continue".into())
+    }
+
+    /// R06: a gave-up record's facts: the failures left, the fix attempts
+    /// rolled back, and the last triage's diagnosis.
+    fn gave_up_facts(&self, remaining: &[String]) -> Value {
+        json!({
+            "remaining": remaining,
+            "attempts": (!self.rolled_back_attempts.is_empty()).then_some(&self.rolled_back_attempts),
+            "triageSummary": self.last_triage.as_ref().map(|t| t.root_cause.clone()),
+        })
+    }
+
+    /// R08: the change reviewer, once the checks pass after a fix round,
+    /// within the run's review budget. True: high findings went to the
+    /// agent, and one more fix and check round is allowed.
+    async fn review_after_green(&mut self, record_id: &str, meta: &Value) -> Result<bool, String> {
+        let config = self.state.config().subagents;
+        if config.kind(super::subagent::Kind::Reviewer).is_none() || self.plan_mode {
+            return Ok(false);
+        }
+        if self.reviews_total >= super::change_review::MAX_CHANGE_REVIEWS_PER_RUN {
+            self.update_meta(
+                record_id,
+                with(
+                    meta.clone(),
+                    json!({ "reviewAfterGreen": {
+                        "status": "skipped",
+                        "reason": format!(
+                            "the run's {} change reviews are used up",
+                            super::change_review::MAX_CHANGE_REVIEWS_PER_RUN
+                        ),
+                    } }),
+                ),
+            )
+            .await?;
+            return Ok(false);
+        }
+        // The fixes are new to the reviewer, whatever came before.
+        self.writes_since_review = true;
+        let sent = self.review_change_as(true).await?;
+        self.update_meta(
+            record_id,
+            with(
+                meta.clone(),
+                json!({ "reviewAfterGreen": {
+                    "status": if sent { "findings" } else { "done" },
+                } }),
+            ),
+        )
+        .await?;
+        if sent {
+            // The fix gets its own check round, past the usual limit if need be.
+            if self.verify_rounds >= self.max_rounds() {
+                self.bonus_rounds += 1;
+            }
+            self.writes_since_verify = false;
+            // The fix goes to the checks next, not to another review.
+            self.reviews_in_row = super::change_review::MAX_REVIEWS_IN_ROW;
+        }
+        Ok(sent)
     }
 
     /// F06: the checks at once, in the middle of a run (after a parallel

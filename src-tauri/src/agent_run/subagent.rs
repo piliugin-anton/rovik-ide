@@ -292,6 +292,9 @@ pub struct SubagentConfig {
     /// The test writer's new tests also run on the code before the change;
     /// one that passes there is flagged (E04).
     pub red_check: bool,
+    /// The repair loop fixes causes in different workers' scopes, each
+    /// rated high by triage, at the same time in child overlays (R07).
+    pub parallel_repair: bool,
     /// Tokens the subagents of one run may use, as their providers report
     /// them; past it, no new subagent starts (S17). None: no limit.
     pub max_run_tokens: Option<u64>,

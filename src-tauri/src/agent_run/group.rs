@@ -89,24 +89,7 @@ pub fn refusal(ctx: &GroupCtx, paths: &[String]) -> Option<String> {
 /// files the run created (a new file belongs to the worker whose folder
 /// it's in, when only one worker's is).
 pub fn attribute(location: &str, owners: &[(String, usize, WriteScope)], created: bool) -> String {
-    let path = location.split(':').next().unwrap_or(location).trim();
-    let path = path.trim_start_matches("./");
-    let by = |exists: bool| -> Vec<&(String, usize, WriteScope)> {
-        owners
-            .iter()
-            .filter(|(_, _, scope)| scope.allows(path, exists))
-            .collect()
-    };
-    let exact = by(true);
-    let found = match (exact.first(), created) {
-        (Some(o), _) => Some(*o),
-        (None, true) => {
-            let beside = by(false);
-            (beside.len() == 1).then(|| beside[0])
-        }
-        (None, false) => None,
-    };
-    found
+    super::causes::worker_of(location, owners, created)
         .map(|(label, step, _)| format!("step {step}, worker {label}"))
         .unwrap_or_else(|| "seam: no worker owns it".into())
 }
@@ -170,6 +153,9 @@ impl<R: Runtime> Run<R> {
         }
         if !config.parallel_workers || config.kind(Kind::Worker).is_none() {
             return Err("Error: parallel workers are off in the settings. Carry out the group's steps one at a time with kind \"worker\".".into());
+        }
+        if chats::group_redone(&self.dialog_id, group) {
+            return Err(format!("Error: the group \"{group}\" is being redone one step at a time (Redo sequentially): carry out its steps with kind \"worker\", one at a time."));
         }
         if chats::get(&self.dialog_id).is_none() {
             return Err("Error: parallel workers need an isolated chat, and this one works in the project directly. Carry out the group's steps one at a time with kind \"worker\".".into());
@@ -292,9 +278,16 @@ impl<R: Runtime> Run<R> {
         let mut conflict: Option<String> = None;
         let mut checklist = None;
         let mut landed_any = false;
+        let mut joins = Joins::default();
         for (member, result) in pending.into_iter().zip(results) {
             let (status, entry) = self
-                .join_one(&member, result, conflict.is_some(), &mut checklist)
+                .join_one(
+                    &member,
+                    result,
+                    conflict.is_some(),
+                    &mut checklist,
+                    &mut joins,
+                )
                 .await;
             match status {
                 Joined::Landed => landed_any = true,
@@ -325,7 +318,9 @@ impl<R: Runtime> Run<R> {
                         .flatten(),
                     Err(_) => None,
                 };
-                let (status, entry) = self.join_one(&again, result, false, &mut checklist).await;
+                let (status, entry) = self
+                    .join_one(&again, result, false, &mut checklist, &mut joins)
+                    .await;
                 lines.push(entry.0);
                 workers.push(entry.1);
                 match status {
@@ -348,6 +343,29 @@ impl<R: Runtime> Run<R> {
         );
         if let Some(c) = &conflict {
             text.push_str(&format!("\n\n{c}"));
+        }
+        // R03/R06: who owns what, for the repair loop; what the files were
+        // before, for Redo sequentially.
+        if landed_any {
+            self.groups.push(super::repair_run::GroupRecord {
+                name: group.to_string(),
+                owners: owners.clone(),
+                children: joins.children.clone(),
+                contract: contract.clone(),
+            });
+            let saved = chats::SavedGroup {
+                name: group.to_string(),
+                plan_path: plan_path.clone(),
+                steps: members.iter().map(|s| s.number).collect(),
+                before: joins.before.clone(),
+                redone: false,
+            };
+            if let Err(e) = chats::save_group(&self.dialog_id, saved) {
+                log::write(
+                    &self.app,
+                    json!({ "event": "groupSave", "dialogId": self.dialog_id, "error": e }),
+                );
+            }
         }
         // F06: the checks, at once, on the merged result.
         if landed_any && conflict.is_none() && !self.stopped() {
@@ -454,6 +472,7 @@ impl<R: Runtime> Run<R> {
         result: Option<SubResult>,
         stopped_join: bool,
         checklist: &mut Option<Vec<super::plan::TodoItem>>,
+        joined: &mut Joins,
     ) -> (Joined, (String, Value)) {
         let n = member.step.number;
         let head = format!("### Step {n} ({}): {}", member.label, member.step.title);
@@ -525,6 +544,21 @@ impl<R: Runtime> Run<R> {
                     .into_iter()
                     .filter(|w| landed_paths.contains(&w.path))
                     .collect();
+                // R06: what the files were before the group, for Redo
+                // sequentially; R04: whose chat to resume for a fix.
+                for w in &writes {
+                    if !joined.before.iter().any(|(p, _)| *p == w.path) {
+                        joined.before.push((w.path.clone(), w.original.clone()));
+                    }
+                }
+                joined.children.push((
+                    member.label.clone(),
+                    member.step.number,
+                    result
+                        .child_dialog_id
+                        .clone()
+                        .unwrap_or_else(|| member.child_id.clone()),
+                ));
                 self.absorb_child_writes(&writes);
                 // The worker's files, as landed, for D04.
                 result.writes = writes.clone();
@@ -590,6 +624,14 @@ impl<R: Runtime> Run<R> {
             }
         }
     }
+}
+
+/// What a group's joins landed: each file as it was before (R06), and
+/// each landed worker's label, step and chat (R04).
+#[derive(Default)]
+struct Joins {
+    before: Vec<(String, Option<String>)>,
+    children: Vec<(String, usize, String)>,
 }
 
 /// How one worker's join went.
