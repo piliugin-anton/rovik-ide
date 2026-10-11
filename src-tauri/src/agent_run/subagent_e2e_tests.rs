@@ -9831,3 +9831,63 @@ async fn hold_then_identical_resubmit_is_reviewed() {
     assert_eq!(files.len(), 1);
     assert!(files[0].contains("## Open review findings"), "{}", files[0]);
 }
+
+/// Round 2: a conflict's two versions, saved for the lead during a join,
+/// are this run's: the run's first checks (at the end here, as after a
+/// group with a conflict) remove only an earlier run's output, not them.
+/// Driven on a run prepared in the project, as joins need FUSE.
+#[tokio::test]
+async fn a_conflicts_saved_versions_outlive_the_runs_checks() {
+    let Some(h) = failing_project(400).await else {
+        return;
+    };
+    let output = |path: &str| crate::agent_run::check_output::resolve(&h.dialog_id, path);
+    let earlier =
+        crate::agent_run::check_output::save(&h.dialog_id, "round-1", "lint", "earlier\n").unwrap();
+    let (url, seen) = model(vec![Reply::Text("Not asked.")]).await;
+    let app = h.app.handle().clone();
+    let state = app.state::<AgentState>().inner().clone();
+    let db = app.state::<DbState>().inner().clone();
+    let request = h.request(&url, Harness::send("Greet"), checks_on());
+    state.set_config(request.config.clone().unwrap());
+    let controls = state.register(&h.dialog_id, "p::m", None).unwrap();
+    let _registered = state.registered(&h.dialog_id, &controls.run_id);
+    let (mut run, _entry) =
+        crate::agent_run::run::Run::prepare(&app, &state, &db, request, controls)
+            .await
+            .unwrap()
+            .unwrap();
+    run.changed_files = vec!["a.txt".into()];
+    run.writes_since_verify = true;
+
+    let said = run.save_conflict(
+        "w2",
+        None,
+        &[crate::overlay::land::Conflict {
+            path: "a.txt".into(),
+            reason: "both changed line 1".into(),
+        }],
+    );
+    let saved: Vec<String> = said
+        .split('`')
+        .filter(|s| s.starts_with("@checks/"))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(saved.len(), 2, "{said}");
+    assert!(
+        output(earlier.as_str()).is_err(),
+        "an earlier run's output goes"
+    );
+
+    assert_eq!(run.verify_at_end(false, None).await.unwrap(), "continue");
+    assert!(output("@checks/round-1-test.log").is_ok());
+    for path in &saved {
+        assert!(
+            output(path).is_ok(),
+            "{path} was removed by the run's checks"
+        );
+    }
+    assert!(seen.lock().unwrap().is_empty(), "no model turn ran");
+    drop(run);
+    crate::agent_run::check_output::clean(&h.dialog_id);
+}

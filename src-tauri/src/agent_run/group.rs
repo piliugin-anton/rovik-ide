@@ -883,11 +883,13 @@ impl<R: Runtime> Run<R> {
     /// P1.2: both versions of each conflicting file, saved with the chat's
     /// check output for the lead to read; one line each.
     pub(super) fn save_conflict(
-        &self,
+        &mut self,
         label: &str,
         child_view: Option<&std::path::Path>,
         conflicts: &[crate::overlay::land::Conflict],
     ) -> String {
+        // Before, not after: the run's first checks mustn't remove them.
+        self.clean_earlier_output();
         let root = self.root.clone().unwrap_or_default();
         let mut lines = Vec::new();
         for c in conflicts {

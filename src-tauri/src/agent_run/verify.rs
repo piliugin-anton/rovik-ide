@@ -1301,9 +1301,10 @@ impl<R: Runtime> Run<R> {
         );
     }
 
-    /// The run's first checks, mid-run or at the end: earlier runs' saved
-    /// output goes, once (P4.7: never this run's).
-    fn clean_earlier_output(&mut self) {
+    /// Before the run's first saved output (its first checks, mid-run or at
+    /// the end, or a join's conflict versions): earlier runs' saved output
+    /// goes, once (P4.7: never this run's).
+    pub(super) fn clean_earlier_output(&mut self) {
         if !self.cleaned_this_run {
             self.cleaned_this_run = true;
             super::check_output::clean(&self.dialog_id);
