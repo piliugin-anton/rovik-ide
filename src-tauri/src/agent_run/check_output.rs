@@ -64,7 +64,7 @@ pub fn resolve(dialog_id: &str, path: &str) -> Result<PathBuf, String> {
         .join(name);
     if !file.is_file() {
         return Err(format!(
-            "{path}: no such saved output (it's kept only while the run that made it goes on)"
+            "{path}: no such saved output (it's kept until the chat's next run runs its checks)"
         ));
     }
     Ok(file)

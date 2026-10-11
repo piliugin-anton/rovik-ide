@@ -9742,7 +9742,10 @@ async fn second_run_cleans_earlier_output() {
     );
     // Its first checks emptied the folder; passing, they saved nothing.
     let gone = output(saved).unwrap_err();
-    assert!(gone.contains("no such saved output"), "{gone}");
+    assert!(
+        gone.contains("no such saved output (it's kept until the chat's next run runs its checks)"),
+        "{gone}"
+    );
     // The earlier run's record still names the file.
     let first = messages
         .iter()
