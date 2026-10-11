@@ -8067,3 +8067,102 @@ async fn resume_counts_calls_beyond_one_page() {
     let meta = h.task_result("t1").await.meta.unwrap()["subagent"].clone();
     assert_eq!(meta["toolCalls"], 600, "{meta}");
 }
+
+/// After a batch whose lead failed, landing doesn't wait for subagents:
+/// none is left at work.
+#[tokio::test]
+async fn landing_waits_only_for_live_children() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[("a.txt", "x\n")]).await;
+    h.isolate().await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-LL",
+            (0..3)
+                .map(|_| Reply::Slow(200, Box::new(Reply::Text(REPORT))))
+                .collect(),
+        )],
+        vec![
+            write_call("l1", "b.txt", "from the lead\n"),
+            Reply::Calls(vec![
+                task_call("ll-1", "MARK-LL: one"),
+                task_call("ll-2", "MARK-LL: two"),
+                task_call("ll-3", "MARK-LL: three"),
+            ]),
+        ],
+    )
+    .await;
+    crate::agent_run::run::FAIL_TOOL_RESULT
+        .lock()
+        .unwrap()
+        .insert("ll-1".into());
+    let mut request = h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({})));
+    request.isolate = Some(true);
+    h.start(request).await;
+    let end = h.run_end().await;
+    crate::agent_run::run::FAIL_TOOL_RESULT
+        .lock()
+        .unwrap()
+        .remove("ll-1");
+    assert_eq!(end, "error");
+    let app = h.app.handle().clone();
+    let landed = crate::overlay::chats::overlay_land(app.state(), h.dialog_id.clone(), false).await;
+    if let Err(e) = &landed {
+        assert!(!e.contains("at work"), "{e}");
+    }
+    assert!(landed.is_ok(), "{:?}", landed.err());
+    assert_eq!(h.file("b.txt").as_deref(), Some("from the lead\n"));
+}
+
+/// A resumed subagent's time budget starts when it's resumed, not when
+/// its chat was started (an hour before, here).
+#[tokio::test]
+async fn a_resumed_subagents_wall_starts_at_resume() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let child = scout_left_at_a_restart(&h, 0, 10).await;
+    let db = h.app.state::<DbState>().inner().clone();
+    let id = child.clone();
+    db.write(move |c| {
+        c.execute(
+            "UPDATE dialogs SET created_at = created_at - 3600000 WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-RB",
+            vec![
+                Reply::Call {
+                    id: "n1",
+                    name: "read",
+                    args: json!({ "path": "a.txt" }),
+                },
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![Reply::Text("Done.")],
+    )
+    .await;
+    let mut request = h.with_subagents(
+        &url,
+        "unused",
+        quiet_permissions(),
+        scouts_on(json!({ "maxMinutes": 0.25 })),
+    );
+    request.start = StartKind::Resume;
+    h.start(request).await;
+    h.run_end().await;
+    let work = h.messages_of(&child).await;
+    let read = work
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("n1"))
+        .unwrap();
+    assert!(!read.content.starts_with("Error"), "{}", read.content);
+    assert!(h.task_result("t1").await.content.contains("Status: done"));
+}
