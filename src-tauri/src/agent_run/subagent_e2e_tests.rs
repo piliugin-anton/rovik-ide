@@ -8166,3 +8166,160 @@ async fn a_resumed_subagents_wall_starts_at_resume() {
     assert!(!read.content.starts_with("Error"), "{}", read.content);
     assert!(h.task_result("t1").await.content.contains("Status: done"));
 }
+
+/// The test writer can't see the code under test in any spelling, by any
+/// tool: reads, neighbours and diagnostics (with or without a path), and
+/// search_code says how many lines it left out.
+#[tokio::test]
+async fn hidden_paths_in_every_spelling_by_every_tool() {
+    let h = test_writer_run(
+        vec![
+            Reply::Calls(vec![
+                ("r1", "read", json!({ "path": "src/greet.ts/." })),
+                ("r2", "read", json!({ "path": "./src/greet.ts" })),
+                ("r3", "read", json!({ "path": "SRC/GREET.TS" })),
+                ("r4", "read", json!({ "path": "src/../src/greet.ts" })),
+                ("n1", "neighbours", json!({ "path": "src//greet.ts" })),
+                ("d1", "diagnostics", json!({ "path": "./src/greet.ts" })),
+                ("d2", "diagnostics", json!({})),
+                ("s1", "search_code", json!({ "query": "Hello" })),
+            ]),
+            Reply::Text(TEST_REPORT),
+        ],
+        json!({ "kind": "testWriter" }),
+    )
+    .await;
+    let results = h.child_results("tw").await;
+    for (id, r) in &results {
+        assert!(!r.contains("Hello, ${name}"), "{id} shows the code: {r}");
+    }
+    for id in ["r1", "r2", "n1", "d1"] {
+        assert!(
+            results[id].contains("one of the files the change touches"),
+            "{id}: {}",
+            results[id]
+        );
+    }
+    assert!(results["r4"].starts_with("Error"), "{}", results["r4"]);
+    assert!(
+        results["s1"].contains("[1 match in the files the change touches left out"),
+        "{}",
+        results["s1"]
+    );
+}
+
+/// extend_scope grants at most 8 paths beyond the step; a path granted
+/// before is granted again (it adds nothing); what was granted is in the
+/// result's meta only when granted.
+#[tokio::test]
+async fn grants_cap_boundary() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let mut script: Vec<Reply> = (1..=9)
+        .map(|n| Reply::Call {
+            id: Box::leak(format!("e{n}").into_boxed_str()),
+            name: "extend_scope",
+            args: json!({ "paths": [format!("extra/e{n}.txt")], "reason": "needed" }),
+        })
+        .collect();
+    script.push(Reply::Call {
+        id: "again",
+        name: "extend_scope",
+        args: json!({ "paths": ["extra/e1.txt"], "reason": "needed" }),
+    });
+    script.push(worker_report("Asked.", &[]));
+    let (url, _) = model_routed(
+        vec![("# Your step: 1.", script)],
+        vec![step("s1", 1), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let child = h.child_of("s1").await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap()
+    };
+    for n in 1..=8 {
+        let r = result(&format!("e{n}"));
+        assert!(r.content.starts_with("Granted"), "e{n}: {}", r.content);
+        assert!(
+            r.meta.as_ref().is_some_and(|m| m["granted"].is_array()),
+            "e{n}"
+        );
+    }
+    let ninth = result("e9");
+    assert!(
+        ninth.content.contains("at most 8 paths"),
+        "{}",
+        ninth.content
+    );
+    assert!(ninth
+        .meta
+        .as_ref()
+        .is_none_or(|m| m.get("granted").is_none()));
+    assert!(
+        result("again").content.starts_with("Granted"),
+        "{}",
+        result("again").content
+    );
+}
+
+/// Grants are the worker's: kept when it's continued in a later run, not
+/// given to another worker of the same step.
+#[tokio::test]
+async fn grants_survive_a_restart_and_a_second_run() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                Reply::Call {
+                    id: "e1",
+                    name: "extend_scope",
+                    args: json!({ "paths": ["extra.txt"], "reason": "needed" }),
+                },
+                worker_report("Granted, not written yet.", &[]),
+            ],
+        )],
+        vec![step("s1", 1), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    // A second run: the same worker continued writes it; a new worker of
+    // the same step can't.
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                write_call("w1", "extra.txt", "by the first\n"),
+                worker_report("Wrote it.", &["extra.txt"]),
+                write_call("w2", "extra.txt", "by the second\n"),
+                worker_report("Tried.", &[]),
+            ],
+        )],
+        vec![
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "s1", "goal": "write extra.txt now" }),
+            },
+            step("s2", 1),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let first = h.child_results("s1").await;
+    assert!(!first["w1"].starts_with("Error"), "{}", first["w1"]);
+    let second = h.child_results("s2").await;
+    assert!(second["w2"].starts_with("Error"), "{}", second["w2"]);
+    assert_eq!(h.file("extra.txt").as_deref(), Some("by the first\n"));
+}
