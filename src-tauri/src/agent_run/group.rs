@@ -363,7 +363,11 @@ impl<R: Runtime> Run<R> {
                 before: joins.before.clone(),
                 redone: false,
             };
-            if let Err(e) = chats::save_group(&self.dialog_id, saved) {
+            let saved_or = match &joins.snapshot_failed {
+                Some(e) => Err(format!("no snapshot: {e}")),
+                None => chats::save_group(&self.dialog_id, saved),
+            };
+            if let Err(e) = saved_or {
                 log::write(
                     &self.app,
                     json!({ "event": "groupSave", "dialogId": self.dialog_id, "error": e }),
@@ -536,6 +540,18 @@ impl<R: Runtime> Run<R> {
                     .map(|b| String::from_utf8_lossy(&b).into_owned()),
             })
             .collect();
+        // R06: what the chat had at these paths, for Redo sequentially.
+        let fresh: Vec<String> = paths
+            .iter()
+            .filter(|p| !joined.before.iter().any(|(q, _)| q == *p))
+            .cloned()
+            .collect();
+        let (dialog, keep) = (self.dialog_id.clone(), fresh.clone());
+        let snapshot =
+            tauri::async_runtime::spawn_blocking(move || chats::snapshot(&dialog, &keep))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
         let child_view = chats::get(&member.child_id).map(|o| o.view.clone());
         let id = member.child_id.clone();
         let landed = tauri::async_runtime::spawn_blocking(move || chats::land_child(&id))
@@ -547,12 +563,17 @@ impl<R: Runtime> Run<R> {
                     .into_iter()
                     .filter(|w| landed_paths.contains(&w.path))
                     .collect();
-                // R06: what the files were before the group, for Redo
-                // sequentially; R04: whose chat to resume for a fix.
-                for w in &writes {
-                    if !joined.before.iter().any(|(p, _)| *p == w.path) {
-                        joined.before.push((w.path.clone(), w.original.clone()));
-                    }
+                // R06: what the landed paths were before the group, for
+                // Redo sequentially (none offered if that couldn't be read);
+                // R04: whose chat to resume for a fix.
+                match &snapshot {
+                    Ok(entries) => joined.before.extend(
+                        entries
+                            .iter()
+                            .filter(|(p, _)| landed_paths.contains(p))
+                            .cloned(),
+                    ),
+                    Err(e) => joined.snapshot_failed = Some(e.clone()),
                 }
                 joined.children.push((
                     member.label.clone(),
@@ -633,7 +654,9 @@ impl<R: Runtime> Run<R> {
 /// each landed worker's label, step and chat (R04).
 #[derive(Default)]
 struct Joins {
-    before: Vec<(String, Option<String>)>,
+    before: Vec<(String, chats::Before)>,
+    /// A snapshot couldn't be taken: Redo sequentially isn't offered.
+    snapshot_failed: Option<String>,
     children: Vec<(String, usize, String)>,
 }
 

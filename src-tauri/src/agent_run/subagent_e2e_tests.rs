@@ -4147,3 +4147,125 @@ async fn a_worker_cut_for_repeating_itself_keeps_its_work() {
     assert!(r.contains("Replaced the line with hello."), "{r}");
     assert_eq!(h.file("a.txt").as_deref(), Some("hello\n"));
 }
+
+/*
+ * R06: Redo sequentially puts each path back exactly as the chat had it
+ * before the join: a folder the group made goes, a file the chat had
+ * changed gets its bytes and its merge base back, a file it hadn't
+ * touched shows the project's again.
+ */
+
+const REDO_PLAN: &str = "# Pages\n\nUsers and posts.\n\n## Steps\n\n\
+    1. **Contract**\n   - `src/api.rs`: declare the pages.\n\
+    2. **Users**\n   - `src/users/` (new): the users page.\n   - Group: pages\n\
+    3. **Posts**\n   - `src/posts.rs`: the posts page.\n   - `assets/x.bin`: its data.\n   - Group: pages\n\n\
+    ## Validation\n- read the files\n";
+
+#[tokio::test]
+#[ignore]
+async fn redo_puts_each_path_back_as_the_chat_had_it() {
+    let mut h = harness(&[
+        ("src/api.rs", "pub fn pages() {}\n"),
+        ("src/posts.rs", "// posts\n"),
+        ("src/main.rs", "fn main() {}\n"),
+        ("assets/x.bin", "orig\n"),
+        (".rovik/plans/greet.md", REDO_PLAN),
+    ])
+    .await;
+    h.isolate().await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users/mod.rs", "pub fn users() {}\n"),
+                    worker_report("Users.", &["src/users/mod.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts by w2\n"),
+                    write_call("w3", "assets/x.bin", "text by w2\n"),
+                    worker_report("Posts.", &["src/posts.rs", "assets/x.bin"]),
+                ],
+            ),
+        ],
+        vec![
+            // Before the group, the lead changes posts.rs, and writes bytes
+            // that aren't UTF-8 into x.bin.
+            write_call("l1", "src/posts.rs", "posts by the lead\n"),
+            Reply::Call {
+                id: "l2",
+                name: "bash",
+                args: json!({ "command": "printf '\\377\\376bin' > assets/x.bin" }),
+            },
+            Reply::Call {
+                id: "t1",
+                name: "todo",
+                args: json!({ "items": [
+                    { "title": "Contract", "status": "done" },
+                    { "title": "Users", "status": "pending" },
+                    { "title": "Posts", "status": "pending" },
+                ] }),
+            },
+            group_task("g1"),
+            Reply::Hang(None),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let joined = h.result_when_ready("g1").await;
+    assert!(
+        joined.content.contains("Landed: src/users"),
+        "{}",
+        joined.content
+    );
+    let app = h.app.handle().clone();
+    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    assert_eq!(h.run_end().await, "stopped");
+
+    let id = h.dialog_id.clone();
+    // The join's changes are in the chat before the redo.
+    let before: Vec<String> = crate::overlay::chats::changes(&id)
+        .iter()
+        .map(|c| c.path().to_string())
+        .collect();
+    for p in ["src/users", "src/users/mod.rs", "src/posts.rs", "assets/x.bin"] {
+        assert!(before.iter().any(|b| b == p), "{p}: {before:?}");
+    }
+    let request = crate::overlay::chats::redo_group(&id, "pages").unwrap();
+    assert!(request.contains("Carry out its steps (2, 3)"), "{request}");
+    let changes = crate::overlay::chats::changes(&id);
+    let change = |p: &str| changes.iter().rev().find(|c| c.path() == p).cloned();
+    // The folder the group made, and its file: gone, nothing to land.
+    assert!(change("src/users").is_none(), "{changes:?}");
+    assert!(change("src/users/mod.rs").is_none(), "{changes:?}");
+    // posts.rs: the lead's version, merged against the project's file as
+    // it was when the lead changed it.
+    let version = |p: &str| -> (Vec<u8>, Option<Vec<u8>>) {
+        match change(p).unwrap_or_else(|| panic!("{p} isn't the chat's: {changes:?}")) {
+            crate::overlay::fs::OverlayChange::Write {
+                upper, base_copy, ..
+            } => (
+                std::fs::read(upper.unwrap()).unwrap(),
+                base_copy.map(|b| std::fs::read(b).unwrap()),
+            ),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(
+        version("src/posts.rs"),
+        (
+            b"posts by the lead\n".to_vec(),
+            Some(b"// posts\n".to_vec())
+        )
+    );
+    // x.bin: its bytes exactly.
+    assert_eq!(version("assets/x.bin").0, b"\xff\xfebin".to_vec());
+    // Untouched files stay untouched.
+    assert!(change("src/main.rs").is_none());
+    // Nothing to land is left from the group, and the project is as it was.
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("// posts\n"));
+    assert!(!h.project.join("src/users").exists());
+}

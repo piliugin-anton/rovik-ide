@@ -2580,7 +2580,29 @@ pub async fn overlay_conflicts_to_chat(
 // Redo sequentially (R06)
 // ---------------------------------------------------------------------------
 
-/// A parallel group joined into the chat: what its files were before the
+/// What a path was in the chat just before a group's join, so the join can
+/// be undone exactly: bytes, not text, and the base the chat's own version
+/// is merged against when it lands.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "was", rename_all = "camelCase")]
+pub enum Before {
+    /// The chat hadn't changed it: the project's version (or nothing) shows.
+    Untouched,
+    /// The chat's own file. `content` and `base` name files in the group's
+    /// folder; `base`: what it's merged against (None: the chat created it).
+    File {
+        content: String,
+        base: Option<String>,
+    },
+    /// The chat's own folder (created, or moved there).
+    Dir,
+    /// Not there: the chat had deleted it.
+    Absent,
+    /// Something a join doesn't change (a symlink): left as it is.
+    Other,
+}
+
+/// A parallel group joined into the chat: what its paths were before the
 /// join, so the merge can be thrown away and its steps redone one at a time.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2588,14 +2610,19 @@ pub struct SavedGroup {
     pub name: String,
     pub plan_path: String,
     pub steps: Vec<usize>,
-    /// Each file the join wrote, as it was before (None: it wasn't there).
-    pub before: Vec<(String, Option<String>)>,
+    /// Each path the join wrote (files and folders), as it was before.
+    pub before: Vec<(String, Before)>,
     /// Redo sequentially was used: the group's steps run one at a time now.
     pub redone: bool,
 }
 
 fn groups_file(dialog_id: &str) -> Option<PathBuf> {
     store_dir(dialog_id).map(|s| s.join("groups.json"))
+}
+
+/// Where the snapshots' bytes are kept.
+fn group_blobs(dialog_id: &str) -> Option<PathBuf> {
+    store_dir(dialog_id).map(|s| s.join("groups"))
 }
 
 pub fn saved_groups(dialog_id: &str) -> Vec<SavedGroup> {
@@ -2611,8 +2638,79 @@ fn write_groups(dialog_id: &str, groups: &[SavedGroup]) -> Result<(), String> {
     crate::atomic_file::write_atomic(&file, &bytes).map_err(|e| e.to_string())
 }
 
-/// Keeps a joined group (a later join of the same name replaces it; what
-/// its files were before the first join stays).
+/// Keeps bytes in the chat's group folder; returns their file's name.
+fn keep_blob(dialog_id: &str, bytes: &[u8]) -> Result<String, String> {
+    let dir = group_blobs(dialog_id).ok_or("this chat has no isolated changes")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name = uuid::Uuid::new_v4().to_string();
+    std::fs::write(dir.join(&name), bytes).map_err(|e| e.to_string())?;
+    Ok(name)
+}
+
+fn read_blob(dialog_id: &str, name: &str) -> Result<Vec<u8>, String> {
+    if !valid_id(name) {
+        return Err(format!("{name}: not a saved version"));
+    }
+    let dir = group_blobs(dialog_id).ok_or("this chat has no isolated changes")?;
+    std::fs::read(dir.join(name)).map_err(|e| format!("a saved version is missing ({e})"))
+}
+
+/// What `paths` are in the chat now, before a join writes them (R06).
+/// Call it before each worker's copy lands.
+pub fn snapshot(dialog_id: &str, paths: &[String]) -> Result<Vec<(String, Before)>, String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let changes = changes(dialog_id);
+    let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    let mut out = Vec::new();
+    for path in paths {
+        check_rel(path)?;
+        let own = changes.iter().rev().find(|c| c.path() == path);
+        // Inside a folder the chat deleted (and not written since): gone.
+        let under_deleted = || {
+            changes.iter().any(|c| {
+                matches!(c, OverlayChange::Delete { path: d, .. } if path.starts_with(&format!("{d}/")))
+            })
+        };
+        let before = match own {
+            Some(OverlayChange::Delete { .. }) => Before::Absent,
+            Some(OverlayChange::Write {
+                kind,
+                upper,
+                origin,
+                ..
+            }) => match kind {
+                crate::vfs::store::Kind::Dir => Before::Dir,
+                crate::vfs::store::Kind::Symlink => Before::Other,
+                crate::vfs::store::Kind::File => {
+                    let bytes = match (upper, origin) {
+                        (Some(file), _) => {
+                            std::fs::read(file).map_err(|e| format!("{path}: {e}"))?
+                        }
+                        (None, Some(o)) => {
+                            std::fs::read(project.join(o)).map_err(|e| format!("{path}: {e}"))?
+                        }
+                        (None, None) => Vec::new(),
+                    };
+                    let base = with_fs(dialog_id, |fs| fs.versions(path))?
+                        .map(|(_, base)| std::fs::read(base).map_err(|e| format!("{path}: {e}")))
+                        .transpose()?;
+                    Before::File {
+                        content: keep_blob(dialog_id, &bytes)?,
+                        base: base.map(|b| keep_blob(dialog_id, &b)).transpose()?,
+                    }
+                }
+            },
+            None if under_deleted() => Before::Absent,
+            None => Before::Untouched,
+        };
+        out.push((path.clone(), before));
+    }
+    Ok(out)
+}
+
+/// Keeps a joined group. A later join of the same name adds the paths it
+/// wrote that the first didn't; what a path was before the first stays.
 pub fn save_group(dialog_id: &str, group: SavedGroup) -> Result<(), String> {
     let lock = state_lock(dialog_id);
     let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -2620,9 +2718,9 @@ pub fn save_group(dialog_id: &str, group: SavedGroup) -> Result<(), String> {
     match all.iter_mut().find(|g| g.name == group.name) {
         Some(g) => {
             let mut before = g.before.clone();
-            for (path, original) in group.before {
+            for (path, was) in group.before {
                 if !before.iter().any(|(p, _)| *p == path) {
-                    before.push((path, original));
+                    before.push((path, was));
                 }
             }
             *g = SavedGroup { before, ..group };
@@ -2639,9 +2737,140 @@ pub fn group_redone(dialog_id: &str, name: &str) -> bool {
         .any(|g| g.name == name && g.redone)
 }
 
-/// Throws the group's merge away (its files go back to what they were
-/// before the join) and returns the request that has its steps redone by
-/// step workers, one at a time.
+/// Makes the folders up to `rel`'s parent in the chat's view.
+fn make_parents(fs: &OverlayFs, rel: &str) -> Result<(), String> {
+    use crate::vfs::backend::Backend;
+    let mut at = String::new();
+    let parts: Vec<&str> = rel.split('/').collect();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        let parent = Backend::resolve(fs, &at).map_err(|e| format!("{rel}: {e:?}"))?;
+        at = if at.is_empty() {
+            part.to_string()
+        } else {
+            format!("{at}/{part}")
+        };
+        match Backend::resolve(fs, &at) {
+            Ok(_) => {}
+            Err(crate::vfs::store::VfsError::NotFound) => {
+                Backend::create(
+                    fs,
+                    parent,
+                    part,
+                    crate::vfs::store::Kind::Dir,
+                    0o755,
+                    0,
+                    0,
+                    None,
+                )
+                .map_err(|e| format!("{at}: {e:?}"))?;
+            }
+            Err(e) => return Err(format!("{at}: {e:?}")),
+        }
+    }
+    Ok(())
+}
+
+/// Puts one path back as it was before the join; a note when it couldn't
+/// be, entirely.
+fn restore_path(
+    dialog_id: &str,
+    fs: &OverlayFs,
+    project: &Path,
+    path: &str,
+    was: &Before,
+) -> Result<Option<String>, String> {
+    use crate::vfs::backend::Backend;
+    use crate::vfs::store::VfsError;
+    let in_project = project.join(path);
+    let now = Backend::resolve(fs, path)
+        .ok()
+        .and_then(|ino| Backend::getattr(fs, ino).ok())
+        .map(|a| a.kind);
+    let remove_dir = |path: &str| -> Result<Option<String>, String> {
+        let (parent, name) =
+            Backend::resolve_parent(fs, path).map_err(|e| format!("{path}: {e:?}"))?;
+        match Backend::rmdir(fs, parent, name) {
+            Ok(()) | Err(VfsError::NotFound) => Ok(None),
+            Err(VfsError::NotEmpty) => Ok(Some(format!(
+                "`{path}/` was kept: it has files the group didn't write"
+            ))),
+            Err(e) => Err(format!("{path}: {e:?}")),
+        }
+    };
+    match was {
+        Before::Other => Ok(None),
+        Before::Dir => {
+            if now != Some(crate::vfs::store::Kind::Dir) {
+                make_parents(fs, &format!("{path}/x"))?;
+            }
+            Ok(None)
+        }
+        Before::File { content, base } => {
+            if now == Some(crate::vfs::store::Kind::Dir) {
+                if let Some(note) = remove_dir(path)? {
+                    return Ok(Some(note));
+                }
+            }
+            make_parents(fs, path)?;
+            let content = read_blob(dialog_id, content)?;
+            let base = base
+                .as_deref()
+                .map(|b| read_blob(dialog_id, b))
+                .transpose()?;
+            fs.rebase_file(path, Some(&content), base.as_deref())
+                .map_err(|e| format!("{path}: {e:?}"))?;
+            Ok(None)
+        }
+        Before::Untouched | Before::Absent => {
+            let project_file = in_project
+                .is_file()
+                .then(|| std::fs::read(&in_project).ok())
+                .flatten();
+            match now {
+                Some(crate::vfs::store::Kind::Dir) => {
+                    if in_project.is_dir() && matches!(was, Before::Untouched) {
+                        Ok(None)
+                    } else {
+                        remove_dir(path)
+                    }
+                }
+                None if matches!(was, Before::Untouched) && project_file.is_none() => Ok(None),
+                _ => {
+                    match (was, project_file) {
+                        // The project's file as it is now, and nothing to
+                        // land: the chat leaves it alone, as before.
+                        (Before::Untouched, Some(bytes)) => {
+                            make_parents(fs, path)
+                                .and_then(|_| {
+                                    if fs.revert_file(path).map_err(|e| format!("{e:?}"))? {
+                                        return Ok(());
+                                    }
+                                    // Deleted or replaced by the group: back
+                                    // first, then the project's again.
+                                    fs.rebase_file(path, Some(&bytes), Some(&bytes))
+                                        .and_then(|_| fs.revert_file(path).map(|_| ()))
+                                        .map_err(|e| format!("{e:?}"))
+                                })
+                                .map_err(|e| format!("{path}: {e}"))?;
+                            return Ok(None);
+                        }
+                        // The chat had deleted it: deleted again, against
+                        // the project's file as it is now.
+                        (Before::Absent, Some(bytes)) => fs.rebase_file(path, None, Some(&bytes)),
+                        _ => fs.rebase_file(path, None, None),
+                    }
+                    .map_err(|e| format!("{path}: {e:?}"))?;
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+/// Throws the group's merge away (each path it wrote goes back to what the
+/// chat had before the join, with the base it lands against) and returns
+/// the request that has its steps redone by step workers, one at a time.
+/// Nothing is marked redone unless every path went back.
 pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
     let lock = state_lock(dialog_id);
     let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -2651,13 +2880,32 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
         .find(|g| g.name == name)
         .ok_or_else(|| format!("no parallel group \"{name}\" in this chat"))?;
     let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
-    for (path, original) in &group.before {
+    // Files before folders, deepest first: a folder the group made is
+    // empty by the time it's removed.
+    let mut order: Vec<&(String, Before)> = group.before.iter().collect();
+    order.sort_by_key(|(p, was)| {
+        (
+            matches!(was, Before::Untouched | Before::Absent) && !project.join(p).is_file(),
+            std::cmp::Reverse(p.matches('/').count()),
+        )
+    });
+    let mut notes = Vec::new();
+    let mut failed = Vec::new();
+    for (path, was) in order {
         check_rel(path)?;
-        let now = std::fs::read(project.join(path)).ok();
-        with_fs(dialog_id, |fs| {
-            fs.rebase_file(path, original.as_deref().map(str::as_bytes), now.as_deref())
-        })?
-        .map_err(|e| format!("{path}: {e:?}"))?;
+        match with_fs(dialog_id, |fs| {
+            restore_path(dialog_id, fs, &project, path, was)
+        })? {
+            Ok(Some(note)) => notes.push(note),
+            Ok(None) => {}
+            Err(e) => failed.push(e),
+        }
+    }
+    if !failed.is_empty() {
+        return Err(format!(
+            "the group's changes couldn't all be undone: {}. Try again, or Discard this chat's changes.",
+            failed.join("; ")
+        ));
     }
     group.redone = true;
     let steps = group
@@ -2672,12 +2920,15 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
         .map(|(p, _)| format!("`{p}`"))
         .collect::<Vec<_>>()
         .join(", ");
-    let request = format!(
+    let mut request = format!(
         "Redo sequentially: the parallel group \"{name}\" didn't pass its checks, so its merged changes were thrown away \
          ({files} are back as they were before it). Carry out its steps ({steps}) of the plan in `{}` again, one at a time, \
          each with a step worker (task with kind \"worker\" and its step), not as a parallel group.",
         group.plan_path
     );
+    if !notes.is_empty() {
+        request.push_str(&format!(" Note: {}.", notes.join("; ")));
+    }
     write_groups(dialog_id, &all)?;
     set_pending(dialog_id, None);
     Ok(request)

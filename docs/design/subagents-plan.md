@@ -1297,3 +1297,53 @@ fixes. This affected every run, with or without subagents.
     `src/greet.ts`, read it, or `cat` it;
   - a worker whose report starts repeating while it streams ends as done,
     with its report and its change kept.
+
+### Review fixes: Redo sequentially puts paths back exactly
+
+The R06 snapshot was each landed file's text, read with
+`from_utf8_lossy`, and the restore used the project's current file as the
+merge base. That broke Redo in three ways:
+
+- a folder a worker created made the restore fail halfway, with "is a
+  directory";
+- a file that wasn't UTF-8 came back corrupted;
+- a later landing could silently undo the project's newer edits, or
+  delete a file the project had added since.
+
+Now:
+
+- **The snapshot** (`chats::snapshot`, taken just before each worker's
+  copy lands) records, for each path the join writes, what the chat had
+  there:
+  - **untouched:** the project's file showed;
+  - **its own file:** the content and the merge base it had, both as
+    bytes in the overlay's `groups/` folder;
+  - **its own folder;**
+  - **absent:** the chat had deleted it.
+
+  If a snapshot can't be taken, the group isn't saved, and Redo isn't
+  offered for it.
+
+- **The restore** (`redo_group`) works on files first, then folders,
+  deepest first:
+  - an untouched path is dropped from the chat's changes, so the
+    project's file shows with nothing to land (`OverlayFs::revert_file`,
+    new);
+  - the chat's own file gets its bytes and its original base back;
+  - a folder the group made is removed, or kept and noted if it has
+    files the group didn't write;
+  - a deleted path is deleted again.
+
+  If any path fails, the group isn't marked redone, so Redo can be tried
+  again, and the error names every path.
+
+- FUSE test: a group makes a folder with a file, changes a file the lead
+  had changed (and that the lead's command had filled with non-UTF-8
+  bytes), and changes another. After Redo:
+  - the folder and its file are gone, with nothing to land;
+  - the lead's file has its content and its original base;
+  - the non-UTF-8 bytes are exact;
+  - untouched files stay untouched, and the project is unchanged.
+- Still open from the review: files only the repair fixers touched
+  aren't in the snapshot. Also, the redo request is sent after the group
+  is marked redone, so if sending fails, the merge is already gone.
