@@ -257,8 +257,22 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
 
 /// Tokens in and out, and the cost when the provider says, of one reply's
 /// usage (OpenAI's names, or the Responses API's).
+/// A token count: a whole number, as some proxies send them as floats
+/// (`10.0`); not a fraction or a negative (round 2, P6.2).
+fn token_count(v: &Value) -> Option<u64> {
+    v.as_u64().or_else(|| {
+        v.as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0 && f.fract() == 0.0)
+            .map(|f| f as u64)
+    })
+}
+
 pub fn usage_of(u: &Value) -> (u64, u64, Option<f64>) {
-    let n = |keys: &[&str]| keys.iter().find_map(|k| u.get(*k)?.as_u64()).unwrap_or(0);
+    let n = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| token_count(u.get(*k)?))
+            .unwrap_or(0)
+    };
     (
         n(&["prompt_tokens", "input_tokens"]),
         n(&["completion_tokens", "output_tokens"]),
@@ -304,7 +318,7 @@ impl Totals {
                 "output_tokens",
             ]
             .iter()
-            .any(|k| u.get(*k).is_some_and(Value::is_u64))
+            .any(|k| u.get(*k).and_then(token_count).is_some())
         };
         let Some(u) = line.get("usage").filter(|u| u.is_object()).filter(counted) else {
             // A request that failed or was cut short may have none.
@@ -654,6 +668,8 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&args.out, text).map_err(|e| format!("{}: {e}", args.out.display()))?;
     drop(app);
+    // Closed first: Windows won't remove an open database's folder.
+    drop(db);
     if own_data {
         let _ = std::fs::remove_dir_all(&data);
     }
@@ -889,6 +905,45 @@ mod tests {
         );
         assert_eq!(t.missing_usage, 0);
         assert_eq!(t.cost(price), (Some(0.0), "price"));
+    }
+
+    /// Round 2, P6.2: the usage shapes providers send, each pinned:
+    /// (tokens, replies, missing).
+    #[test]
+    fn usage_shapes() {
+        for (usage, want) in [
+            (json!({ "prompt_tokens": 10 }), (10, 1, 0)),
+            (json!({ "input_tokens": 5, "output_tokens": 7 }), (12, 1, 0)),
+            (json!({ "total_tokens": 9 }), (0, 0, 1)),
+            (json!({}), (0, 0, 1)),
+            (
+                json!({ "prompt_tokens": 10, "completion_tokens": 2, "prompt_tokens_details": { "cached_tokens": 8 } }),
+                (12, 1, 0),
+            ),
+            // Floats from a proxy: whole numbers count, fractions don't.
+            (
+                json!({ "prompt_tokens": 10.0, "completion_tokens": 3.0 }),
+                (13, 1, 0),
+            ),
+            (json!({ "prompt_tokens": 10.5 }), (0, 0, 1)),
+        ] {
+            let mut t = Totals::default();
+            t.add(
+                &json!({ "event": "reply", "dialogId": "d", "usage": usage }),
+                "d",
+            );
+            assert_eq!((t.tokens(), t.replies, t.missing_usage), want, "{usage}");
+        }
+        // Absent: missing, unless the request failed.
+        let mut t = Totals::default();
+        t.add(&json!({ "event": "reply", "dialogId": "d" }), "d");
+        assert_eq!((t.replies, t.missing_usage), (0, 1));
+        let mut t = Totals::default();
+        t.add(
+            &json!({ "event": "reply", "dialogId": "d", "error": "x" }),
+            "d",
+        );
+        assert_eq!((t.replies, t.missing_usage), (0, 0));
     }
 
     #[test]
