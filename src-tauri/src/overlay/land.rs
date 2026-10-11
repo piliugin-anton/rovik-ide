@@ -430,6 +430,12 @@ pub fn land(
     land_checked(data_dir, dialog_id, project, changes, keep_chat, true)
 }
 
+/// Tests: landings into this folder find it changing under them this many
+/// more times (Busy); and how many were tried.
+#[cfg(test)]
+pub(crate) static BUSY_TIMES: std::sync::LazyLock<Mutex<HashMap<PathBuf, (usize, usize)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// [`land`]; with `allow_merge` false, refuses when any file would land
 /// merged with project changes (they came after the checks ran).
 pub fn land_checked(
@@ -440,6 +446,14 @@ pub fn land_checked(
     keep_chat: bool,
     allow_merge: bool,
 ) -> Result<Option<Landed>, LandError> {
+    #[cfg(test)]
+    if let Some((left, calls)) = BUSY_TIMES.lock().unwrap().get_mut(project) {
+        *calls += 1;
+        if *left > 0 {
+            *left -= 1;
+            return Err(LandError::Busy);
+        }
+    }
     let lock = project_lock(project);
     let _landing = lock.lock().unwrap_or_else(|e| e.into_inner());
     for _ in 0..3 {

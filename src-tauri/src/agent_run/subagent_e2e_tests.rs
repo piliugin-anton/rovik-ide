@@ -8710,3 +8710,80 @@ async fn a_group_worker_with_only_out_of_scope_changes_is_partial() {
     );
     h.run_end().await;
 }
+
+/// Busy landings (the chat's files changing under them) are tried again
+/// a few times: once is retried and lands; for good, each worker is tried
+/// exactly 4 times and its copy kept, with no landing journal left.
+#[tokio::test]
+async fn a_busy_landing_is_retried_then_kept() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    for (busy, lands) in [(1usize, true), (10, false)] {
+        let h = group_harness(&[]).await;
+        let (url, _) = model_routed(
+            vec![
+                (
+                    "# Your step: 2.",
+                    vec![
+                        write_call("w1", "src/users.rs", "users\n"),
+                        Reply::Slow(500, Box::new(worker_report("Users.", &["src/users.rs"]))),
+                    ],
+                ),
+                (
+                    "# Your step: 3.",
+                    vec![
+                        write_call("w2", "src/posts.rs", "posts\n"),
+                        Reply::Slow(500, Box::new(worker_report("Posts.", &["src/posts.rs"]))),
+                    ],
+                ),
+            ],
+            vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+        )
+        .await;
+        h.start(h.implement_isolated(&url, false)).await;
+        let view = loop {
+            if let Some(o) = crate::overlay::chats::get(&h.dialog_id) {
+                break o.view.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        crate::overlay::land::BUSY_TIMES
+            .lock()
+            .unwrap()
+            .insert(view.clone(), (busy, 0));
+        let result = h.result_when_ready("g1").await;
+        let (_, calls) = crate::overlay::land::BUSY_TIMES
+            .lock()
+            .unwrap()
+            .remove(&view)
+            .unwrap();
+        if lands {
+            assert_eq!(
+                in_view(&h, "src/users.rs").as_deref(),
+                Some("users\n"),
+                "{}",
+                result.content
+            );
+            assert_eq!(in_view(&h, "src/posts.rs").as_deref(), Some("posts\n"));
+            assert_eq!(calls, 3, "one retry");
+        } else {
+            assert_eq!(calls, 8, "4 tries for each of the two");
+            assert!(
+                result
+                    .content
+                    .contains("the chat's files kept changing under it"),
+                "{}",
+                result.content
+            );
+            let w1 = h.child_of("g1#w1").await;
+            assert!(
+                crate::overlay::chats::get(&w1.id).is_some(),
+                "its copy is kept"
+            );
+            assert_eq!(in_view(&h, "src/users.rs").as_deref(), Some("// users\n"));
+            assert!(!landing_interrupted(&h.dialog_id));
+        }
+        h.run_end().await;
+    }
+}
