@@ -193,14 +193,22 @@ pub fn with_open_findings(plan: &str, open: &[Finding]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
+    let saved = format!(
         "{}\n\n{OPEN_FINDINGS_HEADING}\n\nThe plan reviewer still reported these after its last round. Check them before implementing.\n\n{list}",
         plan.trim_end()
-    )
+    );
+    // Round 2: in the plan's own line ending, not LF lines in a CRLF file.
+    if plan.contains("\r\n") {
+        saved.replace("\r\n", "\n").replace('\n', "\r\n")
+    } else {
+        saved
+    }
 }
 
 /// Lines a revision changes from the saved plan.
 pub fn changed_lines(before: &str, after: &str) -> usize {
+    // Round 2: a line-ending change alone changes no line.
+    let (before, after) = (before.replace("\r\n", "\n"), after.replace("\r\n", "\n"));
     let (a, b) = (
         diff::split_lines(before.trim()),
         diff::split_lines(after.trim()),
@@ -539,5 +547,17 @@ mod tests {
         let rewritten = plan.replace("line", "row");
         assert_eq!(changed_lines(&plan, &rewritten), 20);
         assert!(findings_result(&f, 1).contains("review 1 of at most 2"));
+    }
+
+    /// Round 2: CRLF plans keep one line ending, and a CRLF → LF
+    /// resubmission changes no line.
+    #[test]
+    fn crlf_plans_keep_one_line_ending_and_compare_by_their_lines() {
+        let f = parse_findings(STEP_FINDINGS).unwrap();
+        let saved = with_open_findings("# P\r\n\r\n## Steps\r\n1. x\r\n", &f[..1]);
+        assert!(!saved.replace("\r\n", "").contains('\n'), "{saved:?}");
+        assert!(saved.contains("## Open review findings\r\n"), "{saved:?}");
+        let lf = "# P\n\n## Steps\n1. x\n2. y\n";
+        assert_eq!(changed_lines(&lf.replace('\n', "\r\n"), lf), 0);
     }
 }

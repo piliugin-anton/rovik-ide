@@ -304,6 +304,8 @@ pub fn save_plan_file(
             path
         }
     };
+    // Round 2: one kind of line ending in the file, as the plan is read.
+    let plan = plan.replace("\r\n", "\n");
     let body = plan.trim();
     // A title, if the plan doesn't start with one.
     let titled = if body.starts_with("# ") || body.starts_with("#\t") {
@@ -1776,6 +1778,23 @@ mod tests {
         }
         // Member access stays code.
         assert!(step_files("1. Update `self.items` and `config.port`.").is_empty());
+    }
+
+    /// Round 2: a plan written with CRLF is saved with LF only.
+    #[test]
+    fn save_plan_file_normalises_line_endings() {
+        let tree = Tree::new(&["src/a.rs"]);
+        let root = tree.0.to_string_lossy().into_owned();
+        let path = save_plan_file(
+            &root,
+            "Do it",
+            "# P\r\n\r\n## Steps\r\n1. x\r\n",
+            None,
+            "2026-01-01",
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert_eq!(saved, "# P\n\n## Steps\n1. x\n");
     }
 
     #[test]
