@@ -149,11 +149,24 @@ export default function IsolationBar(props: Props) {
     });
     if (!ok) return;
     setBusy(true);
+    // P5.9: the group is thrown away first; asking the chat is a step of its own.
+    let request: string;
     try {
-      const request = await overlayRedoGroup(id, group);
-      await props.onAskChat(id, request);
+      request = await overlayRedoGroup(id, group);
     } catch (e) {
       notify({ kind: 'error', title: 'Couldn’t redo the group', message: String(e) });
+      setBusy(false);
+      void refetch();
+      return;
+    }
+    try {
+      await props.onAskChat(id, request);
+    } catch (e) {
+      notify({
+        kind: 'error',
+        title: 'The group was undone, but the chat couldn’t be asked to redo it',
+        message: `${String(e)}. Its files are back to what they were before it; ask the chat to carry out the steps again.`,
+      });
     } finally {
       setBusy(false);
       void refetch();

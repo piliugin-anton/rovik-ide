@@ -3,14 +3,20 @@
 // One change review in the chat (lib/changeReview.ts): what the reviewer
 // concluded, each finding with where it is (a click opens the file there),
 // and its work on demand. Updates live while the reviewer reads the change.
-import { createSignal, For, Show } from 'solid-js';
+import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js';
 import {
   reviewDetails,
   reviewHeadline,
   type ReviewFinding,
   type ReviewMeta,
 } from '../lib/changeReview';
-import { liveSubagent, openTranscript, workLabel } from '../lib/subagents';
+import {
+  forgetLive,
+  forgetTranscript,
+  liveSubagent,
+  openTranscript,
+  workLabel,
+} from '../lib/subagents';
 import { requestOpenFile } from '../lib/editorBridge';
 import { stopRun } from '../lib/agentRuns';
 import { SubagentTranscript } from './ToolCallBlock';
@@ -62,10 +68,20 @@ export default function ReviewRecord(props: {
   const progress = () => liveSubagent(props.dialogId, props.recordId);
   const childId = () => props.meta.childDialogId ?? progress()?.childDialogId ?? null;
   const [showWork, setShowWork] = createSignal(false);
+  // P5.9: neither a finished review's live entry nor an unshown transcript stays.
+  createEffect(() => {
+    const id = props.meta.childDialogId;
+    if (props.meta.status !== 'running' && id) forgetLive(props.dialogId, props.recordId, id);
+  });
+  let opened: string | null = null;
+  onCleanup(() => forgetTranscript(opened));
   const toggleWork = () => {
     const id = childId();
     if (!id) return;
-    if (!showWork() && props.dialogId) void openTranscript(id, props.dialogId, props.recordId);
+    if (!showWork() && props.dialogId) {
+      opened = id;
+      void openTranscript(id, props.dialogId, props.recordId);
+    }
     setShowWork(!showWork());
   };
   return (

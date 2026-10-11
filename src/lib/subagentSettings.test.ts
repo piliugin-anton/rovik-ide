@@ -150,6 +150,21 @@ test('a kind tries its model, its fallbacks, the default model, then the chat', 
     'b::other',
     'chat',
   ]);
+  // P5.2: "Default" with fallbacks of its own: the default model, its
+  // own fallbacks, then the default model's.
+  const ownFallbacks = {
+    ...s,
+    kinds: {
+      ...s.kinds,
+      scout: { ...s.kinds.scout, model: 'default' as const, fallbacks: [sel('a', 'strong')] },
+    },
+  };
+  assert.deepEqual(kindChain(ownFallbacks, 'scout'), [
+    sel('a', 'cheap'),
+    sel('a', 'strong'),
+    sel('b', 'other'),
+    'chat',
+  ]);
   // A removed model falls through to the next.
   const removed = { ...byDefault, defaultModel: sel('gone', 'x') };
   assert.deepEqual(ids(resolveSubagentConfig(removed, providers, resolve).kinds.scout!.models), [

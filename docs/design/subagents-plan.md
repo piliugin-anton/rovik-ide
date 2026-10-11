@@ -1838,3 +1838,42 @@ tasks first.
   reviewer-output variants and a second finding in one step, a small
   revert after a Hold reviewed, mid-run output readable after the end's
   checks, triage paths and its unsaved brief, an out-of-project path.
+
+### Review-fixes plan, phase 5: frontend
+
+- **P5.1** Plan-review records render from the `submit_plan` calls
+  themselves (stable), with each record's meta derived per row, so a
+  record keeps its state (its open transcript) as the run updates it.
+- **P5.2** A kind set to Default tries the default model, then its own
+  fallbacks, then the default model's (the design table's order).
+- **P5.3** A check round's triage reports `usage`, and the run's token
+  total counts it.
+- **P5.4** Transcript rows that arrive while its first page loads are
+  merged by id once it lands; after a load error, opening it again tries
+  again.
+- **P5.5** `harness: 'planCheck'` and `ReviewMeta.afterGreen` are typed;
+  after green, only high findings count as sent to the agent.
+- **P5.6** Styles for running and stopped records, a round's triage and
+  repair, and a subagent's block, context, group list and the Limits
+  toggle, from the theme tokens (both themes).
+- **P5.7** Parallel groups, the red check and parallel repair are disabled,
+  with the reason, when virtual files aren't mounted; the token limit
+  reads "no limit" when empty. Settings that couldn't be read are marked
+  `loadFailed`, and the chat's own saves read them again instead of
+  writing defaults over them.
+- **P5.8** Tool results are indexed by the call itself: a result belongs
+  to the latest call with its id before it, so a model reusing `call_0`
+  across replies gets each result on its own call. One change from the
+  plan: `live` stays keyed by call id (the backend's events carry no
+  message id); only the newest call with an id shows its live progress.
+- **P5.9** Redo sequentially says when the group was undone but the chat
+  couldn't be asked to redo it. A finished subagent's live entry is
+  dropped once its result shows (only that subagent's: matched by its
+  chat), and a transcript when the block that opened it unmounts.
+- Tests (each fails without its fix): a reused call id, the fallback
+  order with own fallbacks, triage tokens in the total, rows arriving
+  mid-load and a retry after an error, the after-green headline,
+  unreadable settings marked, and eviction from the store. P5.1, P5.6,
+  P5.7's disabled options and P5.9's wording are component changes with
+  no DOM test setup here: checked by `npm run typecheck` and `vite build`
+  only. No Rust changed in this phase.

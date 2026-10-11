@@ -3,9 +3,15 @@
 // One round of the verification gate in the chat (lib/verification.ts):
 // what it concluded, each check with its result, and the output of failed
 // checks on demand. Updates live while the checks run.
-import { createSignal, For, Match, Show, Switch } from 'solid-js';
+import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
-import { liveSubagent, openTranscript, workLabel } from '../lib/subagents';
+import {
+  forgetLive,
+  forgetTranscript,
+  liveSubagent,
+  openTranscript,
+  workLabel,
+} from '../lib/subagents';
 import {
   causeLine,
   describeFailure,
@@ -128,10 +134,20 @@ function TriageBlock(props: {
   const childId = () => props.triage.childDialogId ?? progress()?.childDialogId ?? null;
   const interrupted = () => props.triage.status === 'running' && !props.live;
   const [showWork, setShowWork] = createSignal(false);
+  // P5.9: neither a finished triage's live entry nor an unshown transcript stays.
+  createEffect(() => {
+    const id = props.triage.childDialogId;
+    if (props.triage.status !== 'running' && id) forgetLive(props.dialogId, callId(), id);
+  });
+  let opened: string | null = null;
+  onCleanup(() => forgetTranscript(opened));
   const toggleWork = () => {
     const id = childId();
     if (!id) return;
-    if (!showWork() && props.dialogId) void openTranscript(id, props.dialogId, callId());
+    if (!showWork() && props.dialogId) {
+      opened = id;
+      void openTranscript(id, props.dialogId, callId());
+    }
     setShowWork(!showWork());
   };
   return (

@@ -240,7 +240,9 @@ export interface ToolMeta {
     | 'subagentBudget'
     | 'subagentFormat'
     | 'integrity'
-    | 'review';
+    | 'review'
+    /** The saved plan's problems, found when it's implemented (B07b). */
+    | 'planCheck';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */

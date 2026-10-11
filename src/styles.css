@@ -4631,6 +4631,51 @@ body.is-resizing * {
   color: var(--fg-dim);
 }
 
+/* P5.6: a record at work, and one the run left unfinished. */
+.chat-verify.running,
+.chat-review.running {
+  border-left-color: var(--info);
+}
+
+.chat-verify.stopped,
+.chat-review.stopped {
+  border-left-color: var(--fg-dim);
+  opacity: 0.8;
+}
+
+/* A check round's triage and repair, inside its record. */
+.chat-verify-triage,
+.chat-verify-repair {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--fg-dim);
+  border-radius: 4px;
+  background: var(--tool-background);
+}
+
+.chat-verify-triage.running {
+  border-left-color: var(--info);
+}
+
+.chat-verify-triage.done {
+  border-left-color: var(--accent);
+}
+
+.chat-verify-triage.skipped {
+  border-left-color: var(--warning);
+}
+
+.chat-verify-triage.stopped {
+  opacity: 0.8;
+}
+
+.chat-verify-repair {
+  border-left-color: var(--warning);
+}
+
 .chat-verify-rollback summary {
   cursor: pointer;
 }
@@ -7678,6 +7723,38 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--accent);
   font-size: 11px;
   line-height: 16px;
+}
+
+/* P5.6: a subagent's block stands apart from the lead's own calls. */
+.subagent-block {
+  border-left: 2px solid var(--accent-soft);
+}
+
+.subagent-block.running {
+  border-left-color: var(--accent);
+}
+
+.subagent-context {
+  margin-top: 4px;
+  color: var(--fg-muted);
+}
+
+.subagent-group {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.subagent-limits-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--fg);
 }
 
 .subagent-actions {

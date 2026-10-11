@@ -18,7 +18,8 @@ export default function ToolCallGroup(props: {
   name: string;
   calls: ChatToolCall[];
   dialogId: string | null;
-  result: (id: string) => ChatMessage | undefined;
+  /** A call's result (P5.8: by the call, as ids can repeat across replies). */
+  result: (call: ChatToolCall) => ChatMessage | undefined;
   /** True while the agent loop is still running. */
   running: boolean;
   /** Earlier checklist snapshots: history, dimmed. */
@@ -30,7 +31,7 @@ export default function ToolCallGroup(props: {
 
   const states = createMemo(() =>
     props.calls.map((call) => {
-      const result = props.result(call.id);
+      const result = props.result(call);
       if (!result) return props.running ? 'running' : 'idle';
       return isErrorResult(result.content) ? 'error' : 'done';
     })
@@ -46,7 +47,7 @@ export default function ToolCallGroup(props: {
         pendingQuestions(props.dialogId!, c.id) ||
         // A subagent's approvals are its own chat's (P1.6).
         (c.name === 'task' &&
-          !props.result(c.id) &&
+          !props.result(c) &&
           pendingApprovalsOfTask(props.dialogId!, c.id, childOf(props.dialogId, c.id)).length > 0)
     );
   const open = () => userOpen() || awaiting();
@@ -67,9 +68,9 @@ export default function ToolCallGroup(props: {
     return editCounts(
       props.calls
         .filter(
-          (c, i) => state[i] === 'done' && props.result(c.id)?.meta?.approval?.approved !== false
+          (c, i) => state[i] === 'done' && props.result(c)?.meta?.approval?.approved !== false
         )
-        .map((c) => ({ args: parseArgsLenient(c.arguments), result: props.result(c.id)?.meta }))
+        .map((c) => ({ args: parseArgsLenient(c.arguments), result: props.result(c)?.meta }))
     );
   });
 
@@ -78,7 +79,7 @@ export default function ToolCallGroup(props: {
       props.name,
       props.calls.map((c) => parseArgsLenient(c.arguments)),
       active(),
-      props.calls.map((c) => props.result(c.id)?.meta)
+      props.calls.map((c) => props.result(c)?.meta)
     )
   );
 

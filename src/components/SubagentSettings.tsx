@@ -5,9 +5,10 @@
 // model, fallbacks, reasoning effort) and the limits. Everything is off by
 // default; with the master switch off, chats work exactly as without
 // subagents and the rows keep their choices, greyed out.
-import { createSignal, For, Show } from 'solid-js';
+import { createResource, createSignal, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import ModelWithFallbacks from './ModelWithFallbacks';
+import { vfsStatus } from '../lib/virtualFiles';
 import { EFFORTS, type Effort } from '../lib/reasoning';
 import {
   LIMITS,
@@ -32,7 +33,7 @@ interface SubagentSettingsProps {
 function NumberInput(props: {
   label: string;
   value: number | undefined;
-  placeholder: number;
+  placeholder: number | string;
   min: number;
   max: number;
   step?: number;
@@ -75,6 +76,10 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
     patch({ kinds: { ...s().kinds, [id]: { ...s().kinds[id], ...changes } } });
   const [limitsOpen, setLimitsOpen] = createSignal(false);
   const off = () => !s().enabled;
+  // P5.7: what needs isolated chats can't run without virtual files.
+  const [vfs] = createResource(() => vfsStatus().catch(() => null));
+  const noIsolation = () => vfs.state === 'ready' && !vfs()?.mountpoint;
+  const NO_ISOLATION = 'Needs isolated chats: virtual files aren’t mounted on this computer.';
 
   return (
     <div class="permissions-settings subagent-settings">
@@ -231,7 +236,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             <input
               type="checkbox"
               checked={s().parallelWorkers}
-              disabled={off()}
+              disabled={off() || noIsolation()}
+              title={noIsolation() ? NO_ISOLATION : undefined}
               onChange={(e) => patch({ parallelWorkers: e.currentTarget.checked })}
             />
             <span>
@@ -247,7 +253,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             <input
               type="checkbox"
               checked={s().redCheck}
-              disabled={off()}
+              disabled={off() || noIsolation()}
+              title={noIsolation() ? NO_ISOLATION : undefined}
               onChange={(e) => patch({ redCheck: e.currentTarget.checked })}
             />
             <span>
@@ -262,7 +269,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             <input
               type="checkbox"
               checked={s().parallelRepair}
-              disabled={off()}
+              disabled={off() || noIsolation()}
+              title={noIsolation() ? NO_ISOLATION : undefined}
               onChange={(e) => patch({ parallelRepair: e.currentTarget.checked })}
             />
             <span>
@@ -274,11 +282,17 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
               </span>
             </span>
           </label>
+          <Show when={noIsolation()}>
+            <p class="settings-hint">
+              Parallel groups, the red check and parallel repair need isolated chats, and virtual
+              files aren’t mounted on this computer (see Virtual files).
+            </p>
+          </Show>
           <div class="subagent-limits">
             <NumberInput
-              label="Tokens per run (empty: no limit)"
+              label="Tokens per run"
               value={s().maxRunTokens}
-              placeholder={0}
+              placeholder="no limit"
               min={LIMITS.runTokens.min}
               max={LIMITS.runTokens.max}
               step={1000}

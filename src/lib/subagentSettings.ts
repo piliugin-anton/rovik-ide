@@ -277,14 +277,19 @@ const sameEntry = (a: ChainEntry, b: ChainEntry) =>
 
 /**
  * The models a kind tries, in order, before they're resolved: its model
- * and fallbacks (the default model's when set to Default), then the
- * default model and its fallbacks, then the chat's model. Each once.
+ * and fallbacks (set to Default: the default model, its own fallbacks,
+ * then the default model's), then the default model and its fallbacks,
+ * then the chat's model. Each once.
  */
 export function kindChain(settings: SubagentSettings, kind: SubagentKindId): ChainEntry[] {
   const k = settings.kinds[kind];
   const defaults: ChainEntry[] = [settings.defaultModel, ...settings.defaultFallbacks];
+  // P5.2: set to Default, the default model, then the kind's own fallbacks
+  // before the default model's.
   const own: ChainEntry[] =
-    k.model === 'default' ? [...defaults, ...k.fallbacks] : [k.model, ...k.fallbacks];
+    k.model === 'default'
+      ? [settings.defaultModel, ...k.fallbacks, ...settings.defaultFallbacks]
+      : [k.model, ...k.fallbacks];
   const out: ChainEntry[] = [];
   for (const entry of [...own, ...defaults, CHAT]) {
     if (!out.some((o) => sameEntry(o, entry))) out.push(entry);

@@ -16,6 +16,11 @@ export interface PersistedAiSettings {
   permissions: AgentPermissions;
   /** Missing in files written before subagents existed: all off. */
   subagents: SubagentSettings;
+  /**
+   * P5.7: the file couldn't be read: these are defaults, not what's saved,
+   * so they mustn't be written over it. Never saved.
+   */
+  loadFailed?: boolean;
 }
 
 const EMPTY: PersistedAiSettings = {
@@ -44,7 +49,7 @@ export async function loadAiSettings(): Promise<PersistedAiSettings> {
     return EMPTY;
   } catch (err) {
     console.error('Failed to load AI settings:', err);
-    return EMPTY;
+    return { ...EMPTY, loadFailed: true };
   }
 }
 

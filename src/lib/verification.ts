@@ -6,6 +6,7 @@
 // to the agent to fix (src-tauri/src/agent_run/verify.rs). Each round is
 // recorded in the chat as a message with `meta.verification`.
 import type { CheckKind } from './projectProfile';
+import type { SubagentUsage } from './subagents';
 
 export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
 
@@ -59,6 +60,8 @@ export interface TriageMeta {
   model?: string;
   toolCalls?: number;
   ms?: number;
+  /** Tokens its providers reported (P5.3: counted in the run's total). */
+  usage?: SubagentUsage;
 }
 
 export type VerificationStatus =

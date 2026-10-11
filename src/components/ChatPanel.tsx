@@ -151,6 +151,8 @@ export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
+  /** The last settings load failed: `subagentSettings` are defaults (P5.7). */
+  let subagentsUnknown = false;
   const [subagentSettings, setSubagentSettings] =
     createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
 
@@ -283,6 +285,7 @@ export default function ChatPanel(props: ChatProps) {
             setSelection((sel) => reconcileSelection(settings.providers, sel ?? settings.active));
             setPermissions(settings.permissions);
             setSubagentSettings(settings.subagents);
+            subagentsUnknown = !!settings.loadFailed;
           } catch (err) {
             console.error('Failed to reload AI settings:', err);
           }
@@ -687,6 +690,7 @@ export default function ChatPanel(props: ChatProps) {
       setSelection(reconcileSelection(settings.providers, settings.active));
       setPermissions(settings.permissions);
       setSubagentSettings(settings.subagents);
+      subagentsUnknown = !!settings.loadFailed;
 
       try {
         // This project's chats (or, with no folder open, the ones with none).
@@ -1905,13 +1909,26 @@ export default function ChatPanel(props: ChatProps) {
     nextSelection: ModelSelection | null,
     nextPermissions: AgentPermissions = permissions()
   ) {
-    void saveAiSettings({
-      version: 2,
-      providers: nextProviders,
-      active: nextSelection,
-      permissions: nextPermissions,
-      subagents: subagentSettings(),
-    }).catch((err) => console.error('Failed to save AI settings:', err));
+    void (async () => {
+      // P5.7: after a failed reload, the subagent settings here are
+      // defaults: what's saved is read again, never written over.
+      if (subagentsUnknown) {
+        const saved = await loadAiSettings();
+        if (saved.loadFailed) {
+          console.error('AI settings not saved: the saved ones couldn’t be read.');
+          return;
+        }
+        subagentsUnknown = false;
+        setSubagentSettings(saved.subagents);
+      }
+      await saveAiSettings({
+        version: 2,
+        providers: nextProviders,
+        active: nextSelection,
+        permissions: nextPermissions,
+        subagents: subagentSettings(),
+      });
+    })().catch((err) => console.error('Failed to save AI settings:', err));
   }
 
   function handleModelChange(next: ModelSelection) {

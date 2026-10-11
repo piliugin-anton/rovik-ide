@@ -3,7 +3,15 @@
 // One collapsible row per tool invocation. The header is a single readable
 // sentence ("Read src/App.tsx", "Searched for "foo" · 12 matches"); expanding
 // it shows the call arguments and the result together.
-import { createMemo, createResource, createSignal, For, Show } from 'solid-js';
+import {
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  For,
+  onCleanup,
+  Show,
+} from 'solid-js';
 import type { ChatMessage, ChatToolCall, ReviewCheck, ToolApproval, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
 import EditDiffBlock from './EditDiffBlock';
@@ -40,6 +48,8 @@ import {
   kindLabel,
   childOf,
   liveSubagent,
+  forgetLive,
+  forgetTranscript,
   openTranscript,
   reportBody,
   statusLabel,
@@ -55,6 +65,8 @@ export interface ToolCallBlockProps {
   dialogId: string | null;
   /** Content of the matching role:"tool" message, if it has arrived. */
   result?: ChatMessage;
+  /** P5.8: an older call whose id a later call reused: live progress isn't its. */
+  notLive?: boolean;
   /** True while the agent loop is still running (args streaming or tool executing). */
   running?: boolean;
   /** Live note while the call waits, e.g. for approval. */
@@ -620,7 +632,7 @@ export function SubagentTranscript(props: { childDialogId: string; running: bool
  */
 function TaskBlock(props: ToolCallBlockProps) {
   const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
-  const live = () => liveSubagent(props.dialogId, props.toolCall.id);
+  const live = () => (props.notLive ? undefined : liveSubagent(props.dialogId, props.toolCall.id));
   const done = () => props.result?.meta?.subagent;
   /** A parallel group (kind "workers"): its workers, joined. */
   const group = () => props.result?.meta?.group;
@@ -665,10 +677,22 @@ function TaskBlock(props: ToolCallBlockProps) {
     return props.running ? 'starting…' : 'not run';
   };
 
+  // P5.9: the store keeps neither a finished subagent's live entry nor a
+  // transcript once its block is gone.
+  createEffect(() => {
+    const id = done()?.childDialogId;
+    if (id) forgetLive(props.dialogId, props.toolCall.id, id);
+  });
+  let opened: string | null = null;
+  onCleanup(() => forgetTranscript(opened));
+
   function toggleWork() {
     const id = childId();
     if (!id) return;
-    if (!showWork() && props.dialogId) void openTranscript(id, props.dialogId, props.toolCall.id);
+    if (!showWork() && props.dialogId) {
+      opened = id;
+      void openTranscript(id, props.dialogId, props.toolCall.id);
+    }
     setShowWork(!showWork());
   }
 

@@ -162,17 +162,43 @@ export function childOf(dialogId: string | null, toolCallId: string): string | n
 /** Whether a chat is a subagent's (its events don't go to the chat store). */
 export const isSubagentChat = (dialogId: string) => !!state.children[dialogId];
 
+/**
+ * P5.4: rows that arrive while a transcript's first page loads, merged by
+ * id once it lands (they're newer than the page).
+ */
+const arrivedWhileLoading = new Map<string, ChatMessage[]>();
+
+/** `later` over `page`, by id: a later row replaces its earlier copy. */
+export function mergeById(page: ChatMessage[], later: ChatMessage[]): ChatMessage[] {
+  const out = [...page];
+  for (const m of later) {
+    const i = out.findIndex((o) => o.id === m.id);
+    if (i >= 0) out[i] = { ...out[i], ...m };
+    else out.push(m);
+  }
+  return out;
+}
+
 /** Messages a subagent's run stored: shown if its transcript is open. */
 export function receiveSubagentMessages(
   childDialogId: string,
   rows: (MessageRow & { pending?: boolean })[]
 ) {
   const t = state.transcripts[childDialogId];
-  if (!t || t.loading) return;
+  if (!t) return;
+  const incoming = rows.map((row) => ({
+    ...fromRow(row),
+    ...(row.pending ? { pending: true } : {}),
+  }));
+  if (t.loading) {
+    arrivedWhileLoading.set(childDialogId, [
+      ...(arrivedWhileLoading.get(childDialogId) ?? []),
+      ...incoming,
+    ]);
+    return;
+  }
   const known = new Set(t.messages.map((m) => m.id));
-  const added = rows
-    .map((row) => ({ ...fromRow(row), ...(row.pending ? { pending: true } : {}) }))
-    .filter((m) => !known.has(m.id));
+  const added = incoming.filter((m) => !known.has(m.id));
   if (added.length)
     setState('transcripts', childDialogId, 'messages', (list) => [...list, ...added]);
 }
@@ -184,12 +210,16 @@ export function patchSubagentMessage(
 ) {
   const t = state.transcripts[childDialogId];
   if (!t) return;
-  const i = t.messages.findIndex((m) => m.id === messageId);
-  if (i < 0) return;
   const { status, ...fields } = patch;
   const next: Partial<ChatMessage> = { ...fields };
   if ('status' in patch) next.status = status ?? undefined;
   if (fields.finalized) next.pending = false;
+  // P5.4: a row that arrived while the page loads is patched where it waits.
+  const waiting = arrivedWhileLoading.get(childDialogId);
+  const w = waiting?.findIndex((m) => m.id === messageId) ?? -1;
+  if (waiting && w >= 0) waiting[w] = { ...waiting[w], ...next };
+  const i = t.messages.findIndex((m) => m.id === messageId);
+  if (i < 0) return;
   setState('transcripts', childDialogId, 'messages', i, next);
 }
 
@@ -210,14 +240,49 @@ export const transcript = (childDialogId: string | null | undefined): Transcript
 /** Loads a subagent's chat (once; it follows the run afterwards). */
 export async function openTranscript(childDialogId: string, dialogId: string, toolCallId: string) {
   noteRunningSubagent(childDialogId, dialogId, toolCallId);
-  if (state.transcripts[childDialogId]) return;
-  setState('transcripts', childDialogId, { messages: [], loading: true });
+  // P5.4: after an error, opening it again tries again.
+  const t = state.transcripts[childDialogId];
+  if (t && !t.error) return;
+  arrivedWhileLoading.delete(childDialogId);
+  setState('transcripts', childDialogId, { messages: [], loading: true, error: undefined });
   try {
     const page = await chatApi.getMessages(childDialogId, undefined, 500);
-    setState('transcripts', childDialogId, { messages: page.messages, loading: false });
+    const later = arrivedWhileLoading.get(childDialogId) ?? [];
+    arrivedWhileLoading.delete(childDialogId);
+    setState('transcripts', childDialogId, {
+      messages: mergeById(page.messages, later),
+      loading: false,
+    });
   } catch (err) {
+    arrivedWhileLoading.delete(childDialogId);
     setState('transcripts', childDialogId, { messages: [], loading: false, error: String(err) });
   }
+}
+
+/**
+ * P5.9: a finished subagent's live entry, once its result is shown (the
+ * result keeps what the block needs; the chat link stays in `children`).
+ */
+export function forgetLive(dialogId: string | null, toolCallId: string, childDialogId: string) {
+  // Only that subagent's: a later call may have reused the id.
+  if (!dialogId || state.live[dialogId]?.[toolCallId]?.childDialogId !== childDialogId) return;
+  setState(
+    produce((s) => {
+      delete s.live[dialogId]![toolCallId];
+      if (Object.keys(s.live[dialogId]!).length === 0) delete s.live[dialogId];
+    })
+  );
+}
+
+/** P5.9: a transcript no block shows any more (opening it loads it again). */
+export function forgetTranscript(childDialogId: string | null | undefined) {
+  if (!childDialogId || !state.transcripts[childDialogId]) return;
+  arrivedWhileLoading.delete(childDialogId);
+  setState(
+    produce((s) => {
+      delete s.transcripts[childDialogId];
+    })
+  );
 }
 
 /*
@@ -290,12 +355,18 @@ export function runUsage(messages: ChatMessage[]): SubagentUsage | null {
   }
   let total: SubagentUsage | null = null;
   for (const m of messages.slice(from)) {
-    const u = m.meta?.subagent?.usage ?? m.meta?.review?.usage;
-    if (!u) continue;
-    total ??= { inputTokens: 0, outputTokens: 0 };
-    total.inputTokens += u.inputTokens;
-    total.outputTokens += u.outputTokens;
-    if (u.cost !== undefined) total.cost = (total.cost ?? 0) + u.cost;
+    // P5.3: a check round's triage counts too.
+    const used = [
+      m.meta?.subagent?.usage ?? m.meta?.review?.usage,
+      m.meta?.verification?.triage?.usage,
+    ];
+    for (const u of used) {
+      if (!u) continue;
+      total ??= { inputTokens: 0, outputTokens: 0 };
+      total.inputTokens += u.inputTokens;
+      total.outputTokens += u.outputTokens;
+      if (u.cost !== undefined) total.cost = (total.cost ?? 0) + u.cost;
+    }
   }
   return total;
 }

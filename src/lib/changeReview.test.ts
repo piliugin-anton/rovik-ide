@@ -94,3 +94,19 @@ test('a plan saved past the review budget says so', () => {
   );
   assert.equal(reviewDetails(meta), 'No review: all 2 used');
 });
+
+test('after green, only high findings are sent to the agent', () => {
+  const meta: ReviewMeta = {
+    kind: 'change',
+    status: 'findings',
+    round: 1,
+    maxRounds: 3,
+    afterGreen: true,
+    findings: [finding('high'), finding('medium'), finding('low')],
+  };
+  assert.equal(
+    reviewHeadline(meta, false),
+    'The reviewer found 3 findings: 1 sent to the agent to fix or answer.'
+  );
+  assert.match(reviewHeadline({ ...meta, afterGreen: false }, false), /: 2 sent to the agent/);
+});

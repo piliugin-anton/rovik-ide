@@ -1,8 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ChatMessage } from '../types';
+import { chatApi, type MessageRow } from './chatApi';
 import {
   childOf,
+  forgetLive,
+  forgetTranscript,
+  openTranscript,
+  receiveSubagentMessages,
+  transcript,
   isSubagentChat,
   seedRunningSubagent,
   runUsage,
@@ -114,6 +120,27 @@ test('tokens on a block, and the latest request’s total', () => {
   ];
   assert.deepEqual(runUsage(messages), { inputTokens: 305, outputTokens: 35, cost: 0.5 });
   assert.equal(runUsage([msg('user')]), null);
+  // P5.3: a check round's triage counts.
+  const triaged = msg('assistant', {
+    verification: {
+      status: 'failed',
+      round: 1,
+      maxRounds: 3,
+      checks: [],
+      changedFiles: [],
+      triage: {
+        status: 'done',
+        check: 'test',
+        reason: 'large output',
+        usage: { inputTokens: 40, outputTokens: 2, cost: 0.25 },
+      },
+    },
+  });
+  assert.deepEqual(runUsage([...messages, triaged]), {
+    inputTokens: 345,
+    outputTokens: 37,
+    cost: 0.75,
+  });
 });
 
 test('a reloaded page picks up a running subagent with what it does (P1.5)', () => {
@@ -137,4 +164,93 @@ test('a reloaded page picks up a running subagent with what it does (P1.5)', () 
   assert.equal(liveSubagent('lead-s', 't8'), undefined);
   assert.equal(childOf('lead-s', 't8'), 'kid-s');
   assert.equal(childOf('lead-s', 'other'), null);
+});
+
+const row = (id: string, content: string): MessageRow => ({
+  id,
+  dialogId: 'kid-t',
+  seq: 0,
+  role: 'assistant',
+  content,
+  bodyExternal: false,
+  bodyBytes: 0,
+  toolCalls: null,
+  toolCallId: null,
+  meta: null,
+  error: null,
+  failed: false,
+  finalized: true,
+  attachments: [],
+  createdAt: 0,
+});
+
+test('rows that arrive while a transcript loads are kept, and an error retries', async () => {
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  try {
+    let land!: () => void;
+    api.getMessages = () =>
+      new Promise((resolve) => {
+        land = () =>
+          resolve({
+            messages: [{ id: 'm1', role: 'assistant', content: 'first' }],
+            hasOlder: false,
+            hasNewer: false,
+          });
+      });
+    const opening = openTranscript('kid-t', 'lead-t', 'c1');
+    assert.equal(transcript('kid-t')?.loading, true);
+    receiveSubagentMessages('kid-t', [row('m2', 'second')]);
+    land();
+    await opening;
+    assert.deepEqual(
+      transcript('kid-t')?.messages.map((m) => m.content),
+      ['first', 'second'],
+      'the row that arrived mid-load is kept'
+    );
+
+    api.getMessages = () => Promise.reject(new Error('db busy'));
+    await openTranscript('kid-e', 'lead-t', 'c2');
+    assert.match(transcript('kid-e')?.error ?? '', /db busy/);
+    api.getMessages = () =>
+      Promise.resolve({
+        messages: [{ id: 'e1', role: 'assistant', content: 'ok' }],
+        hasOlder: false,
+        hasNewer: false,
+      });
+    await openTranscript('kid-e', 'lead-t', 'c2');
+    assert.equal(transcript('kid-e')?.error, undefined);
+    assert.equal(transcript('kid-e')?.messages[0]?.content, 'ok', 'opened again: tried again');
+  } finally {
+    api.getMessages = original;
+  }
+});
+
+test('finished subagents and unshown transcripts leave the store', async () => {
+  noteSubagentStarted({
+    dialogId: 'lead-f',
+    toolCallId: 'call_0',
+    childDialogId: 'kid-new',
+    kind: 'scout',
+    model: 'm',
+    goal: 'g',
+  });
+  // An older call with the same id, finished: the newer run's entry stays.
+  forgetLive('lead-f', 'call_0', 'kid-old');
+  assert.equal(liveSubagent('lead-f', 'call_0')?.childDialogId, 'kid-new');
+  forgetLive('lead-f', 'call_0', 'kid-new');
+  assert.equal(liveSubagent('lead-f', 'call_0'), undefined);
+  assert.equal(childOf('lead-f', 'call_0'), 'kid-new', 'the link stays');
+
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () => Promise.resolve({ messages: [], hasOlder: false, hasNewer: false });
+  try {
+    await openTranscript('kid-new', 'lead-f', 'call_0');
+    assert.ok(transcript('kid-new'));
+    forgetTranscript('kid-new');
+    assert.equal(transcript('kid-new'), undefined);
+  } finally {
+    api.getMessages = original;
+  }
 });

@@ -58,6 +58,8 @@ export interface ReviewMeta {
   held?: boolean;
   /** plan: findings still open after the last round, saved at the end of the plan. */
   open?: number;
+  /** change: R08's review once the checks pass after a repair: only high findings go back. */
+  afterGreen?: boolean;
   usage?: import('./subagents').SubagentUsage;
 }
 
@@ -74,7 +76,10 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
       return 'The reviewer found nothing to fix.';
     case 'findings': {
       const all = meta.findings ?? [];
-      const serious = all.filter((f) => f.severity !== 'low').length;
+      // P5.5: after green, only high findings go back to the agent.
+      const serious = all.filter((f) =>
+        meta.afterGreen ? f.severity === 'high' : f.severity !== 'low'
+      ).length;
       const count = `${all.length} finding${all.length === 1 ? '' : 's'}`;
       return serious
         ? `The reviewer found ${count}: ${serious} sent to the agent to fix or answer.`
