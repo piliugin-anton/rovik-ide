@@ -632,6 +632,104 @@ mod landing {
         );
     }
 
+    /// Round 2 (section 4.2): after a restart, landings into a chat's view
+    /// (children's, marked with their parent) are left for that view; of
+    /// them only an "applying" one is finished, and only there.
+    #[test]
+    fn app_restart_with_a_journal_in_each_state() {
+        let d = setup(&[
+            ("a.txt", "a\n"),
+            ("b.txt", "b\n"),
+            ("c.txt", "c\n"),
+            ("e.txt", "e\n"),
+        ]);
+        let o = overlay(&d);
+        for f in ["a", "b", "c", "e"] {
+            write_all(&o, &format!("{f}.txt"), &format!("{f} landed\n"));
+        }
+        let all = landable(&o);
+        let states = [
+            ("a", "applying"),
+            ("b", "done"),
+            ("c", "failed"),
+            ("e", "partial"),
+        ];
+        for (f, state) in states {
+            let child = format!("kid-{f}");
+            let one: Vec<_> = all
+                .iter()
+                .filter(|c| c.path() == format!("{f}.txt"))
+                .cloned()
+                .collect();
+            land::mark_into_chat(&data(&d), &child, "parent").unwrap();
+            land::land(&data(&d), &child, &d.project(), &one, false).unwrap();
+            let (id, _, _) = land::latest(&data(&d), &child).unwrap();
+            let journal = data(&d)
+                .join("landings")
+                .join(&child)
+                .join(&id)
+                .join("journal.json");
+            let text = fs::read_to_string(&journal)
+                .unwrap()
+                .replace("\"done\"", &format!("\"{state}\""));
+            fs::write(&journal, text).unwrap();
+            // As if each stopped before writing its file.
+            fs::write(d.project().join(format!("{f}.txt")), format!("{f}\n")).unwrap();
+        }
+        // At start, nothing of a chat's children: its view isn't mounted.
+        assert!(land::recover(&data(&d)).is_empty());
+        for f in ["a", "b", "c", "e"] {
+            assert_eq!(
+                project_file(&d, &format!("{f}.txt")),
+                Some(format!("{f}\n"))
+            );
+        }
+        assert!(land::interrupted_into(&data(&d), "parent", &d.project()));
+        assert!(!land::interrupted_into(&data(&d), "another", &d.project()));
+        // With the view: only the applying one is finished.
+        let done = land::recover_into(&data(&d), "parent", &d.project());
+        assert_eq!(done, ["a.txt"]);
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("a landed\n"));
+        for f in ["b", "c", "e"] {
+            assert_eq!(
+                project_file(&d, &format!("{f}.txt")),
+                Some(format!("{f}\n"))
+            );
+        }
+        assert!(!land::interrupted_into(&data(&d), "parent", &d.project()));
+    }
+
+    /// Round 2 (section 4.2): a landing recorded before into-chat.txt
+    /// existed is found by the view's path.
+    #[test]
+    fn a_legacy_landing_without_into_chat_is_still_found_by_the_views_path() {
+        let d = setup(&[("a.txt", "a\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "a landed\n");
+        land::land(&data(&d), "old-kid", &d.project(), &landable(&o), false).unwrap();
+        let (id, _, _) = land::latest(&data(&d), "old-kid").unwrap();
+        let journal = data(&d)
+            .join("landings")
+            .join("old-kid")
+            .join(&id)
+            .join("journal.json");
+        let text = fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        fs::write(&journal, text).unwrap();
+        fs::write(d.project().join("a.txt"), "a\n").unwrap();
+        assert!(land::interrupted_into(
+            &data(&d),
+            "any-parent",
+            &d.project()
+        ));
+        assert_eq!(
+            land::recover_into(&data(&d), "any-parent", &d.project()),
+            ["a.txt"]
+        );
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("a landed\n"));
+    }
+
     #[test]
     fn an_interrupted_landing_is_finished_at_start() {
         let d = setup(&[("a.txt", "one\n")]);
