@@ -432,6 +432,151 @@ async fn a_rounds_commands_survive_waiting_for_approval() {
     );
 }
 
+/// Round 2 (§4.2), in an isolated chat: a rolled-back round's created file
+/// goes, its deleted one comes back, its modified one has its old bytes,
+/// whether the write tool or a command changed them; no commands are
+/// listed (the chat's copy undoes theirs too). Needs FUSE.
+#[tokio::test]
+async fn rollback_of_create_delete_modify_isolated() {
+    if !has_node() || !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+        ("m.txt", "old\n"),
+        ("d.txt", "keep me\n"),
+        ("e.txt", "keep me too\n"),
+    ])
+    .await;
+    h.isolate().await;
+    let (url, _) = model(vec![
+        write("w0", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        // The fix: breaks `two`, and creates, deletes, modifies, with the
+        // write tool and with a command.
+        write("w1", "b.txt", "broken\n"),
+        write("w2", "c.txt", "new file\n"),
+        write("w3", "m.txt", "new\n"),
+        bash(
+            "b1",
+            "rm d.txt && printf 'made\\n' > n.txt && printf 'changed\\n' > e.txt",
+        ),
+        Reply::Text("Done."),
+        write("w4", "a.txt", "good\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Fix the tests"), checks_on());
+    request.isolate = Some(true);
+    h.start(request).await;
+    let end = h.run_end().await;
+    let rounds = records(&h.messages().await);
+    assert_eq!(end, "verified", "{rounds:#?}");
+    assert_eq!(rounds[1]["status"], "rolled-back", "{}", rounds[1]);
+    let rb = &rounds[1]["rolledBack"];
+    assert_eq!(
+        rb["restored"],
+        json!(["b.txt", "c.txt", "d.txt", "e.txt", "m.txt", "n.txt"]),
+        "{rb}"
+    );
+    assert!(rb.get("skipped").is_none_or(|s| s == &json!([])), "{rb}");
+    assert!(rb.get("commands").is_none(), "{rb}");
+    assert!(
+        h.events_of("fileWritten")
+            .iter()
+            .any(|e| e["deleted"] == true && e["absPath"].as_str().unwrap().ends_with("c.txt")),
+        "{:?}",
+        h.events_of("fileWritten")
+    );
+    // Verified, so it landed: only the last fix is in the project.
+    assert_eq!(h.file("a.txt").as_deref(), Some("good\n"));
+    assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
+    assert_eq!(h.file("c.txt"), None);
+    assert_eq!(h.file("d.txt").as_deref(), Some("keep me\n"));
+    assert_eq!(h.file("e.txt").as_deref(), Some("keep me too\n"));
+    assert_eq!(h.file("m.txt").as_deref(), Some("old\n"));
+    assert_eq!(h.file("n.txt"), None);
+}
+
+/// Round 2 (§4.2), in an isolated chat: after a restart, what each file
+/// was is rebuilt from the project's copy (its hash still matches), so a
+/// test weakened before the wait is still seen.
+#[tokio::test]
+async fn rebuild_from_hashes_isolated_matches_project_copy() {
+    if !has_node() || !crate::vfs::mount_works() {
+        return;
+    }
+    let tests = r#"test('adds', () => assert(require('../add.js')(1, 2) === 3, 'add is wrong'));
+"#;
+    let mut h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/add.test.js", tests),
+        ("add.js", "module.exports = (a, b) => a - b;\n"),
+    ])
+    .await;
+    h.isolate().await;
+    let skipped: &'static str = Box::leak(tests.replace("test(", "test.skip(").into_boxed_str());
+    let tests: &'static str = Box::leak(tests.to_string().into_boxed_str());
+    let (url, _) = model(vec![
+        write("w1", "tests/add.test.js", skipped),
+        Reply::Text("Done."),
+        // Asked: puts the test back and fixes the code instead.
+        write("w2", "tests/add.test.js", tests),
+        write("w3", "add.js", "module.exports = (a, b) => a + b;\n"),
+        Reply::Text("Fixed properly."),
+    ])
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..checks_on()
+    };
+    let mut request = h.request(&url, Harness::send("Fix add"), permissions.clone());
+    request.isolate = Some(true);
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let waiting = h.messages().await.last().unwrap().id.clone();
+    // The restart: what the run carried is gone.
+    h.app.state::<AgentState>().drop_carry(&h.dialog_id);
+    h.events.lock().unwrap().clear();
+    let mut request = h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: waiting.clone(),
+        },
+        permissions.clone(),
+    );
+    request.isolate = Some(true);
+    h.start(request).await;
+    let mut outcome = h.run_end().await;
+    // The fix's checks wait for approval too.
+    if outcome == "verify-needs-approval" {
+        let next = h.messages().await.last().unwrap().id.clone();
+        h.events.lock().unwrap().clear();
+        let mut request = h.request(&url, StartKind::RunChecks { record_id: next }, permissions);
+        request.isolate = Some(true);
+        h.start(request).await;
+        outcome = h.run_end().await;
+    }
+    let messages = h.messages().await;
+    let v = verification_of(&messages, &waiting);
+    assert_eq!(outcome, "verified", "{v}");
+    assert_eq!(v["stateRestored"], false, "{v}");
+    assert!(v.get("integrityChecked").is_none(), "rebuilt: {v}");
+    assert!(
+        !harness_texts(&messages, "integrity").is_empty(),
+        "the weakened test was seen"
+    );
+    assert_eq!(h.file("tests/add.test.js").as_deref(), Some(tests));
+}
+
 #[tokio::test]
 async fn a_test_skipped_to_pass_is_not_reported_as_verified() {
     if !has_node() {
