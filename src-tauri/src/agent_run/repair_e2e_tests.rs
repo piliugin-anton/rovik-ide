@@ -225,6 +225,213 @@ async fn a_fix_that_breaks_a_passing_test_is_rolled_back() {
     assert!(reports[1].contains("a.txt is not good"));
 }
 
+fn bash(id: &'static str, command: &str) -> Reply {
+    Reply::Call {
+        id,
+        name: "bash",
+        args: json!({ "command": command }),
+    }
+}
+
+/// Round 2 (§4.2), working in the project: a rolled-back round's created
+/// file goes, its deleted one comes back, its modified one has its old
+/// bytes. A file the round wrote and then deleted, and one the user
+/// created again where the round deleted it, are left as they are.
+#[tokio::test]
+async fn rollback_of_create_delete_modify_direct() {
+    if !has_node() {
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+        ("m.txt", "old\n"),
+        ("f.txt", "f before\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        // Before any checks: files the run then deletes in its fix.
+        write("w0", "d.txt", "keep me\n"),
+        write("w1", "u.txt", "the run's\n"),
+        Reply::Text("Done."),
+        // The fix: breaks `two`, and creates, deletes, modifies.
+        write("w2", "b.txt", "broken\n"),
+        write("w3", "c.txt", "new file\n"),
+        write("w4", "m.txt", "new\n"),
+        write("w5", "f.txt", "f written\n"),
+        bash("b1", "rm d.txt f.txt u.txt"),
+        Reply::Slow(1500, Box::new(Reply::Text("Done."))),
+        // Rolled back, it fixes `one`.
+        write("w6", "a.txt", "good\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+        .await;
+    // The user creates u.txt again after the round deleted it.
+    let u = h.project.join("u.txt");
+    for _ in 0..500 {
+        if h.file("c.txt").is_some() && !u.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!u.exists(), "the round deleted it");
+    std::fs::write(&u, "the user's\n").unwrap();
+    assert_eq!(h.run_end().await, "verified");
+
+    let rounds = records(&h.messages().await);
+    let rb = &rounds[1]["rolledBack"];
+    assert_eq!(rounds[1]["status"], "rolled-back", "{}", rounds[1]);
+    assert_eq!(rb["restored"], json!(["b.txt", "c.txt", "d.txt", "m.txt"]));
+    assert_eq!(rb["skipped"], json!(["f.txt", "u.txt"]));
+    assert_eq!(h.file("c.txt"), None);
+    assert_eq!(h.file("d.txt").as_deref(), Some("keep me\n"));
+    assert_eq!(h.file("m.txt").as_deref(), Some("old\n"));
+    assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
+    assert_eq!(h.file("f.txt"), None, "deleted by the round, not restored");
+    assert_eq!(h.file("u.txt").as_deref(), Some("the user's\n"));
+
+    let written = h.events_of("fileWritten");
+    let event = |name: &str| {
+        written
+            .iter()
+            .rev()
+            .find(|e| e["absPath"].as_str().unwrap().ends_with(name))
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(event("c.txt")["deleted"], true);
+    let d = event("d.txt");
+    assert_eq!(d["before"], Value::Null, "{d}");
+    assert_eq!(d["content"], "keep me\n");
+    assert!(d.get("deleted").is_none(), "{d}");
+    assert_eq!(event("m.txt")["before"], "new\n");
+}
+
+/// Round 2 (§4.2): a rollback lists the commands of the round it undoes:
+/// not those before it, nor read-only ones.
+#[tokio::test]
+async fn commands_are_counted_per_round() {
+    if !has_node() {
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        // Before the first checks: a command that writes.
+        bash("b1", "printf 'looking\\n' > notes.txt"),
+        Reply::Text("Done."),
+        // The fix: reads with commands, and breaks `two`.
+        bash("b2", "cat a.txt"),
+        bash("b3", "env FOO=1 grep bad a.txt"),
+        write("w1", "b.txt", "broken\n"),
+        Reply::Text("Done."),
+        write("w2", "a.txt", "good\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix the tests"), checks_on()))
+        .await;
+    let end = h.run_end().await;
+    let rounds = records(&h.messages().await);
+    assert_eq!(end, "verified", "{rounds:#?}");
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("failed"), &json!("rolled-back"), &json!("passed")]
+    );
+    let rb = &rounds[1]["rolledBack"];
+    assert_eq!(rb["restored"], json!(["b.txt"]), "{rb}");
+    assert!(rb.get("commands").is_none(), "{rb}");
+}
+
+/// Round 2: with command approval on, a fix round's checks run in a new
+/// run; the commands the fix ran are still listed if it's rolled back.
+#[tokio::test]
+async fn a_rounds_commands_survive_waiting_for_approval() {
+    if !has_node() {
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        write("w0", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        // After "Run checks": the fix runs a command and breaks `two`.
+        bash("b1", "printf 'more\\n' >> notes.txt"),
+        write("w1", "b.txt", "broken\n"),
+        Reply::Text("Done."),
+        write("w2", "a.txt", "good\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..checks_on()
+    };
+    h.start(h.request(&url, Harness::send("Fix the tests"), permissions.clone()))
+        .await;
+    let mut outcome = h.run_end().await;
+    let mut runs = 0;
+    while outcome == "verify-needs-approval" && runs < 4 {
+        runs += 1;
+        let record = h.messages().await.last().unwrap().id.clone();
+        h.events.lock().unwrap().clear();
+        h.start(h.request(
+            &url,
+            StartKind::RunChecks { record_id: record },
+            permissions.clone(),
+        ))
+        .await;
+        if runs == 1 {
+            // The fix's command waits for approval too.
+            h.wait_for("approval b1", |e| {
+                e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "b1"
+            })
+            .await;
+            let app = h.app.handle().clone();
+            agent_resolve_approval(
+                app.clone(),
+                app.state(),
+                h.dialog_id.clone(),
+                "b1".into(),
+                ApprovalDecision::Allow,
+            );
+        }
+        outcome = h.run_end().await;
+    }
+    let rounds = records(&h.messages().await);
+    assert_eq!(outcome, "verified", "{rounds:#?}");
+    let rb = rounds
+        .iter()
+        .find(|r| r["status"] == "rolled-back")
+        .unwrap_or_else(|| panic!("{rounds:#?}"));
+    assert_eq!(
+        rb["rolledBack"]["commands"],
+        json!(["printf 'more\\n' >> notes.txt"]),
+        "{rb}"
+    );
+}
+
 #[tokio::test]
 async fn a_test_skipped_to_pass_is_not_reported_as_verified() {
     if !has_node() {

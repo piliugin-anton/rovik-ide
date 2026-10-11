@@ -130,6 +130,9 @@ pub struct VerifyCarry {
     /// rounds' fixers count on.
     ledger: super::subagent::Ledger,
     rechecks: u32,
+    /// Commands the waiting round's fix ran (P3.5): listed if it's rolled
+    /// back after "Run checks" (round 2).
+    round_commands: Vec<String>,
     /// When it was kept: one older than `CARRY_TTL` is dropped (P1.8).
     pub stored: std::time::Instant,
     /// Baseline contents past `CARRY_MEMORY_BYTES`, on disk until taken up.
@@ -166,6 +169,7 @@ impl VerifyCarry {
             seen: crate::file_guard::Seen::new("test"),
             ledger: Default::default(),
             rechecks: 0,
+            round_commands: Vec::new(),
             stored: std::time::Instant::now() - age,
             spilled: Spilled(
                 spilled
@@ -533,6 +537,7 @@ impl<R: Runtime> Run<R> {
             seen: self.seen.clone(),
             ledger: take(&mut self.ledger),
             rechecks: self.rechecks,
+            round_commands: take(&mut self.round_commands),
             stored: std::time::Instant::now(),
             spilled: Spilled::default(),
         }
@@ -574,6 +579,7 @@ impl<R: Runtime> Run<R> {
         self.seen = c.seen;
         self.ledger = c.ledger;
         self.rechecks = c.rechecks;
+        self.round_commands = c.round_commands;
     }
 
     /// P3.9: the carried state was lost (a restart): what each file was
