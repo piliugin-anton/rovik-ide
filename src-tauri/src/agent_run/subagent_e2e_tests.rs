@@ -9753,3 +9753,81 @@ async fn second_run_cleans_earlier_output() {
         .unwrap();
     assert_eq!(first["checks"][0]["savedOutput"], saved, "{first}");
 }
+
+/// P4.6: a held plan sent again unchanged, with no reply, is reviewed again
+/// (round 2) with the held finding in its brief, and the reviewer's repeat
+/// of it stands: with nothing said against it, it isn't dropped (B04 drops
+/// repeats an answer may have settled), so the plan is saved with it open.
+#[tokio::test]
+async fn hold_then_identical_resubmit_is_reviewed() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            // Held: the agent sends the very same plan again, saying nothing.
+            submit("p2", users_plan("Users", 0)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let first = result_of(&messages, "p1");
+    assert!(
+        first
+            .content
+            .starts_with("Error: The plan wasn't saved yet"),
+        "{}",
+        first.content
+    );
+    assert_eq!(first.meta.as_ref().unwrap()["review"]["held"], true);
+
+    // Reviewed again: the held finding is in the brief, and no reply.
+    let briefs: Vec<String> = requests_with(&seen, PLAN_REVIEW)
+        .iter()
+        .map(|b| {
+            b["messages"][1]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(briefs.len(), 2, "the unchanged plan was reviewed again");
+    assert!(
+        briefs[1].contains("## The earlier review")
+            && briefs[1]
+                .contains("1. [high] Step 2 — `list_users` is also called from `src/cli.rs`"),
+        "{}",
+        briefs[1]
+    );
+    assert!(
+        briefs[1].contains(
+            "The agent's replies since:\n\n(none: it sent the plan again without comment)"
+        ),
+        "{}",
+        briefs[1]
+    );
+    let second = result_of(&messages, "p2");
+    assert!(
+        second
+            .content
+            .starts_with("Saved the plan to .rovik/plans/"),
+        "{}",
+        second.content
+    );
+    let review = &second.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["round"], 2);
+    assert_eq!(review["status"], "findings", "{review}");
+    assert_eq!(review["findings"][0]["step"], 2, "{review}");
+    assert!(review.get("dropped").is_none(), "{review}");
+    assert_eq!(review["open"], 1, "{review}");
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].contains("## Open review findings"), "{}", files[0]);
+}

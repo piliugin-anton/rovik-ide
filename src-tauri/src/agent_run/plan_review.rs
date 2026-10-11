@@ -145,7 +145,7 @@ pub fn brief(p: &BriefParts) -> String {
              The agent's replies since:\n\n{}\n\n\
              Don't report again a finding the agent fixed in the plan or explained, unless you have new evidence; then add a \"- New evidence:\" line saying what's new.",
             if replies.trim().is_empty() {
-                "(none: it revised the plan without comment)"
+                "(none: it sent the plan again without comment)"
             } else {
                 replies.trim()
             }
@@ -389,7 +389,14 @@ impl<R: Runtime> Run<R> {
                                     format!("its report couldn't be read: {e}"),
                                 ),
                                 Ok(found) => {
-                                    let (kept, dropped) = drop_repeats(found, &earlier);
+                                    // B04 drops a repeat an answer may have
+                                    // settled; with nothing said, it stands
+                                    // (an unchanged plan sent again).
+                                    let (kept, dropped) = if replies.trim().is_empty() {
+                                        (found, Vec::new())
+                                    } else {
+                                        drop_repeats(found, &earlier)
+                                    };
                                     serious =
                                         kept.iter().filter(|f| f.serious()).cloned().collect();
                                     review["status"] =
