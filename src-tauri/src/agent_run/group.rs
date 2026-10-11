@@ -1309,4 +1309,240 @@ mod tests {
         );
         assert_eq!(group_call(r#"{"kind":"worker","step":1}"#), None);
     }
+
+    /// A plan whose steps 1 and 2, naming `a` and `b`, are group "g".
+    fn group_plan(a: &str, b: &str) -> String {
+        format!(
+            "# G\n\n## Steps\n\n1. **A**\n   - {a}\n   - Group: g\n\
+             2. **B**\n   - {b}\n   - Group: g\n\n## Validation\n- `cargo test`\n"
+        )
+    }
+
+    /// The plan's problems with group `g`, picked out as `try_group` does
+    /// (the group checks don't look at the project's files).
+    fn group_problems(plan: &str, g: &str) -> Vec<String> {
+        let nowhere = std::env::temp_dir().join(format!("no-project-{}", std::process::id()));
+        super::super::plan::project_problems(plan, &nowhere)
+            .into_iter()
+            .filter(|p| p.contains(&format!("group \"{g}\"")))
+            .collect()
+    }
+
+    /// Round 2 (section 4.2), P4.1: a folder three deep covers the files in
+    /// it at any depth, either way round; a name that only starts like it
+    /// isn't in it.
+    #[test]
+    fn group_folder_three_deep_vs_file() {
+        let folder = "`src/api/v1/`: the handlers.";
+        let steps = super::super::plan::steps(&group_plan(folder, "`src/b.rs`: add b."));
+        assert_eq!(steps[0].files[0].path, "src/api/v1/");
+        assert!(group_scopes(&steps)[0].allows("src/api/v1/users/list.rs", true));
+        for file in [
+            "`src/api/v1/users.rs`: list them.",
+            "`src/api/v1/users/list.rs`: list them.",
+        ] {
+            for (a, b) in [(folder, file), (file, folder)] {
+                let p = group_problems(&group_plan(a, b), "g");
+                assert_eq!(p.len(), 1, "{p:?}");
+                assert!(
+                    p[0].starts_with(
+                        "Steps 1 and 2 are both in group \"g\" but both name `src/api/v1"
+                    ),
+                    "{p:?}"
+                );
+            }
+        }
+        for beside in [
+            "`src/api/v1.rs`: add it.",
+            "`src/api/v10/a.rs`: add it.",
+            "`src/api/a.rs`: add it.",
+        ] {
+            assert_eq!(
+                group_problems(&group_plan(folder, beside), "g"),
+                Vec::<String>::new(),
+                "{beside}"
+            );
+        }
+    }
+
+    /// Round 2 (section 4.2): `./`, `.`, `/` or `src/../` in a step names no
+    /// file, so no member's scope is the whole project and the others
+    /// aren't refused for it. Members with files at the root may add no new
+    /// file there (alone, a step may).
+    #[test]
+    fn group_root_folder_is_never_a_scope() {
+        for root in ["`./`", "./", "`.`", "`/`", "`src/../`"] {
+            let plan = group_plan(
+                &format!("`src/a.rs`: tidy it.\n   - {root}: format what changed."),
+                "`src/b.rs`: add b.",
+            );
+            let steps = super::super::plan::steps(&plan);
+            let files: Vec<&str> = steps[0].files.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(files, ["src/a.rs"], "{root}");
+            let scopes = group_scopes(&steps);
+            assert!(scopes[0].folders.is_empty(), "{root}: {scopes:?}");
+            for other in ["src/b.rs", "src/c.rs", "README.md"] {
+                assert!(!scopes[0].allows(other, true), "{root}: {other}");
+            }
+            assert_eq!(group_problems(&plan, "g"), Vec::<String>::new(), "{root}");
+        }
+        let steps = super::super::plan::steps(&group_plan(
+            "`Cargo.toml`: add the feature.",
+            "`package.json`: add the script.",
+        ));
+        assert!(WriteScope::for_step(&steps[0]).allows("build.rs", false));
+        let scopes = group_scopes(&steps);
+        assert!(scopes[0].allows("Cargo.toml", true));
+        assert!(scopes[1].allows("package.json", true));
+        assert!(
+            scopes.iter().all(|s| !s.allows("build.rs", false)),
+            "{scopes:?}"
+        );
+    }
+
+    /// Round 2 (section 4.2): a group of one step is no problem for the
+    /// plan's check (a file it reads needs no contract step), and its scope
+    /// is the step's own, new files beside its file included. Running it as
+    /// workers is still refused by `try_group` (two or more steps).
+    #[test]
+    fn group_one_member_is_fine() {
+        let plan = "# G\n\n## Steps\n\n\
+            1. **List**\n   - `src/api/users.rs` (new): list them.\n   - `src/api/mod.rs` (read): the signature.\n   - Group: solo\n\
+            2. **Page**\n   - `src/pages/Users.tsx`: render the list.\n\n## Validation\n- `cargo test`\n";
+        let steps = super::super::plan::steps(plan);
+        assert_eq!(steps[0].group.as_deref(), Some("solo"));
+        assert_eq!(group_problems(plan, "solo"), Vec::<String>::new());
+        let members: Vec<PlanStep> = steps
+            .iter()
+            .filter(|s| s.group.as_deref() == Some("solo"))
+            .cloned()
+            .collect();
+        assert_eq!(members.len(), 1);
+        let scopes = group_scopes(&members);
+        assert_eq!(scopes, [WriteScope::for_step(&members[0])]);
+        assert!(scopes[0].allows("src/api/users.rs", false));
+        assert!(
+            scopes[0].allows("src/api/helper.rs", false),
+            "new files beside its own"
+        );
+        assert!(
+            !scopes[0].allows("src/api/mod.rs", true),
+            "what it reads isn't its to change"
+        );
+    }
+
+    /// Round 2 (section 4.2): `Group: API` and `Group: api` are one group:
+    /// the lead's call (in any case) finds both steps, and the plan's check
+    /// refuses them sharing a file as that one group.
+    #[test]
+    fn group_names_differ_only_in_case_merge() {
+        let plan = "# G\n\n## Steps\n\n\
+            1. **List**\n   - `src/api/mod.rs`: register the list route.\n   - Group: API\n\
+            2. **Add**\n   - `src/api/mod.rs`: register the add route.\n   - Group: api\n\n\
+            ## Validation\n- `cargo test`\n";
+        let steps = super::super::plan::steps(plan);
+        assert_eq!(
+            steps.iter().map(|s| s.group.as_deref()).collect::<Vec<_>>(),
+            [Some("api"), Some("api")]
+        );
+        let called = group_call(r#"{"kind":"workers","group":"API"}"#).unwrap();
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|s| s.group.as_deref() == Some(called.as_str()))
+                .count(),
+            2
+        );
+        let p = group_problems(plan, &called);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with(
+                "Steps 1 and 2 are both in group \"api\" but both name `src/api/mod.rs`"
+            ),
+            "{p:?}"
+        );
+    }
+
+    /// Round 2 (section 4.2): a backticked path with a space isn't read as a
+    /// file, so it's in no member's scope (extend_scope can grant it, to one
+    /// worker of the group); accented and CJK names are paths like any, and
+    /// a folder of them covers the files in it.
+    #[test]
+    fn group_paths_with_spaces_and_unicode() {
+        let spaced = group_plan("`src/my dir/a.rs`: add a.", "`src/b.rs`: add b.");
+        let steps = super::super::plan::steps(&spaced);
+        assert!(steps[0].files.is_empty(), "{:?}", steps[0].files);
+        assert!(!group_scopes(&steps)[0].allows("src/my dir/a.rs", true));
+        let folder = "`src/données/`: the handlers.";
+        let steps = super::super::plan::steps(&group_plan(folder, "`src/b.rs`: add b."));
+        assert_eq!(steps[0].files[0].path, "src/données/");
+        for file in [
+            "`src/données/é.rs`: add it.",
+            "`src/données/深/a.rs`: add it.",
+        ] {
+            let p = group_problems(&group_plan(folder, file), "g");
+            assert_eq!(p.len(), 1, "{p:?}");
+            assert!(
+                p[0].starts_with(
+                    "Steps 1 and 2 are both in group \"g\" but both name `src/données`"
+                ),
+                "{p:?}"
+            );
+        }
+        assert_eq!(
+            group_problems(&group_plan(folder, "`src/données.rs`: add it."), "g"),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Round 2 (section 4.2), P4.1: one member changing an existing file in
+    /// a folder and another creating one there: each keeps its own file,
+    /// neither may add other new files there or take the other's, and a new
+    /// file there is put down to neither.
+    #[test]
+    fn group_shared_new_in_with_existing_file() {
+        let plan = "# G\n\n## Steps\n\n\
+            1. **Register**\n   - `src/api/mod.rs`: register the add route.\n   - Group: api\n\
+            2. **Add**\n   - `src/api/add.rs` (new): add a user.\n   - Group: api\n\n\
+            ## Validation\n- `cargo test`\n";
+        let steps = super::super::plan::steps(plan);
+        assert!(
+            !steps[0].files[0].new && steps[1].files[0].new,
+            "{steps:#?}"
+        );
+        // Alone, each may add files beside its own.
+        for s in &steps {
+            assert_eq!(WriteScope::for_step(s).new_in, ["src/api"]);
+        }
+        assert_eq!(group_problems(plan, "api"), Vec::<String>::new());
+        let scopes = group_scopes(&steps);
+        assert!(scopes.iter().all(|s| s.new_in.is_empty()), "{scopes:?}");
+        assert!(scopes[0].allows("src/api/mod.rs", true));
+        assert!(scopes[1].allows("src/api/add.rs", false));
+        assert!(
+            !scopes[0].allows("src/api/add.rs", false),
+            "not the other's new file"
+        );
+        assert!(
+            !scopes[1].allows("src/api/mod.rs", true),
+            "not the other's file"
+        );
+        for s in &scopes {
+            assert!(!s.allows("src/api/helper.rs", false), "{s:?}");
+            assert!(!s.allows("src/api/old.rs", true), "{s:?}");
+        }
+        let owners: Vec<(String, usize, WriteScope)> = scopes
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| (format!("w{}", i + 1), steps[i].number, s))
+            .collect();
+        assert_eq!(
+            attribute("src/api/helper.rs:1", &owners, true),
+            "seam: no worker owns it"
+        );
+        assert_eq!(
+            attribute("src/api/mod.rs:3", &owners, false),
+            "step 1, worker w1"
+        );
+    }
 }
