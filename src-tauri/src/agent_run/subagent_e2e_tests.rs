@@ -7214,3 +7214,386 @@ async fn a_worker_cant_write_through_a_wrapper() {
     assert_eq!(h.file("b.txt").as_deref(), Some("b\n"));
     assert_eq!(h.file("c.txt"), None);
 }
+
+/*
+ * Round 2 (section 4.2): child lifecycle and budgets.
+ */
+
+/// A test writer run for the greeter plan: `script` is its replies, `task`
+/// the lead's call.
+async fn test_writer_run(script: Vec<Reply>, task: Value) -> Harness {
+    let h = harness(&[
+        (
+            "src/greet.ts",
+            "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n",
+        ),
+        ("src/main.ts", "console.log('hi');\n"),
+        (".rovik/plans/greeter.md", TEST_PLAN),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![("# Write tests for this change", script)],
+        vec![
+            Reply::Call {
+                id: "tw",
+                name: "task",
+                args: task,
+            },
+            Reply::Text("Tests are written."),
+        ],
+    )
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    let mut request = h.request(
+        &url,
+        StartKind::Send { message },
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    h.run_end().await;
+    h
+}
+
+impl Harness {
+    /// The results in a child's chat, by call id.
+    async fn child_results(&self, call: &str) -> std::collections::HashMap<String, String> {
+        let child = self.child_of(call).await;
+        self.messages_of(&child.id)
+            .await
+            .into_iter()
+            .filter_map(|m| Some((m.tool_call_id.clone()?, m.content)))
+            .collect()
+    }
+}
+
+/// Refusals of every kind (a non-test write, a hidden read, a refused
+/// command, a path outside the project) each use up the budget; past it,
+/// the rest of the reply isn't run.
+#[tokio::test]
+async fn refusals_of_every_kind_count() {
+    let h = test_writer_run(
+        vec![
+            Reply::Calls(vec![
+                (
+                    "x1",
+                    "write",
+                    json!({ "path": "src/greet.ts", "content": "x\n" }),
+                ),
+                ("x2", "read", json!({ "path": "src/greet.ts" })),
+                ("x3", "bash", json!({ "command": "cat src/greet.ts" })),
+                ("x4", "read", json!({ "path": "../outside.txt" })),
+                (
+                    "x5",
+                    "write",
+                    json!({ "path": "README.md", "content": "x\n" }),
+                ),
+                ("x6", "bash", json!({ "command": "rm -rf src" })),
+            ]),
+            Reply::Text(TEST_REPORT),
+        ],
+        json!({ "kind": "testWriter", "max_tool_calls": 4 }),
+    )
+    .await;
+    let results = h.child_results("tw").await;
+    for id in ["x1", "x2", "x3", "x4"] {
+        assert!(results[id].starts_with("Error"), "{id}: {}", results[id]);
+        assert!(
+            !results[id].starts_with("Error: not run"),
+            "{id}: {}",
+            results[id]
+        );
+    }
+    for id in ["x5", "x6"] {
+        assert!(
+            results[id].starts_with("Error: not run"),
+            "{id}: {}",
+            results[id]
+        );
+    }
+    let result = h.task_result("tw").await;
+    assert!(
+        result.content.contains("Status: partial"),
+        "{}",
+        result.content
+    );
+    assert_eq!(result.meta.as_ref().unwrap()["subagent"]["toolCalls"], 4);
+    assert_eq!(
+        h.file("src/greet.ts")
+            .as_deref()
+            .map(|s| s.contains("Hello")),
+        Some(true)
+    );
+}
+
+/// Exactly at the budget: the calls ran, and the subagent still gets its
+/// report turn (the budget is checked before a call, `>=`), so its report
+/// stands.
+#[tokio::test]
+async fn budget_boundary_exactly_reached() {
+    let h = test_writer_run(
+        vec![
+            Reply::Calls(vec![
+                ("x1", "read", json!({ "path": "src/greet.ts" })),
+                ("x2", "read", json!({ "path": "src/main.ts" })),
+            ]),
+            Reply::Text(TEST_REPORT),
+        ],
+        json!({ "kind": "testWriter", "max_tool_calls": 2 }),
+    )
+    .await;
+    let results = h.child_results("tw").await;
+    assert!(
+        !results["x1"].starts_with("Error: not run"),
+        "{}",
+        results["x1"]
+    );
+    assert!(
+        !results["x2"].starts_with("Error: not run"),
+        "{}",
+        results["x2"]
+    );
+    let result = h.task_result("tw").await;
+    assert_eq!(result.meta.as_ref().unwrap()["subagent"]["toolCalls"], 2);
+    assert!(
+        result.content.contains("Tested greet."),
+        "{}",
+        result.content
+    );
+}
+
+/// The same refused call made again: the refusal already said not to
+/// retry, so the guard pauses the subagent at once (no warning first),
+/// and its result says so.
+#[tokio::test]
+async fn a_refused_call_repeated_is_detected_as_a_loop() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                write_call("w1", "b.txt", "mine\n"),
+                write_call("w2", "b.txt", "mine\n"),
+                write_call("w3", "b.txt", "mine\n"),
+                write_call("w4", "b.txt", "mine\n"),
+                worker_report("Stuck.", &[]),
+            ],
+        )],
+        vec![step("s1", 1), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let results = h.child_results("s1").await;
+    assert!(results["w1"].starts_with("Error"), "{}", results["w1"]);
+    assert!(
+        results["w2"].contains("the run was paused here for the user, because write (b.txt) was made again after it was rejected"),
+        "{results:#?}"
+    );
+    assert!(
+        !results.contains_key("w3"),
+        "stopped at its second try: {results:#?}"
+    );
+    assert_eq!(h.file("b.txt").as_deref(), Some("b\n"));
+}
+
+/// extend_scope uses the budget like any call, granted or refused.
+#[tokio::test]
+async fn scope_grants_count_as_calls_not_refusals() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let extend = |id: &'static str, paths: Value| Reply::Call {
+        id,
+        name: "extend_scope",
+        args: json!({ "paths": paths, "reason": "needed" }),
+    };
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                extend("e1", json!(["c.txt"])),
+                extend("e2", json!(["notes/"])),
+                write_call("w1", "c.txt", "c\n"),
+                worker_report("Ran out.", &[]),
+            ],
+        )],
+        vec![
+            Reply::Call {
+                id: "s1",
+                name: "task",
+                args: json!({ "kind": "worker", "step": 1, "max_tool_calls": 2 }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let results = h.child_results("s1").await;
+    assert!(results["e1"].starts_with("Granted"), "{}", results["e1"]);
+    assert!(
+        results["e2"].starts_with("Error: not granted"),
+        "{}",
+        results["e2"]
+    );
+    // Its budget used, the write is never run.
+    assert!(
+        results
+            .get("w1")
+            .is_none_or(|r| r.starts_with("Error: not run")),
+        "{results:#?}"
+    );
+    let result = h.task_result("s1").await;
+    assert_eq!(result.meta.as_ref().unwrap()["subagent"]["toolCalls"], 2);
+    assert_eq!(h.file("c.txt"), None);
+}
+
+/// Reads that run side by side, refused or not, use the budget one each.
+#[tokio::test]
+async fn refused_parallel_reads_count_once_each() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let read = |id: &'static str| (id, "read", json!({ "path": format!("../{id}.txt") }));
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-PR",
+            vec![
+                Reply::Calls(vec![
+                    read("r1"),
+                    read("r2"),
+                    read("r3"),
+                    read("r4"),
+                    read("r5"),
+                ]),
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![
+            Reply::Call {
+                id: "t1",
+                name: "task",
+                args: json!({ "kind": "scout", "goal": "MARK-PR: look", "max_tool_calls": 3 }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Look", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    h.run_end().await;
+    let results = h.child_results("t1").await;
+    let not_run = results
+        .values()
+        .filter(|r| r.starts_with("Error: not run"))
+        .count();
+    assert_eq!(not_run, 2, "{results:#?}");
+    let result = h.task_result("t1").await;
+    assert_eq!(result.meta.as_ref().unwrap()["subagent"]["toolCalls"], 3);
+}
+
+/// A follow-up's goal is capped like a first one's.
+#[tokio::test]
+async fn a_follow_up_goal_is_capped() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let long: &'static str = Box::leak("y".repeat(subagent::MAX_GOAL_CHARS + 1).into_boxed_str());
+    let ok: &'static str = Box::leak("y".repeat(subagent::MAX_GOAL_CHARS).into_boxed_str());
+    let (url, _) = model_routed(
+        vec![("MARK-FG", vec![Reply::Text(REPORT), Reply::Text(REPORT)])],
+        vec![
+            task("t1", "MARK-FG: where?"),
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "t1", "goal": long }),
+            },
+            Reply::Call {
+                id: "c2",
+                name: "task",
+                args: json!({ "continue": "t1", "goal": ok }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Find it", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    h.run_end().await;
+    let too_long = h.task_result("c1").await.content;
+    assert!(
+        too_long.starts_with("Error: \"goal\" is too long"),
+        "{too_long}"
+    );
+    let fine = h.task_result("c2").await.content;
+    assert!(fine.contains("Status: done"), "{fine}");
+}
+
+/// A follow-up's own max_tool_calls is its budget.
+#[tokio::test]
+async fn a_follow_up_max_tool_calls_is_honoured() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let read = |id: &'static str| (id, "read", json!({ "path": "a.txt" }));
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-FM",
+            vec![
+                Reply::Text(REPORT),
+                Reply::Calls(vec![read("f1"), read("f2"), read("f3")]),
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![
+            task("t1", "MARK-FM: where?"),
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "t1", "goal": "and more?", "max_tool_calls": 1 }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Find it", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    h.run_end().await;
+    let results = h.child_results("t1").await;
+    assert!(!results["f1"].starts_with("Error"), "{}", results["f1"]);
+    for id in ["f2", "f3"] {
+        assert!(
+            results[id].starts_with("Error: not run"),
+            "{id}: {}",
+            results[id]
+        );
+    }
+}
+
+/// The same step given to a worker a third time in a run is refused,
+/// retries counted.
+#[tokio::test]
+async fn same_brief_limit_counts_retries_across_the_run() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let (url, _) = model_routed(
+        vec![("# Your step: 1.", vec![worker_report("Nothing.", &[])])],
+        vec![
+            step("s1", 1),
+            step("s2", 1),
+            step("s3", 1),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let third = h.task_result("s3").await.content;
+    assert!(
+        third.contains("step 1 was already given to a worker 2 times"),
+        "{third}"
+    );
+}
