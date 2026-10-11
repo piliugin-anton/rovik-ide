@@ -1368,7 +1368,9 @@ impl<R: Runtime> Run<R> {
     /// model to fix. Only this changes the file: a reply never does.
     async fn submit_plan(&self, tc: &ToolCall, args: &Map<String, Value>) -> Result<(), String> {
         let plan_text = args.get("plan").and_then(|p| p.as_str()).unwrap_or("");
-        let problems = plan::plan_problems(plan_text);
+        // B07: against the project too, as this chat sees it.
+        let problems =
+            plan::plan_problems_in(plan_text, self.root.as_deref().map(std::path::Path::new));
         if !problems.is_empty() {
             let content = format!(
                 "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- {}",

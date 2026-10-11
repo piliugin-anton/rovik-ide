@@ -266,6 +266,11 @@ pub struct Run<R: Runtime> {
     pub(super) review_note_id: Option<String>,
     /// What the last failure triage found, for the next one (triage.rs).
     pub(super) last_triage: Option<super::triage::Triage>,
+    /// Plan reviews in this run, the findings that held a plan back, and
+    /// the `submit_plan` call they answered (plan_review.rs).
+    pub(super) plan_reviews: u32,
+    pub(super) plan_findings: Vec<super::change_review::Finding>,
+    pub(super) plan_review_call: Option<String>,
 }
 
 /// Who a run works for.
@@ -460,12 +465,11 @@ impl<R: Runtime> Run<R> {
             dialog_id: &str,
             recent: &mut Vec<MessageRow>,
             content: String,
-            kind: &str,
-            from_message_id: Option<String>,
-            items: Vec<plan::TodoItem>,
+            meta: Value,
+            items: Option<Vec<plan::TodoItem>>,
         ) {
             let mut m = new_message("user", &content);
-            m.meta = Some(json!({ "harness": kind, "fromMessageId": from_message_id }));
+            m.meta = Some(meta);
             let stored = vec![m.clone()];
             let id = dialog_id.to_string();
             if let Ok(seqs) = db
@@ -502,13 +506,15 @@ impl<R: Runtime> Run<R> {
                     created_at: mcreated,
                 });
             }
-            emit(
-                app,
-                AgentEvent::Checklist {
-                    dialog_id: dialog_id.to_string(),
-                    items,
-                },
-            );
+            if let Some(items) = items {
+                emit(
+                    app,
+                    AgentEvent::Checklist {
+                        dialog_id: dialog_id.to_string(),
+                        items,
+                    },
+                );
+            }
         }
 
         // Agent mode only: Plan mode has no `todo` tool, so a note asking
@@ -522,9 +528,8 @@ impl<R: Runtime> Run<R> {
                         &dialog_id,
                         &mut recent,
                         plan::carry_note(&carried.items),
-                        "checklistCarried",
-                        carried.from_message_id,
-                        carried.items,
+                        json!({ "harness": "checklistCarried", "fromMessageId": carried.from_message_id }),
+                        Some(carried.items),
                     )
                     .await;
                 }
@@ -539,12 +544,32 @@ impl<R: Runtime> Run<R> {
                         &dialog_id,
                         &mut recent,
                         plan::continue_note(&current.items),
-                        "checklistContinued",
-                        current.from_message_id,
-                        current.items,
+                        json!({ "harness": "checklistContinued", "fromMessageId": current.from_message_id }),
+                        Some(current.items),
                     )
                     .await;
                 }
+            }
+        }
+
+        // B07b: implementing a plan file, which the user may have edited
+        // since it was checked. Its problems now go to the agent before it
+        // starts, and show in the chat.
+        if implements_plan && !plan_mode {
+            if let Some((file, problems)) =
+                plan_check_at_start(&recent, root.as_deref(), project_root.as_deref())
+            {
+                let shown = plan::relative_plan_path(&file, project_root.as_deref());
+                append_carry_note(
+                    app,
+                    db,
+                    &dialog_id,
+                    &mut recent,
+                    plan::plan_check_note(&shown, &problems),
+                    json!({ "harness": "planCheck", "planCheck": { "file": shown, "problems": problems } }),
+                    None,
+                )
+                .await;
             }
         }
 
@@ -713,6 +738,9 @@ impl<R: Runtime> Run<R> {
             review_findings: Vec::new(),
             review_note_id: None,
             last_triage: None,
+            plan_reviews: 0,
+            plan_findings: Vec::new(),
+            plan_review_call: None,
         };
         Ok(Some((run, entry)))
     }
@@ -809,6 +837,9 @@ impl<R: Runtime> Run<R> {
             review_findings: Vec::new(),
             review_note_id: None,
             last_triage: None,
+            plan_reviews: 0,
+            plan_findings: Vec::new(),
+            plan_review_call: None,
         }
     }
 
@@ -2626,6 +2657,38 @@ fn run_mode_for(messages: &[MessageRow]) -> Option<String> {
         .rev()
         .find(|m| m.role == "user" && !plan::is_harness(m))?;
     m.meta.as_ref()?.get("mode")?.as_str().map(str::to_string)
+}
+
+/// B07b: the plan file a "Implement the plan in `…`" request names (or the
+/// chat's own), and what the checker finds in it as it is now.
+fn plan_check_at_start(
+    recent: &[MessageRow],
+    root: Option<&str>,
+    project_root: Option<&str>,
+) -> Option<(String, Vec<String>)> {
+    let named = recent
+        .iter()
+        .rev()
+        .find(|m| m.role == "user" && !plan::is_harness(m))
+        .and_then(|m| {
+            let rest = m.content.strip_prefix("Implement the plan in `")?;
+            Some(rest[..rest.find('`')?].to_string())
+        });
+    let file = match named {
+        Some(rel) => {
+            let base = project_root.or(root)?;
+            let p = std::path::Path::new(&rel);
+            if p.is_absolute() {
+                rel
+            } else {
+                std::path::Path::new(base).join(p).to_string_lossy().into_owned()
+            }
+        }
+        None => chat_plan_file(recent)?,
+    };
+    let text = std::fs::read_to_string(&file).ok()?;
+    let problems = plan::plan_problems_in(&text, root.map(std::path::Path::new));
+    (!problems.is_empty()).then_some((file, problems))
 }
 
 /// The chat's plan file: the latest one a plan was saved to.

@@ -1349,8 +1349,11 @@ async fn failing_checks_go_back_to_the_model_until_they_pass() {
 
 #[tokio::test]
 async fn plan_mode_asks_and_saves_the_plan() {
-    let h = harness(&[]).await;
-    let plan = "# Users\n\nAdd a table.\n\n## Steps\n1. Schema\n2. API\n\n## Decisions\n- SQLite";
+    let h = harness(&[("src/db.rs", ""), ("src/api.rs", "")]).await;
+    let plan = "# Users\n\nAdd a table.\n\n## Steps\n\
+        1. Schema: in `src/db.rs`, add a `users` table with `id` and `email`.\n\
+        2. API: in `src/api.rs`, add `fn list_users()` returning every user.\n\n\
+        ## Decisions\n- SQLite\n\n## Validation\n- `cargo test`";
     let (url, _) = model(vec![
         Reply::Call {
             id: "q1",
@@ -2189,8 +2192,13 @@ async fn a_bad_plan_is_sent_back_and_a_written_out_plan_nudged_once() {
 
 #[tokio::test]
 async fn a_revised_plan_replaces_the_chats_plan_file() {
-    let h = harness(&[]).await;
-    let plan = |title: &str| format!("# {title}\n\n## Steps\n1. a\n2. b");
+    let h = harness(&[("src/a.rs", ""), ("src/b.rs", "")]).await;
+    let plan = |title: &str| {
+        format!(
+            "# {title}\n\n## Steps\n1. Change `src/a.rs`: add `fn a()` that returns 1.\n\
+             2. Change `src/b.rs`: add `fn b()` that calls `a()`.\n\n## Validation\n- `cargo test`"
+        )
+    };
     let first: &'static str = Box::leak(plan("First").into_boxed_str());
     let second: &'static str = Box::leak(plan("Second").into_boxed_str());
     let (url, _) = model(vec![
@@ -2444,6 +2452,72 @@ async fn plan_implementation_forces_todo_on_the_first_turn() {
         requests[0]["tool_choice"]
     );
     assert_eq!(requests[1]["tool_choice"], json!("auto"));
+}
+
+/// B07b: a plan edited by hand after it was checked: the agent hears what's
+/// wrong with it before its first turn, and the user sees it.
+#[tokio::test]
+async fn a_plan_edited_to_name_a_missing_file_is_flagged_at_implementation() {
+    let plan = "# Greet\n\nSay hello.\n\n## Steps\n\
+        1. **Greeting**\n   - `src/greet.rs`: change `fn greet()` to return \"hello\".\n\
+        2. **Use it**\n   - `src/main.rs`: call `greet()` and print the result.\n\n\
+        ## Validation\n- `cargo test`\n";
+    let h = harness(&[
+        ("src/main.rs", "fn main() {}\n"),
+        (".rovik/plans/2026-10-06-greet.md", plan),
+    ])
+    .await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Greeting", "status": "done" }] }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/2026-10-06-greet.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let note = messages
+        .iter()
+        .find(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "planCheck"))
+        .expect("a plan check note");
+    // The user sees it: the chat shows `planCheck` as a card.
+    let check = &note.meta.as_ref().unwrap()["planCheck"];
+    assert_eq!(check["file"], ".rovik/plans/2026-10-06-greet.md");
+    assert!(
+        check["problems"][0].as_str().unwrap().starts_with("Step 1 names `src/greet.rs`, which isn't in the project"),
+        "{check}"
+    );
+    // And the agent has it on its first turn.
+    let first = seen.lock().unwrap()[0].clone();
+    let text = first["messages"].to_string();
+    assert!(text.contains("Step 1 names `src/greet.rs`"), "{text}");
+    assert!(text.contains("may have been edited since it was written"));
+
+    // A plan that holds up: no note.
+    let h = harness(&[("src/main.rs", "fn main() {}\n"), ("src/greet.rs", "\n"), (".rovik/plans/p.md", plan)]).await;
+    let (url, _) = model(vec![Reply::Text("Done.")]).await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/p.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
+        .await;
+    h.run_end().await;
+    assert!(!h
+        .messages()
+        .await
+        .iter()
+        .any(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "planCheck")));
 }
 
 #[tokio::test]
