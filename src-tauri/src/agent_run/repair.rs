@@ -1174,6 +1174,147 @@ mod tests {
         }
     }
 
+    /// Round 2 (§4.2): an error in a file an earlier round changed (not
+    /// this one) is a regression; so is one in an untouched file next to a
+    /// slip in a written one.
+    #[test]
+    fn an_error_in_a_file_changed_in_an_earlier_round_is_a_regression() {
+        let ran = ["test", "lint"];
+        let r1 = round(&["test|test|t::one"], &ran);
+        let r2 = round(&["lint|src/old.ts|rule|m"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/new.ts".into()]);
+        assert_eq!(j.verdict, Verdict::Regression);
+        let r2 = round(
+            &["lint|src/new.ts|rule|m", "lint|src/other.ts|rule|m"],
+            &ran,
+        );
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/new.ts".into()]);
+        assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
+        assert_eq!(j.broke, ["lint|src/other.ts|rule|m"]);
+    }
+
+    /// Round 2 (§4.2): {a test, an error in the written file, an error in
+    /// an untouched one} × {relative, absolute, subfolder paths}.
+    #[test]
+    fn slip_matrix() {
+        let ran = ["test", "lint"];
+        let r1 = round(&["test|test|t::one"], &ran);
+        for (written, printed) in [
+            ("src/a.ts", "src/a.ts"),
+            ("src/a.ts", "/home/me/p/src/a.ts"),
+            ("app/src/a.ts", "src/a.ts"),
+        ] {
+            let other = printed.replace("a.ts", "b.ts");
+            for (key, broken) in [
+                ("test|test|t::two".to_string(), true),
+                (format!("lint|{printed}|rule|m"), false),
+                (format!("lint|{other}|rule|m"), true),
+            ] {
+                let r2 = round(&[key.as_str()], &ran);
+                let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()]);
+                assert_eq!(j.broke.contains(&key), broken, "{written} / {key}: {j:?}");
+            }
+        }
+    }
+
+    /// Round 2 (§4.2): a timeout in either round makes that check blind,
+    /// the others still compared.
+    #[test]
+    fn timeout_on_prev_only_now_only_both() {
+        let ran = ["test", "lint"];
+        let lint_fixed = |prev: &[&str], now: &[&str]| {
+            let j = judge(&[round(prev, &ran)], &round(now, &ran));
+            assert!(
+                j.new
+                    .iter()
+                    .chain(&j.fixed)
+                    .all(|k| !k.starts_with("test|")),
+                "{j:?}"
+            );
+            j
+        };
+        let j = lint_fixed(&["test|timed out", "lint|a|x"], &["test|test|t::one"]);
+        assert_eq!(j.fixed, ["lint|a|x"]);
+        let j = lint_fixed(&["test|test|t::one", "lint|a|x"], &["test|timed out"]);
+        assert_eq!(j.fixed, ["lint|a|x"]);
+        let j = lint_fixed(&["test|timed out"], &["test|timed out", "lint|b|y"]);
+        assert_eq!(j.verdict, Verdict::Regression, "lint still compared: {j:?}");
+    }
+
+    /// Round 2 (§4.2): "and N more" isn't a timeout: past the shown keys,
+    /// one failure fewer is progress.
+    #[test]
+    fn and_n_more_isnt_blind() {
+        let keys = |n: usize| -> Vec<String> {
+            let mut k: Vec<String> = (0..49).map(|i| format!("test|test|t::{i:02}")).collect();
+            k.push(format!("test|and {n} more"));
+            k
+        };
+        let r = |ks: &[String]| RoundFailures {
+            keys: ks.iter().cloned().collect(),
+            ran: ["test".to_string()].into(),
+            tests_ran: None,
+            own_tests: None,
+        };
+        let j = judge(&[r(&keys(2))], &r(&keys(1)));
+        assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
+    }
+
+    /// Round 2 (§4.2): a flag names a test by its file's path or its stem
+    /// (3 letters or more), nothing else.
+    #[test]
+    fn named_in_matches_file_and_stem_only() {
+        let flags = ["tests/add.test.ts: skip markers added (0 → 1)".to_string()];
+        assert!(named_in("test|test|tests/add.test.ts > adds", &flags));
+        assert!(named_in("test|test|add > adds", &flags));
+        assert!(!named_in("test|test|sub > subtracts", &flags));
+        let short = ["t/ab.rs: 1 test removed (2 → 1)".to_string()];
+        assert!(
+            !named_in("test|test|tab::x", &short),
+            "a 2-letter stem names nothing"
+        );
+    }
+
+    /// Round 2 (§4.2): forgiving the flagged test leaves another broken
+    /// one a regression; forgiving all of them falls back to progress.
+    #[test]
+    fn without_regression_in_falls_back_when_others_broke() {
+        let ran = ["test"];
+        let r1 = round(&["test|test|other::x"], &ran);
+        let flags = ["tests/add.test.ts: skip markers added (0 → 1)".to_string()];
+        let both = round(&["test|test|add::adds", "test|test|sub::subs"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &both).without_regression_in(&flags);
+        assert_eq!(j.verdict, Verdict::Regression);
+        assert_eq!(j.broke, ["test|test|sub::subs"]);
+        let only = round(&["test|test|add::adds"], &ran);
+        let j = judge(&[r1], &only).without_regression_in(&flags);
+        assert_ne!(j.verdict, Verdict::Regression);
+    }
+
+    /// Round 2, P3.7: fewer tests than the most an earlier round ran, the
+    /// run's own test files aside; rounds of unknown own tests don't count.
+    #[test]
+    fn fewer_tests_counts_the_others_only() {
+        let r = |ran: u32, own: Option<u32>| RoundFailures {
+            tests_ran: Some(ran),
+            own_tests: own,
+            ..Default::default()
+        };
+        assert_eq!(
+            fewer_tests_flag(&[r(5, Some(0)), r(7, Some(2))], &r(4, Some(1))),
+            Some(
+                "fewer tests ran than before, not counting the run's own test files (5 → 3)".into()
+            )
+        );
+        assert_eq!(fewer_tests_flag(&[r(5, Some(0))], &r(6, Some(1))), None);
+        assert_eq!(
+            fewer_tests_flag(&[r(9, None)], &r(3, Some(0))),
+            None,
+            "restored round"
+        );
+        assert_eq!(fewer_tests_flag(&[], &r(3, Some(0))), None);
+    }
+
     /// P3.3: a round whose tests timed out says nothing about them: not
     /// progress, nothing resolved.
     #[test]
