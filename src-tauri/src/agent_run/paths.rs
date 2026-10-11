@@ -64,6 +64,28 @@ pub fn under_as(folder: &str, path: &str, any_case: bool) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// A path's drive (`C:` of `C:\proj` or `c:/proj`), else "".
+pub fn drive(path: &str) -> &str {
+    let b = path.as_bytes();
+    if b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\') {
+        &path[..2]
+    } else {
+        ""
+    }
+}
+
+/// `src/a.rs:12:5` without its line and column, `C:/p/a.rs:12` too (a
+/// drive's colon isn't one); a path without them as it is.
+pub fn without_line(path: &str) -> &str {
+    let at = drive(path).len();
+    match path[at..].split_once(':') {
+        Some((file, rest)) if rest.chars().all(|c| c.is_ascii_digit() || c == ':') => {
+            &path[..at + file.len()]
+        }
+        _ => path,
+    }
+}
+
 /// The folder `path` is in ("" for the root).
 pub fn parent(path: &str) -> String {
     path.rsplit_once('/')
@@ -159,5 +181,27 @@ mod tests {
         assert!(!under_as("SRC", "src/x.ts", false));
         assert!(same("src/x.ts", "./src\\x.ts"));
         assert!(!same("src/../x", "x"));
+    }
+
+    /// Round 2, P4.8: a line and column come off a path, a drive's colon
+    /// doesn't.
+    #[test]
+    fn without_line_keeps_a_drive() {
+        for (path, want) in [
+            ("src/a.rs:12", "src/a.rs"),
+            ("src/a.rs:12:5", "src/a.rs"),
+            ("src/a.rs:", "src/a.rs"),
+            ("src/a.rs", "src/a.rs"),
+            ("C:/p/a.rs:12", "C:/p/a.rs"),
+            ("c:\\p\\a.rs:12:5", "c:\\p\\a.rs"),
+            ("C:/p/a.rs", "C:/p/a.rs"),
+            ("a:b.txt", "a:b.txt"),
+            ("src/a:b.rs", "src/a:b.rs"),
+        ] {
+            assert_eq!(without_line(path), want, "{path}");
+        }
+        assert_eq!(drive("C:"), "");
+        assert_eq!(drive("C:x"), "");
+        assert_eq!(drive("d:\\x"), "d:");
     }
 }

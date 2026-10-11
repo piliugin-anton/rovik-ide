@@ -146,14 +146,8 @@ fn parse_key(key: &str) -> Failure {
 
 fn norm(path: &str) -> String {
     let p = path.trim().replace('\\', "/");
-    let p = p.trim_start_matches("./");
     // `src/a.rs:12:5` → src/a.rs
-    match p.split_once(':') {
-        Some((file, rest)) if rest.chars().all(|c| c.is_ascii_digit() || c == ':') => {
-            file.to_string()
-        }
-        _ => p.to_string(),
-    }
+    super::paths::without_line(p.trim_start_matches("./")).to_string()
 }
 
 /// A relative path in its one spelling (`paths::norm_rel`), else as it is.

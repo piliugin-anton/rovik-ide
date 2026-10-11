@@ -153,11 +153,22 @@ pub fn paths_in(text: &str) -> Vec<String> {
         text.split_whitespace()
             // Round 2: a URL isn't a path (`http://x/y` gave `//x/y`).
             .filter(|t| !t.contains("://"))
-            .flat_map(|t| t.split([',', ':']))
+            .flat_map(|t| {
+                // A drive's colon (`C:\proj\a.rs:12`) doesn't end the path.
+                let t = t.trim_start_matches('(');
+                let drive = super::paths::drive(t);
+                let mut words: Vec<String> = t[drive.len()..]
+                    .split([',', ':'])
+                    .map(str::to_string)
+                    .collect();
+                words[0].insert_str(0, drive);
+                words
+            })
             .map(|w| {
                 w.trim()
                     .trim_start_matches('(')
                     .trim_end_matches(['.', ')', ';'])
+                    .to_string()
             })
             // P4.8: a folder or a known extension: not `Node.js` or `e.g.`;
             // round 2: nor "and/or", "I/O", "read/write" (two words and a
@@ -176,7 +187,6 @@ pub fn paths_in(text: &str) -> Vec<String> {
                             && !(ext == "js" && JS_NAMES.contains(&stem.to_lowercase().as_str()))
                     })
             })
-            .map(str::to_string)
             .collect()
     } else {
         ticked
@@ -186,12 +196,7 @@ pub fn paths_in(text: &str) -> Vec<String> {
         .map(|p| {
             // `src/a.rs:12` → src/a.rs
             let p = p.trim_start_matches("./").replace('\\', "/");
-            match p.split_once(':') {
-                Some((file, rest)) if rest.chars().all(|c| c.is_ascii_digit() || c == ':') => {
-                    file.to_string()
-                }
-                _ => p,
-            }
+            super::paths::without_line(&p).to_string()
         })
         .collect()
 }
@@ -767,5 +772,37 @@ mod tests {
             .unwrap()
             .other_causes
             .is_empty());
+    }
+
+    /// Round 2, P4.8: a Windows path in a triage report, in prose or in
+    /// backticks, with or without a line, resolves to the project's file:
+    /// a drive's colon isn't where the line starts.
+    #[test]
+    fn windows_path_in_prose() {
+        use super::super::causes::resolve;
+        assert_eq!(
+            paths_in(r"It fails in src\api\a.rs:12 now."),
+            ["src/api/a.rs"]
+        );
+        let known = ["src/a.rs".to_string()];
+        for text in [
+            r"It fails in C:\proj\src\a.rs:12 now.",
+            r"It fails in (C:\proj\src\a.rs:12:5), see above.",
+            r"It fails in C:/proj/src/a.rs: the import is wrong.",
+            r"`C:\proj\src\a.rs`: the import is wrong.",
+            r"`C:\proj\src\a.rs:12`: the import is wrong.",
+            r"`c:/proj/src/a.rs:12:5`: the import is wrong.",
+        ] {
+            let found = paths_in(text);
+            assert_eq!(found.len(), 1, "{text}: {found:?}");
+            assert!(found[0].ends_with(":/proj/src/a.rs"), "{text}: {found:?}");
+            let roots = [found[0][..2].to_string() + r"\proj"];
+            assert_eq!(resolve(&found[0], &roots, &known), "src/a.rs", "{text}");
+        }
+        let roots = [r"C:\proj".to_string()];
+        assert_eq!(
+            resolve(r"C:\proj\src\a.rs:12:5", &roots, &known),
+            "src/a.rs"
+        );
     }
 }
