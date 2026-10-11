@@ -666,6 +666,64 @@ switch; the reviewer's own model and fallback), unit tests in
     - a failing triage leaves today's message, with the saved file named;
     - with triage off, the lead reads the saved output itself.
 
+### D01, B07–B10: plan structure, plan checks and the plan reviewer
+
+- **D01.** `plan::steps` returns each step's number, title, files and body,
+  plus its `Group:` (for F03). A file is a backticked token that looks like
+  a path or a known file name, so signatures, `state.config` and `a::b`
+  aren't taken for files. `path:line` counts as its file, and "(new)" on
+  the step's line marks it as created. `plan::section` returns the text of
+  a `## <name>` section.
+  - **Deviation:** there are no plans in `.rovik/plans/` to test on, so the
+    tests use a plan written the way Plan mode writes them, and the
+    checker's own fixtures.
+- **B07.** `plan::project_problems` reports:
+  - a named file that isn't in the project (and isn't marked "(new)");
+  - a file used before the step that creates it;
+  - two steps of one group naming the same file.
+
+  `plan_problems_in` adds these to the form checks. `submit_plan` runs it
+  on the chat's root (an isolated chat's view). Two older Plan-mode e2e
+  tests used plans the checker had rejected since its form checks came
+  in; they now use plans that pass.
+
+- **B07b.** When Agent mode starts implementing a plan file (the
+  "Implement the plan in `…`" request, else the chat's plan file), the
+  file is checked as it is now. Problems go to the agent before its first
+  turn as a harness note, and the chat shows them as a card
+  (`meta.planCheck`).
+- **B08.** `Kind::PlanReviewer` (`agent_run/plan_review.rs`) has
+  read-only tools and the lead's map, since a plan changes nothing yet.
+  - **Brief:** the user's request, their `ask_user` answers (the tool
+    results, as the agent got them), and the plan. In round 2, also the
+    earlier findings and the agent's replies since.
+  - **Findings:** the change reviewer's parser takes `Step N` (or `Plan`)
+    in place of `path:line`, and `Finding` gets `step`.
+- **B09.** In `submit_plan`, after the checker:
+  - High and medium findings hold the plan back. The result starts
+    "Error: The plan wasn't saved yet" and lists them.
+  - At most 2 reviews a run. After the last, the plan is saved with its
+    open findings under "## Open review findings".
+  - A revision changing fewer than 10 lines from the saved file isn't
+    reviewed.
+  - A failing reviewer saves the plan with "Review skipped: …".
+  - **Deviation:** the record is the `submit_plan` result's
+    `meta.review`, not a message of its own, since the result is where
+    the review happens.
+- **B10.** `ReviewRecord.tsx` with `kind: "plan"` (its own headlines),
+  under the reply that called `submit_plan`. While the reviewer works it
+  shows as running, keyed by the call's id. A reply with `submit_plan`
+  keeps its own row, so the record isn't folded away. There's a "Plan
+  reviewer" row on the Subagents page.
+- **Tests:**
+  - Unit: steps, files and sections; the project checks; step findings;
+    the brief; the open-findings section; revision size.
+  - E2e: a hand-edited plan flagged at implementation; findings held, then
+    fixed and saved; open findings saved after the last round, with no
+    third review; a failing reviewer; a small revision; the reviewer off.
+  - `npm test`: the plan headlines.
+  - Not done: the manual check in Plan mode, which needs the app.
+
 ### G00: the headless runner
 
 Done: `src/headless.rs` and the `rovik-headless` binary, built only with

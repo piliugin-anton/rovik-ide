@@ -259,6 +259,8 @@ export interface ToolMeta {
   implementsPlan?: boolean;
   /** The change reviewer's record (lib/changeReview.ts). */
   review?: import('./lib/changeReview').ReviewMeta;
+  /** The plan checker's problems with a plan Agent mode was asked to implement (B07b). */
+  planCheck?: { file: string; problems: string[] };
   /** A `task` result: the subagent that answered it (lib/subagents.ts). */
   subagent?: import('./lib/subagents').SubagentMeta;
   /** A subagent chat's first message: the lead's brief. */

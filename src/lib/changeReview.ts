@@ -17,6 +17,8 @@ export interface ReviewFinding {
   scenario: string;
   fix: string;
   confidence: 'confirmed' | 'plausible';
+  /** A plan review's finding: the step it's about. */
+  step?: number;
   newEvidence?: string;
 }
 
@@ -32,7 +34,8 @@ export type ReviewStatus =
   | 'stopped';
 
 export interface ReviewMeta {
-  kind: 'change';
+  /** change: a finished change, before the checks; plan: a submitted plan (plan_review.rs). */
+  kind: 'change' | 'plan';
   status: ReviewStatus;
   round: number;
   maxRounds: number;
@@ -50,12 +53,17 @@ export interface ReviewMeta {
   ms?: number;
   /** Out of budget: what it found so far. */
   partial?: boolean;
+  /** plan: its findings kept the plan from being saved, for the agent to fix. */
+  held?: boolean;
+  /** plan: findings still open after the last round, saved at the end of the plan. */
+  open?: number;
   usage?: import('./subagents').SubagentUsage;
 }
 
 /** The record's first line. */
 export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
   if (interrupted) return 'The review didn’t finish: the run ended while it was running.';
+  if (meta.kind === 'plan') return planHeadline(meta);
   const files = meta.files?.length ?? 0;
   const what = `${meta.changedLines ?? 0} changed line${meta.changedLines === 1 ? '' : 's'} in ${files} file${files === 1 ? '' : 's'}`;
   switch (meta.status) {
@@ -75,6 +83,28 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
       return `Review skipped: ${meta.reason ?? 'the reviewer couldn’t run'}. The checks decide.`;
     case 'stopped':
       return 'Review stopped.';
+  }
+}
+
+function planHeadline(meta: ReviewMeta): string {
+  switch (meta.status) {
+    case 'running':
+      return 'Reviewing the plan against the code…';
+    case 'clean':
+      return 'The plan reviewer found nothing to fix.';
+    case 'findings': {
+      const all = meta.findings ?? [];
+      const count = `${all.length} finding${all.length === 1 ? '' : 's'}`;
+      if (meta.held)
+        return `The plan reviewer found ${count}: the plan goes back to the agent before it’s saved.`;
+      if (meta.open)
+        return `The plan reviewer still found ${count} after its last round: saved at the end of the plan, under “Open review findings”.`;
+      return `The plan reviewer found ${count}, none serious enough to hold the plan back.`;
+    }
+    case 'skipped':
+      return `Plan review skipped: ${meta.reason ?? 'the reviewer couldn’t run'}. The plan was saved as it was.`;
+    case 'stopped':
+      return 'Plan review stopped.';
   }
 }
 

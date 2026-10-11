@@ -34,6 +34,8 @@ import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
 import ReviewRecord from './ReviewRecord';
+import { liveSubagent } from '../lib/subagents';
+import type { ReviewMeta } from '../lib/changeReview';
 import { requestOpenFile } from '../lib/editorBridge';
 import { isSettled, parseTodo } from '../lib/todo';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
@@ -148,6 +150,24 @@ export default function MessageList(props: {
     return map;
   });
 
+  /**
+   * A message's plan reviews (B10): each submit_plan call's, from its
+   * result, or running while the reviewer works (keyed by the call's id).
+   */
+  const planReviews = (m: ChatMessage): { callId: string; meta: ReviewMeta }[] =>
+    (m.toolCalls ?? [])
+      .filter((tc) => tc.name === 'submit_plan')
+      .flatMap((tc) => {
+        const result = toolResults().get(tc.id);
+        const meta = result?.meta?.review;
+        if (meta) return [{ callId: tc.id, meta }];
+        if (!result && liveSubagent(props.dialogId, tc.id))
+          return [
+            { callId: tc.id, meta: { kind: 'plan', status: 'running', round: 0, maxRounds: 2 } },
+          ];
+        return [];
+      });
+
   // Checklist snapshots (step 10): every `todo` call writes the whole list,
   // so only the latest call in the chat is the current state. Earlier ones
   // are superseded: dimmed, labelled "earlier update", never spinning — an
@@ -197,7 +217,10 @@ export default function MessageList(props: {
     isBlank(m.content) &&
     !m.error &&
     !m.meta?.reasoning?.text &&
+    !hasPlanSubmit(m) &&
     !(m.pending && m.status);
+  /** A submit_plan call: its plan review shows after the reply's calls (B10). */
+  const hasPlanSubmit = (m: ChatMessage) => !!m.toolCalls?.some((tc) => tc.name === 'submit_plan');
   /** Nothing shown after its tool calls, so the next reply's can follow on. */
   const toolCallsLast = (m: ChatMessage) =>
     !m.meta?.interrupted &&
@@ -205,6 +228,7 @@ export default function MessageList(props: {
     !m.meta?.verification &&
     !m.meta?.review &&
     !m.meta?.planFile &&
+    !hasPlanSubmit(m) &&
     props.planMessageId !== m.id &&
     !(m.pending && m.status);
 
@@ -1258,6 +1282,33 @@ export default function MessageList(props: {
                     />
                   )}
                 </Show>
+
+                <Show when={m.meta?.planCheck}>
+                  {(c) => (
+                    <div class="chat-verify flagged" role="status">
+                      <div class="chat-verify-head">
+                        <span class="chat-verify-title">
+                          The plan in {c().file} has problems as it is now; the agent was told
+                          before it started:
+                        </span>
+                      </div>
+                      <ul class="chat-verify-flags">
+                        <For each={c().problems}>{(p) => <li>{p}</li>}</For>
+                      </ul>
+                    </div>
+                  )}
+                </Show>
+
+                <For each={planReviews(m)}>
+                  {(r) => (
+                    <ReviewRecord
+                      meta={r.meta}
+                      dialogId={props.dialogId}
+                      recordId={r.callId}
+                      live={props.sending}
+                    />
+                  )}
+                </For>
 
                 <Show when={m.meta?.verification}>
                   {(v) => (

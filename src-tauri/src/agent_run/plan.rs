@@ -615,14 +615,12 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
                     step.number, file.path
                 )),
                 Some(_) => {}
-                None if !exists(&file.path) => {
-                    if !missing.contains(&file.path) {
-                        missing.push(file.path.clone());
-                        problems.push(format!(
-                            "Step {} names `{}`, which isn't in the project: fix the path, or mark it \"(new)\" if the step creates it.",
-                            step.number, file.path
-                        ));
-                    }
+                None if !exists(&file.path) && !missing.contains(&file.path) => {
+                    missing.push(file.path.clone());
+                    problems.push(format!(
+                        "Step {} names `{}`, which isn't in the project: fix the path, or mark it \"(new)\" if the step creates it.",
+                        step.number, file.path
+                    ));
                 }
                 None => {}
             }

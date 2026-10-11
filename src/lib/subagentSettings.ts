@@ -14,7 +14,7 @@ import { formatsToSend, type Effort } from './reasoning';
 import { sameModel } from './permissions';
 
 /** The kinds built so far (agent_run/subagent.rs `Kind`). */
-export type SubagentKindId = 'scout' | 'reviewer' | 'triage';
+export type SubagentKindId = 'scout' | 'reviewer' | 'triage' | 'planReviewer';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
@@ -49,6 +49,14 @@ export const SUBAGENT_KINDS: {
     when: 'Runs when a check’s output is too long to send whole, or the same check failed in the round before.',
     toolCalls: 15,
     minutes: 3,
+  },
+  {
+    id: 'planReviewer',
+    label: 'Plan reviewer',
+    hint: 'Checks a plan against the code before it’s saved. Read-only.',
+    when: 'Runs in Plan mode when the agent submits a plan, at most twice a run; small revisions aren’t reviewed.',
+    toolCalls: 25,
+    minutes: 4,
   },
 ];
 
@@ -106,6 +114,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
     scout: { ...DEFAULT_KIND },
     reviewer: { ...DEFAULT_KIND },
     triage: { ...DEFAULT_KIND },
+    planReviewer: { ...DEFAULT_KIND },
   },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,

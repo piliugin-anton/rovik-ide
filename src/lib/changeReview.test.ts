@@ -58,3 +58,25 @@ test('the review record’s details', () => {
     'Review 2 of at most 3 · 7 tool calls · 41 s · P/strong (after 1 failed)'
   );
 });
+
+test('a plan review’s headline says what happened to the plan', () => {
+  const plan: ReviewMeta = { kind: 'plan', status: 'running', round: 1, maxRounds: 2 };
+  assert.equal(reviewHeadline(plan, false), 'Reviewing the plan against the code…');
+  const findings = { ...plan, status: 'findings' as const, findings: [finding('high')] };
+  assert.equal(
+    reviewHeadline({ ...findings, held: true }, false),
+    'The plan reviewer found 1 finding: the plan goes back to the agent before it’s saved.'
+  );
+  assert.match(reviewHeadline({ ...findings, open: 1 }, false), /under “Open review findings”/);
+  assert.equal(
+    reviewHeadline(
+      { ...plan, status: 'skipped', reason: 'the reviewer’s model failed (http)' },
+      false
+    ),
+    'Plan review skipped: the reviewer’s model failed (http). The plan was saved as it was.'
+  );
+  assert.equal(
+    reviewHeadline({ ...plan, status: 'clean' }, false),
+    'The plan reviewer found nothing to fix.'
+  );
+});

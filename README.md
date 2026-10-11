@@ -65,7 +65,9 @@ Electron-based editors.
   change with fresh eyes before the checks run; the agent fixes or
   answers what it finds. When a check fails with a long output, or fails
   again, a triage helper reads all of it and tells the agent the root
-  cause, instead of the agent getting pages of compiler output. Turn them
+  cause, instead of the agent getting pages of compiler output. In Plan
+  mode, a plan reviewer checks each plan against the code before it's
+  saved. Turn them
   on, and pick their models, in Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
