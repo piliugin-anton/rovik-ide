@@ -553,8 +553,12 @@ fn as_path(token: &str) -> Option<String> {
     if t.contains("::") {
         return None;
     }
-    (known || (folder && t.ends_with('/')) || (folder && ext.is_none() && t.contains('/')))
-        .then(|| t.to_string())
+    if !(known || (folder && t.ends_with('/')) || (folder && ext.is_none() && t.contains('/'))) {
+        return None;
+    }
+    // One spelling (`paths`); a folder keeps its `/`; `..` isn't the project's.
+    let p = super::paths::norm_rel(t).filter(|p| !p.is_empty())?;
+    Some(if t.ends_with('/') { format!("{p}/") } else { p })
 }
 
 fn step_title(first_line: &str) -> String {
@@ -1171,7 +1175,7 @@ pub fn checklist_gate_reason(
     changed_files: &[String],
     tool_calls: u32,
 ) -> Option<String> {
-    let norm = |p: &str| p.trim().trim_start_matches("./").to_string();
+    let norm = |p: &str| super::paths::key(p).unwrap_or_else(|| p.trim().to_string());
     match tool {
         "write" => {
             let new_file = path

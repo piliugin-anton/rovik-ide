@@ -631,7 +631,7 @@ impl<R: Runtime> Run<R> {
                     match before.get(&w.path) {
                         Some(was) => *was != now,
                         // Not looked at before: what it was before the run.
-                        None => w.original.as_ref().map(|s| s.as_bytes().to_vec()) != now,
+                        None => w.original.bytes != now,
                     }
                 })
                 .cloned()
@@ -762,9 +762,10 @@ impl<R: Runtime> Run<R> {
                 .iter()
                 .map(|p| subagent::ChildWrite {
                     path: p.clone(),
-                    original: std::fs::read(tools::to_absolute_path(p, &root))
-                        .ok()
-                        .map(|b| String::from_utf8_lossy(&b).into_owned()),
+                    original: subagent::Original::new(
+                        std::fs::read(tools::to_absolute_path(p, &root)).ok(),
+                        subagent::Source::ViewAtRoundStart,
+                    ),
                 })
                 .collect();
             let snapshot = {

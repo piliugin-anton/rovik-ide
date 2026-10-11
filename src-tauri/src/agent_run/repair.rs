@@ -23,6 +23,7 @@
 //! changed (not the write tool) have no checkpoint or baseline here, so
 //! they're neither rolled back nor compared.
 
+use super::subagent::{Original, Source};
 use super::run::Run;
 use super::tools;
 use regex::Regex;
@@ -572,9 +573,13 @@ pub fn rel_key(root: &str, path: &str) -> String {
     let abs = tools::to_absolute_path(path, root).replace('\\', "/");
     let root = root.replace('\\', "/");
     let root = root.trim_end_matches('/');
-    abs.strip_prefix(root)
-        .map(|r| r.trim_start_matches('/').to_string())
-        .unwrap_or(abs)
+    match abs.strip_prefix(root) {
+        // `root` + `/…`, not a sibling folder whose name starts the same.
+        Some(r) if r.is_empty() || r.starts_with('/') => {
+            super::paths::norm_rel(r.trim_start_matches('/')).unwrap_or_else(|| abs.clone())
+        }
+        _ => abs,
+    }
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
@@ -633,14 +638,16 @@ impl<R: Runtime> Run<R> {
         if !self.baseline.contains_key(&key) {
             // In an isolated chat, the project's copy is what the file was
             // before the chat (an earlier run may have changed the view).
+            // A subagent runs within one round of its lead's.
             let original = match (&self.project_root, self.isolated()) {
-                (Some(project), true) => read(&Path::new(project).join(&key)).ok().flatten(),
-                _ => before.clone(),
+                (Some(project), true) => Original::new(
+                    read(&Path::new(project).join(&key)).ok().flatten(),
+                    Source::ProjectCopy,
+                ),
+                _ if self.sub().is_some() => Original::new(before.clone(), Source::ViewAtRoundStart),
+                _ => Original::new(before.clone(), Source::ViewAtRunStart),
             };
-            self.baseline.insert(
-                key.clone(),
-                original.map(|b| String::from_utf8_lossy(&b).into_owned()),
-            );
+            self.baseline.insert(key.clone(), original);
         }
         if let Some(cp) = self.checkpoint.as_mut().filter(|c| !c.too_big) {
             cp.files.entry(key).or_insert(before);
@@ -820,17 +827,21 @@ impl<R: Runtime> Run<R> {
     /// exist; None when that isn't known (a command's change outside an
     /// isolated chat).
     pub(super) fn original_of(&self, key: &str) -> Option<Option<String>> {
+        self.original_bytes_of(key).map(|o| o.text())
+    }
+
+    /// `original_of` as bytes, with where they're from.
+    pub(super) fn original_bytes_of(&self, key: &str) -> Option<Original> {
         if let Some(b) = self.baseline.get(key) {
             return Some(b.clone());
         }
         // An overlay change the write tool didn't make: the project's copy
         // is what it was.
         match (&self.project_root, self.isolated()) {
-            (Some(project), true) => Some(
-                std::fs::read(Path::new(project).join(key))
-                    .ok()
-                    .map(|b| String::from_utf8_lossy(&b).into_owned()),
-            ),
+            (Some(project), true) => Some(Original::new(
+                std::fs::read(Path::new(project).join(key)).ok(),
+                Source::ProjectCopy,
+            )),
             _ => None,
         }
     }
@@ -1118,5 +1129,9 @@ mod tests {
         assert_eq!(rel_key("/p", "src/a.ts"), "src/a.ts");
         assert_eq!(rel_key("/p/", "./src/a.ts"), "src/a.ts");
         assert_eq!(rel_key("/p", "/p/src/a.ts"), "src/a.ts");
+        // Every spelling is one key; a sibling folder isn't inside.
+        assert_eq!(rel_key("/p", "src/./a.ts"), "src/a.ts");
+        assert_eq!(rel_key("/p", "src//a.ts"), "src/a.ts");
+        assert_eq!(rel_key("/p", "/px/a.ts"), "/px/a.ts");
     }
 }

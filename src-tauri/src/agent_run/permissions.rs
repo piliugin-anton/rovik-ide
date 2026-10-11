@@ -331,6 +331,83 @@ fn matches_allowed(segment: &[String], allowed: &[Vec<String>]) -> bool {
     })
 }
 
+/// A wrapper's or program's name: the file name, lower case, without
+/// `.exe`/`.cmd`/`.bat`.
+fn wrapper_name(word: &str) -> String {
+    let name = word
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(word)
+        .to_lowercase();
+    for ext in [".exe", ".cmd", ".bat"] {
+        if let Some(n) = name.strip_suffix(ext) {
+            return n.to_string();
+        }
+    }
+    name
+}
+
+/// How many words a wrapper takes before the command it runs: its name,
+/// its options (with their values) and, for `timeout`, the duration.
+/// None: `word` isn't a wrapper.
+fn wrapper_words(name: &str, rest: &[String]) -> Option<usize> {
+    // Options that take the next word as their value.
+    let takes: &[&str] = match name {
+        "env" => &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+        "timeout" | "gtimeout" => &["-s", "--signal", "-k", "--kill-after"],
+        "nice" => &["-n", "--adjustment"],
+        "sudo" | "doas" => &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"],
+        "xargs" => &[
+            "-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "--max-args", "--max-procs",
+            "--delimiter", "--arg-file", "--max-lines",
+        ],
+        "time" | "nohup" | "exec" | "command" | "caffeinate" => &[],
+        _ => return None,
+    };
+    let mut at = 0;
+    while let Some(w) = rest.get(at) {
+        if name == "env" && w.contains('=') && !w.starts_with('-') {
+            at += 1;
+        } else if takes.contains(&w.as_str()) {
+            at += 2;
+        } else if w.starts_with('-') && w.len() > 1 {
+            at += 1;
+        } else {
+            break;
+        }
+    }
+    if matches!(name, "timeout" | "gtimeout") {
+        // The duration.
+        at += 1;
+    }
+    Some(1 + at)
+}
+
+/// The words of a segment past the wrappers that only run the rest (P0.2):
+/// `env X=1 -u Y`, `timeout 5`, `nice -n 10`, `time`, `nohup`, `exec`,
+/// `command`, `xargs -n 1`, `sudo -u x`. Empty when the segment is only
+/// wrappers (a bare `env` prints the environment). Every matcher of a
+/// command (read-only, checks, light commands) starts from here.
+pub fn unwrap_wrappers(seg: &[String]) -> &[String] {
+    let mut rest = seg;
+    while let Some(first) = rest.first() {
+        match wrapper_words(&wrapper_name(first), &rest[1..]) {
+            Some(n) => rest = &rest[n.min(rest.len())..],
+            None => break,
+        }
+    }
+    rest
+}
+
+/// Whether a segment runs its command as another user (`sudo`, `doas`),
+/// which is never read-only nor a check.
+pub fn elevated(seg: &[String]) -> bool {
+    let inner = unwrap_wrappers(seg).len();
+    seg[..seg.len() - inner]
+        .iter()
+        .any(|w| matches!(wrapper_name(w).as_str(), "sudo" | "doas"))
+}
+
 /// The program's name in a segment, past wrappers that run the rest
 /// (`sudo`, `env X=1`, `time`, `nice`, `nohup`, `exec`, `command`): each
 /// wrapper's own name comes first, so `sudo` itself can be denied.
@@ -442,7 +519,6 @@ const READ_ONLY_COMMANDS: &[&str] = &[
     "type",
     "whoami",
     "date",
-    "env",
     "printenv",
     "stat",
     "file",
@@ -538,6 +614,11 @@ static REWRITES_FILES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(--fix|--write|--in-place)\b").unwrap());
 
 pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
+    // `env rm -rf x` runs `rm`; `sudo` anything changes who runs it.
+    if elevated(seg) {
+        return false;
+    }
+    let seg = unwrap_wrappers(seg);
     let Some((cmd, rest)) = seg.split_first() else {
         return true;
     };
@@ -930,6 +1011,57 @@ mod tests {
 
     fn words(seg: &[&str]) -> Vec<String> {
         seg.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// P0.2: every matcher reads a command past the same wrappers.
+    #[test]
+    fn wrappers_are_seen_through_by_every_matcher() {
+        use crate::workload::classify::classify;
+        for (command, modifies) in [
+            ("env rm x", true),
+            ("env sed -i s/a/b/ f", true),
+            ("timeout 5 rm x", true),
+            ("timeout -s KILL 5m rm x", true),
+            ("nice -n 10 rm x", true),
+            ("xargs -n 1 rm", true),
+            ("sudo cat f", true),
+            ("env -u HOME rm x", true),
+            ("env FOO=1 cat f", false),
+            ("time cat f", false),
+            ("xargs -I {} cat", false),
+            ("env", false),
+        ] {
+            assert_eq!(command_modifies_files(command), modifies, "{command}");
+            let seg = split_words(command);
+            assert_eq!(
+                segment_is_read_only(&seg),
+                !modifies,
+                "segment_is_read_only({command})"
+            );
+        }
+        for (command, check) in [
+            ("env CI=1 timeout 60 cargo test", true),
+            ("nice -n 10 cargo test", true),
+            ("time npm test", true),
+            ("sudo cargo test", false),
+            ("env rm x", false),
+        ] {
+            assert_eq!(
+                super::super::worker::is_check_tool(&split_words(command)),
+                check,
+                "is_check_tool({command})"
+            );
+        }
+        for (wrapped, bare) in [
+            ("env CI=1 cargo test", "cargo test"),
+            ("timeout -s KILL 5m cargo build", "cargo build"),
+            ("nice -n 10 cargo check", "cargo check"),
+            ("xargs -n 1 ls", "ls"),
+            ("env -u X ls", "ls"),
+        ] {
+            assert_eq!(classify(wrapped, None), classify(bare, None), "{wrapped}");
+        }
+        assert_eq!(unwrap_wrappers(&split_words("env -i A=1 -u B time nice -5 x y")), ["x", "y"]);
     }
 
     /// The cases the frontend's hints are tested with too

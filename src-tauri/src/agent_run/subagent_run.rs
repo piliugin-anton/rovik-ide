@@ -828,10 +828,8 @@ impl<R: Runtime> Run<R> {
         };
         let mut out = Vec::new();
         for (path, original) in &self.baseline {
-            let now = std::fs::read(tools::to_absolute_path(path, &root))
-                .ok()
-                .map(|b| String::from_utf8_lossy(&b).into_owned());
-            if now != *original {
+            let now = std::fs::read(tools::to_absolute_path(path, &root)).ok();
+            if now != original.bytes {
                 out.push(ChildWrite {
                     path: path.clone(),
                     original: original.clone(),
@@ -861,12 +859,19 @@ impl<R: Runtime> Run<R> {
             self.baseline
                 .entry(w.path.clone())
                 .or_insert_with(|| w.original.clone());
-            if let Some(cp) = self.checkpoint.as_mut().filter(|c| !c.too_big) {
-                cp.files
-                    .entry(w.path.clone())
-                    .or_insert_with(|| w.original.clone().map(String::into_bytes));
-            }
             let abs = tools::to_absolute_path(&w.path, &root);
+            if let Some(cp) = self.checkpoint.as_mut().filter(|c| !c.too_big) {
+                // What the round started with: the subagent's own original
+                // when it's from within the round; an older one (the
+                // project's copy, the run's start) would undo earlier
+                // rounds, so then the file as it is now.
+                cp.files.entry(w.path.clone()).or_insert_with(|| {
+                    match w.original.source {
+                        subagent::Source::ViewAtRoundStart => w.original.bytes.clone(),
+                        _ => std::fs::read(&abs).ok(),
+                    }
+                });
+            }
             if let Ok(now) = std::fs::read(&abs) {
                 self.seen.record(std::path::Path::new(&abs), &now);
             }
@@ -1429,7 +1434,7 @@ impl<R: Runtime> Run<R> {
             }
         }
         for key in &paths {
-            if let Some(original) = self.original_of(key) {
+            if let Some(original) = self.original_bytes_of(key) {
                 child.baseline.entry(key.clone()).or_insert(original);
             }
             // The lead's checks and reviewer look at it either way.

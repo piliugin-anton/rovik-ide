@@ -12,6 +12,7 @@
 //! has its changes rolled back through the R02 checkpoint (D06).
 
 use super::diff;
+use super::paths;
 use super::plan::{self, PlanStep, TodoItem};
 use super::subagent::{self, Budget, Format, KindSpec};
 use serde_json::{json, Value};
@@ -91,18 +92,10 @@ pub struct WriteScope {
     pub grants: Vec<String>,
 }
 
+/// A path as the scope keeps it (`paths::norm_rel`); a path outside the
+/// project as it was written, which no scope allows.
 fn norm(path: &str) -> String {
-    path.trim()
-        .replace('\\', "/")
-        .trim_start_matches("./")
-        .trim_end_matches('/')
-        .to_string()
-}
-
-fn parent(path: &str) -> String {
-    path.rsplit_once('/')
-        .map(|(d, _)| d.to_string())
-        .unwrap_or_default()
+    paths::norm_rel(path).unwrap_or_else(|| path.trim().replace('\\', "/"))
 }
 
 impl WriteScope {
@@ -112,7 +105,9 @@ impl WriteScope {
         let mut scope = WriteScope::default();
         // Files it only reads are the contract's, not its to change (F03).
         for f in step.files.iter().filter(|f| !f.read_only) {
-            let p = norm(&f.path);
+            let Some(p) = paths::norm_rel(&f.path) else {
+                continue;
+            };
             if f.path.trim().ends_with('/') {
                 if !scope.folders.contains(&p) {
                     scope.folders.push(p);
@@ -122,7 +117,7 @@ impl WriteScope {
             if !scope.files.contains(&p) {
                 scope.files.push(p.clone());
             }
-            let dir = parent(&p);
+            let dir = paths::parent(&p);
             if !scope.new_in.contains(&dir) {
                 scope.new_in.push(dir);
             }
@@ -131,16 +126,21 @@ impl WriteScope {
     }
 
     /// Whether `rel` (repo-relative) may be written; `exists`: it's there now.
+    /// Paths compare however they're spelled (`paths`); one outside the
+    /// project never.
     pub fn allows(&self, rel: &str, exists: bool) -> bool {
-        let p = norm(rel);
-        let under = |dir: &str| dir.is_empty() || p.starts_with(&format!("{dir}/"));
-        self.files.contains(&p)
-            || self.folders.iter().any(|d| under(d))
-            || (!exists && self.new_in.contains(&parent(&p)))
-            || self.grants.iter().any(|g| {
-                let g = norm(g);
-                g == p || under(&g)
-            })
+        let Some(p) = paths::key(rel) else {
+            return false;
+        };
+        let is = |f: &String| paths::key(f).as_deref() == Some(p.as_str());
+        self.files.iter().any(is)
+            || self.folders.iter().any(|d| paths::under(d, &p))
+            || (!exists
+                && self
+                    .new_in
+                    .iter()
+                    .any(|d| paths::key(d) == Some(paths::parent(&p))))
+            || self.grants.iter().any(|g| paths::under(g, &p))
     }
 
     /// For the refusal and the brief.
@@ -202,36 +202,20 @@ pub fn extend_scope_schema() -> Value {
 
 /// The paths of an `extend_scope` call; Err: the result to send back.
 pub fn extend_scope_paths(args: &serde_json::Map<String, Value>) -> Result<Vec<String>, String> {
-    let paths: Vec<String> = args
+    let asked: Vec<String> = args
         .get("paths")
         .and_then(|p| p.as_array())
         .map(|a| {
             a.iter()
                 .filter_map(|p| p.as_str())
-                .map(|p| {
-                    let p = p.trim().replace('\\', "/");
-                    let mut p = p.as_str();
-                    while let Some(rest) = p.strip_prefix("./") {
-                        p = rest;
-                    }
-                    p.to_string()
-                })
+                .map(|p| p.trim().to_string())
                 .collect()
         })
         .unwrap_or_default();
-    if paths.is_empty() {
+    if asked.is_empty() {
         return Err(
             "Error: \"paths\" is required: the files (or folders, ending with /) you need.".into(),
         );
-    }
-    // The whole project isn't a scope: name the files or folders.
-    if let Some(bad) = paths
-        .iter()
-        .find(|p| p.trim_end_matches('/').is_empty() || p.trim_end_matches('/') == ".")
-    {
-        return Err(format!(
-            "Error: `{bad}` is the whole project. Name the files, or the folders (ending with /), the step needs."
-        ));
     }
     if args
         .get("reason")
@@ -240,11 +224,20 @@ pub fn extend_scope_paths(args: &serde_json::Map<String, Value>) -> Result<Vec<S
     {
         return Err("Error: \"reason\" is required: why the step needs these files.".into());
     }
-    if let Some(bad) = paths
-        .iter()
-        .find(|p| p.starts_with('/') || p.split('/').any(|s| s == "..") || p.contains(':'))
-    {
-        return Err(format!("Error: `{bad}` isn't a path in the project."));
+    let mut paths = Vec::new();
+    for raw in &asked {
+        let Some(p) = paths::norm_rel(raw) else {
+            return Err(format!("Error: `{raw}` isn't a path in the project."));
+        };
+        // The whole project isn't a scope: name the files or folders.
+        if p.is_empty() {
+            return Err(format!(
+                "Error: `{raw}` is the whole project. Name the files, or the folders (ending with /), the step needs."
+            ));
+        }
+        // A folder keeps its `/`: it grants what's in it.
+        let folder = raw.ends_with('/') || raw.ends_with('\\');
+        paths.push(if folder { format!("{p}/") } else { p });
     }
     Ok(paths)
 }
@@ -550,35 +543,6 @@ fn program(word: &str) -> String {
     name
 }
 
-/// The words after wrappers that only run the rest: `env X=1`, `time`, `nice`.
-fn unwrapped(words: &[String]) -> &[String] {
-    let mut rest = words;
-    loop {
-        match rest.first().map(|w| program(w)).as_deref() {
-            Some("env") => {
-                let skip = 1 + rest[1..]
-                    .iter()
-                    .take_while(|w| w.contains('=') || w.starts_with('-'))
-                    .count();
-                rest = &rest[skip..];
-            }
-            Some("time" | "nice" | "timeout") => {
-                // `timeout 600 cargo test`: its duration too.
-                let skip = 1 + rest[1..]
-                    .iter()
-                    .take_while(|w| {
-                        w.starts_with('-')
-                            || w.chars()
-                                .all(|c| c.is_ascii_digit() || c == '.' || c == 's' || c == 'm')
-                    })
-                    .count();
-                rest = &rest[skip..];
-            }
-            _ => return rest,
-        }
-    }
-}
-
 /// Flags that make a check change the code it checks.
 fn fixes(words: &[String]) -> bool {
     words.iter().any(|w| {
@@ -600,7 +564,10 @@ fn fixes(words: &[String]) -> bool {
 /// a test runner, without the flags that make it change the code
 /// (`--fix`, `--write`, snapshot updates).
 pub fn is_check_tool(words: &[String]) -> bool {
-    let words = unwrapped(words);
+    if super::permissions::elevated(words) {
+        return false;
+    }
+    let words = super::permissions::unwrap_wrappers(words);
     let Some(first) = words.first() else {
         return false;
     };

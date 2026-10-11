@@ -2720,6 +2720,78 @@ async fn a_failed_worker_is_rolled_back_and_a_partial_one_kept() {
         .is_none());
 }
 
+/// P0.3: a file a worker changed in a fix round goes back byte for byte
+/// when the round is rolled back, UTF-8 or not (Latin-1 here: text to the
+/// write tool, but not UTF-8).
+#[tokio::test]
+async fn a_rolled_back_round_puts_a_workers_non_utf8_file_back_exactly() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let plan = "# Data\n\nFix the data.\n\n## Steps\n\n\
+        1. **Greeting**\n   - `a.txt`: say good.\n\
+        2. **Data**\n   - `data.txt`: rewrite it.\n   - `b.txt`: update it.\n\n\
+        ## Validation\n- `npm test`\n";
+    let check = "const fs = require('fs');\n\
+        if (!fs.readFileSync('a.txt', 'utf8').includes('good')) { console.log('test t::one ... FAILED'); process.exit(1); }\n\
+        if (fs.readFileSync('b.txt', 'utf8').includes('broken')) { console.log('test t::one ... ok'); console.log('test t::two ... FAILED'); process.exit(1); }\n\
+        console.log('test t::one ... ok'); console.log('test t::two ... ok');\n";
+    let h = harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        ("check.js", check),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+        (".rovik/plans/greet.md", plan),
+    ])
+    .await;
+    let original: Vec<u8> = b"caf\xe9 cr\xe8me\n".to_vec();
+    std::fs::write(h.project.join("data.txt"), &original).unwrap();
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 2.",
+            vec![
+                write_call("w1", "data.txt", "text now\n"),
+                write_call("w2", "b.txt", "broken\n"),
+                worker_report("Rewrote both.", &["data.txt", "b.txt"]),
+            ],
+        )],
+        vec![
+            write_call("l1", "notes.txt", "looking\n"),
+            Reply::Text("Done."),
+            // The fix round: a worker, then the real fix.
+            step("s2", 2),
+            write_call("l2", "a.txt", "good\n"),
+            Reply::Text("Done."),
+            // Rolled back: the fix again, alone.
+            write_call("l3", "a.txt", "good\n"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let mut request = h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off);
+    request.config.as_mut().unwrap().permissions.verify_changes = true;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "verified");
+    let statuses: Vec<Value> = h
+        .messages()
+        .await
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .map(|v| v["status"].clone())
+        .collect();
+    assert!(statuses.contains(&json!("rolled-back")), "{statuses:?}");
+    assert_eq!(
+        std::fs::read(h.project.join("data.txt")).unwrap(),
+        original,
+        "the bytes the round started with"
+    );
+    assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
+}
+
 #[tokio::test]
 async fn a_file_changed_meanwhile_is_left_alone_when_a_worker_is_rolled_back() {
     let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;

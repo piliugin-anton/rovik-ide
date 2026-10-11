@@ -252,7 +252,7 @@ pub struct Run<R: Runtime> {
     pub(super) checkpoint: Option<repair::Checkpoint>,
     /// Each file as it was when the run first wrote it (R05), by path
     /// relative to the root; None: it didn't exist.
-    pub(super) baseline: std::collections::HashMap<String, Option<String>>,
+    pub(super) baseline: std::collections::HashMap<String, super::subagent::Original>,
     /// Changes that weaken the checks, which the agent was asked about (R05).
     pub(super) integrity_open: Vec<String>,
     /// Files changed since the change reviewer last ran (change_review.rs).

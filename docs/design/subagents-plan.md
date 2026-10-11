@@ -1585,3 +1585,38 @@ npm test` are refused; a scout with a budget of 3 that asks for 5 calls
   mid-run output name (FUSE), a panicking run's registration, hidden
   files in any case, `library.rs` and `maintenance/mod.rs` filters,
   number field values, a follow-up resumed after a restart.
+
+### Review-fixes plan, phase 0: shared helpers
+
+Following [`subagents-review-fixes.md`](subagents-review-fixes.md).
+
+- **P0.1 One path normaliser** (`agent_run/paths.rs`). `norm_rel` gives
+  a repo-relative path one spelling: `\` → `/`, no `.` or empty parts,
+  no trailing `/`; `..`, absolute and drive paths are not the project's
+  (None). `key`/`same`/`under` compare paths, folding case on macOS and
+  Windows. One change from the plan: `norm_rel` keeps the case (the path
+  is also shown and written to); only `key` folds it. Used by write
+  scopes (`WriteScope::allows`, `for_step`, `extend_scope_paths`), the
+  test writer's hidden files, group owners (the contract), cause
+  resolution, `rel_key` (which also no longer takes `/px/a` for inside
+  `/p`) and plan paths (`as_path` refuses `..`).
+- **P0.2 One command unwrapper** (`permissions::unwrap_wrappers`). `env`
+  (its `K=V` words, `-i`, `-u X`, `-C X`), `timeout` (options and the
+  duration), `nice [-n N]`, `time`, `nohup`, `exec`, `command`,
+  `caffeinate`, `xargs` (its options) and `sudo`/`doas` are skipped by
+  the read-only check, `is_check_tool` and the workload classifier alike;
+  `sudo`/`doas` make a command neither read-only nor a check. `env` left
+  the read-only list (a bare `env` is still read-only), so `env rm -rf x`
+  is no longer read-only for a step worker.
+- **P0.3 One "original content" type** (`subagent::Original`). What a
+  file was is kept as bytes with its moment (`ProjectCopy`,
+  `ViewAtRunStart`, `ViewAtRoundStart`) in the run's baseline and in
+  `ChildWrite`; text is derived only for diffs and the integrity rules.
+  Absorbing a subagent's change into an open checkpoint uses its
+  original only when it's from within the round, else the file as it is
+  then. Before, the original was lossy text, so a rollback rewrote a
+  non-UTF-8 file with U+FFFD.
+- Tests: a table of path spellings and folders; every wrapper through
+  the read-only check, `is_check_tool` and the classifier; a worker's
+  Latin-1 file put back byte for byte by a rolled-back fix round (fails
+  without the fix: é became U+FFFD).

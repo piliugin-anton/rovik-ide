@@ -35,6 +35,7 @@ pub mod guard;
 mod landing;
 pub mod log;
 mod parallel;
+pub mod paths;
 pub mod permissions;
 pub mod plan;
 pub mod plan_review;

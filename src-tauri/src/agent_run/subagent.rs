@@ -728,12 +728,48 @@ pub fn handle(kind: Kind, child_dialog_id: &str) -> String {
     )
 }
 
+/// What a file was before a change (P0.3): its bytes as they were (None:
+/// it didn't exist), and which moment they're from. Kept as bytes, so
+/// putting it back can't turn a binary or Latin-1 file into text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Original {
+    pub bytes: Option<Vec<u8>>,
+    pub source: Source,
+}
+
+/// The moment an `Original` is from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The project's copy, in an isolated chat: before the chat, so maybe
+    /// before earlier runs and rounds in it.
+    ProjectCopy,
+    /// The view when a run (the lead's) first changed it: maybe before
+    /// earlier rounds of that run.
+    ViewAtRunStart,
+    /// The view within the current round, before this change: what a
+    /// rollback of the round puts back.
+    ViewAtRoundStart,
+}
+
+impl Original {
+    pub fn new(bytes: Option<Vec<u8>>, source: Source) -> Self {
+        Original { bytes, source }
+    }
+
+    /// As text, for diffs and the integrity rules only.
+    pub fn text(&self) -> Option<String> {
+        self.bytes
+            .as_ref()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+    }
+}
+
 /// A file a subagent changed: its path relative to the root, and what it
-/// was before the subagent's first write (None: it didn't exist).
+/// was before the subagent's first write.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChildWrite {
     pub path: String,
-    pub original: Option<String>,
+    pub original: Original,
 }
 
 impl SubResult {

@@ -111,7 +111,7 @@ pub struct VerifyCarry {
     last_results: Vec<CheckResult>,
     last_failed: bool,
     checkpoint: Option<repair::Checkpoint>,
-    baseline: std::collections::HashMap<String, Option<String>>,
+    baseline: std::collections::HashMap<String, super::subagent::Original>,
     integrity_open: Vec<String>,
     asked_integrity: bool,
     rolled_back: Vec<repair::Rollback>,

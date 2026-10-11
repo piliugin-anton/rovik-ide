@@ -156,6 +156,11 @@ fn norm(path: &str) -> String {
     }
 }
 
+/// A relative path in its one spelling (`paths::norm_rel`), else as it is.
+fn tidy(path: &str) -> String {
+    super::paths::norm_rel(path).unwrap_or_else(|| path.to_string())
+}
+
 /// A path from a check's output as a project-relative path: an absolute
 /// one without its root (`roots`), and one relative to a subfolder the
 /// check ran in (`cd src-tauri && cargo check` prints `src/x.rs`) as the
@@ -167,12 +172,13 @@ pub fn resolve(path: &str, roots: &[String], known: &[String]) -> String {
         let root = root.trim_end_matches('/');
         if !root.is_empty() {
             if let Some(rest) = p.strip_prefix(&format!("{root}/")) {
-                return rest.to_string();
+                return tidy(rest);
             }
         }
     }
-    if known.contains(&p) {
-        return p;
+    let p = tidy(&p);
+    if let Some(k) = known.iter().find(|k| super::paths::same(k, &p)) {
+        return k.clone();
     }
     let tail = format!("/{p}");
     let ends: Vec<&String> = known.iter().filter(|k| k.ends_with(&tail)).collect();

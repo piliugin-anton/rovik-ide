@@ -93,25 +93,16 @@ pub fn hidden_file(path: &str) -> String {
 /// Whether `rel` (repo-relative) is one of `hidden`. On macOS and Windows
 /// any case names the same file.
 pub fn is_hidden(hidden: &[String], rel: &str) -> bool {
-    is_hidden_as(
-        hidden,
-        rel,
-        cfg!(any(target_os = "macos", target_os = "windows")),
-    )
+    is_hidden_as(hidden, rel, super::paths::ANY_CASE)
 }
 
 fn is_hidden_as(hidden: &[String], rel: &str, any_case: bool) -> bool {
-    let norm = |p: &str| {
-        let p = p.replace('\\', "/");
-        let p = p.trim_start_matches("./").to_string();
-        if any_case {
-            p.to_lowercase()
-        } else {
-            p
-        }
+    let Some(rel) = super::paths::key_as(rel, any_case) else {
+        return false;
     };
-    let rel = norm(rel);
-    hidden.iter().any(|h| norm(h) == rel)
+    hidden
+        .iter()
+        .any(|h| super::paths::key_as(h, any_case).as_deref() == Some(rel.as_str()))
 }
 
 pub struct BriefParts<'a> {
@@ -227,7 +218,7 @@ impl<R: tauri::Runtime> super::run::Run<R> {
         let files: Vec<String> = result
             .writes
             .iter()
-            .filter(|w| w.original.is_none() && project::is_test_path(&w.path))
+            .filter(|w| w.original.bytes.is_none() && project::is_test_path(&w.path))
             .map(|w| w.path.clone())
             .collect();
         if files.is_empty() {

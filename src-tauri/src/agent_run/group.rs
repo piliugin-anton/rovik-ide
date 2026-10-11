@@ -43,7 +43,7 @@ pub struct GroupCtx {
 impl GroupCtx {
     /// Who else owns `rel`, if anyone: a worker's label, or "the contract".
     pub fn owner_of(&self, rel: &str) -> Option<String> {
-        if self.contract.iter().any(|c| c == rel) {
+        if self.contract.iter().any(|c| super::paths::same(c, rel)) {
             return Some("the contract".into());
         }
         // Its files and folders: new files beside them are anyone's.
@@ -567,9 +567,10 @@ impl<R: Runtime> Run<R> {
             .iter()
             .map(|p| subagent::ChildWrite {
                 path: p.clone(),
-                original: std::fs::read(tools::to_absolute_path(p, &root))
-                    .ok()
-                    .map(|b| String::from_utf8_lossy(&b).into_owned()),
+                original: subagent::Original::new(
+                    std::fs::read(tools::to_absolute_path(p, &root)).ok(),
+                    subagent::Source::ViewAtRoundStart,
+                ),
             })
             .collect();
         // R06: what the chat had at these paths, for Redo sequentially.

@@ -76,46 +76,6 @@ fn program(word: &str) -> String {
     name
 }
 
-/// Wrappers that run the rest of the line: `env X=1 cargo test`, `time make`.
-fn skip_wrappers(words: &[String]) -> &[String] {
-    let mut rest = words;
-    loop {
-        let Some(first) = rest.first() else {
-            return rest;
-        };
-        match program(first).as_str() {
-            "env" => {
-                let skip = 1 + rest[1..]
-                    .iter()
-                    .take_while(|w| w.contains('=') || w.starts_with('-'))
-                    .count();
-                rest = &rest[skip..];
-            }
-            "time" | "nice" | "nohup" | "exec" | "command" | "sudo" | "caffeinate" | "xargs" => {
-                let skip = 1 + rest[1..].iter().take_while(|w| w.starts_with('-')).count();
-                rest = &rest[skip..];
-            }
-            // `timeout 600 cargo test`, `timeout -s KILL 5m make`.
-            "timeout" | "gtimeout" => {
-                let mut skip = 1;
-                while let Some(w) = rest.get(skip) {
-                    if w == "-s" || w == "-k" || w == "--signal" || w == "--kill-after" {
-                        skip += 2;
-                    } else if w.starts_with('-') {
-                        skip += 1;
-                    } else {
-                        break;
-                    }
-                }
-                // The duration.
-                skip += 1;
-                rest = &rest[skip.min(rest.len())..];
-            }
-            _ => return rest,
-        }
-    }
-}
-
 /// Whether a command names files (`x.py`, `src/a.ts`), not folders or
 /// the whole project.
 fn file_args(words: &[String]) -> bool {
@@ -221,7 +181,7 @@ const LONG_RUNNING: &[&str] = &[
 const LONG_SCRIPTS: &[&str] = &["dev", "start", "serve", "watch", "preview"];
 
 fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
-    let words = skip_wrappers(words);
+    let words = crate::agent_run::permissions::unwrap_wrappers(words);
     let Some(first) = words.first() else {
         return Class::Light;
     };
