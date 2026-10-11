@@ -567,8 +567,11 @@ fn as_path(token: &str) -> Option<String> {
     let folder = t.ends_with('/') || t.trim_end_matches('/').contains('/');
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
     let named_file = BARE_FILE.is_match(name) && name.len() == BARE_FILE.find(name)?.len();
+    // With a letter: `docs/v1.2` and HTTP/1.1 are versions.
     let short_ext = ext.as_deref().is_some_and(|e| {
-        (1..=10).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric())
+        (1..=10).contains(&e.len())
+            && e.chars().all(|c| c.is_ascii_alphanumeric())
+            && e.chars().any(|c| c.is_ascii_alphabetic())
     });
     // `Node.js` and its kind name a project, not a file.
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
@@ -2536,5 +2539,23 @@ mod tests {
             .map(|f| (f.path.as_str(), f.read_only))
             .collect();
         assert_eq!(got, [("src/types.rs", true), ("src/a.rs", false)]);
+    }
+
+    /// Round 2 (§4.2), P4.3: an extension has a letter, so a version
+    /// (`docs/v1.2`, HTTP/1.1, node-v18.2) isn't a file; `media/intro.mp4`
+    /// and a versioned folder with its `/` are.
+    #[test]
+    fn digit_extension_is_not_a_file() {
+        for no in ["docs/v1.2", "api/v2.0.1", "HTTP/1.1", "node-v18.2"] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+        assert_eq!(
+            as_path("media/intro.mp4").as_deref(),
+            Some("media/intro.mp4")
+        );
+        assert_eq!(as_path("docs/v1.2/").as_deref(), Some("docs/v1.2/"));
+        let step = "1. **Docs**\n   - Move the docs/v1.2 notes and the HTTP/1.1 caveat into `docs/guide.md`.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["docs/guide.md"]);
     }
 }
