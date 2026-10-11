@@ -284,6 +284,9 @@ pub struct Run<R: Runtime> {
     pub(super) rolled_back_attempts: Vec<super::repair::Rollback>,
     /// Fix rounds beyond MAX_VERIFY_ROUNDS a review after green granted (R08).
     pub(super) bonus_rounds: u32,
+    /// The last round asked the agent about changes that weaken the checks
+    /// (R05): the next round's new failures aren't a regression.
+    pub(super) asked_integrity: bool,
 }
 
 /// Who a run works for.
@@ -761,6 +764,7 @@ impl<R: Runtime> Run<R> {
             groups: Vec::new(),
             rolled_back_attempts: Vec::new(),
             bonus_rounds: 0,
+            asked_integrity: false,
         };
         Ok(Some((run, entry)))
     }
@@ -875,6 +879,7 @@ impl<R: Runtime> Run<R> {
             groups: Vec::new(),
             rolled_back_attempts: Vec::new(),
             bonus_rounds: 0,
+            asked_integrity: false,
         }
     }
 

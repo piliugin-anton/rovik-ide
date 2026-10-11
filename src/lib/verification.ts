@@ -86,6 +86,8 @@ export interface RoundProgress {
   verdict: 'progress' | 'no-progress' | 'regression';
   /** Failing now, not before. */
   new: string[];
+  /** The new failures in what passed before: they make it a regression. */
+  broke?: string[];
   /** Failing before, not now. */
   fixed: string[];
   /** Back to the failures of two rounds ago. */

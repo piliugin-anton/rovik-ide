@@ -445,7 +445,12 @@ impl<R: Runtime> Run<R> {
             .any(|r| r.status == "passed" || r.status == "failed");
         // R01: how this round compares with the earlier ones.
         let now = round_failures(&results);
-        let judgement = repair::judge(&self.verify_history, &now);
+        let mut judgement = repair::judge(&self.verify_history, &now);
+        // R05: asked to put back a weakened test, the agent did, and it
+        // fails: that's what was asked for, not a fix that broke something.
+        if std::mem::take(&mut self.asked_integrity) {
+            judgement = judgement.without_regression();
+        }
         // R05: what weakens the checks, and fewer tests than last round.
         let mut flags = if ran {
             self.integrity_flags()
@@ -461,6 +466,10 @@ impl<R: Runtime> Run<R> {
                     "fewer tests ran than in the last round ({before} → {after})"
                 ));
             }
+        }
+        // Nothing weakens the checks any more: an earlier question is settled.
+        if ran && flags.is_empty() {
+            self.integrity_open.clear();
         }
         let tests_before = self.verify_history.last().and_then(|r| r.tests_ran);
         let max_rounds = self.max_rounds();
@@ -479,7 +488,7 @@ impl<R: Runtime> Run<R> {
         // R02: a fix that broke what didn't fail before is undone; the
         // agent hears what it broke and gets the earlier failures again.
         if failed && judgement.verdict == Progress::Regression && !self.stopped() {
-            if let Some(rb) = self.roll_back(judgement.new.clone()).await {
+            if let Some(rb) = self.roll_back(judgement.broke.clone()).await {
                 self.rolled_back_attempts.push(rb.clone());
                 let status = if round >= max_rounds {
                     "gave-up"
@@ -492,7 +501,13 @@ impl<R: Runtime> Run<R> {
                     extra(Some(&rb)),
                 );
                 if status == "gave-up" {
-                    meta = with(meta, self.gave_up_facts(&judgement.new));
+                    // What's left: the failures of the round it went back to.
+                    let left: Vec<String> = self
+                        .verify_history
+                        .last()
+                        .map(|r| r.keys.iter().cloned().collect())
+                        .unwrap_or_default();
+                    meta = with(meta, self.gave_up_facts(&left));
                 }
                 self.update_meta(&record_id, meta).await?;
                 self.log_round(round, status, &results, &judgement, &flags);
@@ -551,6 +566,7 @@ impl<R: Runtime> Run<R> {
             // the checks run were weakened. Asked once; kept: the run isn't
             // verified, and the user decides.
             self.integrity_open = flags.clone();
+            self.asked_integrity = true;
             self.take_checkpoint();
             self.add_harness(repair::integrity_note(&flags, true), "integrity")
                 .await?;
@@ -588,7 +604,7 @@ impl<R: Runtime> Run<R> {
             // No checkpoint to go back to (too large, or the first round).
             notes.push(format!(
                 "Your last fix broke something that didn't fail before:\n{}",
-                repair::key_list(&judgement.new, 8)
+                repair::key_list(&judgement.broke, 8)
             ));
         }
         if !flags.is_empty() {

@@ -58,6 +58,42 @@ fn kind_of(key: &str) -> &str {
     key.split('|').next().unwrap_or("")
 }
 
+/// A failing test's key: `{kind}|test|{name}`.
+fn is_test_key(key: &str) -> bool {
+    key.split('|').nth(1) == Some("test")
+}
+
+/// A key that names no failure: the check alone (`test|failed`,
+/// `test|timed out`) or the count past the shown keys (`test|and 6 more`).
+fn is_opaque(key: &str) -> bool {
+    key.split('|').count() == 2
+}
+
+/// Whether a failure that's new this round is known to have passed in the
+/// round before (`prev`): its check passed then, or it's a test and the
+/// tests ran then with nothing hiding it (no compile errors, no opaque key);
+/// or it's an error in a check that had only failing tests (the code built).
+/// A new error in a check that had errors before may only have been hidden
+/// behind them: compilers report some errors only once earlier ones are
+/// fixed, and a fixed compile error lets tests run that couldn't before.
+fn broke_passing(key: &str, prev: &RoundFailures) -> bool {
+    let kind = kind_of(key);
+    let before: Vec<&String> = prev.keys.iter().filter(|p| kind_of(p) == kind).collect();
+    if before.is_empty() {
+        return true;
+    }
+    if is_opaque(key) || before.iter().any(|p| is_opaque(p)) {
+        return false;
+    }
+    let tests_before = before.iter().any(|p| is_test_key(p));
+    let errors_before = before.iter().any(|p| !is_test_key(p));
+    if is_test_key(key) {
+        tests_before && !errors_before
+    } else {
+        !errors_before
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verdict {
@@ -67,7 +103,8 @@ pub enum Verdict {
     Progress,
     /// The same failures as the round before, or as two rounds before.
     NoProgress,
-    /// A failure that wasn't there before, in a check that ran then.
+    /// A failure in what passed before: a check that passed, or a test
+    /// that ran and didn't fail (`Judgement::broke`).
     Regression,
 }
 
@@ -77,6 +114,13 @@ pub struct Judgement {
     pub verdict: Verdict,
     /// Failing now, not before.
     pub new: Vec<String>,
+    /// The new failures in what is known to have passed before: they make
+    /// the round a regression (and roll it back). The other new ones may
+    /// have been hidden behind the earlier failures (a compile error before
+    /// the tests ran, errors a compiler reports only once earlier ones are
+    /// fixed, output with no keys to compare, the "and N more" key).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub broke: Vec<String>,
     /// Failing before, not now.
     pub fixed: Vec<String>,
     /// Back to the failures of two rounds ago.
@@ -93,6 +137,7 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
         return Judgement {
             verdict: Verdict::First,
             new: Vec::new(),
+            broke: Vec::new(),
             fixed: Vec::new(),
             back_and_forth: false,
         };
@@ -113,11 +158,16 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
         .filter(|k| !now.keys.contains(*k))
         .cloned()
         .collect();
+    let broke: Vec<String> = new
+        .iter()
+        .filter(|k| broke_passing(k, prev))
+        .cloned()
+        .collect();
     let back_and_forth =
         history.len() >= 2 && history[history.len() - 2].keys == now.keys && prev.keys != now.keys;
     let verdict = if both.is_empty() {
         Verdict::First
-    } else if !new.is_empty() {
+    } else if !broke.is_empty() {
         Verdict::Regression
     } else if back_and_forth || fixed.is_empty() {
         Verdict::NoProgress
@@ -127,8 +177,26 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
     Judgement {
         verdict,
         new,
+        broke,
         fixed,
         back_and_forth,
+    }
+}
+
+impl Judgement {
+    /// The same round with nothing counted as broken: after the agent was
+    /// asked to put back a weakened test, the test failing again is what
+    /// was asked for, not a regression (R05).
+    pub fn without_regression(mut self) -> Judgement {
+        if self.verdict == Verdict::Regression {
+            self.verdict = if self.fixed.is_empty() || self.back_and_forth {
+                Verdict::NoProgress
+            } else {
+                Verdict::Progress
+            };
+        }
+        self.broke.clear();
+        self
     }
 }
 
@@ -155,6 +223,20 @@ pub fn key_list(keys: &[String], max: usize) -> String {
 /// What the agent is told about this round's progress, in its failure
 /// report (nothing for the first round).
 pub fn progress_note(j: &Judgement, remaining: usize) -> Option<String> {
+    let note = progress_verdict_note(j, remaining)?;
+    // New failures that aren't regressions: the earlier ones hid them.
+    if j.new.is_empty() || j.verdict == Verdict::Regression {
+        return Some(note);
+    }
+    Some(format!(
+        "{note} {} new failure{} showed up that the earlier ones may have hidden (a later stage of the build or the tests now runs):\n{}",
+        j.new.len(),
+        if j.new.len() == 1 { "" } else { "s" },
+        key_list(&j.new, 8)
+    ))
+}
+
+fn progress_verdict_note(j: &Judgement, remaining: usize) -> Option<String> {
     match j.verdict {
         Verdict::First | Verdict::Regression => None,
         Verdict::Progress => Some(format!(
@@ -824,6 +906,67 @@ mod tests {
         let j = judge(&[r1], &r2);
         assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
         assert!(j.new.is_empty());
+    }
+
+    #[test]
+    fn failures_the_earlier_ones_hid_are_not_a_regression() {
+        let ran = ["test"];
+        // A compile error, fixed: the tests run, and one fails.
+        let built = round(&["test|src/lib.rs|E0425|cannot find value `x`"], &ran);
+        let tested = round(&["test|test|t::adds"], &ran);
+        let j = judge(std::slice::from_ref(&built), &tested);
+        assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
+        assert_eq!(j.new, ["test|test|t::adds"]);
+        assert!(j.broke.is_empty());
+        assert!(progress_note(&j, 1).unwrap().contains("may have hidden"));
+
+        // Rust reports some errors only once earlier ones are fixed.
+        let types = round(&["test|src/a.rs|E0308|mismatched types"], &ran);
+        let borrow = round(&["test|src/a.rs|E0502|cannot borrow"], &ran);
+        assert!(judge(std::slice::from_ref(&types), &borrow)
+            .broke
+            .is_empty());
+
+        // Output with no keys to compare, and the count past the shown keys.
+        let opaque = round(&["test|failed"], &ran);
+        assert!(judge(std::slice::from_ref(&opaque), &tested)
+            .broke
+            .is_empty());
+        let many = round(&["test|a.ts|TS1|x", "test|and 11 more"], &ran);
+        let fewer = round(&["test|b.ts|TS1|y", "test|and 6 more"], &ran);
+        let j = judge(std::slice::from_ref(&many), &fewer);
+        assert_eq!(j.new.len(), 2);
+        assert!(j.broke.is_empty(), "{j:?}");
+    }
+
+    #[test]
+    fn what_passed_before_and_fails_now_is_a_regression() {
+        let ran = ["test", "lint"];
+        // The tests ran and only `a` failed: `b` failing now broke.
+        let before = round(&["test|test|t::a"], &ran);
+        let now = round(&["test|test|t::b"], &ran);
+        assert_eq!(
+            judge(std::slice::from_ref(&before), &now).broke,
+            ["test|test|t::b"]
+        );
+        // The code built before (only tests failed): a compile error now broke.
+        let now = round(&["test|src/a.rs|E0425|x"], &ran);
+        let j = judge(std::slice::from_ref(&before), &now);
+        assert_eq!(j.verdict, Verdict::Regression);
+        // A check that passed: anything in it broke.
+        let now = round(&["test|test|t::a", "lint|c.ts|rule|z"], &ran);
+        assert_eq!(
+            judge(std::slice::from_ref(&before), &now).broke,
+            ["lint|c.ts|rule|z"]
+        );
+        // Asked to put back a weakened test: not a regression.
+        let j = judge(
+            std::slice::from_ref(&before),
+            &round(&["test|test|t::b"], &ran),
+        )
+        .without_regression();
+        assert_eq!(j.verdict, Verdict::Progress);
+        assert!(j.broke.is_empty());
     }
 
     #[test]

@@ -283,3 +283,108 @@ async fn undoing_a_flagged_change_verifies_the_run() {
     assert_eq!(rounds.last().unwrap()["status"], "passed");
     assert!(rounds.last().unwrap().get("integrity").is_none());
 }
+
+#[tokio::test]
+async fn a_fix_that_lets_the_tests_run_is_not_rolled_back() {
+    if !has_node() {
+        return;
+    }
+    // The build fails until build.txt says ok; then the tests run.
+    let runner: &'static str = Box::leak(
+        format!(
+            "if (!require('fs').readFileSync('build.txt', 'utf8').includes('ok')) {{\n\
+               console.log('error[E0425]: cannot find value `x`\\n --> src/lib.rs:1:5');\n\
+               process.exit(1);\n}}\n{RUNNER}"
+        )
+        .into_boxed_str(),
+    );
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", runner),
+        ("tests/a.test.js", TESTS),
+        ("build.txt", "fails\n"),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        write("w1", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        // Fixes the build: now test `one` runs, and fails.
+        write("w2", "build.txt", "ok\n"),
+        Reply::Text("Done."),
+        write("w3", "a.txt", "good\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix it"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    assert_eq!(h.file("build.txt").as_deref(), Some("ok\n"), "kept");
+    let messages = h.messages().await;
+    let rounds = records(&messages);
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("failed"), &json!("failed"), &json!("passed")]
+    );
+    assert_eq!(rounds[1]["progress"]["verdict"], "progress");
+    let reports = harness_texts(&messages, "verification");
+    assert!(
+        reports[1].contains("may have hidden") && reports[1].contains("a.txt is not good"),
+        "{}",
+        reports[1]
+    );
+}
+
+#[tokio::test]
+async fn putting_back_a_weakened_test_that_fails_is_not_rolled_back() {
+    if !has_node() {
+        return;
+    }
+    let tests = r#"test('adds', () => assert(require('../add.js')(1, 2) === 3, 'add is wrong'));
+test('runs', () => assert(true));
+"#;
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/add.test.js", tests),
+        ("add.js", "module.exports = (a, b) => a - b;\n"),
+    ])
+    .await;
+    let weakened: &'static str = Box::leak(
+        tests
+            .replace("test('adds'", "test.skip('adds'")
+            .into_boxed_str(),
+    );
+    let tests: &'static str = Box::leak(tests.to_string().into_boxed_str());
+    let (url, _) = model(vec![
+        // It silences the failing test: the checks pass, and it's asked.
+        write("w1", "tests/add.test.js", weakened),
+        Reply::Text("Done."),
+        // It puts the test back, as asked: the test fails again.
+        write("w2", "tests/add.test.js", tests),
+        Reply::Text("Put it back."),
+        // Then it fixes the code.
+        write("w3", "add.js", "module.exports = (a, b) => a + b;\n"),
+        Reply::Text("Fixed."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix add"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    // The test it put back stays put back.
+    assert_eq!(h.file("tests/add.test.js").as_deref(), Some(tests));
+    let messages = h.messages().await;
+    let rounds = records(&messages);
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("passed"), &json!("failed"), &json!("passed")]
+    );
+    let reports = harness_texts(&messages, "verification");
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].contains("add is wrong"), "{}", reports[0]);
+    assert!(!reports[0].contains("broke something"));
+    assert!(rounds.last().unwrap().get("integrity").is_none());
+}

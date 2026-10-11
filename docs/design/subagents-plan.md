@@ -1175,3 +1175,41 @@ themselves are not done: like G01's baseline, they need a provider key.
     the `task` tool. The scripted model applies its change with `bash`,
     which isn't tracked as an edit, so its reviewer never runs. The dry
     run tests the pipeline, not the kinds.
+
+### Review fixes: regressions and the integrity question
+
+A review of the branch found that the R01/R02 rollback undid correct
+fixes. This affected every run, with or without subagents.
+
+- **A new failure is a regression only when it broke something that
+  passed** (`repair::broke_passing`, `Judgement.broke`). That means one of
+  these:
+  - its check passed in the round before;
+  - it's a test, and in the round before the tests ran with nothing hiding
+    them: no compile errors, and no key without a failure in it;
+  - it's an error in a check that had only failing tests then, so the code
+    built.
+
+  The other new failures may have been hidden behind the earlier ones:
+  - a fixed compile error lets the tests run;
+  - rustc reports borrow errors only once the type errors are gone;
+  - before, there was only `test|failed`, or the count past the shown keys
+    (`and N more`), which changes with any partial fix.
+
+  These are reported as new ("may have hidden") but not rolled back. Such a
+  round counts as progress when something was fixed. Before this, a fix
+  that let the tests run was rolled back every round until the run gave
+  up.
+
+- **Putting back a weakened test, as asked, isn't a regression.** After
+  the R05 question, the next round's new failures don't roll anything back
+  (`Judgement::without_regression`). Before this, the restored test failing
+  was rolled back to the weakened state. The agent was then told "0 checks
+  fail".
+- `integrity_open` is cleared once a round that ran has no flags, so a
+  settled question can't end a later run as flagged.
+- A gave-up record reached through a rollback lists the failures of the
+  round the code went back to, not the ones the undone fix brought in.
+- Tests: unit (hidden failures; what passed and fails now) and e2e (a
+  build fix that lets the tests run is kept; a weakened test put back and
+  failing isn't rolled back).
