@@ -7172,3 +7172,45 @@ async fn a_failed_launch_gives_its_slot_back() {
         second.content
     );
 }
+
+/// Round 2 (§4.2): a step worker can't change files through a wrapper:
+/// each command is refused and the files stay as they were.
+#[tokio::test]
+async fn a_worker_cant_write_through_a_wrapper() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let bash = |id: &'static str, command: &str| Reply::Call {
+        id,
+        name: "bash",
+        args: json!({ "command": command }),
+    };
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 2.",
+            vec![
+                bash("c1", "env sed -i s/old/new/ a.txt"),
+                bash("c2", "timeout 5 rm b.txt"),
+                bash("c3", "env -S \"rm b.txt\""),
+                bash("c4", "nice -n 5 cp a.txt c.txt"),
+                worker_report("Tried.", &[]),
+            ],
+        )],
+        vec![step("s2", 2), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let child = h.child_of("s2").await;
+    let work = h.messages_of(&child.id).await;
+    for id in ["c1", "c2", "c3", "c4"] {
+        let result = work
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        assert!(result.starts_with("Error"), "{id}: {result}");
+    }
+    assert_eq!(h.file("a.txt").as_deref(), Some("old\n"));
+    assert_eq!(h.file("b.txt").as_deref(), Some("b\n"));
+    assert_eq!(h.file("c.txt"), None);
+}

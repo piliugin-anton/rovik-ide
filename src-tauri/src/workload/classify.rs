@@ -551,6 +551,21 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Round 2 (§4.2): a wrapped command classifies as the bare one;
+    /// `env -S` hides its command, so it isn't light.
+    #[test]
+    fn classify_light_commands_through_wrappers() {
+        for (wrapped, bare) in [
+            ("env CI=1 cargo check", "cargo check"),
+            ("timeout 60 npx tsc --noEmit", "npx tsc --noEmit"),
+            ("nice -n 5 ruff check .", "ruff check ."),
+            ("time cargo build", "cargo build"),
+        ] {
+            assert_eq!(classify(wrapped, None), classify(bare, None), "{wrapped}");
+        }
+        assert_ne!(classify("env -S \"cargo build\"", None), Class::Light);
+    }
+
     fn project(files: &[(&str, &str)]) -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
