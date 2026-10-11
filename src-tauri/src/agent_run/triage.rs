@@ -805,4 +805,45 @@ mod tests {
             "src/a.rs"
         );
     }
+
+    /// Round 2, P4.8: the brief says the whole output is saved only when it
+    /// was, and that it wasn't when it wasn't.
+    #[test]
+    fn brief_says_saved_when_saved() {
+        let check = failed("test");
+        let output = "error: boom at src/a.rs:1";
+        let saved = brief(&BriefParts {
+            round: 1,
+            check: &check,
+            saved: Some(("@checks/round-1-test.log", 25)),
+            output,
+            changed_files: &[],
+            failed_before: true,
+            earlier: None,
+        });
+        assert!(
+            saved.contains(
+                "Its whole output (25 characters) is saved as `@checks/round-1-test.log`"
+            ),
+            "{saved}"
+        );
+        assert!(saved.contains("the saved output has everything"), "{saved}");
+        assert!(!saved.contains("wasn't saved"), "{saved}");
+        let unsaved = brief(&BriefParts {
+            round: 1,
+            check: &check,
+            saved: None,
+            output,
+            changed_files: &[],
+            failed_before: true,
+            earlier: None,
+        });
+        assert!(
+            unsaved.contains("(25 characters; the whole output wasn't saved)"),
+            "{unsaved}"
+        );
+        for said in ["saved as", "saved output", "@checks/", "## Excerpt"] {
+            assert!(!unsaved.contains(said), "{said}: {unsaved}");
+        }
+    }
 }

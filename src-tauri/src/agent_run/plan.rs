@@ -2875,4 +2875,64 @@ mod tests {
             plan_problems(&closed)
         );
     }
+
+    /// Round 2, P4.9: a Windows root, with or without its last separator,
+    /// and a `/`-written root a path was joined onto; the shown path keeps
+    /// the OS's separators. A sibling with the same start isn't under it.
+    #[test]
+    fn relative_plan_path_windows_root() {
+        let file = r"C:\p\.rovik\plans\a.md";
+        assert_eq!(
+            relative_plan_path(file, Some(r"C:\p")),
+            r".rovik\plans\a.md"
+        );
+        assert_eq!(
+            relative_plan_path(file, Some(r"C:\p\")),
+            r".rovik\plans\a.md"
+        );
+        assert_eq!(
+            relative_plan_path(r"C:/p\.rovik\plans\a.md", Some("C:/p")),
+            r".rovik\plans\a.md"
+        );
+        assert_eq!(
+            relative_plan_path(r"C:\pq\a.md", Some(r"C:\p")),
+            r"C:\pq\a.md"
+        );
+        assert_eq!(relative_plan_path(r"C:\a.md", Some(r"C:\")), "a.md");
+    }
+
+    /// Round 2, P4.9: the root itself is shown whole, never as an empty
+    /// path; without a root the path is shown as it is.
+    #[test]
+    fn relative_plan_path_root_equals_path() {
+        assert_eq!(relative_plan_path("/p", Some("/p")), "/p");
+        assert_eq!(relative_plan_path("/p", Some("/p/")), "/p");
+        assert_eq!(relative_plan_path("/p/", Some("/p")), "/p/");
+        assert_eq!(relative_plan_path("/", Some("/")), "/");
+        assert_eq!(relative_plan_path(r"C:\p", Some(r"C:\p\")), r"C:\p");
+        assert_eq!(relative_plan_path("/p/a.md", None), "/p/a.md");
+    }
+
+    /// Round 2, P4.9 (documented): `src/..` is the project root, not a
+    /// path out of it. Like `./` it's no step's file and isn't reported as
+    /// outside the project; a step that names nothing else names no file.
+    #[test]
+    fn trailing_dotdot_is_dropped_silently() {
+        assert!(as_path("src/..").is_none());
+        let tree = Tree::new(&["src/a.rs"]);
+        let plan = "# P\n\nx\n\n## Steps\n\n\
+            1. **Root**\n   - `src/..`: update the list of what is in it.\n\
+            2. **Use**\n   - `src/a.rs`: use the list in the loader.\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert!(
+            steps(plan)[0].files.is_empty(),
+            "{:?}",
+            steps(plan)[0].files
+        );
+        let p = project_problems(plan, &tree.0);
+        assert!(p.is_empty(), "{p:?}");
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 1 names no file"), "{p:?}");
+    }
 }
