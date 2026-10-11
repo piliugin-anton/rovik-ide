@@ -271,6 +271,14 @@ impl AgentState {
         self.lock().carries.remove(dialog_id);
     }
 
+    /// Makes the chat's carry `by` older (its time running out).
+    #[cfg(test)]
+    pub(super) fn age_carry(&self, dialog_id: &str, by: std::time::Duration) {
+        if let Some(c) = self.lock().carries.get_mut(dialog_id) {
+            c.stored -= by;
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn has_carry(&self, dialog_id: &str) -> bool {
         self.lock().carries.contains_key(dialog_id)

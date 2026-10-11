@@ -3962,6 +3962,172 @@ async fn the_lead_is_told_once_that_state_was_lost() {
     assert_eq!(told.iter().filter(|t| **t).count(), 1, "{told:?}");
 }
 
+fn needs_user_approval() -> Permissions {
+    Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..Permissions::default()
+    }
+}
+
+fn has_npm() -> bool {
+    std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+const PASSING_TESTS: &str =
+    r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(0)\"" } }"#;
+
+/// Round 2 (§4.2): a carry past its time isn't taken up: the checks run
+/// afresh, and the record says the state wasn't restored.
+#[tokio::test]
+async fn an_expired_carry_runs_afresh_and_says_so() {
+    let h = harness(&[("package.json", PASSING_TESTS)]).await;
+    if !has_npm() {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Write x"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let record = h.messages().await.last().unwrap().id.clone();
+    let state = h.app.state::<AgentState>();
+    state.age_carry(&h.dialog_id, verify::CARRY_TTL);
+    h.events.lock().unwrap().clear();
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: record.clone(),
+        },
+        needs_user_approval(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verified");
+    let v = verification_of(&h.messages().await, &record);
+    assert_eq!(v["status"], "passed", "{v}");
+    assert_eq!(v["stateRestored"], false, "{v}");
+    assert!(!state.has_carry(&h.dialog_id));
+}
+
+/// Round 2 (§4.2): discarding a chat's changes, or deleting the chat,
+/// frees its carry and the folder its large originals spilled to.
+#[tokio::test]
+async fn discard_and_delete_free_the_carry_and_spill_dir() {
+    let big = "a".repeat(verify::CARRY_MEMORY_BYTES + 1);
+    let h = harness(&[("package.json", PASSING_TESTS), ("big.txt", big.as_str())]).await;
+    if !has_npm() {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "big.txt", "content": "small" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "big.txt", "content": "small" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let state = h.app.state::<AgentState>();
+    let spill_dir = check_output::carry_dir(&h.dialog_id).unwrap();
+    let app = h.app.handle().clone();
+
+    h.start(h.request(&url, Harness::send("Shrink"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(state.has_carry(&h.dialog_id));
+    assert!(spill_dir.read_dir().unwrap().next().is_some(), "spilled");
+    let _ = crate::overlay::chats::overlay_discard(app.state(), h.dialog_id.clone()).await;
+    assert!(!state.has_carry(&h.dialog_id));
+    assert!(!spill_dir.exists(), "{}", spill_dir.display());
+
+    std::fs::write(h.project.join("big.txt"), &big).unwrap();
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Shrink again"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(spill_dir.read_dir().unwrap().next().is_some(), "spilled");
+    crate::chat_db::commands::chat_delete_dialog(
+        app.clone(),
+        app.state::<AgentState>(),
+        app.state::<crate::vfs::VfsState>(),
+        app.state::<DbState>(),
+        h.dialog_id.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!state.has_carry(&h.dialog_id));
+    assert!(!spill_dir.exists(), "{}", spill_dir.display());
+}
+
+/// Round 2 (§4.2): a lead's run that ends in an error, or is stopped,
+/// leaves no checks waiting: the older run's state goes.
+#[tokio::test]
+async fn a_lead_that_errors_or_is_stopped_drops_the_carry() {
+    let h = harness(&[("package.json", PASSING_TESTS)]).await;
+    if !has_npm() {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+        Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}"),
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "y.txt", "content": "y" }),
+        },
+        Reply::Text("Done."),
+        Reply::Hang(None),
+    ])
+    .await;
+    let state = h.app.state::<AgentState>();
+    h.start(h.request(&url, Harness::send("Write x"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(state.has_carry(&h.dialog_id));
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("And?"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "error");
+    assert!(!state.has_carry(&h.dialog_id));
+
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Write y"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(state.has_carry(&h.dialog_id));
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Wait"), needs_user_approval()))
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let app = h.app.handle().clone();
+    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    assert_eq!(h.run_end().await, "stopped");
+    assert!(!state.has_carry(&h.dialog_id));
+}
+
 #[tokio::test]
 async fn checks_wait_for_approval_then_run_when_started() {
     let h = harness(&[(

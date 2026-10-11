@@ -214,6 +214,10 @@ impl Drop for Spilled {
         for (_, file, _) in &self.0 {
             let _ = std::fs::remove_file(file);
         }
+        // And the chat's carry folder, once nothing else is in it (round 2).
+        if let Some(dir) = self.0.first().and_then(|(_, f, _)| f.parent()) {
+            let _ = std::fs::remove_dir(dir);
+        }
     }
 }
 
