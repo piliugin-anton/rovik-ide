@@ -4128,17 +4128,10 @@ async fn a_kept_copy_whose_step_cant_be_read_doesnt_land_everything() {
         continued.content
     );
     // Nothing of it reached the chat's files (nor, through them, the
-    // project's); its copy still has its work.
-    let view = crate::overlay::chats::mountpoint(&h.dialog_id);
-    for root in [view, h.project.clone()] {
-        assert_ne!(
-            std::fs::read_to_string(root.join("src/feed.rs"))
-                .ok()
-                .as_deref(),
-            Some("feed from w3\n"),
-            "{}",
-            root.display()
-        );
+    // project's).
+    assert_eq!(h.file("src/feed.rs").as_deref(), Some("// feed\n"));
+    if crate::overlay::chats::get(&h.dialog_id).is_some() {
+        assert_eq!(in_view(&h, "src/feed.rs").as_deref(), Some("// feed\n"));
     }
     assert!(continued.content.contains("Its copy is kept"));
     assert!(continued
@@ -8322,4 +8315,228 @@ async fn grants_survive_a_restart_and_a_second_run() {
     let second = h.child_results("s2").await;
     assert!(second["w2"].starts_with("Error"), "{}", second["w2"]);
     assert_eq!(h.file("extra.txt").as_deref(), Some("by the first\n"));
+}
+
+/// A file in the chat's view, while it's open (None when it isn't, or
+/// the file isn't there).
+fn in_view(h: &Harness, path: &str) -> Option<String> {
+    let view = crate::overlay::chats::get(&h.dialog_id)?.view.clone();
+    std::fs::read_to_string(view.join(path)).ok()
+}
+
+/// A group harness whose `npx eslint` runs `script` (a side effect).
+async fn group_harness_with_side_effect(
+    plan: &'static str,
+    script: &str,
+    extra: &[(&str, &str)],
+) -> Harness {
+    let body = format!("#!/bin/sh\n{script}\n");
+    let mut files: Vec<(&str, &str)> = vec![
+        ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
+        ("src/users.rs", "// users\n"),
+        ("src/posts.rs", "// posts\n"),
+        (".rovik/plans/greet.md", plan),
+        ("node_modules/.bin/eslint", body.as_str()),
+    ];
+    files.extend_from_slice(extra);
+    let mut h = harness(&files).await;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = h.project.join("node_modules/.bin/eslint");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    h.isolate().await;
+    h
+}
+
+fn eslint(id: &'static str) -> Reply {
+    Reply::Call {
+        id,
+        name: "bash",
+        // One file: a light check a worker may run.
+        args: json!({ "command": "npx eslint src/api.rs" }),
+    }
+}
+
+/// A new folder that holds the step's file lands with it; a file a
+/// command made in a folder below it doesn't, and the lead is told.
+#[tokio::test]
+async fn out_of_scope_folder_with_in_scope_file_lands() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let plan: &'static str = Box::leak(
+        GROUP_PLAN
+            .replace(
+                "`src/users.rs`: implement",
+                "`src/api/users.rs` (new): implement",
+            )
+            .into_boxed_str(),
+    );
+    let h = group_harness_with_side_effect(
+        plan,
+        "mkdir -p src/api/cache && printf 'tmp\\n' > src/api/cache/x.tmp",
+        &[],
+    )
+    .await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/api/users.rs", "users\n"),
+                    eslint("b1"),
+                    worker_report("Users.", &["src/api/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let result = h.result_when_ready("g1").await;
+    assert_eq!(in_view(&h, "src/api/users.rs").as_deref(), Some("users\n"));
+    assert!(crate::overlay::chats::get(&h.dialog_id).is_some());
+    assert_eq!(in_view(&h, "src/api/cache/x.tmp"), None);
+    assert!(
+        result
+            .content
+            .contains("Not landed, outside its step's scope"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("src/api/cache"),
+        "{}",
+        result.content
+    );
+    h.run_end().await;
+}
+
+/// A path granted to a worker is in its scope when it lands; another
+/// worker's side effect on it isn't.
+#[tokio::test]
+async fn grants_make_a_path_in_scope_at_landing() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = group_harness_with_side_effect(
+        GROUP_PLAN,
+        "printf 'by w2s command\\n' > src/shared.rs",
+        &[("src/shared.rs", "// shared\n")],
+    )
+    .await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    Reply::Call {
+                        id: "e1",
+                        name: "extend_scope",
+                        args: json!({ "paths": ["src/shared.rs"], "reason": "a helper" }),
+                    },
+                    write_call("w1", "src/shared.rs", "by w1\n"),
+                    write_call("w1b", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs", "src/shared.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    eslint("b2"),
+                    write_call("w2", "src/posts.rs", "posts\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let result = h.result_when_ready("g1").await;
+    assert_eq!(
+        in_view(&h, "src/shared.rs").as_deref(),
+        Some("by w1\n"),
+        "{}",
+        result.content
+    );
+    assert_eq!(in_view(&h, "src/posts.rs").as_deref(), Some("posts\n"));
+    h.run_end().await;
+}
+
+/// A worker with both a conflict and a side effect: both are named, the
+/// conflicting file stays as the chat has it, and landing it later still
+/// leaves the side effect out.
+#[tokio::test]
+async fn out_of_scope_and_conflict_together() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = group_harness_with_side_effect(GROUP_PLAN, "printf 'side effect\\n' > src/api.rs", &[])
+        .await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "from w2\n"),
+                    eslint("b2"),
+                    Reply::Slow(1_000, Box::new(worker_report("Posts.", &["src/posts.rs"]))),
+                    worker_report("Nothing more.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            write_call("l1", "src/posts.rs", "from the user\nfrom w2\n"),
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "g1#w2", "goal": "land it" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    edit_while_workers_run(&h, "src/posts.rs", "from w2\n", "from the user\n").await;
+    let result = h.result_when_ready("g1").await;
+    assert!(
+        result.content.contains("## The join stopped: a conflict"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("outside its step's scope"),
+        "{}",
+        result.content
+    );
+    let continued = h.result_when_ready("c1").await;
+    assert_eq!(
+        in_view(&h, "src/api.rs").as_deref(),
+        Some("pub fn users() {}\npub fn posts() {}\n"),
+        "the side effect never lands: {}",
+        continued.content
+    );
+    assert_eq!(
+        in_view(&h, "src/posts.rs").as_deref(),
+        Some("from the user\nfrom w2\n")
+    );
+    h.run_end().await;
 }
