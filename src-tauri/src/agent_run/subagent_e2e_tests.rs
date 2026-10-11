@@ -9502,3 +9502,251 @@ async fn a_fixer_writing_outside_paths_is_recorded_from_the_chats_own_version() 
         Some("extra by the lead\n")
     );
 }
+
+/// P4.6: a plan submitted once the run's plan reviews are used is saved
+/// with exactly this note and record (no round, time or reviewer).
+#[tokio::test]
+async fn budget_used_record_shape() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(NO_FINDINGS)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit("p2", users_plan("Users", 1)),
+            submit("p3", users_plan("Users v3", 3)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(requests_with(&seen, PLAN_REVIEW).len(), 2);
+    let messages = h.messages().await;
+    let file = result_of(&messages, "p2").meta.as_ref().unwrap()["planFile"].clone();
+    assert!(file.is_string(), "{file}");
+    let third = result_of(&messages, "p3");
+    assert_eq!(
+        third.content,
+        "Saved the plan to .rovik/plans/2026-10-06-add-users.md. Review skipped: this run's 2 plan reviews are used."
+    );
+    assert_eq!(
+        third.meta.as_ref().unwrap(),
+        &json!({
+            "planFile": file,
+            "review": {
+                "kind": "plan",
+                "status": "skipped",
+                "reason": "this run's 2 plan reviews are used",
+                "maxRounds": 2,
+            },
+        })
+    );
+    assert!(h.plan_files()[0].starts_with("# Users v3"));
+}
+
+/// Pins the per-run reset: a run that used both plan reviews doesn't use
+/// up the next run's. Its first review is round 1 again, and its brief
+/// carries none of the earlier run's findings (they're in the saved plan's
+/// open-findings section, which the reviewed revision replaces).
+#[tokio::test]
+async fn plan_review_across_a_second_run() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING_2)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit("p2", users_plan("Users", 1)),
+            Reply::Text("Saved, with one finding open."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(requests_with(&seen, PLAN_REVIEW).len(), 2);
+    let messages = h.messages().await;
+    assert_eq!(
+        result_of(&messages, "p2").meta.as_ref().unwrap()["review"]["open"],
+        1
+    );
+    assert!(h.plan_files()[0].contains("## Open review findings"));
+
+    // The next run: more than a small revision, so it's reviewed, afresh.
+    let (url2, seen2) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(NO_FINDINGS)])],
+        vec![submit("p3", users_plan("Users", 6)), Reply::Text("Saved.")],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.plan_request(&url2, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let briefs = requests_with(&seen2, PLAN_REVIEW);
+    assert_eq!(briefs.len(), 1, "reviewed: the budget is the run's");
+    let brief = briefs[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(!brief.contains("## The earlier review"), "{brief}");
+    assert!(brief.contains("**Caller 5**"), "{brief}");
+    let messages = h.messages().await;
+    let third = result_of(&messages, "p3");
+    assert!(
+        third.content.starts_with("Saved the plan to") && !third.content.contains("Review skipped"),
+        "{}",
+        third.content
+    );
+    let review = &third.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (review["round"].as_u64(), review["status"].as_str()),
+        (Some(1), Some("clean"))
+    );
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(
+        files[0].contains("**Caller 5**") && !files[0].contains("Open review findings"),
+        "{}",
+        files[0]
+    );
+}
+
+/// P4.7 without FUSE: `verify_now` runs only after a parallel group, which
+/// needs an isolated chat, so it's driven on a run prepared in the project
+/// itself. Its saved output is still readable after the end's checks (the
+/// run's first round, which cleaned before P4.7); an earlier run's output
+/// goes at the run's first checks, mid-run ones included.
+#[tokio::test]
+async fn verify_now_output_survives_verify_at_end_without_fuse() {
+    let Some(h) = failing_project(400).await else {
+        return;
+    };
+    let output = |path: &str| crate::agent_run::check_output::resolve(&h.dialog_id, path);
+    // Left by an earlier run of the chat.
+    let earlier =
+        crate::agent_run::check_output::save(&h.dialog_id, "round-1", "lint", "earlier\n").unwrap();
+    let (url, seen) = model(vec![Reply::Text("Not asked.")]).await;
+    let app = h.app.handle().clone();
+    let state = app.state::<AgentState>().inner().clone();
+    let db = app.state::<DbState>().inner().clone();
+    let request = h.request(&url, Harness::send("Greet"), checks_on());
+    state.set_config(request.config.clone().unwrap());
+    let controls = state.register(&h.dialog_id, "p::m", None).unwrap();
+    let _registered = state.registered(&h.dialog_id, &controls.run_id);
+    let (mut run, _entry) =
+        crate::agent_run::run::Run::prepare(&app, &state, &db, request, controls)
+            .await
+            .unwrap()
+            .unwrap();
+    run.changed_files = vec!["a.txt".into()];
+
+    let said = run.verify_now(&[]).await.unwrap();
+    assert!(said.contains("and some fail"), "{said}");
+    assert!(
+        output(earlier.as_str()).is_err(),
+        "an earlier run's output goes"
+    );
+    let messages = h.messages().await;
+    let mid = messages
+        .iter()
+        .find_map(|m| {
+            let v = m.meta.as_ref()?.get("verification")?;
+            (v["midRun"] == true).then(|| v.clone())
+        })
+        .expect("a mid-run record");
+    assert_eq!(mid["status"], "failed", "{mid}");
+    let saved = mid["checks"][0]["savedOutput"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(saved.starts_with("@checks/round-0-midrun-"), "{saved}");
+    assert!(said.contains(&format!("saved as `{saved}`")), "{said}");
+
+    // The end's checks: round 1, which cleaned the folder before P4.7.
+    assert_eq!(run.verify_at_end(false, None).await.unwrap(), "continue");
+    assert!(output("@checks/round-1-test.log").is_ok());
+    let path = output(saved.as_str()).expect("the mid-run output was removed by the end's checks");
+    assert!(std::fs::read_to_string(path)
+        .unwrap()
+        .contains("error: the greeting is wrong at a.txt:1"));
+    assert!(seen.lock().unwrap().is_empty(), "no model turn ran");
+    drop(run);
+    crate::agent_run::check_output::clean(&h.dialog_id);
+}
+
+/// P4.7, across runs (documents the semantics): saved output stays until
+/// the chat's next run runs its first checks. That run can still read it
+/// before then; its checks remove it (they pass here, so nothing new is
+/// saved), while the earlier run's record keeps naming the file.
+#[tokio::test]
+async fn second_run_cleans_earlier_output() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let check = "const fs = require('fs');\n\
+        if (!fs.readFileSync('a.txt', 'utf8').includes('hello')) {\n\
+          for (let i = 1; i <= 400; i++) console.log('noise line ' + i + ' of the test run, nothing to see');\n\
+          console.error('error: the greeting is wrong at a.txt:1');\n\
+          process.exit(1);\n\
+        }\n";
+    let h = harness(&[
+        ("a.txt", "old\n"),
+        ("greet.js", check),
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node greet.js" } }"#,
+        ),
+    ])
+    .await;
+    let saved = "@checks/round-1-test.log";
+    let output = |path: &str| crate::agent_run::check_output::resolve(&h.dialog_id, path);
+    let (url, _) = model(vec![
+        write_call("w1", "a.txt", "helo\n"),
+        Reply::Text("Done."),
+        Reply::Text("I can't fix it."),
+    ])
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), Default::default()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-unresolved");
+    assert!(output(saved).is_ok(), "kept after its run ended");
+
+    let (url, _) = model(vec![
+        // Before this run's checks: the earlier run's output is there.
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": saved, "start_line": 1, "end_line": 12 }),
+        },
+        write_call("w2", "a.txt", "hello\n"),
+        Reply::Text("Fixed."),
+    ])
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.with_subagents(&url, "Try again", checks_on(), Default::default()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let read = result_of(&messages, "r1");
+    assert!(
+        read.content.contains("error: the greeting is wrong"),
+        "{}",
+        read.content
+    );
+    // Its first checks emptied the folder; passing, they saved nothing.
+    let gone = output(saved).unwrap_err();
+    assert!(gone.contains("no such saved output"), "{gone}");
+    // The earlier run's record still names the file.
+    let first = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?.get("verification").cloned())
+        .unwrap();
+    assert_eq!(first["checks"][0]["savedOutput"], saved, "{first}");
+}
