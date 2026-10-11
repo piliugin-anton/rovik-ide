@@ -151,6 +151,9 @@ impl<R: Runtime> Run<R> {
                 "Error: \"group\" is required: the name on the plan's \"Group:\" lines.".into(),
             );
         }
+        if self.plan_mode {
+            return Err("Error: Plan mode changes no files: workers carry out a plan once it's implemented. Finish the plan with submit_plan.".into());
+        }
         if !config.parallel_workers || config.kind(Kind::Worker).is_none() {
             return Err("Error: parallel workers are off in the settings. Carry out the group's steps one at a time with kind \"worker\".".into());
         }

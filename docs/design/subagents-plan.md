@@ -1259,3 +1259,20 @@ fixes. This affected every run, with or without subagents.
     confinement, and `git commit` is refused.
 
   Both e2e tests fail without the fix.
+
+### Review fixes: Plan mode starts no writing subagent
+
+- In Plan mode the lead isn't offered the kinds that write:
+  - `subagent_kinds` drops step workers and the test writer;
+  - the `task` schema and the lead's prompt have no parallel groups
+    (`Run::groups_now`). The group and contract rules for writing the plan
+    stay.
+- A call for a writing kind, a follow-up to one, or `kind: "workers"` is
+  refused with "Plan mode changes no files". Before this, a Plan-mode lead
+  could start a test writer, or a worker on a plan saved with
+  `submit_plan`, and change files in read-only Plan mode.
+- The subagents' hold on the project's commands (review item 5) was
+  already fixed by `Run::overlay_owner` above.
+- Test: in Plan mode with every kind on, the schema offers scouts only.
+  The three calls are refused, no file changes, and no subagent chat is
+  started. The test fails without the fix.

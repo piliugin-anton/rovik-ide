@@ -320,6 +320,14 @@ impl<R: Runtime> Run<R> {
                 .start_follow_up(tc, config, &kinds, handle, &args)
                 .await;
         }
+        if let Some(kind) = args
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .and_then(Kind::parse)
+            .filter(|k| self.plan_mode && k.writes())
+        {
+            return Err(plan_mode_refusal(kind));
+        }
         let brief = subagent::parse_brief(&args, &kinds)?;
         let kind = brief.kind;
         if kind == Kind::Worker {
@@ -389,6 +397,9 @@ impl<R: Runtime> Run<R> {
                 "Error: no subagent \"{handle}\" in this chat. Use the handle from its report."
             ));
         };
+        if let Some(kind) = Kind::parse(&child.kind).filter(|k| self.plan_mode && k.writes()) {
+            return Err(plan_mode_refusal(kind));
+        }
         let kind = Kind::parse(&child.kind)
             .filter(|k| kinds.contains(k))
             .ok_or_else(|| {
@@ -1501,6 +1512,14 @@ impl<R: Runtime> Run<R> {
 }
 
 /// `Blocked` when the report says so, else `otherwise`.
+/// A writing kind asked for in Plan mode, which changes no files.
+fn plan_mode_refusal(kind: Kind) -> String {
+    format!(
+        "Error: Plan mode changes no files, so {} subagents can't run here; they run when the plan is implemented. Scouts can explore.",
+        kind.spec().label.to_lowercase()
+    )
+}
+
 fn status_of(text: &str, otherwise: SubStatus) -> SubStatus {
     if subagent::is_blocked(text) {
         SubStatus::Blocked

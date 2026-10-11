@@ -913,11 +913,23 @@ impl<R: Runtime> Run<R> {
 
     /// The kinds of subagent this lead may start now (none for a subagent:
     /// depth 1, D3). Read at each turn: settings changes apply at once.
+    /// Plan mode changes nothing, so no kind that writes (step workers, the
+    /// test writer) is offered there.
     pub(super) fn subagent_kinds(&self) -> Vec<subagent::Kind> {
         if self.sub().is_some() || self.root.is_none() || self.profile.no_tools {
             return Vec::new();
         }
-        self.state.config().subagents.lead_kinds()
+        let mut kinds = self.state.config().subagents.lead_kinds();
+        if self.plan_mode {
+            kinds.retain(|k| !k.writes());
+        }
+        kinds
+    }
+
+    /// Parallel groups can be started now: they can run, and this isn't
+    /// Plan mode (which writes the plan's groups, not their code).
+    pub(super) fn groups_now(&self) -> bool {
+        self.parallel_on() && !self.plan_mode
     }
 
     /// Parallel groups can run (F): the setting is on, step workers are
@@ -1319,7 +1331,7 @@ impl<R: Runtime> Run<R> {
                 self.project_context
             ));
         } else if !kinds.is_empty() && !context_only && !tools.is_empty() {
-            tools.push(subagent::task_schema(&kinds, self.parallel_on()));
+            tools.push(subagent::task_schema(&kinds, self.groups_now()));
         }
         let subagent_section = if context_only {
             None
@@ -1327,7 +1339,7 @@ impl<R: Runtime> Run<R> {
             subagent::lead_prompt(
                 &kinds,
                 config.subagents.worker_min_steps(),
-                self.parallel_on(),
+                self.groups_now(),
             )
         };
         let group_rules = subagent::plan_group_rules(self.parallel_on());

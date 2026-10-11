@@ -555,6 +555,73 @@ async fn plan_mode_can_send_scouts() {
     assert!(h.task_result("t1").await.content.contains("Status: done"));
 }
 
+/// Plan mode changes no files: the kinds that write aren't offered, and a
+/// call for one (or for a parallel group) is refused.
+#[tokio::test]
+async fn plan_mode_never_starts_a_writing_subagent() {
+    let h = harness(&[("a.txt", "x\n"), (".rovik/plans/greet.md", STEP_PLAN)]).await;
+    let (url, seen) = model(vec![
+        Reply::Calls(vec![
+            ("t1", "task", json!({ "kind": "testWriter" })),
+            ("t2", "task", json!({ "kind": "worker", "step": 1 })),
+            ("t3", "task", json!({ "kind": "workers", "group": "pages" })),
+        ]),
+        Reply::Text("Planning only."),
+    ])
+    .await;
+    let config: subagent::SubagentConfig = serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": {
+            "scout": { "enabled": true },
+            "worker": { "enabled": true },
+            "testWriter": { "enabled": true },
+        },
+        "workerMinSteps": 2,
+        "parallelWorkers": true,
+    }))
+    .unwrap();
+    let mut request = h.with_subagents(
+        &url,
+        "Implement the plan in `.rovik/plans/greet.md`.",
+        quiet_permissions(),
+        config,
+    );
+    request.mode = Some("plan".into());
+    h.start(request).await;
+    h.run_end().await;
+    let first = seen.lock().unwrap()[0].clone();
+    let task = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["function"]["name"] == "task")
+        .expect("scouts are still offered")
+        .to_string();
+    assert!(task.contains("scout"), "{task}");
+    assert!(
+        !task.contains("testWriter") && !task.contains("\"worker\""),
+        "{task}"
+    );
+    for call in ["t1", "t2", "t3"] {
+        let r = h.task_result(call).await.content;
+        assert!(
+            r.starts_with("Error: Plan mode changes no files"),
+            "{call}: {r}"
+        );
+    }
+    assert_eq!(h.file("a.txt").as_deref(), Some("x\n"));
+    // No subagent chat was started for any of them.
+    let db = h.app.state::<DbState>().inner().clone();
+    for call in ["t1", "t2", "t3"] {
+        let (id, call) = (h.dialog_id.clone(), call.to_string());
+        let child = db
+            .read(move |c| store::child_for_call(c, &id, &call))
+            .await
+            .unwrap();
+        assert!(child.is_none(), "{child:?}");
+    }
+}
+
 /// S00: two runs at once each get their own replies, in their order, every
 /// time (the scripted provider used to answer in arrival order, K05).
 #[tokio::test]
