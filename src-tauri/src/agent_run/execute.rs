@@ -685,17 +685,9 @@ impl<R: Runtime> Run<R> {
             .unwrap_or_else(|| tc.arguments.clone());
         let tool_name = tc.name.clone();
         // P2.2: a subagent's command can't run past its time budget.
-        if let (true, Some(left)) = (tool_name == "bash", self.wall_left()) {
-            let mut args = permissions::parse_args(&args_json);
-            let asked = args
-                .get("timeout_seconds")
-                .and_then(|t| t.as_f64())
-                .filter(|t| *t > 0.0)
-                .unwrap_or(120.0);
-            let allowed = asked.min(left.as_secs_f64().max(1.0));
-            if allowed < asked {
-                args.insert("timeout_seconds".into(), json!(allowed));
-                args_json = Value::Object(args).to_string();
+        if tool_name == "bash" {
+            if let Some(clamped) = clamp_timeout(&args_json, self.wall_left()) {
+                args_json = clamped;
             }
         }
         let writes = auth.refusal.is_none() && permissions::modifies_files(&tool_name);
@@ -1723,9 +1715,74 @@ impl<R: Runtime> Run<R> {
     }
 }
 
+/// A command's arguments with its timeout cut to the time `left` of a
+/// subagent's budget (at least a second); None when it's within it, or for
+/// the lead, which has no time budget.
+fn clamp_timeout(args_json: &str, left: Option<std::time::Duration>) -> Option<String> {
+    let left = left?;
+    let mut args = permissions::parse_args(args_json);
+    let asked = args
+        .get("timeout_seconds")
+        .and_then(|t| t.as_f64())
+        .filter(|t| *t > 0.0)
+        .unwrap_or(120.0);
+    let allowed = asked.min(left.as_secs_f64().max(1.0));
+    (allowed < asked).then(|| {
+        args.insert("timeout_seconds".into(), json!(allowed));
+        Value::Object(args).to_string()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2 (section 4.2): a subagent's command timeout is cut to the
+    /// time it has left (at least a second, and later ones no longer than
+    /// earlier ones); the lead's never is.
+    #[test]
+    fn bash_timeout_is_clamped_to_the_time_left() {
+        use std::time::Duration;
+        let timeout = |json: &str| -> f64 {
+            serde_json::from_str::<Value>(json).unwrap()["timeout_seconds"]
+                .as_f64()
+                .unwrap()
+        };
+        let asked = r#"{"command":"npm test","timeout_seconds":600}"#;
+        let first = timeout(&clamp_timeout(asked, Some(Duration::from_secs(90))).unwrap());
+        let second = timeout(&clamp_timeout(asked, Some(Duration::from_secs(30))).unwrap());
+        assert!(
+            second <= first && first <= 90.0 && second >= 1.0,
+            "{first} {second}"
+        );
+        // No timeout given: the default 120 s, cut too.
+        assert_eq!(
+            timeout(&clamp_timeout(r#"{"command":"x"}"#, Some(Duration::from_secs(10))).unwrap()),
+            10.0
+        );
+        // No time left: a second, not zero.
+        assert_eq!(
+            timeout(&clamp_timeout(asked, Some(Duration::ZERO)).unwrap()),
+            1.0
+        );
+        // Within the budget: as asked.
+        assert_eq!(
+            clamp_timeout(
+                r#"{"command":"x","timeout_seconds":5}"#,
+                Some(Duration::from_secs(60))
+            ),
+            None
+        );
+    }
+
+    /// Round 2 (section 4.2): the lead has no time budget.
+    #[test]
+    fn the_lead_has_no_wall() {
+        assert_eq!(
+            clamp_timeout(r#"{"command":"x","timeout_seconds":600}"#, None),
+            None
+        );
+    }
 
     #[test]
     fn context_paths() {
