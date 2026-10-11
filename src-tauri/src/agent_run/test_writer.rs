@@ -283,7 +283,11 @@ impl<R: tauri::Runtime> super::run::Run<R> {
             .iter()
             .find(|c| c.kind == "test" && c.enabled)
             .map(|c| c.command.clone());
-        let id = format!("red-{}", uuid::Uuid::new_v4());
+        let id = format!(
+            "{}{}",
+            crate::overlay::chats::SCRATCH_PREFIX,
+            uuid::Uuid::new_v4()
+        );
         let (scratch_id, base) = (id.clone(), std::path::PathBuf::from(&project));
         let scratch = tauri::async_runtime::spawn_blocking(move || {
             crate::overlay::chats::open_scratch(&scratch_id, &base)

@@ -607,13 +607,17 @@ pub fn open_scratch(id: &str, base: &Path) -> Result<Arc<ChatOverlay>, String> {
     if !valid_id(id) {
         return Err("not a chat id".into());
     }
-    let overlay = mount_on(id, base, DEFAULT_LIMIT, None)?;
-    // P6.8: marked, so one a crash left is swept at the next start.
+    // P6.8: marked, so one a crash left is swept at the next start; marked
+    // before it's mounted, so a crash in between leaves it marked (round 2).
     if let Some(store) = store_dir(id) {
-        let _ = std::fs::write(store.join(SCRATCH_MARK), "");
+        std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
+        std::fs::write(store.join(SCRATCH_MARK), "").map_err(|e| e.to_string())?;
     }
-    Ok(overlay)
+    mount_on(id, base, DEFAULT_LIMIT, None)
 }
+
+/// Scratch overlays' ids start with this (the test writer's red check).
+pub const SCRATCH_PREFIX: &str = "red-";
 
 /// The file that marks a scratch overlay's store (never a chat's).
 const SCRATCH_MARK: &str = "scratch.txt";
@@ -624,7 +628,9 @@ fn sweep_scratch(data_dir: &Path) {
         return;
     };
     for d in dirs.flatten() {
-        if d.path().join(SCRATCH_MARK).is_file() {
+        // Marked, or named as one (a chat's id is a bare uuid).
+        let named = d.file_name().to_string_lossy().starts_with(SCRATCH_PREFIX);
+        if named || d.path().join(SCRATCH_MARK).is_file() {
             let _ = std::fs::remove_dir_all(d.path());
         }
     }
@@ -3815,6 +3821,31 @@ mod bench {
 #[cfg(test)]
 mod child_tests {
     use super::*;
+
+    /// Round 2 (section 4.2): scratch overlays a crash left are swept at
+    /// start, marked or only named as one; a chat's store stays.
+    #[test]
+    fn a_scratch_overlay_left_by_a_crash_is_swept_even_without_its_mark() {
+        let root = std::env::temp_dir().join(format!("sweep-{}", uuid::Uuid::new_v4()));
+        let overlays = root.join("data").join("overlays");
+        let unmarked = overlays.join(format!("{SCRATCH_PREFIX}{}", uuid::Uuid::new_v4()));
+        let marked = overlays.join(uuid::Uuid::new_v4().to_string());
+        let chat = overlays.join(uuid::Uuid::new_v4().to_string());
+        for (dir, files) in [
+            (&unmarked, vec!["project.txt"]),
+            (&marked, vec!["project.txt", SCRATCH_MARK]),
+            (&chat, vec!["project.txt"]),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+            for f in files {
+                std::fs::write(dir.join(f), "x").unwrap();
+            }
+        }
+        let _data = test_data(&root.join("data"));
+        assert!(!unmarked.exists() && !marked.exists());
+        assert!(chat.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn read(p: &Path) -> Option<String> {
         std::fs::read_to_string(p).ok()
