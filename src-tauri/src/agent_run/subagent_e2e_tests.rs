@@ -7597,3 +7597,111 @@ async fn same_brief_limit_counts_retries_across_the_run() {
         "{third}"
     );
 }
+
+/// Calls in a reply that came back after the time budget ran out aren't
+/// run, and the subagent ends soon after.
+#[tokio::test]
+async fn remaining_calls_in_a_reply_are_refused_once_time_is_up() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-WALL",
+            vec![
+                // Past the shortest time budget (0.25 minutes).
+                Reply::Slow(
+                    16_000,
+                    Box::new(Reply::Calls(vec![
+                        ("r1", "read", json!({ "path": "a.txt" })),
+                        ("r2", "read", json!({ "path": "a.txt" })),
+                    ])),
+                ),
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![task("t1", "MARK-WALL: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    let started = std::time::Instant::now();
+    h.start(h.with_subagents(
+        &url,
+        "Go",
+        quiet_permissions(),
+        scouts_on(json!({ "maxMinutes": 0.25 })),
+    ))
+    .await;
+    // The reply takes 16 s: longer than run_end waits on its own.
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    h.run_end().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+    let results = h.child_results("t1").await;
+    for id in ["r1", "r2"] {
+        assert!(
+            results[id].starts_with("Error: not run") && results[id].contains("time budget"),
+            "{id}: {}",
+            results[id]
+        );
+    }
+    assert!(h
+        .task_result("t1")
+        .await
+        .content
+        .contains("Status: partial"));
+}
+
+/// Time spent waiting for the user's approval isn't the subagent's: one
+/// approved after its whole budget still runs the call.
+#[tokio::test]
+async fn waiting_for_an_approval_doesnt_spend_the_wall() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-WAIT",
+            vec![
+                Reply::Call {
+                    id: "s1",
+                    name: "read",
+                    args: json!({ "path": "a.txt" }),
+                },
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![task("t1", "MARK-WAIT: where?"), Reply::Text("Done.")],
+    )
+    .await;
+    let permissions = Permissions {
+        tool_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..quiet_permissions()
+    };
+    h.start(h.with_subagents(
+        &url,
+        "Go",
+        permissions,
+        scouts_on(json!({ "maxMinutes": 0.25 })),
+    ))
+    .await;
+    let asked = h
+        .wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
+    // Longer than its whole budget (0.25 minutes).
+    tokio::time::sleep(Duration::from_secs(16)).await;
+    let app = h.app.handle().clone();
+    assert!(agent_resolve_approval(
+        app.clone(),
+        app.state(),
+        child,
+        "s1".into(),
+        ApprovalDecision::Allow
+    ));
+    h.run_end().await;
+    let results = h.child_results("t1").await;
+    assert!(results["s1"].contains('x'), "{}", results["s1"]);
+    assert!(h.task_result("t1").await.content.contains("Status: done"));
+}

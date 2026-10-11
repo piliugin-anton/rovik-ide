@@ -1067,8 +1067,7 @@ impl<R: Runtime> Run<R> {
     /// None for the lead.
     pub(super) fn wall_left(&self) -> Option<Duration> {
         let sub = self.sub()?;
-        let worked = self.started_at.elapsed().saturating_sub(sub.waited());
-        Some(sub.budget.wall.saturating_sub(worked))
+        Some(time_left(self.started_at, sub.waited(), sub.budget.wall))
     }
 
     fn over_budget(&self) -> Option<String> {
@@ -2021,6 +2020,12 @@ pub(super) fn other_steps(steps: &[super::plan::PlanStep], n: usize) -> Vec<(usi
         .collect()
 }
 
+/// A subagent's working time left of `wall`, started at `started`, time
+/// spent waiting for the user (`waited`) aside.
+fn time_left(started: Instant, waited: Duration, wall: Duration) -> Duration {
+    wall.saturating_sub(started.elapsed().saturating_sub(waited))
+}
+
 /// What the round started with, for a file a subagent changed. The
 /// checkpoint holds every file the chat changed, so a path missing from it
 /// was never changed: an older original (the project's copy, the run's
@@ -2037,6 +2042,25 @@ fn note_round_start(cp: &mut super::repair::Checkpoint, w: &ChildWrite) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2 (section 4.2): time left at the wall's very end is zero,
+    /// and time spent waiting for the user isn't spent.
+    #[test]
+    fn wall_exactly_reached_between_calls() {
+        let wall = Duration::from_secs(60);
+        let started = Instant::now() - wall;
+        assert_eq!(time_left(started, Duration::ZERO, wall), Duration::ZERO);
+        let left = time_left(started, Duration::from_secs(30), wall);
+        assert!(
+            left > Duration::from_secs(29) && left <= Duration::from_secs(30),
+            "{left:?}"
+        );
+        // Waited longer than it ran: all of it is left.
+        assert_eq!(
+            time_left(Instant::now(), Duration::from_secs(5), wall),
+            wall
+        );
+    }
 
     /// Round 2, P0.3: a project-copy original goes into the checkpoint as
     /// it is, not the bytes the subagent wrote; a path the round already
