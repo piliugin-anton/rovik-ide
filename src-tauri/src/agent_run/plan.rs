@@ -2558,4 +2558,157 @@ mod tests {
         let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
         assert_eq!(files, ["docs/guide.md"]);
     }
+
+    /// Round 2, P4.4: numbers that go up with gaps (`2. 4. 7.`) are kept as
+    /// written, with no separate written number, and the checks use them.
+    #[test]
+    fn gapped_numbers_are_kept() {
+        let plan = "# P\n\n## Steps\n\n2. **B**\n   - `src/b.rs`: add b.\n\
+            4. **D**\n   - `src/d.rs`: add d.\n7. **G**\n   - `src/gone.rs`: add g.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.iter().map(|s| s.number).collect::<Vec<_>>(), [2, 4, 7]);
+        assert!(s.iter().all(|s| s.written.is_none()), "{s:#?}");
+        assert_eq!(s[2].named(), "7");
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+        let tree = Tree::new(&["src/b.rs", "src/d.rs"]);
+        let p = project_problems(plan, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 7 names `src/gone.rs`"), "{p:?}");
+    }
+
+    /// P4.4: `## Steps:` is `## Steps` (any case, a space before the colon
+    /// too), taken before a "## Next steps" note.
+    #[test]
+    fn steps_heading_colon() {
+        let plan = "# P\n\n## Next steps (later)\n\n1. Nothing here.\n\n## Steps:\n\n\
+            1. **One**\n   - `src/a.rs`: add a.\n2. **Two**\n   - `src/b.rs`: add b.\n\n## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(
+            s.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
+            ["One", "Two"]
+        );
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+        let spaced = plan.replace("## Steps:", "## STEPS :");
+        assert_eq!(steps(&spaced).len(), 2);
+    }
+
+    /// P4.4: a `Group:` line in a ``` or ~~~ code block isn't the step's
+    /// group; a real one after the block still is.
+    #[test]
+    fn group_in_fenced_code_ignored() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **One**\n   - `src/a.rs`: add a, configured as:\n\n     ```yaml\n     Group: fenced\n     ```\n\
+            2. **Two**\n   - `src/b.rs`: add b, configured as:\n\n     ~~~\n     group: tilde\n     ~~~\n\
+            3. **Three**\n   - `src/c.rs`: add c.\n\n     ```\n     Group: fenced\n     ```\n   - Group: Real\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.len(), 3, "{s:#?}");
+        assert_eq!(s[0].group, None);
+        assert_eq!(s[1].group, None);
+        assert_eq!(s[2].group.as_deref(), Some("real"));
+        // The code stays in the body.
+        assert!(s[1].body.contains("group: tilde"), "{}", s[1].body);
+    }
+
+    /// P4.4: numbered sub-lists indented with tabs, spaces or both belong
+    /// to their step: only the least indented numbered lines are steps.
+    #[test]
+    fn tabs_vs_spaces_sub_lists() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **Tabs**\n\t1. Add `src/a.rs` (new).\n\t2. Register it in `src/lib.rs`.\n\
+            2. **Spaces**\n    1. Add `src/b.rs` (new).\n    2. Register it in `src/lib.rs`.\n\
+            3. **Both**\n\t1. Add `src/c.rs` (new).\n  \t2. Register it in `src/lib.rs`.\n\t\t1. Export it.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(
+            s.iter().map(|s| s.number).collect::<Vec<_>>(),
+            [1, 2, 3],
+            "{s:#?}"
+        );
+        for (step, new) in s.iter().zip(["src/a.rs", "src/b.rs", "src/c.rs"]) {
+            let files: Vec<(&str, bool)> = step
+                .files
+                .iter()
+                .map(|f| (f.path.as_str(), f.new))
+                .collect();
+            assert_eq!(files, [(new, true), ("src/lib.rs", false)], "{}", step.body);
+        }
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+    }
+
+    /// P4.4: numbered sub-lists (`.` or `)`, nested twice) belong to their
+    /// step: they aren't steps, don't renumber the steps and don't count as
+    /// the numbers the plan shows.
+    #[test]
+    fn numbered_sub_lists_inside_step() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **Store**\n   1. Add `src/store.rs` (new) with `fn save(x: &X)`.\n   2. Register it in `src/lib.rs`.\n      1. Export `save` from the crate root.\n\
+            2. **Use it**\n   1) Call `save` from `src/api.rs`.\n   2) Update `src/api_test.rs` to check it.\n   3) Document it in `README.md`.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(
+            s.iter().map(|s| (s.number, s.written)).collect::<Vec<_>>(),
+            [(1, None), (2, None)],
+            "{s:#?}"
+        );
+        assert_eq!(s[1].title, "Use it");
+        let files = |i: usize| {
+            s[i].files
+                .iter()
+                .map(|f| (f.path.as_str(), f.new))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(files(0), [("src/store.rs", true), ("src/lib.rs", false)]);
+        assert_eq!(
+            files(1),
+            [
+                ("src/api.rs", false),
+                ("src/api_test.rs", false),
+                ("README.md", false)
+            ]
+        );
+        assert!(s[0].body.contains("1. Export `save`"), "{}", s[0].body);
+        assert!(!s[0].body.contains("Use it"));
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+    }
+
+    /// P4.4: a group's name reads the same in backticks, in bold or both,
+    /// in any case, so these steps are one group; `none` in backticks is
+    /// still no group.
+    #[test]
+    fn group_name_with_backticks_and_bold() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **A**\n   - `src/a.rs`: add a.\n   - Group: `Backend`\n\
+            2. **B**\n   - `src/b.rs`: add b.\n   - **Group:** backend\n\
+            3. **C**\n   - `src/c.rs`: add c.\n   - **Group**: **backend**\n\
+            4. **D**\n   - `src/d.rs`: add d.\n   - Group: **`backend`**\n\
+            5. **E**\n   - `src/e.rs`: add e.\n   - **Group: `BACKEND`**\n\
+            6. **F**\n   - `src/f.rs`: add f.\n   - Group: `none`\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(
+            s.iter().map(|s| s.group.as_deref()).collect::<Vec<_>>(),
+            [
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                None
+            ],
+            "{s:#?}"
+        );
+        // One group: two of its steps can't share a file.
+        let shared = plan.replace("`src/b.rs`: add b.", "`src/a.rs`: add b.");
+        let tree = Tree::new(&["src/a.rs", "src/c.rs", "src/d.rs", "src/e.rs", "src/f.rs"]);
+        let p = project_problems(&shared, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with(
+                "Steps 1 and 2 are both in group \"backend\" but both name `src/a.rs`"
+            ),
+            "{p:?}"
+        );
+    }
 }
