@@ -1,8 +1,14 @@
 // lib.mjs tests. Run with: npm run test:eval
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
+  applyDefaults,
   budgetAllows,
+  compareVariant,
+  resultsMarkdown,
+  subagentsOn,
+  variantSettings,
   grade,
   parseCargo,
   parseGoJson,
@@ -157,5 +163,120 @@ describe('summary', () => {
     const md = summaryMarkdown(s, 'T');
     assert.match(md, /Success rate: 75% \(per repetition: 50%, 100%/);
     assert.match(md, /\| b \| 1\/2 \| \$0\.200 \|/);
+  });
+});
+
+describe('G02 and G03', () => {
+  const run = (task, rep, success, cost, peak) => ({
+    task,
+    rep,
+    success,
+    costUsd: cost,
+    tokens: 1000,
+    peakLeadContext: peak,
+    ms: 60000,
+    interventions: 0,
+    outcome: 'done',
+  });
+  /** Ten tasks × 3 repetitions; `rate`: how many of each repetition's ten pass. */
+  const campaign = (passing, cost, peak) =>
+    summarize(
+      [1, 2, 3].flatMap((rep) =>
+        Array.from({ length: 10 }, (_, i) => run(`t${i}`, rep, i < passing[rep - 1], cost, peak))
+      )
+    );
+  const base = campaign([5, 5, 6], 1, 100_000);
+
+  it('a variant turns one kind on; the baseline has none', () => {
+    const s = { profile: { id: 'x' }, config: { permissions: { allowAnyCommand: true } } };
+    const v = variantSettings(s, 'scout');
+    assert.deepEqual(v.config.subagents, { enabled: true, kinds: { scout: { enabled: true } } });
+    assert.equal(v.config.permissions.allowAnyCommand, true);
+    assert.equal(s.config.subagents, undefined, 'the original is untouched');
+    assert.equal(subagentsOn(v), true);
+    assert.equal(subagentsOn(variantSettings(v, null)), false);
+    assert.equal(subagentsOn(s), false);
+  });
+
+  it('better success within the cost budget: on', () => {
+    const d = compareVariant(base, campaign([8, 8, 9], 1.5, 100_000), { costRatioMax: 2 });
+    assert.equal(d.on, true, d.reason);
+    assert.equal(d.costRatio, 1.5);
+  });
+
+  it('a lower peak lead context counts as a gain', () => {
+    const d = compareVariant(base, campaign([5, 6, 5], 1.2, 70_000), { costRatioMax: 2 });
+    assert.equal(d.on, true);
+    assert.match(d.reason, /peak context fell to 70%/);
+  });
+
+  it('within the noise, too costly, worse, or too few runs: off', () => {
+    assert.match(
+      compareVariant(base, campaign([6, 5, 6], 1, 100_000), { costRatioMax: 2 }).reason,
+      /no measurable gain/
+    );
+    assert.match(
+      compareVariant(base, campaign([9, 9, 9], 2.5, 100_000), { costRatioMax: 2 }).reason,
+      /2\.50× the baseline, over its 2× budget/
+    );
+    assert.match(
+      compareVariant(base, campaign([2, 2, 3], 1, 50_000), { costRatioMax: 2 }).reason,
+      /worse/
+    );
+    assert.match(
+      compareVariant(base, campaign([9, 9, 9], 1, 100_000), { costRatioMax: 2, stopped: 'cap' })
+        .reason,
+      /not enough runs/
+    );
+  });
+
+  it('the results file has every kind, the unmeasured ones and the decision', () => {
+    const d = compareVariant(base, campaign([8, 8, 9], 1.5, 100_000), { costRatioMax: 2 });
+    const md = resultsMarkdown({
+      date: '2026-10-11',
+      model: 'M',
+      fake: true,
+      costRatioMax: 2,
+      tasks: ['t0'],
+      baseline: base,
+      variants: [{ id: 'scout', milestone: 'A', label: 'Scout', decision: d }],
+      unmeasured: [{ id: 'worker', milestone: 'D', label: 'Step worker', why: 'no plans' }],
+      on: ['scout'],
+    });
+    assert.match(md, /Dry run with a scripted model/);
+    assert.match(md, /\| Scout \(A\) \| 30 \| 83% \(\+30 pts/);
+    assert.match(md, /Step worker \(D\): off by default; no plans\./);
+    assert.match(md, /On by default: scout/);
+  });
+
+  it('the defaults: the master switch and the chosen kinds on', () => {
+    const src = [
+      'const DEFAULT_KIND = { enabled: false };',
+      'export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {',
+      '  enabled: false,',
+      '  kinds: {',
+      '    scout: { ...DEFAULT_KIND },',
+      '    reviewer: { ...DEFAULT_KIND },',
+      '  },',
+      '};',
+      'const enabled = false;',
+    ].join('\n');
+    const out = applyDefaults(src, ['reviewer']);
+    assert.match(out, /\n {2}enabled: true,/);
+    assert.match(out, /reviewer: \{ \.\.\.DEFAULT_KIND, enabled: true \},/);
+    assert.match(out, /scout: \{ \.\.\.DEFAULT_KIND \},/);
+    assert.match(out, /const enabled = false;/, 'only inside the defaults');
+    assert.equal(applyDefaults(src, []), src);
+    assert.throws(() => applyDefaults(src, ['triage']), /triage line not found/);
+  });
+
+  it('applies to the app’s real defaults', () => {
+    const real = readFileSync(
+      new URL('../../src/lib/subagentSettings.ts', import.meta.url),
+      'utf8'
+    );
+    const out = applyDefaults(real, ['scout', 'triage']);
+    assert.notEqual(out, real);
+    assert.match(out, /scout: \{ \.\.\.DEFAULT_KIND, enabled: true \}/);
   });
 });

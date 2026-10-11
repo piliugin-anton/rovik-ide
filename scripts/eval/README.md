@@ -59,10 +59,11 @@ uses it, and a task whose reference changed must be validated again.
 
 ## Budget
 
-| Campaign | Runs                          | Cap |
-| -------- | ----------------------------- | --- |
-| pilot    | 5 tasks × 1 (`budget.json`)   | $5  |
-| baseline | 30 tasks × 3 repetitions = 90 | $75 |
+| Campaign                 | Runs                               | Cap                   |
+| ------------------------ | ---------------------------------- | --------------------- |
+| pilot                    | 5 tasks × 1 (`budget.json`)        | $5                    |
+| baseline                 | 30 tasks × 3 repetitions = 90      | $75                   |
+| each kind (G02), 4 kinds | 30 tasks × 3 repetitions = 90 each | $75 each, $300 in all |
 
 Every run is limited to 1.5 million tokens (the runner's `--max-tokens`: the
 main agent's and its subagents' requests, as the provider reports them; the run
@@ -137,3 +138,51 @@ The report, per task and overall:
 - time
 - interventions
 - the runs' outcomes
+
+## Each kind on by itself (G02) and the defaults (G03)
+
+After the baseline, each kind the task set exercises runs on by itself, as a
+campaign of its own (`eval-results/kind-<id>/`), with the same settings
+otherwise:
+
+| Kind            | Milestone |
+| --------------- | --------- |
+| scout           | A         |
+| change reviewer | B         |
+| failure triage  | C         |
+| test writer     | E         |
+
+The plan reviewer (Plan mode only), step workers (saved plans only) and
+parallel groups with the repair loop (plans with groups, isolated chats) never
+come up in these tasks, which are Agent-mode requests: they aren't measured
+and stay off by default.
+
+```sh
+node scripts/eval/eval.mjs variants --settings my-settings.json [--kinds scout,triage]
+node scripts/eval/eval.mjs compare          # writes docs/design/subagents-results.md
+node scripts/eval/eval.mjs apply-defaults   # G03: the decision into src/lib/subagentSettings.ts
+node scripts/eval/eval.mjs dry-run-variants # all of it with the scripted model, in a scratch folder
+```
+
+- `variants` takes the baseline's settings (subagents off: `run` refuses
+  settings with any kind on) and turns one kind on for each campaign. A kind's
+  campaign starts only if the baseline's cost a run, times the kind's cost
+  budget, times its runs, fits the $75 cap; otherwise it's skipped and says
+  so. A stopped campaign can be resumed by running `variants` again.
+- `compare` compares each kind with the baseline over the tasks both ran:
+  success, cost a run, the lead's peak context, time and interventions. It
+  writes `docs/design/subagents-results.md` and
+  `eval-results/comparison.json`.
+- The decision (G03): a kind goes on by default only if
+  - its success isn't worse than the baseline's by more than the noise (the
+    larger spread between repetitions, and at least one task);
+  - it costs at most 2× the baseline a run (`budget.json`
+    `variants.costRatioMax`, per kind or `default`; `subagents.md` section 6);
+  - and it improved success by more than the noise, or brought the lead's peak
+    context down to 90% of the baseline's or less.
+
+  A campaign that stopped early, or covers fewer than 5 tasks, decides nothing.
+
+- `apply-defaults` turns the chosen kinds on, with the master switch, in
+  `DEFAULT_SUBAGENT_SETTINGS`. It refuses results from the scripted model.
+  Then update the defaults test and link the results file in the pull request.

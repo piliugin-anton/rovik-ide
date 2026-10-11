@@ -11,5 +11,6 @@
     "repeats": 1,
     "capUsd": 5
   },
-  "baseline": { "repeats": 3, "capUsd": 75 }
+  "baseline": { "repeats": 3, "capUsd": 75 },
+  "variants": { "repeats": 3, "capUsd": 75, "costRatioMax": { "default": 2 } }
 }

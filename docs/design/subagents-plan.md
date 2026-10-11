@@ -1121,3 +1121,57 @@ Not done yet: the real pilot and baseline. They need a provider key in the
 environment and the provider's host allowed. The completion criterion (the
 set run with subagents off, 3 runs each, with a report of the spread) waits
 on them. G02's report then goes in `docs/design/subagents-results.md`.
+
+### G02 and G03: the tooling
+
+The code is in `scripts/eval/` (README "Each kind on by itself"). The runs
+themselves are not done: like G01's baseline, they need a provider key.
+
+- **Variants (G02).** `eval.mjs variants` runs one campaign per kind
+  (`kind-<id>`). Each campaign uses the baseline's settings with only that
+  kind on, on the baseline's tasks.
+  - Measured kinds: scout (A), change reviewer (B), triage (C) and test
+    writer (E).
+  - Not measured: the plan reviewer, step workers, and parallel groups
+    with the repair loop. The tasks are Agent-mode requests, so these never
+    come up. They stay off by default, and the results file says why.
+  - **Deviation:** "each milestone's kind" covers only the four kinds the
+    task set exercises. Measuring D, F and R needs plan-mode tasks, which
+    G01 doesn't have.
+  - `run` now refuses baseline settings that turn a kind on.
+  - Budget: 3 repetitions and a $75 cap for each kind, so $300 for all
+    four (`budget.json` `variants`). A kind's campaign starts only if the
+    baseline's cost a run, times its cost budget, times its runs, fits the
+    cap.
+- **Comparison (G02).** `eval.mjs compare` compares each kind with the
+  baseline over the tasks both ran: success, cost a run, the lead's peak
+  context, minutes and interventions. It writes
+  `docs/design/subagents-results.md` and `eval-results/comparison.json`.
+- **Decision (G03), `lib.mjs` `compareVariant`.** A kind goes on by
+  default when all of these hold:
+  - its success isn't worse than the baseline's by more than the noise.
+    The noise is the larger spread between repetitions, and at least one
+    task;
+  - it costs at most 2× the baseline a run (subagents.md section 6, the
+    same for every kind unless `costRatioMax` names it);
+  - its success improved by more than the noise, or the lead's mean peak
+    context fell to 90% of the baseline's or less.
+
+  A campaign that stopped early, or covers fewer than 5 tasks, decides
+  nothing.
+
+- **Applying it (G03).** `eval.mjs apply-defaults` turns the chosen kinds
+  on, with the master switch, in `DEFAULT_SUBAGENT_SETTINGS`. It refuses
+  results from the scripted model. The defaults test and the PR's link to
+  the results are then by hand.
+- **Tests.**
+  - `npm run test:eval`: variant settings; on and off for each decision
+    reason; the results file; editing the defaults, including the app's
+    real file.
+  - `eval.mjs dry-run-variants`: the baseline and all four variants on
+    two tasks with the scripted model, then the comparison. Every run
+    passed, and the results were marked as a dry run.
+  - A headless run with the scout variant was checked to offer the lead
+    the `task` tool. The scripted model applies its change with `bash`,
+    which isn't tracked as an edit, so its reviewer never runs. The dry
+    run tests the pipeline, not the kinds.

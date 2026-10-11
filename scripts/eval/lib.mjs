@@ -224,3 +224,205 @@ export function summaryMarkdown(s, title) {
   ];
   return lines.join('\n');
 }
+
+// ------------------------------------------------- G02 and G03: the variants
+
+/**
+ * The kinds G02 measures one at a time, each with its milestone, and the
+ * ones this task set can't exercise (they stay off by default: there's no
+ * evidence for them).
+ */
+export const MEASURED_KINDS = [
+  { id: 'scout', milestone: 'A', label: 'Scout' },
+  { id: 'reviewer', milestone: 'B', label: 'Change reviewer' },
+  { id: 'triage', milestone: 'C', label: 'Failure triage' },
+  { id: 'testWriter', milestone: 'E', label: 'Test writer' },
+];
+export const UNMEASURED_KINDS = [
+  {
+    id: 'planReviewer',
+    milestone: 'B',
+    label: 'Plan reviewer',
+    why: 'it runs only in Plan mode, and the tasks run in Agent mode',
+  },
+  {
+    id: 'worker',
+    milestone: 'D',
+    label: 'Step worker',
+    why: 'it carries out saved plans, and the tasks are requests, not plans',
+  },
+  {
+    id: 'parallelWorkers',
+    milestone: 'F, R',
+    label: 'Parallel implementers and the repair loop',
+    why: 'they need a plan with groups in an isolated chat',
+  },
+];
+
+/** A copy of the runner's settings with subagents and only `kind` on (null: all off). */
+export function variantSettings(base, kind) {
+  const s = structuredClone(base);
+  s.config = s.config ?? {};
+  s.config.subagents = kind
+    ? { ...(s.config.subagents ?? {}), enabled: true, kinds: { [kind]: { enabled: true } } }
+    : { enabled: false, kinds: {} };
+  return s;
+}
+
+/** Whether the settings turn any subagent on (the baseline must have none). */
+export function subagentsOn(settings) {
+  const sub = settings?.config?.subagents;
+  return !!sub?.enabled && Object.values(sub.kinds ?? {}).some((k) => k?.enabled);
+}
+
+const width = (range) => (range?.length === 2 ? range[1] - range[0] : 0);
+
+/**
+ * G02/G03: a variant against the baseline, over the tasks both ran, and the
+ * decision. A kind goes on by default only if success isn't worse beyond
+ * the noise, it costs at most `costRatioMax` times the baseline a task, and
+ * it improved success beyond the noise or cut the lead's peak context by
+ * at least 10% (subagents.md section 6).
+ *
+ * `base` and `variant` are summarize() results over the same tasks; the
+ * noise is the larger spread between repetitions, and at least one task.
+ */
+export function compareVariant(base, variant, { costRatioMax, minTasks = 5, stopped = null }) {
+  const tasks = Math.min(base.tasks.length, variant.tasks.length);
+  const meanPeak = (s) =>
+    s.tasks.length ? s.tasks.reduce((a, t) => a + t.maxPeakLeadContext, 0) / s.tasks.length : 0;
+  const noise = Math.max(
+    width(base.successRateRange),
+    width(variant.successRateRange),
+    tasks ? 1 / tasks : 1
+  );
+  const successDiff = variant.successRate - base.successRate;
+  const costRatio = base.meanCostUsd > 0 ? variant.meanCostUsd / base.meanCostUsd : null;
+  const basePeak = meanPeak(base);
+  const contextRatio = basePeak > 0 ? meanPeak(variant) / basePeak : null;
+  const numbers = {
+    tasks,
+    runs: variant.runs,
+    baseRuns: base.runs,
+    successRate: variant.successRate,
+    baseSuccessRate: base.successRate,
+    successDiff,
+    noise,
+    costRatio,
+    costRatioMax,
+    contextRatio,
+    meanCostUsd: variant.meanCostUsd,
+    baseMeanCostUsd: base.meanCostUsd,
+    meanPeakContext: meanPeak(variant),
+    baseMeanPeakContext: basePeak,
+    meanMinutes: variant.meanMinutes,
+    baseMeanMinutes: base.meanMinutes,
+    meanInterventions: variant.meanInterventions,
+    baseMeanInterventions: base.meanInterventions,
+  };
+  const off = (reason) => ({ on: false, reason, ...numbers });
+  if (stopped) return off(`not enough runs: its campaign stopped (${stopped})`);
+  if (tasks < minTasks)
+    return off(`not enough runs: ${tasks} tasks in both (at least ${minTasks})`);
+  if (successDiff < -noise) return off('success is worse than the baseline beyond the noise');
+  if (costRatio === null) return off('the baseline’s cost is unknown');
+  if (costRatio > costRatioMax)
+    return off(`it costs ${costRatio.toFixed(2)}× the baseline, over its ${costRatioMax}× budget`);
+  if (successDiff > noise)
+    return {
+      on: true,
+      reason: 'success improved beyond the noise, within its cost budget',
+      ...numbers,
+    };
+  if (contextRatio !== null && contextRatio <= 0.9)
+    return {
+      on: true,
+      reason: `the lead’s peak context fell to ${Math.round(contextRatio * 100)}% of the baseline’s, within its cost budget`,
+      ...numbers,
+    };
+  return off('no measurable gain in success or the lead’s context');
+}
+
+const pctSigned = (x) => `${x >= 0 ? '+' : '−'}${Math.round(Math.abs(x) * 100)} pts`;
+const ratio = (x) => (x === null || x === undefined ? 'n/a' : `${x.toFixed(2)}×`);
+
+/** The results file (docs/design/subagents-results.md). */
+export function resultsMarkdown(c) {
+  const rows = c.variants.map((v) => {
+    const d = v.decision;
+    return (
+      `| ${v.label} (${v.milestone}) | ${d.runs} | ${Math.round(d.successRate * 100)}% ` +
+      `(${pctSigned(d.successDiff)}, noise ±${Math.round(d.noise * 100)}) | ` +
+      `$${d.meanCostUsd.toFixed(3)} (${ratio(d.costRatio)}) | ${ratio(d.contextRatio)} | ` +
+      `${d.meanMinutes.toFixed(1)} (${d.baseMeanMinutes.toFixed(1)}) | ` +
+      `${d.meanInterventions.toFixed(2)} (${d.baseMeanInterventions.toFixed(2)}) | ` +
+      `${d.on ? '**on**' : 'off'}: ${d.reason} |`
+    );
+  });
+  const b = c.baseline;
+  return [
+    '# Subagents: evaluation results (G02, G03)',
+    '',
+    c.fake
+      ? '> **Dry run with a scripted model: these numbers test the pipeline and say nothing about any real model.**\n'
+      : '',
+    `Generated by \`node scripts/eval/eval.mjs compare\` on ${c.date}. Model: ${c.model}.`,
+    `Tasks: ${c.tasks.length}; repetitions as run. Per-task cost budget: ${c.costRatioMax}× the baseline.`,
+    '',
+    '## Baseline (all subagents off)',
+    '',
+    `- Runs: ${b.runs}; success ${Math.round(b.successRate * 100)}%` +
+      (b.perRep.length > 1
+        ? ` (per repetition: ${b.perRep.map((r) => `${Math.round(r.successRate * 100)}%`).join(', ')})`
+        : ''),
+    `- Cost a run: $${b.meanCostUsd.toFixed(3)}; time a run: ${b.meanMinutes.toFixed(1)} min; ` +
+      `interventions a run: ${b.meanInterventions.toFixed(2)}`,
+    '',
+    '## Each kind on by itself',
+    '',
+    'Success is against the baseline over the same tasks; the noise is the larger spread between ' +
+      'repetitions (at least one task). Cost and peak lead context are ratios to the baseline. ' +
+      'Minutes and interventions are a run, with the baseline’s in brackets.',
+    '',
+    '| Kind | Runs | Success | Cost a run | Peak lead context | Minutes | Interventions | Default (G03) |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...rows,
+    '',
+    '## Not measured',
+    '',
+    ...c.unmeasured.map((u) => `- ${u.label} (${u.milestone}): off by default; ${u.why}.`),
+    '',
+    '## Decision',
+    '',
+    c.on.length
+      ? `On by default: ${c.on.join(', ')} (with the master switch). Everything else stays off.`
+      : 'No kind showed a measurable gain within its budget: every kind stays off by default.',
+    '',
+  ].join('\n');
+}
+
+/**
+ * G03: the app's defaults with `kinds` on (and the master switch, when any
+ * is): src/lib/subagentSettings.ts, `DEFAULT_SUBAGENT_SETTINGS`. Throws when
+ * the source doesn't look as expected.
+ */
+export function applyDefaults(source, kinds) {
+  const start = source.indexOf('export const DEFAULT_SUBAGENT_SETTINGS');
+  if (start < 0) throw new Error('DEFAULT_SUBAGENT_SETTINGS not found');
+  const head = source.slice(0, start);
+  const body = source.slice(start);
+  const end = body.indexOf('\n};');
+  if (end < 0) throw new Error('the end of DEFAULT_SUBAGENT_SETTINGS not found');
+  let block = body.slice(0, end);
+  const rest = body.slice(end);
+  if (kinds.length) {
+    if (!/\n {2}enabled: (false|true),/.test(block)) throw new Error('its enabled line not found');
+    block = block.replace(/\n {2}enabled: (false|true),/, '\n  enabled: true,');
+  }
+  for (const kind of kinds) {
+    const re = new RegExp(`\\n {4}${kind}: \\{ \\.\\.\\.DEFAULT_KIND(, enabled: true)? \\},`);
+    if (!re.test(block)) throw new Error(`the ${kind} line not found`);
+    block = block.replace(re, `\n    ${kind}: { ...DEFAULT_KIND, enabled: true },`);
+  }
+  return head + block + rest;
+}

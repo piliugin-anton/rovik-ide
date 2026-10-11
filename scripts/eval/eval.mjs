@@ -8,6 +8,10 @@
 //   node scripts/eval/eval.mjs pilot --settings FILE
 //   node scripts/eval/eval.mjs run --settings FILE
 //   node scripts/eval/eval.mjs report DIR
+//   node scripts/eval/eval.mjs variants --settings FILE [--kinds a,b]   (G02)
+//   node scripts/eval/eval.mjs compare [--out FILE]                     (G02, G03)
+//   node scripts/eval/eval.mjs apply-defaults [--comparison FILE]       (G03)
+//   node scripts/eval/eval.mjs dry-run-variants [--tasks a,b]
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -24,16 +28,23 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  MEASURED_KINDS,
+  UNMEASURED_KINDS,
+  applyDefaults,
   budgetAllows,
+  compareVariant,
   grade,
   parseCargo,
   parseGoJson,
   parseJunit,
   parseTsLines,
   projection,
+  resultsMarkdown,
+  subagentsOn,
   summarize,
   summaryMarkdown,
   validation,
+  variantSettings,
 } from './lib.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
@@ -548,7 +559,9 @@ async function pilot(flags) {
 
 async function baseline(flags) {
   const b = BUDGET.baseline;
-  settingsFor(flags);
+  const { path } = settingsFor(flags);
+  if (subagentsOn(readJson(path)))
+    throw new Error(`${path}: the baseline runs with every subagent off (G02)`);
   const tasks = usableTasks(flags.tasks);
   const repeats = Number(flags.repeats ?? b.repeats);
   const pilotDir = resolve(flags.pilot ?? join(RESULTS, 'pilot'));
@@ -570,6 +583,199 @@ async function baseline(flags) {
   );
   if (!proj.ok) throw new Error(`not starting: ${proj.reason}`);
   await campaign(flags.name ?? 'baseline', tasks, repeats, b.capUsd, flags);
+}
+
+// ------------------------------------------------- G02 and G03: variants
+
+/** A campaign's results, from its directory. */
+function campaignResults(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .flatMap((d) =>
+      readdirSync(join(dir, d.name))
+        .map((rep) => join(dir, d.name, rep, 'result.json'))
+        .filter(existsSync)
+        .map(readJson)
+    );
+}
+
+const kindsWanted = (flags) => {
+  const ids = flags.kinds ? String(flags.kinds).split(',') : MEASURED_KINDS.map((k) => k.id);
+  const unknown = ids.filter((id) => !MEASURED_KINDS.some((k) => k.id === id));
+  if (unknown.length)
+    throw new Error(
+      `not measured by this task set: ${unknown.join(', ')} (measured: ${MEASURED_KINDS.map((k) => k.id).join(', ')})`
+    );
+  return MEASURED_KINDS.filter((k) => ids.includes(k.id));
+};
+
+/**
+ * G02: each measured kind on by itself, on the baseline's tasks, each its
+ * own campaign (`kind-<id>`) within its cap. A kind's campaign starts only
+ * if the baseline's cost a run, times its cost budget, times the runs,
+ * fits the cap.
+ */
+async function variants(flags) {
+  const v = BUDGET.variants;
+  const { path } = settingsFor(flags);
+  const base = readJson(path);
+  if (subagentsOn(base))
+    throw new Error(
+      `${path}: give the baseline's settings (subagents off); each variant turns one kind on`
+    );
+  const baseDir = resolve(flags.baseline ?? join(RESULTS, 'baseline'));
+  const baseResults = campaignResults(baseDir);
+  if (!baseResults.length)
+    throw new Error(`no baseline results in ${baseDir}: run \`eval.mjs run\` first`);
+  const baseTasks = [...new Set(baseResults.map((r) => r.task))].join(',');
+  const tasks = usableTasks(flags.tasks ?? baseTasks);
+  const repeats = Number(flags.repeats ?? v.repeats);
+  const perRun = summarize(baseResults).meanCostUsd;
+  for (const kind of kindsWanted(flags)) {
+    const name = `kind-${kind.id}`;
+    const dir = resolve(join(RESULTS, name));
+    const settings = join(dir, 'settings.json');
+    writeJson(settings, variantSettings(base, kind.id));
+    const budget = v.costRatioMax[kind.id] ?? v.costRatioMax.default;
+    const proj = projection([perRun * budget], tasks.length * repeats, v.capUsd);
+    console.log(
+      `\n${kind.label}: up to $${(perRun * budget).toFixed(3)} a run (${budget}× the baseline's ` +
+        `$${perRun.toFixed(3)}); ${tasks.length} tasks × ${repeats} ≈ $${proj.total.toFixed(2)} (cap $${v.capUsd}).`
+    );
+    if (!proj.ok) {
+      console.log(`Skipped: ${proj.reason}. Run fewer tasks (--tasks) or repetitions (--repeats).`);
+      process.exitCode = 1;
+      continue;
+    }
+    await campaign(name, tasks, repeats, v.capUsd, { ...flags, settings, out: dir });
+  }
+}
+
+/**
+ * G02/G03: every kind's campaign against the baseline, over the tasks both
+ * ran; the decision for each; the results file and its data.
+ */
+function compareAll(flags) {
+  const dir = resolve(flags.results ?? RESULTS);
+  const baseDir = join(dir, 'baseline');
+  const baseResults = campaignResults(baseDir);
+  if (!baseResults.length) throw new Error(`no baseline results in ${baseDir}`);
+  const v = BUDGET.variants;
+  const settingsOf = (d) => {
+    const f = join(d, 'settings.json');
+    return existsSync(f) ? readJson(f) : null;
+  };
+  const stoppedOf = (d) => {
+    const f = join(d, 'summary.json');
+    return existsSync(f) ? (readJson(f).stopped ?? null) : 'no summary: it never finished';
+  };
+  const rows = [];
+  let model = null;
+  for (const kind of MEASURED_KINDS) {
+    const kdir = join(dir, `kind-${kind.id}`);
+    const results = campaignResults(kdir);
+    if (!results.length) continue;
+    model = model ?? settingsOf(kdir)?.profile?.label ?? null;
+    const common = new Set(results.map((r) => r.task));
+    const baseCommon = baseResults.filter((r) => common.has(r.task));
+    const baseTasks = new Set(baseCommon.map((r) => r.task));
+    const variant = summarize(results.filter((r) => baseTasks.has(r.task)));
+    const decision = compareVariant(summarize(baseCommon), variant, {
+      costRatioMax: v.costRatioMax[kind.id] ?? v.costRatioMax.default,
+      stopped: stoppedOf(kdir),
+    });
+    rows.push({ ...kind, decision });
+  }
+  if (!rows.length)
+    throw new Error(`no kind's results in ${dir} (kind-<id>/): run \`eval.mjs variants\``);
+  const fake = /fake/i.test(model ?? '') || !!flags.fake;
+  const comparison = {
+    date: new Date().toISOString().slice(0, 10),
+    model: model ?? 'unknown',
+    fake,
+    costRatioMax: v.costRatioMax.default,
+    tasks: [...new Set(baseResults.map((r) => r.task))],
+    baseline: summarize(baseResults),
+    variants: rows,
+    unmeasured: UNMEASURED_KINDS,
+    on: rows.filter((r) => r.decision.on).map((r) => r.id),
+  };
+  const out = resolve(flags.out ?? join(ROOT, 'docs/design/subagents-results.md'));
+  writeFileSync(out, resultsMarkdown(comparison));
+  writeJson(join(dir, 'comparison.json'), comparison);
+  console.log(resultsMarkdown(comparison));
+  console.log(`Written: ${out} and ${join(dir, 'comparison.json')}`);
+  return comparison;
+}
+
+/** G03: the decision into the app's defaults (src/lib/subagentSettings.ts). */
+function applyDefaultsCommand(flags) {
+  const file = resolve(flags.comparison ?? join(RESULTS, 'comparison.json'));
+  if (!existsSync(file)) throw new Error(`no ${file}: run \`eval.mjs compare\` first`);
+  const c = readJson(file);
+  if (c.fake) throw new Error('these results come from a scripted model: they decide nothing');
+  if (!c.on.length) {
+    console.log('No kind goes on by default: the defaults stay as they are.');
+    return;
+  }
+  const target = resolve(flags.target ?? join(ROOT, 'src/lib/subagentSettings.ts'));
+  writeFileSync(target, applyDefaults(readFileSync(target, 'utf8'), c.on));
+  console.log(
+    `On by default now: ${c.on.join(', ')}, with the master switch (${target}). ` +
+      'Update the defaults test in subagentSettings.test.ts, and link docs/design/subagents-results.md in the PR.'
+  );
+}
+
+/**
+ * G02's pipeline without a provider: the baseline and each kind's variant,
+ * once per task, with the scripted model that applies the reference change;
+ * then the comparison, into a scratch directory. Every run must pass, and
+ * the results must be marked as a dry run.
+ */
+async function dryRunVariants(flags) {
+  const tasks = usableTasks(flags.tasks ?? 'mi-subfactorial,lo-filter-map');
+  const runner = runnerPath(flags);
+  const policy = join(EVAL, 'policy.json');
+  const dir = resolve(flags.out ?? join(RESULTS, `dry-run-variants-${Date.now()}`));
+  let bad = 0;
+  for (const kind of [null, ...MEASURED_KINDS]) {
+    const name = kind ? `kind-${kind.id}` : 'baseline';
+    for (const task of tasks) {
+      const model = await fakeModel(['oracle', referencePatch(task)]);
+      const settings = join(dir, name, `settings-${task.id}.json`);
+      const base = {
+        profile: {
+          id: 'fake::model',
+          label: 'Fake/model',
+          model: 'fake-model',
+          baseUrl: model.url,
+          stream: true,
+          contextTokens: 200000,
+        },
+        mode: 'agent',
+        price: { inputPerMillion: 1, outputPerMillion: 10 },
+        config: { permissions: { ...EVAL_PERMISSIONS, verifyChanges: false, checklist: 'off' } },
+      };
+      const s = variantSettings(base, kind?.id ?? null);
+      writeJson(settings, s);
+      writeJson(join(dir, name, 'settings.json'), { ...s, profile: base.profile });
+      try {
+        const r = await runOne(task, 1, join(dir, name), { settings, policy, runner });
+        if (!r.success) bad++;
+        console.log(
+          `${name} ${task.id}: ${r.success ? 'pass' : 'FAIL'} (${r.outcome}, $${(r.costUsd ?? 0).toFixed(4)})`
+        );
+      } finally {
+        model.stop();
+      }
+    }
+    writeJson(join(dir, name, 'summary.json'), { stopped: null });
+  }
+  const c = compareAll({ results: dir, out: join(dir, 'subagents-results.md'), fake: true });
+  if (!c.fake) bad++;
+  console.log(bad ? `\n${bad} unexpected results.` : '\nThe G02/G03 pipeline works.');
+  if (bad) process.exitCode = 1;
 }
 
 // ----------------------------------------------------------------- dry run
@@ -679,12 +885,23 @@ function report(flags) {
 // -------------------------------------------------------------------- main
 
 const flags = parseFlags(process.argv.slice(2));
-const commands = { validate, 'dry-run': dryRun, pilot, run: baseline, report };
+const commands = {
+  validate,
+  'dry-run': dryRun,
+  pilot,
+  run: baseline,
+  report,
+  variants,
+  compare: compareAll,
+  'apply-defaults': applyDefaultsCommand,
+  'dry-run-variants': dryRunVariants,
+};
 const command = commands[flags._[0]];
 if (!command) {
   console.error(
     'usage: eval.mjs validate [--tasks a,b] | dry-run [--tasks a,b] | pilot --settings FILE | ' +
-      'run --settings FILE [--repeats N] [--tasks a,b] | report [DIR]'
+      'run --settings FILE [--repeats N] [--tasks a,b] | report [DIR] | ' +
+      'variants --settings FILE [--kinds a,b] | compare [--out FILE] | apply-defaults | dry-run-variants'
   );
   process.exit(2);
 }
