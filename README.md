@@ -63,8 +63,10 @@ Electron-based editors.
   context and hand back a short report, so long explorations don't fill
   the agent's own context. A change reviewer can read each finished
   change with fresh eyes before the checks run; the agent fixes or
-  answers what it finds. Turn them on, and pick their models, in
-  Settings → Subagents.
+  answers what it finds. When a check fails with a long output, or fails
+  again, a triage helper reads all of it and tells the agent the root
+  cause, instead of the agent getting pages of compiler output. Turn them
+  on, and pick their models, in Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
 - Chats are saved and searchable, and they keep running in the background

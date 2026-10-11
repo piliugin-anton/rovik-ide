@@ -3,14 +3,18 @@
 // One round of the verification gate in the chat (lib/verification.ts):
 // what it concluded, each check with its result, and the output of failed
 // checks on demand. Updates live while the checks run.
-import { For, Match, Show, Switch } from 'solid-js';
+import { createSignal, For, Match, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
+import { liveSubagent, openTranscript, workLabel } from '../lib/subagents';
 import {
   describeFailure,
   progressLine,
+  triageHeadline,
   type CheckResult,
+  type TriageMeta,
   type VerificationMeta,
 } from '../lib/verification';
+import { SubagentTranscript } from './ToolCallBlock';
 
 function headline(meta: VerificationMeta, interrupted: boolean): string {
   if (interrupted) return 'Checks didn’t finish: the run ended while they were running.';
@@ -91,8 +95,82 @@ function shownStatus(check: CheckResult, interrupted: boolean): CheckResult['sta
     : check.status;
 }
 
+/** The round's failure triage (C03): what it found, or why it was skipped. */
+function TriageBlock(props: {
+  triage: TriageMeta;
+  dialogId: string | null;
+  recordId: string;
+  live: boolean;
+}) {
+  const callId = () => `${props.recordId}:triage`;
+  const progress = () => liveSubagent(props.dialogId, callId());
+  const childId = () => props.triage.childDialogId ?? progress()?.childDialogId ?? null;
+  const interrupted = () => props.triage.status === 'running' && !props.live;
+  const [showWork, setShowWork] = createSignal(false);
+  const toggleWork = () => {
+    const id = childId();
+    if (!id) return;
+    if (!showWork() && props.dialogId) void openTranscript(id, props.dialogId, callId());
+    setShowWork(!showWork());
+  };
+  return (
+    <div class={`chat-verify-triage ${interrupted() ? 'stopped' : props.triage.status}`}>
+      <div class="chat-verify-progress">
+        {triageHeadline(props.triage, CHECK_LABEL[props.triage.check] ?? 'check', interrupted())}
+        <Show when={props.triage.status === 'running' && !interrupted() && progress()}>
+          {(p) => (
+            <>
+              {' '}
+              {workLabel(p().toolCalls)}
+              {p().currentTool ? ` · ${p().currentTool}` : ''}
+            </>
+          )}
+        </Show>
+        <Show when={childId() && props.triage.status !== 'running'}>
+          {' '}
+          <button type="button" class="link-button" aria-expanded={showWork()} onClick={toggleWork}>
+            {showWork() ? 'Hide its work' : 'Show its work'}
+          </button>
+        </Show>
+      </div>
+      <Show when={props.triage.result}>
+        {(r) => (
+          <div class="review-finding-body">
+            <div>
+              <span class="review-label">Root cause:</span> {r().rootCause}
+            </div>
+            <Show when={r().files.length}>
+              <div>
+                <span class="review-label">Files to fix:</span> {r().files.join('; ')}
+              </div>
+            </Show>
+            <div>
+              <span class="review-label">Next step:</span> {r().nextStep}
+            </div>
+            <Show when={r().confidenceNote}>
+              <div>
+                <span class="review-label">Confidence:</span> {r().confidence} ({r().confidenceNote}
+                )
+              </div>
+            </Show>
+          </div>
+        )}
+      </Show>
+      <Show when={showWork() && childId()}>
+        <SubagentTranscript
+          childDialogId={childId()!}
+          running={props.triage.status === 'running'}
+        />
+      </Show>
+    </div>
+  );
+}
+
 export default function VerificationRecord(props: {
   meta: VerificationMeta;
+  /** The chat it's in, and this record's id (its triage's events name it). */
+  dialogId: string | null;
+  recordId: string;
   /** The newest message, nothing running: its buttons are live. */
   latest: boolean;
   /** Checks for this record are running right now. */
@@ -194,6 +272,17 @@ export default function VerificationRecord(props: {
               <pre class="chat-verify-output">{rb().diff}</pre>
             </Show>
           </details>
+        )}
+      </Show>
+
+      <Show when={props.meta.triage}>
+        {(t) => (
+          <TriageBlock
+            triage={t()}
+            dialogId={props.dialogId}
+            recordId={props.recordId}
+            live={props.live}
+          />
         )}
       </Show>
 

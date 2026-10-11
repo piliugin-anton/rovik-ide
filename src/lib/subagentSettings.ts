@@ -14,7 +14,7 @@ import { formatsToSend, type Effort } from './reasoning';
 import { sameModel } from './permissions';
 
 /** The kinds built so far (agent_run/subagent.rs `Kind`). */
-export type SubagentKindId = 'scout' | 'reviewer';
+export type SubagentKindId = 'scout' | 'reviewer' | 'triage';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
@@ -41,6 +41,14 @@ export const SUBAGENT_KINDS: {
     when: 'Runs when the agent finishes a change of at least the size set in Limits, at most 3 times a run.',
     toolCalls: 30,
     minutes: 5,
+  },
+  {
+    id: 'triage',
+    label: 'Failure triage',
+    hint: 'Reads a large or repeated check failure and tells the agent its root cause. Read-only.',
+    when: 'Runs when a check’s output is too long to send whole, or the same check failed in the round before.',
+    toolCalls: 15,
+    minutes: 3,
   },
 ];
 
@@ -94,7 +102,11 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   enabled: false,
   defaultModel: 'chat',
   defaultFallbacks: [],
-  kinds: { scout: { ...DEFAULT_KIND }, reviewer: { ...DEFAULT_KIND } },
+  kinds: {
+    scout: { ...DEFAULT_KIND },
+    reviewer: { ...DEFAULT_KIND },
+    triage: { ...DEFAULT_KIND },
+  },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,
   reviewMinLines: LIMITS.reviewMinLines.default,

@@ -21,6 +21,7 @@
 //!   command_output.rs: the rules and text they use
 
 pub mod change_review;
+pub mod check_output;
 pub mod command_output;
 pub mod diff;
 #[cfg(test)]
@@ -42,6 +43,7 @@ mod run;
 pub mod subagent;
 mod subagent_run;
 pub mod tools;
+pub mod triage;
 mod verify;
 
 use crate::agent::OpenAIChatOptions;

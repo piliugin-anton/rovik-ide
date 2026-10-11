@@ -1263,6 +1263,8 @@ export default function MessageList(props: {
                   {(v) => (
                     <VerificationRecord
                       meta={v()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
                       latest={isLatest(m)}
                       live={props.sending && messages()[messages().length - 1]?.id === m.id}
                       onRunChecks={() => props.onRunChecks()}

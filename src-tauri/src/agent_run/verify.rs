@@ -25,7 +25,9 @@ use tauri::Runtime;
 pub const MAX_VERIFY_ROUNDS: u32 = 3;
 /// Per check. Test suites can be slow; this is the bash maximum.
 const CHECK_TIMEOUT_MS: u64 = 600_000;
-const FAILURE_OUTPUT_CHARS: usize = 8_000;
+/// A failing check's output the agent gets, at most; the whole of a longer
+/// one is saved (check_output.rs) and can go to triage (triage.rs).
+pub const FAILURE_OUTPUT_CHARS: usize = 8_000;
 
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -67,10 +69,14 @@ pub struct CheckResult {
     /// The test check: how many tests ran, when its summary said.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tests_ran: Option<u32>,
+    /// failed, with more output than the report shows: where the whole of
+    /// it is saved, `@checks/…` (check_output.rs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_output: Option<String>,
 }
 
 impl CheckResult {
-    fn pending(check: &ProjectCheck) -> Self {
+    pub(super) fn pending(check: &ProjectCheck) -> Self {
         CheckResult {
             kind: check.kind.clone(),
             command: check.command.trim().to_string(),
@@ -84,6 +90,7 @@ impl CheckResult {
             note: None,
             failures: None,
             tests_ran: None,
+            saved_output: None,
         }
     }
 
@@ -263,6 +270,12 @@ pub fn failure_report(
         }
         lines.push(String::new());
         lines.push(r.output.clone().unwrap_or_default());
+        if let Some(path) = &r.saved_output {
+            lines.push(String::new());
+            lines.push(format!(
+                "That's the relevant part of the output. The whole of it is saved as `{path}`: read it with read and start_line/end_line if you need more."
+            ));
+        }
     }
     let skipped: Vec<String> = results
         .iter()
@@ -379,6 +392,10 @@ impl<R: Runtime> Run<R> {
         }
 
         self.verify_rounds += 1;
+        if self.verify_rounds == 1 {
+            // A run's first round: earlier runs' saved output goes.
+            super::check_output::clean(&self.dialog_id);
+        }
         self.writes_since_verify = false;
         // The checks run: the next change review isn't "in a row".
         self.reviews_in_row = 0;
@@ -473,7 +490,7 @@ impl<R: Runtime> Run<R> {
             }
         }
         self.verify_history.push(now.clone());
-        self.last_verify_results = results.clone();
+        let previous = std::mem::replace(&mut self.last_verify_results, results.clone());
 
         let status = if self.stopped() {
             "stopped"
@@ -536,7 +553,28 @@ impl<R: Runtime> Run<R> {
         if !flags.is_empty() {
             notes.push(repair::integrity_note(&flags, false));
         }
-        let mut report = failure_report(&results, &changed, round, &notes);
+        // C03: a large or repeated failure goes to triage first; the agent
+        // gets its diagnosis in place of that check's output.
+        let base = with(
+            record(status, round, &results, &changed, reason),
+            extra(None),
+        );
+        let triage = self
+            .triage_failure(&record_id, round, &results, &previous, |t| {
+                with(base.clone(), json!({ "triage": t }))
+            })
+            .await?;
+        let mut sent = results.clone();
+        if let Some(t) = &triage {
+            if let Some(section) = &t.section {
+                sent[t.index].output = Some(section.clone());
+                sent[t.index].saved_output = None;
+            }
+        }
+        if self.stopped() {
+            return Ok("verify-stopped".into());
+        }
+        let mut report = failure_report(&sent, &changed, round, &notes);
         if let Some(files) = &self.merged_from_project {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
             let diffs: String = files
@@ -718,6 +756,14 @@ impl<R: Runtime> Run<R> {
                             });
                         }
                         r.output = Some(output);
+                        if combined.chars().count() > FAILURE_OUTPUT_CHARS {
+                            r.saved_output = super::check_output::save(
+                                &self.dialog_id,
+                                round,
+                                &r.kind,
+                                &combined,
+                            );
+                        }
                     }
                 }
                 Err(e) => {

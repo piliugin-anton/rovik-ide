@@ -264,6 +264,8 @@ pub struct Run<R: Runtime> {
     /// latest (its answers follow it).
     pub(super) review_findings: Vec<super::change_review::Finding>,
     pub(super) review_note_id: Option<String>,
+    /// What the last failure triage found, for the next one (triage.rs).
+    pub(super) last_triage: Option<super::triage::Triage>,
 }
 
 /// Who a run works for.
@@ -710,6 +712,7 @@ impl<R: Runtime> Run<R> {
             reviews_in_row: 0,
             review_findings: Vec::new(),
             review_note_id: None,
+            last_triage: None,
         };
         Ok(Some((run, entry)))
     }
@@ -805,6 +808,7 @@ impl<R: Runtime> Run<R> {
             reviews_in_row: 0,
             review_findings: Vec::new(),
             review_note_id: None,
+            last_triage: None,
         }
     }
 

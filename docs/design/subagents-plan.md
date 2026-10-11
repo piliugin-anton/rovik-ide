@@ -612,6 +612,60 @@ dropped; a failing or unreadable reviewer skipped; small changes and the
 switch; the reviewer's own model and fallback), unit tests in
 `change_review.rs`, and `src/lib/changeReview.test.ts`.
 
+### C01–C03: failure triage
+
+- **C01, the saved output.** When a failing check's output is longer than
+  `FAILURE_OUTPUT_CHARS` (8,000), the whole of it is saved
+  (`agent_run/check_output.rs`). The agent and its subagents read it with
+  `read` at a virtual path, `@checks/round-<n>-<kind>.log`, by line range,
+  like `@context/`. A subagent reads its lead's files.
+  - **Deviation:** the files are in the app's temp folder
+    (`rovik-ide-checks/<chat>`) for every chat, isolated or not, not in
+    the overlay's `store/`. They're only needed while the run lasts.
+  - **Cleanup:** a run's first check round clears the chat's folder, and
+    the overlay's `discard` removes it. Landing discards the overlay, and
+    deleting a chat calls `discard`, so one hook covers all three.
+  - **Without triage too:** the failure report names the saved file, so
+    the agent can read past the 8,000 characters itself.
+- **C02, the kind.** `Kind::Triage` (`agent_run/triage.rs`), started by the
+  IDE.
+  - **Tools:** read-only (read, search and the code tools; no web).
+  - **Map:** around the change, at half size.
+  - **Budget:** 15 tool calls and 3 minutes.
+  - **Brief:** the check and its command, how it failed, whether it failed
+    the round before, and the saved output's path and size (or, when not
+    saved, the output itself). Also where the errors point (from
+    `error_locations`), split by `split_by_changed`, the changed files, an
+    excerpt to start from, and the last triage's diagnosis if there was one.
+  - **Report:** four required sections: Root cause, Files to fix, Next
+    step, Confidence (high, medium or low, with a reason).
+- **C03, the hook.** In `verify_at_end`, for a round that goes back to the
+  agent ("failed", not "gave-up"). It triages one check per round: the
+  first failed check, in check order, whose output was saved or that
+  failed in the round before too. A type check comes before the tests that
+  would fail with it.
+  - The agent's message gets the diagnosis in place of that check's
+    output, framed as data, plus a 2,000-character `focus_failures`
+    excerpt and the saved file's path.
+  - The verification record gets `triage`: its status, why it ran, the
+    result or why it was skipped, and its chat (shown in
+    `VerificationRecord.tsx` with "Show its work").
+  - A triage that fails, is blocked, or whose report can't be read is
+    recorded as skipped, and the agent gets the usual report (layer 7).
+- **Settings:** a "Failure triage" row on the Subagents page, off by
+  default like the others.
+- **Tests:**
+  - Unit: the saved output (whole, read in pieces, confined to the chat's
+    folder, removed on discard); the report parser; the brief; which check
+    is picked; the agent's section.
+  - E2e (`subagent_e2e_tests.rs`):
+    - a large failure goes to triage, which reads `@checks/…` and can't
+      write, and its diagnosis reaches the agent;
+    - a small failure gets today's message, then triage once it fails
+      again;
+    - a failing triage leaves today's message, with the saved file named;
+    - with triage off, the lead reads the saved output itself.
+
 ### G00: the headless runner
 
 Done: `src/headless.rs` and the `rovik-headless` binary, built only with

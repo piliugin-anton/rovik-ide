@@ -438,6 +438,8 @@ pub fn close(dialog_id: &str) {
 
 /// Throws the chat's changes away.
 pub fn discard(dialog_id: &str) -> Result<(), String> {
+    // Its checks' saved output goes with it (landing discards too).
+    crate::agent_run::check_output::clean(dialog_id);
     // The project, so the chats left open on it stop warning about this one.
     let project = project_of(dialog_id);
     close(dialog_id);

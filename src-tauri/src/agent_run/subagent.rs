@@ -42,14 +42,16 @@ const MAX_PATHS: usize = 20;
  * ---------------------------------------------------------------------------
  */
 
-/// The kinds of subagent built so far. The plan's others (reviewers, triage,
-/// workers, test writer) come in later milestones.
+/// The kinds of subagent built so far. The plan's others (the plan reviewer,
+/// workers, the test writer) come in later milestones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
     Scout,
     /// Reviews the whole change before the checks run (change_review.rs).
     Reviewer,
+    /// Reads a large or repeated check failure for its cause (triage.rs).
+    Triage,
 }
 
 /// The repository map a kind gets (S18, K21): what it's about and its size.
@@ -62,23 +64,24 @@ pub enum MapScope {
 }
 
 impl Kind {
-    /// Scouts explore anywhere: the lead's map. Reviewers judge the change:
-    /// a map around it, half the size.
+    /// Scouts explore anywhere: the lead's map. Reviewers judge the change,
+    /// and triage its failures: a map around it, half the size.
     pub fn map_scope(self) -> MapScope {
         match self {
             Kind::Scout => MapScope::Lead,
-            Kind::Reviewer => MapScope::Changed {
+            Kind::Reviewer | Kind::Triage => MapScope::Changed {
                 fraction_percent: 50,
             },
         }
     }
 
-    pub const ALL: &'static [Kind] = &[Kind::Scout, Kind::Reviewer];
+    pub const ALL: &'static [Kind] = &[Kind::Scout, Kind::Reviewer, Kind::Triage];
 
     pub fn id(self) -> &'static str {
         match self {
             Kind::Scout => "scout",
             Kind::Reviewer => "reviewer",
+            Kind::Triage => "triage",
         }
     }
 
@@ -96,6 +99,7 @@ impl Kind {
         match self {
             Kind::Scout => &SCOUT,
             Kind::Reviewer => &super::change_review::REVIEWER,
+            Kind::Triage => &super::triage::TRIAGE,
         }
     }
 }

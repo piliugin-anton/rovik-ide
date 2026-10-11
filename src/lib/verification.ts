@@ -28,6 +28,35 @@ export interface CheckResult {
   failures?: string[];
   /** The test check: how many tests ran, when its summary said. */
   testsRan?: number;
+  /** failed, with more output than `output`: where the whole is saved (`@checks/…`). */
+  savedOutput?: string;
+}
+
+/** What a failure triage found (src-tauri/src/agent_run/triage.rs). */
+export interface TriageResult {
+  check: CheckKind;
+  rootCause: string;
+  files: string[];
+  nextStep: string;
+  /** high, medium or low (as written otherwise). */
+  confidence: string;
+  confidenceNote: string;
+}
+
+/** A round's failure triage: a subagent that read a large or repeated failure. */
+export interface TriageMeta {
+  status: 'running' | 'done' | 'skipped' | 'stopped';
+  /** The check it looked at. */
+  check: CheckKind;
+  /** Why it ran. */
+  reason: 'large output' | 'failed again';
+  /** skipped: why. */
+  skipped?: string;
+  result?: TriageResult;
+  childDialogId?: string;
+  model?: string;
+  toolCalls?: number;
+  ms?: number;
 }
 
 export type VerificationStatus =
@@ -88,6 +117,24 @@ export interface VerificationMeta {
   /** Changes that weaken the checks. */
   integrity?: string[];
   rolledBack?: RolledBack;
+  triage?: TriageMeta;
+}
+
+/** The triage's one-line summary in the record. */
+export function triageHeadline(t: TriageMeta, checkLabel: string, interrupted = false): string {
+  const what = `${checkLabel.toLowerCase()} failure`;
+  const why = t.reason === 'failed again' ? 'it failed again' : 'its output is large';
+  if (interrupted) return `Triage of the ${what} didn’t finish.`;
+  switch (t.status) {
+    case 'running':
+      return `Triaging the ${what} (${why})…`;
+    case 'done':
+      return `Triage of the ${what}: ${t.result?.confidence ?? 'unknown'} confidence.`;
+    case 'stopped':
+      return `Triage of the ${what} stopped.`;
+    case 'skipped':
+      return `Triage of the ${what} skipped: ${t.skipped ?? 'it couldn’t run'}. The agent got the usual report.`;
+  }
 }
 
 /** A failure key without its check: "src/a.ts|TS2322|Type …" → readable. */

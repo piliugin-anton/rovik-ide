@@ -574,6 +574,9 @@ pub struct CallContext {
     pub seen: Arc<Seen>,
     /// The chat (dialog id) the call is for.
     pub owner: String,
+    /// The chat whose saved check output `@checks/…` reads: the lead's,
+    /// for a subagent (check_output.rs).
+    pub checks_owner: String,
     /// A note on the call while it runs ("Waiting for a CPU slot: …");
     /// `None` clears it.
     pub note: Arc<dyn Fn(Option<String>) + Send + Sync>,
@@ -621,6 +624,18 @@ async fn run<R: Runtime>(
     ctx: &CallContext,
 ) -> Result<ToolResult, String> {
     let seen: &Seen = &ctx.seen;
+    // A check's whole output, saved by the verification gate (C01).
+    if name == "read" {
+        if let Some(path) = text(args, "path").filter(|p| super::check_output::is_checks_path(p)) {
+            return super::check_output::read(
+                &ctx.checks_owner,
+                path,
+                uint(args, "start_line"),
+                uint(args, "end_line"),
+            )
+            .map(ToolResult::text);
+        }
+    }
     match name {
         "web_search" => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {

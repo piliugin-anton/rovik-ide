@@ -1653,3 +1653,233 @@ async fn a_follow_up_to_a_scout_still_working_is_refused() {
         .content
         .starts_with("Error: that subagent is still working"));
 }
+
+/*
+ * C01–C03: failure triage. The project's test check is a script that
+ * always fails, with a large output (over FAILURE_OUTPUT_CHARS) or a
+ * small one.
+ */
+
+const TRIAGE: &str = "# Triage this failure";
+const DIAGNOSIS: &str = "## Root cause\nThe greeting in a.txt:1 is checked by the tests and is wrong.\n\n\
+    ## Files to fix\n- `a.txt`: write \"hello\"\n\n## Next step\nReplace the line in a.txt.\n\n\
+    ## Confidence\nhigh: the only error names a.txt:1";
+
+fn triage_on(extra: Value) -> subagent::SubagentConfig {
+    let mut triage = json!({ "enabled": true });
+    if let (Some(t), Some(e)) = (triage.as_object_mut(), extra.as_object()) {
+        t.extend(e.clone());
+    }
+    serde_json::from_value(json!({ "enabled": true, "kinds": { "triage": triage } })).unwrap()
+}
+
+/// A project whose tests always fail: `lines` lines of noise, then the error.
+async fn failing_project(lines: usize) -> Option<Harness> {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return None;
+    }
+    let script = format!(
+        "for (let i = 1; i <= {lines}; i++) console.log('noise line ' + i + ' of the test run, nothing to see');\n\
+         console.error('error: the greeting is wrong at a.txt:1');\nprocess.exit(1);\n"
+    );
+    Some(
+        harness(&[
+            ("a.txt", "old\n"),
+            ("fail.js", &script),
+            (
+                "package.json",
+                r#"{ "name": "t", "scripts": { "test": "node fail.js" } }"#,
+            ),
+        ])
+        .await,
+    )
+}
+
+/// The IDE's failure messages to the lead, in order.
+fn fix_messages(messages: &[MessageRow]) -> Vec<String> {
+    messages
+        .iter()
+        .filter(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "verification"))
+        .map(|m| m.content.clone())
+        .collect()
+}
+
+fn triages(messages: &[MessageRow]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification")?.get("triage").cloned())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_large_failure_goes_to_triage_and_its_diagnosis_to_the_agent() {
+    let Some(h) = failing_project(400).await else {
+        return;
+    };
+    let (url, seen) = model_routed(
+        vec![(
+            TRIAGE,
+            vec![
+                Reply::Calls(vec![
+                    (
+                        "t1",
+                        "read",
+                        json!({ "path": "@checks/round-1-test.log", "start_line": 1, "end_line": 3 }),
+                    ),
+                    ("t2", "write", json!({ "path": "a.txt", "content": "triaged\n" })),
+                ]),
+                Reply::Text(DIAGNOSIS),
+            ],
+        )],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            // The failure came back; it gives up without changing anything.
+            Reply::Text("I can't fix it."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), triage_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "verify-unresolved");
+    let messages = h.messages().await;
+
+    // C02: the brief names the saved output; triage reads it, can't write.
+    let briefs = requests_with(&seen, TRIAGE);
+    let brief = briefs[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(brief.contains("saved as `@checks/round-1-test.log`"), "{brief}");
+    assert!(brief.contains("Files the agent changed\n\na.txt"), "{brief}");
+    let tools = tool_names(&briefs[0]);
+    assert!(tools.contains(&"read".to_string()));
+    for t in ["write", "bash", "task"] {
+        assert!(!tools.contains(&t.to_string()), "{t} offered to triage");
+    }
+    let t = &triages(&messages)[0];
+    assert_eq!(t["status"], "done", "{t}");
+    assert_eq!(t["reason"], "large output");
+    let child = t["childDialogId"].as_str().unwrap().to_string();
+    let work = h.messages_of(&child).await;
+    let read = work
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("t1"))
+        .unwrap();
+    // Stderr first, as in the report.
+    assert!(read.content.contains("error: the greeting is wrong at a.txt:1"), "{}", read.content);
+    let write = work
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("t2"))
+        .unwrap();
+    assert!(write.content.starts_with("Error"), "{}", write.content);
+    assert_eq!(h.file("a.txt").as_deref(), Some("helo\n"));
+
+    // C03: the agent gets the diagnosis, a short excerpt and the file,
+    // not the whole output.
+    let fix = &fix_messages(&messages)[0];
+    assert!(fix.contains("**Root cause:** The greeting in a.txt:1"), "{fix}");
+    assert!(fix.contains("**Confidence:** high"), "{fix}");
+    assert!(fix.contains("error: the greeting is wrong at a.txt:1"), "{fix}");
+    assert!(fix.contains("saved as `@checks/round-1-test.log`"), "{fix}");
+    assert!(fix.len() < 5_000, "{} characters", fix.len());
+    // The record keeps the whole result.
+    assert_eq!(t["result"]["files"][0], "`a.txt`: write \"hello\"");
+}
+
+#[tokio::test]
+async fn a_small_failure_gets_the_usual_message_until_it_fails_again() {
+    let Some(h) = failing_project(3).await else {
+        return;
+    };
+    let (url, seen) = model_routed(
+        vec![(TRIAGE, vec![Reply::Text(DIAGNOSIS)])],
+        vec![
+            write_call("w1", "a.txt", "helo\n"),
+            Reply::Text("Done."),
+            write_call("w2", "a.txt", "hello\n"),
+            Reply::Text("Fixed."),
+            Reply::Text("I can't fix it."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), triage_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "verify-unresolved");
+    let messages = h.messages().await;
+    let fixes = fix_messages(&messages);
+    assert_eq!(fixes.len(), 2);
+    // Round 1, small and new: today's message, the output whole.
+    assert!(!fixes[0].contains("Root cause"), "{}", fixes[0]);
+    assert!(fixes[0].contains("noise line 3 of the test run"));
+    assert!(!fixes[0].contains("@checks/"));
+    // Round 2, the same check failed again: triaged.
+    assert!(fixes[1].contains("**Root cause:**"), "{}", fixes[1]);
+    let briefs = requests_with(&seen, TRIAGE);
+    assert_eq!(briefs.len(), 1);
+    let brief = briefs[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(brief.contains("It failed in the round before too"), "{brief}");
+    assert!(brief.contains("## The output"), "{brief}");
+    assert_eq!(triages(&messages)[0]["reason"], "failed again");
+}
+
+#[tokio::test]
+async fn a_failing_triage_leaves_the_usual_message() {
+    let Some(h) = failing_project(400).await else {
+        return;
+    };
+    let (bad, _) = model(vec![Reply::Status(
+        400,
+        r#"{"error":{"message":"no such model"}}"#,
+    )])
+    .await;
+    let (url, _) = model(vec![
+        write_call("w1", "a.txt", "helo\n"),
+        Reply::Text("Done."),
+        Reply::Text("I can't fix it."),
+    ])
+    .await;
+    let config = triage_on(json!({ "models": [profile("bad", &bad)] }));
+    h.start(h.with_subagents(&url, "Greet", checks_on(), config))
+        .await;
+    assert_eq!(h.run_end().await, "verify-unresolved");
+    let messages = h.messages().await;
+    let t = &triages(&messages)[0];
+    assert_eq!(t["status"], "skipped", "{t}");
+    assert!(t["skipped"].as_str().unwrap().contains("model failed"), "{t}");
+    let fix = &fix_messages(&messages)[0];
+    assert!(!fix.contains("Root cause"), "{fix}");
+    assert!(fix.contains("error: the greeting is wrong at a.txt:1"), "{fix}");
+    // C01: the whole output is saved, and the message says where.
+    assert!(fix.contains("The whole of it is saved as `@checks/round-1-test.log`"), "{fix}");
+}
+
+#[tokio::test]
+async fn with_triage_off_a_large_failure_is_saved_and_named() {
+    let Some(h) = failing_project(400).await else {
+        return;
+    };
+    let (url, seen) = model(vec![
+        write_call("w1", "a.txt", "helo\n"),
+        Reply::Text("Done."),
+        // The lead reads the saved output itself, in pieces.
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": "@checks/round-1-test.log", "start_line": 1, "end_line": 12 }),
+        },
+        Reply::Text("I can't fix it."),
+    ])
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), Default::default()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-unresolved");
+    let messages = h.messages().await;
+    assert!(triages(&messages).is_empty());
+    assert!(requests_with(&seen, TRIAGE).is_empty(), "no triage request");
+    let read = result_of(&messages, "r1");
+    assert!(read.content.contains("noise line 5 of"), "{}", read.content);
+    assert!(!read.content.contains("noise line 300 of"), "{}", read.content);
+    assert!(read.content.contains("error: the greeting is wrong"), "{}", read.content);
+}

@@ -1268,6 +1268,9 @@ impl<R: Runtime> Run<R> {
         tools::CallContext {
             seen: self.seen.clone(),
             owner: self.dialog_id.clone(),
+            checks_owner: self
+                .sub()
+                .map_or_else(|| self.dialog_id.clone(), |s| s.parent_dialog_id.clone()),
             note: std::sync::Arc::new(move |note| {
                 emit(
                     &app,
