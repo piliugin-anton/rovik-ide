@@ -967,7 +967,15 @@ impl<R: Runtime> Run<R> {
                 scope.grants = self.grants_of(child).await;
                 outside_scope(&paths, &scope, &root)
             }
-            None => Vec::new(),
+            // Round 2: without its step, what's in its scope isn't known:
+            // nothing lands rather than everything.
+            None => {
+                result.writes.clear();
+                result.notes.push(format!(
+                    "Its copy isn't landed: its plan step can't be read any more (was the plan changed?), so the scope it may land in can't be determined. Its copy is kept: once the plan has the step again, continue it (\"{handle}\") with the goal \"land it\"; or do the step yourself."
+                ));
+                return;
+            }
         };
         if !outside.is_empty() {
             result.notes.push(format!(

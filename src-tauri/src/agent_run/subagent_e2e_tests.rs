@@ -4068,6 +4068,67 @@ async fn unlanded_snapshot_blobs_are_forgotten() {
     );
 }
 
+/// Round 2, P2.6: a kept copy whose plan step can't be read any more when
+/// it's done (the plan was changed meanwhile) lands nothing, and says why.
+#[tokio::test]
+async fn a_kept_copy_whose_step_cant_be_read_doesnt_land_everything() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = kept_after_a_conflict().await;
+    let w3 = h.child_of("g1#w3").await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 4.",
+            vec![Reply::Slow(
+                1_500,
+                Box::new(worker_report("Nothing more to do.", &["src/feed.rs"])),
+            )],
+        )],
+        vec![
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "g1#w3", "goal": "land it" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.implement_isolated(&url, false)).await;
+    // While it works, the plan loses its step 4.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let cut = GROUP3_PLAN.split("4. **Feed**").next().unwrap().to_string()
+        + "\n## Validation\n- `npm test`\n";
+    let plan_in_view = crate::overlay::chats::get(&h.dialog_id)
+        .map(|o| o.view.join(".rovik/plans/greet.md"));
+    std::fs::write(h.project.join(".rovik/plans/greet.md"), &cut).unwrap();
+    if let Some(p) = plan_in_view {
+        let _ = std::fs::write(p, &cut);
+    }
+    let continued = h.result_when_ready("c1").await;
+    h.run_end().await;
+    assert!(
+        continued.content.contains("the scope it may land in can't be determined"),
+        "{}",
+        continued.content
+    );
+    // Nothing of it reached the chat's files (nor, through them, the
+    // project's); its copy still has its work.
+    let view = crate::overlay::chats::mountpoint(&h.dialog_id);
+    for root in [view, h.project.clone()] {
+        assert_ne!(
+            std::fs::read_to_string(root.join("src/feed.rs")).ok().as_deref(),
+            Some("feed from w3\n"),
+            "{}",
+            root.display()
+        );
+    }
+    assert!(continued.content.contains("Its copy is kept"));
+    assert!(continued.content.contains(&subagent::handle(subagent::Kind::Worker, &w3.id)));
+}
+
 /// Round 2, P1.2: after the app restarts, `continue` on a kept copy goes
 /// on in that copy (opened again from disk) and lands it.
 #[tokio::test]
