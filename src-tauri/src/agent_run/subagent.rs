@@ -1139,6 +1139,59 @@ impl Ledger {
 mod tests {
     use super::*;
 
+    /// Round 2 (section 4.2): a run's workers are its plan's steps plus 2
+    /// retries, exactly; a group that doesn't fit is refused and takes
+    /// nothing.
+    #[test]
+    fn retry_boundary_exactly_steps_plus_two() {
+        let mut ledger = Ledger::default();
+        let worker = |step| Brief {
+            kind: Kind::Worker,
+            goal: format!("Carry out step {step}"),
+            context: None,
+            paths: Vec::new(),
+            max_tool_calls: None,
+            step: Some(step),
+        };
+        for step in [1, 2, 3, 1, 2] {
+            ledger.admit_worker(&worker(step), 3).unwrap();
+        }
+        let refused = ledger.admit_worker(&worker(3), 3).unwrap_err();
+        assert!(
+            refused.contains("already started 5 workers, the plan's 3 steps plus 2 retries"),
+            "{refused}"
+        );
+        assert_eq!(ledger.workers, 5);
+    }
+
+    #[test]
+    fn room_for_workers_refuses_a_group_that_doesnt_fit_and_takes_nothing() {
+        let mut ledger = Ledger::default();
+        let one = Brief {
+            kind: Kind::Worker,
+            goal: "Carry out step 1".into(),
+            context: None,
+            paths: Vec::new(),
+            max_tool_calls: None,
+            step: Some(1),
+        };
+        ledger.admit_worker(&one, 4).unwrap();
+        ledger
+            .admit_worker(
+                &Brief {
+                    step: Some(2),
+                    ..one.clone()
+                },
+                4,
+            )
+            .unwrap();
+        // 2 started, 6 allowed: 4 fit, 5 don't.
+        assert!(ledger.room_for_workers(4, 4).is_ok());
+        let e = ledger.room_for_workers(5, 4).unwrap_err();
+        assert!(e.starts_with("Error: 5 workers don't fit"), "{e}");
+        assert_eq!(ledger.workers, 2, "nothing taken");
+    }
+
     /// Round 2, P1.1: a released place can be taken again, for scouts and
     /// workers alike.
     #[test]
