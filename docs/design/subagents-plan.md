@@ -1381,3 +1381,45 @@ Now:
     are refused and `echo` runs.
   - The first headless test now sees the push refused before any
     approval.
+
+### Review fixes: paths, plans, scopes and the checklist
+
+- **Paths in a check's output are read as the project's**
+  (`causes::resolve`).
+  - An absolute path loses the chat's view or the project as its prefix.
+  - A path relative to a subfolder the check ran in (`cd src-tauri &&
+cargo check` prints `src/x.rs`) becomes the one known file it is the
+    end of. Known files are the run's changed files and the workers'
+    scopes. When two files end that way, the path is kept as it is.
+  - Before, ESLint's absolute paths and checks run in a subfolder made
+    every cause a "seam" for the lead, so no worker was ever resumed. The
+    repair loop (`Owners.roots`, `Owners.known`) and F06's attribution
+    both use it.
+- **Plans are read as written.**
+  - Only the least indented numbered lines are steps: a numbered list
+    inside a step is part of it. Before, it became steps of its own with
+    repeated numbers, so `task{step}` found the wrong one.
+  - A `## ` line inside a code block no longer ends the Steps section.
+  - Code blocks stay in a step's body, so the worker gets the exact
+    signature or schema. Paths inside them aren't taken as the step's
+    files.
+- **`extend_scope` can't claim the project or another worker's folder.**
+  - `./`, `.` and `/` (after any number of leading `./`) are refused as
+    the whole project. Before, `./` became an empty path that granted
+    everything.
+  - In a group, a folder with another worker's file or folder in it, or a
+    contract file, is refused (`GroupCtx::owner_within`).
+- **The checklist item a worker's step marks done** (`mark_step_done`):
+  - the step's number first ("Step 2: …"), then the exact title without
+    its number, then the title's words as whole words ("Types" isn't in
+    "Add prototypes");
+  - among open items only, and only when exactly one matches.
+
+  Before, a substring match could mark the wrong item, and a match on a
+  settled item kept the right one from being marked.
+
+- Tests: unit tests for each.
+- Seen meanwhile: an overlay test, `a_landing_reaches_other_chats_at_once`,
+  fails now and then when run with the isolated e2e tests, and passes
+  alone. The overlays' data folder is the process's, and the overlay
+  tests don't take `Harness::isolate`'s lock.

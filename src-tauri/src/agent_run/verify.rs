@@ -796,7 +796,10 @@ impl<R: Runtime> Run<R> {
             ));
             let output = r.output.clone().unwrap_or_default();
             let mut seen: Vec<String> = Vec::new();
+            let (roots, known) = self.path_context(owners);
             for loc in error_locations(&output) {
+                // As a project-relative path (absolute, or from a subfolder).
+                let loc = super::causes::resolve(&loc, &roots, &known);
                 if seen.contains(&loc) || seen.len() >= 30 {
                     continue;
                 }

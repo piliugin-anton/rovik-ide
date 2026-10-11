@@ -82,13 +82,38 @@ static CHANGE_WORD: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// The text of the `## ...` section that starts at `heading_end`.
+/// Whether a line opens or closes a fenced code block.
+fn is_fence(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("```") || t.starts_with("~~~")
+}
+
+/// The lines of `text` with their byte offsets and whether each is inside
+/// a fenced code block (fence lines count as inside).
+fn lines_with_fences(text: &str) -> Vec<(usize, &str, bool)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    let mut fence = false;
+    for line in text.split_inclusive('\n') {
+        let opens = is_fence(line);
+        out.push((at, line, fence || opens));
+        if opens {
+            fence = !fence;
+        }
+        at += line.len();
+    }
+    out
+}
+
+/// The text of the `## ...` section that starts at `heading_end`: up to
+/// the next `## ` heading outside a code block.
 fn section_after(text: &str, heading_end: usize) -> &str {
     let after = &text[heading_end..];
-    match NEXT_HEADING.find(after) {
-        Some(next) => &after[..next.start()],
-        None => after,
-    }
+    let end = lines_with_fences(after)
+        .into_iter()
+        .find(|(_, line, fenced)| !fenced && NEXT_HEADING.is_match(line))
+        .map_or(after.len(), |(at, _, _)| at);
+    &after[..end]
 }
 
 /// Whether a step names a file or folder of the repository.
@@ -114,9 +139,21 @@ fn names_a_file(step: &str) -> bool {
     })
 }
 
-/// The numbered items of a steps section, each with its sub-lines.
+/// The numbered items of a steps section, each with its sub-lines: the
+/// least indented numbered lines outside code blocks (a numbered list
+/// nested in a step is part of that step).
 fn split_steps(section: &str) -> Vec<&str> {
-    let starts: Vec<usize> = NUMBERED.find_iter(section).map(|m| m.start()).collect();
+    let numbered: Vec<(usize, usize)> = lines_with_fences(section)
+        .into_iter()
+        .filter(|(_, line, fenced)| !fenced && NUMBERED.is_match(line) && !line.trim().is_empty())
+        .map(|(at, line, _)| (at, line.len() - line.trim_start().len()))
+        .collect();
+    let indent = numbered.iter().map(|(_, i)| *i).min().unwrap_or(0);
+    let starts: Vec<usize> = numbered
+        .into_iter()
+        .filter(|(_, i)| *i == indent)
+        .map(|(at, _)| at)
+        .collect();
     starts
         .iter()
         .enumerate()
@@ -532,8 +569,9 @@ pub fn steps(markdown: &str) -> Vec<PlanStep> {
     let Some(heading) = STEPS_HEADING.find(text) else {
         return Vec::new();
     };
-    let section = CODE_BLOCK.replace_all(section_after(text, heading.end()), "");
-    split_steps(&section)
+    // Code blocks stay in a step's body (an exact signature, a schema).
+    let section = section_after(text, heading.end());
+    split_steps(section)
         .into_iter()
         .enumerate()
         .map(|(i, raw)| {
@@ -545,7 +583,11 @@ pub fn steps(markdown: &str) -> Vec<PlanStep> {
                 .map(|c| (c[1].parse().unwrap_or(i + 1), c[2].to_string()))
                 .unwrap_or((i + 1, first.to_string()));
             let mut files: Vec<PlanFile> = Vec::new();
-            for line in raw.lines() {
+            // Paths in code blocks are code, not the step's files.
+            for (_, line, _) in lines_with_fences(raw)
+                .into_iter()
+                .filter(|(_, _, fenced)| !fenced)
+            {
                 let new = NEW_MARK.is_match(line);
                 let read_only = READ_MARK.is_match(line);
                 for c in BACKTICKED.captures_iter(line) {
@@ -1228,6 +1270,31 @@ pub fn checklist_note(items: &[TodoItem], carried: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_lists_belong_to_their_step_and_code_blocks_stay() {
+        let plan = "# API\n\nTwo parts.\n\n## Steps\n\n\
+            1. **API**\n   1. Add `src/api/users.rs` (new).\n   2. Register it in `src/api/mod.rs`.\n\
+            2. **Pages**\n   - `src/pages.rs`: render it, with exactly this signature:\n\n     ```rust\n     \
+            ## not a heading\n     pub fn page(id: u32) -> Html { todo!(`src/other.rs`) }\n     ```\n\
+            3. **Docs**\n   - `README.md`: say so.\n\n## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        let numbers: Vec<usize> = s.iter().map(|x| x.number).collect();
+        assert_eq!(numbers, [1, 2, 3], "{s:#?}");
+        assert_eq!(s[0].title, "API");
+        let files = |i: usize| {
+            s[i].files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(files(0), ["src/api/users.rs", "src/api/mod.rs"]);
+        // The code stays in the body; its paths aren't the step's files.
+        assert!(s[1].body.contains("pub fn page(id: u32)"), "{}", s[1].body);
+        assert_eq!(files(1), ["src/pages.rs"]);
+        // A `## ` line in a code block doesn't end the steps.
+        assert_eq!(files(2), ["README.md"]);
+    }
     use serde_json::json;
 
     const GOOD_PLAN: &str = "# Add users\n\nSummary.\n\n## Steps\n\

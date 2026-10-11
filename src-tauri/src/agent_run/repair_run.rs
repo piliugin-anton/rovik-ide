@@ -241,11 +241,14 @@ impl<R: Runtime> Run<R> {
         let found = {
             let created =
                 |f: &str| matches!(self.original_of(&repair::rel_key(&root, f)), Some(None));
+            let (roots, known) = self.path_context(&group.owners);
             let owners = Owners {
                 workers: &group.owners,
                 contract: &group.contract,
                 test_files: &self.test_writer_files,
                 created: &created,
+                roots: &roots,
+                known: &known,
             };
             causes::group(
                 &keys,
@@ -394,6 +397,32 @@ impl<R: Runtime> Run<R> {
             note,
             fixed: fixing,
         })
+    }
+
+    /// For reading paths in a check's output (`causes::resolve`): the roots
+    /// absolute paths start with, and the files the run knows.
+    pub(super) fn path_context(
+        &self,
+        owners: &[(String, usize, WriteScope)],
+    ) -> (Vec<String>, Vec<String>) {
+        let root = self.root.clone().unwrap_or_default();
+        let roots: Vec<String> = [self.root.clone(), self.project_root.clone()]
+            .into_iter()
+            .flatten()
+            .collect();
+        let mut known: Vec<String> = self
+            .changed_files
+            .iter()
+            .map(|f| repair::rel_key(&root, f))
+            .collect();
+        for (_, _, scope) in owners {
+            for f in &scope.files {
+                if !known.contains(f) {
+                    known.push(f.clone());
+                }
+            }
+        }
+        (roots, known)
     }
 
     /// A worker resumed in its own chat to fix `cause`; `root`: the child

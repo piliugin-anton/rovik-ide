@@ -208,9 +208,14 @@ pub fn extend_scope_paths(args: &serde_json::Map<String, Value>) -> Result<Vec<S
         .map(|a| {
             a.iter()
                 .filter_map(|p| p.as_str())
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
-                .map(|p| p.replace('\\', "/").trim_start_matches("./").to_string())
+                .map(|p| {
+                    let p = p.trim().replace('\\', "/");
+                    let mut p = p.as_str();
+                    while let Some(rest) = p.strip_prefix("./") {
+                        p = rest;
+                    }
+                    p.to_string()
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -218,6 +223,15 @@ pub fn extend_scope_paths(args: &serde_json::Map<String, Value>) -> Result<Vec<S
         return Err(
             "Error: \"paths\" is required: the files (or folders, ending with /) you need.".into(),
         );
+    }
+    // The whole project isn't a scope: name the files or folders.
+    if let Some(bad) = paths
+        .iter()
+        .find(|p| p.trim_end_matches('/').is_empty() || p.trim_end_matches('/') == ".")
+    {
+        return Err(format!(
+            "Error: `{bad}` is the whole project. Name the files, or the folders (ending with /), the step needs."
+        ));
     }
     if args
         .get("reason")
@@ -457,19 +471,47 @@ pub fn mark_step_done(
             || t == format!("step {}", step.number)
             || t.starts_with(&format!("{} ", step.number))
     };
-    let at = items
-        .iter()
-        .position(|i| !title.is_empty() && simple(&i.title).contains(&title))
-        .or_else(|| items.iter().position(|i| numbered(&i.title)))
+    // The title without "Step 2:" or "2.".
+    let bare = |t: &str| {
+        let t = simple(t);
+        let t = t.strip_prefix("step ").unwrap_or(&t).to_string();
+        match t.split_once(' ') {
+            Some((n, rest)) if n.chars().all(|c| c.is_ascii_digit()) => rest.to_string(),
+            _ => t,
+        }
+    };
+    // The title's words, in order, as whole words ("types" isn't in
+    // "add prototypes").
+    let has_words = |t: &str| {
+        let hay: Vec<String> = simple(t).split(' ').map(str::to_string).collect();
+        let needle: Vec<&str> = title.split(' ').collect();
+        !title.is_empty()
+            && hay
+                .windows(needle.len())
+                .any(|w| w.iter().zip(&needle).all(|(a, b)| a == b))
+    };
+    // Open items only, and only one that matches: a settled item, or two
+    // that match as well, aren't this step's to mark.
+    let open: Vec<usize> = (0..items.len())
+        .filter(|&i| !plan::is_settled(&items[i]))
+        .collect();
+    let only = |f: &dyn Fn(&str) -> bool| -> Option<usize> {
+        let found: Vec<usize> = open
+            .iter()
+            .copied()
+            .filter(|&i| f(&items[i].title))
+            .collect();
+        (found.len() == 1).then(|| found[0])
+    };
+    let at = only(&numbered)
+        .or_else(|| only(&|t: &str| !title.is_empty() && bare(t) == title))
+        .or_else(|| only(&has_words))
         .or_else(|| {
             (items.len() == plan_steps)
                 .then(|| step.number.checked_sub(1))
                 .flatten()
-        })
-        .filter(|&i| i < items.len())?;
-    if plan::is_settled(&items[at]) {
-        return None;
-    }
+                .filter(|i| open.contains(i))
+        })?;
     let mut out = items.to_vec();
     out[at].status = "done".into();
     Some(out)
@@ -843,6 +885,70 @@ mod tests {
         assert!(
             mark_step_done(&[item("API", "done")], &steps[1], 3).is_none(),
             "settled already"
+        );
+        // Whole words, the step's number first, and never a settled item.
+        let mut types = steps[1].clone();
+        types.title = "Types".into();
+        types.number = 2;
+        let marked = mark_step_done(
+            &[
+                item("Step 1: Add prototypes", "pending"),
+                item("Step 2: Types", "pending"),
+            ],
+            &types,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            (marked[0].status.as_str(), marked[1].status.as_str()),
+            ("pending", "done")
+        );
+        let marked = mark_step_done(
+            &[
+                item("Add prototypes", "pending"),
+                item("Types", "pending"),
+                item("x", "pending"),
+            ],
+            &types,
+            3,
+        )
+        .unwrap();
+        assert_eq!(marked[1].status, "done", "the exact title, not a substring");
+        let mut api = steps[1].clone();
+        api.title = "API".into();
+        api.number = 5;
+        let marked = mark_step_done(
+            &[item("Write API tests", "done"), item("Add API", "pending")],
+            &api,
+            9,
+        )
+        .unwrap();
+        assert_eq!(marked[1].status, "done", "the open one");
+        assert!(
+            mark_step_done(
+                &[item("API one", "pending"), item("API two", "pending")],
+                &api,
+                9
+            )
+            .is_none(),
+            "two match as well: neither"
+        );
+    }
+
+    #[test]
+    fn the_whole_project_isnt_a_scope() {
+        let args = |p: &str| {
+            json!({ "paths": [p], "reason": "r" })
+                .as_object()
+                .unwrap()
+                .clone()
+        };
+        for whole in ["./", ".", "/", "././", " ./ "] {
+            assert!(extend_scope_paths(&args(whole)).is_err(), "{whole}");
+        }
+        assert_eq!(
+            extend_scope_paths(&args("./src/a.rs")).unwrap(),
+            ["src/a.rs"]
         );
     }
 

@@ -66,13 +66,34 @@ pub fn group_call(args_json: &str) -> Option<String> {
     })
 }
 
+impl GroupCtx {
+    /// Who else owns something inside the folder `dir`: the contract, or a
+    /// worker with a file or folder there.
+    pub fn owner_within(&self, dir: &str) -> Option<String> {
+        let dir = dir.trim_end_matches('/');
+        let inside = |p: &str| {
+            let p = p.trim_end_matches('/');
+            p == dir || p.starts_with(&format!("{dir}/"))
+        };
+        if self.contract.iter().any(|c| inside(c)) {
+            return Some("the contract".into());
+        }
+        self.others
+            .iter()
+            .find(|(_, scope)| scope.files.iter().chain(&scope.folders).any(|p| inside(p)))
+            .map(|(label, _)| label.clone())
+    }
+}
+
 /// D07 for a group worker: paths another worker or the contract owns
-/// aren't granted.
+/// aren't granted, nor a folder with any of theirs in it.
 pub fn refusal(ctx: &GroupCtx, paths: &[String]) -> Option<String> {
     let owned: Vec<String> = paths
         .iter()
         .filter_map(|p| {
-            ctx.owner_of(p.trim_end_matches('/'))
+            let path = p.trim_end_matches('/');
+            ctx.owner_of(path)
+                .or_else(|| p.ends_with('/').then(|| ctx.owner_within(path)).flatten())
                 .map(|o| format!("`{p}` ({o})"))
         })
         .collect();
@@ -738,6 +759,11 @@ mod tests {
         );
         assert!(r.contains("Leave this to the lead and list it under \"## Open questions\""));
         assert!(refusal(&ctx, &["src/cli.rs".into()]).is_none());
+        // A folder with another's files, or the contract, in it.
+        for folder in ["src/", "src/pages/", "src/api/"] {
+            assert!(refusal(&ctx, &[folder.into()]).is_some(), "{folder}");
+        }
+        assert!(refusal(&ctx, &["src/cli/".into()]).is_none());
         assert_eq!(
             group_call(r#"{"kind":"workers","group":" api "}"#).as_deref(),
             Some("api")

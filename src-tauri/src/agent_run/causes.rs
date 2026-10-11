@@ -98,6 +98,12 @@ pub struct Owners<'a> {
     pub test_files: &'a [String],
     /// Whether the run created a file (it wasn't there before).
     pub created: &'a dyn Fn(&str) -> bool,
+    /// Folders absolute paths in the output start with (the chat's view,
+    /// the project), for `resolve`.
+    pub roots: &'a [String],
+    /// Project-relative files the run knows (changed, in a scope): a path
+    /// relative to a subfolder is the one of them it ends.
+    pub known: &'a [String],
 }
 
 /// One failure key, read back.
@@ -144,6 +150,32 @@ fn norm(path: &str) -> String {
             file.to_string()
         }
         _ => p.to_string(),
+    }
+}
+
+/// A path from a check's output as a project-relative path: an absolute
+/// one without its root (`roots`), and one relative to a subfolder the
+/// check ran in (`cd src-tauri && cargo check` prints `src/x.rs`) as the
+/// one known file it's the end of. Otherwise as it is.
+pub fn resolve(path: &str, roots: &[String], known: &[String]) -> String {
+    let p = norm(path);
+    for root in roots {
+        let root = root.replace('\\', "/");
+        let root = root.trim_end_matches('/');
+        if !root.is_empty() {
+            if let Some(rest) = p.strip_prefix(&format!("{root}/")) {
+                return rest.to_string();
+            }
+        }
+    }
+    if known.contains(&p) {
+        return p;
+    }
+    let tail = format!("/{p}");
+    let ends: Vec<&String> = known.iter().filter(|k| k.ends_with(&tail)).collect();
+    match ends.as_slice() {
+        [one] => (*one).clone(),
+        _ => p,
     }
 }
 
@@ -277,8 +309,9 @@ fn summary_of(failures: &[Failure]) -> String {
 /// most failures first. `triage`: this round's triage, when one ran.
 pub fn group(keys: &[String], owners: &Owners, triage: Option<&Triage>) -> Vec<Cause> {
     let mut failures: Vec<Failure> = keys.iter().map(|k| parse_key(k)).collect();
+    let resolved = |p: &str| resolve(p, owners.roots, owners.known);
     for f in &mut failures {
-        f.file = f.file.as_deref().map(norm);
+        f.file = f.file.as_deref().map(resolved);
     }
     let mut clusters: Vec<Cluster> = Vec::new();
 
@@ -289,14 +322,14 @@ pub fn group(keys: &[String], owners: &Owners, triage: Option<&Triage>) -> Vec<C
             t.files
                 .iter()
                 .flat_map(|f| super::triage::paths_in(f))
-                .map(|f| norm(&f))
+                .map(|f| resolved(&f))
                 .collect(),
             t.root_cause.clone(),
             t.confidence.clone(),
         )];
         for c in &t.other_causes {
             causes.push((
-                c.files.iter().map(|f| norm(f)).collect(),
+                c.files.iter().map(|f| resolved(f)).collect(),
                 c.cause.clone(),
                 c.confidence.clone(),
             ));
@@ -474,6 +507,8 @@ mod tests {
             contract: &contract,
             test_files: &[],
             created: &not_created,
+            roots: &[],
+            known: &[],
         };
         // `loadPost` gained an argument: twenty call sites, in both folders.
         let keys: Vec<String> = (0..20)
@@ -495,6 +530,46 @@ mod tests {
     }
 
     #[test]
+    fn absolute_and_subfolder_paths_are_read_as_the_projects() {
+        let roots = vec!["/home/u/proj".to_string(), "/run/chats/abc".to_string()];
+        let known = vec![
+            "src-tauri/src/posts.rs".to_string(),
+            "src/posts.ts".to_string(),
+            "src-tauri/src/lib.rs".to_string(),
+            "crates/a/src/lib.rs".to_string(),
+        ];
+        let r = |p: &str| resolve(p, &roots, &known);
+        assert_eq!(r("/home/u/proj/src/posts.ts:4:2"), "src/posts.ts");
+        assert_eq!(
+            r("/run/chats/abc/src-tauri/src/posts.rs"),
+            "src-tauri/src/posts.rs"
+        );
+        // `cd src-tauri && cargo check` prints paths from there.
+        assert_eq!(r("src/posts.rs"), "src-tauri/src/posts.rs");
+        // Known as it is: kept.
+        assert_eq!(r("src/posts.ts"), "src/posts.ts");
+        // Two files end that way: can't tell, kept.
+        assert_eq!(r("src/lib.rs"), "src/lib.rs");
+
+        let w = vec![("w2".to_string(), 3, scope(&["src-tauri/src/posts.rs"]))];
+        let owners = Owners {
+            workers: &w,
+            contract: &[],
+            test_files: &[],
+            created: &not_created,
+            roots: &roots,
+            known: &known,
+        };
+        let keys = vec![
+            "lint|/home/u/proj/src-tauri/src/posts.rs|no-unused|x".to_string(),
+            "test|src/posts.rs|E0425|y".to_string(),
+        ];
+        let causes = group(&keys, &owners, None);
+        assert_eq!(causes.len(), 1, "{causes:?}");
+        assert!(causes[0].owner.is_worker(), "{causes:?}");
+    }
+
+    #[test]
     fn errors_only_in_one_workers_files_are_that_workers() {
         let w = workers();
         let owners = Owners {
@@ -502,6 +577,8 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &not_created,
+            roots: &[],
+            known: &[],
         };
         let keys = vec![
             "typecheck|src/posts/edit.ts|TS2322|Type 'string' is not assignable to type 'number'."
@@ -530,6 +607,8 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &not_created,
+            roots: &[],
+            known: &[],
         };
         let keys = vec![
             "typecheck|src/feed/list.ts|TS2322|a".to_string(),
@@ -557,6 +636,8 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &not_created,
+            roots: &[],
+            known: &[],
         };
         let keys = vec![
             "typecheck|src/feed/list.ts|TS2304|Cannot find name 'Post'.".to_string(),
@@ -581,6 +662,8 @@ mod tests {
             contract: &[],
             test_files: &tests,
             created: &not_created,
+            roots: &[],
+            known: &[],
         };
         let keys = vec![
             "test|test|posts > edits a post".to_string(),
@@ -605,6 +688,8 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &created,
+            roots: &[],
+            known: &[],
         };
         let keys = vec!["typecheck|src/posts/new.ts|TS2322|x".to_string()];
         let causes = group(&keys, &owners, None);
@@ -619,6 +704,8 @@ mod tests {
             contract: &[],
             test_files: &[],
             created: &not_created,
+            roots: &[],
+            known: &[],
         };
         let triage = Triage {
             check: "typecheck".into(),
