@@ -585,18 +585,27 @@ impl<R: Runtime> Run<R> {
     /// P3.9: the carried state was lost (a restart): what each file was
     /// before the run is rebuilt from the record's hashes, from a copy that
     /// still matches (the project's copy in an isolated chat, the file as
-    /// it is). What can't be leaves the integrity check incomplete.
+    /// it is). What can't be leaves the integrity check incomplete. The
+    /// record's round limit stays too.
     pub(super) async fn rebuild_baseline(&mut self, record_id: &str) {
-        let entries = self.recent().await.ok().and_then(|recent| {
+        let waiting = self.recent().await.ok().and_then(|recent| {
             recent
-                .iter()
+                .into_iter()
                 .find(|m| m.id == record_id)?
-                .meta
-                .as_ref()?
-                .pointer("/verification/baselineHashes")?
-                .as_array()
+                .meta?
+                .get("verification")
                 .cloned()
         });
+        // Round 2: the rounds a review after green granted are the
+        // record's too, so they outlast the carry.
+        if let Some(max) = waiting.as_ref().and_then(|v| v["maxRounds"].as_u64()) {
+            self.bonus_rounds = self
+                .bonus_rounds
+                .max((max as u32).saturating_sub(MAX_VERIFY_ROUNDS));
+        }
+        let entries = waiting
+            .as_ref()
+            .and_then(|v| v.get("baselineHashes")?.as_array().cloned());
         let Some(entries) = entries else {
             self.integrity_unchecked = true;
             return;

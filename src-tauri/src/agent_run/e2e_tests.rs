@@ -4128,6 +4128,77 @@ async fn a_lead_that_errors_or_is_stopped_drops_the_carry() {
     assert!(!state.has_carry(&h.dialog_id));
 }
 
+/// Round 2 (§4.2): a waiting record from before the hashes were kept,
+/// after a restart: nothing to rebuild from, so the checks pass but the
+/// run isn't verified, and the record says integrity wasn't checked.
+#[tokio::test]
+async fn rebuild_without_baseline_hashes_is_unchecked() {
+    let h = harness(&[("package.json", PASSING_TESTS), ("x.txt", "x")]).await;
+    if !has_npm() {
+        return;
+    }
+    let ids = store_records(
+        &h,
+        &[json!({ "status": "needs-approval", "round": 0, "changedFiles": ["x.txt"] })],
+    )
+    .await;
+    let (url, _) = model(vec![Reply::Text("Fine.")]).await;
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: ids[0].clone(),
+        },
+        needs_user_approval(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verify-unchecked");
+    let v = verification_of(&h.messages().await, &ids[0]);
+    assert_eq!(v["status"], "passed", "{v}");
+    assert_eq!(v["stateRestored"], false, "{v}");
+    assert_eq!(v["integrityChecked"], false, "{v}");
+}
+
+/// Round 2 (§4.2): checks waiting at round 3 of 4 (a review after green
+/// granted a round), after a restart: the round they run is the record's
+/// last; failing, it gives up, and says 4 of 4, not 4 of 3.
+#[tokio::test]
+async fn restart_with_persisted_baseline_and_bonus_round() {
+    let h = harness(&[(
+        "package.json",
+        r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(1)\"" } }"#,
+    )])
+    .await;
+    if !has_npm() {
+        return;
+    }
+    let ids = store_records(
+        &h,
+        &[json!({
+            "status": "needs-approval",
+            "round": 3,
+            "maxRounds": 4,
+            "changedFiles": ["x.txt"],
+            "baselineHashes": [{ "path": "x.txt", "hash": null }],
+        })],
+    )
+    .await;
+    std::fs::write(h.project.join("x.txt"), "x").unwrap();
+    let (url, _) = model(vec![Reply::Text("Hmm.")]).await;
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: ids[0].clone(),
+        },
+        needs_user_approval(),
+    ))
+    .await;
+    let outcome = h.run_end().await;
+    let v = verification_of(&h.messages().await, &ids[0]);
+    assert_eq!(outcome, "verify-gave-up", "{v}");
+    assert_eq!(v["round"], 4, "{v}");
+    assert_eq!(v["maxRounds"], 4, "{v}");
+}
+
 #[tokio::test]
 async fn checks_wait_for_approval_then_run_when_started() {
     let h = harness(&[(
