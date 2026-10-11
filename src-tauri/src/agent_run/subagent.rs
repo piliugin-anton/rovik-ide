@@ -642,7 +642,9 @@ pub fn format_problem(spec: &KindSpec, text: &str) -> Option<String> {
         return super::change_review::parse_findings(text).err();
     }
     let found = sections(text);
-    if found.get("Blocked").is_some_and(|b| !b.is_empty()) {
+    // Round 2: "## Blocked\nNone." isn't a block, so the report still
+    // needs its sections.
+    if is_blocked(text) {
         return None;
     }
     let missing: Vec<&str> = spec.sections[..spec.required]
@@ -1123,6 +1125,19 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2: a report whose only section is "## Blocked\nNone." is out of
+    /// format (no answer), while a real block needs nothing else.
+    #[test]
+    fn format_problem_rejects_blocked_none() {
+        let scout = Kind::Scout.spec();
+        assert!(format_problem(&scout, "## Blocked\nNone.").is_some());
+        assert!(format_problem(&scout, "## Blocked\nno").is_some());
+        assert_eq!(
+            format_problem(&scout, "## Blocked\nThe repo is empty."),
+            None
+        );
+    }
 
     fn args(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
