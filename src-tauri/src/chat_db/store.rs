@@ -385,8 +385,18 @@ pub fn rename_dialog(conn: &mut Connection, id: &str, title: &str) -> DbResult<(
     tx.commit().map_err(err)
 }
 
-/// P6.7: a chat's subagents' chats, theirs too, deepest first.
+/// P6.7: a chat's subagents' chats, theirs too, deepest first. Each once,
+/// and never `id` itself, even if the parent links loop (round 2).
 pub fn descendants(conn: &Connection, id: &str) -> DbResult<Vec<String>> {
+    let mut seen = std::collections::HashSet::from([id.to_string()]);
+    descendants_in(conn, id, &mut seen)
+}
+
+fn descendants_in(
+    conn: &Connection,
+    id: &str,
+    seen: &mut std::collections::HashSet<String>,
+) -> DbResult<Vec<String>> {
     let mut out = Vec::new();
     let children: Vec<String> = {
         let mut stmt = conn
@@ -400,8 +410,10 @@ pub fn descendants(conn: &Connection, id: &str) -> DbResult<Vec<String>> {
         ids
     };
     for child in children {
-        out.extend(descendants(conn, &child)?);
-        out.push(child);
+        if seen.insert(child.clone()) {
+            out.extend(descendants_in(conn, &child, seen)?);
+            out.push(child);
+        }
     }
     Ok(out)
 }

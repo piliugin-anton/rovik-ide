@@ -565,3 +565,17 @@ fn a_chats_subagents_are_found_deepest_first() {
     assert_eq!(found, ["g", "k1", "k2"]);
     assert!(descendants(&conn, "k2").unwrap().is_empty());
 }
+
+/// Round 2, P6.7: parent links that loop (a damaged database) end.
+#[test]
+fn descendants_terminate_on_a_cycle() {
+    let mut conn = db();
+    dialog(&mut conn, "p", "Pancakes", 0);
+    child(&mut conn, "k1", "p", "call-1");
+    child(&mut conn, "g", "k1", "call-2");
+    conn.execute("UPDATE dialogs SET parent_id = 'g' WHERE id = 'p'", [])
+        .unwrap();
+    let mut found = descendants(&conn, "p").unwrap();
+    found.sort();
+    assert_eq!(found, ["g", "k1"]);
+}
