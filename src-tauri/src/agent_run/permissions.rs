@@ -149,6 +149,9 @@ pub struct ParsedCommand {
     pub writes_via_redirect: bool,
     /// Command substitution or subshells: $( ), backticks, <( ), ( ).
     pub opaque: bool,
+    /// For each segment: words the shell expands (globs `*?[`, `~`, `$VAR`,
+    /// braces), so its arguments aren't what's written (P2.5).
+    pub expands: Vec<bool>,
 }
 
 #[derive(Default)]
@@ -157,6 +160,8 @@ struct Splitter {
     words: Vec<String>,
     word: String,
     in_word: bool,
+    expands: Vec<bool>,
+    expanding: bool,
 }
 
 impl Splitter {
@@ -171,8 +176,10 @@ impl Splitter {
     fn end_segment(&mut self) {
         self.end_word();
         let body = drop_assignments(std::mem::take(&mut self.words));
+        let expanding = std::mem::take(&mut self.expanding);
         if !body.is_empty() {
             self.segments.push(body);
+            self.expands.push(expanding);
         }
     }
 }
@@ -202,6 +209,9 @@ pub fn parse_command(command: &str) -> ParsedCommand {
             } else {
                 if q == '"' && (c == '`' || (c == '$' && next == Some('('))) {
                     opaque = true;
+                }
+                if q == '"' && c == '$' {
+                    s.expanding = true;
                 }
                 s.word.push(c);
             }
@@ -301,6 +311,9 @@ pub fn parse_command(command: &str) -> ParsedCommand {
             i += 1;
             continue;
         }
+        if matches!(c, '*' | '?' | '[' | '~' | '{' | '$') {
+            s.expanding = true;
+        }
         s.word.push(c);
         s.in_word = true;
         i += 1;
@@ -311,6 +324,7 @@ pub fn parse_command(command: &str) -> ParsedCommand {
         segments: s.segments,
         writes_via_redirect,
         opaque,
+        expands: s.expands,
     }
 }
 

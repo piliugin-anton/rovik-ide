@@ -638,7 +638,8 @@ async fn run<R: Runtime>(
             .map(ToolResult::text);
         }
     }
-    if !ctx.hidden.is_empty() && name == "read" {
+    // The test writer doesn't read the change's code by any tool (P2.4).
+    if !ctx.hidden.is_empty() && matches!(name, "read" | "neighbours" | "diagnostics") {
         if let (Some(path), Some(root)) = (text(args, "path"), root) {
             let key = super::repair::rel_key(root, path);
             if super::test_writer::is_hidden(&ctx.hidden, &key) {
@@ -970,6 +971,12 @@ async fn run<R: Runtime>(
                 .map(str::to_string),
         )?,
         _ => format!("Error: unknown tool \"{name}\"."),
+    };
+    // P2.4: what these show of other files leaves out the hidden ones.
+    let content = if !ctx.hidden.is_empty() && matches!(name, "callers" | "neighbours" | "diagnostics") {
+        super::test_writer::without_hidden_lines(&content, &ctx.hidden)
+    } else {
+        content
     };
     Ok(ToolResult::text(content))
 }

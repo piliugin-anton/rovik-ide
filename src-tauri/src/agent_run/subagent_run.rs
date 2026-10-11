@@ -97,6 +97,9 @@ pub(super) struct SubCtx {
     /// landing that waits or failed): what it changes there lands when it
     /// ends (P1.2, P1.3).
     pub kept_copy: bool,
+    /// A step worker outside a group: the plan's other steps' scopes,
+    /// which extend_scope doesn't grant (P2.3).
+    pub other_steps: Vec<(usize, WriteScope)>,
 }
 
 impl SubCtx {
@@ -184,7 +187,16 @@ impl<R: Runtime> Run<R> {
         // Writing subagents run one at a time anyway; each is started only
         // once the one before it ended, so its brief (the steps done, the
         // files as they are) includes that one's work.
-        if calls.len() > 1 && calls.iter().any(writes_task) {
+        let mut any_writes = false;
+        if calls.len() > 1 {
+            for tc in calls {
+                if self.task_writes(tc).await {
+                    any_writes = true;
+                    break;
+                }
+            }
+        }
+        if any_writes {
             for tc in calls {
                 Box::pin(self.execute_tasks(std::slice::from_ref(tc), resumed)).await?;
             }
@@ -397,13 +409,16 @@ impl<R: Runtime> Run<R> {
                 if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
                     return Err(why);
                 }
-                self.ledger.admit(&brief, config.max_per_run())?;
                 uuid::Uuid::new_v4().to_string()
             }
         };
 
         let budget = brief.budget(config.budget(kind));
         let sub = self.new_sub(kind, &tc.id, budget, config).await?;
+        // Counted once it can start (P2.7): no models left isn't a start.
+        if existing.is_none() {
+            self.ledger.admit(&brief, config.max_per_run())?;
+        }
         match &existing {
             Some(_) => self.close_child_calls(&child_id).await?,
             None => {
@@ -411,7 +426,34 @@ impl<R: Runtime> Run<R> {
                     .await?
             }
         }
-        self.launch_child(child_id, &tc.id, &brief.goal, sub)
+        let launched = self.launch_child(child_id.clone(), &tc.id, &brief.goal, sub);
+        self.launched(launched, &child_id, existing.is_some()).await
+    }
+
+    /// Whether a `task` call starts or continues a writing subagent; a
+    /// continued one by the kind its chat was started with, however it's
+    /// named (a handle or the call that started it, P2.8).
+    async fn task_writes(&self, tc: &ToolCall) -> bool {
+        if writes_task(tc) {
+            return true;
+        }
+        let args = permissions::parse_args(&tc.arguments);
+        let Some(handle) = args
+            .get("continue")
+            .and_then(|c| c.as_str())
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        else {
+            return false;
+        };
+        let (parent, key) = (self.dialog_id.clone(), handle.to_string());
+        self.db
+            .read(move |c| store::child_by_handle(c, &parent, &key))
+            .await
+            .ok()
+            .flatten()
+            .and_then(|child| Kind::parse(&child.kind))
+            .is_some_and(|k| k.writes())
     }
 
     /// A04: a follow-up question to a finished subagent, in its own chat
@@ -433,6 +475,19 @@ impl<R: Runtime> Run<R> {
             .filter(|g| !g.is_empty())
             .ok_or("Error: \"goal\" is required: the follow-up question.")?
             .to_string();
+        // The same limits as a new subagent's brief (P2.8).
+        if goal.chars().count() > subagent::MAX_GOAL_CHARS {
+            return Err(format!(
+                "Error: \"goal\" is too long ({} characters, at most {}). Ask one focused question.",
+                goal.chars().count(),
+                subagent::MAX_GOAL_CHARS
+            ));
+        }
+        let max_tool_calls = args
+            .get("max_tool_calls")
+            .and_then(|n| n.as_f64())
+            .filter(|n| n.is_finite() && *n >= 1.0)
+            .map(|n| n.floor() as u32);
         let (parent, key) = (self.dialog_id.clone(), handle.to_string());
         let Some(child) = self
             .db
@@ -476,7 +531,7 @@ impl<R: Runtime> Run<R> {
             goal: format!("follow-up to {handle}: {goal}"),
             context: None,
             paths: Vec::new(),
-            max_tool_calls: None,
+            max_tool_calls,
             step: step.as_ref().map(|s| s.number),
         };
         match &step {
@@ -490,11 +545,17 @@ impl<R: Runtime> Run<R> {
             None => self.ledger.admit(&brief, config.max_per_run())?,
         }
         let mut sub = self
-            .new_sub(kind, &tc.id, config.budget(kind), config)
+            .new_sub(kind, &tc.id, brief.budget(config.budget(kind)), config)
             .await?;
         if let Some(step) = &step {
-            sub.scope = Some(WriteScope::for_step(step));
+            let mut scope = WriteScope::for_step(step);
+            // What it was granted before goes on (P2.3).
+            scope.grants = self.grants_of(&child.id).await;
+            sub.scope = Some(scope);
             sub.step = Some(step.number);
+            if let Some((_, plan)) = self.implementing_plan().await {
+                sub.other_steps = other_steps(&super::plan::steps(&plan), step.number);
+            }
         }
         // A test writer asked more keeps its limits.
         if kind == Kind::TestWriter {
@@ -609,6 +670,7 @@ impl<R: Runtime> Run<R> {
             resumed_writes: Vec::new(),
             registered: None,
             kept_copy: false,
+            other_steps: Vec::new(),
         };
         #[cfg(test)]
         if let Some(k) = config.kinds.get(kind.id()) {
@@ -987,6 +1049,14 @@ impl<R: Runtime> Run<R> {
     }
 
     /// Budget used up: the reason, for the result turn.
+    /// A subagent's working time left (time waiting for the user aside);
+    /// None for the lead.
+    pub(super) fn wall_left(&self) -> Option<Duration> {
+        let sub = self.sub()?;
+        let worked = self.started_at.elapsed().saturating_sub(sub.waited());
+        Some(sub.budget.wall.saturating_sub(worked))
+    }
+
     fn over_budget(&self) -> Option<String> {
         let sub = self.sub()?;
         if self.guard.tool_calls >= sub.budget.tool_calls {
@@ -1336,7 +1406,6 @@ impl<R: Runtime> Run<R> {
                 if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
                     return Err(why);
                 }
-                self.ledger.admit_worker(&brief, steps.len())?;
                 uuid::Uuid::new_v4().to_string()
             }
         };
@@ -1359,8 +1428,12 @@ impl<R: Runtime> Run<R> {
         });
         let budget = brief.budget(config.budget(Kind::Worker));
         let mut sub = self.new_sub(Kind::Worker, &tc.id, budget, config).await?;
+        if existing.is_none() {
+            self.ledger.admit_worker(&brief, steps.len())?;
+        }
         sub.scope = Some(scope);
         sub.step = Some(n);
+        sub.other_steps = other_steps(&steps, n);
         let goal = format!("Step {n}: {}", step.title);
         match &existing {
             Some(_) => self.close_child_calls(&child_id).await?,
@@ -1369,11 +1442,53 @@ impl<R: Runtime> Run<R> {
                     .await?
             }
         }
-        let mut child = self.launch_child(child_id.clone(), &tc.id, &goal, sub)?;
+        let launched = self.launch_child(child_id.clone(), &tc.id, &goal, sub);
+        let mut child = self.launched(launched, &child_id, existing.is_some()).await?;
         if existing.is_some() {
             self.resume_child_writes(&mut child, &child_id).await;
         }
         Ok(child)
+    }
+
+    /// A child just launched (P2.7): one resumed after a restart goes on
+    /// with the tool calls it already made counted; one that couldn't
+    /// launch leaves no chat behind.
+    async fn launched(
+        &mut self,
+        launched: Result<Run<R>, String>,
+        child_id: &str,
+        resumed: bool,
+    ) -> Result<Run<R>, String> {
+        match launched {
+            Ok(mut child) => {
+                if resumed {
+                    let id = child_id.to_string();
+                    let made = self
+                        .db
+                        .read(move |c| store::get_messages(c, &id, None, 500))
+                        .await
+                        .map(|page| {
+                            page.messages
+                                .iter()
+                                .map(|m| m.tool_calls.as_ref().map_or(0, Vec::len))
+                                .sum::<usize>()
+                        })
+                        .unwrap_or(0);
+                    child.guard.tool_calls = made as u32;
+                }
+                Ok(child)
+            }
+            Err(e) => {
+                if !resumed {
+                    let id = child_id.to_string();
+                    let _ = self
+                        .db
+                        .write(move |c| store::delete_dialog(c, &id))
+                        .await;
+                }
+                Err(e)
+            }
+        }
     }
 
     /// E02: a `task{kind:"testWriter"}` call: the brief has the request,
@@ -1413,7 +1528,6 @@ impl<R: Runtime> Run<R> {
                 if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
                     return Err(why);
                 }
-                self.ledger.admit(&brief, config.max_per_run())?;
                 uuid::Uuid::new_v4().to_string()
             }
         };
@@ -1440,6 +1554,9 @@ impl<R: Runtime> Run<R> {
         let mut sub = self
             .new_sub(Kind::TestWriter, &tc.id, budget, config)
             .await?;
+        if existing.is_none() {
+            self.ledger.admit(&brief, config.max_per_run())?;
+        }
         self.limit_test_writer(&mut sub, touched);
         let goal = brief.goal.clone();
         match &existing {
@@ -1449,7 +1566,8 @@ impl<R: Runtime> Run<R> {
                     .await?
             }
         }
-        let mut child = self.launch_child(child_id.clone(), &tc.id, &goal, sub)?;
+        let launched = self.launch_child(child_id.clone(), &tc.id, &goal, sub);
+        let mut child = self.launched(launched, &child_id, existing.is_some()).await?;
         if existing.is_some() {
             self.resume_child_writes(&mut child, &child_id).await;
         }
@@ -1563,8 +1681,30 @@ impl<R: Runtime> Run<R> {
         worker::files_diff(&changes)
     }
 
+    /// What a worker was granted (extend_scope results' `meta.granted`).
+    pub(super) async fn grants_of(&self, child_id: &str) -> Vec<String> {
+        let id = child_id.to_string();
+        let Ok(page) = self
+            .db
+            .read(move |c| store::get_messages(c, &id, None, 500))
+            .await
+        else {
+            return Vec::new();
+        };
+        let mut grants: Vec<String> = Vec::new();
+        for m in &page.messages {
+            let granted = m.meta.as_ref().and_then(|meta| meta.get("granted"));
+            for g in granted.and_then(|g| g.as_array()).into_iter().flatten() {
+                if let Some(g) = g.as_str().filter(|g| !grants.iter().any(|x| x == g)) {
+                    grants.push(g.to_string());
+                }
+            }
+        }
+        grants
+    }
+
     /// A worker's step when it's continued (A04): from its brief's heading.
-    async fn worker_step_of(&self, child_id: &str) -> Option<super::plan::PlanStep> {
+    pub(super) async fn worker_step_of(&self, child_id: &str) -> Option<super::plan::PlanStep> {
         let id = child_id.to_string();
         // Its brief: the first message (a page is the latest ones, so the
         // brief is found by its heading).
@@ -1596,6 +1736,7 @@ impl<R: Runtime> Run<R> {
             return None;
         }
         let actual: Vec<String> = result.writes.iter().map(|w| w.path.clone()).collect();
+        let mut mismatch = false;
         if matches!(
             result.status,
             SubStatus::Done | SubStatus::Partial | SubStatus::Unformatted
@@ -1604,9 +1745,23 @@ impl<R: Runtime> Run<R> {
                 worker::mismatch_note(&worker::reported_files(&result.text), &actual)
             {
                 result.notes.push(note);
+                mismatch = true;
             }
         }
         let n = result.worker.as_ref()?.get("step")?.as_u64()? as usize;
+        // P2.9: "done" with nothing written, or not what it says it wrote,
+        // isn't a step done.
+        if result.status == SubStatus::Done && (actual.is_empty() || mismatch) {
+            result.status = SubStatus::Partial;
+            result.notes.push(format!(
+                "Step {n} isn't marked done: {}. Check it, then continue the worker or finish the step yourself.",
+                if actual.is_empty() {
+                    "it said it was done but changed no files"
+                } else {
+                    "what it changed isn't what it reported"
+                }
+            ));
+        }
         if result.status != SubStatus::Done {
             return None;
         }
@@ -1707,7 +1862,12 @@ impl<R: Runtime> Run<R> {
             ));
         }
         let kept: Vec<String> = self.child_writes().iter().map(|w| w.path.clone()).collect();
-        if status == SubStatus::Partial && !kept.is_empty() {
+        // P2.9: a blocked or unformatted worker's half step is kept too.
+        if matches!(
+            status,
+            SubStatus::Partial | SubStatus::Blocked | SubStatus::Unformatted
+        ) && !kept.is_empty()
+        {
             notes.push(format!(
                 "Its changes are kept: {}. Finish the step (continue it, or do the rest yourself), or undo them.",
                 kept.join(", ")
@@ -1730,9 +1890,8 @@ impl<R: Runtime> Run<R> {
     }
 }
 
-/// `Blocked` when the report says so, else `otherwise`.
-/// Whether a `task` call starts (or continues) a subagent that writes: a
-/// step worker, the test writer, or a parallel group.
+/// Whether a `task` call starts (or continues) a subagent that writes, as
+/// its arguments say (see `Run::task_writes` for a continued one).
 fn writes_task(tc: &ToolCall) -> bool {
     let args = permissions::parse_args(&tc.arguments);
     if super::group::group_call(&tc.arguments).is_some() {
@@ -1797,6 +1956,15 @@ fn subagent_log_line(sub: &SubCtx, dialog_id: &str, model: &str, result: &SubRes
     line
 }
 
+/// The plan's steps other than `n`, with their scopes (P2.3).
+fn other_steps(steps: &[super::plan::PlanStep], n: usize) -> Vec<(usize, WriteScope)> {
+    steps
+        .iter()
+        .filter(|s| s.number != n)
+        .map(|s| (s.number, WriteScope::for_step(s)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1837,6 +2005,7 @@ mod tests {
             resumed_writes: Vec::new(),
             registered: None,
             kept_copy: false,
+            other_steps: Vec::new(),
         }
     }
 

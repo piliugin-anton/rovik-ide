@@ -1687,3 +1687,54 @@ tasks first.
   finished by recovery; Redo puts back a file the chat changed in an
   earlier run and a fixer changed (FUSE); a group whose snapshot failed
   isn't redone.
+
+### Review-fixes plan, phase 2: containment and budgets
+
+- **P2.1** Every call a subagent's run answers without running it (a
+  tool it doesn't have, a write outside its scope, a refused command, a
+  scope request) goes through the guard: it counts for the tool-call
+  budget, the progress shown and the loop checks.
+- **P2.2** A subagent's time budget holds within a reply: once it's
+  used, the reply's remaining calls aren't run, and a command's
+  `timeout_seconds` is cut to the time left.
+- **P2.3** `extend_scope` grants files, and folders only inside the
+  step's own; at most 8 paths per worker; never a path another step of
+  the plan owns, in groups or not. Grants are kept with the call's
+  result (`meta.granted`) and given back to a continued worker. The
+  IDE's notes on a result are cut at 1,500 characters.
+- **P2.4** For the test writer, `neighbours` and `diagnostics` on a
+  hidden file are refused like `read` (every spelling, via P0.1), and
+  lines of `callers`, `neighbours` and `diagnostics` that name a hidden
+  file are left out, with a count.
+- **P2.5** `parse_command` notes, per segment, words the shell expands
+  (`*`, `?`, `[`, `~`, `{`, `$`). The test writer's output filters
+  (`| grep`, `| head` …) may not have them. One change from the plan:
+  they're a flag of their own, not "opaque" for every caller, so the
+  lead's `ls src/*.ts` isn't refused by the allowed-commands list.
+- **P2.6** A group worker's copy lands only within its scope (with its
+  grants): a command's side effect on another file stays out, and the
+  result names it. The same holds when a kept copy lands.
+- **P2.7** Each worker is admitted when it's forked, a group's retries
+  included (the group first checks there's room for all its members);
+  a retry that isn't admitted says why. A subagent is admitted only
+  once it can start (after its models are found), a chat that couldn't
+  launch is deleted, and one resumed after a restart counts the tool
+  calls it made before.
+- **P2.8** Whether a `continue` writes is decided from the continued
+  chat's kind, so a worker continued by its call id runs alone. A
+  follow-up's goal has the same length limit as a brief, and its
+  `max_tool_calls` applies.
+- **P2.9** A worker that says it's done but changed nothing, or not
+  what it reported, is partial and its step isn't ticked. A blocked or
+  unformatted worker's changes are kept with a note; in a group they
+  wait in its copy for the lead ("land it") instead of landing.
+- Tests (each fails without its fix): refused calls use up a scout's
+  budget; a worker's command ends with its time budget; scope grants are
+  bounded and kept when continued; the test writer's other spellings and
+  tools; shell expansion in its filters; a side effect outside a
+  worker's scope doesn't land (FUSE); retries count against the limit
+  (FUSE); a resumed scout's earlier calls count; a worker continued by
+  its call runs alone; a worker that wrote nothing leaves its step open
+  (and the step-by-step test's mismatched step stays open). The
+  conflict tests now make their conflict with an edit in the chat's view
+  while the workers run, since side effects no longer land.

@@ -105,6 +105,46 @@ fn is_hidden_as(hidden: &[String], rel: &str, any_case: bool) -> bool {
         .any(|h| super::paths::key_as(h, any_case).as_deref() == Some(rel.as_str()))
 }
 
+/// `text` without the lines that name a hidden file (callers' call sites,
+/// a file's neighbours, diagnostics), with a note of how many went (P2.4).
+pub fn without_hidden_lines(text: &str, hidden: &[String]) -> String {
+    let any_case = super::paths::ANY_CASE;
+    let names: Vec<String> = hidden
+        .iter()
+        .filter_map(|h| super::paths::key_as(h, any_case))
+        .filter(|h| !h.is_empty())
+        .collect();
+    let mut left_out = 0;
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            let line = line.replace('\\', "/");
+            let line = if any_case { line.to_lowercase() } else { line };
+            let named = names.iter().any(|n| {
+                line.match_indices(n.as_str()).any(|(at, _)| {
+                    // As a path, not part of a longer name.
+                    let before = line[..at].chars().next_back();
+                    let after = line[at + n.len()..].chars().next();
+                    before.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '-'))
+                        && after.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '/'))
+                })
+            });
+            if named {
+                left_out += 1;
+            }
+            !named
+        })
+        .collect();
+    let mut out = kept.join("\n");
+    if left_out > 0 {
+        out.push_str(&format!(
+            "\n[{left_out} line{} in the files the change touches left out: you write tests from the specification. Use outline on those files.]",
+            if left_out == 1 { "" } else { "s" }
+        ));
+    }
+    out
+}
+
 pub struct BriefParts<'a> {
     pub request: &'a str,
     /// The plan being implemented: its path and text.
@@ -339,6 +379,15 @@ mod tests {
         assert!(hidden_file("src/x.ts").contains("Use outline on it"));
         let hidden = vec!["src/x.ts".to_string()];
         assert!(is_hidden(&hidden, "./src/x.ts") && !is_hidden(&hidden, "src/y.ts"));
+        // P2.4: every spelling, and every tool's lines.
+        assert!(is_hidden(&hidden, "src/./x.ts") && is_hidden(&hidden, "src//x.ts"));
+        let shown = without_hidden_lines(
+            "src/x.ts:4: greet(name)\nsrc/y.ts:9: greet(x)\nsrc/x.tsx:1: other",
+            &hidden,
+        );
+        assert!(!shown.contains("src/x.ts:4"), "{shown}");
+        assert!(shown.contains("src/y.ts:9") && shown.contains("src/x.tsx:1"), "{shown}");
+        assert!(shown.ends_with("[1 line in the files the change touches left out: you write tests from the specification. Use outline on those files.]"));
         // Where any case names the same file, any case is hidden.
         assert!(is_hidden_as(&hidden, "SRC/X.ts", true));
         assert!(!is_hidden_as(&hidden, "SRC/X.ts", false));

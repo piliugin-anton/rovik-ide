@@ -173,6 +173,9 @@ fn describe_rejected_hunks(path: &str, rejected: &[Hunk], total: usize) -> Strin
     out.join("\n")
 }
 
+/// Paths extend_scope grants a step worker at most (P2.3).
+const MAX_GRANTS: usize = 8;
+
 impl<R: Runtime> Run<R> {
     pub(super) async fn execute_tool_calls(
         &mut self,
@@ -191,6 +194,18 @@ impl<R: Runtime> Run<R> {
 
         let mut rest = calls;
         while !rest.is_empty() {
+            // P2.2: a subagent's time runs out within a reply too: what's
+            // left of it isn't run.
+            if self.wall_left() == Some(std::time::Duration::ZERO) {
+                let wall = self.sub().map_or(0, |s| s.budget.wall.as_secs());
+                for tc in rest {
+                    let content = format!(
+                        "Error: not run: it's past your time budget of about {wall} seconds. Write your report now with what you have."
+                    );
+                    self.answer_unrun(tc, content, true).await?;
+                }
+                break;
+            }
             // The lead's subagents: a run of `task` calls starts together
             // (subagent_run.rs), at most the settings' number at once.
             let tasks = if self.sub().is_none() {
@@ -312,6 +327,30 @@ impl<R: Runtime> Run<R> {
         Ok(())
     }
 
+    /// A call answered without running it (a subagent's refusal, a scope
+    /// grant): it counts for the budget and the loop checks like any other
+    /// (P2.1), so refusals can't go on for ever.
+    async fn answer_unrun(
+        &mut self,
+        tc: &ToolCall,
+        mut content: String,
+        refused: bool,
+    ) -> Result<(), String> {
+        let verdict = self.guard.record(FinishedCall {
+            name: &tc.name,
+            args_json: &tc.arguments,
+            result: &content,
+            write: None,
+            rejected: refused,
+        });
+        self.log_guard(&tc.name, &verdict);
+        if let Some(note) = verdict.note() {
+            content.push_str(note);
+        }
+        self.add_tool_result(&tc.id, content, None, Vec::new())
+            .await
+    }
+
     /// One call: authorized (asking if the settings say so), run, recorded.
     async fn execute_one(
         &mut self,
@@ -333,9 +372,7 @@ impl<R: Runtime> Run<R> {
                     spec.label.to_lowercase(),
                     spec.tools.join(", ")
                 );
-                return self
-                    .add_tool_result(&tc.id, content, None, Vec::new())
-                    .await;
+                return self.answer_unrun(tc, content, true).await;
             }
         }
         let args = permissions::parse_args(&tc.arguments);
@@ -344,9 +381,24 @@ impl<R: Runtime> Run<R> {
         // A writing subagent: more scope on request (D07), and no write
         // outside it (D7).
         if tc.name == "extend_scope" && self.sub().is_some_and(|s| s.scope.is_some()) {
-            let content = self.extend_scope(&args);
+            let (content, granted) = self.extend_scope(&args);
+            let refused = granted.is_empty();
+            let mut verdict_content = content;
+            let verdict = self.guard.record(FinishedCall {
+                name: &tc.name,
+                args_json: &tc.arguments,
+                result: &verdict_content,
+                write: None,
+                rejected: refused,
+            });
+            self.log_guard(&tc.name, &verdict);
+            if let Some(note) = verdict.note() {
+                verdict_content.push_str(note);
+            }
+            // Kept with the result: a continued worker keeps its grants.
+            let meta = (!granted.is_empty()).then(|| json!({ "granted": granted }));
             return self
-                .add_tool_result(&tc.id, content, None, Vec::new())
+                .add_tool_result(&tc.id, verdict_content, meta, Vec::new())
                 .await;
         }
         // The test writer writes test files only (E02).
@@ -358,9 +410,7 @@ impl<R: Runtime> Run<R> {
             let key = super::repair::rel_key(root, path);
             if !super::project::is_test_path(&key) {
                 let content = super::test_writer::not_a_test_file(&key);
-                return self
-                    .add_tool_result(&tc.id, content, None, Vec::new())
-                    .await;
+                return self.answer_unrun(tc, content, true).await;
             }
         }
         // A writing subagent changes files only with write, where its scope
@@ -373,9 +423,7 @@ impl<R: Runtime> Run<R> {
                     sub.tests_only,
                     self.root.as_deref().map(std::path::Path::new),
                 ) {
-                    return self
-                        .add_tool_result(&tc.id, content, None, Vec::new())
-                        .await;
+                    return self.answer_unrun(tc, content, true).await;
                 }
             }
         }
@@ -398,9 +446,7 @@ impl<R: Runtime> Run<R> {
                 let content = format!(
                     "Error: `{command}` is {what}. The lead runs those after merging your work; use diagnostics, or a light check on one file, run directly."
                 );
-                return self
-                    .add_tool_result(&tc.id, content, None, Vec::new())
-                    .await;
+                return self.answer_unrun(tc, content, true).await;
             }
         }
         if tc.name == "write" {
@@ -413,9 +459,7 @@ impl<R: Runtime> Run<R> {
                 let exists = std::path::Path::new(&tools::to_absolute_path(&key, root)).exists();
                 if !scope.allows(&key, exists) {
                     let content = super::worker::outside_scope(&key, scope);
-                    return self
-                        .add_tool_result(&tc.id, content, None, Vec::new())
-                        .await;
+                    return self.answer_unrun(tc, content, true).await;
                 }
             }
         }
@@ -635,11 +679,25 @@ impl<R: Runtime> Run<R> {
         if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
             return self.stopped_result(tc).await;
         }
-        let args_json = auth
+        let mut args_json = auth
             .args_override
             .clone()
             .unwrap_or_else(|| tc.arguments.clone());
         let tool_name = tc.name.clone();
+        // P2.2: a subagent's command can't run past its time budget.
+        if let (true, Some(left)) = (tool_name == "bash", self.wall_left()) {
+            let mut args = permissions::parse_args(&args_json);
+            let asked = args
+                .get("timeout_seconds")
+                .and_then(|t| t.as_f64())
+                .filter(|t| *t > 0.0)
+                .unwrap_or(120.0);
+            let allowed = asked.min(left.as_secs_f64().max(1.0));
+            if allowed < asked {
+                args.insert("timeout_seconds".into(), json!(allowed));
+                args_json = Value::Object(args).to_string();
+            }
+        }
         let writes = auth.refusal.is_none() && permissions::modifies_files(&tool_name);
         let write_path = if writes {
             permissions::str_arg(&args_json, "path")
@@ -1459,10 +1517,14 @@ impl<R: Runtime> Run<R> {
 
     /// D07: a writing subagent asks for more paths. A sequential worker is
     /// granted them at once; every grant is listed in its result.
-    fn extend_scope(&mut self, args: &Map<String, Value>) -> String {
+    /// D07: more scope for a writing subagent, within limits (P2.3): files,
+    /// or a folder inside one of its step's own; at most
+    /// `MAX_GRANTS`; nothing another step owns. Returns the result and
+    /// what was granted (kept with the result, for a continued worker).
+    fn extend_scope(&mut self, args: &Map<String, Value>) -> (String, Vec<String>) {
         let paths = match super::worker::extend_scope_paths(args) {
             Ok(p) => p,
-            Err(e) => return e,
+            Err(e) => return (e, Vec::new()),
         };
         // A group worker: not what another worker or the contract owns.
         if let Some(refused) = self
@@ -1470,21 +1532,61 @@ impl<R: Runtime> Run<R> {
             .and_then(|s| s.group.as_ref())
             .and_then(|g| super::group::refusal(g, &paths))
         {
-            return refused;
+            return (refused, Vec::new());
+        }
+        let Some(sub) = self.sub() else {
+            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
+        };
+        let Some(scope) = sub.scope.as_ref() else {
+            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
+        };
+        // A folder only inside the step's own folders: a whole `src/` or
+        // `.github/` isn't a step's to take.
+        let own: Vec<&String> = scope.folders.iter().chain(&scope.new_in).collect();
+        if let Some(folder) = paths.iter().find(|p| {
+            p.ends_with('/') && !own.iter().any(|d| !d.is_empty() && super::paths::under(d, p))
+        }) {
+            return (
+                format!("Error: not granted: `{folder}` is a folder outside your step's own. Name the files the step needs."),
+                Vec::new(),
+            );
+        }
+        // Another step's files, in every mode.
+        if let Some((n, p)) = paths.iter().find_map(|p| {
+            if scope.allows(p.trim_end_matches('/'), true) {
+                return None;
+            }
+            sub.other_steps
+                .iter()
+                .find(|(_, s)| s.allows(p.trim_end_matches('/'), true))
+                .map(|(n, _)| (*n, p))
+        }) {
+            return (
+                format!("Error: not granted: `{p}` is step {n}'s to change. Leave it, and list it under \"## Open questions\"."),
+                Vec::new(),
+            );
+        }
+        let new: Vec<&String> = paths.iter().filter(|p| !scope.grants.contains(p)).collect();
+        if scope.grants.len() + new.len() > MAX_GRANTS {
+            return (
+                format!("Error: not granted: a step worker gets at most {MAX_GRANTS} paths beyond its step, and this would be {}. Finish what's in your scope and list the rest under \"## Open questions\".", scope.grants.len() + new.len()),
+                Vec::new(),
+            );
         }
         let Some(scope) = self.sub_mut().and_then(|s| s.scope.as_mut()) else {
-            return "Error: extend_scope is for writing subagents.".into();
+            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
         };
-        let mut granted = Vec::new();
-        for p in paths {
-            if !scope.grants.contains(&p) {
+        for p in &paths {
+            if !scope.grants.contains(p) {
                 scope.grants.push(p.clone());
             }
-            granted.push(format!("`{p}`"));
         }
-        format!(
-            "Granted: you may now write {}. The lead will see this in your result.",
-            granted.join(", ")
+        (
+            format!(
+                "Granted: you may now write {}. The lead will see this in your result.",
+                paths.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ")
+            ),
+            paths,
         )
     }
 

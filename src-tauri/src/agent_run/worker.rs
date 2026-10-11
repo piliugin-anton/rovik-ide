@@ -682,7 +682,10 @@ pub fn writer_command_problem(
             .any(|w| root.is_some_and(|r| r.join(w).exists()) || Path::new(w).is_absolute())
     };
     let mut first = true;
-    for seg in &parsed.segments {
+    for (i, seg) in parsed.segments.iter().enumerate() {
+        // P2.5: a filter's arguments the shell expands (`*`, `~`, `$PWD`)
+        // can name the code under test without saying so.
+        let expands = parsed.expands.get(i).copied().unwrap_or(false);
         let Some(head) = seg.first() else {
             continue;
         };
@@ -696,7 +699,7 @@ pub fn writer_command_problem(
             matches!(program(head).as_str(), "ls" | "pwd" | "which") && super::permissions::segment_is_read_only(seg)
                 ||
             // `cargo test 2>&1 | tail -50`, not `cat src/lib.rs`.
-            !first && FILTERS.contains(&program(head).as_str()) && program(head) != "tee" && !names_file(seg)
+            !first && FILTERS.contains(&program(head).as_str()) && program(head) != "tee" && !names_file(seg) && !expands
         } else {
             super::permissions::segment_is_read_only(seg)
         };
@@ -1003,9 +1006,17 @@ mod tests {
             "grep -rn fn src",
             "cargo test && grep fn src/lib.rs",
             "cargo test | tee src/out.rs",
+            // P2.5: what the shell expands names the code too.
+            "cargo test 2>&1 | grep -rn \"\" *",
+            "cargo test | head -c 9999 ./src/li*",
+            "cargo test | cat $PWD/src/lib.rs",
+            "cargo test | cat ~/proj/src/lib.rs",
+            "cargo test | cat \"$PWD/src/lib.rs\"",
         ] {
             assert!(tw(bad).is_some(), "{bad}");
         }
+        assert_eq!(tw("cargo test 2>&1 | tail -50"), None);
+        assert_eq!(tw("cargo test 2>&1 | grep 'a*b'"), None, "quoted: not expanded");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -219,17 +219,9 @@ impl<R: Runtime> Run<R> {
                 problems.join("\n- ")
             ));
         }
-        for step in &members {
-            let brief = subagent::Brief {
-                kind: Kind::Worker,
-                goal: format!("Carry out step {} of the plan", step.number),
-                context: None,
-                paths: Vec::new(),
-                max_tool_calls: None,
-                step: Some(step.number),
-            };
-            self.ledger.admit_worker(&brief, steps.len())?;
-        }
+        // Room for every member, taken as each starts (P2.7): a group
+        // refused here took none.
+        self.ledger.room_for_workers(members.len(), steps.len())?;
         if let Some(o) = chats::get(&self.dialog_id) {
             o.fs.flush();
         }
@@ -345,7 +337,16 @@ impl<R: Runtime> Run<R> {
                         .await
                         .ok()
                         .flatten(),
-                    Err(_) => None,
+                    // Not retried (the run's workers are used up, say): why.
+                    Err(e) => {
+                        chats::discard_child(&again.child_id);
+                        lines.push(format!(
+                            "Step {} wasn't retried: {}",
+                            again.step.number,
+                            e.trim_start_matches("Error: ")
+                        ));
+                        continue;
+                    }
                 };
                 let (status, entry) = self
                     .join_one(&again, result, false, &mut checklist, &mut joins)
@@ -440,6 +441,17 @@ impl<R: Runtime> Run<R> {
         group: &str,
         config: &SubagentConfig,
     ) -> Result<Run<R>, String> {
+        // Each worker started counts, a retry too (P2.7).
+        let brief = subagent::Brief {
+            kind: Kind::Worker,
+            goal: format!("Carry out step {} of the plan", member.step.number),
+            context: None,
+            paths: Vec::new(),
+            max_tool_calls: None,
+            step: Some(member.step.number),
+        };
+        self.ledger
+            .admit_worker(&brief, super::plan::steps(plan).len())?;
         // The group's workers share what's left of the chat's space.
         let overlay = chats::open_child_shared(&self.dialog_id, &member.child_id, owners.len())?;
         let scope = WriteScope::for_step(&member.step);
@@ -558,6 +570,22 @@ impl<R: Runtime> Run<R> {
                 ),
             );
         }
+        // P2.9: blocked, or no report in the format: what it did waits for
+        // the lead, kept in its copy, rather than landing.
+        if matches!(result.status, SubStatus::Blocked | SubStatus::Unformatted) {
+            let handle = subagent::handle(Kind::Worker, &member.child_id);
+            return (
+                Joined::Kept,
+                (
+                    format!(
+                        "{head}\nStatus: {}. Its copy is kept, not landed: call task with continue: \"{handle}\" (the goal \"land it\" lands what it did), or do the step yourself.\n\n{}",
+                        result.status.id(),
+                        cap(&result.for_lead(), REPORT_CHARS)
+                    ),
+                    entry(result.status.id(), &[]),
+                ),
+            );
+        }
         // What the chat's files were before this worker landed (S03b).
         let root = self.root.clone().unwrap_or_default();
         let paths: Vec<String> = chats::get(&member.child_id)
@@ -594,7 +622,20 @@ impl<R: Runtime> Run<R> {
                 .and_then(|r| r);
         let child_view = chats::get(&member.child_id).map(|o| o.view.clone());
         let handle = subagent::handle(Kind::Worker, &member.child_id);
-        match land_copy(&member.child_id, Vec::new()).await {
+        // P2.6: only what's in its scope lands; what else is in its copy
+        // (a check's side effect, a sibling's file) stays out, named.
+        let mut scope = WriteScope::for_step(&member.step);
+        scope.grants = self.grants_of(&member.child_id).await;
+        let outside = outside_scope(&paths, &scope, &root);
+        let outside_note = if outside.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nNot landed, outside its step's scope (a command's side effect?): {}.",
+                outside.join(", ")
+            )
+        };
+        match land_copy(&member.child_id, outside.clone()).await {
             Ok(landed_paths) => {
                 chats::discard_child(&member.child_id);
                 self.take_landed(member, &mut result, &before, &snapshot, &landed_paths, joined);
@@ -603,7 +644,7 @@ impl<R: Runtime> Run<R> {
                     *checklist = Some(items);
                 }
                 let text = format!(
-                    "{head}\nLanded: {}.\n\n{}",
+                    "{head}\nLanded: {}.{outside_note}\n\n{}",
                     if landed_paths.is_empty() {
                         "nothing (it changed no files)".to_string()
                     } else {
@@ -620,7 +661,8 @@ impl<R: Runtime> Run<R> {
                 // P1.2: the rest of it lands; the conflicting files wait,
                 // both versions saved for the lead, and its copy is kept.
                 let versions = self.save_conflict(&member.label, child_view.as_deref(), &conflicts);
-                let except: Vec<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+                let mut except: Vec<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+                except.extend(outside.iter().cloned());
                 let rest = land_copy(&member.child_id, except).await;
                 let landed_paths = rest.as_ref().cloned().unwrap_or_default();
                 self.take_landed(member, &mut result, &before, &snapshot, &landed_paths, joined);
@@ -634,6 +676,7 @@ impl<R: Runtime> Run<R> {
                         Err(e) => format!("Its other files couldn't land either ({e})."),
                     }
                 );
+                text.push_str(&outside_note);
                 text.push_str("\n\nThe steps after this one are kept, not landed yet: each says how to land it.");
                 (
                     Joined::Conflict(text),
@@ -791,6 +834,21 @@ impl<R: Runtime> Run<R> {
                 ),
             })
             .collect();
+        // P2.6: only what's in its step's scope lands.
+        let outside = match self.worker_step_of(child).await {
+            Some(step) => {
+                let mut scope = WriteScope::for_step(&step);
+                scope.grants = self.grants_of(child).await;
+                outside_scope(&paths, &scope, &root)
+            }
+            None => Vec::new(),
+        };
+        if !outside.is_empty() {
+            result.notes.push(format!(
+                "Not landed, outside its step's scope (a command's side effect?): {}.",
+                outside.join(", ")
+            ));
+        }
         let landed_of = |landed: &[String]| -> Vec<subagent::ChildWrite> {
             before
                 .iter()
@@ -798,7 +856,7 @@ impl<R: Runtime> Run<R> {
                 .cloned()
                 .collect()
         };
-        match land_copy(child, Vec::new()).await {
+        match land_copy(child, outside.clone()).await {
             Ok(landed) => {
                 chats::discard_child(child);
                 result.writes = landed_of(&landed);
@@ -810,7 +868,8 @@ impl<R: Runtime> Run<R> {
             }
             Err(LandError::Conflicts(conflicts)) => {
                 let versions = self.save_conflict(&handle, view.as_deref(), &conflicts);
-                let except: Vec<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+                let mut except: Vec<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+                except.extend(outside.iter().cloned());
                 let rest = land_copy(child, except).await.unwrap_or_default();
                 result.writes = landed_of(&rest);
                 result.notes.push(format!(
@@ -830,6 +889,21 @@ impl<R: Runtime> Run<R> {
             }
         }
     }
+}
+
+/// P2.6: the paths of a worker's copy outside its scope (with its grants).
+/// A folder that holds an in-scope path isn't outside (it's made for it).
+fn outside_scope(paths: &[String], scope: &WriteScope, root: &str) -> Vec<String> {
+    let inside = |p: &String| {
+        let exists = std::path::Path::new(&tools::to_absolute_path(p, root)).exists();
+        scope.allows(p, exists)
+    };
+    let kept: Vec<&String> = paths.iter().filter(|p| inside(p)).collect();
+    paths
+        .iter()
+        .filter(|p| !inside(p) && !kept.iter().any(|k| super::paths::under(p, k) && k != p))
+        .cloned()
+        .collect()
 }
 
 /// P1.3: lands a worker's copy (except `except`), trying again a few

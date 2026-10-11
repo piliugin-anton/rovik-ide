@@ -27,12 +27,14 @@ use std::time::Duration;
 /// A report longer than this is cut, with a note saying where the rest is.
 pub const RESULT_CAP_CHARS: usize = 6_000;
 /// Subagents running at once in one chat, unless the settings say otherwise.
+/// The IDE's notes on a subagent's result are cut here (P2.3).
+pub const NOTES_CAP_CHARS: usize = 1_500;
 pub const DEFAULT_MAX_AT_ONCE: usize = 3;
 /// Scouts (and later test writers and repair fixers) one run may start.
 pub const DEFAULT_MAX_PER_RUN: usize = 12;
 /// The same brief (normalised) at most this many times in one run.
 pub const MAX_SAME_BRIEF: usize = 2;
-const MAX_GOAL_CHARS: usize = 2_000;
+pub const MAX_GOAL_CHARS: usize = 2_000;
 const MAX_CONTEXT_CHARS: usize = 6_000;
 const MAX_PATHS: usize = 20;
 
@@ -817,9 +819,15 @@ impl SubResult {
                 ));
             }
         }
-        for note in &self.notes {
+        // The IDE's notes, capped (P2.3): many grants or kept files can't
+        // crowd out the report.
+        let notes = self.notes.join("\n");
+        if !notes.is_empty() {
             head.push('\n');
-            head.push_str(note);
+            head.push_str(crate::chat_db::store::char_prefix(&notes, NOTES_CAP_CHARS));
+            if notes.chars().count() > NOTES_CAP_CHARS {
+                head.push_str(" …(cut)");
+            }
         }
         let mut body = self.text.trim().to_string();
         let empty = body.is_empty();
@@ -1078,6 +1086,19 @@ impl Ledger {
         Ok(())
     }
 
+    /// Whether `n` more workers fit the run's limit (taking none: each is
+    /// admitted when it's started, retries included, P2.7).
+    pub fn room_for_workers(&self, n: usize, plan_steps: usize) -> Result<(), String> {
+        if self.workers + n > plan_steps + 2 {
+            return Err(format!(
+                "Error: {n} workers don't fit: this run has started {} of its {} (the plan's {plan_steps} steps plus 2 retries). Do the rest yourself.",
+                self.workers,
+                plan_steps + 2
+            ));
+        }
+        Ok(())
+    }
+
     /// Takes one place for a brief, or says why not.
     pub fn admit(&mut self, brief: &Brief, max_per_run: usize) -> Result<(), String> {
         let seen = self.briefs.get(&brief.key()).copied().unwrap_or(0);
@@ -1313,6 +1334,13 @@ mod tests {
             long.contains("[Report shortened: 500 more characters are in the subagent's chat.]")
         );
         assert!(long.contains("ran out of budget"));
+
+        // P2.3: the IDE's notes are capped.
+        let mut noted = result(SubStatus::Done, "## Answer\nYes.".into());
+        noted.notes = vec!["n".repeat(NOTES_CAP_CHARS + 100)];
+        let text = noted.for_lead();
+        assert!(text.contains(" …(cut)") && text.ends_with("## Answer\nYes."));
+        assert!(!text.contains(&"n".repeat(NOTES_CAP_CHARS + 1)));
 
         let failed = SubResult {
             error: Some("server".into()),

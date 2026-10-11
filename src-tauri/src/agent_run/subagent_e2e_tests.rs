@@ -307,6 +307,37 @@ async fn a_scout_cant_write_or_run_commands() {
     assert!(refusals[1].starts_with("Error: bash isn't available to a scout subagent."));
 }
 
+/// P2.1: refused calls count for the budget: a scout that keeps calling a
+/// tool it doesn't have runs out of it, in one reply.
+#[tokio::test]
+async fn refused_calls_use_up_a_subagents_budget() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let writes: Vec<(&'static str, &'static str, Value)> = [
+        "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
+    ]
+    .into_iter()
+    .map(|id| (id, "write", json!({ "path": "a.txt", "content": "no" })))
+    .collect();
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-RB",
+            vec![
+                Reply::Calls(writes),
+                Reply::Text("## Answer\nI couldn't write.\n\n## Open questions\nNone"),
+            ],
+        )],
+        vec![task("t1", "MARK-RB: write a.txt"), Reply::Text("Done.")],
+    )
+    .await;
+    let config = scouts_on(json!({ "maxToolCalls": 3 }));
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let result = h.task_result("t1").await;
+    assert!(result.content.contains("Status: partial"), "{}", result.content);
+    assert!(result.content.contains("ran out of budget"), "{}", result.content);
+}
+
 #[tokio::test]
 async fn a_scout_out_of_budget_reports_what_it_found() {
     let h = harness(&[("a.txt", "x\n"), ("b.txt", "y\n")]).await;
@@ -1502,6 +1533,8 @@ async fn a_restart_during_a_scout_resumes_its_chat() {
         child.as_str(),
         "the same chat, resumed"
     );
+    // P2.7: the calls it made before the restart count for its budget.
+    assert_eq!(meta["toolCalls"], 2, "{meta}");
     // It picked up with its earlier work in its history.
     let asked = requests_with(&seen, "MARK-RS");
     assert_eq!(asked.len(), 1);
@@ -2476,6 +2509,13 @@ impl Harness {
     }
 }
 
+fn too_long() -> Reply {
+    Reply::Status(
+        400,
+        r#"{"error":{"message":"This model's maximum context length is 8192 tokens","code":"context_length_exceeded"}}"#,
+    )
+}
+
 fn bad() -> Reply {
     Reply::Status(400, r#"{"error":{"message":"no such model"}}"#)
 }
@@ -2547,7 +2587,8 @@ async fn workers_carry_out_the_plan_step_by_step() {
     )
     .await;
     h.start(h.implement(&url, workers_on(json!({})))).await;
-    assert_eq!(h.run_end().await, "done");
+    // Step 2's report doesn't match its files: not marked done (P2.9).
+    assert_eq!(h.run_end().await, "unfinished-checklist");
     assert_eq!(h.file("a.txt").as_deref(), Some("hello\nhello again\n"));
     assert_eq!(h.file("b.txt").as_deref(), Some("bye\n"));
     assert_eq!(h.file("notes/today.txt").as_deref(), Some("2026-10-06\n"));
@@ -2613,20 +2654,41 @@ async fn workers_carry_out_the_plan_step_by_step() {
         r2.content
     );
     assert!(!result_of(&messages, "s1").content.contains("don't match"));
-    // ...and each finished step is done on the checklist.
-    let update = &r2.meta.as_ref().unwrap()["checklistUpdate"];
-    assert_eq!(update[0]["status"], "done");
-    assert_eq!(update[1]["status"], "done");
-    assert_eq!(update[2]["status"], "pending");
+    // ...and its step isn't done (P2.9): partial, unticked; the others are.
+    assert!(r2.content.contains("Status: partial"), "{}", r2.content);
+    assert!(r2.content.contains("Step 2 isn't marked done"), "{}", r2.content);
+    assert!(r2.meta.as_ref().unwrap().get("checklistUpdate").is_none());
     let recent = h.messages().await;
     let current = plan::current_checklist(&recent).unwrap();
-    assert!(
-        current.items.iter().all(|i| i.status == "done"),
-        "{:?}",
-        current.items
-    );
+    let statuses: Vec<&str> = current.items.iter().map(|i| i.status.as_str()).collect();
+    assert_eq!(statuses, ["done", "pending", "done"], "{:?}", current.items);
     // The workers' changes are the lead's (S03b).
     assert_eq!(r2.meta.as_ref().unwrap()["subagent"]["worker"]["step"], 2);
+}
+
+/// P2.9: a worker that changed nothing isn't a step done, whatever it says.
+#[tokio::test]
+async fn a_worker_that_wrote_nothing_leaves_its_step_open() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![worker_report("All done.", &["a.txt"])],
+        )],
+        vec![checklist_call(), step("s1", 1), Reply::Text("Stopping here.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let r = result_of(&h.messages().await, "s1").clone();
+    assert!(r.content.contains("Status: partial"), "{}", r.content);
+    assert!(
+        r.content.contains("it said it was done but changed no files"),
+        "{}",
+        r.content
+    );
+    assert!(r.meta.as_ref().unwrap().get("checklistUpdate").is_none());
 }
 
 #[tokio::test]
@@ -2829,6 +2891,148 @@ async fn a_rolled_back_round_puts_a_workers_non_utf8_file_back_exactly() {
     assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
 }
 
+/// P2.3: extend_scope grants files, not folders beyond the step's own nor
+/// another step's files; a continued worker keeps what it was granted.
+#[tokio::test]
+async fn scope_grants_are_bounded_and_kept_when_continued() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let extend = |id: &'static str, paths: Value| Reply::Call {
+        id,
+        name: "extend_scope",
+        args: json!({ "paths": paths, "reason": "needed" }),
+    };
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 2.",
+            vec![
+                extend("e1", json!(["notes/"])),
+                extend("e2", json!(["notes/x.txt"])),
+                extend("e3", json!(["c.txt"])),
+                write_call("w1", "c.txt", "one\n"),
+                worker_report("Wrote c.txt.", &["c.txt"]),
+                // Continued: it still may write c.txt.
+                write_call("w2", "c.txt", "two\n"),
+                worker_report("Changed c.txt again.", &["c.txt"]),
+            ],
+        )],
+        vec![
+            step("s2", 2),
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "s2", "goal": "make it say two" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let child = h.child_of("s2").await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    };
+    assert!(result("e1").starts_with("Error: not granted: `notes/` is a folder"), "{}", result("e1"));
+    assert!(result("e2").contains("is step 3's to change"), "{}", result("e2"));
+    assert!(result("e3").starts_with("Granted"), "{}", result("e3"));
+    assert!(!result("w2").starts_with("Error"), "{}", result("w2"));
+    assert_eq!(h.file("c.txt").as_deref(), Some("two\n"));
+}
+
+/// P2.8: continuing a worker by the call that started it writes as much
+/// as by its handle: in a batch with scouts, it runs on its own.
+#[tokio::test]
+async fn a_worker_continued_by_its_call_runs_alone() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 1.",
+                vec![
+                    write_call("w1", "a.txt", "hello\n"),
+                    worker_report("Said hello.", &["a.txt"]),
+                    worker_report("Nothing else.", &[]),
+                ],
+            ),
+            ("MARK-P8", vec![Reply::Text(REPORT), Reply::Text(REPORT)]),
+        ],
+        vec![
+            step("s1", 1),
+            Reply::Calls(vec![
+                ("c1", "task", json!({ "continue": "s1", "goal": "anything else?" })),
+                task_call("q1", "MARK-P8: one"),
+                task_call("q2", "MARK-P8: two"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let mut config = workers_on(json!({}));
+    config
+        .kinds
+        .insert("scout".into(), serde_json::from_value(json!({ "enabled": true })).unwrap());
+    h.start(h.implement_with(&url, config, ChecklistMode::Off)).await;
+    h.run_end().await;
+    let batches = crate::agent_run::parallel::batches_of(&h.dialog_id);
+    assert!(
+        batches.iter().any(|b| b == &vec!["c1".to_string()]),
+        "{batches:?}"
+    );
+    assert!(!batches.iter().any(|b| b.len() > 1), "{batches:?}");
+}
+
+/// P2.2: a subagent's command runs no longer than its time budget.
+#[tokio::test]
+async fn a_subagents_command_ends_with_its_time_budget() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = plan_harness(&[
+        ("a.txt", "old\n"),
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "sleep 60" } }"#),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                Reply::Call {
+                    id: "b1",
+                    name: "bash",
+                    args: json!({ "command": "npm test", "timeout_seconds": 600 }),
+                },
+                worker_report("Ran out of time.", &[]),
+            ],
+        )],
+        vec![step("s1", 1), Reply::Text("Done.")],
+    )
+    .await;
+    let started = std::time::Instant::now();
+    h.start(h.implement_with(
+        &url,
+        workers_on(json!({ "maxMinutes": 0.25 })),
+        ChecklistMode::Off,
+    ))
+    .await;
+    h.run_end().await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(40),
+        "{:?}",
+        started.elapsed()
+    );
+    let r = result_of(&h.messages().await, "s1").content.clone();
+    assert!(r.contains("Status: partial"), "{r}");
+}
+
 #[tokio::test]
 async fn a_file_changed_meanwhile_is_left_alone_when_a_worker_is_rolled_back() {
     let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
@@ -2925,6 +3129,7 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
         ),
         ("src/main.ts", "console.log('hi');\n"),
         ("src/other.ts", "export const other = 1;\n"),
+        ("src/helper.ts", "export const h = greet('x');\n"),
         (".rovik/plans/greeter.md", TEST_PLAN),
     ])
     .await;
@@ -2937,6 +3142,12 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
                     ("o1", "outline", json!({ "path": "src/greet.ts" })),
                     ("r2", "read", json!({ "path": "src/other.ts" })),
                     ("s1", "search_code", json!({ "query": "greet" })),
+                    // P2.4: other spellings, other tools.
+                    ("r3", "read", json!({ "path": "src/./greet.ts" })),
+                    ("r4", "read", json!({ "path": "src//greet.ts" })),
+                    ("c1", "callers", json!({ "symbol": "greet" })),
+                    ("d1", "diagnostics", json!({ "path": "src/greet.ts" })),
+                    ("n1", "neighbours", json!({ "path": "src/greet.ts" })),
                 ]),
                 write_call("w1", "src/greet.ts", "hacked\n"),
                 write_call("w2", "src/greet.test.ts", "test('greets', () => {});\n"),
@@ -3007,6 +3218,18 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
     );
     let search = result("s1");
     assert!(!search.contains("src/greet.ts"), "{search}");
+    for id in ["r3", "r4", "d1", "n1"] {
+        assert!(
+            result(id).starts_with("Error: `src/greet.ts` is one of the files the change touches"),
+            "{id}: {}",
+            result(id)
+        );
+    }
+    let callers = result("c1");
+    assert!(
+        !callers.contains("src/greet.ts") && callers.contains("src/helper.ts"),
+        "{callers}"
+    );
     assert!(
         search.contains("in the files the change touches left out"),
         "{search}"
@@ -3301,11 +3524,11 @@ async fn a_group_runs_in_parallel_and_joins_into_the_chat_not_the_project() {
     );
 }
 
+/// P2.6: what a worker's copy has outside its scope (a light check's side
+/// effect on a sibling's file) doesn't land, and the lead is told.
 #[tokio::test]
 #[ignore]
-async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
-    // A light check w1 may run (a linter on one file) writes past its
-    // scope as a side effect: posts.rs too.
+async fn a_side_effect_outside_a_workers_scope_doesnt_land() {
     let h = group_harness(&[
         (
             "node_modules/.bin/eslint",
@@ -3340,6 +3563,68 @@ async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
                 ],
             ),
         ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let result = h.result_when_ready("g1").await;
+    assert!(
+        result.content.contains(
+            "Not landed, outside its step's scope (a command's side effect?): src/posts.rs."
+        ),
+        "{}",
+        result.content
+    );
+    assert!(!result.content.contains("conflict"), "{}", result.content);
+    let view = crate::overlay::chats::get(&h.dialog_id).unwrap().view.clone();
+    assert_eq!(
+        std::fs::read_to_string(view.join("src/posts.rs")).unwrap(),
+        "from w2\n",
+        "w1's side effect didn't land; w2's change did"
+    );
+    h.run_end().await;
+}
+
+/// Waits until a worker has written `theirs` at `path` in its copy, then
+/// changes the same file in the chat's view, as the user editing it
+/// meanwhile: a conflict when that worker lands.
+async fn edit_while_workers_run(h: &Harness, path: &str, theirs: &str, ours: &str) {
+    for _ in 0..400 {
+        let written = crate::overlay::chats::children_of(&h.dialog_id)
+            .iter()
+            .filter_map(|c| crate::overlay::chats::get(c))
+            .any(|o| std::fs::read_to_string(o.view.join(path)).ok().as_deref() == Some(theirs));
+        if written {
+            let view = crate::overlay::chats::get(&h.dialog_id).unwrap().view.clone();
+            std::fs::write(view.join(path), ours).unwrap();
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the worker never wrote {path}");
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
+    let h = group_harness(&[]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "from w2\n"),
+                    Reply::Slow(1_500, Box::new(worker_report("Posts.", &["src/posts.rs"]))),
+                ],
+            ),
+        ],
         vec![
             all_done(),
             group_task("g1"),
@@ -3348,6 +3633,7 @@ async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
     )
     .await;
     h.start(h.implement_isolated(&url, false)).await;
+    edit_while_workers_run(&h, "src/posts.rs", "from w2\n", "from the user\n").await;
     let result = h.result_when_ready("g1").await;
     assert!(
         result.content.contains("## The join stopped: a conflict"),
@@ -3362,7 +3648,7 @@ async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
         result.content
     );
     // Both versions are saved for the lead to read.
-    for (file, want) in [("chat", "from w1\n"), ("worker", "from w2\n")] {
+    for (file, want) in [("chat", "from the user\n"), ("worker", "from w2\n")] {
         let path = format!("@checks/conflict-w2-src-posts-rs-{file}.log");
         assert!(result.content.contains(&path), "{}", result.content);
         let saved = crate::agent_run::check_output::resolve(&h.dialog_id, &path).unwrap();
@@ -3372,6 +3658,59 @@ async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
     h.run_end().await;
 }
 
+/// P2.7: retries count against the run's workers: a group of six whose
+/// every worker fails once starts at most the steps plus two retries.
+#[tokio::test]
+#[ignore]
+async fn retried_workers_count_against_the_limit() {
+    let mut steps = String::new();
+    let mut files: Vec<(String, String)> = Vec::new();
+    for n in 1..=6 {
+        steps.push_str(&format!(
+            "{n}. **Part {n}**\n   - `src/part{n}.rs`: implement part {n} with `fn part{n}()`.\n   - Group: all\n"
+        ));
+        files.push((format!("src/part{n}.rs"), format!("// part {n}\n")));
+    }
+    let plan = format!("# Six parts\n\nSix parts at once.\n\n## Steps\n\n{steps}\n## Validation\n- `npm test`\n");
+    let mut all: Vec<(&str, &str)> = files.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+    all.push((".rovik/plans/greet.md", plan.as_str()));
+    let mut h = harness(&all).await;
+    h.isolate().await;
+    let routes: Vec<(&'static str, Vec<Reply>)> = (1..=6)
+        .map(|n| {
+            let marker: &'static str = Box::leak(format!("# Your step: {n}.").into_boxed_str());
+            let path: &'static str = Box::leak(format!("src/part{n}.rs").into_boxed_str());
+            (
+                marker,
+                // Too long for the model, twice (trimmed once): it fails,
+                // without counting against the model (S12's breaker).
+                vec![too_long(), too_long(), write_call("w", path, "done\n"), worker_report("Done.", &[path])],
+            )
+        })
+        .collect();
+    let (url, _) = model_routed(
+        routes,
+        vec![
+            Reply::Call {
+                id: "g1",
+                name: "task",
+                args: json!({ "kind": "workers", "group": "all" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    h.run_end().await;
+    let started = h.events_of("subagentStarted").len();
+    assert_eq!(started, 8, "six, and two retries");
+    let result = result_of(&h.messages().await, "g1").content.clone();
+    assert!(
+        result.contains("wasn't retried: this run has already started 8 workers, the plan's 6 steps plus 2 retries"),
+        "{result}"
+    );
+}
+
 const GROUP3_PLAN: &str = "# Three pages\n\nUsers, posts and a feed.\n\n## Steps\n\n\
     1. **Contract**\n   - `src/api.rs`: declare `fn users()` and `fn posts()` with stub bodies.\n\
     2. **Users**\n   - `src/users.rs`: implement the users page with `fn users()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\
@@ -3379,9 +3718,10 @@ const GROUP3_PLAN: &str = "# Three pages\n\nUsers, posts and a feed.\n\n## Steps
     4. **Feed**\n   - `src/feed.rs`: implement the feed with `fn posts()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\n\
     ## Validation\n- `npm test`\n";
 
-/// P1.2: a conflict lands the rest of the worker, keeps its copy and the
-/// later workers' copies (none discarded), and saves both versions; a
-/// later worker lands when the lead continues it.
+/// P1.2: a conflict (the user edited the file meanwhile) lands the rest of
+/// the worker, keeps its copy and the later workers' copies (none
+/// discarded), and saves both versions; a later worker lands when the
+/// lead continues it.
 #[tokio::test]
 #[ignore]
 async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
@@ -3392,29 +3732,15 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
         ("src/extra.rs", "// extra\n"),
         ("src/feed.rs", "// feed\n"),
         (".rovik/plans/greet.md", GROUP3_PLAN),
-        (
-            "node_modules/.bin/eslint",
-            "#!/bin/sh\nprintf 'from w1\\n' > src/posts.rs\n",
-        ),
-        ("scripts/side.js", "x\n"),
     ])
     .await;
     h.isolate().await;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let bin = h.project.join("node_modules/.bin/eslint");
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
     let (url, _) = model_routed(
         vec![
             (
                 "# Your step: 2.",
                 vec![
-                    Reply::Call {
-                        id: "b1",
-                        name: "bash",
-                        args: json!({ "command": "npx eslint scripts/side.js" }),
-                    },
+                    write_call("w1", "src/users.rs", "users\n"),
                     worker_report("Users.", &["src/users.rs"]),
                 ],
             ),
@@ -3423,7 +3749,7 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
                 vec![
                     write_call("w2", "src/posts.rs", "from w2\n"),
                     write_call("w3", "src/extra.rs", "extra from w2\n"),
-                    worker_report("Posts.", &["src/posts.rs", "src/extra.rs"]),
+                    Reply::Slow(1_500, Box::new(worker_report("Posts.", &["src/posts.rs", "src/extra.rs"]))),
                 ],
             ),
             (
@@ -3449,6 +3775,7 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
     )
     .await;
     h.start(h.implement_isolated(&url, false)).await;
+    edit_while_workers_run(&h, "src/posts.rs", "from w2\n", "from the user\n").await;
     let result = h.result_when_ready("g1").await;
     let text = result.content.clone();
     assert!(text.contains("Its other files landed: src/extra.rs."), "{text}");
@@ -3470,7 +3797,7 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
     let in_view = |p: &str| std::fs::read_to_string(view.join(p)).ok();
     assert_eq!(in_view("src/extra.rs").as_deref(), Some("extra from w2\n"));
     assert_eq!(in_view("src/feed.rs").as_deref(), Some("feed from w3\n"));
-    assert_eq!(in_view("src/posts.rs").as_deref(), Some("from w1\n"));
+    assert_eq!(in_view("src/posts.rs").as_deref(), Some("from the user\n"));
     h.run_end().await;
 }
 
