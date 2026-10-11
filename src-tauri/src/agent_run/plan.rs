@@ -371,20 +371,115 @@ static STEP_NUMBER: LazyLock<Regex> =
 static BACKTICKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());
 static NEW_MARK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\((?:new|new file|created?)\)").unwrap());
-static GROUP_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?im)^[\s>*-]*\**group\**\s*:\s*\**\s*([^*\n]+?)\s*\**\s*$").unwrap());
+static GROUP_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^[\s>*-]*\**group\**\s*:\s*\**\s*([^*\n]+?)\s*\**\s*$").unwrap()
+});
 
 /// Extensions a backticked name must have to count as a file, so that
 /// `state.config` or `self.items` isn't taken for one.
 const FILE_EXTENSIONS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "jsonc", "toml", "yaml", "yml", "md",
-    "mdx", "txt", "css", "scss", "sass", "less", "html", "htm", "vue", "svelte", "py", "pyi", "go",
-    "mod", "sum", "java", "kt", "kts", "gradle", "swift", "m", "mm", "c", "h", "cc", "cpp", "hpp",
-    "cs", "csproj", "sln", "rb", "php", "lua", "sh", "bash", "zsh", "ps1", "bat", "cmd", "sql",
-    "graphql", "gql", "proto", "xml", "ini", "cfg", "conf", "env", "lock", "dart", "ex", "exs",
-    "erl", "hs", "ml", "mli", "fs", "fsx", "scala", "clj", "cljs", "elm", "zig", "nim", "r", "jl",
-    "tf", "hcl", "nix", "svg", "png", "jpg", "ico", "wasm", "vert", "frag", "wgsl", "glsl",
-    "astro", "prisma", "pl", "pm", "tex", "rst", "adoc", "csv", "tsv", "makefile", "dockerfile",
+    "rs",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "json",
+    "jsonc",
+    "toml",
+    "yaml",
+    "yml",
+    "md",
+    "mdx",
+    "txt",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "html",
+    "htm",
+    "vue",
+    "svelte",
+    "py",
+    "pyi",
+    "go",
+    "mod",
+    "sum",
+    "java",
+    "kt",
+    "kts",
+    "gradle",
+    "swift",
+    "m",
+    "mm",
+    "c",
+    "h",
+    "cc",
+    "cpp",
+    "hpp",
+    "cs",
+    "csproj",
+    "sln",
+    "rb",
+    "php",
+    "lua",
+    "sh",
+    "bash",
+    "zsh",
+    "ps1",
+    "bat",
+    "cmd",
+    "sql",
+    "graphql",
+    "gql",
+    "proto",
+    "xml",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "lock",
+    "dart",
+    "ex",
+    "exs",
+    "erl",
+    "hs",
+    "ml",
+    "mli",
+    "fs",
+    "fsx",
+    "scala",
+    "clj",
+    "cljs",
+    "elm",
+    "zig",
+    "nim",
+    "r",
+    "jl",
+    "tf",
+    "hcl",
+    "nix",
+    "svg",
+    "png",
+    "jpg",
+    "ico",
+    "wasm",
+    "vert",
+    "frag",
+    "wgsl",
+    "glsl",
+    "astro",
+    "prisma",
+    "pl",
+    "pm",
+    "tex",
+    "rst",
+    "adoc",
+    "csv",
+    "tsv",
+    "makefile",
+    "dockerfile",
 ];
 
 /// The repo-relative path a backticked token names, if it's one.
@@ -393,7 +488,9 @@ fn as_path(token: &str) -> Option<String> {
     if t.is_empty()
         || t.contains(char::is_whitespace)
         || t.contains("://")
-        || t.contains(['(', ')', '<', '>', '{', '}', '*', '?', '$', '=', ',', ';', '"', '\'', '|'])
+        || t.contains([
+            '(', ')', '<', '>', '{', '}', '*', '?', '$', '=', ',', ';', '"', '\'', '|',
+        ])
         || t.starts_with('/')
         || t.starts_with('-')
         || t.starts_with('@')
@@ -497,7 +594,12 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
     // Created by which step.
     let created: Vec<(&str, usize)> = steps
         .iter()
-        .flat_map(|s| s.files.iter().filter(|f| f.new).map(move |f| (f.path.as_str(), s.number)))
+        .flat_map(|s| {
+            s.files
+                .iter()
+                .filter(|f| f.new)
+                .map(move |f| (f.path.as_str(), s.number))
+        })
         .collect();
     let exists = |path: &str| root.join(path.trim_end_matches('/')).exists();
     let mut missing: Vec<String> = Vec::new();
@@ -535,7 +637,10 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
             continue;
         }
         seen_groups.push(group);
-        let members: Vec<&PlanStep> = steps.iter().filter(|s| s.group.as_deref() == Some(group)).collect();
+        let members: Vec<&PlanStep> = steps
+            .iter()
+            .filter(|s| s.group.as_deref() == Some(group))
+            .collect();
         for (i, a) in members.iter().enumerate() {
             for b in &members[i + 1..] {
                 let shared: Vec<&str> = a
@@ -1093,38 +1198,87 @@ mod tests {
         assert_eq!((s[0].number, s[0].title.as_str()), (1, "Users table"));
         assert_eq!(s[1].title, "List users in the API");
         assert_eq!(s[2].title, "Page");
-        let files = |i: usize| s[i].files.iter().map(|f| (f.path.as_str(), f.new)).collect::<Vec<_>>();
+        let files = |i: usize| {
+            s[i].files
+                .iter()
+                .map(|f| (f.path.as_str(), f.new))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
             files(0),
-            [("migrations/002_users.sql", true), ("migrations/README.md", false)]
+            [
+                ("migrations/002_users.sql", true),
+                ("migrations/README.md", false)
+            ]
         );
         // Not files: the signature, `state.config`, `users`; a path:line is its file.
-        assert_eq!(files(1), [("src/api/users.rs", true), ("src/api/mod.rs", false)]);
-        assert_eq!(files(2), [("src/pages/Users.tsx", true), ("src/pages/", true)]);
+        assert_eq!(
+            files(1),
+            [("src/api/users.rs", true), ("src/api/mod.rs", false)]
+        );
+        assert_eq!(
+            files(2),
+            [("src/pages/Users.tsx", true), ("src/pages/", true)]
+        );
         assert_eq!(s[1].group.as_deref(), Some("backend"));
         assert_eq!(s[0].group, None);
         assert!(s[1].body.contains("register the route"));
-        assert!(!s[0].body.contains("List users"), "a step ends where the next begins");
+        assert!(
+            !s[0].body.contains("List users"),
+            "a step ends where the next begins"
+        );
 
         assert_eq!(
             section(REAL_PLAN, "Decisions").as_deref(),
             Some("- Paginate at 50 (the existing default).\n- Keep `users` in SQLite.")
         );
-        assert_eq!(section(REAL_PLAN, "validation").as_deref(), Some("- `cargo test`\n- open /users by hand"));
+        assert_eq!(
+            section(REAL_PLAN, "validation").as_deref(),
+            Some("- `cargo test`\n- open /users by hand")
+        );
         assert_eq!(section(REAL_PLAN, "Risks"), None);
         // The checker's own fixture.
         let g = steps(GOOD_PLAN);
         assert_eq!(g.len(), 2);
-        assert_eq!(g[1].files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["src/api/users.rs", "src/api/mod.rs"]);
+        assert_eq!(
+            g[1].files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/api/users.rs", "src/api/mod.rs"]
+        );
         assert!(steps("# No steps\n\nJust text.").is_empty());
     }
 
     #[test]
     fn what_counts_as_a_file() {
-        for yes in ["src/a.rs", "Cargo.toml", "./src/b.ts", "src/components/", "Dockerfile", ".env", "src/a.rs:10-20", "docs/design"] {
+        for yes in [
+            "src/a.rs",
+            "Cargo.toml",
+            "./src/b.ts",
+            "src/components/",
+            "Dockerfile",
+            ".env",
+            "src/a.rs:10-20",
+            "docs/design",
+        ] {
             assert!(as_path(yes).is_some(), "{yes}");
         }
-        for no in ["fn a(x: u8)", "state.config", "self.items", "users", "std::fs::read", "https://x.io/a.js", "/etc/hosts", "--flag", "a.b.c()", "*.ts", "@context/TASK.md", "C:/x.rs", "e.g"] {
+        for no in [
+            "fn a(x: u8)",
+            "state.config",
+            "self.items",
+            "users",
+            "std::fs::read",
+            "https://x.io/a.js",
+            "/etc/hosts",
+            "--flag",
+            "a.b.c()",
+            "*.ts",
+            "@context/TASK.md",
+            "C:/x.rs",
+            "e.g",
+        ] {
             assert!(as_path(no).is_none(), "{no}");
         }
     }
@@ -1159,10 +1313,16 @@ mod tests {
         let missing = REAL_PLAN.replace("`src/api/mod.rs:12`", "`src/api/routes.rs`");
         let p = project_problems(&missing, &tree.0);
         assert_eq!(p.len(), 1, "{p:?}");
-        assert!(p[0].starts_with("Step 2 names `src/api/routes.rs`, which isn't in the project"), "{p:?}");
+        assert!(
+            p[0].starts_with("Step 2 names `src/api/routes.rs`, which isn't in the project"),
+            "{p:?}"
+        );
 
         // Used before the step that creates it.
-        let early = REAL_PLAN.replace("Register it in `migrations/README.md`.", "Use the helper in `src/api/users.rs`.");
+        let early = REAL_PLAN.replace(
+            "Register it in `migrations/README.md`.",
+            "Use the helper in `src/api/users.rs`.",
+        );
         let p = project_problems(&early, &tree.0);
         assert_eq!(p, ["Step 1 uses `src/api/users.rs`, which step 2 creates: put the steps in an order where a file is created before it's used."]);
 
@@ -1170,7 +1330,12 @@ mod tests {
         let shared = REAL_PLAN.replace("call `api.listUsers()`", "register it in `src/api/mod.rs`");
         let p = project_problems(&shared, &tree.0);
         assert_eq!(p.len(), 1, "{p:?}");
-        assert!(p[0].starts_with("Steps 2 and 3 are both in group \"backend\" but both name `src/api/mod.rs`"), "{p:?}");
+        assert!(
+            p[0].starts_with(
+                "Steps 2 and 3 are both in group \"backend\" but both name `src/api/mod.rs`"
+            ),
+            "{p:?}"
+        );
         // Out of a group, sharing is fine.
         let ungrouped = shared.replace("   - Group: backend\n", "");
         assert!(project_problems(&ungrouped, &tree.0).is_empty());

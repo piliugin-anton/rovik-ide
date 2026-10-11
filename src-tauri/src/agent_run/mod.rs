@@ -35,6 +35,7 @@ pub mod log;
 mod parallel;
 pub mod permissions;
 pub mod plan;
+pub mod plan_review;
 pub mod project;
 pub mod repair;
 pub mod repetition;

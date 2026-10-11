@@ -1366,7 +1366,11 @@ impl<R: Runtime> Run<R> {
     /// submit_plan: the plan is checked and, if it holds up, saved to the
     /// chat's plan file (a revision replaces it). Problems go back to the
     /// model to fix. Only this changes the file: a reply never does.
-    async fn submit_plan(&self, tc: &ToolCall, args: &Map<String, Value>) -> Result<(), String> {
+    async fn submit_plan(
+        &mut self,
+        tc: &ToolCall,
+        args: &Map<String, Value>,
+    ) -> Result<(), String> {
         let plan_text = args.get("plan").and_then(|p| p.as_str()).unwrap_or("");
         // B07: against the project too, as this chat sees it.
         let problems =
@@ -1399,18 +1403,40 @@ impl<R: Runtime> Run<R> {
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "plan".into());
         let existing = chat_plan_file(&recent);
+        // B09: the plan reviewer, when it's on, before the plan is saved.
+        let review = self
+            .review_plan(&tc.id, plan_text, existing.as_deref())
+            .await?;
+        let record = review.record;
+        let (plan_text, note) = match review.decision {
+            super::plan_review::Decision::Hold { result } => {
+                return self
+                    .add_tool_result(
+                        &tc.id,
+                        format!("Error: {result}"),
+                        Some(json!({ "review": record })),
+                        Vec::new(),
+                    )
+                    .await;
+            }
+            super::plan_review::Decision::Save { plan, note } => (plan, note),
+        };
         match plan::save_plan_file(
             &root,
             &request,
-            plan_text,
+            &plan_text,
             existing.as_deref(),
             &self.local_date,
         ) {
             Ok(path) => {
-                let content = format!(
+                let mut content = format!(
                     "Saved the plan to {}.",
                     plan::relative_plan_path(&path, Some(&root))
                 );
+                if let Some(note) = note {
+                    content.push(' ');
+                    content.push_str(&note);
+                }
                 // Open tabs of the plan show the new version.
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     emit(
@@ -1423,13 +1449,12 @@ impl<R: Runtime> Run<R> {
                         },
                     );
                 }
-                self.add_tool_result(
-                    &tc.id,
-                    content,
-                    Some(json!({ "planFile": path })),
-                    Vec::new(),
-                )
-                .await
+                let mut meta = json!({ "planFile": path });
+                if let Some(record) = record {
+                    meta["review"] = record;
+                }
+                self.add_tool_result(&tc.id, content, Some(meta), Vec::new())
+                    .await
             }
             Err(e) => {
                 self.add_tool_result(

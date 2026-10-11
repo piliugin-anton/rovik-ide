@@ -108,6 +108,9 @@ pub struct Finding {
     pub fix: String,
     /// confirmed or plausible.
     pub confidence: String,
+    /// A plan review's finding: the step it's about (B08).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<u32>,
     /// What's new, for a finding an earlier round already made.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_evidence: Option<String>,
@@ -121,16 +124,19 @@ impl Finding {
 }
 
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(\S+)\s*(?:[—–-]+\s*(.*))?$").unwrap()
+    Regex::new(r"(?i)^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(step\s+\d+|\S+)\s*(?:[—–-]+\s*(.*))?$")
+        .unwrap()
 });
 static FIELD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*[-*]\s*(scenario|fix|suggested fix|confidence|new evidence)\s*:\s*(.*)$")
         .unwrap()
 });
+static STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^step\s+(\d+)$").unwrap());
 static AT_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(.+?):(\d+)(?:[:-]\d+)?$").unwrap());
 
-const FORMAT_HINT: &str = "each finding is a numbered line \"1. [high] path:line — title\" followed by \
+const FORMAT_HINT: &str = "each finding is a numbered line \"1. [high] path:line — title\" (\"Step 3\" in place of \
+     path:line for a plan) followed by \
      \"- Scenario:\", \"- Fix:\" and \"- Confidence:\" (confirmed or plausible) lines; with nothing to report, \
      \"None.\"";
 
@@ -218,7 +224,9 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
                 format!("finding {n} has no \"- Confidence:\" line saying confirmed or plausible ({FORMAT_HINT})")
             })?;
         let (severity, location, title) = d.header;
+        let step = STEP.captures(&location).and_then(|c| c[1].parse().ok());
         let (path, line) = match AT_LINE.captures(&location) {
+            _ if step.is_some() => (None, None),
             Some(c) => (Some(c[1].to_string()), c[2].parse().ok()),
             None if location.contains('/') || location.contains('.') => {
                 (Some(location.clone()), None)
@@ -234,6 +242,7 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             scenario,
             fix,
             confidence,
+            step,
             new_evidence: field("new evidence"),
         });
     }

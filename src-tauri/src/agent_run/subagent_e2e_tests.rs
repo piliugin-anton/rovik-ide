@@ -1661,7 +1661,8 @@ async fn a_follow_up_to_a_scout_still_working_is_refused() {
  */
 
 const TRIAGE: &str = "# Triage this failure";
-const DIAGNOSIS: &str = "## Root cause\nThe greeting in a.txt:1 is checked by the tests and is wrong.\n\n\
+const DIAGNOSIS: &str =
+    "## Root cause\nThe greeting in a.txt:1 is checked by the tests and is wrong.\n\n\
     ## Files to fix\n- `a.txt`: write \"hello\"\n\n## Next step\nReplace the line in a.txt.\n\n\
     ## Confidence\nhigh: the only error names a.txt:1";
 
@@ -1703,7 +1704,11 @@ async fn failing_project(lines: usize) -> Option<Harness> {
 fn fix_messages(messages: &[MessageRow]) -> Vec<String> {
     messages
         .iter()
-        .filter(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "verification"))
+        .filter(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|m| m["harness"] == "verification")
+        })
         .map(|m| m.content.clone())
         .collect()
 }
@@ -1751,8 +1756,14 @@ async fn a_large_failure_goes_to_triage_and_its_diagnosis_to_the_agent() {
     // C02: the brief names the saved output; triage reads it, can't write.
     let briefs = requests_with(&seen, TRIAGE);
     let brief = briefs[0]["messages"][1]["content"].as_str().unwrap();
-    assert!(brief.contains("saved as `@checks/round-1-test.log`"), "{brief}");
-    assert!(brief.contains("Files the agent changed\n\na.txt"), "{brief}");
+    assert!(
+        brief.contains("saved as `@checks/round-1-test.log`"),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("Files the agent changed\n\na.txt"),
+        "{brief}"
+    );
     let tools = tool_names(&briefs[0]);
     assert!(tools.contains(&"read".to_string()));
     for t in ["write", "bash", "task"] {
@@ -1768,7 +1779,12 @@ async fn a_large_failure_goes_to_triage_and_its_diagnosis_to_the_agent() {
         .find(|m| m.tool_call_id.as_deref() == Some("t1"))
         .unwrap();
     // Stderr first, as in the report.
-    assert!(read.content.contains("error: the greeting is wrong at a.txt:1"), "{}", read.content);
+    assert!(
+        read.content
+            .contains("error: the greeting is wrong at a.txt:1"),
+        "{}",
+        read.content
+    );
     let write = work
         .iter()
         .find(|m| m.tool_call_id.as_deref() == Some("t2"))
@@ -1779,9 +1795,15 @@ async fn a_large_failure_goes_to_triage_and_its_diagnosis_to_the_agent() {
     // C03: the agent gets the diagnosis, a short excerpt and the file,
     // not the whole output.
     let fix = &fix_messages(&messages)[0];
-    assert!(fix.contains("**Root cause:** The greeting in a.txt:1"), "{fix}");
+    assert!(
+        fix.contains("**Root cause:** The greeting in a.txt:1"),
+        "{fix}"
+    );
     assert!(fix.contains("**Confidence:** high"), "{fix}");
-    assert!(fix.contains("error: the greeting is wrong at a.txt:1"), "{fix}");
+    assert!(
+        fix.contains("error: the greeting is wrong at a.txt:1"),
+        "{fix}"
+    );
     assert!(fix.contains("saved as `@checks/round-1-test.log`"), "{fix}");
     assert!(fix.len() < 5_000, "{} characters", fix.len());
     // The record keeps the whole result.
@@ -1819,7 +1841,10 @@ async fn a_small_failure_gets_the_usual_message_until_it_fails_again() {
     let briefs = requests_with(&seen, TRIAGE);
     assert_eq!(briefs.len(), 1);
     let brief = briefs[0]["messages"][1]["content"].as_str().unwrap();
-    assert!(brief.contains("It failed in the round before too"), "{brief}");
+    assert!(
+        brief.contains("It failed in the round before too"),
+        "{brief}"
+    );
     assert!(brief.contains("## The output"), "{brief}");
     assert_eq!(triages(&messages)[0]["reason"], "failed again");
 }
@@ -1847,12 +1872,21 @@ async fn a_failing_triage_leaves_the_usual_message() {
     let messages = h.messages().await;
     let t = &triages(&messages)[0];
     assert_eq!(t["status"], "skipped", "{t}");
-    assert!(t["skipped"].as_str().unwrap().contains("model failed"), "{t}");
+    assert!(
+        t["skipped"].as_str().unwrap().contains("model failed"),
+        "{t}"
+    );
     let fix = &fix_messages(&messages)[0];
     assert!(!fix.contains("Root cause"), "{fix}");
-    assert!(fix.contains("error: the greeting is wrong at a.txt:1"), "{fix}");
+    assert!(
+        fix.contains("error: the greeting is wrong at a.txt:1"),
+        "{fix}"
+    );
     // C01: the whole output is saved, and the message says where.
-    assert!(fix.contains("The whole of it is saved as `@checks/round-1-test.log`"), "{fix}");
+    assert!(
+        fix.contains("The whole of it is saved as `@checks/round-1-test.log`"),
+        "{fix}"
+    );
 }
 
 #[tokio::test]
@@ -1880,6 +1914,304 @@ async fn with_triage_off_a_large_failure_is_saved_and_named() {
     assert!(requests_with(&seen, TRIAGE).is_empty(), "no triage request");
     let read = result_of(&messages, "r1");
     assert!(read.content.contains("noise line 5 of"), "{}", read.content);
-    assert!(!read.content.contains("noise line 300 of"), "{}", read.content);
-    assert!(read.content.contains("error: the greeting is wrong"), "{}", read.content);
+    assert!(
+        !read.content.contains("noise line 300 of"),
+        "{}",
+        read.content
+    );
+    assert!(
+        read.content.contains("error: the greeting is wrong"),
+        "{}",
+        read.content
+    );
+}
+
+/*
+ * B08–B09: the plan reviewer, on submit_plan in Plan mode.
+ */
+
+const PLAN_REVIEW: &str = "# Review this plan";
+const PLAN_FINDING: &str = "## Findings\n\n1. [high] Step 2 — `list_users` is also called from `src/cli.rs`\n   - Scenario: the CLI keeps the old signature and won't build.\n   - Fix: add a step updating `src/cli.rs`.\n   - Confidence: confirmed";
+const PLAN_FINDING_2: &str = "## Findings\n\n1. [medium] Step 1 — The table has no index on `email`\n   - Scenario: lookups by email scan the table.\n   - Fix: add the index in step 1.\n   - Confidence: plausible";
+
+fn plan_reviewer_on(extra: Value) -> subagent::SubagentConfig {
+    let mut kind = json!({ "enabled": true });
+    if let (Some(k), Some(e)) = (kind.as_object_mut(), extra.as_object()) {
+        k.extend(e.clone());
+    }
+    serde_json::from_value(json!({ "enabled": true, "kinds": { "planReviewer": kind } })).unwrap()
+}
+
+/// A plan the checker accepts in `plan_project()`; `extra` adds steps.
+fn users_plan(title: &str, extra: usize) -> String {
+    let mut steps = String::from(
+        "1. **Table**\n   - `src/db.rs`: add a `users` table with `id` and `email`.\n\
+         2. **API**\n   - `src/api.rs`: add `fn list_users()` returning every user.\n",
+    );
+    for i in 0..extra {
+        steps.push_str(&format!(
+            "{}. **Caller {i}**\n   - `src/cli.rs`: update call site {i} to use `list_users()` and print each user.\n",
+            i + 3
+        ));
+    }
+    format!("# {title}\n\nAdd users.\n\n## Steps\n\n{steps}\n## Validation\n- `cargo test`\n")
+}
+
+async fn plan_project() -> Harness {
+    harness(&[("src/db.rs", ""), ("src/api.rs", ""), ("src/cli.rs", "")]).await
+}
+
+fn submit(id: &'static str, plan: String) -> Reply {
+    Reply::Call {
+        id,
+        name: "submit_plan",
+        args: json!({ "plan": Box::leak(plan.into_boxed_str()) as &str }),
+    }
+}
+
+impl Harness {
+    fn plan_request(&self, url: &str, subagents: subagent::SubagentConfig) -> StartRequest {
+        let mut request = self.request(url, plan_send("Add users"), quiet_permissions());
+        request.config.as_mut().unwrap().subagents = subagents;
+        request
+    }
+
+    fn plan_files(&self) -> Vec<String> {
+        std::fs::read_dir(self.project.join(".rovik/plans"))
+            .map(|d| {
+                d.flatten()
+                    .map(|e| std::fs::read_to_string(e.path()).unwrap())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+#[tokio::test]
+async fn plan_findings_hold_the_plan_until_the_agent_fixes_it() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(NO_FINDINGS)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            // Held: the agent adds the missing step and submits again.
+            submit("p2", users_plan("Users", 1)),
+            Reply::Text("Saved the plan."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let first = result_of(&messages, "p1");
+    assert!(
+        first
+            .content
+            .starts_with("Error: The plan wasn't saved yet"),
+        "{}",
+        first.content
+    );
+    assert!(first
+        .content
+        .contains("1. [high] Step 2 — `list_users` is also called"));
+    let review = &first.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (review["kind"].as_str(), review["status"].as_str()),
+        (Some("plan"), Some("findings"))
+    );
+    assert_eq!(review["findings"][0]["step"], 2);
+    assert!(first.meta.as_ref().unwrap().get("planFile").is_none());
+    let second = result_of(&messages, "p2");
+    assert!(
+        second
+            .content
+            .starts_with("Saved the plan to .rovik/plans/"),
+        "{}",
+        second.content
+    );
+    assert_eq!(second.meta.as_ref().unwrap()["review"]["status"], "clean");
+    assert_eq!(second.meta.as_ref().unwrap()["review"]["round"], 2);
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].contains("**Caller 0**") && !files[0].contains("Open review findings"));
+
+    // The reviewer saw the request and the plan, never the lead's
+    // conversation; read-only tools; round 2 saw its earlier finding.
+    let briefs: Vec<String> = requests_with(&seen, PLAN_REVIEW)
+        .iter()
+        .map(|b| {
+            b["messages"][1]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(briefs.len(), 2);
+    assert!(briefs[0].contains("## The user's request\n\nAdd users"));
+    assert!(briefs[0].contains("## The plan\n\n````markdown\n# Users"));
+    assert!(!briefs[0].contains("The plan wasn't saved"));
+    assert!(briefs[1].contains("## The earlier review") && briefs[1].contains("Caller 0"));
+    let tools = tool_names(&requests_with(&seen, PLAN_REVIEW)[0]);
+    assert!(tools.contains(&"callers".to_string()));
+    for t in ["write", "bash", "task", "submit_plan", "web_search"] {
+        assert!(
+            !tools.contains(&t.to_string()),
+            "{t} offered to the plan reviewer"
+        );
+    }
+}
+
+#[tokio::test]
+async fn after_the_last_round_open_findings_go_in_the_plan_and_no_third_review() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING_2)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit("p2", users_plan("Users", 1)),
+            // A third submit in the run: saved without a review.
+            submit("p3", users_plan("Users v3", 3)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let second = result_of(&messages, "p2");
+    assert!(
+        second
+            .content
+            .contains("still reported 1 finding after its last round"),
+        "{}",
+        second.content
+    );
+    assert_eq!(second.meta.as_ref().unwrap()["review"]["open"], 1);
+    let third = result_of(&messages, "p3");
+    assert!(
+        third.content.starts_with("Saved the plan"),
+        "{}",
+        third.content
+    );
+    assert!(
+        third.meta.as_ref().unwrap().get("review").is_none(),
+        "never reviewed"
+    );
+    assert_eq!(requests_with(&seen, PLAN_REVIEW).len(), 2);
+    // The second round's open finding was saved with that version; the third
+    // replaced the file.
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].starts_with("# Users v3"));
+}
+
+#[tokio::test]
+async fn the_open_findings_section_is_in_the_saved_plan() {
+    let h = plan_project().await;
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING_2)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit("p2", users_plan("Users", 1)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let files = h.plan_files();
+    assert!(files[0].contains("## Open review findings"), "{}", files[0]);
+    assert!(files[0].contains("**[medium] Step 1 — The table has no index on `email`**"));
+}
+
+#[tokio::test]
+async fn a_failing_plan_reviewer_saves_the_plan_with_a_note() {
+    let h = plan_project().await;
+    let (bad, _) = model(vec![Reply::Status(
+        400,
+        r#"{"error":{"message":"no such model"}}"#,
+    )])
+    .await;
+    let (url, _) = model(vec![
+        submit("p1", users_plan("Users", 0)),
+        Reply::Text("Saved."),
+    ])
+    .await;
+    let config = plan_reviewer_on(json!({ "models": [profile("bad", &bad)] }));
+    h.start(h.plan_request(&url, config)).await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let r = result_of(&messages, "p1");
+    assert!(r.content.starts_with("Saved the plan to"), "{}", r.content);
+    assert!(
+        r.content
+            .contains("Review skipped: the reviewer's model failed"),
+        "{}",
+        r.content
+    );
+    assert_eq!(r.meta.as_ref().unwrap()["review"]["status"], "skipped");
+    assert_eq!(h.plan_files().len(), 1);
+}
+
+#[tokio::test]
+async fn a_small_revision_is_saved_without_a_review_and_off_means_off() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(NO_FINDINGS)])],
+        vec![submit("p1", users_plan("Users", 0)), Reply::Text("Saved.")],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    // The user asks for a small change: a new run, a revision of a few lines.
+    let (url2, seen2) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(NO_FINDINGS)])],
+        vec![
+            submit("p2", users_plan("Users (revised)", 0)),
+            Reply::Text("Revised."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    h.start(h.plan_request(&url2, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(requests_with(&seen, PLAN_REVIEW).len(), 1);
+    assert!(
+        requests_with(&seen2, PLAN_REVIEW).is_empty(),
+        "a small revision isn't reviewed"
+    );
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1, "{files:#?}");
+    assert!(files[0].starts_with("# Users (revised)"), "{files:#?}");
+
+    // Subagents on, the plan reviewer off: no review.
+    let h = plan_project().await;
+    let (url, seen) = model(vec![
+        submit("p1", users_plan("Users", 0)),
+        Reply::Text("Saved."),
+    ])
+    .await;
+    h.start(h.plan_request(&url, scouts_on(json!({})))).await;
+    assert_eq!(h.run_end().await, "done");
+    assert!(requests_with(&seen, PLAN_REVIEW).is_empty());
+    assert!(result_of(&h.messages().await, "p1")
+        .meta
+        .as_ref()
+        .unwrap()
+        .get("review")
+        .is_none());
 }

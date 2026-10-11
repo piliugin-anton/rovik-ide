@@ -42,8 +42,8 @@ const MAX_PATHS: usize = 20;
  * ---------------------------------------------------------------------------
  */
 
-/// The kinds of subagent built so far. The plan's others (the plan reviewer,
-/// workers, the test writer) come in later milestones.
+/// The kinds of subagent built so far. The plan's others (workers, the test
+/// writer) come in later milestones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
@@ -52,6 +52,8 @@ pub enum Kind {
     Reviewer,
     /// Reads a large or repeated check failure for its cause (triage.rs).
     Triage,
+    /// Checks a submitted plan against the code (plan_review.rs).
+    PlanReviewer,
 }
 
 /// The repository map a kind gets (S18, K21): what it's about and its size.
@@ -68,20 +70,27 @@ impl Kind {
     /// and triage its failures: a map around it, half the size.
     pub fn map_scope(self) -> MapScope {
         match self {
-            Kind::Scout => MapScope::Lead,
+            // A plan changes nothing yet: the whole project, ranked for it.
+            Kind::Scout | Kind::PlanReviewer => MapScope::Lead,
             Kind::Reviewer | Kind::Triage => MapScope::Changed {
                 fraction_percent: 50,
             },
         }
     }
 
-    pub const ALL: &'static [Kind] = &[Kind::Scout, Kind::Reviewer, Kind::Triage];
+    pub const ALL: &'static [Kind] = &[
+        Kind::Scout,
+        Kind::Reviewer,
+        Kind::Triage,
+        Kind::PlanReviewer,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Kind::Scout => "scout",
             Kind::Reviewer => "reviewer",
             Kind::Triage => "triage",
+            Kind::PlanReviewer => "planReviewer",
         }
     }
 
@@ -100,6 +109,7 @@ impl Kind {
             Kind::Scout => &SCOUT,
             Kind::Reviewer => &super::change_review::REVIEWER,
             Kind::Triage => &super::triage::TRIAGE,
+            Kind::PlanReviewer => &super::plan_review::PLAN_REVIEWER,
         }
     }
 }
@@ -1162,7 +1172,9 @@ mod tests {
                 fraction_percent: 50
             }
         );
+        assert_eq!(Kind::PlanReviewer.map_scope(), MapScope::Lead);
         assert!(Kind::Scout.lead_starts() && !Kind::Reviewer.lead_starts());
+        assert!(!Kind::PlanReviewer.lead_starts() && !Kind::Triage.lead_starts());
     }
 
     #[test]
