@@ -3992,6 +3992,96 @@ mod bench {
 mod child_tests {
     use super::*;
 
+    /// Round 2 (section 4.2): a child that renames, deletes and creates
+    /// lands all three; what the parent had before lets Redo put them back.
+    #[test]
+    fn a_worker_that_deletes_renames_and_creates_lands_all_three() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("kids3-{}", uuid::Uuid::new_v4()));
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        for f in ["a", "c"] {
+            std::fs::write(project.join(f), format!("{f}\n")).unwrap();
+        }
+        let _data = test_data(&root.join("data"));
+        let parent = open("kids3-parent", &project, Box::new(|_, _| {})).unwrap();
+        let w = open_child("kids3-parent", "kids3-w").unwrap();
+        std::fs::rename(w.view.join("a"), w.view.join("b")).unwrap();
+        std::fs::remove_file(w.view.join("c")).unwrap();
+        std::fs::write(w.view.join("d"), "x\n").unwrap();
+        w.fs.flush();
+        let paths = ["a", "b", "c", "d"].map(String::from);
+        let before = snapshot("kids3-parent", &paths).unwrap();
+        land_child("kids3-w").unwrap();
+        let has = |f: &str| parent.view.join(f).exists();
+        assert!(has("b") && has("d") && !has("a") && !has("c"));
+        save_group(
+            "kids3-parent",
+            SavedGroup {
+                name: "g".into(),
+                plan_path: "p.md".into(),
+                steps: vec![1, 2],
+                before,
+                redone: false,
+                unavailable: None,
+            },
+        )
+        .unwrap();
+        redo_group("kids3-parent", "g").unwrap();
+        assert!(has("a") && has("c") && !has("b") && !has("d"));
+        assert_eq!(read(&parent.view.join("a")).as_deref(), Some("a\n"));
+        close("kids3-parent");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round 2 (section 4.2): a child's landing records its parent before
+    /// it writes anything, so one that fails at the first file is still
+    /// found by its parent.
+    #[test]
+    fn land_child_paths_marks_the_parent_before_any_write() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
+        use super::super::land;
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("kidsmark-{}", uuid::Uuid::new_v4()));
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.rs"), "a\n").unwrap();
+        let data = root.join("data");
+        let _data = test_data(&data);
+        let parent = open("kidsmark-parent", &project, Box::new(|_, _| {})).unwrap();
+        let w = open_child("kidsmark-parent", "kidsmark-w").unwrap();
+        std::fs::write(w.view.join("a.rs"), "a from w\n").unwrap();
+        w.fs.flush();
+        *land::FAIL_WRITING.lock().unwrap() = Some((parent.view.clone(), "a.rs".into()));
+        land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+        let landed = land_child_except("kidsmark-w", &[]);
+        land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
+        *land::FAIL_WRITING.lock().unwrap() = None;
+        assert!(landed.is_err(), "{landed:?}");
+        assert_eq!(
+            std::fs::read_to_string(
+                data.join("landings")
+                    .join("kidsmark-w")
+                    .join("into-chat.txt")
+            )
+            .ok()
+            .as_deref(),
+            Some("kidsmark-parent")
+        );
+        assert!(land::interrupted_into(
+            &data,
+            "kidsmark-parent",
+            &parent.view
+        ));
+        discard_child("kidsmark-w");
+        close("kidsmark-parent");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Round 2 (section 4.2): scratch overlays a crash left are swept at
     /// start, marked or only named as one; a chat's store stays.
     #[test]
