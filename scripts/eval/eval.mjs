@@ -30,7 +30,6 @@ import {
   MEASURED_KINDS,
   UNMEASURED_KINDS,
   applyDefaults,
-  budgetAllows,
   compareVariant,
   grade,
   parseCargo,
@@ -39,6 +38,7 @@ import {
   parseTsLines,
   projection,
   resultsMarkdown,
+  runCampaign,
   subagentsOn,
   summarize,
   summaryMarkdown,
@@ -46,7 +46,7 @@ import {
   variantSettings,
 } from './lib.mjs';
 import { run, startServer } from './proc.mjs';
-import { copyTree, fingerprint, protect } from './caches.mjs';
+import { changedCaches, copyTree, fingerprint, protect } from './caches.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -212,11 +212,6 @@ function prepare(task, rev, ws) {
   if (exclude.length)
     appendFileSync(join(ws, '.git', 'info', 'exclude'), exclude.join('\n') + '\n');
   return { env, caches, start: git('rev-parse', 'HEAD').stdout.trim() };
-}
-
-/** Shared caches a run changed (P6.5): later runs would see its changes. */
-function changedCaches(caches) {
-  return caches.filter((c) => fingerprint(c.dir) !== c.print).map((c) => c.dir);
 }
 
 /** Puts the reference's version of the hidden test files in the workspace. */
@@ -473,46 +468,29 @@ async function campaign(name, tasks, repeats, cap, flags) {
   const campaignDir = resolve(flags.out ?? join(RESULTS, name));
   // The first run's estimate: every token it may use at the input price.
   const firstEstimate = (BUDGET.perRun.maxTokens / 1e6) * price.inputPerMillion;
-  const results = [];
-  let stopped = '';
-  outer: for (let rep = 1; rep <= repeats; rep++) {
-    for (const task of tasks) {
-      const done = existsSync(join(campaignDir, task.id, String(rep), 'result.json'));
-      if (!done) {
-        const spent = results.reduce((a, r) => a + (r.costUsd ?? 0), 0);
-        const allowed = budgetAllows({
-          cap,
-          spent,
-          costs: results.map((r) => r.costUsd ?? 0),
-          firstEstimate,
-        });
-        if (!allowed.ok) {
-          stopped = allowed.reason;
-          break outer;
-        }
-      }
+  const plan = [];
+  for (let rep = 1; rep <= repeats; rep++)
+    for (const task of tasks)
+      plan.push({
+        task,
+        rep,
+        done: existsSync(join(campaignDir, task.id, String(rep), 'result.json')),
+      });
+  const { results, stopped } = await runCampaign(plan, {
+    cap,
+    firstEstimate,
+    runOne: async ({ task, rep }) => {
       process.stdout.write(`[${name}] ${task.id} #${rep}: `);
       const r = await runOne(task, rep, campaignDir, { settings, policy, runner });
-      results.push(r);
+      const cost = typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(3)}` : 'cost unknown';
       console.log(
         `${r.success ? 'PASS' : 'fail'} (${r.outcome}, ${r.grade.passed}/${r.grade.required} tests, ` +
-          `$${(r.costUsd ?? 0).toFixed(3)}, ${(r.tokens / 1000).toFixed(0)}k tokens)` +
+          `${cost}, ${(r.tokens / 1000).toFixed(0)}k tokens)` +
           (r.reused ? ' [kept from before]' : '')
       );
-      const failing = results.slice(-3);
-      if (
-        failing.length === 3 &&
-        failing.every((f) => ['error', 'runner-failed'].includes(f.outcome))
-      ) {
-        stopped = 'three runs in a row ended in an error: is the provider (or the runner) working?';
-        break outer;
-      }
-      if (r.costUsd === null) {
-        stopped = `${task.id} #${rep}: its cost is unknown (no usage reported); stopping`;
-        break outer;
-      }
-    }
-  }
+      return r;
+    },
+  });
   const s = summarize(results);
   writeJson(join(campaignDir, 'summary.json'), { ...s, stopped: stopped || null, cap });
   writeFileSync(join(campaignDir, 'summary.md'), summaryMarkdown(s, `Evaluation: ${name}`));

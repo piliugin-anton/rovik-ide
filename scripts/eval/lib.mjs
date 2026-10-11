@@ -171,6 +171,57 @@ const unknownCosts = (runs) => runs.length - knownCosts(runs).length;
 /** "$0.123", or "unknown" with no known cost. */
 const money = (x, digits) => (typeof x === 'number' ? `$${x.toFixed(digits)}` : 'unknown');
 
+/**
+ * P6.6: what a campaign's runs so far cost, from the runs whose cost is
+ * known: the total, each one (the next run's estimate is their mean), and
+ * how many runs weren't counted. An unknown cost isn't taken as $0.
+ */
+export function knownSpend(results) {
+  const costs = knownCosts(results);
+  return { spent: costs.reduce((a, c) => a + c, 0), costs, unknown: results.length - costs.length };
+}
+
+const ERRORS = ['error', 'runner-failed'];
+
+/**
+ * Why a campaign stops after its latest run ('' to go on). A run kept from
+ * an earlier pass (`reused`) was judged in that pass: a resumed campaign
+ * goes past it, or it could never be resumed past a run whose cost is
+ * unknown (P6.6) or past three errors in a row.
+ */
+export function stopAfter(results) {
+  const last = results.at(-1);
+  if (!last || last.reused) return '';
+  const fresh = results.filter((r) => !r.reused).slice(-3);
+  if (fresh.length === 3 && fresh.every((r) => ERRORS.includes(r.outcome)))
+    return 'three runs in a row ended in an error: is the provider (or the runner) working?';
+  if (typeof last.costUsd !== 'number')
+    return `${last.task} #${last.rep}: its cost is unknown (no usage reported); stopping`;
+  return '';
+}
+
+/**
+ * A campaign's runs in order. `plan` lists them, each with `done` when its
+ * result is kept from an earlier pass; `runOne(item)` makes the run (or
+ * reads its kept result back). A new run starts only if the budget allows
+ * it (`budgetAllows` over `knownSpend`), and the campaign stops where
+ * `stopAfter` says. Returns the results and why it stopped ('' if it didn't).
+ */
+export async function runCampaign(plan, { cap, firstEstimate, runOne }) {
+  const results = [];
+  for (const item of plan) {
+    if (!item.done) {
+      const { spent, costs } = knownSpend(results);
+      const allowed = budgetAllows({ cap, spent, costs, firstEstimate });
+      if (!allowed.ok) return { results, stopped: allowed.reason };
+    }
+    results.push(await runOne(item));
+    const stopped = stopAfter(results);
+    if (stopped) return { results, stopped };
+  }
+  return { results, stopped: '' };
+}
+
 export function summarize(results) {
   const byTask = new Map();
   for (const r of results) {
@@ -358,7 +409,7 @@ export function compareVariant(base, variant, { costRatioMax, minTasks = 5, stop
   if (costRatio === null)
     return off(
       costsKnown
-        ? 'the baseline’s cost is unknown'
+        ? 'the baseline cost nothing: there’s no cost ratio'
         : 'some runs’ cost is unknown (no usage reported)'
     );
   if (costRatio > costRatioMax)

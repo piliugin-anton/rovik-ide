@@ -143,15 +143,19 @@ virtualenv, cargo's target directory) are in `.eval-cache/`.
 
 Caches are shared by every run, so no run may change them for the next:
 each run gets its own copy of `node_modules` (a copy-on-write clone where
-the file system can), and the virtualenv is read-only (as root that doesn't
-hold). A run that changed a shared cache anyway is reported with a warning
+the file system can; where it can't, the evaluation says so once and each
+run copies it in full), and the virtualenv's files are read-only (as root
+that doesn't hold). Its folders stay writable, so `rm -rf .eval-cache`
+works without a `chmod` first. A run that changed a shared cache anyway is reported with a warning
 and `changedCaches` in its `result.json`. Cargo's target directory is shared
 on purpose (building every commit from scratch costs too much): a task's
 own crate is pruned from it after each run.
 
 A run whose provider reports no usage has an unknown cost: it's left out of
 the mean costs (the summary says how many), and a pilot with one can't
-project the campaign's cost.
+project the campaign's cost. The campaign stops after such a run; resumed,
+it goes on past it (the run kept, its cost not counted in what was spent),
+and likewise past three errors in a row kept from before.
 
 Ctrl+C (or a kill of `eval.mjs`) ends the runs it started, and what they
 started, before it exits; the run that was going has no result and runs

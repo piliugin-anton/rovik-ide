@@ -3,26 +3,39 @@
 // is read-only, and a cache that changed during a run is reported.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync } from 'node:fs';
+import { chmodSync, lstatSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+
+let warnedFullCopy = false;
 
 /**
  * Copies a folder: a copy-on-write clone where the file system can
- * (Linux's reflink, macOS's clonefile), else a plain copy.
+ * (Linux's reflink, macOS's clonefile), else a plain copy, which says so
+ * once (every run then copies the whole folder).
  */
 export function copyTree(from, to) {
   const tries =
     process.platform === 'darwin'
       ? [
-          ['-cR', from, to],
-          ['-R', from, to],
+          { args: ['-cR', from, to], clone: true },
+          { args: ['-R', from, to], clone: false },
         ]
       : [
-          ['-a', '--reflink=auto', from, to],
-          ['-R', from, to],
+          { args: ['-a', '--reflink=always', from, to], clone: true },
+          { args: ['-a', from, to], clone: false },
+          { args: ['-R', from, to], clone: false },
         ];
-  for (const args of tries) {
-    if (spawnSync('cp', args, { stdio: 'ignore' }).status === 0) return;
+  for (const { args, clone } of tries) {
+    // A failed try may leave part of a copy: `cp` would then copy into it.
+    rmSync(to, { recursive: true, force: true });
+    if (spawnSync('cp', args, { stdio: 'ignore' }).status !== 0) continue;
+    if (!clone && !warnedFullCopy) {
+      warnedFullCopy = true;
+      console.warn(
+        `note: this file system can't clone ${from}: each run copies it in full (slower, more disk).`
+      );
+    }
+    return;
   }
   throw new Error(`couldn't copy ${from} to ${to}`);
 }
@@ -48,7 +61,34 @@ export function fingerprint(dir) {
   return hash.digest('hex');
 }
 
-/** Makes a cache read-only for the runs (its owner can still delete it). */
+/**
+ * The caches (`{dir, print}`, `print` its fingerprint before the run)
+ * whose contents changed since: later runs would see the changes.
+ */
+export function changedCaches(caches) {
+  return caches.filter((c) => fingerprint(c.dir) !== c.print).map((c) => c.dir);
+}
+
+/**
+ * Makes a cache's files read-only for the runs. Only files: its folders
+ * keep (or get back) their owner's write bit, so the owner can still
+ * delete the cache (`rm -rf`) without a chmod first.
+ */
 export function protect(dir) {
-  spawnSync('chmod', ['-R', 'a-w', dir], { stdio: 'ignore' });
+  const walk = (p) => {
+    let s;
+    try {
+      s = lstatSync(p);
+    } catch {
+      return;
+    }
+    if (s.isSymbolicLink()) return; // chmod would follow it
+    if (s.isDirectory()) {
+      if (!(s.mode & 0o200)) chmodSync(p, (s.mode & 0o7777) | 0o200);
+      for (const name of readdirSync(p)) walk(join(p, name));
+    } else if (s.mode & 0o222) {
+      chmodSync(p, s.mode & 0o7777 & ~0o222);
+    }
+  };
+  walk(dir);
 }

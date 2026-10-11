@@ -10,11 +10,14 @@ import {
   subagentsOn,
   variantSettings,
   grade,
+  knownSpend,
   parseCargo,
   parseGoJson,
   parseJunit,
   parseTsLines,
   projection,
+  runCampaign,
+  stopAfter,
   summarize,
   summaryMarkdown,
   validation,
@@ -304,5 +307,161 @@ describe('unknown costs (P6.6)', () => {
     const d = compareVariant(base, variant, { costRatioMax: 2, minTasks: 1 });
     assert.equal(d.costRatio, null);
     assert.equal(d.on, false);
+  });
+
+  it('one unknown among known costs: the mean and total of the others, "1 run"', () => {
+    const s = summarize([run('a', 0.1), run('a', null), run('a', 0.3)]);
+    assert.ok(Math.abs(s.meanCostUsd - 0.2) < 1e-9);
+    assert.ok(Math.abs(s.totalCostUsd - 0.4) < 1e-9);
+    assert.equal(s.unknownCosts, 1);
+    assert.ok(Math.abs(s.tasks[0].meanCostUsd - 0.2) < 1e-9);
+    assert.match(
+      summaryMarkdown(s, 'x'),
+      /Cost: \$0\.40 in all, \$0\.200 a run \(1 run not counted: cost unknown\)/
+    );
+  });
+
+  it('a pilot of unknown costs only is no projection', () => {
+    const one = projection([null], 90, 75);
+    assert.deepEqual([one.ok, one.perRun, one.total], [false, 0, 0]);
+    assert.equal(
+      one.reason,
+      '1 pilot run’s cost is unknown (no usage reported): the cost can’t be projected'
+    );
+    assert.match(projection([null, 0.2, null], 90, 75).reason, /^2 pilot runs’ cost is unknown/);
+  });
+
+  it('compareVariant: an unknown cost on either side is no ratio, and no gain', () => {
+    const known = (cost, n = 5) =>
+      summarize(Array.from({ length: n }, (_, i) => run(`t${i}`, cost)));
+    const someUnknown = summarize([
+      ...Array.from({ length: 4 }, (_, i) => run(`t${i}`, 0.1)),
+      run('t4', null),
+    ]);
+    const allUnknown = known(null);
+    for (const [base, variant] of [
+      [someUnknown, known(0.1)],
+      [known(0.1), someUnknown],
+      [known(0.1), allUnknown],
+      [allUnknown, allUnknown],
+    ]) {
+      const d = compareVariant(base, variant, { costRatioMax: 2 });
+      assert.equal(d.on, false);
+      assert.equal(d.costRatio, null);
+      assert.equal(d.reason, 'some runs’ cost is unknown (no usage reported)');
+    }
+    assert.equal(compareVariant(known(0.1), allUnknown, { costRatioMax: 2 }).meanCostUsd, null);
+    // A baseline that cost nothing gives no ratio either.
+    assert.equal(
+      compareVariant(known(0), known(0.1), { costRatioMax: 2 }).reason,
+      'the baseline cost nothing: there’s no cost ratio'
+    );
+    // Worse success is said first: the cost doesn't matter then.
+    const worse = summarize(
+      Array.from({ length: 5 }, (_, i) => ({ ...run(`t${i}`, null), success: false }))
+    );
+    assert.match(compareVariant(known(0.1), worse, { costRatioMax: 2 }).reason, /worse/);
+  });
+
+  it('knownSpend adds the known costs and counts the others', () => {
+    assert.deepEqual(knownSpend([]), { spent: 0, costs: [], unknown: 0 });
+    const k = knownSpend([run('a', 0.5), run('b', null), run('c', 0.25), run('d', undefined)]);
+    assert.deepEqual(k, { spent: 0.75, costs: [0.5, 0.25], unknown: 2 });
+  });
+});
+
+describe('campaign (P6.6)', () => {
+  const result = (task, rep, costUsd, extra = {}) => ({
+    task,
+    rep,
+    success: true,
+    costUsd,
+    tokens: 0,
+    outcome: 'done',
+    ...extra,
+  });
+  /** A campaign over `plan` whose runs come from `made` (by "task#rep"); returns what ran. */
+  const campaign = async (plan, made, { cap = 10, firstEstimate = 1 } = {}) => {
+    const ran = [];
+    const out = await runCampaign(plan, {
+      cap,
+      firstEstimate,
+      runOne: async ({ task, rep, done }) => {
+        ran.push(`${task}#${rep}`);
+        const r = made[`${task}#${rep}`];
+        return done ? { ...r, reused: true } : r;
+      },
+    });
+    return { ...out, ran };
+  };
+
+  it('a_campaign_resumes_past_a_stored_null_cost_run', async () => {
+    const plan = [
+      { task: 'a', rep: 1, done: true },
+      { task: 'b', rep: 1, done: true },
+      { task: 'c', rep: 1, done: false },
+      { task: 'd', rep: 1, done: false },
+    ];
+    const made = {
+      'a#1': result('a', 1, 0.5),
+      // The first pass stopped here: no usage reported.
+      'b#1': result('b', 1, null, { outcome: 'runner-failed' }),
+      'c#1': result('c', 1, 0.5),
+      'd#1': result('d', 1, 0.5),
+    };
+    const { results, stopped, ran } = await campaign(plan, made);
+    assert.equal(stopped, '');
+    assert.deepEqual(ran, ['a#1', 'b#1', 'c#1', 'd#1']);
+    assert.deepEqual(knownSpend(results), { spent: 1.5, costs: [0.5, 0.5, 0.5], unknown: 1 });
+  });
+
+  it('a new run of unknown cost still stops the campaign', async () => {
+    const plan = ['a', 'b', 'c'].map((task) => ({ task, rep: 1, done: false }));
+    const made = {
+      'a#1': result('a', 1, 0.5),
+      'b#1': result('b', 1, null),
+      'c#1': result('c', 1, 0.5),
+    };
+    const { stopped, ran } = await campaign(plan, made);
+    assert.equal(stopped, 'b #1: its cost is unknown (no usage reported); stopping');
+    assert.deepEqual(ran, ['a#1', 'b#1']);
+  });
+
+  it('three errors in a row stop it, unless they were kept from before', async () => {
+    const err = (task) => result(task, 1, 0.1, { outcome: 'error' });
+    const made = { 'a#1': err('a'), 'b#1': err('b'), 'c#1': err('c'), 'd#1': err('d') };
+    const fresh = ['a', 'b', 'c', 'd'].map((task) => ({ task, rep: 1, done: false }));
+    const first = await campaign(fresh, made);
+    assert.match(first.stopped, /three runs in a row ended in an error/);
+    assert.deepEqual(first.ran, ['a#1', 'b#1', 'c#1']);
+    // Resumed after the provider was fixed: the kept errors don't stop it.
+    const resumed = await campaign(
+      fresh.map((p, i) => ({ ...p, done: i < 3 })),
+      { ...made, 'd#1': result('d', 1, 0.1) }
+    );
+    assert.equal(resumed.stopped, '');
+    assert.equal(resumed.ran.length, 4);
+    // ...but a new error counts with the ones after the resume.
+    assert.equal(stopAfter([{ ...err('a'), reused: true }, err('b'), err('c')]), '');
+    assert.match(stopAfter([err('b'), err('c'), err('d')]), /three runs/);
+  });
+
+  it('the budget counts known costs only, and spares the kept runs', async () => {
+    const plan = [
+      { task: 'a', rep: 1, done: true },
+      { task: 'b', rep: 1, done: true },
+      { task: 'c', rep: 1, done: false },
+      { task: 'd', rep: 1, done: false },
+    ];
+    const made = {
+      'a#1': result('a', 1, 3),
+      'b#1': result('b', 1, null),
+      'c#1': result('c', 1, 3),
+      'd#1': result('d', 1, 3),
+    };
+    // $3 spent, the next estimated at $3 (not the $1.50 mean with b as $0).
+    const { stopped, ran } = await campaign(plan, made, { cap: 8 });
+    assert.deepEqual(ran, ['a#1', 'b#1', 'c#1']);
+    assert.match(stopped, /\$6\.00 spent; another run \(~\$3\.00\) would pass the \$8 cap/);
   });
 });
