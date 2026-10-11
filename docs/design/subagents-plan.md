@@ -724,6 +724,71 @@ switch; the reviewer's own model and fallback), unit tests in
   - `npm test`: the plan headlines.
   - Not done: the manual check in Plan mode, which needs the app.
 
+### D02–D07: step workers
+
+- **D02.** `Kind::Worker` (`agent_run/worker.rs`), started by the lead.
+  - **Tools:** the read tools, `diagnostics`, `write`, `bash` (with the
+    chat's permissions), and `extend_scope`.
+  - **Budget:** 60 calls and 15 minutes.
+  - **Root:** the lead's, so a worker writes into the chat's overlay or
+    the project.
+  - **Scope:** the step's files, new files in their folders, and anything
+    in a folder the step names. A write outside it is refused, with the
+    scope in the message.
+  - **`bash` isn't held to the scope.** A command can write anywhere the
+    permissions allow, as the lead's can.
+  - **Deviation:** a writing kind shares the lead's file-guard record
+    (`Seen`). It works for the lead, so a file an earlier worker wrote
+    isn't "changed by another chat". The first e2e run found this.
+- **D03.** `task{kind:"worker", step:n}`. The plan is the one the request
+  names ("Implement the plan in `…`"), else the chat's plan file.
+  - **Brief:** written by the harness, with the plan's title and summary,
+    its Decisions, the step, one line on each step a worker finished in
+    this run, the diff of the step's files since the run began, and the
+    scope. The lead's own `goal`/`context`, if it gave any, go under
+    "From the lead".
+  - **Report:** Summary (required), Changed files, Open questions.
+- **D04.** After a worker:
+  - The files it really changed (the S03b writes) are compared with its
+    report's "Changed files", and a difference is a note to the lead.
+  - A worker that finished marks its step done: the checklist item named
+    like the step, or "Step N", or the N-th item when there's one per
+    step. The `task` result stores the updated list as
+    `meta.checklistUpdate`, which `current_checklist` reads, and the live
+    checklist is updated.
+- **D05.** The lead's prompt gets a "Step workers" section when the kind is
+  on, with the threshold from the settings ("Step workers from (plan
+  steps)", default 6).
+- **D06.** A worker starts with an empty R02 checkpoint, which keeps each
+  file as it was before the worker's first write to it.
+  - `failed` or `stopped`: its changes are rolled back with R02's
+    `roll_back`, and the result says what was put back. In direct mode, a
+    file that changed since its last write is left alone and listed.
+  - `partial`: the changes are kept and listed.
+- **D07.** `extend_scope{paths, reason}`. A sequential worker is always
+  granted; group workers come with F. Grants are listed in the result.
+- **Limits:**
+  - Workers count against the plan's steps + 2 retries (D11), not the
+    shared limit of 12.
+  - A batch of `task` calls with a worker runs one at a time.
+  - A worker is continued (`task{continue}`) with its step's scope, read
+    from its brief's heading.
+- **Settings:** a "Step worker" row and the threshold in Limits.
+- **Tests:**
+  - Unit: the scope; the brief; reports against files; checklist
+    matching; `extend_scope` arguments.
+  - E2e:
+    - three workers carry out a 3-step plan in order. Step 2's brief has
+      step 1's change and summary, the lead's context holds the reports
+      and not the workers' calls, a report that doesn't match is noted,
+      and the checklist ends all done;
+    - a write outside the scope is refused, then allowed after
+      `extend_scope`;
+    - a failed worker is rolled back, and a partial one keeps its changes;
+    - a file the user changed meanwhile is left alone;
+    - a worker without a plan, or for a step that doesn't exist, is
+      refused.
+
 ### G00: the headless runner
 
 Done: `src/headless.rs` and the `rovik-headless` binary, built only with

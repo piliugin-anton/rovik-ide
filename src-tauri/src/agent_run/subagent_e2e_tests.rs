@@ -2215,3 +2215,433 @@ async fn a_small_revision_is_saved_without_a_review_and_off_means_off() {
         .get("review")
         .is_none());
 }
+
+/*
+ * Milestone D: step workers. The lead implements a saved plan; workers are
+ * routed by the heading of their brief, "# Your step: N.".
+ */
+
+const STEP_PLAN: &str = "# Greet\n\nSay hello in two files.\n\n## Steps\n\n\
+    1. **First greeting**\n   - `a.txt`: replace its line with \"hello\".\n\
+    2. **Second greeting**\n   - `a.txt`: add a second line \"hello again\".\n   - `b.txt`: write \"bye\".\n\
+    3. **Notes**\n   - `notes/` (new): add a file with the date.\n\n\
+    ## Decisions\n- Plain text, one greeting per line.\n\n## Validation\n- read the files\n";
+
+fn workers_on(extra: Value) -> subagent::SubagentConfig {
+    let mut worker = json!({ "enabled": true });
+    if let (Some(w), Some(e)) = (worker.as_object_mut(), extra.as_object()) {
+        w.extend(e.clone());
+    }
+    serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "worker": worker },
+        "workerMinSteps": 2,
+    }))
+    .unwrap()
+}
+
+fn step(id: &'static str, n: usize) -> Reply {
+    Reply::Call {
+        id,
+        name: "task",
+        args: json!({ "kind": "worker", "step": n }),
+    }
+}
+
+fn worker_report(summary: &str, files: &[&str]) -> Reply {
+    let list = if files.is_empty() {
+        "None".to_string()
+    } else {
+        files
+            .iter()
+            .map(|f| format!("- `{f}`: changed"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Reply::Text(Box::leak(
+        format!("## Summary\n{summary}\n\n## Changed files\n{list}\n\n## Open questions\nNone")
+            .into_boxed_str(),
+    ))
+}
+
+async fn plan_harness(files: &[(&str, &str)]) -> Harness {
+    let mut all: Vec<(&str, &str)> = files.to_vec();
+    all.push((".rovik/plans/greet.md", STEP_PLAN));
+    harness(&all).await
+}
+
+impl Harness {
+    fn implement(&self, url: &str, subagents: subagent::SubagentConfig) -> StartRequest {
+        self.implement_with(url, subagents, ChecklistMode::Auto)
+    }
+
+    /// Off: the run may end with steps open (a test that stops early).
+    fn implement_with(
+        &self,
+        url: &str,
+        subagents: subagent::SubagentConfig,
+        checklist: ChecklistMode,
+    ) -> StartRequest {
+        let message = UserMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            content: "Implement the plan in `.rovik/plans/greet.md`.".into(),
+            meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        };
+        let mut request = self.request(
+            url,
+            StartKind::Send { message },
+            Permissions {
+                allow_any_command: true,
+                checklist,
+                ..quiet_permissions()
+            },
+        );
+        request.config.as_mut().unwrap().subagents = subagents;
+        request
+    }
+}
+
+fn bad() -> Reply {
+    Reply::Status(400, r#"{"error":{"message":"no such model"}}"#)
+}
+
+/// The lead settles its checklist before it finishes.
+fn checklist_closed() -> Reply {
+    Reply::Call {
+        id: "t9",
+        name: "todo",
+        args: json!({ "items": [
+            { "title": "First greeting", "status": "done" },
+            { "title": "Second greeting", "status": "skipped" },
+            { "title": "Notes", "status": "skipped" },
+        ] }),
+    }
+}
+
+fn checklist_call() -> Reply {
+    Reply::Call {
+        id: "t1",
+        name: "todo",
+        args: json!({ "items": [
+            { "title": "First greeting", "status": "pending" },
+            { "title": "Second greeting", "status": "pending" },
+            { "title": "Notes", "status": "pending" },
+        ] }),
+    }
+}
+
+#[tokio::test]
+async fn workers_carry_out_the_plan_step_by_step() {
+    let h = plan_harness(&[("a.txt", "old\n")]).await;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "# Your step: 1.",
+                vec![
+                    write_call("w1", "a.txt", "hello\n"),
+                    worker_report("Replaced the line with hello.", &["a.txt"]),
+                ],
+            ),
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w2", "a.txt", "hello\nhello again\n"),
+                    write_call("w3", "b.txt", "bye\n"),
+                    // It lists a file it didn't change, and leaves out one it did.
+                    worker_report(
+                        "Added the second greeting and the farewell.",
+                        &["a.txt", "c.txt"],
+                    ),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w4", "notes/today.txt", "2026-10-06\n"),
+                    worker_report("Added notes/today.txt.", &["notes/today.txt"]),
+                ],
+            ),
+        ],
+        vec![
+            checklist_call(),
+            step("s1", 1),
+            step("s2", 2),
+            step("s3", 3),
+            Reply::Text("Done: the plan is implemented."),
+        ],
+    )
+    .await;
+    h.start(h.implement(&url, workers_on(json!({})))).await;
+    let end = h.run_end().await;
+    let messages = h.messages().await;
+    assert_eq!(end, "done");
+    assert_eq!(h.file("a.txt").as_deref(), Some("hello\nhello again\n"));
+    assert_eq!(h.file("b.txt").as_deref(), Some("bye\n"));
+    assert_eq!(h.file("notes/today.txt").as_deref(), Some("2026-10-06\n"));
+
+    // D05: the lead's prompt says when to use workers, with the threshold.
+    let first = seen.lock().unwrap()[0].clone();
+    assert!(
+        system_prompt(&first).contains("plan of 2 or more steps"),
+        "the threshold from the settings"
+    );
+    // D03: step 2's worker sees step 1's change, its summary, the plan's
+    // head and decisions; its own step only.
+    let briefs = requests_with(&seen, "# Your step: 2.");
+    let brief = briefs[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(
+        brief.contains("- Step 1. First greeting: Replaced the line with hello."),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("-old") && brief.contains("+hello"),
+        "the diff of its file: {brief}"
+    );
+    assert!(
+        brief.contains("## The plan's decisions\n\n- Plain text"),
+        "{brief}"
+    );
+    assert!(!brief.contains("**Notes**"), "{brief}");
+    let tools = tool_names(&briefs[0]);
+    for t in ["write", "bash", "extend_scope", "diagnostics"] {
+        assert!(tools.contains(&t.to_string()), "{t} for a worker");
+    }
+    for t in ["task", "todo", "ask_user"] {
+        assert!(!tools.contains(&t.to_string()), "{t} not for a worker");
+    }
+    // The lead's context: the workers' reports, not their tool calls.
+    let last_lead = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|b| route_of(b, &["# Your step:"]).is_none())
+        .last()
+        .cloned()
+        .unwrap();
+    let context = last_lead["messages"].to_string();
+    assert!(context.contains("Added the second greeting"));
+    assert!(
+        !context.contains("hello again\\\\n"),
+        "the workers' write calls stay in their chats"
+    );
+
+    // D04: a report that doesn't match the files gets a note.
+    let messages = h.messages().await;
+    let r2 = result_of(&messages, "s2");
+    assert!(
+        r2.content.contains("lists `c.txt`, which it didn't change"),
+        "{}",
+        r2.content
+    );
+    assert!(
+        r2.content
+            .contains("changed `b.txt`, which its report doesn't list"),
+        "{}",
+        r2.content
+    );
+    assert!(!result_of(&messages, "s1").content.contains("don't match"));
+    // ...and each finished step is done on the checklist.
+    let update = &r2.meta.as_ref().unwrap()["checklistUpdate"];
+    assert_eq!(update[0]["status"], "done");
+    assert_eq!(update[1]["status"], "done");
+    assert_eq!(update[2]["status"], "pending");
+    let recent = h.messages().await;
+    let current = plan::current_checklist(&recent).unwrap();
+    assert!(
+        current.items.iter().all(|i| i.status == "done"),
+        "{:?}",
+        current.items
+    );
+    // The workers' changes are the lead's (S03b).
+    assert_eq!(r2.meta.as_ref().unwrap()["subagent"]["worker"]["step"], 2);
+}
+
+#[tokio::test]
+async fn a_write_outside_the_scope_is_refused_until_extended() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("c.txt", "keep\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                write_call("w1", "c.txt", "changed\n"),
+                write_call("w2", "src/new.txt", "x\n"),
+                Reply::Call {
+                    id: "e1",
+                    name: "extend_scope",
+                    args: json!({ "paths": ["c.txt"], "reason": "the greeting is mirrored there" }),
+                },
+                write_call("w3", "c.txt", "hello\n"),
+                write_call("w4", "a.txt", "hello\n"),
+                worker_report("Greeted.", &["a.txt", "c.txt"]),
+            ],
+        )],
+        vec![
+            checklist_call(),
+            step("s1", 1),
+            checklist_closed(),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let child = h.child_of("s1").await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap()
+            .content
+            .clone()
+    };
+    let refused = result("w1");
+    assert!(
+        refused.starts_with("Error: `c.txt` is outside your write scope"),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("You may write: `a.txt`; and new files in the project root"),
+        "{refused}"
+    );
+    assert!(
+        result("w2").contains("outside your write scope"),
+        "a new file in another folder"
+    );
+    assert!(result("e1").starts_with("Granted"));
+    assert!(!result("w3").starts_with("Error"), "{}", result("w3"));
+    assert_eq!(h.file("c.txt").as_deref(), Some("hello\n"));
+    assert!(h.file("src/new.txt").is_none());
+    let lead = result_of(&h.messages().await, "s1").content.clone();
+    assert!(
+        lead.contains("It was granted, beyond its step: c.txt."),
+        "{lead}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_worker_is_rolled_back_and_a_partial_one_kept() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "a.txt", "half\n"),
+                    write_call("w2", "b.txt", "half\n"),
+                    bad(),
+                    bad(),
+                ],
+            ),
+            (
+                "# Your step: 1.",
+                vec![
+                    write_call("w3", "a.txt", "one\n"),
+                    write_call("w4", "a.txt", "two\n"),
+                    write_call("w5", "a.txt", "three\n"),
+                    // Out of budget (3 calls): the result turn.
+                    worker_report("Half done.", &["a.txt"]),
+                ],
+            ),
+        ],
+        vec![
+            checklist_call(),
+            step("s2", 2),
+            step("s1", 1),
+            checklist_closed(),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_with(
+        &url,
+        workers_on(json!({ "maxToolCalls": 3 })),
+        ChecklistMode::Off,
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let failed = result_of(&messages, "s2").content.clone();
+    assert!(failed.contains("Status: failed"), "{failed}");
+    assert!(
+        failed.contains("Its changes were undone: a.txt, b.txt put back as they were."),
+        "{failed}"
+    );
+    let partial = result_of(&messages, "s1").content.clone();
+    assert!(partial.contains("Status: partial"), "{partial}");
+    assert!(
+        partial.contains("Its changes are kept: a.txt."),
+        "{partial}"
+    );
+    assert_eq!(h.file("a.txt").as_deref(), Some("three\n"));
+    assert_eq!(h.file("b.txt").as_deref(), Some("b\n"));
+    // A failed or partial step isn't marked done.
+    assert!(result_of(&messages, "s1")
+        .meta
+        .as_ref()
+        .unwrap()
+        .get("checklistUpdate")
+        .is_none());
+}
+
+#[tokio::test]
+async fn a_file_changed_meanwhile_is_left_alone_when_a_worker_is_rolled_back() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 2.",
+            vec![
+                write_call("w1", "a.txt", "half\n"),
+                write_call("w2", "b.txt", "half\n"),
+                Reply::Slow(1_500, Box::new(bad())),
+                bad(),
+            ],
+        )],
+        vec![
+            checklist_call(),
+            step("s2", 2),
+            checklist_closed(),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    // The user edits b.txt in the editor while the worker waits for its model.
+    let b = h.project.join("b.txt");
+    for _ in 0..100 {
+        if std::fs::read_to_string(&b).ok().as_deref() == Some("half\n") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    std::fs::write(&b, "the user's\n").unwrap();
+    assert_eq!(h.run_end().await, "done");
+    let failed = result_of(&h.messages().await, "s2").content.clone();
+    assert!(failed.contains("a.txt put back as they were"), "{failed}");
+    assert!(
+        failed.contains("left as they are, because they changed outside it meanwhile: b.txt"),
+        "{failed}"
+    );
+    assert_eq!(h.file("a.txt").as_deref(), Some("old\n"));
+    assert_eq!(h.file("b.txt").as_deref(), Some("the user's\n"));
+}
+
+#[tokio::test]
+async fn workers_need_a_plan_and_a_real_step() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model(vec![step("s1", 1), Reply::Text("Done.")]).await;
+    h.start(h.with_subagents(&url, "Do it", checks_on(), workers_on(json!({}))))
+        .await;
+    h.run_end().await;
+    assert!(result_of(&h.messages().await, "s1")
+        .content
+        .starts_with("Error: workers carry out steps of a saved plan"));
+
+    let h = plan_harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model(vec![checklist_call(), step("s9", 9), Reply::Text("Done.")]).await;
+    h.start(h.implement(&url, workers_on(json!({})))).await;
+    h.run_end().await;
+    let r = result_of(&h.messages().await, "s9").content.clone();
+    assert!(r.contains("has no step 9; its steps are 1, 2, 3"), "{r}");
+}

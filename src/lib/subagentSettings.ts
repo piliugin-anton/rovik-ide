@@ -14,7 +14,7 @@ import { formatsToSend, type Effort } from './reasoning';
 import { sameModel } from './permissions';
 
 /** The kinds built so far (agent_run/subagent.rs `Kind`). */
-export type SubagentKindId = 'scout' | 'reviewer' | 'triage' | 'planReviewer';
+export type SubagentKindId = 'scout' | 'reviewer' | 'triage' | 'planReviewer' | 'worker';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
@@ -58,6 +58,14 @@ export const SUBAGENT_KINDS: {
     toolCalls: 25,
     minutes: 4,
   },
+  {
+    id: 'worker',
+    label: 'Step worker',
+    hint: 'Carries out one step of a plan, writing only that step’s files.',
+    when: 'The agent hands a plan’s steps to workers one at a time, for plans of at least the size set in Limits.',
+    toolCalls: 60,
+    minutes: 15,
+  },
 ];
 
 /** "default": the default subagent model; "chat": the chat's own model. */
@@ -86,6 +94,8 @@ export interface SubagentSettings {
   maxPerRun: number;
   /** The change reviewer runs on changes of at least this many lines. */
   reviewMinLines: number;
+  /** Plans of at least this many steps go to step workers. */
+  workerMinSteps: number;
   /** Tokens one run's subagents may use (as reported); undefined: no limit. */
   maxRunTokens?: number;
 }
@@ -94,6 +104,7 @@ export const LIMITS = {
   atOnce: { min: 1, max: 8, default: 3 },
   perRun: { min: 1, max: 50, default: 12 },
   reviewMinLines: { min: 1, max: 10_000, default: 10 },
+  workerMinSteps: { min: 1, max: 100, default: 6 },
   runTokens: { min: 1_000, max: 100_000_000 },
   toolCalls: { min: 1, max: 200 },
   minutes: { min: 0.25, max: 120 },
@@ -115,10 +126,12 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
     reviewer: { ...DEFAULT_KIND },
     triage: { ...DEFAULT_KIND },
     planReviewer: { ...DEFAULT_KIND },
+    worker: { ...DEFAULT_KIND },
   },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,
   reviewMinLines: LIMITS.reviewMinLines.default,
+  workerMinSteps: LIMITS.workerMinSteps.default,
 };
 
 const EFFORT_IDS: Effort[] = ['default', 'none', 'low', 'medium', 'high'];
@@ -190,6 +203,10 @@ export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
       clampNumber(r.reviewMinLines, LIMITS.reviewMinLines.min, LIMITS.reviewMinLines.max) ??
         LIMITS.reviewMinLines.default
     ),
+    workerMinSteps: Math.round(
+      clampNumber(r.workerMinSteps, LIMITS.workerMinSteps.min, LIMITS.workerMinSteps.max) ??
+        LIMITS.workerMinSteps.default
+    ),
     ...(typeof r.maxRunTokens === 'number' && Number.isFinite(r.maxRunTokens)
       ? {
           maxRunTokens: Math.round(
@@ -223,6 +240,7 @@ export interface SubagentConfig {
   maxAtOnce: number;
   maxPerRun: number;
   reviewMinLines: number;
+  workerMinSteps: number;
   maxRunTokens?: number;
 }
 
@@ -304,6 +322,7 @@ export function resolveSubagentConfig(
     maxAtOnce: settings.maxAtOnce,
     maxPerRun: settings.maxPerRun,
     reviewMinLines: settings.reviewMinLines,
+    workerMinSteps: settings.workerMinSteps,
     ...(settings.maxRunTokens !== undefined ? { maxRunTokens: settings.maxRunTokens } : {}),
   };
 }

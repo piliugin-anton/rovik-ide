@@ -211,6 +211,17 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                 patch({ reviewMinLines: Math.round(v ?? LIMITS.reviewMinLines.default) })
               }
             />
+            <NumberInput
+              label="Step workers from (plan steps)"
+              value={s().workerMinSteps}
+              placeholder={LIMITS.workerMinSteps.default}
+              min={LIMITS.workerMinSteps.min}
+              max={LIMITS.workerMinSteps.max}
+              disabled={off()}
+              onChange={(v) =>
+                patch({ workerMinSteps: Math.round(v ?? LIMITS.workerMinSteps.default) })
+              }
+            />
           </div>
           <div class="subagent-limits">
             <NumberInput

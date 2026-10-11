@@ -955,6 +955,16 @@ pub fn is_checklist_dismissed(m: &MessageRow) -> bool {
 
 /// The latest `todo` call in one message, if it parses to a non-empty list.
 fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
+    // A step worker's result: the checklist with its step marked done (D04).
+    if let Some(items) = m
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("checklistUpdate"))
+        .and_then(|v| serde_json::from_value::<Vec<TodoItem>>(v.clone()).ok())
+        .filter(|items| !items.is_empty())
+    {
+        return Some(items);
+    }
     let call = m
         .tool_calls
         .iter()

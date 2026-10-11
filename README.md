@@ -67,7 +67,8 @@ Electron-based editors.
   again, a triage helper reads all of it and tells the agent the root
   cause, instead of the agent getting pages of compiler output. In Plan
   mode, a plan reviewer checks each plan against the code before it's
-  saved. Turn them
+  saved. When the agent implements a long plan, step workers can carry it
+  out one step at a time, each writing only its step's files. Turn them
   on, and pick their models, in Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.

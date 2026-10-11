@@ -45,6 +45,7 @@ pub mod subagent;
 mod subagent_run;
 pub mod tools;
 pub mod triage;
+pub mod worker;
 mod verify;
 
 use crate::agent::OpenAIChatOptions;

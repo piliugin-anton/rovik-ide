@@ -27,6 +27,7 @@ use super::run::{new_message, unanswered_tool_calls, Role, Run, IDE_NOTE};
 use super::subagent::{
     self, Brief, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig,
 };
+use super::worker::{self, WriteScope};
 use super::{failure, log, permissions, tools, ModelProfile};
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewChildDialog, ToolCall};
@@ -73,6 +74,10 @@ pub(super) struct SubCtx {
     pub tokens_out: u64,
     pub usage_seen: bool,
     pub cost: Option<f64>,
+    /// A writing kind: where it may write (worker.rs, D7).
+    pub scope: Option<WriteScope>,
+    /// A step worker: its plan step.
+    pub step: Option<usize>,
 }
 
 impl SubCtx {
@@ -168,6 +173,10 @@ impl<R: Runtime> Run<R> {
         }
         let started = Instant::now();
         let running = jobs.iter().filter(|j| matches!(j, Job::Run(_))).count();
+        let jobs_write = jobs.iter().any(|j| match j {
+            Job::Run(child) => child.sub().is_some_and(|s| s.kind.writes()),
+            Job::Answered(_) => false,
+        });
         let throttled = jobs.iter().any(|j| match j {
             Job::Run(child) => self.ledger.is_throttled(&child.profile.id),
             Job::Answered(_) => false,
@@ -199,20 +208,28 @@ impl<R: Runtime> Run<R> {
                 }
             })
             .collect();
-        // A model a rate limit stopped runs one subagent at a time (S12).
-        let limit = if throttled { 1 } else { config.max_at_once() };
+        // A model a rate limit stopped runs one subagent at a time (S12);
+        // so does a batch with a step worker: it writes the lead's files.
+        let writes = jobs_write;
+        let limit = if throttled || writes {
+            1
+        } else {
+            config.max_at_once()
+        };
         let mut results = stream::iter(futures).buffered(limit);
         for (tc, refusal) in calls.iter().zip(answered) {
             let result = results.next().await.flatten();
             let (content, meta): (String, Option<Value>) = match (refusal, result) {
                 (Some(text), _) => (text, None),
-                (None, Some(result)) => {
+                (None, Some(mut result)) => {
                     self.absorb_child_writes(&result.writes);
                     self.note_models(&result);
-                    (
-                        result.for_lead(),
-                        Some(json!({ "subagent": result.meta() })),
-                    )
+                    let update = self.after_worker(&mut result).await;
+                    let mut meta = json!({ "subagent": result.meta() });
+                    if let Some(items) = update {
+                        meta["checklistUpdate"] = json!(items);
+                    }
+                    (result.for_lead(), Some(meta))
                 }
                 (None, None) => (
                     "Error: the subagent ended without a report (its run failed).".into(),
@@ -275,6 +292,9 @@ impl<R: Runtime> Run<R> {
         }
         let brief = subagent::parse_brief(&args, &kinds)?;
         let kind = brief.kind;
+        if kind == Kind::Worker {
+            return self.start_worker(tc, config, brief, resumed).await;
+        }
 
         // Started before the app closed: it goes on in its own chat.
         let existing = if resumed {
@@ -353,17 +373,39 @@ impl<R: Runtime> Run<R> {
         if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
             return Err(why);
         }
+        // A worker goes on with its step's scope (A04, F07).
+        let step = if kind == Kind::Worker {
+            Some(self.worker_step_of(&child.id).await.ok_or(
+                "Error: that worker's plan step can't be found any more (was the plan changed?). Do the rest yourself.",
+            )?)
+        } else {
+            None
+        };
         let brief = Brief {
             kind,
             goal: format!("follow-up to {handle}: {goal}"),
             context: None,
             paths: Vec::new(),
             max_tool_calls: None,
+            step: step.as_ref().map(|s| s.number),
         };
-        self.ledger.admit(&brief, config.max_per_run())?;
-        let sub = self
+        match &step {
+            Some(_) => {
+                let plan_steps = match self.implementing_plan().await {
+                    Some((_, plan)) => super::plan::steps(&plan).len(),
+                    None => 0,
+                };
+                self.ledger.admit_worker(&brief, plan_steps)?
+            }
+            None => self.ledger.admit(&brief, config.max_per_run())?,
+        }
+        let mut sub = self
             .new_sub(kind, &tc.id, config.budget(kind), config)
             .await?;
+        if let Some(step) = &step {
+            sub.scope = Some(WriteScope::for_step(step));
+            sub.step = Some(step.number);
+        }
         self.close_child_calls(&child.id).await?;
         let mut message = new_message(
             "user",
@@ -429,6 +471,8 @@ impl<R: Runtime> Run<R> {
             tokens_out: 0,
             usage_seen: false,
             cost: None,
+            scope: None,
+            step: None,
         };
         #[cfg(test)]
         if let Some(k) = config.kinds.get(kind.id()) {
@@ -457,7 +501,13 @@ impl<R: Runtime> Run<R> {
             return Err("Error: that subagent is already running.".into());
         };
         sub.run_id = controls.run_id.clone();
-        let map = self.kind_map(sub.kind);
+        let focus: Vec<String> = sub
+            .scope
+            .as_ref()
+            .map(|s| s.files.iter().chain(&s.folders).cloned().collect())
+            .unwrap_or_default();
+        let map = self.kind_map(sub.kind, &focus);
+        let writes = sub.kind.writes();
         emit(
             &self.app,
             AgentEvent::SubagentStarted {
@@ -470,6 +520,11 @@ impl<R: Runtime> Run<R> {
             },
         );
         let mut child = Run::prepare_child(self, child_id, sub, controls);
+        // D06: what the files were before its first write to each, so a
+        // worker that fails or is stopped can be rolled back (R02's code).
+        if writes {
+            child.checkpoint = Some(super::repair::Checkpoint::default());
+        }
         if let Some((map, chars)) = map {
             child.repo_map = map;
             child.repo_map_chars = chars;
@@ -480,13 +535,14 @@ impl<R: Runtime> Run<R> {
 
     /// S18: a kind's own repository map, when it isn't the lead's: around
     /// the files this run changed, smaller. None: the lead's map.
-    fn kind_map(&self, kind: Kind) -> Option<(Option<String>, usize)> {
+    fn kind_map(&self, kind: Kind, focus_files: &[String]) -> Option<(Option<String>, usize)> {
         let subagent::MapScope::Changed { fraction_percent } = kind.map_scope() else {
             return None;
         };
         let root = self.root.clone()?;
         let chars = (self.repo_map_chars * fraction_percent / 100).max(500);
-        let touched: Vec<String> = self.touched_keys().into_iter().collect();
+        let mut touched: Vec<String> = self.touched_keys().into_iter().collect();
+        touched.extend(focus_files.iter().cloned());
         let root_path = std::path::Path::new(&root);
         let focus = crate::repo_map::focus_from(root_path, "", &touched);
         let options = crate::repo_map::Options {
@@ -626,6 +682,7 @@ impl<R: Runtime> Run<R> {
             } else {
                 Vec::new()
             };
+        let (notes, worker) = self.writer_end(status).await;
         let writes = self.child_writes();
         let Role::Sub(sub) = &self.role else {
             unreachable!("go_sub runs subagents only")
@@ -652,6 +709,8 @@ impl<R: Runtime> Run<R> {
             }),
             answered_by: (!matches!(status, SubStatus::Failed | SubStatus::Stopped))
                 .then(|| self.profile.id.clone()),
+            notes,
+            worker,
         };
         emit(
             &self.app,
@@ -1036,6 +1095,259 @@ impl<R: Runtime> Run<R> {
     }
 }
 
+impl<R: Runtime> Run<R> {
+    /*
+     * -----------------------------------------------------------------------
+     * Step workers (worker.rs)
+     * -----------------------------------------------------------------------
+     */
+
+    /// The plan this run implements: its path and text.
+    async fn implementing_plan(&self) -> Option<(String, String)> {
+        let recent = self.recent().await.ok()?;
+        let request = recent
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && !super::plan::is_harness(m))
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let base = self.project_root.as_deref().or(self.root.as_deref());
+        let path = worker::plan_file_named(&request, base)
+            .or_else(|| super::run::chat_plan_file(&recent))?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        let shown = super::plan::relative_plan_path(&path, base);
+        Some((shown, text))
+    }
+
+    /// D03: a `task{kind:"worker", step}` call: the step from the plan
+    /// being implemented, its scope, and the brief the harness writes.
+    async fn start_worker(
+        &mut self,
+        tc: &ToolCall,
+        config: &SubagentConfig,
+        brief: Brief,
+        resumed: bool,
+    ) -> Result<Run<R>, String> {
+        let n = brief.step.unwrap_or(0);
+        let Some((plan_path, plan)) = self.implementing_plan().await else {
+            return Err("Error: workers carry out steps of a saved plan, and this run isn't implementing one. Do the work yourself.".into());
+        };
+        let steps = super::plan::steps(&plan);
+        let Some(step) = steps.iter().find(|s| s.number == n).cloned() else {
+            return Err(format!(
+                "Error: the plan {plan_path} has no step {n}; its steps are {}.",
+                steps
+                    .iter()
+                    .map(|s| s.number.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        };
+        let existing = if resumed {
+            let (parent, call) = (self.dialog_id.clone(), tc.id.clone());
+            self.db
+                .read(move |c| store::child_for_call(c, &parent, &call))
+                .await?
+        } else {
+            None
+        };
+        let child_id = match &existing {
+            Some(child) => child.id.clone(),
+            None => {
+                if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
+                    return Err(why);
+                }
+                self.ledger.admit_worker(&brief, steps.len())?;
+                uuid::Uuid::new_v4().to_string()
+            }
+        };
+        let scope = WriteScope::for_step(&step);
+        let root = self.root.clone().unwrap_or_default();
+        let changes: Vec<(String, Option<String>, Option<String>)> = step
+            .files
+            .iter()
+            .filter(|f| !f.path.ends_with('/'))
+            .filter_map(|f| {
+                let key = super::repair::rel_key(&root, &f.path);
+                let before = self.original_of(&key)?;
+                let after = std::fs::read(tools::to_absolute_path(&key, &root))
+                    .ok()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned());
+                Some((key, before, after))
+            })
+            .collect();
+        let diff = worker::files_diff(&changes);
+        let lead_note = (!brief.goal.starts_with("Carry out step "))
+            .then(|| brief.goal.clone())
+            .into_iter()
+            .chain(brief.context.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let message = worker::brief(&worker::BriefParts {
+            plan_path: &plan_path,
+            plan: &plan,
+            step: &step,
+            done: &self.worker_steps,
+            diff: &diff,
+            scope: &scope,
+            note: Some(lead_note.as_str()).filter(|n| !n.is_empty()),
+        });
+        let budget = brief.budget(config.budget(Kind::Worker));
+        let mut sub = self.new_sub(Kind::Worker, &tc.id, budget, config).await?;
+        sub.scope = Some(scope);
+        sub.step = Some(n);
+        let goal = format!("Step {n}: {}", step.title);
+        match &existing {
+            Some(_) => self.close_child_calls(&child_id).await?,
+            None => {
+                self.store_child(&child_id, &tc.id, Kind::Worker, &goal, message)
+                    .await?
+            }
+        }
+        self.launch_child(child_id, &tc.id, &goal, sub)
+    }
+
+    /// A worker's step when it's continued (A04): from its brief's heading.
+    async fn worker_step_of(&self, child_id: &str) -> Option<super::plan::PlanStep> {
+        let id = child_id.to_string();
+        let first = self
+            .db
+            .read(move |c| store::get_messages(c, &id, None, 1))
+            .await
+            .ok()?
+            .messages
+            .into_iter()
+            .next()?;
+        let rest = first.content.strip_prefix("# Your step: ")?;
+        let n: usize = rest[..rest.find('.')?].trim().parse().ok()?;
+        let (_, plan) = self.implementing_plan().await?;
+        super::plan::steps(&plan)
+            .into_iter()
+            .find(|s| s.number == n)
+    }
+
+    /// D04: after a worker, on the lead's side: its report against the
+    /// files it really changed, the step it finished, and the checklist
+    /// with that step done (returned, for the result's meta).
+    async fn after_worker(&mut self, result: &mut SubResult) -> Option<Vec<super::plan::TodoItem>> {
+        if result.kind != Kind::Worker {
+            return None;
+        }
+        let actual: Vec<String> = result.writes.iter().map(|w| w.path.clone()).collect();
+        if matches!(
+            result.status,
+            SubStatus::Done | SubStatus::Partial | SubStatus::Unformatted
+        ) {
+            if let Some(note) =
+                worker::mismatch_note(&worker::reported_files(&result.text), &actual)
+            {
+                result.notes.push(note);
+            }
+        }
+        let n = result.worker.as_ref()?.get("step")?.as_u64()? as usize;
+        if result.status != SubStatus::Done {
+            return None;
+        }
+        let (_, plan) = self.implementing_plan().await?;
+        let steps = super::plan::steps(&plan);
+        let step = steps.iter().find(|s| s.number == n)?;
+        let summary = subagent::sections(&result.text)
+            .get("Summary")
+            .map(|s| s.lines().next().unwrap_or("").trim().to_string())
+            .unwrap_or_default();
+        self.worker_steps.retain(|d| d.number != n);
+        self.worker_steps.push(worker::DoneStep {
+            number: n,
+            title: step.title.clone(),
+            summary: crate::chat_db::store::char_prefix(&summary, 300).to_string(),
+        });
+        self.worker_steps.sort_by_key(|d| d.number);
+        let recent = self.recent().await.ok()?;
+        let current = super::plan::current_checklist(&recent)?;
+        let items = worker::mark_step_done(&current.items, step, steps.len())?;
+        emit(
+            &self.app,
+            AgentEvent::Checklist {
+                dialog_id: self.dialog_id.clone(),
+                items: items.clone(),
+            },
+        );
+        Some(items)
+    }
+
+    /// D06, on the worker's side, before its result: a failed or stopped
+    /// worker's changes are rolled back; a partial one keeps them, listed.
+    /// Returns the notes for the lead and the facts for its block.
+    async fn writer_end(&mut self, status: SubStatus) -> (Vec<String>, Option<Value>) {
+        let Some(sub) = self.sub() else {
+            return (Vec::new(), None);
+        };
+        if !sub.kind.writes() {
+            return (Vec::new(), None);
+        }
+        let (step, grants, scope) = (
+            sub.step,
+            sub.scope
+                .as_ref()
+                .map(|s| s.grants.clone())
+                .unwrap_or_default(),
+            sub.scope.as_ref().map(|s| s.describe()),
+        );
+        let mut notes = Vec::new();
+        let mut rolled_back = None;
+        if matches!(status, SubStatus::Failed | SubStatus::Stopped) {
+            if let Some(rb) = self.roll_back(Vec::new()).await {
+                let mut note = String::from("Its changes were undone");
+                if rb.restored.is_empty() && rb.skipped.is_empty() {
+                    note = "It changed no files.".into();
+                } else {
+                    if !rb.restored.is_empty() {
+                        note.push_str(&format!(
+                            ": {} put back as they were",
+                            rb.restored.join(", ")
+                        ));
+                    }
+                    if !rb.skipped.is_empty() {
+                        note.push_str(&format!(
+                            "{}left as they are, because they changed outside it meanwhile: {}",
+                            if rb.restored.is_empty() {
+                                ", except: "
+                            } else {
+                                "; "
+                            },
+                            rb.skipped.join(", ")
+                        ));
+                    }
+                    note.push('.');
+                }
+                notes.push(note);
+                rolled_back = Some(rb);
+            }
+        }
+        let kept: Vec<String> = self.child_writes().iter().map(|w| w.path.clone()).collect();
+        if status == SubStatus::Partial && !kept.is_empty() {
+            notes.push(format!(
+                "Its changes are kept: {}. Finish the step (continue it, or do the rest yourself), or undo them.",
+                kept.join(", ")
+            ));
+        }
+        if !grants.is_empty() {
+            notes.push(format!(
+                "It was granted, beyond its step: {}.",
+                grants.join(", ")
+            ));
+        }
+        let facts = json!({
+            "step": step,
+            "scope": scope,
+            "grants": grants,
+            "rolledBack": rolled_back,
+            "changed": kept,
+        });
+        (notes, Some(facts))
+    }
+}
+
 /// `Blocked` when the report says so, else `otherwise`.
 fn status_of(text: &str, otherwise: SubStatus) -> SubStatus {
     if subagent::is_blocked(text) {
@@ -1108,6 +1420,8 @@ mod tests {
             tokens_out: 0,
             usage_seen: false,
             cost: None,
+            scope: None,
+            step: None,
         }
     }
 
@@ -1129,6 +1443,8 @@ mod tests {
             failed_models: vec![],
             answered_by: None,
             usage: None,
+            notes: vec![],
+            worker: None,
         };
         let line = subagent_log_line(&sub, "k", "m", &result);
         assert_eq!(line["event"], "subagent");

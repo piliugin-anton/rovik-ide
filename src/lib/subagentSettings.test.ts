@@ -67,6 +67,7 @@ test('defaults: everything off, chats work as before', () => {
   assert.deepEqual(ids(config.kinds.scout!.models), ['chat']);
   assert.equal(config.kinds.reviewer!.enabled, false);
   assert.equal(config.reviewMinLines, 10);
+  assert.equal(config.workerMinSteps, 6);
 });
 
 test('saved settings load back, and garbage is dropped', () => {

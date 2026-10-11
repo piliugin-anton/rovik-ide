@@ -57,7 +57,7 @@ test('a subagent is followed from its events, under its lead chat and call', () 
 test('the block’s words', () => {
   assert.equal(kindLabel('scout'), 'Scout');
   assert.equal(kindLabel('reviewer'), 'Change reviewer');
-  assert.equal(kindLabel('triage'), 'Triage');
+  assert.equal(kindLabel('fixer'), 'Fixer');
   assert.equal(statusLabel('partial'), 'out of budget');
   assert.equal(workLabel(1), '1 tool call');
   assert.equal(workLabel(12, 41_000), '12 tool calls · 41 s');

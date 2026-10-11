@@ -341,6 +341,31 @@ impl<R: Runtime> Run<R> {
         let args = permissions::parse_args(&tc.arguments);
         let path_arg = args.get("path").and_then(|p| p.as_str());
 
+        // A writing subagent: more scope on request (D07), and no write
+        // outside it (D7).
+        if tc.name == "extend_scope" && self.sub().is_some_and(|s| s.scope.is_some()) {
+            let content = self.extend_scope(&args);
+            return self
+                .add_tool_result(&tc.id, content, None, Vec::new())
+                .await;
+        }
+        if tc.name == "write" {
+            if let (Some(scope), Some(path), Some(root)) = (
+                self.sub().and_then(|s| s.scope.as_ref()),
+                path_arg,
+                self.root.as_deref(),
+            ) {
+                let key = super::repair::rel_key(root, path);
+                let exists = std::path::Path::new(&tools::to_absolute_path(&key, root)).exists();
+                if !scope.allows(&key, exists) {
+                    let content = super::worker::outside_scope(&key, scope);
+                    return self
+                        .add_tool_result(&tc.id, content, None, Vec::new())
+                        .await;
+                }
+            }
+        }
+
         // The agent's own context: no approval, no editor review, not a
         // project change. It applies to the next request.
         if clm
@@ -1361,6 +1386,29 @@ impl<R: Runtime> Run<R> {
         let meta = json!({ "questions": { "questions": questions, "outcome": outcome } });
         self.add_tool_result(&tc.id, content, Some(meta), Vec::new())
             .await
+    }
+
+    /// D07: a writing subagent asks for more paths. A sequential worker is
+    /// granted them at once; every grant is listed in its result.
+    fn extend_scope(&mut self, args: &Map<String, Value>) -> String {
+        let paths = match super::worker::extend_scope_paths(args) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let Some(scope) = self.sub_mut().and_then(|s| s.scope.as_mut()) else {
+            return "Error: extend_scope is for writing subagents.".into();
+        };
+        let mut granted = Vec::new();
+        for p in paths {
+            if !scope.grants.contains(&p) {
+                scope.grants.push(p.clone());
+            }
+            granted.push(format!("`{p}`"));
+        }
+        format!(
+            "Granted: you may now write {}. The lead will see this in your result.",
+            granted.join(", ")
+        )
     }
 
     /// submit_plan: the plan is checked and, if it holds up, saved to the

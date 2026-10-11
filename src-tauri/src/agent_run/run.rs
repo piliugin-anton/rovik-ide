@@ -271,6 +271,8 @@ pub struct Run<R: Runtime> {
     pub(super) plan_reviews: u32,
     pub(super) plan_findings: Vec<super::change_review::Finding>,
     pub(super) plan_review_call: Option<String>,
+    /// Plan steps step workers finished in this run (worker.rs, D03).
+    pub(super) worker_steps: Vec<super::worker::DoneStep>,
 }
 
 /// Who a run works for.
@@ -741,6 +743,7 @@ impl<R: Runtime> Run<R> {
             plan_reviews: 0,
             plan_findings: Vec::new(),
             plan_review_call: None,
+            worker_steps: Vec::new(),
         };
         Ok(Some((run, entry)))
     }
@@ -759,11 +762,19 @@ impl<R: Runtime> Run<R> {
     ) -> Run<R> {
         let profile = sub.models[0].clone();
         let options = sub.options.clone();
+        // A writing kind works for the lead: the lead's record of what it
+        // read and wrote, so its files aren't "changed by another chat"
+        // and the lead can go on from what the worker wrote.
+        let seen = if sub.kind.writes() {
+            parent.seen.clone()
+        } else {
+            crate::file_guard::Seen::new(dialog_id.clone())
+        };
         Run {
             app: parent.app.clone(),
             state: parent.state.clone(),
             db: parent.db.clone(),
-            seen: crate::file_guard::Seen::new(dialog_id.clone()),
+            seen,
             dialog_id,
             profile,
             options,
@@ -840,6 +851,7 @@ impl<R: Runtime> Run<R> {
             plan_reviews: 0,
             plan_findings: Vec::new(),
             plan_review_call: None,
+            worker_steps: Vec::new(),
         }
     }
 
@@ -1247,6 +1259,9 @@ impl<R: Runtime> Run<R> {
                         .unwrap_or(""),
                 )
             });
+            if sub.scope.is_some() {
+                tools.push(super::worker::extend_scope_schema());
+            }
             system_prompt = Some(format!(
                 "{}\n\n{}",
                 spec.prompt(&sub.budget),
@@ -1258,7 +1273,7 @@ impl<R: Runtime> Run<R> {
         let subagent_section = if context_only {
             None
         } else {
-            subagent::lead_prompt(&kinds)
+            subagent::lead_prompt(&kinds, config.subagents.worker_min_steps())
         };
         let project_context = if self.plan_mode {
             [
