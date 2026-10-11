@@ -161,12 +161,46 @@ fn split_steps(section: &str) -> Vec<&str> {
         .collect()
 }
 
+/// P4.4: each step's number, as written when the plan's numbers go up one
+/// by one, else its place (`1. 1. 1.`, as some editors number lists), and
+/// the number the plan shows when that's another.
+fn step_numbers(raws: &[&str]) -> Vec<(usize, Option<usize>)> {
+    let written: Vec<Option<usize>> = raws
+        .iter()
+        .map(|raw| {
+            STEP_NUMBER
+                .captures(raw.trim_start().lines().next().unwrap_or(""))
+                .and_then(|c| c[1].parse().ok())
+        })
+        .collect();
+    let increasing = written.iter().all(Option::is_some) && written.windows(2).all(|w| w[0] < w[1]);
+    written
+        .into_iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let number = if increasing {
+                w.unwrap_or(i + 1)
+            } else {
+                i + 1
+            };
+            (number, w.filter(|w| *w != number))
+        })
+        .collect()
+}
+
+/// "4", or "4 (numbered 3. in the plan)": how messages name a step.
+fn step_name(number: usize, written: Option<usize>) -> String {
+    match written {
+        Some(w) => format!("{number} (numbered {w}. in the plan)"),
+        None => number.to_string(),
+    }
+}
+
 /// "2", "2 and 4", "2, 4 and 5".
-fn list_numbers(numbers: &[usize]) -> String {
-    let words: Vec<String> = numbers.iter().map(usize::to_string).collect();
-    match words.split_last() {
+fn list_steps(names: &[&str]) -> String {
+    match names.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => words.join(""),
+        _ => names.join(""),
     }
 }
 
@@ -200,8 +234,14 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
                     "List the steps under \"## Steps\" as a numbered list (1., 2., ...).".into(),
                 );
             } else {
-                let no_file: Vec<usize> = (1..=steps.len())
-                    .filter(|&n| !names_a_file(steps[n - 1]))
+                // P4.4: named as `steps` numbers them (`2. 4. 7.` keeps its numbers).
+                let names: Vec<String> = step_numbers(&steps)
+                    .into_iter()
+                    .map(|(n, w)| step_name(n, w))
+                    .collect();
+                let no_file: Vec<&str> = (0..steps.len())
+                    .filter(|&i| !names_a_file(steps[i]))
+                    .map(|i| names[i].as_str())
                     .collect();
                 if !no_file.is_empty() {
                     problems.push(format!(
@@ -209,22 +249,23 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
                          (e.g. `src/db/users.rs`), and mark files it creates as \"(new)\". Name only paths you've seen in the \
                          repository.",
                         if no_file.len() > 1 { "s" } else { "" },
-                        list_numbers(&no_file),
+                        list_steps(&no_file),
                         if no_file.len() > 1 { "" } else { "s" },
                     ));
                 }
-                let vague: Vec<usize> = (1..=steps.len())
-                    .filter(|&n| {
-                        let step = steps[n - 1];
+                let vague: Vec<&str> = (0..steps.len())
+                    .filter(|&i| {
+                        let step = steps[i];
                         step.split_whitespace().count() < 6 || !CHANGE_WORD.is_match(step)
                     })
+                    .map(|i| names[i].as_str())
                     .collect();
                 if !vague.is_empty() {
                     problems.push(format!(
                         "Step{} {} {} too vague: say what to add, change or remove in the files, by name (the functions, \
                          types, components or settings, and how they behave); a one-line signature is fine.",
                         if vague.len() > 1 { "s" } else { "" },
-                        list_numbers(&vague),
+                        list_steps(&vague),
                         if vague.len() > 1 { "are" } else { "is" },
                     ));
                 }
@@ -421,10 +462,7 @@ pub struct PlanStep {
 impl PlanStep {
     /// "4", or "4 (numbered 3. in the plan)": how messages name it.
     pub fn named(&self) -> String {
-        match self.written {
-            Some(w) => format!("{} (numbered {w}. in the plan)", self.number),
-            None => self.number.to_string(),
-        }
+        step_name(self.number, self.written)
     }
 }
 
@@ -748,17 +786,7 @@ pub fn steps(markdown: &str) -> Vec<PlanStep> {
         // NUMBERED's `^\s*` can start at the blank line before a step.
         .map(str::trim_start)
         .collect();
-    // P4.4: the numbers as written when they go up one by one, else the
-    // steps' places (`1. 1. 1.`, as some editors number lists).
-    let written: Vec<Option<usize>> = raws
-        .iter()
-        .map(|raw| {
-            STEP_NUMBER
-                .captures(raw.lines().next().unwrap_or(""))
-                .and_then(|c| c[1].parse().ok())
-        })
-        .collect();
-    let increasing = written.iter().all(Option::is_some) && written.windows(2).all(|w| w[0] < w[1]);
+    let numbers = step_numbers(&raws);
     raws.into_iter()
         .enumerate()
         .map(|(i, raw)| {
@@ -766,15 +794,11 @@ pub fn steps(markdown: &str) -> Vec<PlanStep> {
             let rest = STEP_NUMBER
                 .captures(first)
                 .map_or_else(|| first.to_string(), |c| c[2].to_string());
-            let number = if increasing {
-                written[i].unwrap_or(i + 1)
-            } else {
-                i + 1
-            };
+            let (number, written) = numbers[i];
             let files = step_files(raw);
             PlanStep {
                 number,
-                written: written[i].filter(|w| *w != number),
+                written,
                 title: step_title(&rest),
                 files,
                 body: raw.trim_end().to_string(),
@@ -2785,6 +2809,28 @@ mod tests {
         assert_eq!(
             section("## 2024 roadmap\n\nx\n", "2024").as_deref(),
             Some("x")
+        );
+    }
+
+    /// Round 2, P4.4: the form check names a step as `steps` numbers it:
+    /// in `2. 4. 7.` the step without a file is step 4, not "step 2"; in
+    /// `1. 2. 2. 3.` the last is step 4, numbered 3. in the plan.
+    #[test]
+    fn gapped_numbers_in_form_check_messages() {
+        let plan = "# P\n\n## Steps\n\n2. **B**\n   - `src/b.rs`: add b.\n\
+            4. **D**\n   - Add the d helper next to b, with its own tests.\n\
+            7. **G**\n   - `src/g.rs`: add g.\n\n## Validation\n- `cargo test`\n";
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 4 names no file"), "{p:?}");
+        let plan = "# P\n\n## Steps\n\n1. **A**\n   - `src/a.rs`: add a.\n\
+            2. **B**\n   - `src/b.rs`: add b.\n2. **C**\n   - `src/c.rs`: add c.\n\
+            3. **D**\n   - `src/d.rs`.\n\n## Validation\n- `cargo test`\n";
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with("Step 4 (numbered 3. in the plan) is too vague"),
+            "{p:?}"
         );
     }
 }
