@@ -202,3 +202,21 @@ test('models from other providers than the chat’s are named (K18)', () => {
   assert.deepEqual(otherProviders(providers, s, 'scout', sel('b', 'other')), ['Alpha']);
   assert.equal(subagentSummary(s), 'On: Scout');
 });
+
+test('parallel groups and the red check are off until turned on', () => {
+  const s = normalizeSubagentSettings(undefined);
+  assert.equal(s.parallelWorkers, false);
+  assert.equal(s.redCheck, false);
+  const on = normalizeSubagentSettings({
+    parallelWorkers: true,
+    redCheck: true,
+    workerMinSteps: 4,
+  });
+  assert.equal(on.parallelWorkers, true);
+  assert.equal(on.redCheck, true);
+  const config = resolveSubagentConfig(on, providers, resolve);
+  assert.equal(config.parallelWorkers, true);
+  assert.equal(config.redCheck, true);
+  assert.equal(config.workerMinSteps, 4);
+  assert.equal(normalizeSubagentSettings({ parallelWorkers: 'yes' }).parallelWorkers, false);
+});

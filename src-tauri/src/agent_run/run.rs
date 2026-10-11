@@ -903,6 +903,16 @@ impl<R: Runtime> Run<R> {
         self.state.config().subagents.lead_kinds()
     }
 
+    /// Parallel groups can run (F): the setting is on, step workers are
+    /// on, and the chat is isolated (child overlays need its view).
+    pub(super) fn parallel_on(&self) -> bool {
+        let config = self.state.config().subagents;
+        self.sub().is_none()
+            && config.parallel_workers
+            && config.kind(subagent::Kind::Worker).is_some()
+            && crate::overlay::chats::get(&self.dialog_id).is_some()
+    }
+
     pub(super) fn stopped(&self) -> bool {
         self.stop.is_set()
     }
@@ -1292,17 +1302,23 @@ impl<R: Runtime> Run<R> {
                 self.project_context
             ));
         } else if !kinds.is_empty() && !context_only && !tools.is_empty() {
-            tools.push(subagent::task_schema(&kinds));
+            tools.push(subagent::task_schema(&kinds, self.parallel_on()));
         }
         let subagent_section = if context_only {
             None
         } else {
-            subagent::lead_prompt(&kinds, config.subagents.worker_min_steps())
+            subagent::lead_prompt(
+                &kinds,
+                config.subagents.worker_min_steps(),
+                self.parallel_on(),
+            )
         };
+        let group_rules = subagent::plan_group_rules(self.parallel_on());
         let project_context = if self.plan_mode {
             [
                 self.project_context.as_str(),
                 plan::PLAN_MODE_INSTRUCTIONS,
+                group_rules,
                 self.plan_context.as_str(),
             ]
             .iter()

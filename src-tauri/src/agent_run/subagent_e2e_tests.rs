@@ -2811,3 +2811,562 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
     assert!(system_prompt(&lead)
         .contains("Change a test-writer test only when it contradicts the request or the plan"));
 }
+
+/*
+ * Milestone F: parallel workers, in child overlays of an isolated chat.
+ * They need FUSE: cargo test -- --ignored group
+ */
+
+const GROUP_PLAN: &str = "# Two pages\n\nUsers and posts.\n\n## Steps\n\n\
+    1. **Contract**\n   - `src/api.rs`: declare `fn users()` and `fn posts()` with stub bodies.\n\
+    2. **Users**\n   - `src/users.rs`: implement the users page with `fn users()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\
+    3. **Posts**\n   - `src/posts.rs`: implement the posts page with `fn posts()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\n\
+    ## Validation\n- `npm test`\n";
+
+fn groups_on() -> subagent::SubagentConfig {
+    serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "worker": { "enabled": true } },
+        "workerMinSteps": 2,
+        "parallelWorkers": true,
+    }))
+    .unwrap()
+}
+
+fn group_task(id: &'static str) -> Reply {
+    Reply::Call {
+        id,
+        name: "task",
+        args: json!({ "kind": "workers", "group": "pages" }),
+    }
+}
+
+fn all_done() -> Reply {
+    Reply::Call {
+        id: "t1",
+        name: "todo",
+        args: json!({ "items": [
+            { "title": "Contract", "status": "done" },
+            { "title": "Users", "status": "pending" },
+            { "title": "Posts", "status": "pending" },
+        ] }),
+    }
+}
+
+async fn group_harness(extra: &[(&str, &str)]) -> Harness {
+    let mut files = vec![
+        ("src/api.rs", "pub fn users() {}\npub fn posts() {}\n"),
+        ("src/users.rs", "// users\n"),
+        ("src/posts.rs", "// posts\n"),
+        (".rovik/plans/greet.md", GROUP_PLAN),
+    ];
+    files.extend_from_slice(extra);
+    let h = harness(&files).await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    h
+}
+
+impl Harness {
+    fn implement_isolated(&self, url: &str, verify: bool) -> StartRequest {
+        let mut request = self.implement_with(url, groups_on(), ChecklistMode::Off);
+        request.isolate = Some(true);
+        request.config.as_mut().unwrap().permissions.verify_changes = verify;
+        request
+    }
+
+    /// Waits until the call has its result, and returns it.
+    async fn result_when_ready(&self, call: &str) -> MessageRow {
+        for _ in 0..400 {
+            if let Some(m) = self
+                .messages()
+                .await
+                .into_iter()
+                .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(call))
+            {
+                return m;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("no result for {call}");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_group_runs_in_parallel_and_joins_into_the_chat_not_the_project() {
+    let h = group_harness(&[]).await;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    Reply::Calls(vec![
+                        ("b1", "bash", json!({ "command": "cargo build" })),
+                        ("b2", "bash", json!({ "command": "ls src" })),
+                        (
+                            "e1",
+                            "extend_scope",
+                            json!({ "paths": ["src/posts.rs"], "reason": "shared" }),
+                        ),
+                        (
+                            "b3",
+                            "bash",
+                            json!({ "command": "ruff check src/users.rs" }),
+                        ),
+                        (
+                            "b4",
+                            "bash",
+                            json!({ "command": "python -m pytest tests/" }),
+                        ),
+                    ]),
+                    write_call("w1", "src/users.rs", "pub fn users_page() {}\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "pub fn posts_page() {}\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Slow(2_000, Box::new(Reply::Text("Done."))),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let result = h.result_when_ready("g1").await;
+    // Joined into the chat's view; the project unchanged until the chat lands.
+    assert_eq!(h.file("src/users.rs").as_deref(), Some("// users\n"));
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("// posts\n"));
+    let mut changed: Vec<String> = crate::overlay::chats::changes(&h.dialog_id)
+        .iter()
+        .map(|c| c.path().to_string())
+        .collect();
+    changed.sort();
+    assert_eq!(changed, ["src/posts.rs", "src/users.rs"]);
+    assert!(
+        result
+            .content
+            .contains("Parallel group \"pages\" (2 workers)"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("### Step 2 (w1): Users\nLanded: src/users.rs."),
+        "{}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("### Step 3 (w2): Posts\nLanded: src/posts.rs."),
+        "{}",
+        result.content
+    );
+    let workers = &result.meta.as_ref().unwrap()["group"]["workers"];
+    assert_eq!(workers.as_array().unwrap().len(), 2);
+
+    // In w1's chat: no build (F05), ls runs, no one else's file (D07).
+    let w1 = workers[0]["childDialogId"].as_str().unwrap().to_string();
+    let work = h.messages_of(&w1).await;
+    let res = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap()
+            .content
+            .clone()
+    };
+    assert!(
+        res("b1").starts_with("Error: `cargo build` is a heavy command"),
+        "{}",
+        res("b1")
+    );
+    assert!(res("b2").contains("users.rs"), "{}", res("b2"));
+    assert!(
+        res("e1").contains("`src/posts.rs` (w2) belongs to another part"),
+        "{}",
+        res("e1")
+    );
+    // F05b: a light check on its file runs (whether ruff is installed or
+    // not); a test run doesn't.
+    assert!(!res("b3").contains("is a heavy command"), "{}", res("b3"));
+    assert!(
+        res("b4").starts_with("Error: `python -m pytest tests/` is a heavy command"),
+        "{}",
+        res("b4")
+    );
+    // Each worker's brief says who else is in the group.
+    let brief = requests_with(&seen, "# Your step: 2.")[0]["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        brief.contains("You are worker w1 of the parallel group \"pages\""),
+        "{brief}"
+    );
+    assert!(brief.contains("- w2, step 3: `src/posts.rs`"), "{brief}");
+    // The lead's prompt offers the group, and its tools the workers kind.
+    let lead = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|b| route_of(b, &["# Your step:"]).is_none())
+        .cloned()
+        .unwrap();
+    assert!(system_prompt(&lead).contains("### Parallel groups"));
+
+    assert_eq!(h.run_end().await, "done");
+    // The chat's run finished: its changes, the workers' included, landed.
+    assert_eq!(
+        h.file("src/users.rs").as_deref(),
+        Some("pub fn users_page() {}\n")
+    );
+    assert_eq!(
+        h.file("src/posts.rs").as_deref(),
+        Some("pub fn posts_page() {}\n")
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
+    let h = group_harness(&[]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    // A command reaches past its scope (a bug): posts.rs too.
+                    Reply::Call {
+                        id: "b1",
+                        name: "bash",
+                        args: json!({ "command": "printf 'from w1\\n' > src/posts.rs" }),
+                    },
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "from w2\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Slow(2_000, Box::new(Reply::Text("Merged by hand."))),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let result = h.result_when_ready("g1").await;
+    assert!(
+        result.content.contains("## The join stopped: a conflict"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("Worker w2 (step 3) changed the same lines"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("In the chat now:\n```\nfrom w1"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("Worker w2's version:\n```\nfrom w2"),
+        "{}",
+        result.content
+    );
+    assert_eq!(result.meta.as_ref().unwrap()["group"]["conflict"], true);
+    h.run_end().await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn after_the_join_the_checks_run_once_and_name_the_worker() {
+    let check = "const fs = require('fs');\n\
+        if (fs.readFileSync('src/posts.rs', 'utf8').includes('bad')) {\n\
+          console.error('error[E0425]: cannot find value `x`\\n --> src/posts.rs:1:5');\n  process.exit(1);\n}\n";
+    let h = group_harness(&[
+        ("check.js", check),
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+    ])
+    .await;
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    // The first w1 fails; its retry (F09) succeeds.
+                    bad(),
+                    bad(),
+                    write_call("w1", "src/users.rs", "pub fn users_page() {}\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Done."),
+            Reply::Text("I'll leave it."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, true)).await;
+    h.run_end().await;
+    let messages = h.messages().await;
+    let result = result_of(&messages, "g1").content.clone();
+    assert!(
+        result.contains("### Step 2 (w1): Users\nStatus: failed. Its copy was discarded"),
+        "{result}"
+    );
+    assert!(
+        result.contains("### Step 2 (w1'): Users\nLanded: src/users.rs."),
+        "the retry: {result}"
+    );
+    assert!(
+        result.contains("- src/posts.rs (step 3, worker w2)"),
+        "{result}"
+    );
+    // One check run after the join (the mid-run record), before the end's.
+    let mid: Vec<_> = messages
+        .iter()
+        .filter(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|m| m["verification"]["midRun"] == true)
+        })
+        .collect();
+    assert_eq!(mid.len(), 1);
+    assert_eq!(
+        mid[0].meta.as_ref().unwrap()["verification"]["attribution"][0]["owner"],
+        "step 3, worker w2"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_step_that_fails_twice_goes_to_the_lead() {
+    let h = group_harness(&[]).await;
+    let (url, _) = model_routed(
+        vec![
+            ("# Your step: 2.", vec![bad(), bad(), bad(), bad()]),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("I'll do step 2.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    h.run_end().await;
+    let result = result_of(&h.messages().await, "g1").content.clone();
+    assert!(
+        result.contains("Step 2 failed twice: do it yourself"),
+        "{result}"
+    );
+    assert!(
+        result.contains("### Step 3 (w2): Posts\nLanded: src/posts.rs."),
+        "{result}"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_group_worker_continued_works_in_the_chat_within_its_old_scope() {
+    let h = group_harness(&[]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Next run fixes it."),
+        ],
+    )
+    .await;
+    let mut request = h.implement_isolated(&url, false);
+    // Keep the chat's changes in its overlay: land only when told.
+    request.config.as_mut().unwrap().permissions.checklist = ChecklistMode::Off;
+    h.start(request).await;
+    h.run_end().await;
+    let messages = h.messages().await;
+    let w2 = result_of(&messages, "g1").meta.as_ref().unwrap()["group"]["workers"][1]
+        ["childDialogId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let handle: &'static str =
+        Box::leak(subagent::handle(subagent::Kind::Worker, &w2).into_boxed_str());
+    // F07: the lead continues w2 to fix its step, now in the chat's view.
+    let (url, _) = model_routed(
+        vec![(
+            // Its chat starts with its step's brief; the follow-up is later.
+            "# Your step: 3.",
+            vec![
+                write_call("w3", "src/posts.rs", "posts, fixed\n"),
+                write_call("w4", "src/users.rs", "not mine\n"),
+                worker_report("Fixed.", &["src/posts.rs"]),
+            ],
+        )],
+        vec![
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": handle, "goal": "posts.rs fails: fix it" }),
+            },
+            Reply::Text("Fixed."),
+        ],
+    )
+    .await;
+    h.events.lock().unwrap().clear();
+    let mut request = h.request(
+        &url,
+        Harness::send("Fix the posts page"),
+        Permissions {
+            allow_any_command: true,
+            checklist: ChecklistMode::Off,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = groups_on();
+    request.isolate = Some(true);
+    h.start(request).await;
+    h.run_end().await;
+    let work = h.messages_of(&w2).await;
+    let res = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap()
+            .content
+            .clone()
+    };
+    assert!(!res("w3").starts_with("Error"), "{}", res("w3"));
+    assert!(
+        res("w4").contains("outside your write scope"),
+        "{}",
+        res("w4")
+    );
+    assert_eq!(
+        h.file("src/posts.rs").as_deref(),
+        Some("posts, fixed\n"),
+        "landed with the chat"
+    );
+}
+
+/*
+ * E04: the red check, on the project (the code before the change) of an
+ * isolated chat. Go: one test package per file.
+ */
+
+#[tokio::test]
+#[ignore]
+async fn the_red_check_flags_a_test_that_passes_on_the_old_code() {
+    if std::process::Command::new("go")
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let h = harness(&[
+        ("go.mod", "module x\n\ngo 1.21\n"),
+        ("a/a.go", "package a\n\nfunc A() int { return 1 }\n"),
+        ("b/b.go", "package b\n\nfunc B() int { return 1 }\n"),
+    ])
+    .await;
+    crate::overlay::chats::init(&h._dir.0.join("data"));
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![
+                write_call("t1", "a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) { if A() != 1 { t.Fatal(A()) } }\n"),
+                write_call("t2", "b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) { if B() != 2 { t.Fatal(B()) } }\n"),
+                Reply::Text("## Summary\nTests.\n\n## Test files\n- `a/a_test.go`\n- `b/b_test.go`\n\n## Assumptions\nNone"),
+            ],
+        )],
+        vec![
+            write_call("w1", "b/b.go", "package b\n\nfunc B() int { return 2 }\n"),
+            Reply::Call { id: "tw", name: "task", args: json!({ "kind": "testWriter" }) },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let config: subagent::SubagentConfig = serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "testWriter": { "enabled": true } },
+        "redCheck": true,
+    }))
+    .unwrap();
+    let mut request = h.request(
+        &url,
+        Harness::send("Make B return 2"),
+        Permissions {
+            allow_any_command: true,
+            checklist: ChecklistMode::Off,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = config;
+    request.isolate = Some(true);
+    h.start(request).await;
+    h.run_end().await;
+    let r = result_of(&h.messages().await, "tw").content.clone();
+    assert!(
+        r.contains("Red check: `a/a_test.go` already passes on the code before the change"),
+        "{r}"
+    );
+    assert!(!r.contains("`b/b_test.go` already"), "{r}");
+}

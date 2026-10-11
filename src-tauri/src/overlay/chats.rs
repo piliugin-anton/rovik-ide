@@ -324,6 +324,12 @@ fn mountpoint(dialog_id: &str) -> PathBuf {
     base.join(dialog_id)
 }
 
+/// Whether `path` is a chat's view (a mount made here), not a project.
+pub fn is_chat_view(path: &Path) -> bool {
+    let base = mountpoint("x");
+    path.parent().is_some_and(|p| Some(p) == base.parent())
+}
+
 /// The chat's overlay, opened (and mounted) if it isn't yet. `on_warn`:
 /// told once when its changes pass 80% of its limit (used, limit).
 pub fn open(
@@ -380,6 +386,16 @@ pub fn open(
     OPEN.lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(dialog_id.to_string(), overlay.clone());
+    // A child's landing into this view that a crash interrupted (F01).
+    if let Some(data) = data_dir() {
+        let finished = super::land::recover_into(&data, &overlay.view);
+        if !finished.is_empty() {
+            eprintln!(
+                "overlay: finished an interrupted landing into {dialog_id}: {}",
+                finished.join(", ")
+            );
+        }
+    }
     // Before the check: it may mark conflicts, which takes the gate.
     drop(opening);
     // Closed until now (a restart): the project may have changed meanwhile.
@@ -440,6 +456,10 @@ pub fn close(dialog_id: &str) {
 pub fn discard(dialog_id: &str) -> Result<(), String> {
     // Its checks' saved output goes with it (landing discards too).
     crate::agent_run::check_output::clean(dialog_id);
+    // And its children's overlays, which stood on its view (F02).
+    for child in children_of(dialog_id) {
+        discard_child(&child);
+    }
     // The project, so the chats left open on it stop warning about this one.
     let project = project_of(dialog_id);
     close(dialog_id);
@@ -470,14 +490,168 @@ pub fn forget(dialog_id: &str) {
 
 /// At exit: every view unmounted, or its folder stays a dead mount.
 pub fn close_all() {
-    let all: Vec<Arc<ChatOverlay>> = OPEN
+    let mut all: Vec<(String, Arc<ChatOverlay>)> = OPEN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .drain()
-        .map(|(_, o)| o)
         .collect();
-    for o in all {
+    // Children first: they read from their parents' views.
+    all.sort_by_key(|(id, _)| parent_of(id).is_none());
+    for (_, o) in all {
         o.unmount();
+    }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Child overlays (F01, F02): a parallel worker's view, stacked on its
+ * parent chat's view and landed back into it
+ * ---------------------------------------------------------------------------
+ */
+
+/// Child chat id -> its parent's.
+static CHILDREN: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
+/// The least room a child gets, whatever its parent has used.
+const MIN_CHILD_LIMIT: u64 = 1 << 20;
+
+/// The open children of a chat.
+pub fn children_of(parent: &str) -> Vec<String> {
+    let mut kids: Vec<String> = CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, p)| p.as_str() == parent)
+        .map(|(c, _)| c.clone())
+        .collect();
+    // Saved ones a restart left behind, too.
+    if let Some(data) = data_dir() {
+        if let Ok(dirs) = std::fs::read_dir(data.join("overlays")) {
+            for d in dirs.flatten() {
+                let id = d.file_name().to_string_lossy().into_owned();
+                let saved = std::fs::read_to_string(d.path().join("parent.txt")).ok();
+                if saved.as_deref().map(str::trim) == Some(parent) && !kids.contains(&id) {
+                    kids.push(id);
+                }
+            }
+        }
+    }
+    kids
+}
+
+/// The parent of a child chat, while it's open.
+pub fn parent_of(child: &str) -> Option<String> {
+    CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(child)
+        .cloned()
+}
+
+/// F02: opens (and mounts) a child overlay of `parent`'s view. Its changes
+/// count inside the parent's limit: it gets what the parent and its other
+/// children leave of it.
+pub fn open_child(parent: &str, child: &str) -> Result<Arc<ChatOverlay>, String> {
+    if !valid_id(child) {
+        return Err("not a chat id".into());
+    }
+    let p = get(parent).ok_or("the chat isn't isolated, so it can't have child overlays")?;
+    if let Some(o) = get(child) {
+        return Ok(o);
+    }
+    let (used, limit) = p.fs.used();
+    let siblings: u64 = children_of(parent)
+        .iter()
+        .filter_map(|c| get(c))
+        .map(|o| o.fs.used().0)
+        .sum();
+    let room = limit
+        .saturating_sub(used)
+        .saturating_sub(siblings)
+        .max(MIN_CHILD_LIMIT);
+    let overlay = mount_on(child, &p.view, room, Some(parent))?;
+    CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(child.to_string(), parent.to_string());
+    Ok(overlay)
+}
+
+/// E04: a throwaway overlay of `base` (the project, the code before a
+/// chat's change), for running something there without touching it.
+/// Removed with `discard_child`.
+pub fn open_scratch(id: &str, base: &Path) -> Result<Arc<ChatOverlay>, String> {
+    if !valid_id(id) {
+        return Err("not a chat id".into());
+    }
+    mount_on(id, base, DEFAULT_LIMIT, None)
+}
+
+/// An overlay of `base`, mounted, registered as open.
+fn mount_on(
+    id: &str,
+    base: &Path,
+    limit: u64,
+    parent: Option<&str>,
+) -> Result<Arc<ChatOverlay>, String> {
+    let store = store_dir(id).ok_or("the app's data folder isn't known yet")?;
+    std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
+    if let Some(parent) = parent {
+        std::fs::write(store.join("parent.txt"), parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(store.join("project.txt"), base.to_string_lossy().as_bytes())
+        .map_err(|e| e.to_string())?;
+    let fs = Arc::new(OverlayFs::open(base, &store, limit).map_err(|e| e.to_string())?);
+    fs.sweep_orphans();
+    let at = mountpoint(id);
+    let (mount, view) = crate::vfs::platform_mount(fs.clone(), Some(&at))
+        .map_err(|e| format!("couldn't mount the view: {}", e.message()))?;
+    let overlay = Arc::new(ChatOverlay {
+        fs,
+        project: base.to_path_buf(),
+        view,
+        store,
+        mount: Mutex::new(Some(mount)),
+    });
+    OPEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.to_string(), overlay.clone());
+    Ok(overlay)
+}
+
+/// F02: lands a child's changes into its parent's view (merged three ways,
+/// journaled: land.rs), then removes the child. A conflict keeps it, for
+/// the lead to see. Returns the paths that landed.
+pub fn land_child(child: &str) -> Result<Vec<String>, super::land::LandError> {
+    use super::land::LandError;
+    let o = get(child).ok_or_else(|| LandError::Failed("the worker's view isn't open".into()))?;
+    let data = data_dir()
+        .ok_or_else(|| LandError::Failed("the app's data folder isn't known yet".into()))?;
+    o.fs.flush();
+    let changes = o.fs.changes();
+    let landed = super::land::land(&data, child, &o.project, &changes, false)?;
+    // The parent's overlay saves what came in.
+    if let Some(parent) = parent_of(child).and_then(|p| get(&p)) {
+        parent.fs.flush();
+    }
+    discard_child(child);
+    Ok(landed.map(|l| l.paths).unwrap_or_default())
+}
+
+/// F02: a child's overlay, unmounted and removed with its landing journals.
+pub fn discard_child(child: &str) {
+    if !valid_id(child) {
+        return;
+    }
+    close(child);
+    CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(child);
+    if let Some(store) = store_dir(child) {
+        let _ = std::fs::remove_dir_all(store);
+    }
+    if let Some(data) = data_dir() {
+        let _ = std::fs::remove_dir_all(data.join("landings").join(child));
     }
 }
 
@@ -2844,5 +3018,139 @@ mod bench {
         }
         super::discard("bench-chat").unwrap();
         let _ = std::fs::remove_dir_all(&data);
+    }
+}
+
+/// F01–F02: child overlays stacked on a chat's view. Needs FUSE:
+/// cargo test -- --ignored child_overlays
+#[cfg(test)]
+mod child_tests {
+    use super::*;
+
+    fn read(p: &Path) -> Option<String> {
+        std::fs::read_to_string(p).ok()
+    }
+
+    #[test]
+    #[ignore]
+    fn child_overlays_land_into_their_parent_not_the_project() {
+        let root = std::env::temp_dir().join(format!("kids-{}", uuid::Uuid::new_v4()));
+        let project = root.join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("src/a.rs"), "a\n").unwrap();
+        std::fs::write(project.join("src/b.rs"), "b\n").unwrap();
+        init(&root.join("data"));
+        let parent = open("kids-parent", &project, Box::new(|_, _| {})).unwrap();
+        // The parent changed a file before the workers start.
+        std::fs::write(parent.view.join("src/a.rs"), "a from the lead\n").unwrap();
+
+        // Two children of one parent: each sees the parent's view.
+        let w1 = open_child("kids-parent", "kids-w1").unwrap();
+        assert_eq!(
+            read(&w1.view.join("src/a.rs")).as_deref(),
+            Some("a from the lead\n")
+        );
+        std::fs::write(w1.view.join("src/a.rs"), "a from w1\n").unwrap();
+        std::fs::write(w1.view.join("src/new.rs"), "new\n").unwrap();
+        w1.fs.flush();
+        let w2 = open_child("kids-parent", "kids-w2").unwrap();
+        std::fs::write(w2.view.join("src/b.rs"), "b from w2\n").unwrap();
+        // Their space counts inside the parent's limit.
+        let (parent_used, parent_limit) = parent.fs.used();
+        assert!(
+            w1.fs.used().1 <= parent_limit - parent_used,
+            "{:?}",
+            w1.fs.used()
+        );
+        assert!(w2.fs.used().1 <= parent_limit - parent_used - w1.fs.used().0);
+        // Neither sees the other before landing.
+        assert_eq!(
+            read(&w2.view.join("src/a.rs")).as_deref(),
+            Some("a from the lead\n")
+        );
+
+        // One after another, into the parent.
+        let landed = land_child("kids-w1").unwrap();
+        assert_eq!(landed.len(), 2, "{landed:?}");
+        assert!(land_child("kids-w2").is_ok());
+        assert_eq!(
+            read(&parent.view.join("src/a.rs")).as_deref(),
+            Some("a from w1\n")
+        );
+        assert_eq!(
+            read(&parent.view.join("src/new.rs")).as_deref(),
+            Some("new\n")
+        );
+        assert_eq!(
+            read(&parent.view.join("src/b.rs")).as_deref(),
+            Some("b from w2\n")
+        );
+        // The project is unchanged; the children are gone.
+        assert_eq!(read(&project.join("src/a.rs")).as_deref(), Some("a\n"));
+        assert!(!project.join("src/new.rs").exists());
+        assert!(get("kids-w1").is_none() && children_of("kids-parent").is_empty());
+        // The parent's changes include theirs, for its own landing.
+        let mut paths: Vec<String> = changes("kids-parent")
+            .iter()
+            .map(|c| c.path().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, ["src/a.rs", "src/b.rs", "src/new.rs"]);
+
+        // A conflict: a child changed what the parent changed meanwhile.
+        let w3 = open_child("kids-parent", "kids-w3").unwrap();
+        std::fs::write(w3.view.join("src/b.rs"), "b from w3\n").unwrap();
+        std::fs::write(parent.view.join("src/b.rs"), "b from the lead again\n").unwrap();
+        match land_child("kids-w3") {
+            Err(super::super::land::LandError::Conflicts(c)) => assert_eq!(c[0].path, "src/b.rs"),
+            other => panic!("expected a conflict: {other:?}"),
+        }
+        assert!(get("kids-w3").is_some(), "kept for the lead");
+        assert_eq!(
+            read(&parent.view.join("src/b.rs")).as_deref(),
+            Some("b from the lead again\n")
+        );
+        discard_child("kids-w3");
+
+        // A crash during a child's landing: its journal waits for the
+        // parent's view, then finishes there.
+        let w4 = open_child("kids-parent", "kids-w4").unwrap();
+        std::fs::write(w4.view.join("src/new.rs"), "new from w4\n").unwrap();
+        w4.fs.flush();
+        let data = root.join("data");
+        super::super::land::land(&data, "kids-w4", &w4.project, &w4.fs.changes(), false).unwrap();
+        // As if the app died mid-write: the journal says "applying" and
+        // the parent's file is still the old one.
+        let journals = data.join("landings").join("kids-w4");
+        let landing = std::fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .find(|d| d.path().is_dir())
+            .unwrap()
+            .path();
+        let journal = landing.join("journal.json");
+        let text = std::fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        std::fs::write(&journal, text).unwrap();
+        std::fs::write(parent.view.join("src/new.rs"), "new\n").unwrap();
+        assert!(
+            super::super::land::recover(&data).is_empty(),
+            "not into an unmounted view"
+        );
+        let finished = super::super::land::recover_into(&data, &parent.view);
+        assert_eq!(finished, ["src/new.rs"]);
+        assert_eq!(
+            read(&parent.view.join("src/new.rs")).as_deref(),
+            Some("new from w4\n")
+        );
+        discard_child("kids-w4");
+
+        // Discarding the parent takes any child with it.
+        open_child("kids-parent", "kids-w5").unwrap();
+        discard("kids-parent").unwrap();
+        assert!(get("kids-w5").is_none());
+        assert!(!data.join("overlays").join("kids-w5").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

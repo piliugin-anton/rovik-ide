@@ -18,6 +18,18 @@ import { SubagentTranscript } from './ToolCallBlock';
 
 function headline(meta: VerificationMeta, interrupted: boolean): string {
   if (interrupted) return 'Checks didn’t finish: the run ended while they were running.';
+  if (meta.midRun) {
+    switch (meta.status) {
+      case 'running':
+        return 'Checking the workers’ merged changes…';
+      case 'passed':
+        return 'Checks pass on the workers’ merged changes.';
+      case 'failed':
+        return 'Checks fail on the workers’ merged changes: sent to the agent, with whose step each error is in.';
+      default:
+        break;
+    }
+  }
   switch (meta.status) {
     case 'running':
       return 'Checking the changes…';
@@ -284,6 +296,18 @@ export default function VerificationRecord(props: {
             live={props.live}
           />
         )}
+      </Show>
+
+      <Show when={props.meta.attribution?.length}>
+        <ul class="chat-verify-flags">
+          <For each={props.meta.attribution}>
+            {(a) => (
+              <li>
+                {a.location}: {a.owner}
+              </li>
+            )}
+          </For>
+        </ul>
       </Show>
 
       <Show when={props.meta.integrity?.length}>

@@ -789,6 +789,148 @@ switch; the reviewer's own model and fallback), unit tests in
     - a worker without a plan, or for a step that doesn't exist, is
       refused.
 
+### E01–E04: the test writer
+
+- **E01.** In `agent_run/project.rs`:
+  - `is_test_path` (R05's conventions).
+  - `test_paths_for(source)`: where a test goes, per stack. TS/JS uses
+    `x.test.ts` and `__tests__/`. Go uses `x_test.go`. Python uses
+    `tests/test_x.py`. Rust uses the module's `tests.rs`, as this
+    repository does, or the crate's `tests/`.
+  - `test_command_for(root, files, test_check)`:
+    - vitest or jest by path, from package.json;
+    - `cargo test` by module path or `--test` target (one filter; several
+      modules share their common prefix);
+    - `python -m pytest` by path;
+    - `go test` by package;
+    - anything else, or mixed stacks, falls back to the test check.
+- **E02.** `Kind::TestWriter` (`agent_run/test_writer.rs`), started by the
+  lead (goal optional).
+  - **Writes:** test files only. A refusal suggests where the test goes.
+  - **Reads:** it can't read the files the change touches. Those are the
+    plan's step files plus the run's changed non-test files. `read`
+    points it to `outline`, and `search_code` leaves those files out and
+    says how many matches it dropped (`CallContext.hidden`).
+  - **Commands:** light only. A command `workload::classify` rates Heavy
+    or LongRunning is refused (`SubCtx.light_bash`, shared with F05).
+  - **Brief:** the request, the plan, the touched files' outlines, and
+    where tests go.
+  - It counts against the shared limit of 12.
+- **E03.** The lead's prompt gets the rule for changing tests. The files
+  the test writer wrote are kept, and a later lead write to one is
+  recorded. The lead's final reply gets a line listing them.
+- **E04.** An optional setting ("Red check"). After the test writer, its
+  new test files go into a throwaway overlay of the project, which is the
+  code before the change, and run there: per file where
+  `test_command_for` can, else the whole test check once. A file whose
+  tests pass is flagged in the result.
+  - **Deviation:** it needs an isolated chat (the project is the "before"
+    code), and is skipped with a note in direct mode. The group
+    variant, red-checking at the contract point, isn't built: the test
+    writer isn't part of a group yet.
+- **Tests:**
+  - Unit: paths and commands per stack; the brief; refusals.
+  - E2e: the test writer writes only tests and sees only outlines, a heavy
+    command is refused, and the lead's changed test is listed;
+    `#[ignore]`/FUSE: the red check flags a Go test that passes on the old
+    code.
+
+### F01–F09: parallel implementers
+
+- **F01.** A child overlay is an `OverlayFs` whose base is its parent
+  chat's mounted view. Reads go through the parent's overlay, and landing
+  (`land.rs`, unchanged) writes through it.
+  - **Deviation from "an in-process Base interface":** the overlay code
+    stays as it is. The child is mounted too, since a worker's tools and
+    commands need a real folder.
+  - **Crash during a child's landing:** `recover` leaves journals whose
+    target is a chat view for later, and `recover_into` finishes them
+    once the parent's view is mounted again (`chats::open`).
+- **F02.** `chats::open_child`, `land_child` and `discard_child`.
+  - **Limit:** a child gets what's left of the parent's limit after the
+    parent's and its open siblings' changes, at least 1 MiB.
+  - **Cleanup:** discarding the parent discards its children (including
+    saved ones, from `parent.txt`), and closing the app unmounts children
+    first.
+  - **Conflict:** `land_child` keeps the child, for the lead to see.
+- **F03.** A step's file marked "(read)" or "(read-only)" is context: it
+  isn't in the step's write scope, and steps of a group may share it.
+  `project_problems` requires a step before the group, outside it, that
+  changes each such file the group's steps share. A group's steps still
+  can't share a file they change (B07).
+- **F04.** `task{kind:"workers", group}` (`agent_run/group.rs`):
+  - **Requires:** the setting "Run plan groups in parallel", the worker
+    kind on, an isolated chat, the plan, two or more steps in the group,
+    and no F03 problem for it.
+  - **Run:** one worker per step (w1, w2, …), each in a child overlay with
+    its step's scope, at most `max_at_once` at a time. Each is admitted
+    against steps + 2.
+  - **Join:** in step order, with `land_child`. Each landing counts as
+    the lead's writes, and its checklist item is marked done, building on
+    the earlier joins.
+  - **Conflict:** it stops the join. The lead gets both versions, and the
+    later steps aren't landed.
+  - **Result:** the group's result lists each worker and its report;
+    `meta.group` has their status and landed files.
+- **F05.** Group workers get `light_bash`: a Heavy or LongRunning command
+  is refused ("the lead runs those after merging"). Diagnostics are on.
+  - **`extend_scope`** refuses what another worker or the contract owns,
+    with "Leave this to the lead and list it under open questions".
+- **F05b.** `project::light_check_for(files)`: `ruff check <file>` and
+  `pyright <file>` when installed, `go vet ./<pkg>`, and `npx eslint
+<file>` when eslint is in node_modules. `classify` rates these Light:
+  - `ruff` is always Light;
+  - `pyright` and `eslint` are Light with file arguments, Heavy without;
+  - `go vet` is Light on one package, Heavy on `./...`;
+  - `pytest` stays Heavy.
+
+  A worker's brief lists the light checks it may run.
+
+- **F06.** `verify_now` (in `verify.rs`) runs after a join that landed
+  anything. It runs the checks once, as `verify_at_end` does, with a
+  record marked `midRun`.
+  - **Attribution:** each error location is put down to the worker whose
+    scope owns the file, or to a seam. A new file goes to the one worker
+    whose folder it's in.
+  - It doesn't count as a fix round, and the checks run again when the
+    run ends.
+  - **Deviation:** locations are files, not `file:line`, because
+    `error_locations` returns paths.
+- **F07.** A group worker is continued with `task{continue}` like a
+  sequential one. It works in the chat's view, with its step's scope
+  read back from its brief.
+  - **Two fixes the test found:** the plan is found from the latest
+    request that named one, so a follow-up message in the chat still
+    reaches it. The brief is found by its heading, not as the first
+    message of a page.
+- **F08.** The lead's prompt gets "Parallel groups", the `task` schema
+  gets `workers` and `group`, and Plan mode gets the group and contract
+  rules (`PLAN_GROUP_RULES`). All only when parallel groups can run:
+  `Run::parallel_on`, which needs the setting, the worker kind and an
+  isolated chat.
+- **F09.** A failed or stopped worker's copy is discarded and the others
+  land. Its step is retried once as a fresh worker (`w1'`), then the
+  merged checks run once. A second failure goes to the lead: "do it
+  yourself, or carry out the steps one at a time".
+  - **Deviation:** there is no "Redo sequentially" button yet (R06).
+- **UI:** the `task` block of a group lists its workers. The mid-run
+  record has its own headlines and the attribution list. Settings have
+  the two switches.
+- **Tests:**
+  - Unit: attribution; ownership; contract checks; light checks and their
+    classes; prompts and the schema with groups on and off.
+  - FUSE (`#[ignore]`, run with `--ignored`; all pass here):
+    - child overlays land into their parent, report conflicts, recover
+      after a crash, and go with the parent;
+    - a group runs in parallel and joins into the chat, not the project,
+      with no build, no other worker's files, a light check and no test
+      run;
+    - a conflict goes to the lead with both versions;
+    - the checks run once after the join and name w2, and a failed w1 is
+      retried;
+    - a step that fails twice goes to the lead;
+    - a continued group worker writes into the chat within its old scope.
+
 ### G00: the headless runner
 
 Done: `src/headless.rs` and the `rovik-headless` binary, built only with

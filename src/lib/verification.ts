@@ -118,6 +118,10 @@ export interface VerificationMeta {
   integrity?: string[];
   rolledBack?: RolledBack;
   triage?: TriageMeta;
+  /** Checks run in the middle of a run, after a parallel group was joined (F06). */
+  midRun?: boolean;
+  /** midRun: each error's location and the worker (or seam) it's put down to. */
+  attribution?: { location: string; owner: string }[];
 }
 
 /** The triage's one-line summary in the record. */

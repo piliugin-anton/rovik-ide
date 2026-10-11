@@ -192,6 +192,7 @@ const KIND_LABELS: Record<string, string> = {
   planReviewer: 'Plan reviewer',
   worker: 'Step worker',
   testWriter: 'Test writer',
+  workers: 'Parallel workers',
 };
 
 export const kindLabel = (kind: string | undefined) =>

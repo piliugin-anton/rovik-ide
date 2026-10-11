@@ -754,6 +754,18 @@ pub fn project_of(data_dir: &Path, dialog_id: &str) -> Option<PathBuf> {
 /// Finishes landings a crash interrupted: their journals say "applying".
 /// Returns the paths written.
 pub fn recover(data_dir: &Path) -> Vec<String> {
+    // A child chat's landing went into its parent's view, which isn't
+    // mounted yet: it's finished when the parent's view is (F01).
+    recover_where(data_dir, |project| !super::chats::is_chat_view(project))
+}
+
+/// Finishes the interrupted landings into one chat's view (its children's),
+/// once that view is mounted.
+pub fn recover_into(data_dir: &Path, view: &Path) -> Vec<String> {
+    recover_where(data_dir, |project| project == view)
+}
+
+fn recover_where(data_dir: &Path, wanted: impl Fn(&Path) -> bool) -> Vec<String> {
     let mut done = Vec::new();
     let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
         return done;
@@ -763,6 +775,9 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
         let Some(project) = project_of(data_dir, &dialog_id) else {
             continue;
         };
+        if !wanted(&project) {
+            continue;
+        }
         let Ok(landings) = fs::read_dir(chat.path()) else {
             continue;
         };

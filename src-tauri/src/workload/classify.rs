@@ -100,6 +100,21 @@ fn skip_wrappers(words: &[String]) -> &[String] {
     }
 }
 
+/// Whether a command names files (`x.py`, `src/a.ts`), not folders or
+/// the whole project.
+fn file_args(words: &[String]) -> bool {
+    let args: Vec<&String> = words
+        .iter()
+        .skip(1)
+        .filter(|w| !w.starts_with('-'))
+        .collect();
+    !args.is_empty()
+        && args.iter().all(|a| {
+            let name = a.rsplit(['/', '\\']).next().unwrap_or(a);
+            name.contains('.') && !name.ends_with('.') && *a != "." && *a != ".."
+        })
+}
+
 fn has_flag(words: &[String], flags: &[&str]) -> bool {
     words.iter().any(|w| flags.contains(&w.as_str()))
 }
@@ -224,6 +239,27 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
                     | "pkgid" | "locate-project" | "version" | "help" | "new" | "init" | "clean",
                 ) => Class::Light,
                 _ => Class::Unknown,
+            };
+        }
+        // F05b: light checks on a file or one package (project::light_check_for).
+        "ruff" => return Class::Light,
+        "pyright" | "eslint" => {
+            return if file_args(words) {
+                Class::Light
+            } else {
+                Class::Heavy
+            };
+        }
+        "go" if sub == Some("vet") => {
+            let pkgs: Vec<&String> = words
+                .iter()
+                .skip(2)
+                .filter(|w| !w.starts_with('-'))
+                .collect();
+            return if pkgs.len() == 1 && !pkgs[0].contains("...") {
+                Class::Light
+            } else {
+                Class::Heavy
             };
         }
         "go" => {
@@ -555,6 +591,15 @@ mod tests {
         assert_eq!(c("vite"), Class::LongRunning);
         assert_eq!(c("python -m pytest -q"), Class::Heavy);
         assert_eq!(c("pytest"), Class::Heavy);
+        // F05b: light checks on one file or package.
+        assert_eq!(c("ruff check src/a.py"), Class::Light);
+        assert_eq!(c("pyright src/a.py"), Class::Light);
+        assert_eq!(c("pyright"), Class::Heavy);
+        assert_eq!(c("npx eslint src/a.ts"), Class::Light);
+        assert_eq!(c("eslint ."), Class::Heavy);
+        assert_eq!(c("go vet ./pkg/util"), Class::Light);
+        assert_eq!(c("go vet ./..."), Class::Heavy);
+        assert_eq!(c("python -m pytest tests/test_a.py"), Class::Heavy);
         assert_eq!(c("make"), Class::Heavy);
         assert_eq!(c("ls -la"), Class::Light);
         assert_eq!(c("git status"), Class::Light);

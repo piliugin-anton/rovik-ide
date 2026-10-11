@@ -349,6 +349,9 @@ pub struct PlanFile {
     pub path: String,
     /// Marked "(new)": the step creates it.
     pub new: bool,
+    /// Marked "(read)" or "(read-only)": context the step uses but doesn't
+    /// change (F03: what a contract step settles).
+    pub read_only: bool,
 }
 
 /// One numbered step of a plan's "## Steps" section.
@@ -371,6 +374,8 @@ static STEP_NUMBER: LazyLock<Regex> =
 static BACKTICKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());
 static NEW_MARK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\((?:new|new file|created?)\)").unwrap());
+static READ_MARK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\((?:read|read-only|readonly|reads|context)\)").unwrap());
 static GROUP_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)^[\s>*-]*\**group\**\s*:\s*\**\s*([^*\n]+?)\s*\**\s*$").unwrap()
 });
@@ -542,11 +547,20 @@ pub fn steps(markdown: &str) -> Vec<PlanStep> {
             let mut files: Vec<PlanFile> = Vec::new();
             for line in raw.lines() {
                 let new = NEW_MARK.is_match(line);
+                let read_only = READ_MARK.is_match(line);
                 for c in BACKTICKED.captures_iter(line) {
                     if let Some(path) = as_path(&c[1]) {
                         match files.iter_mut().find(|f| f.path == path) {
-                            Some(f) => f.new |= new,
-                            None => files.push(PlanFile { path, new }),
+                            Some(f) => {
+                                f.new |= new;
+                                // Changed anywhere in the step: not read-only.
+                                f.read_only &= read_only;
+                            }
+                            None => files.push(PlanFile {
+                                path,
+                                new,
+                                read_only,
+                            }),
                         }
                     }
                 }
@@ -641,10 +655,12 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
             .collect();
         for (i, a) in members.iter().enumerate() {
             for b in &members[i + 1..] {
+                // Files both change: read-only ones are the contract's.
                 let shared: Vec<&str> = a
                     .files
                     .iter()
-                    .filter(|f| b.files.iter().any(|g| g.path == f.path))
+                    .filter(|f| !f.read_only)
+                    .filter(|f| b.files.iter().any(|g| g.path == f.path && !g.read_only))
                     .map(|f| f.path.as_str())
                     .collect();
                 if !shared.is_empty() {
@@ -658,6 +674,36 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
                 }
             }
         }
+        // F03: a file the group's steps use as shared context is settled
+        // first, by a contract step before the group that changes it.
+        let first = members.iter().map(|s| s.number).min().unwrap_or(0);
+        let mut context: Vec<&str> = Vec::new();
+        for f in members
+            .iter()
+            .flat_map(|s| s.files.iter().filter(|f| f.read_only))
+        {
+            let users = members
+                .iter()
+                .filter(|s| s.files.iter().any(|g| g.path == f.path))
+                .count();
+            if users >= 2 && !context.contains(&f.path.as_str()) {
+                context.push(&f.path);
+            }
+        }
+        for path in context {
+            let settled = steps.iter().any(|s| {
+                s.number < first
+                    && s.group.as_deref() != Some(group)
+                    && s.files.iter().any(|f| f.path == path && !f.read_only)
+            });
+            if !settled {
+                problems.push(format!(
+                    "The steps of group \"{group}\" all build on `{path}`, but no step before the group settles it: add a contract step \
+                     before the group that adds the shared types, signatures or names there (with stub bodies), so the group's steps \
+                     work against the same interface."
+                ));
+            }
+        }
     }
     problems
 }
@@ -666,7 +712,7 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
 /// has problems (the user may have edited it after it was checked).
 pub fn plan_check_note(file: &str, problems: &[String]) -> String {
     format!(
-        "[Automatic check by the IDE, not written by the user]\nThe plan file {file} was checked as it is now (it may have been edited since it was written), and the checker found:\n- {}\n\n         Check each against the code before you start. Where the plan is wrong, follow the code and the user's intent, and say what you changed from the plan when you finish.",
+        "[Automatic check by the IDE, not written by the user]\nThe plan file {file} was checked as it is now (it may have been edited since it was written), and the checker found:\n- {}\n\nCheck each against the code before you start. Where the plan is wrong, follow the code and the user's intent, and say what you changed from the plan when you finish.",
         problems.join("\n- ")
     )
 }
@@ -1342,6 +1388,29 @@ mod tests {
             p[0].starts_with(
                 "Steps 2 and 3 are both in group \"backend\" but both name `src/api/mod.rs`"
             ),
+            "{p:?}"
+        );
+        // F03: shared context needs a contract step before the group.
+        let contract = "# C\n\n## Steps\n\n\
+            1. **Contract**\n   - `src/api/mod.rs`: declare `fn list_users()` and `fn add_user()` with stub bodies.\n\
+            2. **List**\n   - `src/api/users.rs` (new): implement `list_users`.\n   - `src/api/mod.rs` (read): the signature.\n   - Group: api\n\
+            3. **Add**\n   - `src/api/add.rs` (new): implement `add_user`.\n   - `src/api/mod.rs` (read-only): the signature.\n   - Group: api\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert_eq!(project_problems(contract, &tree.0), Vec::<String>::new());
+        let s = steps(contract);
+        assert!(s[1]
+            .files
+            .iter()
+            .any(|f| f.path == "src/api/mod.rs" && f.read_only));
+        assert!(!s[0].files[0].read_only);
+        let no_contract = contract.replace(
+            "`src/api/mod.rs`: declare",
+            "`migrations/README.md`: declare",
+        );
+        let p = project_problems(&no_contract, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].contains("all build on `src/api/mod.rs`, but no step before the group settles it"),
             "{p:?}"
         );
         // Out of a group, sharing is fine.

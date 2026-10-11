@@ -105,6 +105,10 @@ export interface SubagentSettings {
   reviewMinLines: number;
   /** Plans of at least this many steps go to step workers. */
   workerMinSteps: number;
+  /** Plan groups run as parallel workers (isolated chats only). */
+  parallelWorkers: boolean;
+  /** The test writer's tests also run on the code before the change. */
+  redCheck: boolean;
   /** Tokens one run's subagents may use (as reported); undefined: no limit. */
   maxRunTokens?: number;
 }
@@ -142,6 +146,8 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   maxPerRun: LIMITS.perRun.default,
   reviewMinLines: LIMITS.reviewMinLines.default,
   workerMinSteps: LIMITS.workerMinSteps.default,
+  parallelWorkers: false,
+  redCheck: false,
 };
 
 const EFFORT_IDS: Effort[] = ['default', 'none', 'low', 'medium', 'high'];
@@ -217,6 +223,8 @@ export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
       clampNumber(r.workerMinSteps, LIMITS.workerMinSteps.min, LIMITS.workerMinSteps.max) ??
         LIMITS.workerMinSteps.default
     ),
+    parallelWorkers: r.parallelWorkers === true,
+    redCheck: r.redCheck === true,
     ...(typeof r.maxRunTokens === 'number' && Number.isFinite(r.maxRunTokens)
       ? {
           maxRunTokens: Math.round(
@@ -251,6 +259,8 @@ export interface SubagentConfig {
   maxPerRun: number;
   reviewMinLines: number;
   workerMinSteps: number;
+  parallelWorkers: boolean;
+  redCheck: boolean;
   maxRunTokens?: number;
 }
 
@@ -333,6 +343,8 @@ export function resolveSubagentConfig(
     maxPerRun: settings.maxPerRun,
     reviewMinLines: settings.reviewMinLines,
     workerMinSteps: settings.workerMinSteps,
+    parallelWorkers: settings.parallelWorkers,
+    redCheck: settings.redCheck,
     ...(settings.maxRunTokens !== undefined ? { maxRunTokens: settings.maxRunTokens } : {}),
   };
 }

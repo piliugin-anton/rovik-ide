@@ -68,7 +68,10 @@ Electron-based editors.
   cause, instead of the agent getting pages of compiler output. In Plan
   mode, a plan reviewer checks each plan against the code before it's
   saved. When the agent implements a long plan, step workers can carry it
-  out one step at a time, each writing only its step's files. Turn them
+  out one step at a time, each writing only its step's files; in an
+  isolated chat, steps the plan groups can run side by side, each in its
+  own copy, then merged and checked once. A test writer can write tests
+  from the request and the plan without reading the new code. Turn them
   on, and pick their models, in Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.

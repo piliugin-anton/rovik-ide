@@ -29,6 +29,7 @@ mod e2e_tests;
 pub mod events;
 mod execute;
 pub mod failure;
+pub mod group;
 pub mod guard;
 mod landing;
 pub mod log;

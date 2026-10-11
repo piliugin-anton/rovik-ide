@@ -78,6 +78,8 @@ pub(super) struct SubCtx {
     pub scope: Option<WriteScope>,
     /// A step worker: its plan step.
     pub step: Option<usize>,
+    /// A worker in a parallel group (F04): what the group's other steps own.
+    pub group: Option<super::group::GroupCtx>,
     /// The test writer: it writes only test files, and can't read or
     /// search these (the files the change touches, K11).
     pub tests_only: bool,
@@ -133,14 +135,16 @@ impl SubCtx {
 /// A `task` call, ready to run or already answered.
 enum Job<R: Runtime> {
     Run(Box<Run<R>>),
-    Answered(String),
+    /// Answered without a child of its own: a refusal, or a whole group of
+    /// parallel workers (group.rs), with the result's meta.
+    Answered(String, Option<Value>),
 }
 
-type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Send>>;
+pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Send>>;
 
 /// A subagent's whole run as a boxed future: a run's future can't contain
 /// itself (a child's tool calls go through the same code as the lead's).
-fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
+pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
     Box::pin(async move {
         let mut run = run;
         Some(run.go_sub().await)
@@ -169,35 +173,42 @@ impl<R: Runtime> Run<R> {
             if self.stopped() {
                 jobs.push(Job::Answered(
                     "Error: stopped by the user before this ran.".into(),
+                    None,
                 ));
+                continue;
+            }
+            // F04: a plan group, run as parallel workers and joined here.
+            if let Some(group) = super::group::group_call(&tc.arguments) {
+                let (text, meta) = self.run_group(tc, &group, &config).await;
+                jobs.push(Job::Answered(text, meta));
                 continue;
             }
             jobs.push(match self.start_task(tc, &config, resumed).await {
                 Ok(child) => Job::Run(Box::new(child)),
-                Err(text) => Job::Answered(text),
+                Err(text) => Job::Answered(text, None),
             });
         }
         let started = Instant::now();
         let running = jobs.iter().filter(|j| matches!(j, Job::Run(_))).count();
         let jobs_write = jobs.iter().any(|j| match j {
             Job::Run(child) => child.sub().is_some_and(|s| s.kind.writes()),
-            Job::Answered(_) => false,
+            Job::Answered(..) => false,
         });
         let throttled = jobs.iter().any(|j| match j {
             Job::Run(child) => self.ledger.is_throttled(&child.profile.id),
-            Job::Answered(_) => false,
+            Job::Answered(..) => false,
         });
         #[cfg(test)]
         super::parallel::BATCHES.lock().unwrap().push((
             self.dialog_id.clone(),
             calls.iter().map(|c| c.id.clone()).collect(),
         ));
-        let mut answered: Vec<Option<String>> = Vec::with_capacity(jobs.len());
+        let mut answered: Vec<Option<(String, Option<Value>)>> = Vec::with_capacity(jobs.len());
         let futures: Vec<SubFuture> = jobs
             .into_iter()
             .map(|job| match job {
-                Job::Answered(text) => {
-                    answered.push(Some(text));
+                Job::Answered(text, meta) => {
+                    answered.push(Some((text, meta)));
                     Box::pin(async { None }) as SubFuture
                 }
                 Job::Run(child) => {
@@ -226,7 +237,7 @@ impl<R: Runtime> Run<R> {
         for (tc, refusal) in calls.iter().zip(answered) {
             let result = results.next().await.flatten();
             let (content, meta): (String, Option<Value>) = match (refusal, result) {
-                (Some(text), _) => (text, None),
+                (Some((text, meta)), _) => (text, meta),
                 (None, Some(mut result)) => {
                     self.absorb_child_writes(&result.writes);
                     if result.kind == Kind::TestWriter {
@@ -235,9 +246,15 @@ impl<R: Runtime> Run<R> {
                                 self.test_writer_files.push(w.path.clone());
                             }
                         }
+                        // E04: tests that pass on the code before the change.
+                        if config.red_check {
+                            if let Some(note) = self.red_check(&result).await {
+                                result.notes.push(note);
+                            }
+                        }
                     }
                     self.note_models(&result);
-                    let update = self.after_worker(&mut result).await;
+                    let update = self.after_worker(&mut result, None).await;
                     let mut meta = json!({ "subagent": result.meta() });
                     if let Some(items) = update {
                         meta["checklistUpdate"] = json!(items);
@@ -441,7 +458,7 @@ impl<R: Runtime> Run<R> {
 
     /// A subagent's context, before it has a run. Err: none of its models
     /// can be used (they kept failing in this run, S12).
-    async fn new_sub(
+    pub(super) async fn new_sub(
         &self,
         kind: Kind,
         call_id: &str,
@@ -489,6 +506,7 @@ impl<R: Runtime> Run<R> {
             cost: None,
             scope: None,
             step: None,
+            group: None,
             tests_only: false,
             hidden: Vec::new(),
             light_bash: false,
@@ -503,7 +521,7 @@ impl<R: Runtime> Run<R> {
 
     /// Registers a child under this run and prepares its run; the chat
     /// hears it started.
-    fn launch_child(
+    pub(super) fn launch_child(
         &self,
         child_id: String,
         call_id: &str,
@@ -605,7 +623,7 @@ impl<R: Runtime> Run<R> {
     }
 
     /// The child chat, with the brief as its first message.
-    async fn store_child(
+    pub(super) async fn store_child(
         &self,
         child_id: &str,
         call_id: &str,
@@ -803,6 +821,10 @@ impl<R: Runtime> Run<R> {
     }
 
     /// S12: what a subagent's end says about its models, for the next ones.
+    pub(super) fn note_models_of(&mut self, result: &SubResult) {
+        self.note_models(result)
+    }
+
     fn note_models(&mut self, result: &SubResult) {
         for model in self.ledger.note(result) {
             log::write(
@@ -1122,16 +1144,16 @@ impl<R: Runtime> Run<R> {
      */
 
     /// The plan this run implements: its path and text.
-    async fn implementing_plan(&self) -> Option<(String, String)> {
+    pub(super) async fn implementing_plan(&self) -> Option<(String, String)> {
         let recent = self.recent().await.ok()?;
-        let request = recent
+        let base = self.project_root.as_deref().or(self.root.as_deref());
+        // The latest request that named a plan (a follow-up in the chat
+        // still works on it), else the chat's own plan file.
+        let path = recent
             .iter()
             .rev()
-            .find(|m| m.role == "user" && !super::plan::is_harness(m))
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
-        let base = self.project_root.as_deref().or(self.root.as_deref());
-        let path = worker::plan_file_named(&request, base)
+            .filter(|m| m.role == "user" && !super::plan::is_harness(m))
+            .find_map(|m| worker::plan_file_named(&m.content, base))
             .or_else(|| super::run::chat_plan_file(&recent))?;
         let text = std::fs::read_to_string(&path).ok()?;
         let shown = super::plan::relative_plan_path(&path, base);
@@ -1181,21 +1203,7 @@ impl<R: Runtime> Run<R> {
             }
         };
         let scope = WriteScope::for_step(&step);
-        let root = self.root.clone().unwrap_or_default();
-        let changes: Vec<(String, Option<String>, Option<String>)> = step
-            .files
-            .iter()
-            .filter(|f| !f.path.ends_with('/'))
-            .filter_map(|f| {
-                let key = super::repair::rel_key(&root, &f.path);
-                let before = self.original_of(&key)?;
-                let after = std::fs::read(tools::to_absolute_path(&key, &root))
-                    .ok()
-                    .map(|b| String::from_utf8_lossy(&b).into_owned());
-                Some((key, before, after))
-            })
-            .collect();
-        let diff = worker::files_diff(&changes);
+        let diff = self.step_diff(&step);
         let lead_note = (!brief.goal.starts_with("Carry out step "))
             .then(|| brief.goal.clone())
             .into_iter()
@@ -1320,17 +1328,38 @@ impl<R: Runtime> Run<R> {
         self.launch_child(child_id, &tc.id, &goal, sub)
     }
 
+    /// The step's files as they changed in this run so far, for its brief.
+    pub(super) fn step_diff(&self, step: &super::plan::PlanStep) -> String {
+        let root = self.root.clone().unwrap_or_default();
+        let changes: Vec<(String, Option<String>, Option<String>)> = step
+            .files
+            .iter()
+            .filter(|f| !f.path.ends_with('/'))
+            .filter_map(|f| {
+                let key = super::repair::rel_key(&root, &f.path);
+                let before = self.original_of(&key)?;
+                let after = std::fs::read(tools::to_absolute_path(&key, &root))
+                    .ok()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned());
+                Some((key, before, after))
+            })
+            .collect();
+        worker::files_diff(&changes)
+    }
+
     /// A worker's step when it's continued (A04): from its brief's heading.
     async fn worker_step_of(&self, child_id: &str) -> Option<super::plan::PlanStep> {
         let id = child_id.to_string();
+        // Its brief: the first message (a page is the latest ones, so the
+        // brief is found by its heading).
         let first = self
             .db
-            .read(move |c| store::get_messages(c, &id, None, 1))
+            .read(move |c| store::get_messages(c, &id, None, 500))
             .await
             .ok()?
             .messages
             .into_iter()
-            .next()?;
+            .find(|m| m.role == "user" && m.content.starts_with("# Your step: "))?;
         let rest = first.content.strip_prefix("# Your step: ")?;
         let n: usize = rest[..rest.find('.')?].trim().parse().ok()?;
         let (_, plan) = self.implementing_plan().await?;
@@ -1342,7 +1371,11 @@ impl<R: Runtime> Run<R> {
     /// D04: after a worker, on the lead's side: its report against the
     /// files it really changed, the step it finished, and the checklist
     /// with that step done (returned, for the result's meta).
-    async fn after_worker(&mut self, result: &mut SubResult) -> Option<Vec<super::plan::TodoItem>> {
+    pub(super) async fn after_worker(
+        &mut self,
+        result: &mut SubResult,
+        base: Option<&[super::plan::TodoItem]>,
+    ) -> Option<Vec<super::plan::TodoItem>> {
         if result.kind != Kind::Worker {
             return None;
         }
@@ -1375,9 +1408,15 @@ impl<R: Runtime> Run<R> {
             summary: crate::chat_db::store::char_prefix(&summary, 300).to_string(),
         });
         self.worker_steps.sort_by_key(|d| d.number);
-        let recent = self.recent().await.ok()?;
-        let current = super::plan::current_checklist(&recent)?;
-        let items = worker::mark_step_done(&current.items, step, steps.len())?;
+        // The list so far: a group's earlier joins, else the chat's.
+        let current = match base {
+            Some(items) => items.to_vec(),
+            None => {
+                let recent = self.recent().await.ok()?;
+                super::plan::current_checklist(&recent)?.items
+            }
+        };
+        let items = worker::mark_step_done(&current, step, steps.len())?;
         emit(
             &self.app,
             AgentEvent::Checklist {
@@ -1535,6 +1574,7 @@ mod tests {
             cost: None,
             scope: None,
             step: None,
+            group: None,
             tests_only: false,
             hidden: Vec::new(),
             light_bash: false,

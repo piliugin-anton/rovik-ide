@@ -110,7 +110,8 @@ impl WriteScope {
     /// in a folder it names.
     pub fn for_step(step: &PlanStep) -> WriteScope {
         let mut scope = WriteScope::default();
-        for f in &step.files {
+        // Files it only reads are the contract's, not its to change (F03).
+        for f in step.files.iter().filter(|f| !f.read_only) {
             let p = norm(&f.path);
             if f.path.trim().ends_with('/') {
                 if !scope.folders.contains(&p) {

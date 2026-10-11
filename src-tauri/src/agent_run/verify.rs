@@ -597,6 +597,104 @@ impl<R: Runtime> Run<R> {
         Ok("continue".into())
     }
 
+    /// F06: the checks at once, in the middle of a run (after a parallel
+    /// group was joined), with each failure put down to the worker whose
+    /// scope owns its file or to a seam. A record shows it; the run's fix
+    /// rounds aren't counted, and the checks run again when it finishes.
+    /// None when there's nothing to run.
+    pub(super) async fn verify_now(
+        &mut self,
+        owners: &[(String, usize, super::worker::WriteScope)],
+    ) -> Option<String> {
+        let p = self.state.config().permissions;
+        let root = self.root.clone()?;
+        if !p.verify_changes {
+            return None;
+        }
+        let checks: Vec<ProjectCheck> = self
+            .checks
+            .iter()
+            .filter(|c| c.enabled && !c.command.trim().is_empty())
+            .cloned()
+            .collect();
+        if checks.is_empty() {
+            return None;
+        }
+        if p.command_approval.required {
+            return Some("The checks didn't run on the merged result yet: command approval is on, so they run when you finish.".into());
+        }
+        let changed = self.changed_files.clone();
+        let round = self.verify_rounds;
+        let record_id = self
+            .add_record(with(
+                record("running", round, &[], &changed, None),
+                json!({ "midRun": true }),
+            ))
+            .await
+            .ok()?;
+        let results = self
+            .run_checks(&root, &checks, &p, &changed, &record_id, round)
+            .await
+            .ok()?;
+        let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
+        let mut attribution: Vec<Value> = Vec::new();
+        let mut text = Vec::new();
+        for r in &failed {
+            text.push(format!(
+                "## {} failed: `{}`",
+                check_label(&r.kind),
+                r.command
+            ));
+            let output = r.output.clone().unwrap_or_default();
+            let mut seen: Vec<String> = Vec::new();
+            for loc in error_locations(&output) {
+                if seen.contains(&loc) || seen.len() >= 30 {
+                    continue;
+                }
+                seen.push(loc.clone());
+                // A file the run created (it wasn't there before it).
+                let key = super::repair::rel_key(&root, &loc);
+                let created = matches!(self.original_of(&key), Some(None));
+                let owner = super::group::attribute(&loc, owners, created);
+                attribution.push(json!({ "location": loc, "owner": owner }));
+                text.push(format!("- {loc} ({owner})"));
+            }
+            text.push(format!("\n{}", output.trim()));
+            if let Some(path) = &r.saved_output {
+                text.push(format!("(The whole output is saved as `{path}`.)"));
+            }
+        }
+        let status = if self.stopped() {
+            "stopped"
+        } else if !failed.is_empty() {
+            "failed"
+        } else if results.iter().any(|r| r.status == "passed") {
+            "passed"
+        } else {
+            "unverified"
+        };
+        let _ = self
+            .update_meta(
+                &record_id,
+                with(
+                    record(status, round, &results, &changed, None),
+                    json!({ "midRun": true, "attribution": attribution }),
+                ),
+            )
+            .await;
+        // The checks run again when the run finishes.
+        self.writes_since_verify = true;
+        Some(match status {
+            "passed" => "The project's checks ran on the merged result and pass.".to_string(),
+            "failed" => format!(
+                "The project's checks ran on the merged result, and some fail. Each error is put down to the worker whose step owns its file, or to a seam between them. \
+                 A failure inside one worker's files: continue that worker (task with continue and its handle) to fix it. A seam: fix it yourself.\n\n{}",
+                text.join("\n")
+            ),
+            _ => "The project's checks couldn't run on the merged result; they run when you finish.".to_string(),
+        })
+    }
+
     /// One line per round in the run log.
     fn log_round(
         &self,

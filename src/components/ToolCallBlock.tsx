@@ -621,10 +621,12 @@ function TaskBlock(props: ToolCallBlockProps) {
   const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
   const live = () => liveSubagent(props.dialogId, props.toolCall.id);
   const done = () => props.result?.meta?.subagent;
+  /** A parallel group (kind "workers"): its workers, joined. */
+  const group = () => props.result?.meta?.group;
   const childId = () => done()?.childDialogId ?? live()?.childDialogId ?? null;
   const kind = () => done()?.kind ?? live()?.kind ?? str(args().kind);
   const working = () => !props.result && !!props.running && !!live() && !live()!.status;
-  const refused = () => !!props.result && !done();
+  const refused = () => !!props.result && !done() && !group();
   const approvals = () => {
     const id = childId();
     return id && working() ? pendingApprovalsOf(id) : [];
@@ -633,6 +635,13 @@ function TaskBlock(props: ToolCallBlockProps) {
   const [showWork, setShowWork] = createSignal(false);
 
   const meta = () => {
+    const g = group();
+    if (g) {
+      const landed = g.workers.filter((w) => (w.landed?.length ?? 0) > 0).length;
+      return [`${g.workers.length} workers`, `${landed} landed`, g.conflict ? 'a conflict' : '']
+        .filter(Boolean)
+        .join(' · ');
+    }
     const d = done();
     if (d) {
       const model =
@@ -685,7 +694,9 @@ function TaskBlock(props: ToolCallBlockProps) {
         <span class="subagent-kind">{kindLabel(kind())}</span>
         <span class="tool-call-title">
           {str(args().continue) ? 'Follow-up: ' : ''}
-          {shortGoal(str(args().goal) ?? live()?.goal)}
+          {str(args().group)
+            ? `Group “${str(args().group)}”`
+            : shortGoal(str(args().goal) ?? live()?.goal)}
         </span>
         <Show when={meta()}>
           <span class="tool-call-meta">{meta()}</span>
@@ -720,6 +731,23 @@ function TaskBlock(props: ToolCallBlockProps) {
               <div class="subagent-paths">Look first at: {paths().join(', ')}</div>
             </Show>
           </section>
+          <Show when={group()}>
+            {(g) => (
+              <section class="tool-call-section">
+                <div class="tool-call-label">Workers</div>
+                <ul class="subagent-group">
+                  <For each={g().workers}>
+                    {(w) => (
+                      <li>
+                        Step {w.step} ({w.label}): {w.status}
+                        {w.landed?.length ? ` · landed ${w.landed.join(', ')}` : ''}
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </section>
+            )}
+          </Show>
           <section class="tool-call-section">
             <div class="tool-call-label">Report</div>
             <Show

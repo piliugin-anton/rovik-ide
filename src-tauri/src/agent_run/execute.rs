@@ -1430,6 +1430,14 @@ impl<R: Runtime> Run<R> {
             Ok(p) => p,
             Err(e) => return e,
         };
+        // A group worker: not what another worker or the contract owns.
+        if let Some(refused) = self
+            .sub()
+            .and_then(|s| s.group.as_ref())
+            .and_then(|g| super::group::refusal(g, &paths))
+        {
+            return refused;
+        }
         let Some(scope) = self.sub_mut().and_then(|s| s.scope.as_mut()) else {
             return "Error: extend_scope is for writing subagents.".into();
         };

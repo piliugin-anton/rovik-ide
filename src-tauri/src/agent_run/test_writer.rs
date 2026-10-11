@@ -189,6 +189,110 @@ pub fn changed_tests_line(files: &[String]) -> String {
     )
 }
 
+/// The note for tests that pass on the code before the change (E04).
+pub fn red_note(passing: &[String]) -> Option<String> {
+    (!passing.is_empty()).then(|| {
+        format!(
+            "Red check: {} already {} on the code before the change, so {} may not test it. Check that {} the new behaviour.",
+            passing.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", "),
+            if passing.len() == 1 { "passes" } else { "pass" },
+            if passing.len() == 1 { "it" } else { "they" },
+            if passing.len() == 1 { "it exercises" } else { "they exercise" },
+        )
+    })
+}
+
+impl<R: tauri::Runtime> super::run::Run<R> {
+    /// E04: the test writer's new tests, run on the code before the change
+    /// (the project under an isolated chat), in a throwaway overlay. A test
+    /// file whose tests pass there is flagged.
+    pub(super) async fn red_check(&self, result: &super::subagent::SubResult) -> Option<String> {
+        let files: Vec<String> = result
+            .writes
+            .iter()
+            .filter(|w| w.original.is_none() && project::is_test_path(&w.path))
+            .map(|w| w.path.clone())
+            .collect();
+        if files.is_empty() {
+            return None;
+        }
+        let (Some(root), Some(project)) = (self.root.clone(), self.project_root.clone()) else {
+            return None;
+        };
+        if !self.isolated() {
+            return Some("Red check skipped: the chat works in the project directly, so the code before the change isn't there to run the tests on.".into());
+        }
+        let test_check = self
+            .checks
+            .iter()
+            .find(|c| c.kind == "test" && c.enabled)
+            .map(|c| c.command.clone());
+        let id = format!("red-{}", uuid::Uuid::new_v4());
+        let (scratch_id, base) = (id.clone(), std::path::PathBuf::from(&project));
+        let scratch = tauri::async_runtime::spawn_blocking(move || {
+            crate::overlay::chats::open_scratch(&scratch_id, &base)
+        })
+        .await
+        .ok()?
+        .ok()?;
+        for f in &files {
+            if let Ok(content) = std::fs::read(super::tools::to_absolute_path(f, &root)) {
+                let target = scratch.view.join(f);
+                let _ = target.parent().map(std::fs::create_dir_all);
+                let _ = std::fs::write(target, content);
+            }
+        }
+        let view = scratch.view.to_string_lossy().into_owned();
+        let mut passing = Vec::new();
+        // One file at a time when the stack can, else the whole test check once.
+        let per_file = files.iter().all(|f| {
+            project::test_command_for(&scratch.view, std::slice::from_ref(f), None).is_some()
+        });
+        let runs: Vec<(Vec<String>, Option<String>)> = if per_file {
+            files
+                .iter()
+                .map(|f| {
+                    (
+                        vec![f.clone()],
+                        project::test_command_for(&scratch.view, std::slice::from_ref(f), None),
+                    )
+                })
+                .collect()
+        } else {
+            vec![(files.clone(), test_check.clone())]
+        };
+        for (which, command) in runs {
+            let Some(command) = command else { continue };
+            let stop = self.stop.clone();
+            let queued = crate::command_tool::Queued {
+                kind: crate::workload::JobKind::Check {
+                    owner: self.dialog_id.clone(),
+                },
+                note: Box::new(|_| {}),
+                env: scratch.command_env(),
+                confine: scratch.confine(),
+            };
+            let out = crate::command_tool::run_command(
+                view.clone(),
+                command,
+                Some(300_000),
+                move || stop.is_set(),
+                Some(queued),
+            )
+            .await;
+            if let Ok(out) = out {
+                if out.exit_code == Some(0) && !out.timed_out && !out.stopped {
+                    passing.extend(which);
+                }
+            }
+        }
+        let _ =
+            tauri::async_runtime::spawn_blocking(move || crate::overlay::chats::discard_child(&id))
+                .await;
+        red_note(&passing)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -393,6 +393,52 @@ pub fn test_command_for(root: &Path, files: &[String], test_check: Option<&str>)
     fallback()
 }
 
+/// F05b: light checks a parallel worker may run on its files, per stack:
+/// a file or a package at a time, never a build or a test run. Tools that
+/// aren't installed are left out; a stack with nothing gets only the
+/// language server's diagnostics.
+pub fn light_check_for(root: &Path, files: &[String]) -> Vec<String> {
+    let installed = |tool: &str| {
+        root.join("node_modules/.bin").join(tool).is_file()
+            || std::env::var_os("PATH").is_some_and(|path| {
+                std::env::split_paths(&path)
+                    .any(|d| d.join(tool).is_file() || d.join(format!("{tool}.exe")).is_file())
+            })
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |c: String| {
+        if !out.contains(&c) {
+            out.push(c)
+        }
+    };
+    for f in files {
+        let f = f.replace('\\', "/");
+        match split_ext(&f).1 {
+            "py" => {
+                if installed("ruff") {
+                    push(format!("ruff check {f}"));
+                }
+                if installed("pyright") {
+                    push(format!("pyright {f}"));
+                }
+            }
+            "go" => {
+                let pkg = f
+                    .rsplit_once('/')
+                    .map_or(".".to_string(), |(d, _)| format!("./{d}"));
+                push(format!("go vet {pkg}"));
+            }
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+                if root.join("node_modules/.bin/eslint").is_file() =>
+            {
+                push(format!("npx eslint {f}"));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn cargo(dir: &str, filter: &str) -> String {
     let manifest = if dir.is_empty() {
         String::new()
@@ -477,6 +523,31 @@ mod tests {
         for t in ["src/a.ts", "src/testing.rs", "x.go"] {
             assert!(!is_test_path(t), "{t}");
         }
+    }
+
+    #[test]
+    fn light_checks_per_stack_are_light() {
+        let dir = std::env::temp_dir().join(format!("light-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("node_modules/.bin")).unwrap();
+        std::fs::write(dir.join("node_modules/.bin/eslint"), "").unwrap();
+        let checks = light_check_for(
+            &dir,
+            &[
+                "pkg/util/a.go".into(),
+                "src/a.ts".into(),
+                "README.md".into(),
+                "pkg/util/b.go".into(),
+            ],
+        );
+        assert_eq!(checks, ["go vet ./pkg/util", "npx eslint src/a.ts"]);
+        for c in &checks {
+            assert_eq!(
+                crate::workload::classify::classify(c, Some(&dir)),
+                crate::workload::classify::Class::Light,
+                "{c}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -223,6 +223,37 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
               }
             />
           </div>
+          <label class="setting-checkbox">
+            <input
+              type="checkbox"
+              checked={s().parallelWorkers}
+              disabled={off()}
+              onChange={(e) => patch({ parallelWorkers: e.currentTarget.checked })}
+            />
+            <span>
+              Run plan groups in parallel
+              <span class="setting-checkbox-sub">
+                Steps a plan marks with the same “Group:” are carried out by step workers at the
+                same time, each in its own copy of the chat’s files, then joined and checked once.
+                Isolated chats only; needs the step worker on.
+              </span>
+            </span>
+          </label>
+          <label class="setting-checkbox">
+            <input
+              type="checkbox"
+              checked={s().redCheck}
+              disabled={off()}
+              onChange={(e) => patch({ redCheck: e.currentTarget.checked })}
+            />
+            <span>
+              Red check for the test writer’s tests
+              <span class="setting-checkbox-sub">
+                Its new tests also run on the code before the change; one that already passes there
+                is flagged, since it may not test the change. Isolated chats only.
+              </span>
+            </span>
+          </label>
           <div class="subagent-limits">
             <NumberInput
               label="Tokens per run (empty: no limit)"
