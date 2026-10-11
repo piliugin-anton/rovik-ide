@@ -8540,3 +8540,173 @@ async fn out_of_scope_and_conflict_together() {
     );
     h.run_end().await;
 }
+
+/// A worker that says it's done but reports another file than it changed:
+/// partial, the step left open, and the lead told why.
+#[tokio::test]
+async fn a_done_worker_whose_report_names_the_wrong_file_is_partial() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 1.",
+            vec![
+                write_call("w1", "a.txt", "hello\n"),
+                worker_report("Said hello.", &["b.txt"]),
+            ],
+        )],
+        vec![step("s1", 1), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let r = h.task_result("s1").await;
+    assert!(r.content.contains("Status: partial"), "{}", r.content);
+    assert!(
+        r.content.contains("what it changed isn't what it reported"),
+        "{}",
+        r.content
+    );
+    assert!(r.meta.as_ref().unwrap().get("checklistUpdate").is_none());
+    assert_eq!(
+        h.file("a.txt").as_deref(),
+        Some("hello\n"),
+        "its change is kept"
+    );
+}
+
+/// A blocked worker keeps what it did of its step, and the lead hears why
+/// it stopped.
+#[tokio::test]
+async fn a_blocked_worker_keeps_its_half_step_with_the_note() {
+    let h = plan_harness(&[("a.txt", "old\n"), ("b.txt", "b\n")]).await;
+    let blocked = "## Summary\nHalf of it.\n\n## Changed files\n- `a.txt`: changed\n\n## Open questions\nNone\n\n## Blocked\nb.txt is locked by another step.";
+    let (url, _) = model_routed(
+        vec![(
+            "# Your step: 2.",
+            vec![
+                write_call("w1", "a.txt", "hello again\n"),
+                Reply::Text(blocked),
+            ],
+        )],
+        vec![step("s2", 2), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let r = h.task_result("s2").await;
+    assert!(r.content.contains("Status: blocked"), "{}", r.content);
+    assert!(
+        r.content.contains("b.txt is locked by another step"),
+        "{}",
+        r.content
+    );
+    assert!(
+        r.content.contains("Its changes are kept: a.txt."),
+        "{}",
+        r.content
+    );
+    assert_eq!(h.file("a.txt").as_deref(), Some("hello again\n"));
+}
+
+/// A group worker whose report is out of format isn't landed at the join;
+/// its copy waits until the lead says to land it.
+#[tokio::test]
+async fn an_unformatted_group_worker_isnt_landed_until_the_lead_says_so() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = group_harness(&[]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    Reply::Text("did stuff"),
+                    Reply::Text("still no format"),
+                    worker_report("Landing it.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Call {
+                id: "c1",
+                name: "task",
+                args: json!({ "continue": "g1#w1", "goal": "land it" }),
+            },
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let joined = h.result_when_ready("g1").await;
+    assert!(
+        joined
+            .content
+            .contains("Status: unformatted. Its copy is kept, not landed"),
+        "{}",
+        joined.content
+    );
+    let continued = h.result_when_ready("c1").await;
+    assert!(
+        continued.content.contains("Its copy landed: src/users.rs."),
+        "{}",
+        continued.content
+    );
+    assert_eq!(in_view(&h, "src/users.rs").as_deref(), Some("users\n"));
+    h.run_end().await;
+}
+
+/// A group worker whose only change was outside its scope changed nothing
+/// of its step: partial, and nothing of it lands.
+#[tokio::test]
+async fn a_group_worker_with_only_out_of_scope_changes_is_partial() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = group_harness_with_side_effect(GROUP_PLAN, "printf 'side effect\\n' > src/api.rs", &[])
+        .await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![eslint("b1"), worker_report("Users done.", &[])],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts\n"),
+                    worker_report("Posts.", &["src/posts.rs"]),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let joined = h.result_when_ready("g1").await;
+    let w1 = joined
+        .content
+        .split("### Step 3")
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(w1.contains("Status: partial"), "{w1}");
+    assert!(w1.contains("outside its step's scope"), "{w1}");
+    assert_eq!(
+        in_view(&h, "src/api.rs").as_deref(),
+        Some("pub fn users() {}\npub fn posts() {}\n")
+    );
+    h.run_end().await;
+}

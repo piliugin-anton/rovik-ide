@@ -1800,17 +1800,11 @@ impl<R: Runtime> Run<R> {
             }
         }
         let n = result.worker.as_ref()?.get("step")?.as_u64()? as usize;
-        // P2.9: "done" with nothing written, or not what it says it wrote,
-        // isn't a step done.
-        if result.status == SubStatus::Done && (actual.is_empty() || mismatch) {
-            result.status = SubStatus::Partial;
+        let (status, why) = step_outcome(result.status, actual.is_empty(), mismatch);
+        result.status = status;
+        if let Some(why) = why {
             result.notes.push(format!(
-                "Step {n} isn't marked done: {}. Check it, then continue the worker or finish the step yourself.",
-                if actual.is_empty() {
-                    "it said it was done but changed no files"
-                } else {
-                    "what it changed isn't what it reported"
-                }
+                "Step {n} isn't marked done: {why}. Check it, then continue the worker or finish the step yourself."
             ));
         }
         if result.status != SubStatus::Done {
@@ -2016,6 +2010,27 @@ pub(super) fn other_steps(steps: &[super::plan::PlanStep], n: usize) -> Vec<(usi
         .collect()
 }
 
+/// P2.9: a worker's status for its step: "done" with nothing changed, or
+/// not what it reported, isn't a step done (and why). Any other status
+/// stands.
+fn step_outcome(
+    status: SubStatus,
+    changed_nothing: bool,
+    mismatch: bool,
+) -> (SubStatus, Option<&'static str>) {
+    match status {
+        SubStatus::Done if changed_nothing => (
+            SubStatus::Partial,
+            Some("it said it was done but changed no files"),
+        ),
+        SubStatus::Done if mismatch => (
+            SubStatus::Partial,
+            Some("what it changed isn't what it reported"),
+        ),
+        other => (other, None),
+    }
+}
+
 /// A subagent's working time left of `wall`, started at `started`, time
 /// spent waiting for the user (`waited`) aside.
 fn time_left(started: Instant, waited: Duration, wall: Duration) -> Duration {
@@ -2038,6 +2053,33 @@ fn note_round_start(cp: &mut super::repair::Checkpoint, w: &ChildWrite) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2 (section 4.2): a worker's step outcome, every case.
+    #[test]
+    fn after_worker_unit_matrix() {
+        use SubStatus::*;
+        for status in [Done, Partial, Blocked, Failed, Stopped, Unformatted] {
+            for changed_nothing in [false, true] {
+                for mismatch in [false, true] {
+                    let (now, why) = step_outcome(status, changed_nothing, mismatch);
+                    if status == Done && (changed_nothing || mismatch) {
+                        assert_eq!(now, Partial);
+                        assert!(why.is_some());
+                    } else {
+                        assert_eq!(
+                            (now, why),
+                            (status, None),
+                            "{status:?} {changed_nothing} {mismatch}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            step_outcome(Done, true, true).1,
+            Some("it said it was done but changed no files")
+        );
+    }
 
     /// Round 2 (section 4.2): time left at the wall's very end is zero,
     /// and time spent waiting for the user isn't spent.
