@@ -268,9 +268,6 @@ pub struct Run<R: Runtime> {
     /// Commands that may have changed files since the round's checkpoint
     /// (P3.5): a rollback can't undo them, and says so.
     pub(super) round_commands: Vec<String>,
-    /// How many check rounds had run when the run first wrote a test file
-    /// (P3.7: test counts are compared with the rounds before it).
-    pub(super) first_test_write_round: Option<usize>,
     /// What files were before the run couldn't all be rebuilt after a
     /// restart (P3.9): checks that pass aren't "verified".
     pub(super) integrity_unchecked: bool,
@@ -775,7 +772,6 @@ impl<R: Runtime> Run<R> {
             review_outcome: None,
             carry_lost: None,
             round_commands: Vec::new(),
-            first_test_write_round: None,
             integrity_unchecked: false,
             rechecks: 0,
             carry_lost_told: false,
@@ -899,7 +895,6 @@ impl<R: Runtime> Run<R> {
             review_outcome: None,
             carry_lost: None,
             round_commands: Vec::new(),
-            first_test_write_round: None,
             integrity_unchecked: false,
             rechecks: 0,
             carry_lost_told: false,

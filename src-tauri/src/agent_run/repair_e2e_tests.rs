@@ -264,7 +264,7 @@ async fn a_test_skipped_to_pass_is_not_reported_as_verified() {
         asked[0]
     );
     assert!(
-        asked[0].contains("fewer tests ran than before this run changed any test (1 → 0)"),
+        asked[0].contains("fewer tests ran than before, not counting the run's own test files (1 → 0)"),
         "{}",
         asked[0]
     );
@@ -702,4 +702,80 @@ if (fs.readFileSync('a.js', 'utf8').includes('require')) {
         Some("good\n"),
         "the fix is kept"
     );
+}
+
+/// Two failing tests of add.js, for the P3.7 runs below.
+const ADD_TESTS: &str = r#"test('adds', () => assert(require('../add.js')(1, 2) === 3, 'add is wrong'));
+test('adds zero', () => assert(require('../add.js')(2, 0) === 2, 'add is wrong'));
+"#;
+const NEW_TEST: &str = "test('new', () => assert(true));\n";
+
+fn rm_add_tests(id: &'static str) -> Reply {
+    Reply::Call {
+        id,
+        name: "bash",
+        args: json!({ "command": "rm tests/add.test.js" }),
+    }
+}
+
+async fn fewer_tests_run(lead: Vec<Reply>) -> (Harness, String) {
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/add.test.js", ADD_TESTS),
+        ("add.js", "module.exports = (a, b) => a * b;\n"),
+    ])
+    .await;
+    let (url, _) = model(lead).await;
+    h.start(h.request(&url, Harness::send("Fix add"), checks_on()))
+        .await;
+    let end = h.run_end().await;
+    (h, end)
+}
+
+/// Round 2, P3.7: a test file deleted by a command, after the run wrote a
+/// test file of its own: fewer tests is still flagged (direct mode, where
+/// the command's deletion isn't one of the run's files).
+#[tokio::test]
+async fn fewer_tests_after_a_bash_deletion_is_flagged_in_direct_mode() {
+    if !has_node() {
+        return;
+    }
+    let (h, end) = fewer_tests_run(vec![
+        write("w1", "add.js", "module.exports = (a, b) => a - b;\n"),
+        Reply::Text("Done."),
+        write("w2", "tests/new.test.js", NEW_TEST),
+        rm_add_tests("b1"),
+        Reply::Text("Done."),
+        Reply::Text("Those tests were obsolete."),
+    ])
+    .await;
+    assert_eq!(end, "verify-flagged");
+    let asked = harness_texts(&h.messages().await, "integrity");
+    assert!(
+        asked[0].contains("fewer tests ran than before, not counting the run's own test files (2 → 0)"),
+        "{asked:?}"
+    );
+}
+
+/// Round 2, P3.7: the run's first write is a test file, so no round ran
+/// before it touched tests; a later deletion is still measured against
+/// the rounds before.
+#[tokio::test]
+async fn first_write_is_a_test_file_keeps_a_reference() {
+    if !has_node() {
+        return;
+    }
+    let (h, end) = fewer_tests_run(vec![
+        write("w1", "tests/new.test.js", NEW_TEST),
+        Reply::Text("Done."),
+        rm_add_tests("b1"),
+        Reply::Text("Done."),
+        Reply::Text("Those tests were obsolete."),
+    ])
+    .await;
+    let rounds = records(&h.messages().await);
+    assert_eq!(rounds[0]["testsRun"], 3, "{rounds:#?}");
+    assert_eq!(rounds[1]["testsRun"], 1, "{rounds:#?}");
+    assert_eq!(end, "verify-flagged");
 }

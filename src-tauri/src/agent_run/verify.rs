@@ -275,6 +275,7 @@ fn round_failures(results: &[CheckResult]) -> RoundFailures {
             .iter()
             .filter_map(|r| r.tests_ran)
             .reduce(|a, b| a + b),
+        own_tests: None,
     }
 }
 
@@ -733,7 +734,8 @@ impl<R: Runtime> Run<R> {
             .iter()
             .any(|r| r.status == "passed" || r.status == "failed");
         // R01: how this round compares with the earlier ones.
-        let now = round_failures(&results);
+        let mut now = round_failures(&results);
+        now.own_tests = Some(self.own_test_count());
         let mut judgement = repair::judge(&self.verify_history, &now);
         // R05: asked to put back a weakened test, the agent did, and it
         // fails: that's what was asked for, not a fix that broke something.
@@ -760,25 +762,11 @@ impl<R: Runtime> Run<R> {
         } else {
             Vec::new()
         };
-        // P3.7: against the most tests a round ran before the run first
-        // wrote a test file. Fewer is left unflagged when the run did write
-        // test files and none of them weakens anything (it removed tests of
-        // its own, say).
-        let upto = self
-            .first_test_write_round
-            .unwrap_or(self.verify_history.len())
-            .min(self.verify_history.len());
-        let reference = self.verify_history[..upto]
-            .iter()
-            .filter_map(|r| r.tests_ran)
-            .max();
-        if let (Some(before), Some(after)) = (reference, now.tests_ran) {
-            let explained = self.first_test_write_round.is_some() && flags.is_empty();
-            if after < before && !explained {
-                flags.push(format!(
-                    "fewer tests ran than before this run changed any test ({before} → {after})"
-                ));
-            }
+        // P3.7: fewer tests than an earlier round, the run's own test files
+        // aside (round 2: a test file a command deleted counts too, and a
+        // run whose first write is a test file still has a reference).
+        if let Some(flag) = repair::fewer_tests_flag(&self.verify_history, &now) {
+            flags.push(flag);
         }
         // Nothing weakens the checks any more: an earlier question is settled.
         if ran && flags.is_empty() {

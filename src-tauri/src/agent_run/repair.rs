@@ -72,6 +72,22 @@ pub struct RoundFailures {
     pub ran: BTreeSet<String>,
     /// Tests the test check ran, when it said.
     pub tests_ran: Option<u32>,
+    /// Round 2, P3.7: tests in the files the run itself wrote, then (None:
+    /// not known, a round restored from before a restart).
+    pub own_tests: Option<u32>,
+}
+
+/// Round 2, P3.7: fewer tests ran than in an earlier round, not counting
+/// the tests in the run's own test files (it may remove tests it added,
+/// and what it removes from a file is flagged by the file). A test file
+/// deleted by a command, or tests that stopped being found, show here.
+pub fn fewer_tests_flag(history: &[RoundFailures], now: &RoundFailures) -> Option<String> {
+    let others = |r: &RoundFailures| Some(r.tests_ran?.saturating_sub(r.own_tests?));
+    let before = history.iter().filter_map(others).max()?;
+    let after = others(now)?;
+    (after < before).then(|| {
+        format!("fewer tests ran than before, not counting the run's own test files ({before} → {after})")
+    })
 }
 
 /// The check a key belongs to (`failure_keys` puts it first).
@@ -770,10 +786,6 @@ impl<R: Runtime> Run<R> {
         {
             self.tests_changed.push(key.clone());
         }
-        // P3.7: the round before which tests were last counted as found.
-        if self.first_test_write_round.is_none() && super::project::is_test_path(&key) {
-            self.first_test_write_round = Some(self.verify_history.len());
-        }
         let needs_baseline = !self.baseline.contains_key(&key);
         let needs_checkpoint = self
             .checkpoint
@@ -1020,6 +1032,23 @@ impl<R: Runtime> Run<R> {
 
     /// R05: what weakens the checks among the files the run changed, from
     /// their baselines.
+    /// Round 2, P3.7: the tests in the test files the run changed, as
+    /// they are now.
+    pub(super) fn own_test_count(&self) -> u32 {
+        let Some(root) = self.root.clone() else {
+            return 0;
+        };
+        self.touched_keys()
+            .iter()
+            .filter(|k| super::project::is_test_path(k))
+            .filter_map(|k| {
+                let text = std::fs::read(tools::to_absolute_path(k, &root)).ok()?;
+                count_tests(k, &String::from_utf8_lossy(&text))
+            })
+            .map(|c| c.tests as u32)
+            .sum()
+    }
+
     pub(super) fn integrity_flags(&self) -> Vec<String> {
         let Some(root) = self.root.clone() else {
             return Vec::new();
@@ -1047,6 +1076,7 @@ mod tests {
             keys: keys.iter().map(|k| k.to_string()).collect(),
             ran: ran.iter().map(|k| k.to_string()).collect(),
             tests_ran: None,
+            own_tests: None,
         }
     }
 
@@ -1062,6 +1092,7 @@ mod tests {
                 keys: keys.into_iter().collect(),
                 ran: ["test".to_string()].into_iter().collect(),
                 tests_ran: None,
+                own_tests: None,
             }
         };
         let cases = [

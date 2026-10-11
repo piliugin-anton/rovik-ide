@@ -613,6 +613,7 @@ mod tests {
             keys: failure_keys("test", out, false).into_iter().collect(),
             ran: ["test".to_string()].into(),
             tests_ran: None,
+            own_tests: None,
         };
         let j = super::super::repair::judge(&[round(before)], &round(after));
         assert_ne!(
