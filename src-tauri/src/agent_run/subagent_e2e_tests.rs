@@ -7831,3 +7831,122 @@ async fn a_second_run_in_the_same_chat_starts_after_a_failed_batch() {
         .await;
     assert_eq!(h.run_end().await, "done");
 }
+
+/// A test writer continued by the call that started it writes, so it runs
+/// on its own, not batched with scouts.
+#[tokio::test]
+async fn continue_by_call_id_of_a_test_writer_runs_alone() {
+    let h = harness(&[
+        (
+            "src/greet.ts",
+            "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n",
+        ),
+        ("src/main.ts", "console.log('hi');\n"),
+        (".rovik/plans/greeter.md", TEST_PLAN),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Write tests for this change",
+                vec![Reply::Text(TEST_REPORT), Reply::Text(TEST_REPORT)],
+            ),
+            ("MARK-TA", vec![Reply::Text(REPORT)]),
+        ],
+        vec![
+            test_task("tw"),
+            Reply::Calls(vec![
+                (
+                    "c1",
+                    "task",
+                    json!({ "continue": "tw", "goal": "one more case?" }),
+                ),
+                task_call("q1", "MARK-TA: where?"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    let mut request = h.request(
+        &url,
+        StartKind::Send { message },
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    );
+    let mut config = test_writer_on();
+    config.kinds.insert(
+        "scout".into(),
+        serde_json::from_value(json!({ "enabled": true })).unwrap(),
+    );
+    request.config.as_mut().unwrap().subagents = config;
+    h.start(request).await;
+    h.run_end().await;
+    let batches = crate::agent_run::parallel::batches_of(&h.dialog_id);
+    assert!(
+        batches.iter().any(|b| b == &vec!["c1".to_string()]),
+        "{batches:?}"
+    );
+    assert!(!batches.iter().any(|b| b.len() > 1), "{batches:?}");
+}
+
+/// An unknown handle in a batch: one named like a writing kind's runs
+/// alone (it might write) and errors cleanly; any other is batched with
+/// the scouts and errors cleanly, the scouts unharmed.
+#[tokio::test]
+async fn continue_with_an_unknown_handle_in_a_batch() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![("MARK-UH", vec![Reply::Text(REPORT), Reply::Text(REPORT)])],
+        vec![
+            Reply::Calls(vec![
+                (
+                    "u1",
+                    "task",
+                    json!({ "continue": "worker-deadbeef", "goal": "go on" }),
+                ),
+                task_call("q1", "MARK-UH: one"),
+            ]),
+            Reply::Calls(vec![
+                (
+                    "u2",
+                    "task",
+                    json!({ "continue": "nobody", "goal": "go on" }),
+                ),
+                task_call("q2", "MARK-UH: two"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    h.run_end().await;
+    for id in ["u1", "u2"] {
+        let r = h.task_result(id).await.content;
+        assert!(r.starts_with("Error"), "{id}: {r}");
+    }
+    for id in ["q1", "q2"] {
+        assert!(
+            h.task_result(id).await.content.contains("Status: done"),
+            "{id}"
+        );
+    }
+    let batches = crate::agent_run::parallel::batches_of(&h.dialog_id);
+    assert!(
+        batches.iter().any(|b| b == &vec!["u1".to_string()]),
+        "{batches:?}"
+    );
+    assert!(
+        batches
+            .iter()
+            .any(|b| b == &vec!["u2".to_string(), "q2".to_string()]),
+        "{batches:?}"
+    );
+}
