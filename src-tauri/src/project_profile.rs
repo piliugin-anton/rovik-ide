@@ -703,6 +703,15 @@ pub fn save_project_settings(
 /// runner, headless.rs, keeps it with its report).
 static AGENT_LOG_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
+/// Tests: where the agent log goes now (None: the app's data folder).
+#[cfg(test)]
+pub fn agent_log_dir() -> Option<std::path::PathBuf> {
+    AGENT_LOG_DIR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 #[cfg(any(test, feature = "headless"))]
 pub fn set_agent_log_dir(dir: Option<std::path::PathBuf>) {
     *AGENT_LOG_DIR.lock().unwrap_or_else(|e| e.into_inner()) = dir;

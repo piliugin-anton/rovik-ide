@@ -547,12 +547,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             e = tokio::time::timeout_at(deadline, rx.recv()) => e,
             _ = tick.tick(), if args.max_tokens.is_some() => {
                 for line in new_log_lines(&log_file, &mut log_offset) {
-                    // P6.4: a subagent's line names its lead, even before
-                    // its start event is seen.
-                    let of_run = line["dialogId"] == dialog_id.as_str()
-                        || line["parentDialogId"] == dialog_id.as_str()
-                        || children.iter().any(|c| line["dialogId"] == c.as_str());
-                    if of_run {
+                    if of_run(&line, &dialog_id, &children) {
                         watched.add(&line, &dialog_id);
                     }
                 }
@@ -685,6 +680,15 @@ fn has_run_line(log: &Path, dialog_id: &str) -> bool {
                     .is_ok_and(|v| v["event"] == "run" && v["dialogId"] == dialog_id)
         })
     })
+}
+
+/// Whether a run log line is this run's: the lead's (`dialog_id`) or one of
+/// its subagents' (`children`: the ones seen starting). P6.4: a subagent's
+/// line names its lead, so it counts even before its start event is seen.
+fn of_run(line: &Value, dialog_id: &str, children: &[String]) -> bool {
+    line["dialogId"] == dialog_id
+        || line["parentDialogId"] == dialog_id
+        || children.iter().any(|c| line["dialogId"] == c.as_str())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1078,5 +1082,144 @@ mod tests {
                 ]
             }
         );
+    }
+
+    /// Round 2 (section 4.2): the lead's peak context is its largest
+    /// request; a subagent's larger ones, before or after, aren't the lead's.
+    #[test]
+    fn peak_lead_context_only_from_lead_lines() {
+        let reply = |dialog: &str, usage: Value| json!({ "event": "reply", "dialogId": dialog, "usage": usage });
+        let mut t = Totals::default();
+        t.add(
+            &reply(
+                "kid",
+                json!({ "prompt_tokens": 600_000, "completion_tokens": 10 }),
+            ),
+            "lead",
+        );
+        assert_eq!(t.peak_lead_context, 0, "no lead line yet");
+        t.add(
+            &reply(
+                "lead",
+                json!({ "prompt_tokens": 2_000, "completion_tokens": 5 }),
+            ),
+            "lead",
+        );
+        t.add(
+            &reply("lead", json!({ "input_tokens": 1_000, "output_tokens": 5 })),
+            "lead",
+        );
+        t.add(
+            &reply(
+                "kid",
+                json!({ "input_tokens": 900_000, "output_tokens": 1 }),
+            ),
+            "lead",
+        );
+        assert_eq!(t.peak_lead_context, 2_000);
+        assert_eq!((t.lead_in, t.sub_in), (3_000, 1_500_000));
+    }
+
+    /// Round 2 (section 4.2): `cost()`'s arms in order. Replies without
+    /// usage make it unknown whatever else is known; then the provider's
+    /// cost; then the price; only with neither is a run without replies
+    /// free ("none") and one with replies unknown. Pinned: a price with no
+    /// replies is (0, "price"), not "none".
+    #[test]
+    fn cost_arm_order_with_no_replies_and_no_price() {
+        let price = Some(Price {
+            input_per_million: 2.0,
+            output_per_million: 10.0,
+        });
+        assert_eq!(Totals::default().cost(None), (Some(0.0), "none"));
+        assert_eq!(Totals::default().cost(price), (Some(0.0), "price"));
+        let missing = Totals {
+            missing_usage: 1,
+            ..Totals::default()
+        };
+        assert_eq!(missing.cost(None), (None, "unknown"), "not none");
+        assert_eq!(missing.cost(price), (None, "unknown"), "not price");
+        let reported = Totals {
+            lead_in: 10,
+            replies: 1,
+            reported_cost: Some(0.5),
+            ..Totals::default()
+        };
+        assert_eq!(reported.cost(price), (Some(0.5), "provider"));
+        assert_eq!(
+            Totals {
+                missing_usage: 1,
+                ..reported
+            }
+            .cost(price),
+            (None, "unknown")
+        );
+        let counted = Totals {
+            lead_in: 10,
+            replies: 1,
+            ..Totals::default()
+        };
+        assert_eq!(counted.cost(None), (None, "unknown"));
+    }
+
+    /// Round 2 (section 4.2), P6.4: a subagent's line is the run's by its
+    /// `parentDialogId` before its `subagentStarted` is seen; one naming no
+    /// parent counts once the child is known; another run's never do.
+    #[test]
+    fn of_run_takes_a_childs_line_by_its_parent_before_it_starts() {
+        let none: Vec<String> = Vec::new();
+        let known = vec!["kid".to_string()];
+        let lead = json!({ "event": "reply", "dialogId": "lead" });
+        let child = json!({ "event": "reply", "dialogId": "kid", "parentDialogId": "lead" });
+        let bare = json!({ "event": "reply", "dialogId": "kid" });
+        assert!(of_run(&lead, "lead", &none));
+        assert!(of_run(&child, "lead", &none), "before subagentStarted");
+        assert!(!of_run(&bare, "lead", &none));
+        assert!(of_run(&bare, "lead", &known));
+        for other in [
+            json!({ "event": "reply", "dialogId": "other" }),
+            json!({ "event": "reply", "dialogId": "kid2", "parentDialogId": "other" }),
+            json!({ "event": "run" }),
+        ] {
+            assert!(!of_run(&other, "lead", &known), "{other}");
+        }
+    }
+
+    /// Round 2 (section 4.2), P6.4: a run that fails early leaves the agent
+    /// log's folder as it found it: a missing `--project` fails before it's
+    /// set; a database that can't open (its `attachments` folder is a file)
+    /// fails after, and the folder is reset.
+    #[tokio::test]
+    async fn the_log_dir_is_reset_after_an_early_project_error() {
+        let dir = std::env::temp_dir().join(format!("headless-early-{}", uuid::Uuid::new_v4()));
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let settings = dir.join("settings.json");
+        std::fs::write(
+            &settings,
+            json!({ "profile": { "id": "p::m", "label": "P/m", "model": "m", "baseUrl": "http://127.0.0.1:9/v1" } })
+                .to_string(),
+        )
+        .unwrap();
+        let args = |project: PathBuf| Args {
+            project,
+            settings: settings.clone(),
+            policy: None,
+            prompt: "Hi".into(),
+            out: dir.join("report.json"),
+            data: Some(data.clone()),
+            timeout: Duration::from_secs(5),
+            max_tokens: None,
+        };
+        // Other runs may set their own folder meanwhile: only ours is checked.
+        let ours = Some(data.join("log"));
+        let err = run(&args(dir.join("missing"))).await.unwrap_err();
+        assert!(err.contains("missing"), "{err}");
+        assert_ne!(crate::project_profile::agent_log_dir(), ours);
+        std::fs::write(data.join("attachments"), "").unwrap();
+        assert!(run(&args(dir.clone())).await.is_err());
+        assert_ne!(crate::project_profile::agent_log_dir(), ours);
+        assert!(!dir.join("report.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

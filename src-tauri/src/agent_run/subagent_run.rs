@@ -2246,4 +2246,25 @@ mod tests {
         sub.add_waited(Duration::from_secs(5));
         assert_eq!(sub.waited(), Duration::from_secs(605));
     }
+
+    /// Round 2 (section 4.2), P6.2: a request asked again after its usage
+    /// was reported (the prompt was sent and billed, nothing came back),
+    /// then the one that answered: both count, 1000 in and 20 out.
+    #[test]
+    fn note_usage_asked_again_then_success() {
+        let mut sub = ctx();
+        sub.note_usage(Some(
+            &json!({ "prompt_tokens": 500, "completion_tokens": 0 }),
+        ));
+        // An asked-again request that reported nothing changes nothing.
+        sub.note_usage(None);
+        sub.note_usage(Some(
+            &json!({ "prompt_tokens": 500, "completion_tokens": 20 }),
+        ));
+        assert_eq!(
+            (sub.tokens_in, sub.tokens_out, sub.usage_seen),
+            (1000, 20, true)
+        );
+        assert_eq!(sub.cost, None);
+    }
 }

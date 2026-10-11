@@ -458,3 +458,109 @@ async fn the_timeout_stops_the_run_and_the_report_says_so() {
         .iter()
         .any(|l| l["event"] == "run" && l["outcome"] == "stopped"));
 }
+
+/// Round 2 (section 4.2), P6.4: when the run's `"event":"run"` line never
+/// reaches the log (here no line can be written: the log's folder is a
+/// file), the report still comes after the bounded 5 s wait, with an
+/// empty run log.
+#[tokio::test]
+async fn a_run_line_that_never_arrives_is_waited_for_5_s_at_most() {
+    let dir = temp_dir();
+    let (url, seen) = model(vec![Reply::Text("Nothing to do.")]).await;
+    let data = dir.0.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("log"), "").unwrap();
+    // Timed from the run's first request: a wait for another headless run
+    // (one at a time) isn't counted.
+    let asked = async {
+        for _ in 0..12_000 {
+            if !seen.lock().unwrap().is_empty() {
+                return std::time::Instant::now();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the model was never asked");
+    };
+    let (report, asked) = tokio::join!(
+        headless(
+            &dir,
+            settings_with(&url, json!({ "verifyChanges": false, "checklist": "off" })),
+            None,
+            "Look around",
+            &[],
+        ),
+        asked
+    );
+    let waited = asked.elapsed();
+    assert_eq!(report["outcome"], "done", "{report:#}");
+    assert_eq!(report["runLog"], json!([]));
+    assert!(
+        waited >= std::time::Duration::from_secs(5) && waited < std::time::Duration::from_secs(7),
+        "{waited:?}"
+    );
+}
+
+/// Round 2 (section 4.2): the token cap counts a subagent's tokens, by its
+/// lines in the run log: a scout's one 600k-token request is past the cap
+/// by itself (the lead used 1k).
+#[tokio::test]
+async fn the_token_cap_counts_a_subagents_600k_prompt_tokens() {
+    const REPORT: &str = "## Answer\nIt is in a.txt.\n\n## Evidence\n- `a.txt:1`: the line\n\n## Open questions\nNone\n\n## Web sources\nNone";
+    let dir = temp_dir();
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-CAP",
+            vec![Reply::Usage(600_000, 1_000, Box::new(Reply::Text(REPORT)))],
+        )],
+        vec![
+            Reply::Usage(
+                1_000,
+                10,
+                Box::new(Reply::Call {
+                    id: "t1",
+                    name: "task",
+                    args: json!({ "kind": "scout", "goal": "MARK-CAP: where is it?" }),
+                }),
+            ),
+            // The lead would wait for ever: only the cap ends the run.
+            Reply::Hang(None),
+        ],
+    )
+    .await;
+    let mut settings = settings_with(&url, json!({ "verifyChanges": false, "checklist": "off" }));
+    settings["config"]["subagents"] =
+        json!({ "enabled": true, "kinds": { "scout": { "enabled": true } } });
+    let report = headless(&dir, settings, None, "Find it", &["--max-tokens", "500000"]).await;
+    assert_eq!(report["outcome"], "budget", "{report:#}");
+    let usage = &report["usage"];
+    assert_eq!(usage["subagentInputTokens"], 600_000);
+    assert_eq!(usage["subagentOutputTokens"], 1_000);
+    assert_eq!(usage["leadInputTokens"], 1_000);
+    assert_eq!(usage["peakLeadContext"], 1_000);
+}
+
+/// Round 2 (section 4.2), P6.4: a `--data` folder is the caller's: kept
+/// after the report, with the run's database and log.
+#[tokio::test]
+async fn a_data_folder_given_is_kept() {
+    let dir = temp_dir();
+    let (url, _) = model(vec![Reply::Text("Nothing to do.")]).await;
+    let report = headless(
+        &dir,
+        settings_with(&url, json!({ "verifyChanges": false, "checklist": "off" })),
+        None,
+        "Look around",
+        &[],
+    )
+    .await;
+    assert_eq!(report["outcome"], "done", "{report:#}");
+    let data = dir.0.join("data");
+    assert!(data.join("chats.db").is_file());
+    let id = report["dialogId"].as_str().unwrap();
+    let log = std::fs::read_to_string(data.join("log").join("agent-log.jsonl")).unwrap();
+    assert!(
+        log.lines().any(|l| serde_json::from_str::<Value>(l)
+            .is_ok_and(|v| v["event"] == "run" && v["dialogId"] == id)),
+        "{log}"
+    );
+}
