@@ -150,15 +150,26 @@ pub fn paths_in(text: &str) -> Vec<String> {
         .filter(|p| !p.is_empty() && !p.contains(' '))
         .collect();
     let found = if ticked.is_empty() {
-        text.split([',', ' ', ':'])
+        text.split_whitespace()
+            // Round 2: a URL isn't a path (`http://x/y` gave `//x/y`).
+            .filter(|t| !t.contains("://"))
+            .flat_map(|t| t.split([',', ':']))
             .map(|w| {
                 w.trim()
                     .trim_start_matches('(')
                     .trim_end_matches(['.', ')', ';'])
             })
-            // P4.8: a folder or a known extension: not `Node.js` or `e.g.`.
+            // P4.8: a folder or a known extension: not `Node.js` or `e.g.`;
+            // round 2: nor "and/or", "I/O", "read/write" (two words and a
+            // slash, with no extension or closing `/`).
             .filter(|w| {
-                w.contains('/') && w.len() > 1
+                let parts = w.split('/').filter(|p| !p.is_empty()).count();
+                let has_ext = w
+                    .rsplit('/')
+                    .next()
+                    .and_then(|n| n.rsplit_once('.'))
+                    .is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
+                w.contains('/') && (parts >= 3 || parts == 2 && (has_ext || w.ends_with('/')))
                     || w.rsplit_once('.').is_some_and(|(stem, ext)| {
                         !stem.is_empty()
                             && super::plan::FILE_EXTENSIONS.contains(&ext.to_lowercase().as_str())
@@ -697,6 +708,18 @@ mod tests {
         );
         assert_eq!(paths_in("`Node.js` stays"), ["Node.js"], "backticks decide");
         assert!(paths_in("i.e. nothing, etc.").is_empty());
+    }
+
+    /// Round 2, P4.8: word pairs and URLs in prose aren't paths; folders
+    /// and files still are.
+    #[test]
+    fn and_or_and_urls_are_not_paths() {
+        assert!(paths_in("Check the I/O and/or the read/write code.").is_empty());
+        assert!(paths_in("See http://example.com/docs/a for why.").is_empty());
+        assert_eq!(
+            paths_in("Fix src/api/ and lib/x.rs, see src/api/users/list too."),
+            ["src/api/", "lib/x.rs", "src/api/users/list"]
+        );
     }
 
     #[test]
