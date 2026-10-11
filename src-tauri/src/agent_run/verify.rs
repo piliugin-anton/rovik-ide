@@ -146,6 +146,28 @@ pub const CARRY_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Default)]
 struct Spilled(Vec<(String, std::path::PathBuf, super::subagent::Source)>);
 
+impl Spilled {
+    /// Puts the spilled contents back in `baseline`. False: one couldn't be
+    /// read back (its file is gone).
+    fn restore(
+        &self,
+        baseline: &mut std::collections::HashMap<String, super::subagent::Original>,
+    ) -> bool {
+        let mut all = true;
+        for (key, file, source) in &self.0 {
+            match std::fs::read(file) {
+                Ok(bytes) => {
+                    baseline
+                        .entry(key.clone())
+                        .or_insert(super::subagent::Original::new(Some(bytes), *source));
+                }
+                Err(_) => all = false,
+            }
+        }
+        all
+    }
+}
+
 impl Drop for Spilled {
     fn drop(&mut self) {
         for (_, file, _) in &self.0 {
@@ -479,13 +501,10 @@ impl<R: Runtime> Run<R> {
             return;
         };
         // Spilled contents come back; one that can't is left out (its
-        // file's original isn't known, like a command's change).
-        for (key, file, source) in &c.spilled.0 {
-            if let Ok(bytes) = std::fs::read(file) {
-                c.baseline
-                    .entry(key.clone())
-                    .or_insert(super::subagent::Original::new(Some(bytes), *source));
-            }
+        // file's original isn't known, like a command's change), and the
+        // integrity check can't be complete (round 2, P3.9).
+        if !c.spilled.restore(&mut c.baseline) {
+            self.integrity_unchecked = true;
         }
         self.verify_history = c.history;
         self.last_verify_results = c.last_results;
@@ -1401,6 +1420,28 @@ mod tests {
         let file = file.clone();
         drop(spilled);
         assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(super::super::check_output::carry_dir(&chat).unwrap());
+    }
+
+    /// Round 2, P3.9: a spilled file that's gone is reported, so the run
+    /// marks its integrity check as incomplete.
+    #[test]
+    fn a_spilled_file_lost_marks_integrity_unchecked() {
+        use super::super::subagent::{Original, Source};
+        let chat = format!("spill-{}", uuid::Uuid::new_v4());
+        let mut baseline = std::collections::HashMap::new();
+        baseline.insert(
+            "big.bin".to_string(),
+            Original::new(Some(vec![1u8; CARRY_MEMORY_BYTES + 1]), Source::ViewAtRunStart),
+        );
+        let spilled = spill(&chat, &mut baseline);
+        let mut kept = baseline.clone();
+        assert!(spilled.restore(&mut kept), "all of it comes back");
+        assert!(kept.contains_key("big.bin"));
+        std::fs::remove_file(&spilled.0[0].1).unwrap();
+        let mut lost = baseline.clone();
+        assert!(!spilled.restore(&mut lost));
+        assert!(!lost.contains_key("big.bin"));
         let _ = std::fs::remove_dir_all(super::super::check_output::carry_dir(&chat).unwrap());
     }
 
