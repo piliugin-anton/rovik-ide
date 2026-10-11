@@ -1088,6 +1088,39 @@ mod tests {
         dir
     }
 
+    /// Round 2 (section 4.2): a filter after a check can't read the code:
+    /// a file named in any spelling, or a folder searched whole.
+    #[test]
+    fn the_test_writer_cant_read_hidden_code_through_bash_filters() {
+        let dir = tw_dir("hidden");
+        let tw = |c: &str| writer_command_problem(c, true, Some(&dir));
+        for bad in [
+            "cargo test | cat src/lib.rs",
+            "cargo test | head src/./lib.rs",
+            "cargo test | grep -rn \"\" src",
+            "cargo test | grep -rn \"\" .",
+        ] {
+            assert!(tw(bad).is_some(), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round 2 (section 4.2): globs in the check itself are the check's
+    /// business; only a filter's are refused.
+    #[test]
+    fn the_test_writer_runs_checks_with_expansions_in_the_check_itself() {
+        let dir = tw_dir("globs");
+        let tw = |c: &str| writer_command_problem(c, true, Some(&dir));
+        for ok in [
+            "npx vitest run src/**/*.test.ts",
+            "pytest tests/test_*.py",
+            "cargo test 2>&1 | grep -c \"test result\"",
+        ] {
+            assert_eq!(tw(ok), None, "{ok}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Round 2, P2.5: a filter after the check may not write a file.
     #[test]
     fn filters_that_write_files_are_refused() {
