@@ -1525,6 +1525,39 @@ mod tests {
         assert!(!is_secret_path("src/keyboard.ts"));
     }
 
+    /// Round 2 (§4.2): what the shell expands is read from the quoting,
+    /// segment by segment.
+    #[test]
+    fn quoting_decides_expansion() {
+        let expands = |c: &str| parse_command(c).expands;
+        for (command, want) in [
+            ("grep \"fn *\"", false),
+            ("ls fn*", true),
+            ("echo '$X'", false),
+            ("echo \"$X\"", true),
+            ("ls ~", true),
+            ("ls '~'", false),
+            ("ls {a,b}", true),
+            ("grep -E \"a{2}\"", false),
+            ("echo \\$HOME", false),
+        ] {
+            assert_eq!(expands(command), [want], "{command}");
+        }
+        assert_eq!(expands("a | b*"), [false, true]);
+        assert_eq!(expands("ls * ; ls"), [true, false]);
+        assert_eq!(expands("ls * && ls"), [true, false]);
+    }
+
+    /// Round 2 (§4.2): one entry per segment, empty ones skipped.
+    #[test]
+    fn expands_vector_aligns_with_segments() {
+        for command in ["; ; ls * ; ", "| | |", "", "ls &&", "&& ls *"] {
+            let p = parse_command(command);
+            assert_eq!(p.expands.len(), p.segments.len(), "{command}");
+        }
+        assert_eq!(parse_command("; ; ls * ; ").expands, [true]);
+    }
+
     /// Round 2 (§4.2): a wrapper with its option's value missing is
     /// nothing to run, not a panic.
     #[test]
