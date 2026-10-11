@@ -849,6 +849,26 @@ pub fn section(markdown: &str, name: &str) -> Option<String> {
     None
 }
 
+/// Where a relative path's `..` parts take it, as written (no links
+/// followed); None when out of the project.
+fn without_dots(path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(if path.ends_with('/') && !parts.is_empty() {
+        format!("{}/", parts.join("/"))
+    } else {
+        parts.join("/")
+    })
+}
+
 /// B07: what's wrong with a plan against the project, beyond its form:
 /// files that aren't there, a file used before the step that creates it,
 /// and steps of one group that share a file.
@@ -882,10 +902,19 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
             let escapes = t.starts_with("../") || t.contains("/../") || t == "..";
             if escapes && super::paths::norm_rel(&t).is_none() && !missing.contains(&t) {
                 missing.push(t.clone());
-                problems.push(format!(
-                    "Step {} names `{t}`, which is outside the project: use a path inside it.",
-                    step.named()
-                ));
+                // `src/../x.rs` is `x.rs`: inside, but not read as a file.
+                match without_dots(&t) {
+                    None => problems.push(format!(
+                        "Step {} names `{t}`, which is outside the project: use a path inside it.",
+                        step.named()
+                    )),
+                    Some(inside) if !inside.is_empty() => problems.push(format!(
+                        "Step {} names `{t}`: write it as `{inside}`, without `..`.",
+                        step.named()
+                    )),
+                    // The root itself is no step's file (as `./`).
+                    Some(_) => {}
+                }
             }
         }
         for file in step.files.iter().filter(|f| !f.new) {
@@ -2934,5 +2963,28 @@ mod tests {
         let p = plan_problems(plan);
         assert_eq!(p.len(), 1, "{p:?}");
         assert!(p[0].starts_with("Step 1 names no file"), "{p:?}");
+    }
+
+    /// Round 2, P4.9: a `..` that stays in the project (`src/../x.rs`) isn't
+    /// "outside the project": the check says how to write it; one that
+    /// leaves it is still outside, and `src/../` (the root) is no file.
+    #[test]
+    fn dotdot_inside_the_project_is_named_as_it_resolves() {
+        let tree = Tree::new(&["src/a.rs", "x.rs"]);
+        let plan = "# P\n\nx\n\n## Steps\n\n\
+            1. **One**\n   - `src/../x.rs`: use it.\n   - `src/api/../lib/`: the helpers.\n\
+               - `src/../../k.rs`: read it.\n   - `src/../`: format it.\n   - `src/a.rs`: use it.\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert_eq!(
+            project_problems(plan, &tree.0),
+            [
+                "Step 1 names `src/../x.rs`: write it as `x.rs`, without `..`.",
+                "Step 1 names `src/api/../lib/`: write it as `src/lib/`, without `..`.",
+                "Step 1 names `src/../../k.rs`, which is outside the project: use a path inside it.",
+            ]
+        );
+        assert_eq!(without_dots("a/b/../../c"), Some("c".into()));
+        assert_eq!(without_dots("a/../.."), None);
+        assert_eq!(without_dots("./a/./b/"), Some("a/b/".into()));
     }
 }
