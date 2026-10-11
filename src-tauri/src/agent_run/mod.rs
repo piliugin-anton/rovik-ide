@@ -1033,6 +1033,49 @@ mod run_control_tests {
         assert!(state.register_in("kid", None, "m", None).is_some());
     }
 
+    /// Round 2 (§4.2): a carry past its time is dropped when it's taken,
+    /// and its spilled files with it.
+    #[test]
+    fn a_carry_past_its_ttl_is_dropped_on_take() {
+        use super::verify::{VerifyCarry, CARRY_TTL};
+        let state = super::AgentState::default();
+        let file = std::env::temp_dir().join(format!("carry-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, "x").unwrap();
+        let old = CARRY_TTL + std::time::Duration::from_secs(1);
+        state.put_carry(
+            "chat",
+            VerifyCarry::for_test("rec", old, vec![file.clone()]),
+        );
+        assert!(state.take_carry("chat", "rec").is_none());
+        assert!(!file.exists(), "its spilled file went");
+        // Within its time it's taken.
+        state.put_carry(
+            "chat",
+            VerifyCarry::for_test("rec", std::time::Duration::ZERO, vec![]),
+        );
+        assert!(state.take_carry("chat", "rec").is_some());
+    }
+
+    /// Round 2 (§4.2): a newer carry replaces the chat's older one, whose
+    /// spilled files go; another record's take leaves it in place.
+    #[test]
+    fn a_newer_carry_replaces_and_removes_the_old_spill_files() {
+        use super::verify::VerifyCarry;
+        let state = super::AgentState::default();
+        let file = std::env::temp_dir().join(format!("carry-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, "x").unwrap();
+        let now = std::time::Duration::ZERO;
+        state.put_carry(
+            "chat",
+            VerifyCarry::for_test("old", now, vec![file.clone()]),
+        );
+        state.put_carry("chat", VerifyCarry::for_test("new", now, vec![]));
+        assert!(!file.exists());
+        assert!(state.take_carry("chat", "old").is_none());
+        assert!(state.has_carry("chat"), "an older record's take leaves it");
+        assert!(state.take_carry("chat", "new").is_some());
+    }
+
     /// Round 2 (section 4.2): run A's guard, dropped after run B started in
     /// the same chat, leaves B running.
     #[test]

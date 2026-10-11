@@ -136,6 +136,47 @@ pub struct VerifyCarry {
     spilled: Spilled,
 }
 
+#[cfg(test)]
+impl VerifyCarry {
+    /// An empty carry for `record_id`, kept `age` ago, with `spilled`
+    /// files (removed when it goes).
+    pub(super) fn for_test(
+        record_id: &str,
+        age: std::time::Duration,
+        spilled: Vec<std::path::PathBuf>,
+    ) -> VerifyCarry {
+        VerifyCarry {
+            record_id: record_id.into(),
+            history: Vec::new(),
+            last_results: Vec::new(),
+            last_failed: false,
+            checkpoint: None,
+            baseline: Default::default(),
+            integrity_open: Vec::new(),
+            asked_integrity: false,
+            rolled_back: Vec::new(),
+            bonus_rounds: 0,
+            groups: Vec::new(),
+            last_triage: None,
+            test_writer_files: Vec::new(),
+            tests_changed: Vec::new(),
+            worker_steps: Vec::new(),
+            reviews_total: 0,
+            review_findings: Vec::new(),
+            seen: crate::file_guard::Seen::new("test"),
+            ledger: Default::default(),
+            rechecks: 0,
+            stored: std::time::Instant::now() - age,
+            spilled: Spilled(
+                spilled
+                    .into_iter()
+                    .map(|f| ("k".to_string(), f, super::subagent::Source::ViewAtRunStart))
+                    .collect(),
+            ),
+        }
+    }
+}
+
 /// A carry is kept this long at most.
 pub const CARRY_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 /// Baseline contents a carry keeps in memory; the rest goes to disk.
