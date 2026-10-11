@@ -11,12 +11,16 @@ pub const ANY_CASE: bool = cfg!(any(target_os = "macos", target_os = "windows"))
 
 /// `path` as a repo-relative path with `/`: no `.` or empty parts, no
 /// trailing `/`. None for a path that isn't inside the project: one with a
-/// `..` part, an absolute one, or one with a drive (`C:`). The project root
-/// itself is "".
+/// `..` part, an absolute one, or one with a drive (`C:`, `c:/`; `a:b.txt`
+/// is a file name with a colon). The project root itself is "".
 pub fn norm_rel(path: &str) -> Option<String> {
     let p = path.trim().replace('\\', "/");
     let b = p.as_bytes();
-    if p.starts_with('/') || (b.len() > 1 && b[1] == b':' && b[0].is_ascii_alphabetic()) {
+    let drive = b.len() > 1
+        && b[1] == b':'
+        && b[0].is_ascii_alphabetic()
+        && (b[0].is_ascii_uppercase() || b.len() == 2 || b[2] == b'/');
+    if p.starts_with('/') || drive {
         return None;
     }
     let mut parts: Vec<&str> = Vec::new();
@@ -85,7 +89,7 @@ mod tests {
             ("..", None),
             ("/abs", None),
             ("C:\\x", None),
-            ("c:x", None),
+            ("c:/x", None),
             ("src/", Some("src")),
             ("src", Some("src")),
             ("", Some("")),
@@ -95,6 +99,16 @@ mod tests {
         }
         assert_eq!(key_as("SRC/X.ts", true).as_deref(), Some("src/x.ts"));
         assert_eq!(key_as("SRC/X.ts", false).as_deref(), Some("SRC/X.ts"));
+    }
+
+    /// Round 2, P0.1: a colon in a name isn't a drive.
+    #[test]
+    fn colon_in_a_name_is_not_a_drive() {
+        assert_eq!(norm_rel("a:b.txt").as_deref(), Some("a:b.txt"));
+        assert_eq!(norm_rel("src/a:b.txt").as_deref(), Some("src/a:b.txt"));
+        for drive in ["C:x", "C:", "c:", "C:/x", "c:\\x"] {
+            assert_eq!(norm_rel(drive), None, "{drive}");
+        }
     }
 
     #[test]
