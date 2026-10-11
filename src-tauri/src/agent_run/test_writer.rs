@@ -124,9 +124,17 @@ pub fn without_hidden_lines(text: &str, hidden: &[String]) -> String {
                 line.match_indices(n.as_str()).any(|(at, _)| {
                     // As a path, not part of a longer name.
                     let before = line[..at].chars().next_back();
-                    let after = line[at + n.len()..].chars().next();
+                    let rest = &line[at + n.len()..];
+                    let mut after = rest.chars();
+                    // `src/x.ts.bak` is another file; `src/x.ts.` ends a
+                    // sentence (round 2).
+                    let longer = match after.next() {
+                        Some(c) if c.is_alphanumeric() || c == '_' || c == '/' || c == '-' => true,
+                        Some('.') => after.next().is_some_and(|c| c.is_alphanumeric()),
+                        _ => false,
+                    };
                     before.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '-'))
-                        && after.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '/'))
+                        && !longer
                 })
             });
             if named {
@@ -344,6 +352,31 @@ impl<R: tauri::Runtime> super::run::Run<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2 (section 4.2): lines naming the hidden files go, and only
+    /// those: as a path, in any separator, not part of a longer name.
+    #[test]
+    fn without_hidden_lines_edge_cases() {
+        let hidden = vec!["src/x.ts".to_string()];
+        assert_eq!(without_hidden_lines("", &hidden), "");
+        let text = "src/x.ts:1: a\nsrc/x.ts.bak:1: b\nsrc\\x.ts:2: c\nsrc/y.ts:3: d";
+        let kept = without_hidden_lines(text, &hidden);
+        assert!(!kept.contains(": a") && !kept.contains(": c"), "{kept}");
+        assert!(
+            kept.contains("src/x.ts.bak:1: b") && kept.contains("src/y.ts:3: d"),
+            "{kept}"
+        );
+        // Pinned: a path ending in the hidden one (another folder's file of
+        // the same relative name) is left out too: the safe side.
+        assert!(!without_hidden_lines("other/src/x.ts:1: e", &hidden).contains(": e"));
+        // Hiding the root or nothing hides nothing.
+        for none in [vec![String::new()], vec![".".to_string()]] {
+            assert!(
+                without_hidden_lines(text, &none).starts_with("src/x.ts:1: a"),
+                "{none:?}"
+            );
+        }
+    }
 
     #[test]
     fn the_brief_has_the_specification_and_outlines_not_code() {
