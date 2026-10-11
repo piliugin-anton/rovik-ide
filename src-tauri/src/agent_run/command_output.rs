@@ -278,12 +278,12 @@ static RUST_ARROW: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*-->\s*(?P<file>[^\s:]+\.[A-Za-z0-9]+):\d+").unwrap());
 /// Summary lines that say it failed, not what did.
 static RUST_SUMMARY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(could not compile|aborting due to|test failed|\d+ previous errors?|build failed|failed to run|Some errors have detailed|\d+ targets? failed)").unwrap()
+    Regex::new(r"^(could not compile|aborting due to|test failed|\d+ previous errors?|build failed|failed to run|Some errors have detailed|\d+ targets? failed|doctest failed|process didn't exit successfully)").unwrap()
 });
 /// `path:12:5: error: msg` (gcc, clang), `path:12:5: F401 msg` (ruff),
 /// `./a.go:3:2: msg` (go vet).
 static GENERIC: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(?P<file>(?:\.{1,2}/)?[A-Za-z0-9_@./+-]+\.[A-Za-z][A-Za-z0-9]{0,5}):\d+(?::\d+)?:\s*(?:(?:fatal\s+)?error:\s*|(?P<code>[A-Z]{1,4}\d{2,5})\s+)?(?P<msg>.+)$").unwrap()
+    Regex::new(r"^\s*(?P<file>(?:\.{1,2}/)?[A-Za-z0-9_@./+-]+\.[A-Za-z][A-Za-z0-9]{0,5}):\d+(?P<col>:\d+)?:\s*(?:(?:fatal\s+)?error:\s*|(?P<code>[A-Z]{1,4}\d{2,5})\s+)?(?P<msg>.+)$").unwrap()
 });
 /// eslint (stylish): a file on its own line, then `  12:5  error  msg  rule`.
 static ESLINT_FILE: LazyLock<Regex> = LazyLock::new(|| {
@@ -425,7 +425,12 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
             }
             let code = c.name("code").map_or("", |m| m.as_str());
             let key = format!("{kind}|{file}|{code}|{}", key_message(&c["msg"]));
-            if !generic.contains(&key) {
+            // Round 2, P3.1: a compiler's line (`./a.go:3:2: undefined: foo`:
+            // its path first, with a column) is an error of its own, even
+            // next to failing tests; tracebacks and assertion lines aren't.
+            if c.name("col").is_some() && !indented {
+                push(key, &mut keys);
+            } else if !generic.contains(&key) {
                 generic.push(key);
             }
         }
@@ -588,6 +593,42 @@ mod tests {
             ["src/a.ts"],
             "each once"
         );
+    }
+
+    /// Round 2, P3.1: a build error in one Go package next to a failing
+    /// test in another is kept; once it compiles, its own failing tests
+    /// aren't a regression of the round before.
+    #[test]
+    fn go_build_error_next_to_another_packages_test_failure_is_kept() {
+        let before = "# example.com/a\n./a.go:3:2: undefined: foo\nFAIL\texample.com/a [build failed]\n\
+            --- FAIL: TestB (0.00s)\n    b_test.go:9: got 1, want 2\nFAIL\nFAIL\texample.com/b\t0.002s\n";
+        let keys = failure_keys("test", before, false);
+        assert!(
+            keys.contains(&"test|a.go||undefined: foo".to_string()),
+            "{keys:?}"
+        );
+        assert!(keys.contains(&"test|test|TestB".to_string()), "{keys:?}");
+        let after = "--- FAIL: TestA (0.00s)\n    a_test.go:4: wrong\nFAIL\nFAIL\texample.com/a\t0.001s\nok\texample.com/b\n";
+        let round = |out: &str| super::super::repair::RoundFailures {
+            keys: failure_keys("test", out, false).into_iter().collect(),
+            ran: ["test".to_string()].into(),
+            tests_ran: None,
+        };
+        let j = super::super::repair::judge(&[round(before)], &round(after));
+        assert_ne!(
+            j.verdict,
+            super::super::repair::Verdict::Regression,
+            "{j:?}"
+        );
+    }
+
+    /// Round 2, P3.1: cargo's closing summaries aren't errors of their own.
+    #[test]
+    fn cargo_summaries_arent_keys() {
+        let out = "test tests::it ... FAILED\n\nerror: doctest failed, to rerun pass `--doc`\n\
+            error: process didn't exit successfully: `target/debug/deps/a-1a2b` (exit status: 101)\n\
+            error: 1 target failed:\n    `-p a --lib`\n";
+        assert_eq!(failure_keys("test", out, false), ["test|test|tests::it"]);
     }
 
     #[test]
