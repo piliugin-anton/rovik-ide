@@ -4044,6 +4044,30 @@ async fn kept_after_a_conflict() -> Harness {
     h
 }
 
+/// Round 2, P6.8: after a conflict, the snapshot blobs left are exactly
+/// the saved group's: none for the paths that didn't land.
+#[tokio::test]
+async fn unlanded_snapshot_blobs_are_forgotten() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = kept_after_a_conflict().await;
+    let groups = crate::overlay::chats::saved_groups(&h.dialog_id);
+    let referenced: usize = groups
+        .iter()
+        .flat_map(|g| &g.before)
+        .map(|(_, b)| match b {
+            crate::overlay::chats::Before::File { base, .. } => 1 + usize::from(base.is_some()),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(
+        crate::overlay::chats::group_blob_count(&h.dialog_id),
+        referenced,
+        "{groups:?}"
+    );
+}
+
 /// Round 2, P1.2: after the app restarts, `continue` on a kept copy goes
 /// on in that copy (opened again from disk) and lands it.
 #[tokio::test]

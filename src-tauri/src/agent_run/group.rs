@@ -504,6 +504,10 @@ impl<R: Runtime> Run<R> {
                 None => chats::save_group(&self.dialog_id, saved),
             };
             if let Err(e) = saved_or {
+                // Kept by no group: their blobs go.
+                let unused: Vec<chats::Before> =
+                    joins.before.iter().map(|(_, b)| b.clone()).collect();
+                chats::forget_snapshot(&self.dialog_id, &unused);
                 log::write(
                     &self.app,
                     json!({ "event": "groupSave", "dialogId": self.dialog_id, "error": e }),
@@ -803,6 +807,11 @@ impl<R: Runtime> Run<R> {
                 // stopped half way, its journal: Land waits until it's
                 // finished); its finished work isn't thrown away.
                 let busy = matches!(e, LandError::Busy);
+                if let Ok(entries) = &snapshot {
+                    let unused: Vec<chats::Before> =
+                        entries.iter().map(|(_, b)| b.clone()).collect();
+                    chats::forget_snapshot(&self.dialog_id, &unused);
+                }
                 (
                     Joined::Kept,
                     (
@@ -839,12 +848,17 @@ impl<R: Runtime> Run<R> {
             .cloned()
             .collect();
         match snapshot {
-            Ok(entries) => joined.before.extend(
-                entries
+            Ok(entries) => {
+                let (landed, not): (Vec<_>, Vec<_>) = entries
                     .iter()
-                    .filter(|(p, _)| landed_paths.contains(p))
-                    .cloned(),
-            ),
+                    .cloned()
+                    .partition(|(p, _)| landed_paths.contains(p));
+                joined.before.extend(landed);
+                // Round 2, P6.8: what a path that didn't land was (a
+                // conflict, outside the scope) is kept by no group.
+                let unused: Vec<chats::Before> = not.into_iter().map(|(_, b)| b).collect();
+                chats::forget_snapshot(&self.dialog_id, &unused);
+            }
             Err(e) => joined.snapshot_failed = Some(e.clone()),
         }
         if !landed_paths.is_empty() {
