@@ -804,6 +804,12 @@ pub fn section(markdown: &str, name: &str) -> Option<String> {
             .find('\n')
             .map_or(markdown.len(), |e| start + e);
         let title = markdown[start + 2..line_end].trim().to_lowercase();
+        // `## 5. Decisions` is the Decisions section, as `## 3. Steps` is the steps.
+        let title = title
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .strip_prefix(['.', ')'])
+            .filter(|_| title.starts_with(|c: char| c.is_ascii_digit()))
+            .map_or(title.as_str(), str::trim_start);
         if title.starts_with(&lower) {
             return Some(section_after(markdown, line_end).trim().to_string());
         }
@@ -2757,5 +2763,28 @@ mod tests {
             assert_eq!(s[1].files[0].path, "src/b.rs");
             assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
         }
+    }
+
+    /// Round 2: a numbered heading (`## 5. Decisions`) is its name's
+    /// section, so a step worker's brief keeps the plan's decisions.
+    #[test]
+    fn section_finds_numbered_headings() {
+        let plan = "# P\n\n## 1. Summary\n\nTwo files.\n\n## 3. Steps\n\n\
+            1. **One**\n   - `src/a.rs`: add a.\n2. **Two**\n   - `src/b.rs`: add b.\n\n\
+            ## 4) Validation\n- `cargo test`\n\n## 5. Decisions\n\n- Keep the old API.\n";
+        assert_eq!(
+            section(plan, "Decisions").as_deref(),
+            Some("- Keep the old API.")
+        );
+        assert_eq!(
+            section(plan, "validation").as_deref(),
+            Some("- `cargo test`")
+        );
+        assert_eq!(section(plan, "Summary").as_deref(), Some("Two files."));
+        assert_eq!(section("## 2024 roadmap\n\nx\n", "roadmap"), None);
+        assert_eq!(
+            section("## 2024 roadmap\n\nx\n", "2024").as_deref(),
+            Some("x")
+        );
     }
 }
