@@ -284,6 +284,13 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
                 .into(),
         ),
     }
+    // A code block left open runs to the end: the steps after it would be
+    // its step's body, silently.
+    if text.lines().filter(|l| is_fence(l)).count() % 2 == 1 {
+        problems.push(
+            "Close the code block that's left open (```): everything after it reads as code, steps included.".into(),
+        );
+    }
     // Code belongs in the implementation, not the plan. Signatures and
     // config lines (up to 3 lines) are welcome and don't count.
     let (mut code_lines, mut longest) = (0usize, 0usize);
@@ -2831,6 +2838,41 @@ mod tests {
         assert!(
             p[0].starts_with("Step 4 (numbered 3. in the plan) is too vague"),
             "{p:?}"
+        );
+    }
+
+    /// Round 2, P4.4: a code block that's never closed runs to the end of
+    /// the plan (no guess at where it was meant to end), so the steps after
+    /// it are its step's body; the form check asks for it to be closed.
+    #[test]
+    fn unclosed_fence_swallows_rest() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **One**\n   - `src/a.rs`: add `a` to the module.\n\
+            2. **Two**\n   - `src/b.rs`: add `b` with this signature:\n\n     ```rust\n     pub fn b() -> u8\n\
+            3. **Three**\n   - `src/c.rs`: call `b` from `c`.\n\n## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.len(), 2, "{s:#?}");
+        assert_eq!(
+            s[1].files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/b.rs"]
+        );
+        assert!(
+            s[1].body.contains("3. **Three**") && s[1].body.contains("## Validation"),
+            "{}",
+            s[1].body
+        );
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Close the code block"), "{p:?}");
+        let closed = plan.replace("pub fn b() -> u8\n", "pub fn b() -> u8\n     ```\n");
+        assert_eq!(steps(&closed).len(), 3);
+        assert!(
+            plan_problems(&closed).is_empty(),
+            "{:?}",
+            plan_problems(&closed)
         );
     }
 }
