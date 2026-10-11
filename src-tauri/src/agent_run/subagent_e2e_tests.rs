@@ -8953,3 +8953,67 @@ async fn non_utf8_contents_land_and_roll_back_exactly() {
     );
     h.run_end().await;
 }
+
+/// Stop while a group's other worker is still at work: the worker that
+/// finished lands, the stopped one is discarded, and none is retried.
+#[tokio::test]
+async fn stop_during_the_join_keeps_finished_copies() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let h = group_harness(&[]).await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "posts\n"),
+                    Reply::Hang(None),
+                ],
+            ),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    // Once w1 has reported and w2 has written, Stop.
+    for _ in 0..400 {
+        let ended = h.events_of("subagentEnded").len();
+        let w2_wrote = crate::overlay::chats::children_of(&h.dialog_id)
+            .iter()
+            .filter_map(|c| crate::overlay::chats::get(c))
+            .any(|o| {
+                std::fs::read_to_string(o.view.join("src/posts.rs"))
+                    .ok()
+                    .as_deref()
+                    == Some("posts\n")
+            });
+        if ended >= 1 && w2_wrote {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let app = h.app.handle().clone();
+    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    let result = h.result_when_ready("g1").await;
+    assert_eq!(h.run_end().await, "stopped");
+    let text = &result.content;
+    assert!(
+        text.contains("### Step 2 (w1): Users\nLanded: src/users.rs."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Status: stopped. Its copy was discarded"),
+        "{text}"
+    );
+    assert_eq!(h.events_of("subagentStarted").len(), 2, "no retry");
+    let w2 = h.child_of("g1#w2").await;
+    assert!(crate::overlay::chats::get(&w2.id).is_none(), "discarded");
+}
