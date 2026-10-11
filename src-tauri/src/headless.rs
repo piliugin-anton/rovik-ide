@@ -25,7 +25,11 @@
 //!     "config": { "permissions": { … }, "approvalProfiles": [],
 //!                 "subagents": { "enabled": true, "kinds": { … } } } }
 //!
-//! The policy file (anything it doesn't cover is allowed):
+//! The policy file (anything it doesn't cover is allowed). Its deny rules
+//! for commands are the run's denied commands: refused whenever the agent
+//! runs them, approvals or not. Its other rules answer approvals, when the
+//! settings ask for them. A provider that reports no usage stops a run that
+//! has `--max-tokens` (outcome `no-usage`): the cap can't be kept.
 //!
 //!   { "default": "allow",
 //!     "rules": [ { "tool": "bash", "contains": "git push", "decision": "deny" } ],
@@ -133,6 +137,21 @@ impl Policy {
                     })
             })
             .map_or(self.default, |r| r.decision)
+    }
+
+    /// Its deny rules for commands (bash, or any tool), as commands the run
+    /// refuses (`Permissions::denied_commands`): approvals are asked only
+    /// when the settings say so, and an evaluation's settings don't.
+    pub fn denied_commands(&self) -> Vec<String> {
+        self.rules
+            .iter()
+            .filter(|r| r.decision == Decision::Deny)
+            .filter(|r| r.tool.as_deref().is_none_or(|t| t == "bash"))
+            .filter_map(|r| r.contains.as_deref())
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 
     fn answer(&self, questions: &Value) -> QuestionsOutcome {
@@ -260,6 +279,9 @@ pub struct Totals {
     pub reported_cost: Option<f64>,
     /// Replies with usage.
     pub replies: usize,
+    /// Replies that came back whole without usage: the provider doesn't
+    /// report it, so neither tokens nor cost are known.
+    pub missing_usage: usize,
 }
 
 impl Totals {
@@ -274,6 +296,10 @@ impl Totals {
             return;
         }
         let Some(u) = line.get("usage").filter(|u| u.is_object()) else {
+            // A request that failed or was cut short may have none.
+            if line.get("error").is_none() {
+                self.missing_usage += 1;
+            }
             return;
         };
         let (i, o, cost) = usage_of(u);
@@ -295,6 +321,10 @@ impl Totals {
 
     /// Its cost: as reported, else by the settings' price; None: unknown.
     pub fn cost(&self, price: Option<Price>) -> (Option<f64>, &'static str) {
+        // Some replies' tokens aren't known: nor is the cost.
+        if self.missing_usage > 0 {
+            return (None, "unknown");
+        }
         if let Some(c) = self.reported_cost {
             return (Some(c), "provider");
         }
@@ -419,7 +449,16 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         root: Some(project.to_string_lossy().into_owned()),
         current_user_content: None,
         local_date: None,
-        config: Some(settings.config.clone()),
+        config: Some({
+            // The policy's commands refused are refused as the run asks for
+            // them, whether or not the settings have commands approved.
+            let mut config = settings.config.clone();
+            config
+                .permissions
+                .denied_commands
+                .extend(policy.denied_commands());
+            config
+        }),
         isolate: Some(false),
     };
     agent_run::agent_start(
@@ -451,7 +490,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                         watched.add(&line, &dialog_id);
                     }
                 }
-                if args.max_tokens.is_some_and(|max| watched.tokens() > max) {
+                // The provider doesn't report usage: the cap can't be kept.
+                let no_usage = watched.missing_usage > 0;
+                if no_usage || args.max_tokens.is_some_and(|max| watched.tokens() > max) {
                     agent_run::agent_stop(handle.clone(), handle.state(), dialog_id.clone());
                     let _ = tokio::time::timeout(Duration::from_secs(10), async {
                         while let Some(e) = rx.recv().await {
@@ -461,7 +502,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                         }
                     })
                     .await;
-                    break "budget".to_string();
+                    break if no_usage { "no-usage" } else { "budget" }.to_string();
                 }
                 continue;
             }
@@ -649,6 +690,7 @@ fn report(
             "totalTokens": totals.tokens(),
             "peakLeadContext": totals.peak_lead_context,
             "replies": totals.replies,
+            "repliesWithoutUsage": totals.missing_usage,
         },
         "costUsd": cost,
         "costSource": cost_source,
@@ -734,6 +776,44 @@ mod tests {
     }
 
     #[test]
+    fn replies_without_usage_make_the_cost_unknown() {
+        let price = Some(Price {
+            input_per_million: 2.0,
+            output_per_million: 10.0,
+        });
+        let mut t = Totals::default();
+        t.add(
+            &json!({ "event": "reply", "dialogId": "d", "usage": null }),
+            "d",
+        );
+        assert_eq!(t.missing_usage, 1);
+        assert_eq!(t.cost(price), (None, "unknown"), "not free");
+        // A request that failed or was stopped may have none: not counted.
+        let mut t = Totals::default();
+        t.add(
+            &json!({ "event": "reply", "dialogId": "d", "error": "cancelled" }),
+            "d",
+        );
+        assert_eq!(t.missing_usage, 0);
+        assert_eq!(t.cost(price), (Some(0.0), "price"));
+    }
+
+    #[test]
+    fn the_policys_command_denials_become_denied_commands() {
+        let policy: Policy = serde_json::from_value(json!({
+            "default": "allow",
+            "rules": [
+                { "tool": "bash", "contains": "git push", "decision": "deny" },
+                { "contains": " sudo ", "decision": "deny" },
+                { "tool": "write", "contains": ".env", "decision": "deny" },
+                { "tool": "bash", "contains": "ls", "decision": "allow" },
+            ],
+        }))
+        .unwrap();
+        assert_eq!(policy.denied_commands(), ["git push", "sudo"]);
+    }
+
+    #[test]
     fn totals_and_cost_from_the_run_log() {
         let reply = |dialog: &str, usage: Value| json!({ "event": "reply", "dialogId": dialog, "usage": usage });
         let mut t = Totals::default();
@@ -756,7 +836,11 @@ mod tests {
             "lead",
         );
         t.add(&json!({ "event": "run", "dialogId": "lead" }), "lead");
-        t.add(&reply("lead", Value::Null), "lead");
+        // A request that failed: no usage, and none expected.
+        t.add(
+            &json!({ "event": "reply", "dialogId": "lead", "usage": null, "error": "server" }),
+            "lead",
+        );
         assert_eq!(t.tokens(), 4670);
         assert_eq!(t.peak_lead_context, 3000);
         assert_eq!(t.replies, 3);

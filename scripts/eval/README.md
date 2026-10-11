@@ -77,7 +77,10 @@ stops with outcome `budget`) and 30 minutes (outcome `timeout`).
   repetitions (`--repeats`).
 - A run's cost is the provider's own figure when it reports one (`usage.cost`),
   else tokens × the `price` in the settings file. The settings must have a
-  price, and a run whose cost can't be known stops the campaign.
+  price, and a run whose cost can't be known stops the campaign. That
+  includes a provider that doesn't report usage (in a streamed reply, its
+  last chunk): the runner stops such a run with outcome `no-usage`, since
+  neither its tokens nor its cost can be counted.
 - Repetitions run in order: every task once, then every task again. A campaign
   stopped by its cap still covers the tasks evenly.
 
@@ -106,10 +109,12 @@ an environment variable named by `apiKeyEnv`, not in the file. Its
 aren't on the app's default command list) and `toolCallCheckpoint: null` (a
 pause every 50 tool calls would end a headless run; the caps bound it instead).
 Other settings are the app's defaults: the checks run when a run ends, and so
-does the checklist. `policy.json`
-answers approvals (everything except `git push` and `sudo` is allowed) and
-picks the recommended answer to questions. Each answer counts as an
-intervention in the report.
+does the checklist. `policy.json` refuses `git push` and `sudo` whenever the
+agent runs them, written in any form (`git -C . push`, `env X=1 git push`,
+`bash -c 'git push'`), with no approval asked: its command deny rules become
+the run's denied commands. It allows everything else, and picks the
+recommended answer to questions. Each question answered (and each approval,
+when settings ask for them) counts as an intervention in the report.
 
 `dry-run` runs each task twice with `fake-model.mjs`. The first model applies
 the reference change and must grade as a success. The second changes nothing

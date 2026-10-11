@@ -46,6 +46,10 @@ pub struct Permissions {
     pub allow_any_command: bool,
     /// Command prefixes, e.g. "git status" permits "git status -s".
     pub allowed_commands: Vec<String>,
+    /// Commands refused even when any command is permitted: a program and
+    /// words it's run with, in order ("git push" refuses `git -C . push
+    /// origin`). For unattended runs (the headless runner's policy).
+    pub denied_commands: Vec<String>,
     /// bash.
     pub command_approval: ApprovalRule,
     /// write and edit.
@@ -111,6 +115,7 @@ impl Default for Permissions {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            denied_commands: Vec::new(),
             command_approval: NO_APPROVAL,
             edit_approval: NO_APPROVAL,
             tool_approval: NO_APPROVAL,
@@ -326,6 +331,91 @@ fn matches_allowed(segment: &[String], allowed: &[Vec<String>]) -> bool {
     })
 }
 
+/// The program's name in a segment, past wrappers that run the rest
+/// (`sudo`, `env X=1`, `time`, `nice`, `nohup`, `exec`, `command`): each
+/// wrapper's own name comes first, so `sudo` itself can be denied.
+fn programs(segment: &[String]) -> Vec<(String, &[String])> {
+    let mut out = Vec::new();
+    let mut rest = segment;
+    while let Some(first) = rest.first() {
+        let name = first
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(first)
+            .to_lowercase();
+        out.push((name.clone(), &rest[1..]));
+        let skip = match name.as_str() {
+            "sudo" | "doas" | "time" | "nice" | "nohup" | "exec" | "command" | "xargs" => {
+                1 + rest[1..].iter().take_while(|w| w.starts_with('-')).count()
+            }
+            "env" => {
+                1 + rest[1..]
+                    .iter()
+                    .take_while(|w| w.contains('=') || w.starts_with('-'))
+                    .count()
+            }
+            _ => break,
+        };
+        rest = &rest[skip.min(rest.len())..];
+    }
+    out
+}
+
+/// Whether a segment runs a denied command: its program, then the entry's
+/// other words in order anywhere after it; a shell's `-c` script is
+/// checked as a command of its own.
+fn segment_denied(segment: &[String], denied: &[Vec<String>], depth: usize) -> bool {
+    programs(segment).iter().any(|(program, args)| {
+        let shell = matches!(program.as_str(), "bash" | "sh" | "zsh" | "dash" | "fish");
+        if shell && depth < 3 {
+            if let Some(at) = args.iter().position(|a| a == "-c" || a == "-lc") {
+                if let Some(script) = args.get(at + 1) {
+                    if command_denied(script, denied, depth + 1) {
+                        return true;
+                    }
+                }
+            }
+        }
+        denied.iter().any(|entry| {
+            let Some((head, words)) = entry.split_first() else {
+                return false;
+            };
+            if head.to_lowercase() != *program {
+                return false;
+            }
+            let mut it = args.iter();
+            words.iter().all(|w| it.any(|a| a == w))
+        })
+    })
+}
+
+fn command_denied(command: &str, denied: &[Vec<String>], depth: usize) -> bool {
+    let parsed = parse_command(command);
+    if parsed
+        .segments
+        .iter()
+        .any(|seg| segment_denied(seg, denied, depth))
+    {
+        return true;
+    }
+    // Inside $( ), backticks or ( ): the words in order in the text.
+    parsed.opaque && {
+        let text = split_words(&command.replace(['(', ')', '`', '$', ';', '&', '|'], " "));
+        denied.iter().any(|entry| {
+            !entry.is_empty() && text.windows(entry.len()).any(|w| w == entry.as_slice())
+        })
+    }
+}
+
+/// The denied entry a command runs, if any (`Permissions::denied_commands`).
+pub fn denied_entry(command: &str, permissions: &Permissions) -> Option<String> {
+    permissions.denied_commands.iter().find_map(|entry| {
+        let words = split_words(entry);
+        (!words.is_empty() && command_denied(command, std::slice::from_ref(&words), 0))
+            .then(|| entry.trim().to_string())
+    })
+}
+
 pub fn split_words(entry: &str) -> Vec<String> {
     entry.split_whitespace().map(str::to_string).collect()
 }
@@ -533,6 +623,12 @@ pub fn check_command(command: &str, permissions: &Permissions) -> Verdict {
     let modifies_files = parsed.writes_via_redirect
         || parsed.opaque
         || !parsed.segments.iter().all(|s| segment_is_read_only(s));
+
+    if let Some(entry) = denied_entry(command, permissions) {
+        return Verdict::Refused(format!(
+            "`{entry}` isn't allowed in this run. Do without it, or finish and say what's left."
+        ));
+    }
 
     if permissions.allow_any_command {
         return Verdict::Permitted { modifies_files };
@@ -1173,5 +1269,45 @@ mod tests {
         assert!(is_secret_path("C:\\Users\\me\\.aws\\config"));
         assert!(is_secret_path("deploy/KEY.PEM"));
         assert!(!is_secret_path("src/keyboard.ts"));
+    }
+
+    #[test]
+    fn denied_commands_are_refused_however_they_are_written() {
+        let p = Permissions {
+            allow_any_command: true,
+            denied_commands: vec!["git push".into(), "sudo".into(), "rm -rf".into()],
+            ..Permissions::default()
+        };
+        let refused = |c: &str| matches!(check_command(c, &p), Verdict::Refused(_));
+        for bad in [
+            "git push",
+            "git  push origin main",
+            "git -C . push",
+            "/usr/bin/git push --force",
+            "cd x && git push",
+            "env GIT_TRACE=1 git push",
+            "sudo ls",
+            "sudo -u root cat x",
+            "bash -c 'git push'",
+            "sh -c \"sudo ls\"",
+            "echo $(git push)",
+            "rm -rf build",
+            "time git push",
+        ] {
+            assert!(refused(bad), "{bad}");
+        }
+        for ok in [
+            "git status",
+            "git pull",
+            "echo git push",
+            "ls sudo",
+            "rm build",
+        ] {
+            assert!(!refused(ok), "{ok}");
+        }
+        assert_eq!(
+            denied_entry("git -C . push", &p).as_deref(),
+            Some("git push")
+        );
     }
 }

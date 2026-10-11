@@ -1347,3 +1347,37 @@ Now:
 - Still open from the review: files only the repair fixers touched
   aren't in the snapshot. Also, the redo request is sent after the group
   is marked redone, so if sending fails, the merge is already gone.
+
+### Review fixes: the evaluation's caps and policy
+
+- **A provider that reports no usage no longer makes runs free** (review
+  item 12).
+  - The runner's totals skipped a reply without usage, so the run cost $0
+    and 0 tokens, and neither the campaign's dollar cap nor
+    `--max-tokens` could stop it.
+  - Now a reply that came back whole without usage is counted
+    (`Totals::missing_usage`, `repliesWithoutUsage` in the report). The
+    run's cost is then unknown, so the campaign stops, as it already did
+    for an unknown cost.
+  - A run with `--max-tokens` stops at once with outcome `no-usage`.
+  - A failed or cancelled request without usage isn't counted.
+- **The policy's command denials apply without approvals** (review item
+  13).
+  - Eval settings ask no approvals, so the policy, which only answered
+    approvals, never saw a command, and `sudo` and `git push` ran.
+  - Now the runner turns the policy's deny rules for commands into the
+    run's `Permissions::denied_commands` (new). The command check refuses
+    them even when any command is allowed, and with no approval asked.
+  - Matching is by words, not substrings: the program, then the entry's
+    other words in order. It looks past `sudo`, `env X=1`, `time`, paths
+    to the program and extra spaces, and into `bash -c '…'` and
+    `$( … )`. So `git -C . push`, `/usr/bin/git push --force` and `bash -c
+'git push'` are refused, and `echo git push` isn't.
+- Tests:
+  - unit: totals with and without usage; the policy's denials; the
+    matching (13 refused forms, 5 allowed);
+  - headless e2e: a capped run with no usage ends `no-usage`, with no
+    known cost; with approvals off, four forms of `git push` and `sudo`
+    are refused and `echo` runs.
+  - The first headless test now sees the push refused before any
+    approval.
