@@ -603,3 +603,49 @@ async fn an_empty_usage_with_a_token_cap_ends_no_usage() {
         "{report:#}"
     );
 }
+
+/// Round 2 (section 4.2), P6.2: a request asked again with another effort
+/// after the provider had reported its usage counts as a reply, with the
+/// one that answered: two replies, 1000 tokens in.
+#[tokio::test]
+async fn an_asked_again_request_with_usage_counts_as_a_reply() {
+    let dir = temp_dir();
+    let (url, seen) = model(vec![
+        // Its usage, then silence: stuck before any of the reply.
+        Reply::Usage(500, 0, Box::new(Reply::Hang(None))),
+        Reply::Usage(500, 20, Box::new(Reply::Text("Hello."))),
+    ])
+    .await;
+    let mut settings = settings_with(&url, json!({ "verifyChanges": false, "checklist": "off" }));
+    settings["options"] =
+        json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort"] });
+    // Once this run has asked (it may first wait for another headless
+    // run), another effort is picked in its chat, as in the app.
+    let pick = async {
+        for _ in 0..2_400 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let running = crate::headless::TEST_RUN.lock().unwrap().clone();
+        let (app, dialog) = running.expect("the run asked the model");
+        assert_eq!(
+            agent_set_effort(app.state(), "p::m".into(), effort("low"), Some(dialog)),
+            1
+        );
+    };
+    let (report, ()) = tokio::join!(headless(&dir, settings, None, "Hi", &[]), pick);
+    assert_eq!(report["outcome"], "done", "{report:#}");
+    assert_eq!(seen.lock().unwrap().len(), 2, "asked again once");
+    let usage = &report["usage"];
+    assert_eq!(usage["replies"], 2, "{report:#}");
+    assert_eq!(usage["repliesWithoutUsage"], 0);
+    assert_eq!(usage["leadInputTokens"], 1_000);
+    assert_eq!(usage["leadOutputTokens"], 20);
+    assert!(report["runLog"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l["error"] == "asked-again" && l["usage"]["prompt_tokens"] == 500));
+}

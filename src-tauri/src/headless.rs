@@ -421,6 +421,13 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Tests: the run under way, its app and lead chat, to act on it as the
+/// user would (pick another effort mid-request). Cleared as the run ends.
+#[cfg(test)]
+pub(crate) static TEST_RUN: std::sync::Mutex<
+    Option<(tauri::AppHandle<tauri::test::MockRuntime>, String)>,
+> = std::sync::Mutex::new(None);
+
 /// Runs once and writes the report; returns it too.
 pub async fn run(args: &Args) -> Result<Value, String> {
     // One run at a time: the agent log's folder is process-wide.
@@ -463,6 +470,10 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     impl Drop for LogDir {
         fn drop(&mut self) {
             crate::project_profile::set_agent_log_dir(None);
+            #[cfg(test)]
+            {
+                *TEST_RUN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
         }
     }
     let log_dir_guard = LogDir;
@@ -524,6 +535,11 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         }),
         isolate: Some(false),
     };
+    #[cfg(test)]
+    {
+        *TEST_RUN.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((handle.clone(), dialog_id.clone()));
+    }
     agent_run::agent_start(
         handle.clone(),
         handle.state::<AgentState>(),
