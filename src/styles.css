@@ -4620,6 +4620,7 @@ body.is-resizing * {
 .chat-review.findings,
 .chat-review.skipped,
 .chat-verify.needs-approval,
+.chat-verify.superseded,
 .chat-verify.unverified,
 .chat-verify.rolled-back,
 .chat-verify.flagged {

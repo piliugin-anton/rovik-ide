@@ -24,6 +24,12 @@ fn dir(dialog_id: &str) -> Option<PathBuf> {
     crate::overlay::chats::valid_id(dialog_id).then(|| base().join(dialog_id))
 }
 
+/// Where a chat's carried fix-round state spills large file contents
+/// while its checks wait for approval (P1.8); not under `@checks/`.
+pub fn carry_dir(dialog_id: &str) -> Option<PathBuf> {
+    crate::overlay::chats::valid_id(dialog_id).then(|| base().join(format!("{dialog_id}.carry")))
+}
+
 /// Whether a tool's path argument names saved output.
 pub fn is_checks_path(path: &str) -> bool {
     path.trim().starts_with(PREFIX)

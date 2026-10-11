@@ -48,6 +48,34 @@ describe('groupToolCalls', () => {
   });
 });
 
+describe('task calls', () => {
+  it('each subagent keeps its own line, named by its kind and goal (P1.6)', () => {
+    const runs = groupToolCalls([
+      call('task', { kind: 'scout', goal: 'Where is the parser?' }),
+      call('task', { kind: 'scout', goal: 'Who calls it?' }),
+      call('task', { continue: 'scout-1', goal: 'And then?' }),
+    ]);
+    assert.deepEqual(
+      runs.map((r) => [r.name, r.calls.length, r.alone]),
+      [
+        ['task', 1, true],
+        ['task', 1, true],
+        ['task', 1, true],
+      ]
+    );
+    const label = describeGroup('task', [{ kind: 'scout', goal: 'Where is the parser?' }], true);
+    assert.equal(label.verb, 'Scout');
+    assert.deepEqual(
+      label.items.map((i) => i.text),
+      ['Where is the parser?']
+    );
+    assert.equal(
+      describeGroup('task', [{ continue: 'scout-1', goal: 'x' }], false).verb,
+      'Follow-up'
+    );
+  });
+});
+
 describe('describeGroup', () => {
   it('names files once each, with where to open them', () => {
     const label = describeGroup(

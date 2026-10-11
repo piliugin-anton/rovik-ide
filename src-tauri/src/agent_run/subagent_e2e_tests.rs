@@ -1513,6 +1513,43 @@ async fn a_restart_during_a_scout_resumes_its_chat() {
         .any(|m| m.tool_call_id.as_deref() == Some("s2") && m.content.contains("interrupted")));
 }
 
+/// P1.1: a lead whose run fails while its subagents are queued leaves none
+/// of them registered: the chat isn't "running" for good.
+#[tokio::test]
+async fn a_lead_that_fails_mid_batch_leaves_no_subagent_running() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-Q",
+            (0..5)
+                .map(|_| Reply::Slow(200, Box::new(Reply::Text(REPORT))))
+                .collect(),
+        )],
+        vec![Reply::Calls(vec![
+            task_call("q11-1", "MARK-Q: one"),
+            task_call("q11-2", "MARK-Q: two"),
+            task_call("q11-3", "MARK-Q: three"),
+            task_call("q11-4", "MARK-Q: four"),
+            task_call("q11-5", "MARK-Q: five"),
+        ])],
+    )
+    .await;
+    *crate::agent_run::run::FAIL_TOOL_RESULT.lock().unwrap() = Some("q11-1".into());
+    h.start(h.with_subagents(
+        &url,
+        "Go",
+        quiet_permissions(),
+        scouts_on(json!({})),
+    ))
+    .await;
+    let end = h.run_end().await;
+    *crate::agent_run::run::FAIL_TOOL_RESULT.lock().unwrap() = None;
+    assert_eq!(end, "error");
+    let state = h.app.state::<AgentState>();
+    assert_eq!(state.running_children(&h.dialog_id), 0);
+    assert!(!state.is_running(&h.dialog_id));
+}
+
 /// A follow-up asked just before the app closed is asked once: resumed,
 /// the subagent goes on from the question already in its chat.
 #[tokio::test]

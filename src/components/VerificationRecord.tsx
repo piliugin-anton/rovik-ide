@@ -56,6 +56,8 @@ function headline(meta: VerificationMeta, interrupted: boolean): string {
       return 'The agent finished without changing anything after the failed checks.';
     case 'needs-approval':
       return 'The changes weren’t checked yet: command approval is on.';
+    case 'superseded':
+      return 'These checks didn’t run: a newer request came after them.';
     case 'unverified':
       return `The changes weren’t checked: ${meta.reason ?? 'no check could run'}.`;
     case 'stopped':
@@ -215,6 +217,12 @@ export default function VerificationRecord(props: {
         </Show>
       </div>
 
+      <Show when={props.meta.stateRestored === false}>
+        <div class="chat-verify-progress">
+          The earlier rounds’ state was gone (the app restarted, or it expired): these checks
+          started afresh.
+        </div>
+      </Show>
       <Show when={props.meta.checks.length > 0}>
         <ul class="chat-verify-checks">
           <For each={props.meta.checks}>

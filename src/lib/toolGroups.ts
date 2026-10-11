@@ -9,6 +9,7 @@ import { isLiveContextPath } from './contextDoc';
 import { dirName, parseArgsLenient, type Args } from './toolArgs';
 import { parseTodo, progressLabel } from './todo';
 import { diffRows, snippetLines } from './lineDiff';
+import { kindLabel } from './subagents';
 
 /** Consecutive calls to one tool; a single call is a run of one. */
 export interface ToolRun {
@@ -19,12 +20,13 @@ export interface ToolRun {
 }
 
 /**
- * Calls that keep a line of their own: each question, checklist update and
- * plan is its own event, and a change to the agent's context file says
- * "its context", not a file name.
+ * Calls that keep a line of their own: each question, checklist update,
+ * plan and subagent (`task`: its approvals show on its own block) is its
+ * own event, and a change to the agent's context file says "its context",
+ * not a file name.
  */
 function standsAlone(call: ChatToolCall): boolean {
-  if (['ask_user', 'todo', 'submit_plan'].includes(call.name)) return true;
+  if (['ask_user', 'todo', 'submit_plan', 'task'].includes(call.name)) return true;
   return call.name === 'write' && isLiveContextPath(str(parseArgsLenient(call.arguments).path));
 }
 
@@ -285,6 +287,13 @@ export function describeGroup(
           })
         )
       );
+    case 'task': {
+      // "Scout: where is the parser?" (a follow-up says so).
+      const a = argsList[0] ?? {};
+      const goal = str(a.goal)?.trim();
+      const kind = str(a.continue) ? 'Follow-up' : kindLabel(str(a.kind));
+      return label(kind, [goal ? { text: short(goal, 60), title: goal } : undefined]);
+    }
     case 'restore_context':
       return label(verb('Restoring its context', 'Restored its context'), []);
     default:

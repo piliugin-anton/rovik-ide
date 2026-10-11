@@ -118,6 +118,47 @@ export function noteRunningSubagent(childDialogId: string, dialogId: string, too
   setState('children', childDialogId, { dialogId, toolCallId });
 }
 
+/** A running subagent as `agent_status` describes it (mod.rs `RunningSubagent`). */
+export interface RunningSubagent {
+  dialogId: string;
+  parentDialogId: string;
+  parentCallId: string;
+  kind?: string;
+  goal?: string;
+  model?: string;
+  startedAt?: number;
+  toolCalls?: number;
+}
+
+/**
+ * A reloaded page picks up a running subagent (P1.5): with what it's doing,
+ * its block shows it working (and its approvals) as if it had seen it start.
+ */
+export function seedRunningSubagent(sub: RunningSubagent) {
+  noteRunningSubagent(sub.dialogId, sub.parentDialogId, sub.parentCallId);
+  if (!sub.kind || state.live[sub.parentDialogId]?.[sub.parentCallId]) return;
+  noteSubagentStarted({
+    dialogId: sub.parentDialogId,
+    toolCallId: sub.parentCallId,
+    childDialogId: sub.dialogId,
+    kind: sub.kind,
+    model: sub.model ?? '',
+    goal: sub.goal ?? '',
+  });
+  if (sub.toolCalls)
+    setState('live', sub.parentDialogId, sub.parentCallId, { toolCalls: sub.toolCalls });
+}
+
+/** The subagent chat answering a lead's `task` call, if known. */
+export function childOf(dialogId: string | null, toolCallId: string): string | null {
+  if (!dialogId) return null;
+  const live = state.live[dialogId]?.[toolCallId];
+  if (live) return live.childDialogId;
+  for (const [child, link] of Object.entries(state.children))
+    if (link.dialogId === dialogId && link.toolCallId === toolCallId) return child;
+  return null;
+}
+
 /** Whether a chat is a subagent's (its events don't go to the chat store). */
 export const isSubagentChat = (dialogId: string) => !!state.children[dialogId];
 

@@ -126,6 +126,72 @@ pub struct VerifyCarry {
     /// What the run last wrote or read: in a chat that isn't isolated, a
     /// rollback undoes only what's still the run's (K15).
     seen: std::sync::Arc<crate::file_guard::Seen>,
+    /// When it was kept: one older than `CARRY_TTL` is dropped (P1.8).
+    pub stored: std::time::Instant,
+    /// Baseline contents past `CARRY_MEMORY_BYTES`, on disk until taken up.
+    spilled: Spilled,
+}
+
+/// A carry is kept this long at most.
+pub const CARRY_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+/// Baseline contents a carry keeps in memory; the rest goes to disk.
+pub const CARRY_MEMORY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Baseline entries kept on disk: path → (file, where the original is from).
+/// Their files go when the carry does, taken up or dropped.
+#[derive(Default)]
+struct Spilled(Vec<(String, std::path::PathBuf, super::subagent::Source)>);
+
+impl Drop for Spilled {
+    fn drop(&mut self) {
+        for (_, file, _) in &self.0 {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+}
+
+/// Moves the largest baseline contents to disk until what's left fits in
+/// `CARRY_MEMORY_BYTES`. One that can't be written stays in memory.
+fn spill(
+    dialog_id: &str,
+    baseline: &mut std::collections::HashMap<String, super::subagent::Original>,
+) -> Spilled {
+    let mut spilled = Spilled::default();
+    let mut total: usize = baseline
+        .values()
+        .map(|o| o.bytes.as_ref().map_or(0, Vec::len))
+        .sum();
+    if total <= CARRY_MEMORY_BYTES {
+        return spilled;
+    }
+    let Some(dir) = super::check_output::carry_dir(dialog_id) else {
+        return spilled;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return spilled;
+    }
+    let mut by_size: Vec<(String, usize)> = baseline
+        .iter()
+        .filter_map(|(k, o)| Some((k.clone(), o.bytes.as_ref()?.len())))
+        .collect();
+    by_size.sort_by_key(|e| std::cmp::Reverse(e.1));
+    for (key, size) in by_size {
+        if total <= CARRY_MEMORY_BYTES {
+            break;
+        }
+        let file = dir.join(format!("{}.bin", uuid::Uuid::new_v4()));
+        let Some(original) = baseline.get(&key) else {
+            continue;
+        };
+        let bytes = original.bytes.as_deref().unwrap_or_default();
+        if std::fs::write(&file, bytes).is_ok() {
+            let source = original.source;
+            baseline.remove(&key);
+            spilled.0.push((key, file, source));
+            total -= size;
+        }
+    }
+    spilled
 }
 
 /// The record's meta: `{ verification: … }`.
@@ -375,14 +441,28 @@ impl<R: Runtime> Run<R> {
             reviews_total: self.reviews_total,
             review_findings: take(&mut self.review_findings),
             seen: self.seen.clone(),
+            stored: std::time::Instant::now(),
+            spilled: Spilled::default(),
         }
     }
 
     /// The run that starts the checks takes up where the last one stopped.
+    /// None found (the app restarted, the chat was discarded, it expired):
+    /// the record and the agent are told the checks start afresh (P1.7).
     pub(super) fn restore_verify_state(&mut self, record_id: &str) {
-        let Some(c) = self.state.take_carry(&self.dialog_id, record_id) else {
+        let Some(mut c) = self.state.take_carry(&self.dialog_id, record_id) else {
+            self.carry_lost = Some(record_id.to_string());
             return;
         };
+        // Spilled contents come back; one that can't is left out (its
+        // file's original isn't known, like a command's change).
+        for (key, file, source) in &c.spilled.0 {
+            if let Ok(bytes) = std::fs::read(file) {
+                c.baseline
+                    .entry(key.clone())
+                    .or_insert(super::subagent::Original::new(Some(bytes), *source));
+            }
+        }
         self.verify_history = c.history;
         self.last_verify_results = c.last_results;
         self.last_verify_failed = c.last_failed;
@@ -495,7 +575,8 @@ impl<R: Runtime> Run<R> {
             // The run ends here: what its fix rounds know waits for the
             // run that starts the checks.
             if self.sub().is_none() {
-                let carry = self.take_verify_state(record_id);
+                let mut carry = self.take_verify_state(record_id);
+                carry.spilled = spill(&self.dialog_id, &mut carry.baseline);
                 self.state.put_carry(&self.dialog_id, carry);
             }
             return Ok("verify-needs-approval".into());
@@ -684,6 +765,11 @@ impl<R: Runtime> Run<R> {
         // assistant reply; marked as the IDE's, so it's never shown as the
         // user's message or replaced by the request's editor context.
         let mut notes: Vec<String> = Vec::new();
+        if self.carry_lost.is_some() && !std::mem::replace(&mut self.carry_lost_told, true) {
+            notes.push(
+                "What the earlier rounds of checks knew (their failures, what each file was before) didn't carry over to these, so they start afresh: nothing is compared with or rolled back to before them.".into(),
+            );
+        }
         if let Some(note) = repair::progress_note(&judgement, now.keys.len()) {
             notes.push(note);
         }
@@ -1132,6 +1218,30 @@ impl<R: Runtime> Run<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P1.8: a carry keeps at most CARRY_MEMORY_BYTES of file contents in
+    /// memory; the largest go to disk, come back intact, and their files go
+    /// with the carry.
+    #[test]
+    fn a_large_baseline_spills_to_disk_and_comes_back() {
+        use super::super::subagent::{Original, Source};
+        let chat = format!("spill-{}", uuid::Uuid::new_v4());
+        let big = vec![0xffu8; CARRY_MEMORY_BYTES];
+        let mut baseline = std::collections::HashMap::new();
+        baseline.insert("big.bin".to_string(), Original::new(Some(big.clone()), Source::ViewAtRunStart));
+        baseline.insert("small.txt".to_string(), Original::new(Some(b"x".to_vec()), Source::ProjectCopy));
+        baseline.insert("new.txt".to_string(), Original::new(None, Source::ViewAtRunStart));
+        let spilled = spill(&chat, &mut baseline);
+        assert_eq!(spilled.0.len(), 1);
+        assert!(!baseline.contains_key("big.bin") && baseline.contains_key("small.txt"));
+        let (key, file, source) = &spilled.0[0];
+        assert_eq!((key.as_str(), *source), ("big.bin", Source::ViewAtRunStart));
+        assert_eq!(std::fs::read(file).unwrap(), big);
+        let file = file.clone();
+        drop(spilled);
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(super::super::check_output::carry_dir(&chat).unwrap());
+    }
 
     #[test]
     fn the_report_the_agent_gets() {

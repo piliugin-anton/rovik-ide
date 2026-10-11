@@ -46,6 +46,9 @@ export interface PendingApproval {
   note?: string;
   /** write on an existing file: the reviewable diff. */
   edit?: EditReview;
+  /** A subagent's request: its lead's chat and the `task` call there. */
+  parentDialogId?: string;
+  parentCallId?: string;
 }
 
 /** As a run asks: an edit comes with the file's text before and after it. */
@@ -141,6 +144,23 @@ export function pendingApproval(dialogId: string, toolCallId: string): PendingAp
 /** Every approval a chat waits on (a subagent's, shown on its block). */
 export function pendingApprovalsOf(dialogId: string): PendingApproval[] {
   return Object.values(state.pending).filter((p) => p.dialogId === dialogId);
+}
+
+/**
+ * The approvals a lead's `task` call waits on: its subagent's, found by the
+ * subagent's chat when it's known and by the call the requests name
+ * (P1.5: after a reload, before anything else about the subagent is).
+ */
+export function pendingApprovalsOfTask(
+  dialogId: string,
+  toolCallId: string,
+  childId: string | null
+): PendingApproval[] {
+  return Object.values(state.pending).filter(
+    (p) =>
+      (childId !== null && p.dialogId === childId) ||
+      (p.parentDialogId === dialogId && p.parentCallId === toolCallId)
+  );
 }
 
 /** The pending edit review of a file, if any. */

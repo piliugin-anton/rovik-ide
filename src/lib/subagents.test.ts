@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ChatMessage } from '../types';
 import {
+  childOf,
   isSubagentChat,
+  seedRunningSubagent,
   runUsage,
   usageLabel,
   kindLabel,
@@ -112,4 +114,27 @@ test('tokens on a block, and the latest request’s total', () => {
   ];
   assert.deepEqual(runUsage(messages), { inputTokens: 305, outputTokens: 35, cost: 0.5 });
   assert.equal(runUsage([msg('user')]), null);
+});
+
+test('a reloaded page picks up a running subagent with what it does (P1.5)', () => {
+  seedRunningSubagent({
+    dialogId: 'kid-r',
+    parentDialogId: 'lead-r',
+    parentCallId: 't7',
+    kind: 'worker',
+    goal: 'Step 2',
+    model: 'Test/m',
+    startedAt: 1,
+    toolCalls: 4,
+  });
+  const live = liveSubagent('lead-r', 't7')!;
+  assert.equal(live.childDialogId, 'kid-r');
+  assert.equal(live.kind, 'worker');
+  assert.equal(live.toolCalls, 4);
+  assert.ok(isSubagentChat('kid-r'));
+  // Known only as a chat (an older backend): still found by its call.
+  seedRunningSubagent({ dialogId: 'kid-s', parentDialogId: 'lead-s', parentCallId: 't8' });
+  assert.equal(liveSubagent('lead-s', 't8'), undefined);
+  assert.equal(childOf('lead-s', 't8'), 'kid-s');
+  assert.equal(childOf('lead-s', 'other'), null);
 });

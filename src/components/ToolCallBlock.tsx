@@ -32,12 +32,13 @@ import {
   deny,
   hunkCounts,
   pendingApproval,
-  pendingApprovalsOf,
+  pendingApprovalsOfTask,
   revealEdit,
   type PendingApproval,
 } from '../lib/approvals';
 import {
   kindLabel,
+  childOf,
   liveSubagent,
   openTranscript,
   reportBody,
@@ -623,14 +624,17 @@ function TaskBlock(props: ToolCallBlockProps) {
   const done = () => props.result?.meta?.subagent;
   /** A parallel group (kind "workers"): its workers, joined. */
   const group = () => props.result?.meta?.group;
-  const childId = () => done()?.childDialogId ?? live()?.childDialogId ?? null;
+  const childId = () =>
+    done()?.childDialogId ?? live()?.childDialogId ?? childOf(props.dialogId, props.toolCall.id);
   const kind = () => done()?.kind ?? live()?.kind ?? str(args().kind);
   const working = () => !props.result && !!props.running && !!live() && !live()!.status;
   const refused = () => !!props.result && !done() && !group();
-  const approvals = () => {
-    const id = childId();
-    return id && working() ? pendingApprovalsOf(id) : [];
-  };
+  // Shown until the call has its result, whatever is known of the subagent:
+  // after a reload its run may wait on one with nothing else seen (P1.5).
+  const approvals = () =>
+    props.result || !props.dialogId
+      ? []
+      : pendingApprovalsOfTask(props.dialogId, props.toolCall.id, childId());
   const [expanded, setExpanded] = createSignal(!!props.initiallyExpanded);
   const [showWork, setShowWork] = createSignal(false);
 

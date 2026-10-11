@@ -9,7 +9,8 @@ import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
 import { describeGroup, editCounts } from '../lib/toolGroups';
 import { isErrorResult, parseArgsLenient } from '../lib/toolArgs';
-import { pendingApproval } from '../lib/approvals';
+import { pendingApproval, pendingApprovalsOfTask } from '../lib/approvals';
+import { childOf } from '../lib/subagents';
 import { pendingQuestions } from '../lib/questions';
 import { requestOpenFile } from '../lib/editorBridge';
 
@@ -40,7 +41,13 @@ export default function ToolCallGroup(props: {
   const awaiting = () =>
     !!props.dialogId &&
     props.calls.some(
-      (c) => pendingApproval(props.dialogId!, c.id) || pendingQuestions(props.dialogId!, c.id)
+      (c) =>
+        pendingApproval(props.dialogId!, c.id) ||
+        pendingQuestions(props.dialogId!, c.id) ||
+        // A subagent's approvals are its own chat's (P1.6).
+        (c.name === 'task' &&
+          !props.result(c.id) &&
+          pendingApprovalsOfTask(props.dialogId!, c.id, childOf(props.dialogId, c.id)).length > 0)
     );
   const open = () => userOpen() || awaiting();
   const meta = () =>

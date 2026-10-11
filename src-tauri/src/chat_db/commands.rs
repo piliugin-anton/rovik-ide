@@ -241,6 +241,7 @@ async fn remove_chat_files<R: tauri::Runtime>(
             );
         }
     }
+    agent.drop_carry(dialog_id);
     let id = dialog_id.to_string();
     let _ = tauri::async_runtime::spawn_blocking(move || crate::overlay::chats::forget(&id)).await;
     // Only an id the context folder's name keeps whole: one it shortens

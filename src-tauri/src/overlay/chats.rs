@@ -1692,6 +1692,7 @@ pub async fn overlay_discard(
     dialog_id: String,
 ) -> Result<(), String> {
     not_running(&agent, &dialog_id)?;
+    agent.drop_carry(&dialog_id);
     tauri::async_runtime::spawn_blocking(move || discard(&dialog_id))
         .await
         .map_err(|e| e.to_string())?

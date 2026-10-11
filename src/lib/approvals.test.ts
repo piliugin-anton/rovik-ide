@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   decideRemaining,
   pendingApproval,
+  pendingApprovalsOfTask,
   registerApproval,
   setHunkState,
   type ApprovalRequest,
@@ -106,4 +107,18 @@ test('two chats waiting on the same call id are reviewed apart', () => {
   const forA = sent.filter((s) => s.args.toolCallId === 'function-call-1');
   assert.equal(forA.length, 1);
   assert.equal(forA[0].args.dialogId, 'chat-a');
+});
+
+test("a subagent's approval is found by its lead's call, with nothing else known (P1.5)", () => {
+  registerApproval({
+    toolCallId: 'b1',
+    dialogId: 'kid-x',
+    toolName: 'bash',
+    summary: 'Run `npm test`',
+    parentDialogId: 'lead-x',
+    parentCallId: 't1',
+  });
+  assert.equal(pendingApprovalsOfTask('lead-x', 't1', null).length, 1);
+  assert.equal(pendingApprovalsOfTask('lead-x', 't1', 'kid-x').length, 1);
+  assert.equal(pendingApprovalsOfTask('lead-x', 't2', null).length, 0);
 });

@@ -162,6 +162,20 @@ struct RunControl {
     stop: Arc<StopSignal>,
     /// The reasoning effort picked while the run goes on (see `set_effort`).
     effort: watch::Sender<EffortPick>,
+    /// A subagent's: what its block shows, for a page reloaded mid-run (P1.5).
+    child: Option<ChildInfo>,
+}
+
+/// A running subagent as its block shows it.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildInfo {
+    pub kind: String,
+    pub goal: String,
+    pub model: String,
+    /// Milliseconds since the epoch.
+    pub started_at: u64,
+    pub tool_calls: u32,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -228,17 +242,38 @@ impl AgentState {
         self.lock().config.clone()
     }
 
-    /// Keeps a run's fix-round state until the user starts its checks.
+    /// Keeps a run's fix-round state until the user starts its checks
+    /// (one per chat: a newer one replaces it). Carries past their time go.
     fn put_carry(&self, dialog_id: &str, carry: verify::VerifyCarry) {
-        self.lock().carries.insert(dialog_id.to_string(), carry);
+        let mut inner = self.lock();
+        inner
+            .carries
+            .retain(|_, c| c.stored.elapsed() < verify::CARRY_TTL);
+        inner.carries.insert(dialog_id.to_string(), carry);
     }
 
     /// The state a run left for the checks waiting in `record_id`, if it
-    /// left it for those (a newer request drops it).
+    /// left it for those. Another record's (an older one) leaves the chat's
+    /// carry as it is (P1.7).
     fn take_carry(&self, dialog_id: &str, record_id: &str) -> Option<verify::VerifyCarry> {
         let mut inner = self.lock();
+        let c = inner.carries.get(dialog_id)?;
+        if c.record_id != record_id {
+            return None;
+        }
         let carry = inner.carries.remove(dialog_id)?;
-        (carry.record_id == record_id).then_some(carry)
+        (carry.stored.elapsed() < verify::CARRY_TTL).then_some(carry)
+    }
+
+    /// Drops a chat's carry: deleted or discarded, or a newer run ended
+    /// without leaving checks waiting (P1.8).
+    pub fn drop_carry(&self, dialog_id: &str) {
+        self.lock().carries.remove(dialog_id);
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_carry(&self, dialog_id: &str) -> bool {
+        self.lock().carries.contains_key(dialog_id)
     }
 
     fn set_config(&self, config: AgentConfig) {
@@ -300,6 +335,7 @@ impl AgentState {
                 profile_id: profile_id.to_string(),
                 stop: stop.clone(),
                 effort: effort_tx,
+                child: None,
             },
         );
         Some(Controls {
@@ -357,6 +393,26 @@ impl AgentState {
         }
     }
 
+    /// What a subagent's block shows (P1.5): kept with its run.
+    pub(super) fn describe_child(&self, dialog_id: &str, info: ChildInfo) {
+        if let Some(run) = self.lock().runs.get_mut(dialog_id) {
+            run.child = Some(info);
+        }
+    }
+
+    /// A subagent's progress, as its block's event says.
+    pub(super) fn note_child_progress(&self, dialog_id: &str, tool_calls: u32, model: &str) {
+        if let Some(info) = self
+            .lock()
+            .runs
+            .get_mut(dialog_id)
+            .and_then(|r| r.child.as_mut())
+        {
+            info.tool_calls = tool_calls;
+            info.model = model.to_string();
+        }
+    }
+
     /// How many subagents are running for the chat.
     pub fn running_children(&self, dialog_id: &str) -> usize {
         self.lock()
@@ -379,12 +435,24 @@ impl AgentState {
     /// Stops the chat's run: its current request, its next steps, and
     /// whatever it waits on (approvals count as denied, questions as stopped).
     /// A lead's subagents stop with it; a subagent's chat stops only itself.
+    /// False when nothing ran there (neither the chat nor a subagent of it).
     pub fn stop<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) -> bool {
+        self.stop_in(app, dialog_id, true)
+    }
+
+    /// Stops a lead's subagents only (the lead itself goes on, e.g. to
+    /// report an error once they've ended).
+    pub(super) fn stop_children<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) {
+        self.stop_in(app, dialog_id, false);
+    }
+
+    fn stop_in<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str, itself: bool) -> bool {
         let mut inner = self.lock();
-        let Some(run) = inner.runs.get(dialog_id) else {
-            return false;
+        let own = if itself {
+            inner.runs.get(dialog_id).map(|run| run.stop.set()).is_some()
+        } else {
+            false
         };
-        run.stop.set();
         let children: Vec<String> = inner
             .runs
             .iter()
@@ -394,7 +462,12 @@ impl AgentState {
                 d.clone()
             })
             .collect();
-        let stopping = |d: &String| d == dialog_id || children.contains(d);
+        // A lead that isn't registered (its run ended in an error) still
+        // stops the subagents it left.
+        if !own && children.is_empty() {
+            return false;
+        }
+        let stopping = |d: &String| (itself && d == dialog_id) || children.contains(d);
         let approvals: Vec<WaitKey> = inner
             .approvals
             .keys()
@@ -813,6 +886,9 @@ pub struct RunningSubagent {
     dialog_id: String,
     parent_dialog_id: String,
     parent_call_id: String,
+    /// Its kind, goal, model, start and tool calls (once it's launched).
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    info: Option<ChildInfo>,
 }
 
 #[derive(Serialize)]
@@ -848,6 +924,7 @@ pub fn agent_status(state: State<'_, AgentState>) -> AgentStatus {
                     dialog_id: dialog_id.clone(),
                     parent_dialog_id: r.parent.clone()?,
                     parent_call_id: r.parent_call.clone().unwrap_or_default(),
+                    info: r.child.clone(),
                 })
             })
             .collect(),

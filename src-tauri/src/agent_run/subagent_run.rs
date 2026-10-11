@@ -90,6 +90,9 @@ pub(super) struct SubCtx {
     /// count as its changes, but aren't rolled back (what they were before
     /// it isn't known any more).
     pub resumed_writes: Vec<String>,
+    /// Its registration, from `launch_child` on (P1.1): dropping a child
+    /// that never started (or panicked) unregisters it.
+    pub registered: Option<super::Registered>,
 }
 
 impl SubCtx {
@@ -149,14 +152,11 @@ pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Sen
 /// A subagent's whole run as a boxed future: a run's future can't contain
 /// itself (a child's tool calls go through the same code as the lead's).
 pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
+    // Unregistered however it ends, by the guard in its `SubCtx`: a child
+    // that panicked would otherwise stay "running" and its chat couldn't be
+    // deleted.
     Box::pin(async move {
         let mut run = run;
-        // Unregistered however it ends: a child that panicked would
-        // otherwise stay "running" and its chat couldn't be deleted.
-        let _registered = match &run.role {
-            Role::Sub(sub) => Some(run.state.registered(&run.dialog_id, &sub.run_id)),
-            _ => None,
-        };
         Some(run.go_sub().await)
     })
 }
@@ -296,8 +296,16 @@ impl<R: Runtime> Run<R> {
             if let Some(note) = verdict.note() {
                 content.push_str(note);
             }
-            self.add_tool_result(&tc.id, content, meta, Vec::new())
-                .await?;
+            if let Err(e) = self
+                .add_tool_result(&tc.id, content, meta, Vec::new())
+                .await
+            {
+                // P1.1: the run ends in an error; its subagents end first,
+                // stopped, so none is left running (or registered).
+                self.state.stop_children(&self.app, &self.dialog_id);
+                while results.next().await.is_some() {}
+                return Err(e);
+            }
         }
         if running > 0 {
             log::write(
@@ -566,6 +574,7 @@ impl<R: Runtime> Run<R> {
             hidden: Vec::new(),
             light_bash: false,
             resumed_writes: Vec::new(),
+            registered: None,
         };
         #[cfg(test)]
         if let Some(k) = config.kinds.get(kind.id()) {
@@ -594,6 +603,7 @@ impl<R: Runtime> Run<R> {
             return Err("Error: that subagent is already running.".into());
         };
         sub.run_id = controls.run_id.clone();
+        sub.registered = Some(self.state.registered(&child_id, &controls.run_id));
         let focus: Vec<String> = sub
             .scope
             .as_ref()
@@ -601,6 +611,18 @@ impl<R: Runtime> Run<R> {
             .unwrap_or_default();
         let map = self.kind_map(sub.kind, &focus);
         let writes = sub.kind.writes();
+        self.state.describe_child(
+            &child_id,
+            super::ChildInfo {
+                kind: sub.kind.id().into(),
+                goal: goal.to_string(),
+                model: sub.models[0].label.clone(),
+                started_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as u64),
+                tool_calls: 0,
+            },
+        );
         emit(
             &self.app,
             AgentEvent::SubagentStarted {
@@ -745,6 +767,8 @@ impl<R: Runtime> Run<R> {
     /// Tells the lead's chat how far the subagent got (its block shows it).
     pub(super) fn note_sub_progress(&self, current_tool: &str) {
         let Some(sub) = self.sub() else { return };
+        self.state
+            .note_child_progress(&self.dialog_id, self.guard.tool_calls, &self.profile.label);
         emit(
             &self.app,
             AgentEvent::SubagentProgress {
@@ -1777,6 +1801,7 @@ mod tests {
             hidden: Vec::new(),
             light_bash: false,
             resumed_writes: Vec::new(),
+            registered: None,
         }
     }
 

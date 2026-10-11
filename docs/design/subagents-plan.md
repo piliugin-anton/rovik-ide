@@ -1620,3 +1620,38 @@ Following [`subagents-review-fixes.md`](subagents-review-fixes.md).
   the read-only check, `is_check_tool` and the classifier; a worker's
   Latin-1 file put back byte for byte by a rolled-back fix round (fails
   without the fix: é became U+FFFD).
+
+### Review-fixes plan, phase 1 (part 1): runs that hang or leak
+
+In the order of the plan's "Ordering and dependencies": the independent
+tasks first.
+
+- **P1.1 Children registered before they're owned.** A subagent's
+  registration guard is made in `launch_child` and kept in its `SubCtx`,
+  so a child dropped before it started (queued past `max_at_once`, or
+  its lead failing) unregisters. A lead whose batch fails stops its
+  subagents and waits for them before returning the error; `stop` also
+  reaches the subagents of a lead that isn't registered any more.
+- **P1.5 A child's approval after a reload.** `agent_status` lists each
+  running subagent with its kind, goal, model, start and tool calls; a
+  reloaded page seeds the subagent's block from that. A `task` block
+  finds its approvals by the subagent's chat or by the lead's call the
+  request names (`pendingApprovalsOfTask`), and shows them until the
+  call has its result, not only while it has seen the subagent work.
+- **P1.6 Approvals inside a group.** `task` calls keep a line each
+  ("Scout: <goal>"), and a line waiting on a subagent's approval opens.
+- **P1.7 The stale carry.** `take_carry` removes a carry only for its own
+  record. A new run in the chat marks older records waiting for "Run
+  checks" `superseded` (no button). Checks started with no state left
+  (restart, expiry, discard) mark their record `stateRestored: false`
+  and tell the agent once that they start afresh.
+- **P1.8 Carries are freed** when the chat is deleted or discarded, when
+  a newer run ends without leaving checks waiting, and after 24 hours.
+  Past 8 MB, the largest baseline contents wait on disk (the chat's
+  `.carry` folder) and come back when the checks start.
+- Tests (each fails without its fix): a lead failing mid-batch leaves no
+  subagent registered; a reloaded subagent's block and approvals
+  (frontend); `task` calls stand alone; an older waiting check is
+  superseded, the newer carry survives it, lost state is recorded, and
+  deleting the chat frees the carry; a large baseline spills and comes
+  back.

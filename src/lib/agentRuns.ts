@@ -33,7 +33,8 @@ import { dismiss, notify } from './notifications';
 import { noteClmStatus, type ClmStatus } from './contextMode';
 import {
   isSubagentChat,
-  noteRunningSubagent,
+  seedRunningSubagent,
+  type RunningSubagent,
   noteSubagentEnded,
   noteSubagentProgress,
   noteSubagentStarted,
@@ -386,7 +387,7 @@ function handle(event: AgentEvent) {
 interface AgentStatus {
   runs: { dialogId: string; runId: string }[];
   /** Subagents' runs: their chats and their leads'. */
-  subagents?: { dialogId: string; parentDialogId: string; parentCallId: string }[];
+  subagents?: RunningSubagent[];
   approvals: ApprovalRequest[];
   questions: PendingQuestions[];
 }
@@ -404,8 +405,7 @@ export function initAgentRuns(): Promise<void> {
     try {
       const status = await invoke<AgentStatus>('agent_status');
       for (const run of status.runs) chatStore.setRunning(run.dialogId, true);
-      for (const sub of status.subagents ?? [])
-        noteRunningSubagent(sub.dialogId, sub.parentDialogId, sub.parentCallId);
+      for (const sub of status.subagents ?? []) seedRunningSubagent(sub);
       for (const request of status.approvals) registerApproval(request);
       for (const request of status.questions) registerQuestions(request);
     } catch (err) {

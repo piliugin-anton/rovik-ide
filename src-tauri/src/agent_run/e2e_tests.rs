@@ -3601,6 +3601,158 @@ async fn nothing_to_continue_or_check_starts_no_run() {
     assert!(seen.lock().unwrap().is_empty());
 }
 
+/// P1.7, P1.8: a newer run's waiting checks make an older run's stale:
+/// starting those is refused and doesn't touch the newer run's state;
+/// checks with no state left say so; deleting the chat frees its state.
+#[tokio::test]
+async fn an_older_waiting_check_is_superseded_and_carries_are_freed() {
+    let h = harness(&[(
+        "package.json",
+        r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(0)\"" } }"#,
+    )])
+    .await;
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "y.txt", "content": "y" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w3",
+            name: "write",
+            args: json!({ "path": "z.txt", "content": "z" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w4",
+            name: "write",
+            args: json!({ "path": "w.txt", "content": "w" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..Permissions::default()
+    };
+    let waiting = |messages: &[MessageRow], status: &str| -> Vec<String> {
+        messages
+            .iter()
+            .filter(|m| {
+                m.meta
+                    .as_ref()
+                    .is_some_and(|m| m["verification"]["status"] == status)
+            })
+            .map(|m| m.id.clone())
+            .collect()
+    };
+    let state = h.app.state::<AgentState>();
+    h.start(h.request(&url, Harness::send("Write x"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let first = waiting(&h.messages().await, "needs-approval")[0].clone();
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Write y"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let messages = h.messages().await;
+    assert_eq!(waiting(&messages, "superseded"), std::slice::from_ref(&first));
+    let second = waiting(&messages, "needs-approval")[0].clone();
+    assert!(state.has_carry(&h.dialog_id));
+
+    // The older record's checks don't start, and the newer state stays.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: first.clone(),
+        },
+        permissions.clone(),
+    ))
+    .await;
+    assert!(h.events_of("runStarted").is_empty());
+    assert!(state.has_carry(&h.dialog_id));
+
+    // The newer one's run with its state: nothing says it was lost.
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: second.clone(),
+        },
+        permissions.clone(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verified");
+    let record = h
+        .messages()
+        .await
+        .into_iter()
+        .find(|m| m.id == second)
+        .unwrap();
+    assert!(record.meta.unwrap()["verification"].get("stateRestored").is_none());
+    assert!(!state.has_carry(&h.dialog_id));
+
+    // A third waits; its state is gone (as after a restart): it says so.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Write z"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let third = waiting(&h.messages().await, "needs-approval")[0].clone();
+    state.drop_carry(&h.dialog_id);
+    h.events.lock().unwrap().clear();
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: third.clone(),
+        },
+        permissions.clone(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verified");
+    let record = h
+        .messages()
+        .await
+        .into_iter()
+        .find(|m| m.id == third)
+        .unwrap();
+    assert_eq!(record.meta.unwrap()["verification"]["stateRestored"], false);
+
+    // Deleting a chat frees what it carried.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Again"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(state.has_carry(&h.dialog_id));
+    let app = h.app.handle().clone();
+    crate::chat_db::commands::chat_delete_dialog(
+        app.clone(),
+        app.state::<AgentState>(),
+        app.state::<crate::vfs::VfsState>(),
+        app.state::<DbState>(),
+        h.dialog_id.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!state.has_carry(&h.dialog_id));
+}
+
 #[tokio::test]
 async fn checks_wait_for_approval_then_run_when_started() {
     let h = harness(&[(

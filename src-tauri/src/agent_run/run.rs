@@ -262,6 +262,10 @@ pub struct Run<R: Runtime> {
     /// How the last change review went: its status and why it was skipped.
     /// None when it didn't start.
     pub(super) review_outcome: Option<(String, Option<String>)>,
+    /// The checks were started from `record` with no carried state for it
+    /// (P1.7): its record says so, and the agent is told once.
+    pub(super) carry_lost: Option<String>,
+    pub(super) carry_lost_told: bool,
     pub(super) reviews_in_row: u32,
     /// The findings sent to the agent so far, and the note that sent the
     /// latest (its answers follow it).
@@ -754,6 +758,8 @@ impl<R: Runtime> Run<R> {
             writes_since_review: false,
             reviews_total: 0,
             review_outcome: None,
+            carry_lost: None,
+            carry_lost_told: false,
             reviews_in_row: 0,
             review_findings: Vec::new(),
             review_note_id: None,
@@ -870,6 +876,8 @@ impl<R: Runtime> Run<R> {
             writes_since_review: false,
             reviews_total: 0,
             review_outcome: None,
+            carry_lost: None,
+            carry_lost_told: false,
             reviews_in_row: 0,
             review_findings: Vec::new(),
             review_note_id: None,
@@ -975,6 +983,11 @@ impl<R: Runtime> Run<R> {
                 "error".to_string()
             }
         };
+        // P1.8: a lead's run that leaves no checks waiting leaves no state
+        // for them either (an older run's is stale now).
+        if self.sub().is_none() && outcome != "verify-needs-approval" {
+            self.state.drop_carry(&self.dialog_id);
+        }
         // An isolated chat's changes land now, or say why they don't.
         self.land_at_end(&outcome).await;
         // Ended before the message got any answer.
@@ -998,6 +1011,11 @@ impl<R: Runtime> Run<R> {
     }
 
     async fn drive(&mut self, entry: Entry) -> Result<String, String> {
+        // P1.7: a new run makes the checks older runs left waiting stale:
+        // their records say so (no "Run checks" any more).
+        if !matches!(entry, Entry::Verify { .. }) && self.sub().is_none() {
+            self.supersede_waiting_checks().await;
+        }
         match entry {
             Entry::Turn => {}
             Entry::Verify { record_id } => {
@@ -2100,6 +2118,10 @@ impl<R: Runtime> Run<R> {
         meta: Option<Value>,
         attachments: Vec<String>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if FAIL_TOOL_RESULT.lock().unwrap().as_deref() == Some(tool_call_id) {
+            return Err("the database is gone (test)".into());
+        }
         let mut m = new_message("tool", &content);
         m.tool_call_id = Some(tool_call_id.to_string());
         m.meta = meta;
@@ -2145,7 +2167,32 @@ impl<R: Runtime> Run<R> {
 
     /// Replaces a stored message's meta and shows it (records that change
     /// after they're added, like the verification gate's rounds).
+    /// Marks the chat's records still waiting for "Run checks" superseded.
+    async fn supersede_waiting_checks(&self) {
+        let Ok(recent) = self.recent().await else {
+            return;
+        };
+        for m in recent {
+            let Some(mut meta) = m.meta.clone() else {
+                continue;
+            };
+            let waiting = meta.pointer("/verification/status").and_then(|s| s.as_str())
+                == Some("needs-approval");
+            if waiting {
+                meta["verification"]["status"] = json!("superseded");
+                let _ = self.update_meta(&m.id, meta).await;
+            }
+        }
+    }
+
     pub(super) async fn update_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
+        let mut meta = meta;
+        // P1.7: the record whose checks found no carried state says so.
+        if self.carry_lost.as_deref() == Some(message_id) {
+            if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
+                v.insert("stateRestored".into(), json!(false));
+            }
+        }
         let id = message_id.to_string();
         let patch = MessagePatch {
             meta: Some(meta.clone()),
@@ -2709,6 +2756,10 @@ fn effort_label(options: &Option<OpenAIChatOptions>) -> &'static str {
         Some(ReasoningEffort::High) => "high effort",
     }
 }
+
+/// Tests: storing this call's result fails, as with a broken database.
+#[cfg(test)]
+pub(crate) static FAIL_TOOL_RESULT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub(super) fn new_message(role: &str, content: &str) -> NewMessage {
     NewMessage {

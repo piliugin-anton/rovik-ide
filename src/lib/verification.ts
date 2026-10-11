@@ -73,6 +73,8 @@ export type VerificationStatus =
   | 'unresolved'
   /** Command approval is on: the user starts the checks. */
   | 'needs-approval'
+  /** It waited for approval, and a newer request came first: it won't run. */
+  | 'superseded'
   /** Nothing could be checked (no checks, or none allowed to run). */
   | 'unverified'
   /** The fix broke something that passed before: it was undone. */
@@ -173,6 +175,8 @@ export interface VerificationMeta {
   triageSummary?: string | null;
   /** passed after a fix round: the change review that followed (R08). */
   reviewAfterGreen?: { status: 'findings' | 'done' | 'skipped'; reason?: string };
+  /** False: started with none of the earlier rounds' state (P1.7). */
+  stateRestored?: boolean;
 }
 
 /** The repair round's one-line summary. */
