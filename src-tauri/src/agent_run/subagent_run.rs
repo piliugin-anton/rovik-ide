@@ -1514,17 +1514,12 @@ impl<R: Runtime> Run<R> {
         match launched {
             Ok(mut child) => {
                 if resumed {
+                    // Every call it made, however long its chat (round 2).
                     let id = child_id.to_string();
                     let made = self
                         .db
-                        .read(move |c| store::get_messages(c, &id, None, 500))
+                        .read(move |c| store::count_tool_calls(c, &id))
                         .await
-                        .map(|page| {
-                            page.messages
-                                .iter()
-                                .map(|m| m.tool_calls.as_ref().map_or(0, Vec::len))
-                                .sum::<usize>()
-                        })
                         .unwrap_or(0);
                     child.guard.tool_calls = made as u32;
                 }

@@ -346,6 +346,19 @@ pub fn child_for_call(
     .map_err(err)
 }
 
+/// Round 2, P2.7: the tool calls a chat's model made, all of them (not
+/// one page's): what a resumed subagent has used of its budget.
+pub fn count_tool_calls(conn: &Connection, dialog_id: &str) -> DbResult<usize> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(json_array_length(tool_calls)), 0) FROM messages
+         WHERE dialog_id = ?1 AND tool_calls IS NOT NULL AND json_valid(tool_calls)",
+        params![dialog_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n.max(0) as usize)
+    .map_err(err)
+}
+
 /// A chat's subagent by the handle its report gave the lead
 /// ("scout-3f2a9c1d": the kind and the start of its id), or by the `task`
 /// call that started it.

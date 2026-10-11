@@ -7950,3 +7950,120 @@ async fn continue_with_an_unknown_handle_in_a_batch() {
         "{batches:?}"
     );
 }
+
+/// A scout's chat as the app left it at a restart: the lead's task call
+/// (`max_tool_calls` of `budget`) with no result, and in the scout's chat
+/// its brief and `made` calls, each with its result.
+async fn scout_left_at_a_restart(h: &Harness, made: usize, budget: u32) -> String {
+    let db = h.app.state::<DbState>().inner().clone();
+    let lead = h.dialog_id.clone();
+    let mut user = crate::agent_run::run::new_message("user", "Find it");
+    user.meta = Some(json!({ "mode": "agent" }));
+    let mut call = crate::agent_run::run::new_message("assistant", "");
+    call.tool_calls = Some(vec![store::ToolCall {
+        id: "t1".into(),
+        name: "task".into(),
+        arguments: json!({ "kind": "scout", "goal": "MARK-RB: where?", "max_tool_calls": budget })
+            .to_string(),
+        extra_content: None,
+    }]);
+    let child = uuid::Uuid::new_v4().to_string();
+    let mut work = vec![crate::agent_run::run::new_message(
+        "user",
+        "# Task from the lead agent\n\nMARK-RB: where?",
+    )];
+    for n in 0..made {
+        let mut read = crate::agent_run::run::new_message("assistant", "");
+        read.tool_calls = Some(vec![store::ToolCall {
+            id: format!("e{n}"),
+            name: "read".into(),
+            arguments: json!({ "path": "a.txt" }).to_string(),
+            extra_content: None,
+        }]);
+        let mut result = crate::agent_run::run::new_message("tool", "x");
+        result.tool_call_id = Some(format!("e{n}"));
+        work.push(read);
+        work.push(result);
+    }
+    let child_id = child.clone();
+    db.write(move |c| {
+        store::append_messages(c, &lead, &[user, call])?;
+        store::create_child_dialog(
+            c,
+            &store::NewChildDialog {
+                id: child_id.clone(),
+                parent_id: lead.clone(),
+                parent_call_id: "t1".into(),
+                kind: "scout".into(),
+                title: "Scout".into(),
+                created_at: store::now_ms(),
+            },
+        )?;
+        store::append_messages(c, &child_id, &work)?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    child
+}
+
+async fn resume_scout(h: &Harness, script: Vec<Reply>) {
+    let (url, _) = model_routed(vec![("MARK-RB", script)], vec![Reply::Text("Done.")]).await;
+    let mut request = h.with_subagents(&url, "unused", quiet_permissions(), scouts_on(json!({})));
+    request.start = StartKind::Resume;
+    h.start(request).await;
+    h.run_end().await;
+}
+
+/// A resumed scout's earlier calls count: all of its budget used, it runs
+/// nothing more; one left, one more call runs.
+#[tokio::test]
+async fn resumed_tool_calls_boundary() {
+    let read = |id: &'static str| (id, "read", json!({ "path": "a.txt" }));
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let child = scout_left_at_a_restart(&h, 3, 3).await;
+    resume_scout(
+        &h,
+        vec![Reply::Calls(vec![read("n1")]), Reply::Text(REPORT)],
+    )
+    .await;
+    let meta = h.task_result("t1").await.meta.unwrap()["subagent"].clone();
+    assert_eq!(meta["toolCalls"], 3, "{meta}");
+    assert!(!h.messages_of(&child).await.iter().any(
+        |m| m.tool_call_id.as_deref() == Some("n1") && !m.content.starts_with("Error: not run")
+    ));
+
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let child = scout_left_at_a_restart(&h, 2, 3).await;
+    resume_scout(
+        &h,
+        vec![
+            Reply::Calls(vec![read("n1"), read("n2")]),
+            Reply::Text(REPORT),
+        ],
+    )
+    .await;
+    let results: std::collections::HashMap<String, String> = h
+        .messages_of(&child)
+        .await
+        .into_iter()
+        .filter_map(|m| Some((m.tool_call_id.clone()?, m.content)))
+        .collect();
+    assert_eq!(results["n1"], "x\n");
+    assert!(
+        results["n2"].starts_with("Error: not run"),
+        "{}",
+        results["n2"]
+    );
+}
+
+/// Round 2, P2.7: a resumed subagent's calls are counted however long its
+/// chat is, not from its latest page of messages.
+#[tokio::test]
+async fn resume_counts_calls_beyond_one_page() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    scout_left_at_a_restart(&h, 600, 200).await;
+    resume_scout(&h, vec![Reply::Text(REPORT)]).await;
+    let meta = h.task_result("t1").await.meta.unwrap()["subagent"].clone();
+    assert_eq!(meta["toolCalls"], 600, "{meta}");
+}
