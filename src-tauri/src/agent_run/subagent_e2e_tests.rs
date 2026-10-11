@@ -7101,3 +7101,30 @@ async fn deleting_a_project_removes_its_subagents_chats_and_files() {
         .unwrap();
     assert_eq!(rows, 0);
 }
+
+/// Round 2, P1.1: a subagent admitted but never launched gives its place
+/// back: with a limit of one, the next `task` still starts.
+#[tokio::test]
+async fn a_failed_launch_gives_its_slot_back() {
+    let h = harness(&[("a.txt", "a\n")]).await;
+    let (url, _) = model_routed(
+        vec![("MARK-SLOT", vec![Reply::Text(REPORT)])],
+        vec![
+            task("f1", "MARK-SLOT: first"),
+            task("f2", "MARK-SLOT: second"),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    *crate::agent_run::subagent_run::FAIL_LAUNCH.lock().unwrap() = Some("f1".into());
+    let mut config = scouts_on(json!({}));
+    config.max_per_run = Some(1);
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), config))
+        .await;
+    h.run_end().await;
+    *crate::agent_run::subagent_run::FAIL_LAUNCH.lock().unwrap() = None;
+    let first = h.task_result("f1").await;
+    assert!(first.content.contains("already running"), "{}", first.content);
+    let second = h.task_result("f2").await;
+    assert!(second.content.contains("Status: done"), "{}", second.content);
+}

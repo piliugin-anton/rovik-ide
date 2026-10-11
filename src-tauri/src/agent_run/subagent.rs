@@ -1102,6 +1102,19 @@ impl Ledger {
     }
 
     /// Takes one place for a brief, or says why not.
+    /// Round 2, P1.1: an admitted subagent that couldn't start (its chat
+    /// couldn't be stored, or it couldn't be launched) gives its place back.
+    pub fn release(&mut self, brief: &Brief) {
+        if brief.kind == Kind::Worker {
+            self.workers = self.workers.saturating_sub(1);
+        } else {
+            self.started = self.started.saturating_sub(1);
+        }
+        if let Some(n) = self.briefs.get_mut(&brief.key()) {
+            *n = n.saturating_sub(1);
+        }
+    }
+
     pub fn admit(&mut self, brief: &Brief, max_per_run: usize) -> Result<(), String> {
         let seen = self.briefs.get(&brief.key()).copied().unwrap_or(0);
         if seen >= MAX_SAME_BRIEF {
@@ -1125,6 +1138,34 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2, P1.1: a released place can be taken again, for scouts and
+    /// workers alike.
+    #[test]
+    fn a_released_place_is_free_again() {
+        let mut ledger = Ledger::default();
+        let scout = Brief {
+            kind: Kind::Scout,
+            goal: "look".into(),
+            context: None,
+            paths: Vec::new(),
+            max_tool_calls: None,
+            step: None,
+        };
+        ledger.admit(&scout, 1).unwrap();
+        assert!(ledger.admit(&scout, 1).is_err());
+        ledger.release(&scout);
+        ledger.admit(&scout, 1).unwrap();
+        let worker = Brief {
+            kind: Kind::Worker,
+            step: Some(1),
+            ..scout.clone()
+        };
+        ledger.admit_worker(&worker, 1).unwrap();
+        ledger.release(&worker);
+        assert_eq!(ledger.workers, 0);
+        assert_eq!(ledger.briefs[&worker.key()], 0);
+    }
 
     /// Round 2: a report whose only section is "## Blocked\nNone." is out of
     /// format (no answer), while a real block needs nothing else.

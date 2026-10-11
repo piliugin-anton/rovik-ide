@@ -161,6 +161,9 @@ pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Sen
 /// Tests: the subagent answering this `task` call panics as it starts.
 #[cfg(test)]
 pub static PANIC_SUB: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Tests: the subagent for this `task` call can't be launched.
+#[cfg(test)]
+pub static FAIL_LAUNCH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
     // Unregistered however it ends, by the guard in its `SubCtx`: a child
@@ -423,15 +426,10 @@ impl<R: Runtime> Run<R> {
         if existing.is_none() {
             self.ledger.admit(&brief, config.max_per_run())?;
         }
-        match &existing {
-            Some(_) => self.close_child_calls(&child_id).await?,
-            None => {
-                self.store_child(&child_id, &tc.id, kind, &brief.goal, brief.message())
-                    .await?
-            }
-        }
-        let launched = self.launch_child(child_id.clone(), &tc.id, &brief.goal, sub);
-        self.launched(launched, &child_id, existing.is_some()).await
+        let message = existing.is_none().then(|| brief.message());
+        let admitted = existing.is_none().then_some(&brief);
+        self.store_and_launch(&child_id, &tc.id, kind, &brief.goal, message, sub, admitted)
+            .await
     }
 
     /// Whether a `task` call starts or continues a writing subagent; a
@@ -700,6 +698,10 @@ impl<R: Runtime> Run<R> {
         goal: &str,
         mut sub: SubCtx,
     ) -> Result<Run<R>, String> {
+        #[cfg(test)]
+        if FAIL_LAUNCH.lock().unwrap().as_deref() == Some(call_id) {
+            return Err("Error: that subagent is already running.".into());
+        }
         let Some(controls) = self.state.register_child(
             &child_id,
             &self.dialog_id,
@@ -1449,19 +1451,47 @@ impl<R: Runtime> Run<R> {
         sub.step = Some(n);
         sub.other_steps = other_steps(&steps, n);
         let goal = format!("Step {n}: {}", step.title);
-        match &existing {
-            Some(_) => self.close_child_calls(&child_id).await?,
-            None => {
-                self.store_child(&child_id, &tc.id, Kind::Worker, &goal, message)
-                    .await?
-            }
-        }
-        let launched = self.launch_child(child_id.clone(), &tc.id, &goal, sub);
-        let mut child = self.launched(launched, &child_id, existing.is_some()).await?;
+        let message = existing.is_none().then_some(message);
+        let admitted = existing.is_none().then_some(&brief);
+        let mut child = self
+            .store_and_launch(&child_id, &tc.id, Kind::Worker, &goal, message, sub, admitted)
+            .await?;
         if existing.is_some() {
             self.resume_child_writes(&mut child, &child_id).await;
         }
         Ok(child)
+    }
+
+    /// Stores a new child's chat (`message`: its brief) or reopens a
+    /// resumed one's (None), and launches it. A new one that can't start
+    /// gives back the place `admitted` took (round 2, P1.1).
+    #[allow(clippy::too_many_arguments)]
+    async fn store_and_launch(
+        &mut self,
+        child_id: &str,
+        call_id: &str,
+        kind: Kind,
+        goal: &str,
+        message: Option<String>,
+        sub: SubCtx,
+        admitted: Option<&Brief>,
+    ) -> Result<Run<R>, String> {
+        let resumed = message.is_none();
+        let started = async {
+            match message {
+                None => self.close_child_calls(child_id).await?,
+                Some(m) => self.store_child(child_id, call_id, kind, goal, m).await?,
+            }
+            let launched = self.launch_child(child_id.to_string(), call_id, goal, sub);
+            self.launched(launched, child_id, resumed).await
+        }
+        .await;
+        if started.is_err() {
+            if let Some(brief) = admitted {
+                self.ledger.release(brief);
+            }
+        }
+        started
     }
 
     /// A child just launched (P2.7): one resumed after a restart goes on
@@ -1573,15 +1603,11 @@ impl<R: Runtime> Run<R> {
         }
         self.limit_test_writer(&mut sub, touched);
         let goal = brief.goal.clone();
-        match &existing {
-            Some(_) => self.close_child_calls(&child_id).await?,
-            None => {
-                self.store_child(&child_id, &tc.id, Kind::TestWriter, &goal, message)
-                    .await?
-            }
-        }
-        let launched = self.launch_child(child_id.clone(), &tc.id, &goal, sub);
-        let mut child = self.launched(launched, &child_id, existing.is_some()).await?;
+        let message = existing.is_none().then_some(message);
+        let admitted = existing.is_none().then_some(&brief);
+        let mut child = self
+            .store_and_launch(&child_id, &tc.id, Kind::TestWriter, &goal, message, sub, admitted)
+            .await?;
         if existing.is_some() {
             self.resume_child_writes(&mut child, &child_id).await;
         }
