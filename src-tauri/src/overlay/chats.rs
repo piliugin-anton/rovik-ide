@@ -3636,6 +3636,176 @@ mod hub_tests {
         o.fs.write(ino, 0, content.as_bytes()).unwrap();
     }
 
+    /// A chat with saved (not mounted) changes on a project of `files`,
+    /// made by `change` on its overlay; returns the project's folder.
+    fn closed_chat(
+        id: &str,
+        root: &Path,
+        files: &[(&str, &str)],
+        change: impl FnOnce(&OverlayFs),
+    ) -> PathBuf {
+        let project = root.join("project");
+        for (p, c) in files {
+            let path = project.join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, c).unwrap();
+        }
+        let store = store_dir(id).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(
+            store.join("project.txt"),
+            project.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        let fs = OverlayFs::open(&project, &store, DEFAULT_LIMIT).unwrap();
+        change(&fs);
+        fs.flush();
+        project
+    }
+
+    fn put(fs: &OverlayFs, rel: &str, content: &str) {
+        let ino = match fs.resolve(rel) {
+            Ok(ino) => ino,
+            Err(_) => {
+                let (parent, name) = fs.resolve_parent(rel).unwrap();
+                fs.create(
+                    parent,
+                    name,
+                    crate::vfs::store::Kind::File,
+                    0o644,
+                    0,
+                    0,
+                    None,
+                )
+                .unwrap()
+                .ino
+            }
+        };
+        fs.setattr(
+            ino,
+            &SetAttr {
+                size: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fs.write(ino, 0, content.as_bytes()).unwrap();
+    }
+
+    fn text(id: &str, rel: &str) -> Option<String> {
+        with_fs(id, |fs| {
+            let ino = fs.resolve(rel).ok()?;
+            let size = fs.getattr(ino).ok()?.size as usize;
+            fs.read(ino, 0, size)
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// Round 2 (section 4.2): a path whose saved version can't be read is
+    /// an error of its own, never "untouched"; the all-or-nothing snapshot
+    /// fails with it.
+    #[test]
+    fn an_unreadable_path_marks_redo_unavailable_not_untouched() {
+        let root = std::env::temp_dir().join(format!("redo-unreadable-{}", uuid::Uuid::new_v4()));
+        let _data = test_data(&root.join("data"));
+        let id = "redo-unreadable-chat";
+        closed_chat(id, &root, &[("a.rs", "a\n"), ("b.rs", "b\n")], |fs| {
+            put(fs, "a.rs", "a by the chat\n");
+        });
+        // Its saved copy goes missing behind the overlay's back.
+        let upper = changes(id)
+            .into_iter()
+            .find_map(|c| match c {
+                OverlayChange::Write {
+                    path,
+                    upper: Some(u),
+                    ..
+                } if path == "a.rs" => Some(u),
+                _ => None,
+            })
+            .unwrap();
+        std::fs::remove_file(&upper).unwrap();
+        let each = snapshot_each(id, &["a.rs".into(), "b.rs".into()]).unwrap();
+        assert!(each[0].1.is_err(), "{:?}", each[0]);
+        assert!(matches!(each[1].1, Ok(Before::Untouched)), "{:?}", each[1]);
+        assert!(snapshot(id, &["a.rs".into(), "b.rs".into()]).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round 2 (section 4.2): Redo on a chat whose overlay is closed puts
+    /// a file the group moved back where it was, removes where it went,
+    /// and spends the saved versions.
+    #[test]
+    fn redo_on_a_closed_overlay_and_of_a_moved_file() {
+        let root = std::env::temp_dir().join(format!("redo-moved-{}", uuid::Uuid::new_v4()));
+        let _data = test_data(&root.join("data"));
+        let id = "redo-moved-chat";
+        closed_chat(id, &root, &[("a.rs", "a\n")], |fs| {
+            put(fs, "a.rs", "a by the chat\n");
+        });
+        let before = snapshot(id, &["a.rs".into(), "b.rs".into()]).unwrap();
+        assert!(matches!(before[0].1, Before::File { .. }));
+        assert!(matches!(before[1].1, Before::Untouched));
+        // The group moves a.rs to b.rs.
+        with_fs(id, |fs| {
+            let root_ino = fs.resolve("").unwrap();
+            fs.rename(
+                root_ino,
+                "a.rs",
+                root_ino,
+                "b.rs",
+                crate::vfs::store::RenameMode::Replace,
+            )
+            .unwrap();
+        })
+        .unwrap();
+        save_group(
+            id,
+            SavedGroup {
+                name: "g".into(),
+                plan_path: "p.md".into(),
+                steps: vec![1, 2],
+                before,
+                redone: false,
+                unavailable: None,
+            },
+        )
+        .unwrap();
+        assert!(group_blob_count(id) > 0);
+        redo_group(id, "g").unwrap();
+        assert_eq!(text(id, "a.rs").as_deref(), Some("a by the chat\n"));
+        assert_eq!(text(id, "b.rs"), None);
+        assert_eq!(group_blob_count(id), 0, "spent");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round 2 (section 4.2): a path inside a folder the chat deleted was
+    /// absent before the group (pinned: Absent, so Redo removes it).
+    #[test]
+    fn a_fixer_file_under_a_folder_the_chat_deleted() {
+        let root = std::env::temp_dir().join(format!("redo-deleted-{}", uuid::Uuid::new_v4()));
+        let _data = test_data(&root.join("data"));
+        let id = "redo-deleted-chat";
+        closed_chat(
+            id,
+            &root,
+            &[("old/x.rs", "x\n"), ("keep.rs", "k\n")],
+            |fs| {
+                let root_ino = fs.resolve("").unwrap();
+                let old = fs.resolve("old").unwrap();
+                fs.unlink(old, "x.rs").unwrap();
+                fs.rmdir(root_ino, "old").unwrap();
+            },
+        );
+        let each = snapshot_each(id, &["old/x.rs".into(), "old/new.rs".into()]).unwrap();
+        assert!(matches!(each[0].1, Ok(Before::Absent)), "{:?}", each[0]);
+        assert!(matches!(each[1].1, Ok(Before::Absent)), "{:?}", each[1]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// P1.4: a group whose snapshot failed isn't offered for Redo, and
     /// says why, rather than putting paths back as if untouched.
     #[test]
