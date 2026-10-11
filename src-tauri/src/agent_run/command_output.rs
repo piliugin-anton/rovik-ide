@@ -623,6 +623,105 @@ mod tests {
         );
     }
 
+    /// Round 2 (§4.2): a pytest long traceback is one failing test, not
+    /// its frames or its assertion line.
+    #[test]
+    fn pytest_long_traceback_frames_arent_keys() {
+        let out = "_____ test_add _____\n\ndef test_add():\n>       assert add(2, 2) == 4\n\
+            src/math.py:10: in add\n    return a - b\n\
+            tests/test_math.py:5: in test_add\n    assert add(2, 2) == 4\n\
+            E   AssertionError: expected 4\n\
+            tests/test_math.py:5: AssertionError: expected 4\n\
+            FAILED tests/test_math.py::test_add - AssertionError: expected 4\n";
+        assert_eq!(
+            failure_keys("test", out, false),
+            ["test|test|tests/test_math.py::test_add"]
+        );
+    }
+
+    /// Round 2 (§4.2): a pytest collection error is an error key; the
+    /// tests failing once it's fixed aren't "new" next to it.
+    #[test]
+    fn pytest_collection_error_is_an_error_key() {
+        let before = failure_keys(
+            "test",
+            "ERROR tests/test_a.py - ImportError: no module named x\n",
+            false,
+        );
+        assert_eq!(before.len(), 1, "{before:?}");
+        assert!(!before[0].starts_with("test|test|"), "{before:?}");
+        let after = failure_keys(
+            "test",
+            "FAILED tests/test_a.py::test_one - assert 1 == 2\n",
+            false,
+        );
+        let round = |keys: Vec<String>| super::super::repair::RoundFailures {
+            keys: keys.into_iter().collect(),
+            ran: ["test".to_string()].into(),
+            tests_ran: None,
+            own_tests: None,
+        };
+        let j = super::super::repair::judge(&[round(before)], &round(after));
+        assert_ne!(
+            j.verdict,
+            super::super::repair::Verdict::Regression,
+            "{j:?}"
+        );
+    }
+
+    /// Round 2 (§4.2): a crate's name is added only to cargo's own test
+    /// lines (after its Running line), on any platform's path.
+    #[test]
+    fn crate_prefix_only_on_cargo_test_lines() {
+        let go = "     Running unittests src/lib.rs (target/debug/deps/alpha-1a2b)\n--- FAIL: TestX (0.00s)\n";
+        assert_eq!(failure_keys("test", go, false), ["test|test|TestX"]);
+        let it = "     Running tests/it.rs (target/debug/deps/it-0a1b)\ntest adds ... FAILED\n";
+        assert_eq!(failure_keys("test", it, false), ["test|test|it::adds"]);
+        let win = "     Running unittests src\\lib.rs (target\\debug\\deps\\alpha-1a2b.exe)\ntest t ... FAILED\n";
+        assert_eq!(failure_keys("test", win, false), ["test|test|alpha::t"]);
+    }
+
+    /// Round 2 (§4.2): with more errors than keys kept, one fewer is
+    /// progress and one more isn't a regression of passing code.
+    #[test]
+    fn eslint_sixty_errors_round_pair() {
+        use super::super::repair::{judge, RoundFailures, Verdict};
+        let lint = |n: usize| {
+            let mut out = String::from("/p/src/a.ts\n");
+            for i in 0..n {
+                out.push_str(&format!(
+                    "  {}:1  error  rule {i} broken  rule-{i}\n",
+                    i + 1
+                ));
+            }
+            RoundFailures {
+                keys: failure_keys("lint", &out, false).into_iter().collect(),
+                ran: ["lint".to_string()].into(),
+                tests_ran: None,
+                own_tests: None,
+            }
+        };
+        let j = judge(&[lint(60)], &lint(59));
+        assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
+        assert!(j.broke.is_empty());
+        assert_ne!(judge(&[lint(60)], &lint(61)).verdict, Verdict::Regression);
+    }
+
+    /// Round 2 (§4.2): cargo's compile error and a failing test from the
+    /// same run are both kept.
+    #[test]
+    fn cargo_compile_error_and_test_failure_keep_both() {
+        let out = "error[E0425]: cannot find value `x` in this scope\n --> src/lib.rs:3:5\n\
+            test tests::adds ... FAILED\n";
+        let keys = failure_keys("test", out, false);
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert!(
+            keys.iter().any(|k| k.starts_with("test|src/lib.rs|E0425|")),
+            "{keys:?}"
+        );
+        assert!(keys.contains(&"test|test|tests::adds".to_string()));
+    }
+
     /// Round 2, P3.1: cargo's closing summaries aren't errors of their own.
     #[test]
     fn cargo_summaries_arent_keys() {
