@@ -185,6 +185,7 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             });
             continue;
         }
+        let n = drafts.len();
         let Some(d) = drafts.last_mut() else {
             if line.trim().is_empty() || (has_header && !FIELD.is_match(line)) {
                 continue;
@@ -195,6 +196,15 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
         };
         if let Some(c) = FIELD.captures(line) {
             let name = c[1].to_lowercase().replace("suggested ", "");
+            // A second "- Scenario:" is the next finding's, whose header (a
+            // bullet, no [severity]) wasn't read as one: it would be lost.
+            if d.fields.iter().any(|(k, _)| *k == name) {
+                return Err(format!(
+                    "finding {n} has a second \"- {}:\" line: each finding starts with its own \
+                     \"N. [severity] location — title\" line ({FORMAT_HINT})",
+                    &c[1]
+                ));
+            }
             d.fields.push((name, c[2].trim().to_string()));
         } else if !line.trim().is_empty() {
             // A continuation of the field (or the title) above.
@@ -1217,5 +1227,54 @@ mod tests {
         );
         let untitled = finding("src/b.ts", "");
         assert!(!repeat(&untitled, "src/b.ts", ""), "nothing ties them");
+    }
+
+    /// Round 2 (§4.2): a finding under a `-` or `*` bullet in place of its
+    /// number is out of format, whether it comes first or after a good one
+    /// (where it was read as the text of the finding above, and lost).
+    #[test]
+    fn dash_bulleted_header_is_a_format_error() {
+        let rest = "\n   - Scenario: s\n   - Fix: f\n   - Confidence: confirmed";
+        for bullet in ["-", "*"] {
+            let first = format!("## Findings\n\n{bullet} [high] a.rs:3 — x{rest}");
+            assert!(
+                parse_findings(&first)
+                    .unwrap_err()
+                    .contains("don't start with a numbered finding"),
+                "{bullet}"
+            );
+            assert!(subagent::format_problem(Kind::Reviewer.spec(), &first).is_some());
+            let second = format!(
+                "## Findings\n\n1. [high] a.rs:3 — x{rest}\n\n{bullet} [medium] b.rs:9 — y{rest}"
+            );
+            let e = parse_findings(&second).unwrap_err();
+            assert!(
+                e.contains("finding 1 has a second \"- Scenario:\" line"),
+                "{bullet}: {e}"
+            );
+        }
+    }
+
+    /// Round 2 (§4.2): a numbered finding without `[high]`, `[medium]` or
+    /// `[low]` is out of format, first in the list or after a good one
+    /// (where it was read as the text of the finding above, and lost).
+    #[test]
+    fn no_severity_is_an_error() {
+        let rest = "\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        for header in ["1. a.rs:3 — x", "1. [] a.rs:3 — x", "1. (high) a.rs:3 — x"] {
+            let text = format!("## Findings\n{header}{rest}");
+            assert!(
+                parse_findings(&text)
+                    .unwrap_err()
+                    .contains("don't start with a numbered finding"),
+                "{header}"
+            );
+        }
+        let second = format!("## Findings\n1. [high] a.rs:3 — x{rest}\n2. b.rs:9 — y{rest}");
+        let e = parse_findings(&second).unwrap_err();
+        assert!(
+            e.contains("finding 1 has a second \"- Scenario:\" line"),
+            "{e}"
+        );
     }
 }
