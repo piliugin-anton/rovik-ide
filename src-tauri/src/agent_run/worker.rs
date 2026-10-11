@@ -1002,6 +1002,55 @@ mod tests {
         }
     }
 
+    /// Round 2 (§4.2): a scope reads every spelling of its paths; `..`
+    /// and absolute paths are refused; a new file only beside a named one.
+    #[test]
+    fn write_scope_allows_every_spelling() {
+        let steps = plan::steps(PLAN);
+        let s = WriteScope::for_step(&steps[1]);
+        for ok in [
+            "./src/api//users.rs",
+            "src\\api\\mod.rs",
+            "src/api/./users.rs",
+        ] {
+            assert!(s.allows(ok, true), "{ok}");
+        }
+        for bad in [
+            "src/api/../db.rs",
+            "/abs/src/api/users.rs",
+            "C:\\src\\api\\users.rs",
+        ] {
+            assert!(!s.allows(bad, true) && !s.allows(bad, false), "{bad}");
+        }
+        assert!(
+            s.allows("src/api/new.rs", false),
+            "new, beside a named file"
+        );
+        assert!(
+            !s.allows("src/api/deep/new.rs", false),
+            "not in a folder below"
+        );
+        assert!(!s.allows("src/new.rs", false), "not beside the folder");
+    }
+
+    /// Round 2 (§4.2): what counts as a check reads past wrappers; one run
+    /// as root, or one that fixes the code, isn't.
+    #[test]
+    fn is_check_tool_after_wrappers() {
+        for (command, check) in [
+            ("env CI=1 timeout 60 npx tsc --noEmit", true),
+            ("sudo -E cargo test", false),
+            ("nice -n 10 eslint --fix src", false),
+            ("xargs -n1 cargo test", true),
+        ] {
+            assert_eq!(
+                is_check_tool(&super::super::permissions::split_words(command)),
+                check,
+                "{command}"
+            );
+        }
+    }
+
     fn tw_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("writer-{name}-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src")).unwrap();

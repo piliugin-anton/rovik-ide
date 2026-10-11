@@ -1525,6 +1525,82 @@ mod tests {
         assert!(!is_secret_path("src/keyboard.ts"));
     }
 
+    /// Round 2 (§4.2): a wrapper with its option's value missing is
+    /// nothing to run, not a panic.
+    #[test]
+    fn dangling_wrapper_options_dont_panic() {
+        for seg in [
+            vec!["env", "-u"],
+            vec!["timeout"],
+            vec!["timeout", "-s"],
+            vec!["nice", "-n"],
+            vec!["xargs", "-I"],
+            vec!["sudo", "-u"],
+            vec![],
+        ] {
+            let seg = words(&seg);
+            assert!(unwrap_wrappers(&seg).is_empty(), "{seg:?}");
+            let _ = programs(&seg);
+            let _ = elevated(&seg);
+        }
+        assert!(segment_is_read_only(&[]));
+    }
+
+    /// Round 2 (§4.2): wrappers in all their forms.
+    #[test]
+    fn wrapper_edge_cases() {
+        for (command, modifies) in [
+            ("env -i A=1 cat f", false),
+            ("env -- rm x", true),
+            ("env -C dir rm x", true),
+            ("/usr/bin/env rm x", true),
+            ("timeout --signal=KILL 5 rm x", true),
+            ("exec -a name rm x", true),
+            ("nohup rm x &", true),
+            ("xargs -P4 -I{} sh -c 'rm {}'", true),
+            ("timeout 5", false),
+            ("time -p cat f", false),
+            ("command -v ls", false),
+            ("xargs", false),
+            ("find . | xargs grep foo", false),
+        ] {
+            assert_eq!(command_modifies_files(command), modifies, "{command}");
+        }
+        assert!(elevated(&split_words("doas cat f")));
+        assert!(!segment_is_read_only(&split_words("doas cat f")));
+    }
+
+    /// Round 2 (§4.2): the denied list, however `rm -rf` is written or
+    /// wrapped; long options are read only for rm (as the README says);
+    /// an option's value is read as options too (pinned: refusing more is
+    /// the safe side for a denied list).
+    #[test]
+    fn denied_rm_forms_and_wrappers() {
+        let p = Permissions {
+            allow_any_command: true,
+            denied_commands: vec!["rm -rf".into(), "curl -f".into(), "grep -r".into()],
+            ..Permissions::default()
+        };
+        let refused = |c: &str| matches!(check_command(c, &p), Verdict::Refused(_));
+        for bad in [
+            "rm -r -f x",
+            "rm -fr x",
+            "rm -Rf x",
+            "rm --recursive --force x",
+            "rm -r build -f",
+            "env rm -rf x",
+            "timeout 5 rm -rf x",
+            "bash -c 'rm -rf x'",
+            "xargs rm -rf",
+            "grep -e -r f",
+        ] {
+            assert!(refused(bad), "{bad}");
+        }
+        for ok in ["rm -r x", "rm -f x", "curl --fail x"] {
+            assert!(!refused(ok), "{ok}");
+        }
+    }
+
     /// Round 2, P0.2: `env -S` hides its command in a string, so the
     /// segment matches no list: it may change files, isn't read-only, a
     /// check nor light.

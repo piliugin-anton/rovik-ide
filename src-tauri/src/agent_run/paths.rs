@@ -101,6 +101,42 @@ mod tests {
         assert_eq!(key_as("SRC/X.ts", false).as_deref(), Some("SRC/X.ts"));
     }
 
+    /// Round 2 (§4.2): names with spaces, accents and dots are kept as
+    /// they are.
+    #[test]
+    fn spaces_unicode_and_dots_in_names_survive() {
+        for path in ["src/a b.rs", "src/día/ünïcode.ts", "src/.hidden", "src/..."] {
+            assert_eq!(norm_rel(path).as_deref(), Some(path), "{path}");
+        }
+        assert_eq!(norm_rel("./").as_deref(), Some(""));
+    }
+
+    /// Round 2 (§4.2): Windows spellings are rejected (outside the project)
+    /// or folded to `/`.
+    #[test]
+    fn windows_spellings_are_rejected_or_folded() {
+        for path in [
+            "C:/x",
+            "c:\\x",
+            "\\\\server\\share\\x",
+            "\\\\?\\C:\\x",
+            "src\\a\\..\\b",
+        ] {
+            assert_eq!(norm_rel(path), None, "{path}");
+        }
+        assert_eq!(norm_rel(".\\src\\x.ts").as_deref(), Some("src/x.ts"));
+    }
+
+    /// Round 2 (§4.2): a folder holds what's inside it, not names that
+    /// start with it.
+    #[test]
+    fn under_is_not_a_prefix_match() {
+        assert!(!under("src/api", "src/api2/x.rs"));
+        assert!(!under("src/x.ts", "src/x.ts.bak"));
+        assert!(under("src/api/", "src/api"));
+        assert!(under_as("Src", "src/x", true));
+    }
+
     /// Round 2, P0.1: a colon in a name isn't a drive.
     #[test]
     fn colon_in_a_name_is_not_a_drive() {
