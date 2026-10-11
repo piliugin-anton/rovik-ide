@@ -1051,6 +1051,36 @@ mod tests {
         }
     }
 
+    /// Round 2 (section 4.2): extend_scope's paths, every edge.
+    #[test]
+    fn extend_scope_input_edge_cases() {
+        let ask = |paths: Value| {
+            let args = json!({ "paths": paths, "reason": "needed" });
+            extend_scope_paths(args.as_object().unwrap())
+        };
+        for whole in ["", ".", "./"] {
+            let e = ask(json!([whole])).unwrap_err();
+            assert!(
+                e.contains("is the whole project") || e.contains("\"paths\" is required"),
+                "{whole}: {e}"
+            );
+        }
+        for outside in ["../x", "/abs", "C:\\x"] {
+            let e = ask(json!([outside])).unwrap_err();
+            assert!(e.contains("isn't a path in the project"), "{outside}: {e}");
+        }
+        assert_eq!(ask(json!(["src\\api\\"])).unwrap(), ["src/api/"]);
+        assert_eq!(ask(json!([" src/x.rs "])).unwrap(), ["src/x.rs"]);
+        for not_a_list in [json!("src/x.rs"), json!(null), json!([])] {
+            let e = ask(not_a_list.clone()).unwrap_err();
+            assert!(e.contains("\"paths\" is required"), "{not_a_list}: {e}");
+        }
+        let no_reason = json!({ "paths": ["src/x.rs"] });
+        assert!(extend_scope_paths(no_reason.as_object().unwrap())
+            .unwrap_err()
+            .contains("\"reason\" is required"));
+    }
+
     fn tw_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("writer-{name}-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src")).unwrap();

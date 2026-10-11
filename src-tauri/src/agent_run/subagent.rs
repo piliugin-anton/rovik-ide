@@ -1139,6 +1139,16 @@ impl Ledger {
 mod tests {
     use super::*;
 
+    /// Round 2 (section 4.2): the notes cap cuts by characters, not bytes.
+    #[test]
+    fn notes_cap_is_char_safe() {
+        let mut r = result(SubStatus::Done, "## Answer\nYes.".into());
+        r.notes = vec!["é".repeat(NOTES_CAP_CHARS - 1), "ünïcode note".into()];
+        let text = r.for_lead();
+        assert!(text.contains(" …(cut)"), "{text}");
+        assert!(text.ends_with("## Answer\nYes."));
+    }
+
     /// Round 2 (section 4.2): a run's workers are its plan's steps plus 2
     /// retries, exactly; a group that doesn't fit is refused and takes
     /// nothing.

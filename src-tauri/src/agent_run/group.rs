@@ -1175,6 +1175,55 @@ mod tests {
         );
     }
 
+    /// Round 2 (section 4.2): a grant's holder is found however the path
+    /// is spelled; a retry (`w2'`) holds what its first try was granted.
+    #[test]
+    fn group_grant_holder_normalises_spelling() {
+        let g = GroupGrants::default();
+        g.record(&["src/shared.rs".into(), "src/util/".into()], "w2");
+        for spelling in [
+            "./src//shared.rs",
+            "src\\shared.rs",
+            "src/util/a.rs",
+            "src/",
+        ] {
+            assert_eq!(
+                g.holder(spelling, "w1").as_deref(),
+                Some("w2"),
+                "{spelling}"
+            );
+        }
+        assert_eq!(g.holder("src/shared.rs", "w2'"), None, "the retry's own");
+        assert_eq!(g.holder("src/other.rs", "w1"), None);
+    }
+
+    /// Round 2 (section 4.2): what lands is decided by the normalised path;
+    /// odd names don't panic.
+    #[test]
+    fn landing_excludes_by_normalised_path() {
+        let s = scope(&["src/users.rs"]);
+        let dir = std::env::temp_dir().join(format!("outside-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/posts.rs"), "").unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        assert!(outside_scope(&["./src/users.rs".into()], &s, &root).is_empty());
+        assert_eq!(
+            outside_scope(&["src/posts.rs".into()], &s, &root),
+            ["src/posts.rs"]
+        );
+        if super::super::paths::ANY_CASE {
+            assert!(outside_scope(&["src/Users.rs".into()], &s, &root).is_empty());
+        }
+        let odd = [
+            "src/\u{fffd}x.rs".to_string(),
+            "".to_string(),
+            "../x".to_string(),
+        ];
+        let out = outside_scope(&odd, &s, &root);
+        assert!(out.contains(&"../x".to_string()), "{out:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Round 2, P0.1: a folder grant is refused however the folder is
     /// spelled.
     #[test]
