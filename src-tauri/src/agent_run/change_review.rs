@@ -1025,4 +1025,197 @@ mod tests {
         assert!(note.contains("1. [high] src/a.ts:42 — Off by one in the loop\n   Scenario:"));
         assert!(note.contains("not a bug, because"));
     }
+
+    /// Round 2 (§4.2): the severity is read without case and stored in
+    /// lower case, so `serious()` and the after-green "high" filter see it.
+    #[test]
+    fn severity_in_caps() {
+        let text = "## Findings\n\
+            1. [HIGH] a.rs:3 — x\n - Scenario: s\n - Fix: f\n - Confidence: confirmed\n\
+            2. [Medium] b.rs:4 — y\n - Scenario: s\n - Fix: f\n - Confidence: plausible\n\
+            3. [LOW] c.rs:5 — z\n - Scenario: s\n - Fix: f\n - Confidence: plausible";
+        let f = parse_findings(text).unwrap();
+        let severities: Vec<&str> = f.iter().map(|x| x.severity.as_str()).collect();
+        assert_eq!(severities, ["high", "medium", "low"]);
+        assert!(f[0].serious() && f[1].serious() && !f[2].serious());
+    }
+
+    /// Round 2 (§4.2): line 0 is kept as written; a line number past `u32`
+    /// is no line, and the path is still read.
+    #[test]
+    fn line_zero_and_huge_line() {
+        let at = |location: &str| {
+            let f = parse_findings(&format!(
+                "## Findings\n1. [high] {location} — x\n - Scenario: s\n - Fix: f\n - Confidence: confirmed"
+            ))
+            .unwrap();
+            (f[0].path.clone(), f[0].line)
+        };
+        assert_eq!(at("a.rs:0"), (Some("a.rs".to_string()), Some(0)));
+        assert_eq!(
+            at("a.rs:4294967295"),
+            (Some("a.rs".to_string()), Some(u32::MAX))
+        );
+        assert_eq!(at("a.rs:99999999999"), (Some("a.rs".to_string()), None));
+    }
+
+    /// Round 2 (§4.2): a finding without a confidence, or with an empty one,
+    /// is out of format, and the error names which finding.
+    #[test]
+    fn confidence_missing_is_an_error() {
+        let head = "## Findings\n1. [medium] a.rs:3 — x\n - Scenario: y\n - Fix: z";
+        for text in [
+            head.to_string(),
+            format!("{head}\n - Confidence:"),
+            format!("{head}\n - Confidence: **"),
+        ] {
+            assert!(
+                parse_findings(&text)
+                    .unwrap_err()
+                    .contains("finding 1 has no \"- Confidence:\" line"),
+                "{text}"
+            );
+        }
+        let second = format!(
+            "{head}\n - Confidence: confirmed\n2. [low] b.rs:4 — w\n - Scenario: y\n - Fix: z"
+        );
+        assert!(parse_findings(&second)
+            .unwrap_err()
+            .contains("finding 2 has no \"- Confidence:\" line"));
+    }
+
+    /// Round 2 (§4.2): `Confidence` in bold either way, and a value with
+    /// markup or words after it: its first word decides, and a word before
+    /// it ("likely plausible") is an error.
+    #[test]
+    fn confidence_bold_and_prefixed() {
+        for (line, want) in [
+            ("- **Confidence**: plausible.", "plausible"),
+            ("- Confidence: **confirmed**", "confirmed"),
+            ("* Confidence: _plausible_ (not run)", "plausible"),
+            ("- CONFIDENCE: (Confirmed)", "confirmed"),
+            ("- Confidence: ✅ confirmed by the test", "confirmed"),
+            ("- **Confidence:** Plausible: I didn't run it", "plausible"),
+        ] {
+            let text =
+                format!("## Findings\n1. [high] a.rs:3 — x\n - Scenario: s\n - Fix: f\n {line}");
+            let found = parse_findings(&text).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(found[0].confidence, want, "{line}");
+        }
+        let likely = "## Findings\n1. [high] a.rs:3 — x\n - Scenario: s\n - Fix: f\n - Confidence: likely plausible";
+        assert!(parse_findings(likely)
+            .unwrap_err()
+            .contains("confirmed or plausible"));
+    }
+
+    /// Round 2 (§4.2), pinned: the same finding twice in one report is kept
+    /// twice. `drop_repeats` compares with earlier rounds only (merging within
+    /// a round by `same_finding` would also merge two real bugs a few lines
+    /// apart); the agent answers the copy once more, nothing is lost, and a
+    /// later round drops both.
+    #[test]
+    fn duplicate_findings_in_one_round() {
+        let one = "1. [high] src/a.ts:42 — Off by one\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        let two = one.replacen("1.", "2.", 1);
+        let found = parse_findings(&format!("## Findings\n{one}\n{two}")).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0], found[1]);
+        let (kept, dropped) = drop_repeats(found.clone(), &[]);
+        assert_eq!((kept.len(), dropped.len()), (2, 0));
+        let note = findings_note(&kept, 1);
+        assert!(
+            note.contains("1. [high] src/a.ts:42 — Off by one"),
+            "{note}"
+        );
+        assert!(
+            note.contains("2. [high] src/a.ts:42 — Off by one"),
+            "{note}"
+        );
+        let (kept, dropped) = drop_repeats(found.clone(), &found[..1]);
+        assert_eq!((kept.len(), dropped.len()), (0, 2));
+    }
+
+    /// Round 2 (§4.2), pinned: a report wrapped whole in a backtick code
+    /// fence has no "## Findings" heading (`subagent::sections` skips fenced
+    /// lines), so it's out of format: `format_problem` sends it to the repair
+    /// turn (subagent_run.rs `finish_report`), and a fenced "None." is never
+    /// read as clean.
+    #[test]
+    fn report_entirely_in_a_code_fence() {
+        let fenced = format!("```markdown\n{GOOD}\n```");
+        assert!(parse_findings(&fenced)
+            .unwrap_err()
+            .contains("no \"## Findings\" section"));
+        let problem = subagent::format_problem(Kind::Reviewer.spec(), &fenced).unwrap();
+        assert!(problem.contains("no \"## Findings\""), "{problem}");
+        assert!(parse_findings("```\n## Findings\nNone.\n```").is_err());
+        // The repair turn's answer, unfenced, reads.
+        assert_eq!(parse_findings(GOOD).unwrap().len(), 2);
+    }
+
+    /// Round 2 (§4.2), decided: `subagent::sections` takes only backtick
+    /// fences, not `~~~` (plan.rs's `is_fence` takes both). Models fence with
+    /// backticks; a report wrapped in `~~~` still reads without a repair
+    /// turn, at the cost of a `## ` line inside a `~~~` block starting a
+    /// section.
+    #[test]
+    fn tilde_fence_is_not_a_fence_for_sections() {
+        let s = subagent::sections("## Answer\nx\n~~~\n## Inside\ny\n~~~\n");
+        assert_eq!(s.get("Answer"), Some("x\n~~~"));
+        assert_eq!(s.get("Inside"), Some("y\n~~~"));
+        let backticks = subagent::sections("## Answer\nx\n```\n## Inside\n```\n");
+        assert_eq!(backticks.get("Inside"), None);
+        let wrapped = "~~~markdown\n## Findings\n1. [high] a.rs:3 — x\n - Scenario: s\n - Fix: f\n - Confidence: confirmed\n~~~";
+        let found = parse_findings(wrapped).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].confidence, "confirmed");
+    }
+
+    /// Round 2 (§4.2): in one file, when either finding has no line, only
+    /// the same title (case and punctuation aside) makes a repeat; with lines
+    /// on both, near lines are enough. No title and no line: never a repeat
+    /// (pinned).
+    #[test]
+    fn same_file_no_line_title_rules() {
+        let finding = |location: &str, title: &str| {
+            parse_findings(&format!(
+                "## Findings\n1. [low] {location} — {title}\n - Scenario: s\n - Fix: f\n - Confidence: confirmed"
+            ))
+            .unwrap()
+        };
+        let repeat = |earlier: &[Finding], location: &str, title: &str| {
+            drop_repeats(finding(location, title), earlier).1.len() == 1
+        };
+        let no_line = finding("src/b.ts", "Unused import");
+        assert!(repeat(&no_line, "src/b.ts", "Unused import"));
+        assert!(repeat(&no_line, "src/b.ts", "unused  IMPORT!"));
+        assert!(repeat(&no_line, "./src/b.ts", "Unused import"));
+        assert!(
+            repeat(&no_line, "src/b.ts:9", "Unused import"),
+            "a line on one side only: the title decides"
+        );
+        assert!(!repeat(&no_line, "src/b.ts", "Leaks a handle"));
+        assert!(!repeat(&no_line, "src/b.ts:9", "Leaks a handle"));
+        assert!(
+            !repeat(&no_line, "src/c.ts", "Unused import"),
+            "another file"
+        );
+        let lined = finding("src/b.ts:10", "Unused import");
+        assert!(repeat(&lined, "src/b.ts", "Unused import"));
+        assert!(!repeat(&lined, "src/b.ts", "Leaks a handle"));
+        assert!(
+            repeat(&lined, "src/b.ts:14", "Leaks a handle"),
+            "near lines"
+        );
+        assert!(
+            !repeat(&lined, "src/b.ts:30", "Leaks a handle"),
+            "far lines, another title"
+        );
+        assert!(
+            repeat(&lined, "src/b.ts:300", "Unused import"),
+            "far lines, same title"
+        );
+        let untitled = finding("src/b.ts", "");
+        assert!(!repeat(&untitled, "src/b.ts", ""), "nothing ties them");
+    }
 }
