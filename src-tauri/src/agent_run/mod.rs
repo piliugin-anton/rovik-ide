@@ -194,6 +194,9 @@ struct Inner {
     /// (Gemini: "function-call-1"), so two chats can wait on the same id.
     approvals: HashMap<WaitKey, Waiting<ApprovalDecision, ApprovalRequest>>,
     questions: HashMap<WaitKey, Waiting<QuestionsOutcome, QuestionsRequest>>,
+    /// A run's fix-round state while its checks wait for the user's
+    /// approval, by chat (verify.rs `VerifyCarry`).
+    carries: HashMap<String, verify::VerifyCarry>,
 }
 
 /// Runs in progress (one per chat at most), what they wait on, and the settings.
@@ -207,6 +210,19 @@ impl AgentState {
 
     pub fn config(&self) -> AgentConfig {
         self.lock().config.clone()
+    }
+
+    /// Keeps a run's fix-round state until the user starts its checks.
+    fn put_carry(&self, dialog_id: &str, carry: verify::VerifyCarry) {
+        self.lock().carries.insert(dialog_id.to_string(), carry);
+    }
+
+    /// The state a run left for the checks waiting in `record_id`, if it
+    /// left it for those (a newer request drops it).
+    fn take_carry(&self, dialog_id: &str, record_id: &str) -> Option<verify::VerifyCarry> {
+        let mut inner = self.lock();
+        let carry = inner.carries.remove(dialog_id)?;
+        (carry.record_id == record_id).then_some(carry)
     }
 
     fn set_config(&self, config: AgentConfig) {

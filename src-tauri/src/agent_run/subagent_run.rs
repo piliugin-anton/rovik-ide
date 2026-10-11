@@ -86,6 +86,10 @@ pub(super) struct SubCtx {
     pub hidden: Vec<String>,
     /// Only light commands: no builds or test runs (E02, F05).
     pub light_bash: bool,
+    /// Resumed after the app closed: the files it wrote before then. They
+    /// count as its changes, but aren't rolled back (what they were before
+    /// it isn't known any more).
+    pub resumed_writes: Vec<String>,
 }
 
 impl SubCtx {
@@ -167,6 +171,15 @@ impl<R: Runtime> Run<R> {
         calls: &[ToolCall],
         resumed: bool,
     ) -> Result<(), String> {
+        // Writing subagents run one at a time anyway; each is started only
+        // once the one before it ended, so its brief (the steps done, the
+        // files as they are) includes that one's work.
+        if calls.len() > 1 && calls.iter().any(writes_task) {
+            for tc in calls {
+                Box::pin(self.execute_tasks(std::slice::from_ref(tc), resumed)).await?;
+            }
+            return Ok(());
+        }
         let config = self.state.config().subagents;
         let mut jobs: Vec<Job<R>> = Vec::with_capacity(calls.len());
         for tc in calls {
@@ -526,6 +539,7 @@ impl<R: Runtime> Run<R> {
             tests_only: false,
             hidden: Vec::new(),
             light_bash: false,
+            resumed_writes: Vec::new(),
         };
         #[cfg(test)]
         if let Some(k) = config.kinds.get(kind.id()) {
@@ -1266,7 +1280,11 @@ impl<R: Runtime> Run<R> {
                     .await?
             }
         }
-        self.launch_child(child_id, &tc.id, &goal, sub)
+        let mut child = self.launch_child(child_id.clone(), &tc.id, &goal, sub)?;
+        if existing.is_some() {
+            self.resume_child_writes(&mut child, &child_id).await;
+        }
+        Ok(child)
     }
 
     /// E02: a `task{kind:"testWriter"}` call: the brief has the request,
@@ -1342,7 +1360,66 @@ impl<R: Runtime> Run<R> {
                     .await?
             }
         }
-        self.launch_child(child_id, &tc.id, &goal, sub)
+        let mut child = self.launch_child(child_id.clone(), &tc.id, &goal, sub)?;
+        if existing.is_some() {
+            self.resume_child_writes(&mut child, &child_id).await;
+        }
+        Ok(child)
+    }
+
+    /// A writing subagent resumed after the app closed: the files it wrote
+    /// before then, from its chat. Each counts as its change (and the
+    /// lead's) from what it was before this run, where that's known (the
+    /// project's copy, in an isolated chat). They're never rolled back:
+    /// what they were just before it isn't known any more.
+    async fn resume_child_writes(&mut self, child: &mut Run<R>, child_id: &str) {
+        let id = child_id.to_string();
+        let Ok(page) = self
+            .db
+            .read(move |c| store::get_messages(c, &id, None, 500))
+            .await
+        else {
+            return;
+        };
+        let root = self.root.clone().unwrap_or_default();
+        let failed = |call: &str| {
+            page.messages
+                .iter()
+                .any(|m| m.tool_call_id.as_deref() == Some(call) && m.content.starts_with("Error"))
+        };
+        let mut paths: Vec<String> = Vec::new();
+        for m in &page.messages {
+            for tc in m.tool_calls.iter().flatten() {
+                if tc.name != "write" || failed(&tc.id) {
+                    continue;
+                }
+                let args = permissions::parse_args(&tc.arguments);
+                if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+                    let key = super::repair::rel_key(&root, path);
+                    if !paths.contains(&key) {
+                        paths.push(key);
+                    }
+                }
+            }
+        }
+        for key in &paths {
+            if let Some(original) = self.original_of(key) {
+                child.baseline.entry(key.clone()).or_insert(original);
+            }
+            // The lead's checks and reviewer look at it either way.
+            if !self
+                .changed_files
+                .iter()
+                .any(|c| super::repair::rel_key(&root, c) == *key)
+            {
+                self.changed_files.push(key.clone());
+            }
+            self.writes_since_verify = true;
+            self.writes_since_review = true;
+        }
+        if let Some(sub) = child.sub_mut() {
+            sub.resumed_writes = paths;
+        }
     }
 
     /// The files the test writer may not read (E02): those the plan names
@@ -1497,11 +1574,19 @@ impl<R: Runtime> Run<R> {
         );
         let mut notes = Vec::new();
         let mut rolled_back = None;
+        let resumed = self
+            .sub()
+            .map(|s| s.resumed_writes.clone())
+            .unwrap_or_default();
         if matches!(status, SubStatus::Failed | SubStatus::Stopped) {
             if let Some(rb) = self.roll_back(Vec::new()).await {
                 let mut note = String::from("Its changes were undone");
                 if rb.restored.is_empty() && rb.skipped.is_empty() {
-                    note = "It changed no files.".into();
+                    note = if resumed.is_empty() {
+                        "It changed no files.".into()
+                    } else {
+                        "Nothing it changed after the app closed needed undoing.".into()
+                    };
                 } else {
                     if !rb.restored.is_empty() {
                         note.push_str(&format!(
@@ -1525,6 +1610,12 @@ impl<R: Runtime> Run<R> {
                 notes.push(note);
                 rolled_back = Some(rb);
             }
+        }
+        if matches!(status, SubStatus::Failed | SubStatus::Stopped) && !resumed.is_empty() {
+            notes.push(format!(
+                "What it wrote before the app closed is kept, not undone: {}. Check it, or undo it yourself.",
+                resumed.join(", ")
+            ));
         }
         let kept: Vec<String> = self.child_writes().iter().map(|w| w.path.clone()).collect();
         if status == SubStatus::Partial && !kept.is_empty() {
@@ -1551,6 +1642,24 @@ impl<R: Runtime> Run<R> {
 }
 
 /// `Blocked` when the report says so, else `otherwise`.
+/// Whether a `task` call starts (or continues) a subagent that writes: a
+/// step worker, the test writer, or a parallel group.
+fn writes_task(tc: &ToolCall) -> bool {
+    let args = permissions::parse_args(&tc.arguments);
+    if super::group::group_call(&tc.arguments).is_some() {
+        return true;
+    }
+    let kind = |id: &str| Kind::parse(id).is_some_and(|k| k.writes());
+    if args.get("kind").and_then(|k| k.as_str()).is_some_and(kind) {
+        return true;
+    }
+    // A handle is "<kind>-<id>".
+    args.get("continue")
+        .and_then(|c| c.as_str())
+        .and_then(|h| h.rsplit_once('-'))
+        .is_some_and(|(k, _)| kind(k))
+}
+
 /// A writing kind asked for in Plan mode, which changes no files.
 fn plan_mode_refusal(kind: Kind) -> String {
     format!(
@@ -1636,6 +1745,7 @@ mod tests {
             tests_only: false,
             hidden: Vec::new(),
             light_bash: false,
+            resumed_writes: Vec::new(),
         }
     }
 

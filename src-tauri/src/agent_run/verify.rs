@@ -100,6 +100,34 @@ impl CheckResult {
     }
 }
 
+/// A run's fix-round state while its checks wait for the user's approval:
+/// with command approval on, each round of checks starts a new run, which
+/// takes this up (R01 progress, R02 rollback, R04 the repair loop, R05
+/// integrity, R08 the review after green). Kept in memory: after a
+/// restart, the next round starts afresh, as before.
+pub struct VerifyCarry {
+    pub record_id: String,
+    history: Vec<RoundFailures>,
+    last_results: Vec<CheckResult>,
+    last_failed: bool,
+    checkpoint: Option<repair::Checkpoint>,
+    baseline: std::collections::HashMap<String, Option<String>>,
+    integrity_open: Vec<String>,
+    asked_integrity: bool,
+    rolled_back: Vec<repair::Rollback>,
+    bonus_rounds: u32,
+    groups: Vec<super::repair_run::GroupRecord>,
+    last_triage: Option<super::triage::Triage>,
+    test_writer_files: Vec<String>,
+    tests_changed: Vec<String>,
+    worker_steps: Vec<super::worker::DoneStep>,
+    reviews_total: u32,
+    review_findings: Vec<super::change_review::Finding>,
+    /// What the run last wrote or read: in a chat that isn't isolated, a
+    /// rollback undoes only what's still the run's (K15).
+    seen: std::sync::Arc<crate::file_guard::Seen>,
+}
+
 /// The record's meta: `{ verification: … }`.
 fn record(
     status: &str,
@@ -325,6 +353,58 @@ impl<R: Runtime> Run<R> {
         }
     }
 
+    /// The fix-round state, moved out as the run stops for approval.
+    fn take_verify_state(&mut self, record_id: String) -> VerifyCarry {
+        use std::mem::take;
+        VerifyCarry {
+            record_id,
+            history: take(&mut self.verify_history),
+            last_results: take(&mut self.last_verify_results),
+            last_failed: self.last_verify_failed,
+            checkpoint: self.checkpoint.take(),
+            baseline: take(&mut self.baseline),
+            integrity_open: take(&mut self.integrity_open),
+            asked_integrity: self.asked_integrity,
+            rolled_back: take(&mut self.rolled_back_attempts),
+            bonus_rounds: self.bonus_rounds,
+            groups: take(&mut self.groups),
+            last_triage: self.last_triage.take(),
+            test_writer_files: take(&mut self.test_writer_files),
+            tests_changed: take(&mut self.tests_changed),
+            worker_steps: take(&mut self.worker_steps),
+            reviews_total: self.reviews_total,
+            review_findings: take(&mut self.review_findings),
+            seen: self.seen.clone(),
+        }
+    }
+
+    /// The run that starts the checks takes up where the last one stopped.
+    pub(super) fn restore_verify_state(&mut self, record_id: &str) {
+        let Some(c) = self.state.take_carry(&self.dialog_id, record_id) else {
+            return;
+        };
+        self.verify_history = c.history;
+        self.last_verify_results = c.last_results;
+        self.last_verify_failed = c.last_failed;
+        self.checkpoint = c.checkpoint;
+        // What this run's writes find first stays theirs.
+        for (path, original) in c.baseline {
+            self.baseline.entry(path).or_insert(original);
+        }
+        self.integrity_open = c.integrity_open;
+        self.asked_integrity = c.asked_integrity;
+        self.rolled_back_attempts = c.rolled_back;
+        self.bonus_rounds = c.bonus_rounds;
+        self.groups = c.groups;
+        self.last_triage = c.last_triage;
+        self.test_writer_files = c.test_writer_files;
+        self.tests_changed = c.tests_changed;
+        self.worker_steps = c.worker_steps;
+        self.reviews_total = c.reviews_total;
+        self.review_findings = c.review_findings;
+        self.seen = c.seen;
+    }
+
     /// The round limit: MAX_VERIFY_ROUNDS, and one more for each review
     /// after green whose findings went back (R08).
     fn max_rounds(&self) -> u32 {
@@ -403,14 +483,21 @@ impl<R: Runtime> Run<R> {
         // Command approval is on: the gate's commands need the user's go too.
         if p.command_approval.required && !approved {
             let pending: Vec<CheckResult> = checks.iter().map(CheckResult::pending).collect();
-            self.add_record(record(
-                "needs-approval",
-                self.verify_rounds,
-                &pending,
-                &changed,
-                None,
-            ))
-            .await?;
+            let record_id = self
+                .add_record(record(
+                    "needs-approval",
+                    self.verify_rounds,
+                    &pending,
+                    &changed,
+                    None,
+                ))
+                .await?;
+            // The run ends here: what its fix rounds know waits for the
+            // run that starts the checks.
+            if self.sub().is_none() {
+                let carry = self.take_verify_state(record_id);
+                self.state.put_carry(&self.dialog_id, carry);
+            }
             return Ok("verify-needs-approval".into());
         }
 

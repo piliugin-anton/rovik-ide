@@ -388,3 +388,83 @@ test('runs', () => assert(true));
     assert!(!reports[0].contains("broke something"));
     assert!(rounds.last().unwrap().get("integrity").is_none());
 }
+
+/// With command approval on, each round of checks is a run of its own: the
+/// fix rounds' state goes from one to the next, so a fix that broke a
+/// passing test is still rolled back.
+#[tokio::test]
+async fn with_approval_on_a_fix_that_breaks_a_test_is_still_rolled_back() {
+    if !has_node() {
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        write("w1", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        // Round 1 fails; its fix fixes `one` and breaks `two`.
+        write("w2", "a.txt", "good\n"),
+        write("w3", "b.txt", "broken\n"),
+        Reply::Text("Done."),
+        // Told it was rolled back, it stops.
+        Reply::Text("I'll leave it."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Fix the tests"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    for _ in 0..2 {
+        let waiting = h
+            .messages()
+            .await
+            .into_iter()
+            .rev()
+            .find(|m| {
+                m.meta
+                    .as_ref()
+                    .is_some_and(|m| m["verification"]["status"] == "needs-approval")
+            })
+            .expect("checks waiting");
+        h.events.lock().unwrap().clear();
+        h.start(h.request(
+            &url,
+            StartKind::RunChecks {
+                record_id: waiting.id.clone(),
+            },
+            permissions.clone(),
+        ))
+        .await;
+        h.run_end().await;
+    }
+    // The rounds that ran (the next one waits for approval again).
+    let rounds: Vec<Value> = records(&h.messages().await)
+        .into_iter()
+        .filter(|r| r["status"] != "needs-approval")
+        .collect();
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses[..2],
+        [&json!("failed"), &json!("rolled-back")],
+        "{rounds:#?}"
+    );
+    assert_eq!(
+        rounds[1]["rolledBack"]["broke"],
+        json!(["test|test|t::two"])
+    );
+    assert_eq!(h.file("b.txt").as_deref(), Some("fine\n"));
+}

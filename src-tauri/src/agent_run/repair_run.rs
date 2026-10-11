@@ -522,14 +522,46 @@ impl<R: Runtime> Run<R> {
                 }
             }
         };
+        // What the files are now, to tell what the fixer itself changed: a
+        // fixer's writes are counted from the project's files, so in an
+        // isolated chat every file the group changed would look changed,
+        // and one it rolled back too.
+        let root_dir = self.root.clone().unwrap_or_default();
+        let mut paths: Vec<String> = self
+            .changed_files
+            .iter()
+            .map(|f| repair::rel_key(&root_dir, f))
+            .collect();
+        if let Owner::Worker { label, .. } = &cause.owner {
+            if let Some((_, _, scope)) = group.owners.iter().find(|(l, _, _)| l == label) {
+                paths.extend(scope.files.iter().cloned());
+            }
+        }
+        paths.extend(cause.files.iter().cloned());
+        paths.sort();
+        paths.dedup();
+        let before: std::collections::HashMap<String, Option<Vec<u8>>> = paths
+            .into_iter()
+            .map(|p| {
+                let now = std::fs::read(tools::to_absolute_path(&p, &root_dir)).ok();
+                (p, now)
+            })
+            .collect();
         let result = tauri::async_runtime::spawn(go_sub(run))
             .await
             .ok()
             .flatten();
-        self.fixer_done(child, result)
+        self.fixer_done(child, result, Some(&before))
     }
 
-    fn fixer_done(&mut self, child: String, result: Option<SubResult>) -> Fixed {
+    /// `before`: the files just before a fixer that worked in the chat's
+    /// view; only the writes that left a file different count.
+    fn fixer_done(
+        &mut self,
+        child: String,
+        result: Option<SubResult>,
+        before: Option<&std::collections::HashMap<String, Option<Vec<u8>>>>,
+    ) -> Fixed {
         let Some(result) = result else {
             return Fixed {
                 status: "failed".into(),
@@ -539,8 +571,25 @@ impl<R: Runtime> Run<R> {
             };
         };
         self.note_models_of(&result);
-        self.absorb_child_writes(&result.writes);
-        let changed: Vec<String> = result.writes.iter().map(|w| w.path.clone()).collect();
+        let root_dir = self.root.clone().unwrap_or_default();
+        let writes: Vec<subagent::ChildWrite> = match before {
+            None => result.writes.clone(),
+            Some(before) => result
+                .writes
+                .iter()
+                .filter(|w| {
+                    let now = std::fs::read(tools::to_absolute_path(&w.path, &root_dir)).ok();
+                    match before.get(&w.path) {
+                        Some(was) => *was != now,
+                        // Not looked at before: what it was before the run.
+                        None => w.original.as_ref().map(|s| s.as_bytes().to_vec()) != now,
+                    }
+                })
+                .cloned()
+                .collect(),
+        };
+        self.absorb_child_writes(&writes);
+        let changed: Vec<String> = writes.iter().map(|w| w.path.clone()).collect();
         let status = match result.status {
             SubStatus::Done => "done",
             other => other.id(),
@@ -679,7 +728,7 @@ impl<R: Runtime> Run<R> {
                         .into_iter()
                         .filter(|w| paths.contains(&w.path))
                         .collect();
-                    out.push(self.fixer_done(child, Some(result)));
+                    out.push(self.fixer_done(child, Some(result), None));
                 }
                 Err(e) => {
                     chats::discard_child(&child);

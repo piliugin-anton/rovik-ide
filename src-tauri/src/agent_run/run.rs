@@ -996,6 +996,8 @@ impl<R: Runtime> Run<R> {
         match entry {
             Entry::Turn => {}
             Entry::Verify { record_id } => {
+                // What the last run's fix rounds knew (command approval on).
+                self.restore_verify_state(&record_id);
                 // The waiting record becomes the running one, then the results.
                 let outcome = self.verify_at_end(true, Some(record_id)).await?;
                 if outcome != "continue" {

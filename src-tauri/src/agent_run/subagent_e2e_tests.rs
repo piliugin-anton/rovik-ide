@@ -4382,3 +4382,219 @@ async fn redo_puts_each_path_back_as_the_chat_had_it() {
     assert_eq!(h.file("src/posts.rs").as_deref(), Some("// posts\n"));
     assert!(!h.project.join("src/users").exists());
 }
+
+/// A fixer that fails is rolled back: it changed nothing, and the lead
+/// isn't told the workers' fixes are in.
+#[tokio::test]
+#[ignore]
+async fn a_failed_fixer_is_reported_as_having_changed_nothing() {
+    let Some(h) = repair_harness(false).await else {
+        return;
+    };
+    let (url, _) = model_routed(
+        vec![
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w1", "src/users.rs", "users\n"),
+                    worker_report("Users page.", &["src/users.rs"]),
+                ],
+            ),
+            (
+                "# Your step: 3.",
+                vec![
+                    write_call("w2", "src/posts.rs", "bad posts\n"),
+                    worker_report("Posts page.", &["src/posts.rs"]),
+                    // Resumed to fix it: writes, then its model fails.
+                    write_call("w2f", "src/posts.rs", "posts, half fixed\n"),
+                    bad(),
+                ],
+            ),
+        ],
+        vec![
+            all_done(),
+            group_task("g1"),
+            Reply::Text("Done."),
+            Reply::Text("I'll leave it."),
+        ],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, true)).await;
+    h.run_end().await;
+    let messages = h.messages().await;
+    let records = end_records(&messages);
+    let repair = &records[0]["repair"];
+    assert_eq!(repair["status"], "lead", "{repair}");
+    let fixer = &repair["causes"][0]["fixer"];
+    assert_eq!(fixer["status"], "failed", "{fixer}");
+    assert_eq!(fixer["changed"], json!([]), "{fixer}");
+    let report = messages
+        .iter()
+        .find(|m| m.content.contains("## Root causes"))
+        .expect("the lead's report");
+    assert!(
+        !report.content.contains("fixes are in your files"),
+        "{}",
+        report.content
+    );
+    assert!(
+        report.content.contains("couldn't fix it"),
+        "{}",
+        report.content
+    );
+}
+
+/// A worker resumed after the app closed knows what it wrote before then:
+/// those files count as changed, and a failure says they're kept.
+#[tokio::test]
+async fn a_worker_resumed_after_a_restart_knows_what_it_wrote() {
+    let h = plan_harness(&[("a.txt", "hello\n")]).await;
+    let db = h.app.state::<DbState>().inner().clone();
+    // As the app left it: the lead's task call, no result; the worker's
+    // chat with its brief and one write done (a.txt says hello now).
+    let lead = h.dialog_id.clone();
+    let mut user = crate::agent_run::run::new_message(
+        "user",
+        "Implement the plan in `.rovik/plans/greet.md`.",
+    );
+    user.meta = Some(json!({ "mode": "agent", "implementsPlan": true }));
+    let mut call = crate::agent_run::run::new_message("assistant", "");
+    call.tool_calls = Some(vec![store::ToolCall {
+        id: "s1".into(),
+        name: "task".into(),
+        arguments: json!({ "kind": "worker", "step": 1 }).to_string(),
+        extra_content: None,
+    }]);
+    let child = uuid::Uuid::new_v4().to_string();
+    let brief =
+        crate::agent_run::run::new_message("user", "# Your step: 1. First greeting\n\nDo it.");
+    let mut write = crate::agent_run::run::new_message("assistant", "");
+    write.tool_calls = Some(vec![store::ToolCall {
+        id: "w1".into(),
+        name: "write".into(),
+        arguments: json!({ "path": "a.txt", "content": "hello\n" }).to_string(),
+        extra_content: None,
+    }]);
+    let mut wrote = crate::agent_run::run::new_message("tool", "wrote 6 bytes to a.txt");
+    wrote.tool_call_id = Some("w1".into());
+    let child_id = child.clone();
+    db.write(move |c| {
+        store::append_messages(c, &lead, &[user, call])?;
+        store::create_child_dialog(
+            c,
+            &store::NewChildDialog {
+                id: child_id.clone(),
+                parent_id: lead.clone(),
+                parent_call_id: "s1".into(),
+                kind: "worker".into(),
+                title: "Worker".into(),
+                created_at: store::now_ms(),
+            },
+        )?;
+        store::append_messages(c, &child_id, &[brief, write, wrote])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    // Resumed, its model fails.
+    let (url, _) = model_routed(
+        vec![("# Your step: 1.", vec![bad(), bad(), bad()])],
+        vec![Reply::Text("I'll look at a.txt myself.")],
+    )
+    .await;
+    let mut request = h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off);
+    request.start = StartKind::Resume;
+    h.start(request).await;
+    h.run_end().await;
+    let r = h.task_result("s1").await.content;
+    assert!(
+        r.contains("What it wrote before the app closed is kept, not undone: a.txt"),
+        "{r}"
+    );
+    assert!(!r.contains("It changed no files"), "{r}");
+    assert_eq!(h.file("a.txt").as_deref(), Some("hello\n"));
+}
+
+/// Two steps started in one reply: the second's brief is made once the
+/// first is done, so it has the first's work.
+#[tokio::test]
+async fn steps_started_together_brief_each_after_the_one_before() {
+    let h = plan_harness(&[("a.txt", "old\n")]).await;
+    let (url, seen) = model_routed(
+        vec![
+            (
+                "# Your step: 1.",
+                vec![
+                    write_call("w1", "a.txt", "hello\n"),
+                    worker_report("Replaced the line with hello.", &["a.txt"]),
+                ],
+            ),
+            (
+                "# Your step: 2.",
+                vec![
+                    write_call("w2", "a.txt", "hello\nhello again\n"),
+                    write_call("w3", "b.txt", "bye\n"),
+                    worker_report("Added the second greeting.", &["a.txt", "b.txt"]),
+                ],
+            ),
+        ],
+        vec![
+            Reply::Calls(vec![
+                ("s1", "task", json!({ "kind": "worker", "step": 1 })),
+                ("s2", "task", json!({ "kind": "worker", "step": 2 })),
+            ]),
+            Reply::Text("Two steps done."),
+        ],
+    )
+    .await;
+    h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
+        .await;
+    h.run_end().await;
+    let brief = requests_with(&seen, "# Your step: 2.")[0].to_string();
+    assert!(
+        brief.contains("Replaced the line with hello."),
+        "step 1's summary: {brief}"
+    );
+    assert!(
+        brief.contains("+hello"),
+        "step 1's change to a.txt: {brief}"
+    );
+    assert_eq!(h.file("a.txt").as_deref(), Some("hello\nhello again\n"));
+}
+
+/// Stop during a group: the stopped workers aren't retried as failures.
+#[tokio::test]
+#[ignore]
+async fn stop_during_a_group_retries_no_worker() {
+    let h = group_harness(&[]).await;
+    let (url, _) = model_routed(
+        vec![
+            ("# Your step: 2.", vec![Reply::Hang(None)]),
+            ("# Your step: 3.", vec![Reply::Hang(None)]),
+        ],
+        vec![all_done(), group_task("g1"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.implement_isolated(&url, false)).await;
+    // Both workers are at work.
+    for _ in 0..400 {
+        if h.events_of("subagentStarted").len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(h.events_of("subagentStarted").len(), 2);
+    let app = h.app.handle().clone();
+    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    assert_eq!(h.run_end().await, "stopped");
+    // No third worker was started for a retry.
+    assert_eq!(h.events_of("subagentStarted").len(), 2);
+    let messages = h.messages().await;
+    let result = result_of(&messages, "g1").content.clone();
+    assert!(
+        !result.contains("w1'") && !result.contains("w2'"),
+        "{result}"
+    );
+    assert!(!result.contains("failed twice"), "{result}");
+}

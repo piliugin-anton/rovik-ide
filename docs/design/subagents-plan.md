@@ -1454,3 +1454,60 @@ run`, `uvx` and `pipx run`.
 npm test` are refused; a scout with a budget of 3 that asks for 5 calls
   in one reply gets 3 run, 2 not run, and ends partial). Both e2e tests
   fail without the fix.
+
+### Review fixes: state across runs, fixers' changes, resumed workers, briefs and Stop
+
+- **With command approval on, the fix rounds' state carries over**
+  (`verify::VerifyCarry`, kept in `AgentState` by chat).
+  - With approval on, each round of checks is a run of its own. The run
+    that stops for approval leaves what its fix rounds know, tied to its
+    waiting record:
+    - the rounds' failures and last results;
+    - the checkpoint;
+    - the baselines;
+    - the integrity question;
+    - the rollbacks and bonus rounds;
+    - the parallel groups;
+    - the last triage;
+    - the test writer's files;
+    - the steps done;
+    - the reviews;
+    - `seen`, so a rollback in a chat that isn't isolated still knows
+      which files are the run's own.
+  - The run that starts those checks takes it up. Before this, progress,
+    rollback, the repair loop and the review after green never worked
+    with approval on.
+  - It's kept in memory: after an app restart, the next round starts
+    afresh, as before.
+- `integrity_open` was already cleared once a round that ran has no flags
+  (the rollback fixes above).
+- **A fixer's changes are what it changed** (`fix_one`). The files are
+  read just before a sequential fixer. Its writes count only where a file
+  is different afterwards. Before, they were counted against the
+  project's files, so in an isolated chat every file the group changed,
+  and every one a failed fixer had rolled back, counted as the fixer's.
+  The lead was then told "the workers' fixes are in".
+- **A writing subagent resumed after the app closed knows what it wrote**
+  (`resume_child_writes`).
+  - Its earlier `write` calls are read from its chat. Those files count
+    as changed for the lead's checks and reviewer, and as the
+    subagent's, from what they were before the run where that's known.
+  - They aren't rolled back, since what they were just before it isn't
+    known any more. A failure says they're kept.
+- **Writing subagents started in one reply are briefed one by one**
+  (`execute_tasks`). A batch with a step worker, the test writer, a
+  parallel group or a follow-up to one runs call by call, so step 2's
+  brief has step 1's work. Before, both briefs were made before either
+  ran.
+- **Stop during a group retries nothing**. A stopped worker is skipped,
+  not failed, and no retry starts after Stop. Before, each stopped worker
+  was retried.
+- Tests (each fails without its fix):
+  - with approval on, a fix that breaks a passing test is still rolled
+    back in the next run;
+  - a fixer that fails reports no changes, and the lead isn't told its
+    fixes are in (FUSE);
+  - a worker resumed after a restart reports its earlier write as kept;
+  - two steps started together: step 2's brief has step 1's summary and
+    change;
+  - Stop during a group starts no third worker (FUSE).

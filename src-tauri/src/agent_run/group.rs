@@ -322,9 +322,13 @@ impl<R: Runtime> Run<R> {
             lines.push(entry.0);
             workers.push(entry.1);
         }
-        // F09: a failed step is retried once, as a fresh worker.
-        if conflict.is_none() {
+        // F09: a failed step is retried once, as a fresh worker (not after
+        // the user's Stop).
+        if conflict.is_none() && !self.stopped() {
             for member in retry {
+                if self.stopped() {
+                    break;
+                }
                 let again = Member {
                     label: format!("{}'", member.label),
                     step: member.step.clone(),
@@ -519,8 +523,14 @@ impl<R: Runtime> Run<R> {
         let entry = |status: &str, landed: &[String]| json!({ "step": n, "label": member.label, "status": status, "childDialogId": child, "landed": landed });
         if matches!(result.status, SubStatus::Failed | SubStatus::Stopped) {
             chats::discard_child(&member.child_id);
+            // Stopped (the user's Stop): not retried as a failure.
+            let joined = if result.status == SubStatus::Stopped || self.stopped() {
+                Joined::Skipped
+            } else {
+                Joined::Failed
+            };
             return (
-                Joined::Failed,
+                joined,
                 (
                     format!(
                         "{head}\nStatus: {}. Its copy was discarded: nothing of it landed.",
