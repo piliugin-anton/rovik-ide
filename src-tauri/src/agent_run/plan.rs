@@ -61,11 +61,17 @@ static STEPS_HEADING: LazyLock<Regex> =
 /// (P4.4: a "## Next steps" note before it isn't the steps).
 static STEPS_HEADING_EXACT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?im)^##\s+(?:the\s+)?steps\s*:?\s*$").unwrap());
+/// Then one that starts with "Steps" (`## Steps (ordered)`, `## 3. Steps`),
+/// still before one that only mentions them.
+static STEPS_HEADING_LEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^##[ \t]+(?:\d+[.)][ \t]*)?(?:the[ \t]+)?steps\b[^\n]*$").unwrap()
+});
 
 /// The steps section's heading (P4.4).
 fn steps_heading(text: &str) -> Option<regex::Match<'_>> {
     STEPS_HEADING_EXACT
         .find(text)
+        .or_else(|| STEPS_HEADING_LEADING.find(text))
         .or_else(|| STEPS_HEADING.find(text))
 }
 static VALIDATION_HEADING: LazyLock<Regex> = LazyLock::new(|| {
@@ -2710,5 +2716,46 @@ mod tests {
             ),
             "{p:?}"
         );
+    }
+
+    /// Round 2, P4.4: `## Steps (ordered)` is the steps heading, alone and
+    /// after a "## Next steps" note (which would otherwise be read first).
+    #[test]
+    fn steps_heading_with_suffix() {
+        let plan = "# P\n\n## Next steps (later)\n\n1. Nothing here.\n\n## Steps (ordered)\n\n\
+            1. **One**\n   - `src/a.rs`: add a.\n\
+            2. **Two**\n   - `src/b.rs`: add b.\n\n## Validation\n- `cargo test`\n";
+        let alone = plan.replace("## Next steps (later)\n\n1. Nothing here.\n\n", "");
+        for plan in [alone.as_str(), plan] {
+            let s = steps(plan);
+            assert_eq!(
+                s.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
+                ["One", "Two"],
+                "{plan}"
+            );
+            assert_eq!(s[1].files[0].path, "src/b.rs");
+            assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+        }
+    }
+
+    /// Round 2, P4.4: a numbered `## 3. Steps` is the steps heading, alone
+    /// and after a "## 2. Next steps" note; its number isn't a step's.
+    #[test]
+    fn steps_heading_numbered() {
+        let plan = "# P\n\n## 1. Summary\n\nTwo files.\n\n## 2. Next steps (later)\n\n1. Nothing here.\n\n\
+            ## 3. Steps\n\n1. **One**\n   - `src/a.rs`: add a.\n2. **Two**\n   - `src/b.rs`: add b.\n\n\
+            ## 4. Validation\n- `cargo test`\n";
+        let alone = plan.replace("## 2. Next steps (later)\n\n1. Nothing here.\n\n", "");
+        for plan in [alone.as_str(), plan] {
+            let s = steps(plan);
+            assert_eq!(
+                s.iter().map(|s| s.number).collect::<Vec<_>>(),
+                [1, 2],
+                "{plan}"
+            );
+            assert_eq!(s[0].title, "One");
+            assert_eq!(s[1].files[0].path, "src/b.rs");
+            assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+        }
     }
 }
