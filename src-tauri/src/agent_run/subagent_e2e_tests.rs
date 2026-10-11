@@ -3123,13 +3123,21 @@ async fn a_group_runs_in_parallel_and_joins_into_the_chat_not_the_project() {
 #[tokio::test]
 #[ignore]
 async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
-    // A check w1 may run writes past its scope as a side effect (a test
-    // that writes a file): posts.rs too.
-    let h = group_harness(&[(
-        "scripts/side.test.js",
-        "require('fs').writeFileSync('src/posts.rs', 'from w1\\n');\n",
-    )])
+    // A light check w1 may run (a linter on one file) writes past its
+    // scope as a side effect: posts.rs too.
+    let h = group_harness(&[
+        (
+            "node_modules/.bin/eslint",
+            "#!/bin/sh\nprintf 'from w1\\n' > src/posts.rs\n",
+        ),
+        ("scripts/side.js", "x\n"),
+    ])
     .await;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = h.project.join("node_modules/.bin/eslint");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let (url, _) = model_routed(
         vec![
             (
@@ -3138,7 +3146,7 @@ async fn a_conflict_while_joining_goes_to_the_lead_with_both_versions() {
                     Reply::Call {
                         id: "b1",
                         name: "bash",
-                        args: json!({ "command": "node --test scripts/side.test.js" }),
+                        args: json!({ "command": "npx eslint scripts/side.js" }),
                     },
                     worker_report("Users.", &["src/users.rs"]),
                 ],
@@ -4114,6 +4122,106 @@ async fn a_test_writer_continued_keeps_its_limits() {
     assert!(h.file("src/greet.ts").unwrap().contains("Hello"));
 }
 
+/// The light-command limit fails closed: a heavy command behind a wrapper
+/// is refused too.
+#[tokio::test]
+async fn a_heavy_command_behind_a_wrapper_is_refused_to_the_test_writer() {
+    let h = harness(&[("src/greet.ts", "export const greet = 1;\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![
+                Reply::Calls(vec![
+                    ("b1", "bash", json!({ "command": "timeout 600 cargo test" })),
+                    (
+                        "b2",
+                        "bash",
+                        json!({ "command": "env CI=1 timeout 60 npm test" }),
+                    ),
+                ]),
+                Reply::Text(TEST_REPORT),
+            ],
+        )],
+        vec![test_task("tw"), Reply::Text("Done.")],
+    )
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        checklist: ChecklistMode::Off,
+        ..quiet_permissions()
+    };
+    let mut request = h.request(&url, Harness::send("Test greet"), permissions);
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    h.run_end().await;
+    let child = h.child_of("tw").await;
+    let work = h.messages_of(&child.id).await;
+    for id in ["b1", "b2"] {
+        let r = &work
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap()
+            .content;
+        assert!(r.contains("is a heavy command"), "{id}: {r}");
+    }
+}
+
+/// The tool-call budget holds within one reply: calls past it aren't run.
+#[tokio::test]
+async fn calls_past_the_budget_in_one_reply_are_not_run() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let read = |id: &'static str| (id, "read", json!({ "path": "a.txt" }));
+    let (url, _) = model_routed(
+        vec![(
+            "MARK-B",
+            vec![
+                Reply::Calls(vec![
+                    read("r1"),
+                    read("r2"),
+                    read("r3"),
+                    read("r4"),
+                    read("r5"),
+                ]),
+                Reply::Text(REPORT),
+            ],
+        )],
+        vec![
+            Reply::Call {
+                id: "t1",
+                name: "task",
+                args: json!({ "kind": "scout", "goal": "MARK-B: where?", "max_tool_calls": 3 }),
+            },
+            Reply::Text("Found it."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Find it", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    h.run_end().await;
+    let child = h.child_of("t1").await;
+    let work = h.messages_of(&child.id).await;
+    let result = |id: &str| {
+        work.iter()
+            .find(|m| m.tool_call_id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("no result for {id}"))
+            .content
+            .clone()
+    };
+    for id in ["r1", "r2", "r3"] {
+        assert!(result(id).contains('x'), "{id}: {}", result(id));
+    }
+    for id in ["r4", "r5"] {
+        assert!(
+            result(id).starts_with("Error: not run"),
+            "{id}: {}",
+            result(id)
+        );
+    }
+    let r = h.task_result("t1").await.content;
+    assert!(r.contains("Status: partial"), "{r}");
+    assert!(r.contains("3 tool calls"), "{r}");
+}
+
 /// A worker whose report starts repeating itself is cut there, not taken
 /// as stopped by the user: its report stands and its changes are kept.
 #[tokio::test]
@@ -4231,7 +4339,12 @@ async fn redo_puts_each_path_back_as_the_chat_had_it() {
         .iter()
         .map(|c| c.path().to_string())
         .collect();
-    for p in ["src/users", "src/users/mod.rs", "src/posts.rs", "assets/x.bin"] {
+    for p in [
+        "src/users",
+        "src/users/mod.rs",
+        "src/posts.rs",
+        "assets/x.bin",
+    ] {
         assert!(before.iter().any(|b| b == p), "{p}: {before:?}");
     }
     let request = crate::overlay::chats::redo_group(&id, "pages").unwrap();

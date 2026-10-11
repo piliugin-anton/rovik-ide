@@ -1423,3 +1423,34 @@ cargo check` prints `src/x.rs`) becomes the one known file it is the
   fails now and then when run with the isolated e2e tests, and passes
   alone. The overlays' data folder is the process's, and the overlay
   tests don't take `Harness::isolate`'s lock.
+
+### Review fixes: the light-command limit and the tool-call budget
+
+- **The light-command limit fails closed** (`execute.rs`): a subagent with
+  `light_bash` (group workers, the test writer, repair fixers) runs only
+  commands `workload::classify` rates Light. Before, only Heavy and
+  LongRunning were refused, so anything it couldn't tell (Unknown) ran.
+  The classifier now sees through more wrappers, which also helps the
+  workload queue:
+  - `timeout` (and its duration);
+  - `xargs` (it was on the light list itself, so `xargs cargo test` was
+    "light");
+  - `bash -c '…'`, whose script is classified;
+  - `uv run`, `poetry run`, `pipenv run`, `pdm run`, `hatch run`, `rye
+run`, `uvx` and `pipx run`.
+
+  `mypy` is heavy, like `python -m mypy`. A test checks that the light
+  checks offered to workers (F05b) are rated Light.
+
+- **The tool-call budget holds within a reply** (`drive_sub`): the calls
+  past what's left aren't run. Each gets a result saying so, and the next
+  turn is the report turn (status partial). Before, one reply with 40
+  calls ran all 40.
+- The join-conflict test now makes its conflict with a light check whose
+  local binary writes a file (a linter on one file), since `node --test`
+  can't be told to be light any more.
+- Tests: unit (the wrappers seen through; F05b's commands are Light);
+  e2e (the test writer's `timeout 600 cargo test` and `env CI=1 timeout 60
+npm test` are refused; a scout with a budget of 3 that asks for 5 calls
+  in one reply gets 3 run, 2 not run, and ends partial). Both e2e tests
+  fail without the fix.

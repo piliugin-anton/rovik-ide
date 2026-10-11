@@ -91,9 +91,25 @@ fn skip_wrappers(words: &[String]) -> &[String] {
                     .count();
                 rest = &rest[skip..];
             }
-            "time" | "nice" | "nohup" | "exec" | "command" | "sudo" | "caffeinate" => {
+            "time" | "nice" | "nohup" | "exec" | "command" | "sudo" | "caffeinate" | "xargs" => {
                 let skip = 1 + rest[1..].iter().take_while(|w| w.starts_with('-')).count();
                 rest = &rest[skip..];
+            }
+            // `timeout 600 cargo test`, `timeout -s KILL 5m make`.
+            "timeout" | "gtimeout" => {
+                let mut skip = 1;
+                while let Some(w) = rest.get(skip) {
+                    if w == "-s" || w == "-k" || w == "--signal" || w == "--kill-after" {
+                        skip += 2;
+                    } else if w.starts_with('-') {
+                        skip += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // The duration.
+                skip += 1;
+                rest = &rest[skip.min(rest.len())..];
             }
             _ => return rest,
         }
@@ -133,8 +149,8 @@ const LIGHT: &[&str] = &[
     "wc", "sort", "uniq", "cut", "tr", "diff", "which", "where", "true", "false", "test", "[",
     "mkdir", "rm", "rmdir", "cp", "mv", "touch", "chmod", "ln", "stat", "file", "du", "df", "tree",
     "jq", "yq", "curl", "wget", "type", "dir", "rustfmt", "basename", "dirname", "realpath",
-    "date", "sleep", "whoami", "uname", "xargs", "tee", "less", "more", "open", "set", "export",
-    "source", ".", "exit", "cd",
+    "date", "sleep", "whoami", "uname", "tee", "less", "more", "open", "set", "export", "source",
+    ".", "exit", "cd",
 ];
 
 /// Programs whose own processes do the heavy work (also used by the tracker).
@@ -175,6 +191,7 @@ pub const HEAVY_PROGRAMS: &[&str] = &[
     "sbt",
     "ant",
     "pytest",
+    "mypy",
     "py.test",
     "tox",
     "nox",
@@ -358,12 +375,27 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
     match prog.as_str() {
         "npm" | "pnpm" | "yarn" | "bun" => package_script(&prog, words, cwd, depth),
         "npx" | "bunx" => tool_after(words, 1, cwd, depth),
+        // `uv run pytest`, `poetry run mypy .`: what they run.
+        "uv" | "poetry" | "pipenv" | "pdm" | "hatch" | "rye" if sub == Some("run") => {
+            let at = words.iter().position(|w| w == "run").unwrap_or(1);
+            tool_after(words, at + 1, cwd, depth)
+        }
+        "uvx" | "pipx" => tool_after(words, if sub == Some("run") { 2 } else { 1 }, cwd, depth),
         "just" => recipe(cwd, sub, depth, just_recipe),
         "task" => recipe(cwd, sub, depth, taskfile_recipe),
-        "sh" | "bash" | "zsh" | "dash" => match words.get(1).filter(|w| !w.starts_with('-')) {
-            Some(script) => shell_script(cwd, script, depth),
-            None => Class::Unknown,
-        },
+        "sh" | "bash" | "zsh" | "dash" => {
+            // `bash -c 'cargo test'`: the command it runs.
+            if let Some(at) = words.iter().position(|w| w == "-c" || w == "-lc") {
+                return match words.get(at + 1) {
+                    Some(script) => classify_at(script, cwd.map(Path::to_path_buf), depth + 1),
+                    None => Class::Unknown,
+                };
+            }
+            match words.get(1).filter(|w| !w.starts_with('-')) {
+                Some(script) => shell_script(cwd, script, depth),
+                None => Class::Unknown,
+            }
+        }
         _ if first.starts_with("./") || first.starts_with(".\\") => shell_script(cwd, first, depth),
         _ => Class::Unknown,
     }
@@ -666,5 +698,31 @@ mod tests {
         assert_eq!(c("./build.sh"), Class::Heavy);
         assert_eq!(c("sh tidy.sh"), Class::Light);
         assert_eq!(c("bash missing.sh"), Class::Unknown);
+    }
+
+    #[test]
+    fn wrappers_and_runners_are_seen_through() {
+        let c = |cmd: &str| classify(cmd, None);
+        for heavy in [
+            "timeout 600 cargo test",
+            "timeout -s KILL 5m cargo build",
+            "xargs cargo test",
+            "bash -c 'cargo test'",
+            "sh -c \"npm test\"",
+            "uv run pytest",
+            "poetry run mypy .",
+            "pipenv run pytest tests/",
+            "env CI=1 timeout 60 cargo check",
+        ] {
+            assert_eq!(c(heavy), Class::Heavy, "{heavy}");
+        }
+        for light in [
+            "uvx ruff check a.py",
+            "timeout 5 ls",
+            "bash -c 'git status'",
+            "npx eslint src/a.ts",
+        ] {
+            assert_eq!(c(light), Class::Light, "{light}");
+        }
     }
 }

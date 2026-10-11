@@ -968,7 +968,23 @@ impl<R: Runtime> Run<R> {
             if calls.is_empty() {
                 return self.finish_report(text).await;
             }
-            self.execute_tool_calls(&calls, None).await?;
+            // The budget holds within a reply too: calls past it aren't run,
+            // and each gets a result saying so.
+            let left = self.sub().map_or(usize::MAX, |s| {
+                s.budget.tool_calls.saturating_sub(self.guard.tool_calls) as usize
+            });
+            let (run_now, over) = calls.split_at(left.min(calls.len()));
+            if !run_now.is_empty() {
+                self.execute_tool_calls(run_now, None).await?;
+            }
+            for tc in over {
+                let content = format!(
+                    "Error: not run: it's past your budget of {} tool calls. Write your report now with what you have.",
+                    self.sub().map_or(0, |s| s.budget.tool_calls)
+                );
+                self.add_tool_result(&tc.id, content, None, Vec::new())
+                    .await?;
+            }
             if self.stopped() {
                 return Ok((SubStatus::Stopped, last_text, None));
             }

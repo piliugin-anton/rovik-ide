@@ -669,4 +669,21 @@ mod tests {
         );
         assert_eq!(project_context(&ProjectProfile::default(), &[], true), "");
     }
+
+    #[test]
+    fn the_light_checks_offered_are_light() {
+        // F05b's commands pass the light-command limit (classify: Light).
+        for cmd in [
+            "ruff check src/a.py",
+            "pyright src/a.py",
+            "go vet ./pkg",
+            "npx eslint src/a.ts",
+        ] {
+            assert_eq!(
+                crate::workload::classify::classify(cmd, None),
+                crate::workload::classify::Class::Light,
+                "{cmd}"
+            );
+        }
+    }
 }

@@ -380,19 +380,23 @@ impl<R: Runtime> Run<R> {
             }
         }
         // Light commands only: builds and test runs are the lead's (E02, F05).
+        // Only what's known to be light runs: a command that can't be told
+        // (a wrapper, a script, a subshell) is refused too.
         if tc.name == "bash" && self.sub().is_some_and(|s| s.light_bash) {
             let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
             let class = crate::workload::classify::classify(
                 command,
                 self.root.as_deref().map(std::path::Path::new),
             );
-            if matches!(
-                class,
-                crate::workload::classify::Class::Heavy
-                    | crate::workload::classify::Class::LongRunning
-            ) {
+            if class != crate::workload::classify::Class::Light {
+                let what = match class {
+                    crate::workload::classify::Class::Unknown => {
+                        "a command that can't be told to be light"
+                    }
+                    _ => "a heavy command (a build, a test run or a server)",
+                };
                 let content = format!(
-                    "Error: `{command}` is a heavy command (a build, a test run or a server). The lead runs those after merging your work; use diagnostics, or a light check on one file."
+                    "Error: `{command}` is {what}. The lead runs those after merging your work; use diagnostics, or a light check on one file, run directly."
                 );
                 return self
                     .add_tool_result(&tc.id, content, None, Vec::new())
