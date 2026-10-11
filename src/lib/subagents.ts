@@ -162,11 +162,17 @@ export function childOf(dialogId: string | null, toolCallId: string): string | n
 /** Whether a chat is a subagent's (its events don't go to the chat store). */
 export const isSubagentChat = (dialogId: string) => !!state.children[dialogId];
 
+type Patch = Omit<Partial<ChatMessage>, 'status'> & { status?: ChatMessage['status'] | null };
+
 /**
- * P5.4: rows that arrive while a transcript's first page loads, merged by
- * id once it lands (they're newer than the page).
+ * P5.4: what arrives while a transcript's first page loads (rows, and
+ * patches to rows that may be in the page), applied in order once it lands:
+ * it's newer than the page.
  */
-const arrivedWhileLoading = new Map<string, ChatMessage[]>();
+type Arrival = { rows: ChatMessage[] } | { messageId: string; patch: Partial<ChatMessage> };
+const arrivedWhileLoading = new Map<string, Arrival[]>();
+/** The load in flight per transcript: one that lands after it's forgotten is dropped. */
+const loads = new Map<string, object>();
 
 /** `later` over `page`, by id: a later row replaces its earlier copy. */
 export function mergeById(page: ChatMessage[], later: ChatMessage[]): ChatMessage[] {
@@ -177,6 +183,22 @@ export function mergeById(page: ChatMessage[], later: ChatMessage[]): ChatMessag
     else out.push(m);
   }
   return out;
+}
+
+function replay(page: ChatMessage[], arrivals: Arrival[]): ChatMessage[] {
+  let out = page;
+  for (const a of arrivals) {
+    if ('rows' in a) out = mergeById(out, a.rows);
+    else out = out.map((m) => (m.id === a.messageId ? { ...m, ...a.patch } : m));
+  }
+  return out;
+}
+
+function arrive(childDialogId: string, arrival: Arrival) {
+  arrivedWhileLoading.set(childDialogId, [
+    ...(arrivedWhileLoading.get(childDialogId) ?? []),
+    arrival,
+  ]);
 }
 
 /** Messages a subagent's run stored: shown if its transcript is open. */
@@ -190,34 +212,22 @@ export function receiveSubagentMessages(
     ...fromRow(row),
     ...(row.pending ? { pending: true } : {}),
   }));
-  if (t.loading) {
-    arrivedWhileLoading.set(childDialogId, [
-      ...(arrivedWhileLoading.get(childDialogId) ?? []),
-      ...incoming,
-    ]);
-    return;
-  }
+  if (t.loading) return arrive(childDialogId, { rows: incoming });
   const known = new Set(t.messages.map((m) => m.id));
   const added = incoming.filter((m) => !known.has(m.id));
   if (added.length)
     setState('transcripts', childDialogId, 'messages', (list) => [...list, ...added]);
 }
 
-export function patchSubagentMessage(
-  childDialogId: string,
-  messageId: string,
-  patch: Omit<Partial<ChatMessage>, 'status'> & { status?: ChatMessage['status'] | null }
-) {
+export function patchSubagentMessage(childDialogId: string, messageId: string, patch: Patch) {
   const t = state.transcripts[childDialogId];
   if (!t) return;
   const { status, ...fields } = patch;
   const next: Partial<ChatMessage> = { ...fields };
   if ('status' in patch) next.status = status ?? undefined;
   if (fields.finalized) next.pending = false;
-  // P5.4: a row that arrived while the page loads is patched where it waits.
-  const waiting = arrivedWhileLoading.get(childDialogId);
-  const w = waiting?.findIndex((m) => m.id === messageId) ?? -1;
-  if (waiting && w >= 0) waiting[w] = { ...waiting[w], ...next };
+  // P5.4: while the page loads, the row may be in it: patched once it lands.
+  if (t.loading) return arrive(childDialogId, { messageId, patch: next });
   const i = t.messages.findIndex((m) => m.id === messageId);
   if (i < 0) return;
   setState('transcripts', childDialogId, 'messages', i, next);
@@ -243,20 +253,29 @@ export async function openTranscript(childDialogId: string, dialogId: string, to
   // P5.4: after an error, opening it again tries again.
   const t = state.transcripts[childDialogId];
   if (t && !t.error) return;
+  const load = {};
+  loads.set(childDialogId, load);
   arrivedWhileLoading.delete(childDialogId);
   setState('transcripts', childDialogId, { messages: [], loading: true, error: undefined });
+  let messages: ChatMessage[] = [];
+  let error: string | undefined;
   try {
-    const page = await chatApi.getMessages(childDialogId, undefined, 500);
-    const later = arrivedWhileLoading.get(childDialogId) ?? [];
-    arrivedWhileLoading.delete(childDialogId);
-    setState('transcripts', childDialogId, {
-      messages: mergeById(page.messages, later),
-      loading: false,
-    });
+    messages = (await chatApi.getMessages(childDialogId, undefined, 500)).messages;
   } catch (err) {
-    arrivedWhileLoading.delete(childDialogId);
-    setState('transcripts', childDialogId, { messages: [], loading: false, error: String(err) });
+    error = String(err);
   }
+  // Forgotten (or loaded again) meanwhile: this load isn't wanted any more.
+  if (loads.get(childDialogId) !== load) return;
+  loads.delete(childDialogId);
+  const later = arrivedWhileLoading.get(childDialogId) ?? [];
+  arrivedWhileLoading.delete(childDialogId);
+  setState(
+    'transcripts',
+    childDialogId,
+    error === undefined
+      ? { messages: replay(messages, later), loading: false }
+      : { messages: [], loading: false, error }
+  );
 }
 
 /**
@@ -276,13 +295,47 @@ export function forgetLive(dialogId: string | null, toolCallId: string, childDia
 
 /** P5.9: a transcript no block shows any more (opening it loads it again). */
 export function forgetTranscript(childDialogId: string | null | undefined) {
-  if (!childDialogId || !state.transcripts[childDialogId]) return;
+  if (!childDialogId) return;
   arrivedWhileLoading.delete(childDialogId);
+  loads.delete(childDialogId);
+  holders.delete(childDialogId);
+  if (!state.transcripts[childDialogId]) return;
   setState(
     produce((s) => {
       delete s.transcripts[childDialogId];
     })
   );
+}
+
+/** P5.9: how many blocks show each transcript. */
+const holders = new Map<string, number>();
+
+/**
+ * A block's hold on the transcript it shows. One subagent's chat can be on
+ * two blocks (a follow-up `task` continues the same child under a new
+ * call), so it's forgotten only when the last block showing it lets go.
+ */
+export function transcriptHold() {
+  let held: string | null = null;
+  const release = () => {
+    if (!held) return;
+    const left = (holders.get(held) ?? 1) - 1;
+    if (left > 0) holders.set(held, left);
+    else forgetTranscript(held);
+    held = null;
+  };
+  return {
+    /** Shows `childDialogId` (loading it if it isn't yet); held until `release`. */
+    open(childDialogId: string, dialogId: string, toolCallId: string) {
+      if (held !== childDialogId) {
+        release();
+        held = childDialogId;
+        holders.set(childDialogId, (holders.get(childDialogId) ?? 0) + 1);
+      }
+      return openTranscript(childDialogId, dialogId, toolCallId);
+    },
+    release,
+  };
 }
 
 /*

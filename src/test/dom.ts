@@ -19,6 +19,8 @@ const globals = [
   'MouseEvent',
   'KeyboardEvent',
   'MutationObserver',
+  'ResizeObserver',
+  'IntersectionObserver',
   'getComputedStyle',
   'requestAnimationFrame',
   'cancelAnimationFrame',

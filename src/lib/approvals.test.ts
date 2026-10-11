@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  clearApproval,
   decideRemaining,
   pendingApproval,
   pendingApprovalsOfTask,
@@ -8,6 +9,7 @@ import {
   setHunkState,
   type ApprovalRequest,
 } from './approvals';
+import { childOf, noteSubagentStarted } from './subagents';
 
 /*
  * A file edit reviewed hunk by hunk: what the run is told decides what's
@@ -121,4 +123,58 @@ test("a subagent's approval is found by its lead's call, with nothing else known
   assert.equal(pendingApprovalsOfTask('lead-x', 't1', null).length, 1);
   assert.equal(pendingApprovalsOfTask('lead-x', 't1', 'kid-x').length, 1);
   assert.equal(pendingApprovalsOfTask('lead-x', 't2', null).length, 0);
+});
+
+test('approval_before_subagent_started: one record, counted once before and after', () => {
+  registerApproval({
+    toolCallId: 'b1',
+    dialogId: 'kid-early',
+    toolName: 'bash',
+    summary: 'Run `ls`',
+    parentDialogId: 'lead-early',
+    parentCallId: 't1',
+  });
+  // Before subagentStarted: found by the call the request names.
+  assert.equal(pendingApprovalsOfTask('lead-early', 't1', childOf('lead-early', 't1')).length, 1);
+  noteSubagentStarted({
+    dialogId: 'lead-early',
+    toolCallId: 't1',
+    childDialogId: 'kid-early',
+    kind: 'scout',
+    model: 'm',
+    goal: 'g',
+  });
+  // After: found both by its chat and by the call, still one.
+  assert.equal(childOf('lead-early', 't1'), 'kid-early');
+  assert.equal(pendingApprovalsOfTask('lead-early', 't1', childOf('lead-early', 't1')).length, 1);
+  clearApproval('kid-early', 'b1');
+});
+
+test('no_cross_chat_leak: two leads with the same call id see their own child’s approvals', () => {
+  // Providers number calls per reply: both leads have a "t1".
+  for (const [lead, kid] of [
+    ['lead-a', 'kid-a'],
+    ['lead-b', 'kid-b'],
+  ])
+    noteSubagentStarted({
+      dialogId: lead,
+      toolCallId: 't1',
+      childDialogId: kid,
+      kind: 'scout',
+      model: 'm',
+      goal: 'g',
+    });
+  registerApproval({
+    toolCallId: 'b1',
+    dialogId: 'kid-a',
+    toolName: 'bash',
+    summary: 'Run `ls`',
+    parentDialogId: 'lead-a',
+    parentCallId: 't1',
+  });
+  assert.equal(pendingApprovalsOfTask('lead-a', 't1', childOf('lead-a', 't1')).length, 1);
+  assert.equal(pendingApprovalsOfTask('lead-b', 't1', childOf('lead-b', 't1')).length, 0);
+  // Callers pass `childOf` in the same chat: another chat's child would match by its chat.
+  assert.equal(pendingApprovalsOfTask('lead-b', 't1', 'kid-a').length, 1);
+  clearApproval('kid-a', 'b1');
 });

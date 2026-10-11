@@ -49,14 +49,14 @@ import {
   childOf,
   liveSubagent,
   forgetLive,
-  forgetTranscript,
-  openTranscript,
   reportBody,
   statusLabel,
   transcript,
+  transcriptHold,
   usageLabel,
   workLabel,
 } from '../lib/subagents';
+import { indexToolResults } from '../lib/toolResults';
 import { stopRun } from '../lib/agentRuns';
 
 export interface ToolCallBlockProps {
@@ -590,8 +590,8 @@ function shortGoal(goal: string | undefined): string {
  */
 export function SubagentTranscript(props: { childDialogId: string; running: boolean }) {
   const t = () => transcript(props.childDialogId);
-  const resultOf = (callId: string) =>
-    t()?.messages.find((m) => m.role === 'tool' && m.tool_call_id === callId);
+  // P5.8: by the call itself, as a child's calls can reuse ids across replies.
+  const toolIndex = createMemo(() => indexToolResults(t()?.messages ?? []));
   const shown = () =>
     (t()?.messages ?? []).filter(
       (m) => m.role === 'assistant' && (m.toolCalls?.length || m.content.trim() || m.error)
@@ -611,7 +611,7 @@ export function SubagentTranscript(props: { childDialogId: string; running: bool
                     <ToolCallBlock
                       toolCall={call}
                       dialogId={props.childDialogId}
-                      result={resultOf(call.id)}
+                      result={toolIndex().results.get(call)}
                       running={props.running}
                     />
                   )}
@@ -677,22 +677,23 @@ function TaskBlock(props: ToolCallBlockProps) {
     return props.running ? 'starting…' : 'not run';
   };
 
-  // P5.9: the store keeps neither a finished subagent's live entry nor a
-  // transcript once its block is gone.
+  // P5.9: the store keeps neither a finished subagent's live entry (a
+  // group's: each worker's, under "<call>#<label>") nor a transcript once
+  // no block shows it.
   createEffect(() => {
     const id = done()?.childDialogId;
     if (id) forgetLive(props.dialogId, props.toolCall.id, id);
+    for (const w of group()?.workers ?? [])
+      if (w.childDialogId)
+        forgetLive(props.dialogId, `${props.toolCall.id}#${w.label}`, w.childDialogId);
   });
-  let opened: string | null = null;
-  onCleanup(() => forgetTranscript(opened));
+  const hold = transcriptHold();
+  onCleanup(hold.release);
 
   function toggleWork() {
     const id = childId();
     if (!id) return;
-    if (!showWork() && props.dialogId) {
-      opened = id;
-      void openTranscript(id, props.dialogId, props.toolCall.id);
-    }
+    if (!showWork() && props.dialogId) void hold.open(id, props.dialogId, props.toolCall.id);
     setShowWork(!showWork());
   }
 

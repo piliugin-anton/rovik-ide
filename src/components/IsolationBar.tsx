@@ -26,6 +26,7 @@ import {
   overlayLand,
   overlayRedoGroup,
   overlayStatus,
+  redoGroup,
   overlayUndo,
   overlayUndoMerge,
   overlayUnmark,
@@ -132,7 +133,7 @@ export default function IsolationBar(props: Props) {
     sideNames: { ours: 'Project', theirs: 'Chat' },
   };
 
-  async function redoGroup(group: string) {
+  async function confirmRedo(group: string) {
     const id = props.dialogId;
     if (!props.canAskChat) {
       notify({
@@ -149,24 +150,8 @@ export default function IsolationBar(props: Props) {
     });
     if (!ok) return;
     setBusy(true);
-    // P5.9: the group is thrown away first; asking the chat is a step of its own.
-    let request: string;
     try {
-      request = await overlayRedoGroup(id, group);
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t redo the group', message: String(e) });
-      setBusy(false);
-      void refetch();
-      return;
-    }
-    try {
-      await props.onAskChat(id, request);
-    } catch (e) {
-      notify({
-        kind: 'error',
-        title: 'The group was undone, but the chat couldn’t be asked to redo it',
-        message: `${String(e)}. Its files are back to what they were before it; ask the chat to carry out the steps again.`,
-      });
+      await redoGroup(id, group, { redo: overlayRedoGroup, askChat: props.onAskChat, notify });
     } finally {
       setBusy(false);
       void refetch();
@@ -416,7 +401,7 @@ export default function IsolationBar(props: Props) {
                     class="isolation-bar-action"
                     disabled={disabled()}
                     title="Throw the group’s merged changes away and carry out its steps one at a time"
-                    onClick={() => void redoGroup(group)}
+                    onClick={() => void confirmRedo(group)}
                   >
                     Redo sequentially
                   </button>

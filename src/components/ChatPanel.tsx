@@ -37,7 +37,7 @@ import {
   loadAiSettings,
   reconcileSelection,
   resolveProfile,
-  saveAiSettings,
+  saveKeepingSubagents,
 } from '../lib/aiSettings';
 import { chatStore } from '../lib/chatStore';
 import { chatApi } from '../lib/chatApi';
@@ -1912,22 +1912,24 @@ export default function ChatPanel(props: ChatProps) {
     void (async () => {
       // P5.7: after a failed reload, the subagent settings here are
       // defaults: what's saved is read again, never written over.
-      if (subagentsUnknown) {
-        const saved = await loadAiSettings();
-        if (saved.loadFailed) {
-          console.error('AI settings not saved: the saved ones couldn’t be read.');
-          return;
-        }
-        subagentsUnknown = false;
-        setSubagentSettings(saved.subagents);
+      const unknown = subagentsUnknown;
+      const saved = await saveKeepingSubagents(
+        {
+          providers: nextProviders,
+          active: nextSelection,
+          permissions: nextPermissions,
+          subagents: subagentSettings(),
+        },
+        unknown
+      );
+      if (!saved) {
+        console.error('AI settings not saved: the saved ones couldn’t be read.');
+        return;
       }
-      await saveAiSettings({
-        version: 2,
-        providers: nextProviders,
-        active: nextSelection,
-        permissions: nextPermissions,
-        subagents: subagentSettings(),
-      });
+      if (unknown) {
+        subagentsUnknown = false;
+        setSubagentSettings(saved);
+      }
     })().catch((err) => console.error('Failed to save AI settings:', err));
   }
 

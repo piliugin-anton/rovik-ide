@@ -9,6 +9,7 @@ import {
   openTranscript,
   receiveSubagentMessages,
   transcript,
+  transcriptHold,
   isSubagentChat,
   seedRunningSubagent,
   runUsage,
@@ -18,6 +19,7 @@ import {
   noteSubagentEnded,
   noteSubagentProgress,
   noteSubagentStarted,
+  patchSubagentMessage,
   reportBody,
   statusLabel,
   workLabel,
@@ -250,6 +252,260 @@ test('finished subagents and unshown transcripts leave the store', async () => {
     assert.ok(transcript('kid-new'));
     forgetTranscript('kid-new');
     assert.equal(transcript('kid-new'), undefined);
+  } finally {
+    api.getMessages = original;
+  }
+});
+
+/** `chatApi.getMessages` answering with `messages` once `land()` is called. */
+function deferredPage(messages: ChatMessage[]) {
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  let land!: () => void;
+  api.getMessages = () =>
+    new Promise((resolve) => {
+      land = () => resolve({ messages, hasOlder: false, hasNewer: false });
+    });
+  return { land: () => land(), restore: () => (api.getMessages = original) };
+}
+
+test('a_patch_for_a_page_row_during_load_is_kept (P5.4)', async () => {
+  const page = deferredPage([
+    { id: 'm1', role: 'assistant', content: 'partial', pending: true },
+    { id: 'm0', role: 'assistant', content: 'other' },
+  ]);
+  try {
+    const opening = openTranscript('kid-p', 'lead-p', 'c1');
+    // The child's streaming reply finishes while its page is fetched.
+    patchSubagentMessage('kid-p', 'm1', { content: 'full', finalized: true });
+    page.land();
+    await opening;
+    const m1 = transcript('kid-p')!.messages.find((m) => m.id === 'm1')!;
+    assert.equal(m1.content, 'full');
+    assert.equal(m1.pending, false);
+    assert.equal(transcript('kid-p')!.messages.length, 2);
+  } finally {
+    page.restore();
+  }
+});
+
+test('buffered_row_then_patched: a row that arrived mid-load is patched where it waits', async () => {
+  const page = deferredPage([{ id: 'b1', role: 'assistant', content: 'first' }]);
+  try {
+    const opening = openTranscript('kid-b', 'lead-b', 'c1');
+    receiveSubagentMessages('kid-b', [{ ...row('b2', 'stre'), finalized: false, pending: true }]);
+    patchSubagentMessage('kid-b', 'b2', { content: 'streamed', finalized: true });
+    page.land();
+    await opening;
+    assert.deepEqual(
+      transcript('kid-b')!.messages.map((m) => [m.id, m.content, !!m.pending]),
+      [
+        ['b1', 'first', false],
+        ['b2', 'streamed', false],
+      ]
+    );
+  } finally {
+    page.restore();
+  }
+});
+
+test('finished_child_after_reload: opened with no live state, then followed', async () => {
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () =>
+    Promise.resolve({
+      messages: ['r1', 'r2', 'r3'].map((id) => ({ id, role: 'assistant' as const, content: id })),
+      hasOlder: false,
+      hasNewer: false,
+    });
+  try {
+    assert.equal(isSubagentChat('kid-reloaded'), false);
+    await openTranscript('kid-reloaded', 'lead-reloaded', 'c9');
+    assert.equal(transcript('kid-reloaded')!.messages.length, 3);
+    assert.ok(isSubagentChat('kid-reloaded'), 'its events now go to the transcript');
+    assert.equal(childOf('lead-reloaded', 'c9'), 'kid-reloaded');
+    receiveSubagentMessages('kid-reloaded', [row('r4', 'later'), row('r3', 'again')]);
+    assert.deepEqual(
+      transcript('kid-reloaded')!.messages.map((m) => m.id),
+      ['r1', 'r2', 'r3', 'r4'],
+      'later rows append, a known one isn’t added twice'
+    );
+  } finally {
+    api.getMessages = original;
+  }
+});
+
+test('error_then_retry_does_not_double_buffer', async () => {
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  try {
+    let fail!: () => void;
+    api.getMessages = () => new Promise((_, reject) => (fail = () => reject(new Error('busy'))));
+    const first = openTranscript('kid-r', 'lead-r2', 'c1');
+    receiveSubagentMessages('kid-r', [row('x2', 'second')]);
+    fail();
+    await first;
+    assert.match(transcript('kid-r')!.error ?? '', /busy/);
+
+    const page = deferredPage([
+      { id: 'x1', role: 'assistant', content: 'first' },
+      { id: 'x2', role: 'assistant', content: 'second' },
+    ]);
+    const retry = openTranscript('kid-r', 'lead-r2', 'c1');
+    receiveSubagentMessages('kid-r', [row('x3', 'third')]);
+    page.land();
+    await retry;
+    assert.deepEqual(
+      transcript('kid-r')!.messages.map((m) => m.id),
+      ['x1', 'x2', 'x3'],
+      'the failed load’s buffer is gone; the retry’s is merged once'
+    );
+  } finally {
+    api.getMessages = original;
+  }
+});
+
+test('forget_transcript_clears_the_loading_buffer', async () => {
+  const page = deferredPage([{ id: 'f1', role: 'assistant', content: 'first' }]);
+  try {
+    const opening = openTranscript('kid-g', 'lead-g', 'c1');
+    receiveSubagentMessages('kid-g', [row('f2', 'mid-load')]);
+    forgetTranscript('kid-g');
+    page.land();
+    await opening;
+    assert.equal(
+      transcript('kid-g'),
+      undefined,
+      'a load that lands after it’s forgotten is dropped'
+    );
+  } finally {
+    page.restore();
+  }
+  const again = deferredPage([{ id: 'f1', role: 'assistant', content: 'first' }]);
+  try {
+    const opening = openTranscript('kid-g', 'lead-g', 'c1');
+    again.land();
+    await opening;
+    assert.deepEqual(
+      transcript('kid-g')!.messages.map((m) => m.id),
+      ['f1'],
+      'nothing buffered before it was forgotten comes back'
+    );
+  } finally {
+    again.restore();
+  }
+});
+
+test('subagent_ended_before_status: an end for an unknown entry is a no-op', () => {
+  noteSubagentEnded({
+    dialogId: 'lead-u',
+    toolCallId: 't1',
+    childDialogId: 'kid-u',
+    status: 'done',
+  });
+  assert.equal(liveSubagent('lead-u', 't1'), undefined);
+  seedRunningSubagent({
+    dialogId: 'kid-u',
+    parentDialogId: 'lead-u',
+    parentCallId: 't1',
+    kind: 'scout',
+    model: 'm',
+  });
+  assert.equal(liveSubagent('lead-u', 't1')?.status, undefined, 'seeded as running');
+  forgetLive('lead-u', 't1', 'kid-u');
+  assert.equal(liveSubagent('lead-u', 't1'), undefined);
+  assert.equal(childOf('lead-u', 't1'), 'kid-u', 'the link stays');
+});
+
+test('run_usage_sums_subagent_review_and_triage', () => {
+  const usage = (inputTokens: number, outputTokens: number, cost?: number) => ({
+    inputTokens,
+    outputTokens,
+    ...(cost !== undefined ? { cost } : {}),
+  });
+  const subagent = (u: ReturnType<typeof usage>) => ({
+    kind: 'scout',
+    status: 'done' as const,
+    childDialogId: null,
+    model: null,
+    modelsTried: [],
+    toolCalls: 1,
+    ms: 1,
+    usage: u,
+  });
+  const messages: ChatMessage[] = [
+    // Before the request: not counted.
+    { id: 'old', role: 'tool', content: '', meta: { subagent: subagent(usage(1000, 1000, 9)) } },
+    { id: 'u', role: 'user', content: 'go' },
+    { id: 's', role: 'tool', content: '', meta: { subagent: subagent(usage(100, 10, 0.1)) } },
+    {
+      id: 'r',
+      role: 'assistant',
+      content: '',
+      meta: {
+        review: {
+          kind: 'change',
+          status: 'clean',
+          round: 1,
+          maxRounds: 3,
+          usage: usage(50, 5, 0.05),
+        },
+      },
+    },
+    {
+      id: 'v',
+      role: 'assistant',
+      content: '',
+      meta: {
+        verification: {
+          status: 'failed',
+          round: 1,
+          maxRounds: 3,
+          checks: [],
+          changedFiles: [],
+          triage: {
+            status: 'done',
+            check: 'test',
+            reason: 'large output',
+            usage: usage(40, 2, 0.1),
+          },
+        },
+      },
+    },
+  ];
+  const total = runUsage(messages)!;
+  assert.equal(total.inputTokens, 190);
+  assert.equal(total.outputTokens, 17);
+  assert.ok(Math.abs(total.cost! - 0.25) < 1e-9, String(total.cost));
+  // None reported a cost: the total has none.
+  const free = runUsage([
+    { id: 'u', role: 'user', content: 'go' },
+    { id: 's', role: 'tool', content: '', meta: { subagent: subagent(usage(1, 2)) } },
+  ]);
+  assert.deepEqual(free, { inputTokens: 1, outputTokens: 2 });
+  assert.equal(free!.cost, undefined);
+});
+
+test('a transcript is kept while any block holds it (P5.9)', async () => {
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () =>
+    Promise.resolve({
+      messages: [{ id: 'h1', role: 'assistant', content: 'hi' }],
+      hasOlder: false,
+      hasNewer: false,
+    });
+  try {
+    const a = transcriptHold();
+    const b = transcriptHold();
+    await a.open('kid-h', 'lead-h', 't1');
+    await a.open('kid-h', 'lead-h', 't1'); // shown again by the same block: one hold
+    await b.open('kid-h', 'lead-h', 't2');
+    a.release();
+    a.release();
+    assert.equal(transcript('kid-h')?.messages.length, 1, 'b still holds it');
+    b.release();
+    assert.equal(transcript('kid-h'), undefined);
   } finally {
     api.getMessages = original;
   }

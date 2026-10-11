@@ -76,9 +76,14 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
     patch({ kinds: { ...s().kinds, [id]: { ...s().kinds[id], ...changes } } });
   const [limitsOpen, setLimitsOpen] = createSignal(false);
   const off = () => !s().enabled;
-  // P5.7: what needs isolated chats can't run without virtual files.
-  const [vfs] = createResource(() => vfsStatus().catch(() => null));
-  const noIsolation = () => vfs.state === 'ready' && !vfs()?.mountpoint;
+  // P5.7: what needs isolated chats can't run without virtual files. When
+  // their status can't be read, it isn't known: nothing is turned off.
+  const [vfs] = createResource(() => vfsStatus().catch(() => undefined));
+  const noIsolation = () => {
+    if (vfs.state !== 'ready') return false;
+    const status = vfs();
+    return status !== undefined && !status.mountpoint;
+  };
   const NO_ISOLATION = 'Needs isolated chats: virtual files aren’t mounted on this computer.';
 
   return (

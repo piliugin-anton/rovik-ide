@@ -5,13 +5,7 @@
 // checks on demand. Updates live while the checks run.
 import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
-import {
-  forgetLive,
-  forgetTranscript,
-  liveSubagent,
-  openTranscript,
-  workLabel,
-} from '../lib/subagents';
+import { forgetLive, liveSubagent, transcriptHold, workLabel } from '../lib/subagents';
 import {
   causeLine,
   describeFailure,
@@ -139,15 +133,12 @@ function TriageBlock(props: {
     const id = props.triage.childDialogId;
     if (props.triage.status !== 'running' && id) forgetLive(props.dialogId, callId(), id);
   });
-  let opened: string | null = null;
-  onCleanup(() => forgetTranscript(opened));
+  const hold = transcriptHold();
+  onCleanup(hold.release);
   const toggleWork = () => {
     const id = childId();
     if (!id) return;
-    if (!showWork() && props.dialogId) {
-      opened = id;
-      void openTranscript(id, props.dialogId, callId());
-    }
+    if (!showWork() && props.dialogId) void hold.open(id, props.dialogId, callId());
     setShowWork(!showWork());
   };
   return (

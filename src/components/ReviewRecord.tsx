@@ -10,13 +10,7 @@ import {
   type ReviewFinding,
   type ReviewMeta,
 } from '../lib/changeReview';
-import {
-  forgetLive,
-  forgetTranscript,
-  liveSubagent,
-  openTranscript,
-  workLabel,
-} from '../lib/subagents';
+import { forgetLive, liveSubagent, transcriptHold, workLabel } from '../lib/subagents';
 import { requestOpenFile } from '../lib/editorBridge';
 import { stopRun } from '../lib/agentRuns';
 import { SubagentTranscript } from './ToolCallBlock';
@@ -73,15 +67,12 @@ export default function ReviewRecord(props: {
     const id = props.meta.childDialogId;
     if (props.meta.status !== 'running' && id) forgetLive(props.dialogId, props.recordId, id);
   });
-  let opened: string | null = null;
-  onCleanup(() => forgetTranscript(opened));
+  const hold = transcriptHold();
+  onCleanup(hold.release);
   const toggleWork = () => {
     const id = childId();
     if (!id) return;
-    if (!showWork() && props.dialogId) {
-      opened = id;
-      void openTranscript(id, props.dialogId, props.recordId);
-    }
+    if (!showWork() && props.dialogId) void hold.open(id, props.dialogId, props.recordId);
     setShowWork(!showWork());
   };
   return (

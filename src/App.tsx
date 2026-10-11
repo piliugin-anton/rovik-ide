@@ -96,7 +96,7 @@ import {
   notifyAiSettingsSaved,
   openAppSettings,
 } from './lib/appSettings';
-import { loadAiSettings, reconcileSelection, saveAiSettings } from './lib/aiSettings';
+import { loadAiSettings, reconcileSelection, saveKeepingSubagents } from './lib/aiSettings';
 import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './lib/subagentSettings';
 import { DEFAULT_PERMISSIONS, type AgentPermissions } from './lib/permissions';
 import type { ModelSelection, Provider } from './types';
@@ -161,12 +161,15 @@ export default function App() {
   const [settingsSubagents, setSettingsSubagents] =
     createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
   const [settingsChatModel, setSettingsChatModel] = createSignal<ModelSelection | null>(null);
+  /** P5.7: the load failed: the subagent settings here are defaults, not what's saved. */
+  let settingsSubagentsUnknown = false;
   onMount(async () => {
     try {
       const settings = await loadAiSettings();
       setSettingsProviders(settings.providers);
       setSettingsPermissions(settings.permissions);
       setSettingsSubagents(settings.subagents);
+      settingsSubagentsUnknown = !!settings.loadFailed;
       setSettingsChatModel(reconcileSelection(settings.providers, settings.active));
     } catch (err) {
       console.error('Failed to load AI settings for Settings dialog:', err);
@@ -199,21 +202,33 @@ export default function App() {
     // changed here, so reconcile against the saved selection.
     void loadAiSettings()
       .catch(() => null)
-      .then((current) => {
+      .then(async (current) => {
         const active: ModelSelection | null = reconcileSelection(
           changes.providers,
           current?.active ?? null
         );
         setSettingsChatModel(active);
-        return saveAiSettings({
-          version: 2,
-          providers: changes.providers,
-          active,
-          permissions: changes.permissions,
-          subagents: changes.subagents,
-        });
+        // P5.7: never the defaults a failed load left over the saved ones.
+        const unknown = settingsSubagentsUnknown;
+        const saved = await saveKeepingSubagents(
+          {
+            providers: changes.providers,
+            active,
+            permissions: changes.permissions,
+            subagents: changes.subagents,
+          },
+          unknown
+        );
+        if (!saved) {
+          console.error('AI settings not saved: the saved ones couldn’t be read.');
+          return;
+        }
+        if (unknown) {
+          settingsSubagentsUnknown = false;
+          setSettingsSubagents(saved);
+        }
+        notifyAiSettingsSaved();
       })
-      .then(() => notifyAiSettingsSaved())
       .catch((err) => console.error('Failed to save AI settings:', err));
   }
   const [cursorInfo, setCursorInfo] = createSignal<CursorInfo | null>(null);

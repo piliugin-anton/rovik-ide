@@ -26,3 +26,24 @@ test('a call id reused in a later reply gets its own result', () => {
   assert.equal(running.results.get(second), undefined);
   assert.equal(running.latest.get('call_0'), second);
 });
+
+test('three_replies_reuse_function_call_1', () => {
+  // Gemini numbers calls per reply: each reply's first call is function-call-1.
+  const calls = [call('function-call-1'), call('function-call-1'), call('function-call-1')];
+  const messages: ChatMessage[] = [
+    // A tool message with no call before it (a page cut there): dropped.
+    { id: 'orphan', role: 'tool', content: 'lost', tool_call_id: 'function-call-1' },
+    ...calls.flatMap((c, i): ChatMessage[] => [
+      { id: `a${i}`, role: 'assistant', content: '', toolCalls: [c] },
+      { id: `t${i}`, role: 'tool', content: `result ${i}`, tool_call_id: 'function-call-1' },
+    ]),
+  ];
+  const index = indexToolResults(messages);
+  assert.deepEqual(
+    calls.map((c) => index.results.get(c)?.id),
+    ['t0', 't1', 't2'],
+    'by position'
+  );
+  assert.equal(index.results.size, 3, 'the orphan answers no call');
+  assert.equal(index.latest.get('function-call-1'), calls[2]);
+});

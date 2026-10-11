@@ -1,4 +1,5 @@
-// Runs the frontend unit tests (src/**/*.test.ts) with node:test.
+// Runs the frontend tests (src/**/*.test.ts, *.test.tsx) with node:test;
+// `npm test` typechecks them first (tsconfig.test.json).
 //
 // Each test file is bundled with esbuild first: the sources use
 // extensionless imports, which node can't resolve on its own, and the

@@ -110,3 +110,18 @@ test('after green, only high findings are sent to the agent', () => {
   );
   assert.match(reviewHeadline({ ...meta, afterGreen: false }, false), /: 2 sent to the agent/);
 });
+
+test('after_green_headline_counts_high_only', () => {
+  const meta: ReviewMeta = {
+    kind: 'change',
+    status: 'findings',
+    round: 1,
+    maxRounds: 3,
+    afterGreen: true,
+    findings: [finding('medium'), finding('low')],
+  };
+  assert.equal(
+    reviewHeadline(meta, false),
+    'The reviewer found 2 findings, none serious enough to send to the agent.'
+  );
+});

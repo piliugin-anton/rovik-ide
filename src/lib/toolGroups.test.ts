@@ -76,6 +76,56 @@ describe('task calls', () => {
   });
 });
 
+describe('one_and_three_task_calls_stand_alone', () => {
+  it('each task is a run of its own, and reads either side of one don’t merge (P1.6)', () => {
+    const runs = groupToolCalls([
+      call('read', { path: 'a.ts' }),
+      call('task', { kind: 'scout', goal: 'One' }),
+      call('read', { path: 'b.ts' }),
+      call('task', { kind: 'scout', goal: 'Two' }),
+      call('task', { kind: 'reviewer', goal: 'Three' }),
+      call('write', { path: 'c.ts', content: '' }),
+    ]);
+    assert.deepEqual(
+      runs.map((r) => [r.name, r.calls.length]),
+      [
+        ['read', 1],
+        ['task', 1],
+        ['read', 1],
+        ['task', 1],
+        ['task', 1],
+        ['write', 1],
+      ]
+    );
+    // A single task alone is a run of one too.
+    assert.deepEqual(
+      groupToolCalls([call('task', { kind: 'scout', goal: 'x' })]).map((r) => [
+        r.calls.length,
+        r.alone,
+      ]),
+      [[1, true]]
+    );
+  });
+
+  it('describe_group_task_edge_cases', () => {
+    const goal = 'g'.repeat(100);
+    const long = describeGroup('task', [{ kind: 'scout', goal }], true);
+    assert.equal(long.items[0].text.length, 60);
+    assert.ok(long.items[0].text.endsWith('…'));
+    assert.equal(long.items[0].title, goal, 'the whole goal in the tooltip');
+    assert.equal(
+      describeGroup('task', [{ kind: 'workers', group: 'api' }], true).verb,
+      'Parallel workers'
+    );
+    assert.deepEqual(
+      describeGroup('task', [{ kind: 'scout' }], false).items,
+      [],
+      'no goal: no items'
+    );
+    assert.deepEqual(describeGroup('task', [], false).items, []);
+  });
+});
+
 describe('describeGroup', () => {
   it('names files once each, with where to open them', () => {
     const label = describeGroup(

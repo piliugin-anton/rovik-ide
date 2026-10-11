@@ -249,3 +249,66 @@ test('a number field saves what it shows: unset, clamped, whole', () => {
   assert.equal(numberFieldValue('2.6', 1, 10), 3);
   assert.equal(numberFieldValue('2.6', 0, 10, 0.5), 2.6);
 });
+
+test('default_with_own_fallbacks_and_disabled_model', () => {
+  const s: SubagentSettings = {
+    ...DEFAULT_SUBAGENT_SETTINGS,
+    enabled: true,
+    defaultModel: sel('a', 'cheap'),
+    defaultFallbacks: [sel('b', 'other'), sel('a', 'strong')],
+    kinds: {
+      ...DEFAULT_SUBAGENT_SETTINGS.kinds,
+      scout: {
+        enabled: true,
+        model: 'default',
+        // Its own, repeating the default model and one of its fallbacks.
+        fallbacks: [sel('a', 'strong'), sel('a', 'cheap'), sel('a', 'off')],
+        effort: 'default',
+      },
+    },
+  };
+  assert.deepEqual(kindChain(s, 'scout'), [
+    sel('a', 'cheap'),
+    sel('a', 'strong'),
+    sel('a', 'off'),
+    sel('b', 'other'),
+    'chat',
+  ]);
+  assert.deepEqual(
+    ids(resolveSubagentConfig(s, providers, resolve).kinds.scout!.models),
+    ['a::cheap', 'a::strong', 'b::other', 'chat'],
+    'deduplicated; the turned-off model is left out when resolved'
+  );
+});
+
+test('default_with_no_own_fallbacks', () => {
+  const s: SubagentSettings = {
+    ...DEFAULT_SUBAGENT_SETTINGS,
+    enabled: true,
+    defaultModel: sel('a', 'strong'),
+    defaultFallbacks: [sel('b', 'other')],
+    kinds: {
+      ...DEFAULT_SUBAGENT_SETTINGS.kinds,
+      scout: { enabled: true, model: 'default', fallbacks: [], effort: 'default' },
+    },
+  };
+  assert.deepEqual(kindChain(s, 'scout'), [sel('a', 'strong'), sel('b', 'other'), 'chat']);
+  // The default model set to the chat's: just the chat.
+  const chat = { ...s, defaultModel: 'chat' as const, defaultFallbacks: [] };
+  assert.deepEqual(kindChain(chat, 'scout'), ['chat']);
+});
+
+test('number_field_value_table', () => {
+  const table: [Parameters<typeof numberFieldValue>, number | undefined][] = [
+    [['500', 1000, 1e8], 1000],
+    [['', 1000, 1e8], undefined],
+    [['abc', 1000, 1e8], undefined],
+    [['1e9', 1000, 1e8], 1e8],
+    [['2.5', 1, 8], 3],
+    [['2.5', 1, 8, 0.5], 2.5],
+    [['  7 ', 1, 8], 7],
+    [['Infinity', 1, 8], undefined],
+  ];
+  for (const [args, expected] of table)
+    assert.equal(numberFieldValue(...args), expected, JSON.stringify(args));
+});

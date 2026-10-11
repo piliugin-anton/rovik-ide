@@ -54,7 +54,32 @@ export async function loadAiSettings(): Promise<PersistedAiSettings> {
 }
 
 export async function saveAiSettings(settings: PersistedAiSettings): Promise<void> {
-  await invoke<void>('save_ai_settings', { json: JSON.stringify(settings) });
+  const { loadFailed: _, ...saved } = settings;
+  await invoke<void>('save_ai_settings', { json: JSON.stringify(saved) });
+}
+
+/**
+ * P5.7: saves the AI settings, but never the defaults a failed load left in
+ * place of the subagent settings: when `subagentsUnknown`, the saved ones
+ * are read again and kept, and nothing is saved if they still can't be read.
+ * Resolves with the subagent settings saved, or null when nothing was.
+ */
+export async function saveKeepingSubagents(
+  settings: Omit<PersistedAiSettings, 'version' | 'loadFailed'>,
+  subagentsUnknown: boolean,
+  io: {
+    load: () => Promise<PersistedAiSettings>;
+    save: (settings: PersistedAiSettings) => Promise<void>;
+  } = { load: loadAiSettings, save: saveAiSettings }
+): Promise<SubagentSettings | null> {
+  let subagents = settings.subagents;
+  if (subagentsUnknown) {
+    const saved = await io.load();
+    if (saved.loadFailed) return null;
+    subagents = saved.subagents;
+  }
+  await io.save({ ...settings, version: 2, subagents });
+  return subagents;
 }
 
 /*
