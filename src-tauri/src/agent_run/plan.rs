@@ -2295,4 +2295,222 @@ mod tests {
         ];
         assert!(current_checklist(&messages).is_some());
     }
+
+    /// Round 2 (§4.2), P4.2: on a line naming two paths, "(read)" is the mark
+    /// of the path it follows; one after neither marks neither; a file the
+    /// step changes on another line isn't read-only.
+    #[test]
+    fn read_mark_adjacent_only() {
+        let marked = |step: &str| -> Vec<String> {
+            step_files(step)
+                .into_iter()
+                .map(|f| {
+                    if f.read_only {
+                        format!("{} (read)", f.path)
+                    } else {
+                        f.path
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(
+            marked("1. **A**\n   - `src/a.rs`: use the type in `src/types.rs` (read)."),
+            ["src/a.rs", "src/types.rs (read)"]
+        );
+        assert_eq!(
+            marked("1. **A**\n   - `src/types.rs` (read) for `src/a.rs`: the signature."),
+            ["src/types.rs (read)", "src/a.rs"]
+        );
+        assert_eq!(
+            marked("1. **A**\n   - `src/a.rs` and `src/b.rs`, with the types as context (read)."),
+            ["src/a.rs", "src/b.rs"]
+        );
+        assert_eq!(
+            marked("1. **A**\n   - `src/types.rs` (read): the signature.\n   - `src/types.rs`: add a field."),
+            ["src/types.rs"]
+        );
+    }
+
+    /// Round 2 (§4.2), P4.2: a mark right after its path with no space
+    /// (`` `a.rs`(new) ``) is that path's, backticked or plain.
+    #[test]
+    fn mark_with_no_space() {
+        for (line, path) in [
+            ("`a.rs`(new): register it in `src/mod.rs`.", "a.rs"),
+            ("src/a.rs(new): register it in `src/mod.rs`.", "src/a.rs"),
+        ] {
+            let files = step_files(&format!("1. **A**\n   - {line}"));
+            let got: Vec<(&str, bool)> = files.iter().map(|f| (f.path.as_str(), f.new)).collect();
+            assert_eq!(got, [(path, true), ("src/mod.rs", false)], "{line}");
+        }
+        let files = step_files("1. **A**\n   - `src/types.rs`(read) for `src/a.rs`.");
+        assert_eq!(files.len(), 2, "{files:?}");
+        assert!(files[0].read_only && !files[1].read_only, "{files:?}");
+    }
+
+    /// Round 2 (§4.2), P4.2: on a line that names one path, a mark anywhere
+    /// on it is that path's; a mark on a line naming no path marks nothing.
+    #[test]
+    fn one_path_mark_anywhere() {
+        for (step, new, read_only) in [
+            (
+                "1. **A**\n   - Create (new file) `src/a.rs` with the helper.",
+                true,
+                false,
+            ),
+            (
+                "1. **A**\n   - `src/a.rs`: the helper module (new).",
+                true,
+                false,
+            ),
+            (
+                "1. **A**\n   - Context (read-only): the signature in `src/a.rs`.",
+                false,
+                true,
+            ),
+            (
+                "1. **A** (new)\n   - `src/a.rs`: the helper.\n   - It's new (new).",
+                false,
+                false,
+            ),
+        ] {
+            let files = step_files(step);
+            assert_eq!(files.len(), 1, "{step}: {files:?}");
+            assert_eq!(files[0].path, "src/a.rs", "{step}");
+            assert_eq!(
+                (files[0].new, files[0].read_only),
+                (new, read_only),
+                "{step}"
+            );
+        }
+    }
+
+    /// Round 2 (§4.2), P4.2: a folder that only a new file of the plan is in
+    /// counts as there, from another step and a level up; a folder whose
+    /// name only starts the same doesn't.
+    #[test]
+    fn new_file_makes_its_folder_exist() {
+        let tree = Tree::new(&["src/lib.rs"]);
+        let plan = "# F\n\n## Steps\n\n\
+            1. **Module**\n   - `src/feature/sub/mod.rs` (new): add the module.\n\
+            2. **Wire**\n   - `src/feature/`: register the module.\n   - `src/lib.rs`: declare it.\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert_eq!(project_problems(plan, &tree.0), Vec::<String>::new());
+        let p = project_problems(&plan.replace("`src/feature/`", "`src/feat/`"), &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with("Step 2 names `src/feat/`, which isn't in the project"),
+            "{p:?}"
+        );
+    }
+
+    /// Round 2 (§4.2), P4.3: library names written like files (Node.js,
+    /// `Vue.js`, Three.js) aren't step files, in prose or backticks; a `.js`
+    /// file in a folder or with another stem still is.
+    #[test]
+    fn node_js_in_prose_is_not_a_file() {
+        let step = "1. **Deps**\n   - Bump Node.js, `Vue.js` and Three.js; load them in `src/app.js` and server.js.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/app.js", "server.js"]);
+        assert!(!names_a_file("1. **Deps**\n   - Bump Node.js."));
+        assert_eq!(as_path("Node.js"), None);
+    }
+
+    /// Round 2 (§4.2): an absolute Windows path (drive, UNC), backticked or
+    /// plain, isn't the project's; a relative one with `\` is folded.
+    #[test]
+    fn windows_absolute_rejected() {
+        for no in [
+            "C:\\proj\\src\\a.rs",
+            "c:/proj/a.rs",
+            "D:a.rs",
+            "\\\\server\\share\\a.rs",
+        ] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+        assert_eq!(as_path(".\\src\\a.rs").as_deref(), Some("src/a.rs"));
+        let step = "1. **Win**\n   - Change `C:\\proj\\src\\a.rs` and C:/proj/src/b.rs to log.";
+        assert!(step_files(step).is_empty(), "{:?}", step_files(step));
+        assert!(!names_a_file(step));
+    }
+
+    /// Round 2 (§4.2): the path form (`as_path`) refuses a name with a space
+    /// and keeps accented and CJK names, backticked or plain.
+    #[test]
+    fn spaces_and_unicode() {
+        assert_eq!(as_path("src/my file.rs"), None);
+        assert_eq!(
+            as_path("src/données/é.rs").as_deref(),
+            Some("src/données/é.rs")
+        );
+        assert_eq!(as_path("src/深/a.rs").as_deref(), Some("src/深/a.rs"));
+        let step =
+            "1. **I18n**\n   - `src/données/é.rs`: add the strings; load them in src/深/a.rs.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/données/é.rs", "src/深/a.rs"]);
+        assert!(step_files("1. **S**\n   - `src/my file.rs`: add a field.").is_empty());
+    }
+
+    /// Round 2 (§4.2): a folder three deep keeps its closing `/` in every
+    /// spelling, so it's read as a folder, and is checked as one.
+    #[test]
+    fn three_deep_folder_keeps_slash() {
+        for t in ["src/a/b/c/", "./src//a/b/c/", "src\\a\\b\\c\\"] {
+            assert_eq!(as_path(t).as_deref(), Some("src/a/b/c/"), "{t}");
+        }
+        assert_eq!(as_path("src/a/b/c").as_deref(), Some("src/a/b/c"));
+        let step = "1. **C**\n   - Move the helpers under src/a/b/c/ and `src/a/b/d/`.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/a/b/c/", "src/a/b/d/"]);
+        let tree = Tree::new(&["src/a/b/c/x.rs", "src/a/b/d/y.rs"]);
+        assert_eq!(
+            project_problems(&format!("## Steps\n{step}"), &tree.0),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Round 2 (§4.2), pinned: a path with `\` written plainly isn't read
+    /// (only backticked ones are folded to `/`), so a step naming only that
+    /// names no file and the form check asks for a backticked path.
+    #[test]
+    fn unbackticked_backslash() {
+        let plain = "1. **W**\n   - Change src\\api\\users.rs to log the id.";
+        assert!(step_files(plain).is_empty(), "{:?}", step_files(plain));
+        assert!(!names_a_file(plain));
+        let ticked = plain.replace("src\\api\\users.rs", "`src\\api\\users.rs`");
+        assert_eq!(step_files(&ticked)[0].path, "src/api/users.rs");
+        let plan = format!(
+            "# W\n\n## Steps\n\n{plain}\n2. **X**\n   - `src/x.rs`: add the log helper.\n\n## Validation\n- `cargo test`\n"
+        );
+        let p = plan_problems(&plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 1 names no file"), "{p:?}");
+    }
+
+    /// Round 2 (§4.2): a step that names no file is still a step (number,
+    /// title and body kept, no files); the form check names it, the project
+    /// check adds nothing, and its worker's scope is empty until a grant.
+    #[test]
+    fn step_with_zero_files() {
+        use crate::agent_run::worker::WriteScope;
+        let plan = "# Z\n\nx\n\n## Steps\n\n\
+            1. **Helper**\n   - `src/a.rs`: add `fn helper()`.\n\
+            2. **Run it** — run the migration by hand and check the logs for errors.\n\
+            3. **Use**\n   - `src/b.rs`: call `helper()` from `main`.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.iter().map(|s| s.number).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(s[1].title, "Run it");
+        assert!(s[1].files.is_empty(), "{:?}", s[1].files);
+        assert!(s[1].body.contains("check the logs"), "{}", s[1].body);
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 2 names no file"), "{p:?}");
+        let tree = Tree::new(&["src/a.rs", "src/b.rs"]);
+        assert_eq!(project_problems(plan, &tree.0), Vec::<String>::new());
+        let scope = WriteScope::for_step(&s[1]);
+        assert_eq!(scope, WriteScope::default());
+        assert_eq!(scope.describe(), "nothing yet");
+        assert!(!scope.allows("src/a.rs", true) && !scope.allows("new.rs", false));
+    }
 }
