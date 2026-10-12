@@ -341,6 +341,20 @@ pub(super) struct TurnOutput {
     pub(super) reasoning: Option<Value>,
 }
 
+/// A reply up to where it started repeating itself (`cut`; all of it
+/// when it didn't).
+pub(super) fn text_before_cut(text: &str, cut: Option<usize>) -> &str {
+    match cut {
+        Some(cut) => text[..cut.min(text.len())].trim_end(),
+        None => text,
+    }
+}
+
+/// A reply's meta from what the model reasoned, if it did.
+pub(super) fn reasoning_meta(reasoning: Option<Value>) -> Option<Value> {
+    reasoning.map(|r| json!({ "reasoning": r }))
+}
+
 impl<R: Runtime> Run<R> {
     /// Everything a run needs before its first step; None when there's
     /// nothing to do.
@@ -1055,11 +1069,11 @@ impl<R: Runtime> Run<R> {
 
             // Stopped for repeating itself: keep the reply up to where it
             // started, tell the model once, and go on; a second time, the run ends.
-            if let Some(cut) = turn.repetition_cut {
+            if turn.repetition_cut.is_some() {
                 self.repetition_stops += 1;
                 let kept = format!(
                     "{}\n\n_[Stopped here: the reply kept repeating itself.]_",
-                    turn.text[..cut.min(turn.text.len())].trim_end()
+                    text_before_cut(&turn.text, turn.repetition_cut)
                 );
                 self.finalize(
                     &turn.message_id,
@@ -1098,32 +1112,10 @@ impl<R: Runtime> Run<R> {
             }
 
             if let Some(error) = turn.failure {
-                let stored = failure::stored(&error);
-                if !turn.text.trim().is_empty() {
-                    // Part of the reply arrived: keep it (it stays in the
-                    // history) and let the user continue. Incomplete tool
-                    // calls are dropped.
-                    let mut meta = turn
-                        .reasoning
-                        .map(|r| json!({ "reasoning": r }))
-                        .unwrap_or_else(|| json!({}));
-                    meta["interrupted"] = stored;
-                    self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
-                        .await?;
-                    self.settle(true).await;
-                } else {
-                    let meta = json!({ "failure": stored });
-                    let text = failure::describe(&error);
-                    self.finalize(
-                        &turn.message_id,
-                        String::new(),
-                        Vec::new(),
-                        Some(meta),
-                        Some(text),
-                    )
+                let kept = self
+                    .store_failed_turn(&turn.message_id, &turn.text, turn.reasoning, &error)
                     .await?;
-                    self.settle(false).await;
-                }
+                self.settle(kept).await;
                 return Ok(if error.kind == ErrorKind::Cancelled {
                     "stopped"
                 } else {
@@ -1132,12 +1124,11 @@ impl<R: Runtime> Run<R> {
                 .into());
             }
 
-            let meta = turn.reasoning.map(|r| json!({ "reasoning": r }));
             self.finalize(
                 &turn.message_id,
                 turn.text.clone(),
                 turn.tool_calls.clone(),
-                meta,
+                reasoning_meta(turn.reasoning),
                 None,
             )
             .await?;
@@ -1264,37 +1255,49 @@ impl<R: Runtime> Run<R> {
         .await?;
         self.words_only = true;
         let turn = self.model_turn().await?;
-        let mut meta = turn
-            .reasoning
-            .map(|r| json!({ "reasoning": r }))
-            .unwrap_or_else(|| json!({}));
         let Some(error) = turn.failure else {
             // Calls the provider sent anyway aren't run: the run is pausing.
+            let meta = reasoning_meta(turn.reasoning).unwrap_or_else(|| json!({}));
             self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
                 .await?;
             self.settle(true).await;
             return Ok(self.stopped());
         };
         // As a failed turn in the run: what arrived is kept, else the error shows.
-        let stored = failure::stored(&error);
-        if !turn.text.trim().is_empty() {
+        let kept = self
+            .store_failed_turn(&turn.message_id, &turn.text, turn.reasoning, &error)
+            .await?;
+        self.settle(kept).await;
+        Ok(error.kind == ErrorKind::Cancelled || self.stopped())
+    }
+
+    /// A turn the provider failed, stored: what arrived is kept as an
+    /// interrupted reply (true), else the reply shows the error (false).
+    pub(super) async fn store_failed_turn(
+        &self,
+        message_id: &str,
+        text: &str,
+        reasoning: Option<Value>,
+        error: &ChatError,
+    ) -> Result<bool, String> {
+        let stored = failure::stored(error);
+        if !text.trim().is_empty() {
+            let mut meta = reasoning_meta(reasoning).unwrap_or_else(|| json!({}));
             meta["interrupted"] = stored;
-            self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
+            self.finalize(message_id, text.to_string(), Vec::new(), Some(meta), None)
                 .await?;
-            self.settle(true).await;
+            Ok(true)
         } else {
-            let text = failure::describe(&error);
             self.finalize(
-                &turn.message_id,
+                message_id,
                 String::new(),
                 Vec::new(),
                 Some(json!({ "failure": stored })),
-                Some(text),
+                Some(failure::describe(error)),
             )
             .await?;
-            self.settle(false).await;
+            Ok(false)
         }
-        Ok(error.kind == ErrorKind::Cancelled || self.stopped())
     }
 
     /*

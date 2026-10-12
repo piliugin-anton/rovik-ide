@@ -23,12 +23,14 @@
 
 use super::events::{emit, AgentEvent};
 use super::guard::FinishedCall;
-use super::run::{new_message, unanswered_tool_calls, Role, Run, IDE_NOTE};
+use super::run::{
+    new_message, reasoning_meta, text_before_cut, unanswered_tool_calls, Role, Run, IDE_NOTE,
+};
 use super::subagent::{
     self, Brief, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig,
 };
 use super::worker::{self, WriteScope};
-use super::{failure, log, permissions, tools, ModelProfile};
+use super::{log, permissions, tools, ModelProfile};
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewChildDialog, ToolCall};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -1170,13 +1172,10 @@ impl<R: Runtime> Run<R> {
             // A reply that started repeating itself: what came before it is
             // its report (the format check below decides how it's taken).
             let (text, calls) = match turn.repetition_cut {
-                Some(cut) => (
-                    turn.text[..cut.min(turn.text.len())].trim_end().to_string(),
-                    Vec::new(),
-                ),
+                Some(cut) => (text_before_cut(&turn.text, Some(cut)).to_string(), Vec::new()),
                 None => (turn.text.clone(), turn.tool_calls.clone()),
             };
-            let meta = turn.reasoning.map(|r| json!({ "reasoning": r }));
+            let meta = reasoning_meta(turn.reasoning);
             self.finalize(&turn.message_id, text.clone(), calls.clone(), meta, None)
                 .await?;
             if !text.trim().is_empty() {
@@ -1225,33 +1224,6 @@ impl<R: Runtime> Run<R> {
 
     /// A failed turn, stored as the lead's are: what arrived is kept, else
     /// the error shows (and the history leaves it out).
-    async fn store_failed_turn(
-        &self,
-        message_id: &str,
-        text: &str,
-        reasoning: Option<Value>,
-        error: &ChatError,
-    ) -> Result<(), String> {
-        let stored = failure::stored(error);
-        if !text.trim().is_empty() {
-            let mut meta = reasoning
-                .map(|r| json!({ "reasoning": r }))
-                .unwrap_or_else(|| json!({}));
-            meta["interrupted"] = stored;
-            self.finalize(message_id, text.to_string(), Vec::new(), Some(meta), None)
-                .await
-        } else {
-            self.finalize(
-                message_id,
-                String::new(),
-                Vec::new(),
-                Some(json!({ "failure": stored })),
-                Some(failure::describe(error)),
-            )
-            .await
-        }
-    }
-
     /// Once per subagent: its requests are fitted to three quarters of the
     /// window they were (S10). False when that was done already.
     fn trim_once(&mut self) -> bool {
@@ -1381,11 +1353,8 @@ impl<R: Runtime> Run<R> {
                 .await?;
             return Ok(turn.text);
         }
-        let text = match turn.repetition_cut {
-            Some(cut) => turn.text[..cut.min(turn.text.len())].trim_end().to_string(),
-            None => turn.text,
-        };
-        let meta = turn.reasoning.map(|r| json!({ "reasoning": r }));
+        let text = text_before_cut(&turn.text, turn.repetition_cut).to_string();
+        let meta = reasoning_meta(turn.reasoning);
         // Calls a provider sent anyway aren't run, and aren't kept either.
         self.finalize(&turn.message_id, text.clone(), Vec::new(), meta, None)
             .await?;
