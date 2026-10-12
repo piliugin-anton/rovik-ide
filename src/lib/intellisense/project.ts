@@ -9,7 +9,15 @@ import type { LoadedFiles } from '../../types';
 import { readProjectConfig } from './compilerOptions';
 import { clearTypeScriptMarkers, setSemanticValidationEnabled } from './defaults';
 import { workerLibs, type LibEntry } from './libs';
-import { isProjectSource, isTsConfig, isTypingsLib, isTypingsManifest, LINKS_LIB } from './paths';
+import {
+  isLoadedLib,
+  isProjectSource,
+  isSourceLib,
+  isTsConfig,
+  isTypingsLib,
+  isTypingsManifest,
+  LINKS_LIB,
+} from './paths';
 import { QuietRunner } from './quietRunner';
 import { SourceChangeQueue, type SourceChangeSink } from './sourceChanges';
 import { ActiveConfig } from './activeConfig';
@@ -127,7 +135,7 @@ export class IntelliSenseProject {
         typings.links.map((l) => dependencyUriFor(l.path))
       );
       this.types.apply();
-      workerLibs.replace([...typingLibs, ...this.sourceLibs(sources)]);
+      workerLibs.replace([...typingLibs, ...this.sourceLibs(sources)], isLoadedLib);
     } finally {
       // Even a throw must not leave validation off and the overlay up
       // forever: mark it ready, clear the markers of the half-loaded
@@ -164,7 +172,7 @@ export class IntelliSenseProject {
     if (this.disposed || !sources) return;
     this.warnIfTruncated('sources', sources);
     this.noteConfigs(sources);
-    workerLibs.replace(this.sourceLibs(sources), (uri) => !isTypingsLib(uri));
+    workerLibs.replace(this.sourceLibs(sources), isSourceLib);
   }
 
   private async refreshTypings(): Promise<void> {
