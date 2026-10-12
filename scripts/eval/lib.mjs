@@ -14,17 +14,24 @@ export function parseCargo(text) {
   return results;
 }
 
+/** The lines of `text` that start with `prefix` and are JSON (the rest is other output). */
+function jsonLines(text, prefix = '{') {
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (!line.startsWith(prefix)) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      // not ours
+    }
+  }
+  return out;
+}
+
 /** Results of `go test -json`: "Package/Test" -> pass|fail|skip. */
 export function parseGoJson(text) {
   const results = {};
-  for (const line of text.split('\n')) {
-    if (!line.startsWith('{')) continue;
-    let e;
-    try {
-      e = JSON.parse(line);
-    } catch {
-      continue;
-    }
+  for (const e of jsonLines(text)) {
     if (!e.Test || !['pass', 'fail', 'skip'].includes(e.Action)) continue;
     results[e.Test] = e.Action;
   }
@@ -59,15 +66,7 @@ export function parseJunit(xml) {
 /** Results of ts-test.mjs (its reporter's JSON lines): "file > suite > test" -> pass|fail|skip. */
 export function parseTsLines(text) {
   const results = {};
-  for (const line of text.split('\n')) {
-    if (!line.startsWith('{"test":')) continue;
-    try {
-      const { test, status } = JSON.parse(line);
-      results[test] = status;
-    } catch {
-      // not ours
-    }
-  }
+  for (const { test, status } of jsonLines(text, '{"test":')) results[test] = status;
   return results;
 }
 
@@ -109,13 +108,15 @@ export function validation(baseResults, referenceRuns) {
   return { ok: problems.length === 0, problems, required, failingAtBase, flaky };
 }
 
+const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+
 /**
  * Whether the next run may start. `spent` is what the campaign's runs
  * cost so far; the next run is assumed to cost their mean (or, before
  * any run, `firstEstimate`).
  */
 export function budgetAllows({ cap, spent, costs, firstEstimate }) {
-  const estimate = costs.length ? costs.reduce((a, b) => a + b, 0) / costs.length : firstEstimate;
+  const estimate = costs.length ? sum(costs) / costs.length : firstEstimate;
   const ok = spent + estimate <= cap;
   return {
     ok,
@@ -138,7 +139,7 @@ export function projection(pilotCosts, runs, cap) {
       total: 0,
       reason: `${unknown} pilot run${unknown === 1 ? '’s' : 's’'} cost is unknown (no usage reported): the cost can’t be projected`,
     };
-  const perRun = pilotCosts.reduce((a, b) => a + b, 0) / pilotCosts.length;
+  const perRun = sum(pilotCosts) / pilotCosts.length;
   const total = perRun * runs;
   return {
     ok: total <= cap,
@@ -151,7 +152,7 @@ export function projection(pilotCosts, runs, cap) {
   };
 }
 
-const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+const mean = (xs) => (xs.length ? sum(xs) / xs.length : 0);
 const stdev = (xs) => {
   if (xs.length < 2) return 0;
   const m = mean(xs);
@@ -182,7 +183,7 @@ const money = (x, digits) => (typeof x === 'number' ? `$${x.toFixed(digits)}` : 
  */
 export function knownSpend(results) {
   const costs = knownCosts(results);
-  return { spent: costs.reduce((a, c) => a + c, 0), costs, unknown: results.length - costs.length };
+  return { spent: sum(costs), costs, unknown: results.length - costs.length };
 }
 
 const ERRORS = ['error', 'runner-failed'];
@@ -315,7 +316,7 @@ export function summarize(results) {
     perRep,
     successRateStdev: stdev(rates),
     successRateRange: rates.length ? [Math.min(...rates), Math.max(...rates)] : [0, 0],
-    totalCostUsd: knownCosts(results).reduce((a, c) => a + c, 0),
+    totalCostUsd: sum(knownCosts(results)),
     meanCostUsd: meanCost(results),
     unknownCosts: unknownCosts(results),
     meanTokens: mean(results.map((r) => r.tokens ?? 0)),
@@ -425,8 +426,7 @@ const width = (range) => (range?.length === 2 ? range[1] - range[0] : 0);
  */
 export function compareVariant(base, variant, { costRatioMax, minTasks = 5, stopped = null }) {
   const tasks = Math.min(base.tasks.length, variant.tasks.length);
-  const meanPeak = (s) =>
-    s.tasks.length ? s.tasks.reduce((a, t) => a + t.maxPeakLeadContext, 0) / s.tasks.length : 0;
+  const meanPeak = (s) => mean(s.tasks.map((t) => t.maxPeakLeadContext));
   const noise = Math.max(
     width(base.successRateRange),
     width(variant.successRateRange),
@@ -495,7 +495,7 @@ export function resultsMarkdown(c) {
   const rows = c.variants.map((v) => {
     const d = v.decision;
     return (
-      `| ${v.label} (${v.milestone}) | ${d.runs} | ${Math.round(d.successRate * 100)}% ` +
+      `| ${v.label} (${v.milestone}) | ${d.runs} | ${pct(d.successRate)} ` +
       `(${pctSigned(d.successDiff)}, noise ±${Math.round(d.noise * 100)}) | ` +
       `${money(d.meanCostUsd, 3)} (${ratio(d.costRatio)}) | ${ratio(d.contextRatio)} | ` +
       `${d.meanMinutes.toFixed(1)} (${d.baseMeanMinutes.toFixed(1)}) | ` +
@@ -515,9 +515,9 @@ export function resultsMarkdown(c) {
     '',
     '## Baseline (all subagents off)',
     '',
-    `- Runs: ${b.runs}; success ${Math.round(b.successRate * 100)}%` +
+    `- Runs: ${b.runs}; success ${pct(b.successRate)}` +
       (b.perRep.length > 1
-        ? ` (per repetition: ${b.perRep.map((r) => `${Math.round(r.successRate * 100)}%`).join(', ')})`
+        ? ` (per repetition: ${b.perRep.map((r) => pct(r.successRate)).join(', ')})`
         : ''),
     `- Cost a run: ${money(b.meanCostUsd, 3)}; time a run: ${b.meanMinutes.toFixed(1)} min; ` +
       `interventions a run: ${b.meanInterventions.toFixed(2)}`,

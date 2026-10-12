@@ -554,14 +554,7 @@ async function baseline(flags) {
   const pilotFile = join(pilotDir, 'summary.json');
   if (!existsSync(pilotFile))
     throw new Error(`no pilot results in ${pilotDir}: run \`eval.mjs pilot\` first`);
-  const pilotCosts = readdirSync(pilotDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .flatMap((d) =>
-      readdirSync(join(pilotDir, d.name))
-        .map((rep) => join(pilotDir, d.name, rep, 'result.json'))
-        .filter(existsSync)
-        .map((f) => readJson(f).costUsd ?? null)
-    );
+  const pilotCosts = campaignResults(pilotDir).map((r) => r.costUsd ?? null);
   const proj = projection(pilotCosts, tasks.length * repeats, b.capUsd);
   if (!proj.ok && !proj.perRun) throw new Error(`not starting: ${proj.reason}`);
   console.log(
@@ -572,9 +565,7 @@ async function baseline(flags) {
   await campaign(flags.name ?? 'baseline', tasks, repeats, b.capUsd, flags);
 }
 
-// ------------------------------------------------- G02 and G03: variants
-
-/** A campaign's results, from its directory. */
+/** A campaign's results, from its directory (<task>/<repetition>/result.json). */
 function campaignResults(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
@@ -586,6 +577,23 @@ function campaignResults(dir) {
         .map(readJson)
     );
 }
+
+/** A run's settings on the fake model (fake-model.mjs) at `url`: no checks, no checklist. */
+const fakeSettings = (url) => ({
+  profile: {
+    id: 'fake::model',
+    label: 'Fake/model',
+    model: 'fake-model',
+    baseUrl: url,
+    stream: true,
+    contextTokens: 200000,
+  },
+  mode: 'agent',
+  price: { inputPerMillion: 1, outputPerMillion: 10 },
+  config: { permissions: { ...EVAL_PERMISSIONS, verifyChanges: false, checklist: 'off' } },
+});
+
+// ------------------------------------------------- G02 and G03: variants
 
 const kindsWanted = (flags) => {
   const ids = flags.kinds ? String(flags.kinds).split(',') : MEASURED_KINDS.map((k) => k.id);
@@ -737,19 +745,7 @@ async function dryRunVariants(flags) {
     for (const task of tasks) {
       const model = await fakeModel(['oracle', referencePatch(task)]);
       const settings = join(dir, name, `settings-${task.id}.json`);
-      const base = {
-        profile: {
-          id: 'fake::model',
-          label: 'Fake/model',
-          model: 'fake-model',
-          baseUrl: model.url,
-          stream: true,
-          contextTokens: 200000,
-        },
-        mode: 'agent',
-        price: { inputPerMillion: 1, outputPerMillion: 10 },
-        config: { permissions: { ...EVAL_PERMISSIONS, verifyChanges: false, checklist: 'off' } },
-      };
+      const base = fakeSettings(model.url);
       const s = variantSettings(base, kind?.id ?? null);
       writeJson(settings, s);
       writeJson(join(dir, name, 'settings.json'), { ...s, profile: base.profile });
@@ -815,19 +811,7 @@ async function dryRun(flags) {
     for (const mode of ['oracle', 'idle']) {
       const model = await fakeModel(mode === 'oracle' ? [mode, referencePatch(task)] : [mode]);
       const settings = join(campaignDir, `settings-${task.id}-${mode}.json`);
-      writeJson(settings, {
-        profile: {
-          id: 'fake::model',
-          label: 'Fake/model',
-          model: 'fake-model',
-          baseUrl: model.url,
-          stream: true,
-          contextTokens: 200000,
-        },
-        mode: 'agent',
-        price: { inputPerMillion: 1, outputPerMillion: 10 },
-        config: { permissions: { ...EVAL_PERMISSIONS, verifyChanges: false, checklist: 'off' } },
-      });
+      writeJson(settings, fakeSettings(model.url));
       try {
         const r = await runOne(task, mode === 'oracle' ? 1 : 2, join(campaignDir, mode), {
           settings,
@@ -855,15 +839,8 @@ async function dryRun(flags) {
 
 function report(flags) {
   const dir = resolve(flags._[1] ?? join(RESULTS, 'baseline'));
-  const results = readdirSync(dir, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .flatMap((d) =>
-      readdirSync(join(dir, d.name))
-        .map((rep) => join(dir, d.name, rep, 'result.json'))
-        .filter(existsSync)
-        .map(readJson)
-    );
-  const s = summarize(results);
+  if (!existsSync(dir)) throw new Error(`no results in ${dir}`);
+  const s = summarize(campaignResults(dir));
   writeJson(join(dir, 'summary.json'), s);
   writeFileSync(join(dir, 'summary.md'), summaryMarkdown(s, `Evaluation: ${dir}`));
   console.log(summaryMarkdown(s, `Evaluation: ${dir}`));
