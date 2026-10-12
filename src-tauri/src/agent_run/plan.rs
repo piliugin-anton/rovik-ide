@@ -1194,10 +1194,7 @@ const MAX_QUESTIONS: usize = 3;
 const MAX_OPTIONS: usize = 6;
 
 fn trimmed(v: Option<&Value>) -> Option<String> {
-    v.and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    super::permissions::trimmed_str(v).map(str::to_string)
 }
 
 /// The questions from the tool's arguments, tolerating the shapes models

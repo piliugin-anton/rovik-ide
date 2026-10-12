@@ -382,12 +382,7 @@ impl<R: Runtime> Run<R> {
             );
         }
         let args = permissions::parse_args(&tc.arguments);
-        if let Some(handle) = args
-            .get("continue")
-            .and_then(|c| c.as_str())
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-        {
+        if let Some(handle) = permissions::trimmed_str(args.get("continue")) {
             return self
                 .start_follow_up(tc, config, &kinds, handle, &args, resumed)
                 .await;
@@ -409,24 +404,7 @@ impl<R: Runtime> Run<R> {
             return self.start_test_writer(tc, config, brief, resumed).await;
         }
 
-        // Started before the app closed: it goes on in its own chat.
-        let existing = if resumed {
-            let (parent, call) = (self.dialog_id.clone(), tc.id.clone());
-            self.db
-                .read(move |c| store::child_for_call(c, &parent, &call))
-                .await?
-        } else {
-            None
-        };
-        let child_id = match &existing {
-            Some(child) => child.id.clone(),
-            None => {
-                if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
-                    return Err(why);
-                }
-                uuid::Uuid::new_v4().to_string()
-            }
-        };
+        let (existing, child_id) = self.child_for(tc, config, resumed).await?;
 
         let budget = brief.budget(config.budget(kind));
         let sub = self.new_sub(kind, &tc.id, budget, config).await?;
@@ -448,12 +426,7 @@ impl<R: Runtime> Run<R> {
             return true;
         }
         let args = permissions::parse_args(&tc.arguments);
-        let Some(handle) = args
-            .get("continue")
-            .and_then(|c| c.as_str())
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-        else {
+        let Some(handle) = permissions::trimmed_str(args.get("continue")) else {
             return false;
         };
         let (parent, key) = (self.dialog_id.clone(), handle.to_string());
@@ -478,11 +451,7 @@ impl<R: Runtime> Run<R> {
         args: &serde_json::Map<String, Value>,
         resumed: bool,
     ) -> Result<Run<R>, String> {
-        let goal = args
-            .get("goal")
-            .and_then(|g| g.as_str())
-            .map(str::trim)
-            .filter(|g| !g.is_empty())
+        let goal = permissions::trimmed_str(args.get("goal"))
             .ok_or("Error: \"goal\" is required: the follow-up question.")?
             .to_string();
         // The same limits as a new subagent's brief (P2.8).
@@ -493,11 +462,7 @@ impl<R: Runtime> Run<R> {
                 subagent::MAX_GOAL_CHARS
             ));
         }
-        let max_tool_calls = args
-            .get("max_tool_calls")
-            .and_then(|n| n.as_f64())
-            .filter(|n| n.is_finite() && *n >= 1.0)
-            .map(|n| n.floor() as u32);
+        let max_tool_calls = permissions::count_arg(args.get("max_tool_calls"));
         let (parent, key) = (self.dialog_id.clone(), handle.to_string());
         let Some(child) = self
             .db
@@ -642,18 +607,10 @@ impl<R: Runtime> Run<R> {
                 .unwrap_or(0);
             run.guard.tool_calls = made as u32;
         } else {
-            let mut message = new_message(
-                "user",
-                &format!(
-                    "# Follow-up from the lead agent\n\n{goal}\n\nAnswer it in the same report format."
-                ),
+            let text = format!(
+                "# Follow-up from the lead agent\n\n{goal}\n\nAnswer it in the same report format."
             );
-            message.meta = Some(json!({
-                "subagentBrief": { "kind": kind.id(), "parentCallId": tc.id, "followUp": true }
-            }));
-            let id = child.id.clone();
-            self.db
-                .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
+            self.append_follow_up(&child.id, kind, &tc.id, &text, false)
                 .await?;
         }
         if let Some(view) = kept_view {
@@ -888,6 +845,28 @@ impl<R: Runtime> Run<R> {
                 }
                 stored
             })
+            .await
+    }
+
+    /// A further brief in a finished child's chat: a follow-up question
+    /// (A04) or, `repair`, a fix round's cause for its worker (R04).
+    pub(super) async fn append_follow_up(
+        &self,
+        child_id: &str,
+        kind: Kind,
+        call_id: &str,
+        text: &str,
+        repair: bool,
+    ) -> Result<(), String> {
+        let mut message = new_message("user", text);
+        let mut brief = json!({ "kind": kind.id(), "parentCallId": call_id, "followUp": true });
+        if repair {
+            brief["repair"] = Value::Bool(true);
+        }
+        message.meta = Some(json!({ "subagentBrief": brief }));
+        let id = child_id.to_string();
+        self.db
+            .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
             .await
     }
 
@@ -1460,23 +1439,7 @@ impl<R: Runtime> Run<R> {
                     .join(", ")
             ));
         };
-        let existing = if resumed {
-            let (parent, call) = (self.dialog_id.clone(), tc.id.clone());
-            self.db
-                .read(move |c| store::child_for_call(c, &parent, &call))
-                .await?
-        } else {
-            None
-        };
-        let child_id = match &existing {
-            Some(child) => child.id.clone(),
-            None => {
-                if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
-                    return Err(why);
-                }
-                uuid::Uuid::new_v4().to_string()
-            }
-        };
+        let (existing, child_id) = self.child_for(tc, config, resumed).await?;
         let scope = WriteScope::for_step(&step);
         let diff = self.step_diff(&step);
         let lead_note = (!brief.goal.starts_with("Carry out step "))
@@ -1505,26 +1468,43 @@ impl<R: Runtime> Run<R> {
         sub.other_steps = other_steps(&steps, n);
         let goal = format!("Step {n}: {}", step.title);
         let message = existing.is_none().then_some(message);
-        let mut child = self
-            .store_and_launch(
-                &child_id,
-                &tc.id,
-                Kind::Worker,
-                &goal,
-                message,
-                sub,
-                admitted,
-            )
-            .await?;
-        if existing.is_some() {
-            self.resume_child_writes(&mut child, &child_id).await;
-        }
-        Ok(child)
+        self.store_and_launch(&child_id, &tc.id, Kind::Worker, &goal, message, sub, admitted)
+            .await
+    }
+
+    /// The child chat `tc` started before the app closed, when the run is
+    /// resumed (it goes on in that chat), else the id of a new one. A new
+    /// child isn't started past the run's token limit.
+    async fn child_for(
+        &self,
+        tc: &ToolCall,
+        config: &SubagentConfig,
+        resumed: bool,
+    ) -> Result<(Option<store::ChildDialog>, String), String> {
+        let existing = if resumed {
+            let (parent, call) = (self.dialog_id.clone(), tc.id.clone());
+            self.db
+                .read(move |c| store::child_for_call(c, &parent, &call))
+                .await?
+        } else {
+            None
+        };
+        let child_id = match &existing {
+            Some(child) => child.id.clone(),
+            None => {
+                if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
+                    return Err(why);
+                }
+                uuid::Uuid::new_v4().to_string()
+            }
+        };
+        Ok((existing, child_id))
     }
 
     /// Stores a new child's chat (`message`: its brief) or reopens a
     /// resumed one's (None), and launches it. A new one that can't start
-    /// gives back the place `admitted` took (round 2, P1.1).
+    /// gives back the place `admitted` took (round 2, P1.1); a resumed
+    /// writer goes on with the files it wrote before.
     #[allow(clippy::too_many_arguments)]
     async fn store_and_launch(
         &mut self,
@@ -1551,7 +1531,11 @@ impl<R: Runtime> Run<R> {
                 self.ledger.release(admission);
             }
         }
-        started
+        let mut child = started?;
+        if resumed && kind.writes() {
+            self.resume_child_writes(&mut child, child_id).await;
+        }
+        Ok(child)
     }
 
     /// A child just launched (P2.7): one resumed after a restart goes on
@@ -1613,23 +1597,7 @@ impl<R: Runtime> Run<R> {
                 (k.clone(), outline)
             })
             .collect();
-        let existing = if resumed {
-            let (parent, call) = (self.dialog_id.clone(), tc.id.clone());
-            self.db
-                .read(move |c| store::child_for_call(c, &parent, &call))
-                .await?
-        } else {
-            None
-        };
-        let child_id = match &existing {
-            Some(child) => child.id.clone(),
-            None => {
-                if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
-                    return Err(why);
-                }
-                uuid::Uuid::new_v4().to_string()
-            }
-        };
+        let (existing, child_id) = self.child_for(tc, config, resumed).await?;
         let request = self.latest_user_request().await;
         let test_check = self
             .checks
@@ -1660,21 +1628,8 @@ impl<R: Runtime> Run<R> {
         self.limit_test_writer(&mut sub, touched);
         let goal = brief.goal.clone();
         let message = existing.is_none().then_some(message);
-        let mut child = self
-            .store_and_launch(
-                &child_id,
-                &tc.id,
-                Kind::TestWriter,
-                &goal,
-                message,
-                sub,
-                admitted,
-            )
-            .await?;
-        if existing.is_some() {
-            self.resume_child_writes(&mut child, &child_id).await;
-        }
-        Ok(child)
+        self.store_and_launch(&child_id, &tc.id, Kind::TestWriter, &goal, message, sub, admitted)
+            .await
     }
 
     /// A writing subagent resumed after the app closed: the files it wrote

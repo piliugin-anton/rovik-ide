@@ -15,7 +15,7 @@
 use super::causes::{self, Cause, Owner, Owners};
 use super::command_output::focus_failures;
 use super::repair::{self, Judgement, Verdict};
-use super::run::{new_message, Run};
+use super::run::Run;
 use super::subagent::{self, Brief, Kind, SubResult, SubStatus};
 use super::subagent_run::{go_sub, SubFuture};
 use super::verify::{with, CheckResult};
@@ -494,13 +494,8 @@ impl<R: Runtime> Run<R> {
             // Launched first (P3.10): its chat gets the fix's brief only when
             // the fixer really starts.
             let mut run = self.launch_child(child.clone(), &call_id, &goal, sub)?;
-            let mut message = new_message("user", &fixer_message(cause, round, results));
-            message.meta = Some(json!({
-                "subagentBrief": { "kind": "worker", "parentCallId": call_id, "followUp": true, "repair": true }
-            }));
-            let id = child.clone();
-            self.db
-                .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
+            let text = fixer_message(cause, round, results);
+            self.append_follow_up(&child, Kind::Worker, &call_id, &text, true)
                 .await?;
             if let Some(root) = root {
                 run.root = Some(root);

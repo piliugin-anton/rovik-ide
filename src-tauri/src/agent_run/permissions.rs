@@ -923,6 +923,20 @@ pub fn str_arg(args_json: &str, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A string value, trimmed, when there's something left of it.
+pub fn trimmed_str(v: Option<&serde_json::Value>) -> Option<&str> {
+    v.and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// A count argument: a whole number of at least 1 (a float is floored).
+pub fn count_arg(v: Option<&serde_json::Value>) -> Option<u32> {
+    v.and_then(|n| n.as_f64())
+        .filter(|n| n.is_finite() && *n >= 1.0)
+        .map(|n| n.floor() as u32)
+}
+
 /// Permission first, then who (if anyone) has to approve.
 pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -> ToolVerdict {
     if name == "bash" {

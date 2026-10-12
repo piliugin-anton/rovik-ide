@@ -17,7 +17,7 @@
 //!   - its report is data, not instructions: the lead is told so, since a
 //!     report may quote untrusted files or web pages.
 
-use super::ModelProfile;
+use super::{permissions, ModelProfile};
 use crate::agent::OpenAIChatOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -447,11 +447,7 @@ pub fn parse_brief(args: &Map<String, Value>, enabled: &[Kind]) -> Result<Brief,
             "Error: a worker needs \"step\": the number of the plan step it carries out.".into(),
         );
     }
-    let goal = args
-        .get("goal")
-        .and_then(|g| g.as_str())
-        .map(str::trim)
-        .filter(|g| !g.is_empty())
+    let goal = permissions::trimmed_str(args.get("goal"))
         .map(str::to_string)
         .or_else(|| {
             step.filter(|_| kind == Kind::Worker)
@@ -472,11 +468,7 @@ pub fn parse_brief(args: &Map<String, Value>, enabled: &[Kind]) -> Result<Brief,
             goal.chars().count()
         ));
     }
-    let context = args
-        .get("context")
-        .and_then(|c| c.as_str())
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
+    let context = permissions::trimmed_str(args.get("context"))
         .map(|c| crate::chat_db::store::char_prefix(c, MAX_CONTEXT_CHARS).to_string());
     let paths = args
         .get("paths")
@@ -491,11 +483,7 @@ pub fn parse_brief(args: &Map<String, Value>, enabled: &[Kind]) -> Result<Brief,
                 .collect()
         })
         .unwrap_or_default();
-    let max_tool_calls = args
-        .get("max_tool_calls")
-        .and_then(|n| n.as_f64())
-        .filter(|n| n.is_finite() && *n >= 1.0)
-        .map(|n| n.floor() as u32);
+    let max_tool_calls = permissions::count_arg(args.get("max_tool_calls"));
     Ok(Brief {
         kind,
         goal: goal.to_string(),
