@@ -2380,6 +2380,79 @@ async fn a_failing_plan_reviewer_saves_the_plan_with_a_note() {
     assert_eq!(h.plan_files().len(), 1);
 }
 
+/// A plan reviewer cut short by its budget writes its report like any
+/// other: checked against the findings format, with the repair turn. Before,
+/// the budget's report went to the parser unchecked, and a reviewer that
+/// wrote prose (the budget note asked for "## Open questions", a section it
+/// doesn't have) skipped the review: "it has no \"## Findings\" section".
+#[tokio::test]
+async fn a_plan_reviewer_out_of_budget_still_reports_findings() {
+    let h = plan_project().await;
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![
+                Reply::Calls(vec![
+                    ("r1", "read", json!({ "path": "src/api.rs" })),
+                    ("r2", "read", json!({ "path": "src/cli.rs" })),
+                ]),
+                // Asked for its report after the budget: prose, no heading.
+                Reply::Text("I checked src/cli.rs: it calls list_users too, and the plan doesn't update it."),
+                // The repair turn.
+                Reply::Text(PLAN_FINDING),
+                // Round 2, on the fixed plan.
+                Reply::Text(NO_FINDINGS),
+            ],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit("p2", users_plan("Users", 1)),
+            Reply::Text("Saved the plan."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({ "maxToolCalls": 1 }))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let first = result_of(&messages, "p1");
+    assert!(
+        first.content.starts_with("Error: The plan wasn't saved yet"),
+        "{}",
+        first.content
+    );
+    assert!(first
+        .content
+        .contains("1. [high] Step 2 — `list_users` is also called"));
+    let review = &first.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["status"], "findings");
+    let second = result_of(&messages, "p2");
+    assert!(
+        second.content.starts_with("Saved the plan to"),
+        "{}",
+        second.content
+    );
+    assert_eq!(second.meta.as_ref().unwrap()["review"]["status"], "clean");
+
+    // The budget note asked for findings, not "## Open questions", and the
+    // prose got the repair turn.
+    let child = h.child_of("p1").await;
+    let work = h.messages_of(&child.id).await;
+    let note = |harness: &str| {
+        work.iter().find(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|m| m["harness"] == harness)
+        })
+    };
+    let budget = note("subagentBudget").expect("asked for its report");
+    assert!(budget.content.contains("budget of 1 tool calls"), "{}", budget.content);
+    assert!(budget.content.contains("\"## Findings\""), "{}", budget.content);
+    assert!(!budget.content.contains("Open questions"), "{}", budget.content);
+    let format = note("subagentFormat").expect("got the repair turn");
+    assert!(format.content.contains("no \"## Findings\" section"), "{}", format.content);
+}
+
 #[tokio::test]
 async fn a_small_revision_is_saved_without_a_review_and_off_means_off() {
     let h = plan_project().await;

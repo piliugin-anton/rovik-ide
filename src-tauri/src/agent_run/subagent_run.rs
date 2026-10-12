@@ -14,7 +14,8 @@
 //! Instead:
 //!   - a budget of tool calls and wall time (time waiting for an approval
 //!     doesn't count); past it, or stuck in a loop, one turn without tools
-//!     to write the report from what it found: `partial`;
+//!     to write the report from what it found: `partial` (checked against
+//!     the format like any report, with the repair turn below);
 //!   - a model that fails for good hands over to the kind's next model, on
 //!     the same stored history; with none left: `failed`, with what the
 //!     subagent read before;
@@ -1202,7 +1203,7 @@ impl<R: Runtime> Run<R> {
                 return Ok((SubStatus::Stopped, last_text, None));
             }
             if calls.is_empty() {
-                return self.finish_report(text).await;
+                return self.finish_report(text, SubStatus::Done).await;
             }
             // The budget holds within a reply too: calls past it aren't run,
             // and each gets a result saying so.
@@ -1304,14 +1305,16 @@ impl<R: Runtime> Run<R> {
     }
 
     /// The final reply: checked against the kind's format, with one repair
-    /// turn when it doesn't follow it (S13).
+    /// turn when it doesn't follow it (S13). `status` is the report's when
+    /// it follows the format: `Done`, or `Partial` after the budget.
     async fn finish_report(
         &mut self,
         text: String,
+        status: SubStatus,
     ) -> Result<(SubStatus, String, Option<String>), String> {
         let spec = self.sub().map(|s| s.kind.spec()).expect("a subagent");
         let Some(problem) = subagent::format_problem(spec, &text) else {
-            return Ok((status_of(&text, SubStatus::Done), text, None));
+            return Ok((status_of(&text, status), text, None));
         };
         let sections = spec
             .sections
@@ -1327,24 +1330,34 @@ impl<R: Runtime> Run<R> {
         )
         .await?;
         let again = self.words_only_turn().await?;
+        if self.stopped() {
+            return Ok((SubStatus::Stopped, again, None));
+        }
         if subagent::format_problem(spec, &again).is_none() {
-            return Ok((status_of(&again, SubStatus::Done), again, None));
+            return Ok((status_of(&again, status), again, None));
         }
         let raw = if again.trim().is_empty() { text } else { again };
         Ok((SubStatus::Unformatted, raw, None))
     }
 
     /// One turn without tools for the report, after the budget ran out or a
-    /// loop: `status` unless it says it's blocked.
+    /// loop: `status` unless it says it's blocked. The report is checked
+    /// against the kind's format like a final reply (S13): a reviewer cut
+    /// short that writes prose gets its repair turn too, so its findings
+    /// aren't lost as "no \"## Findings\" section".
     async fn result_turn(
         &mut self,
         status: SubStatus,
         why: &str,
         last_text: String,
     ) -> Result<(SubStatus, String, Option<String>), String> {
+        let note = self
+            .sub()
+            .map(|s| s.kind.spec().partial_report_note())
+            .expect("a subagent");
         self.add_harness(
             format!(
-                "{IDE_NOTE}{why}. Don't call any tools. Write your report now, in the required format, from what you found so far, and say under \"## Open questions\" what you didn't get to."
+                "{IDE_NOTE}{why}. Don't call any tools. Write your report now, in the required format, from what you found so far. {note}"
             ),
             "subagentBudget",
         )
@@ -1358,7 +1371,7 @@ impl<R: Runtime> Run<R> {
         } else {
             text
         };
-        Ok((status_of(&text, status), text, None))
+        self.finish_report(text, status).await
     }
 
     /// A turn whose calls aren't run: its text, stored (empty when it failed).
