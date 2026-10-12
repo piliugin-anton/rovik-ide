@@ -3204,17 +3204,20 @@ body.tree-dragging {
   color: var(--fg-muted);
 }
 
-.file-context-menu .context-menu-icon {
+.file-context-menu .context-menu-icon,
+.terminal-context-menu .context-menu-icon {
   display: inline-flex;
   flex: 0 0 14px;
   color: var(--fg-muted);
 }
 
-.file-context-menu .context-menu-label {
+.file-context-menu .context-menu-label,
+.terminal-context-menu .context-menu-label {
   flex: 1;
 }
 
-.file-context-menu .context-menu-shortcut {
+.file-context-menu .context-menu-shortcut,
+.terminal-context-menu .context-menu-shortcut {
   margin-left: 16px;
   color: var(--fg-dim);
   font-size: 11px;
@@ -3229,16 +3232,19 @@ body.tree-dragging {
   background: var(--error-soft);
 }
 
-.file-context-menu .context-menu-item.disabled {
+.file-context-menu .context-menu-item.disabled,
+.terminal-context-menu .context-menu-item.disabled {
   cursor: default;
   opacity: 0.4;
 }
 
-.file-context-menu .context-menu-item.disabled:hover {
+.file-context-menu .context-menu-item.disabled:hover,
+.terminal-context-menu .context-menu-item.disabled:hover {
   background: none;
 }
 
-.file-context-menu .context-menu-separator {
+.file-context-menu .context-menu-separator,
+.terminal-context-menu .context-menu-separator {
   height: 1px;
   margin: 4px 6px;
   background: var(--border);

@@ -1,8 +1,9 @@
-import { onMount, onCleanup, createEffect } from 'solid-js';
+import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { spawnTerminal, writeToTerminal, resizeTerminal, closeTerminal } from '../lib/terminal';
+import TerminalContextMenu from './TerminalContextMenu';
 
 interface TerminalProps {
   cwd: string | null;
@@ -43,6 +44,52 @@ export function controlCharFor(e: KeyboardEvent): string | null {
   return CONTROL_PUNCTUATION[e.code] ?? null;
 }
 
+/** Copy text to the OS clipboard, with a fallback for webviews without the async API. */
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    return ok;
+  }
+}
+
+/** Ctrl+Shift+C / Ctrl+Shift+V by physical key, so non-Latin layouts work too. */
+function isCopyKey(e: KeyboardEvent): boolean {
+  return (
+    e.type === 'keydown' &&
+    e.ctrlKey &&
+    e.shiftKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    (e.key.toLowerCase() === 'c' || e.code === 'KeyC')
+  );
+}
+
+function isPasteKey(e: KeyboardEvent): boolean {
+  return (
+    e.type === 'keydown' &&
+    e.ctrlKey &&
+    e.shiftKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    (e.key.toLowerCase() === 'v' || e.code === 'KeyV')
+  );
+}
+
 export default function Terminal(props: TerminalProps) {
   let containerEl: HTMLDivElement | undefined;
   let xterm: XTerm | undefined;
@@ -51,11 +98,95 @@ export default function Terminal(props: TerminalProps) {
   let disposed = false;
   let exited = false;
 
+  const [menuVisible, setMenuVisible] = createSignal(false);
+  const [menuPos, setMenuPos] = createSignal({ x: 0, y: 0 });
+  const [menuHasSelection, setMenuHasSelection] = createSignal(false);
+  let menuEl: HTMLDivElement | undefined;
+
+  /** Clamp to the viewport once the menu's size is known (like App's file menu). */
+  function setMenuEl(el: HTMLDivElement) {
+    menuEl = el;
+    const pos = menuPos();
+    const w = el.offsetWidth || 160;
+    const h = el.offsetHeight || 120;
+    const x = Math.max(0, Math.min(pos.x, window.innerWidth - w - 10));
+    const y = Math.max(0, Math.min(pos.y, window.innerHeight - h - 10));
+    if (x !== pos.x || y !== pos.y) setMenuPos({ x, y });
+  }
+
+  const closeMenu = () => setMenuVisible(false);
+
+  async function copySelection() {
+    const term = xterm;
+    if (!term || !term.hasSelection()) return;
+    const text = term.getSelection();
+    if (!text) return;
+    await writeClipboard(text);
+    term.focus();
+  }
+
+  async function pasteFromClipboard() {
+    const term = xterm;
+    if (!term) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) term.paste(text);
+    } catch {
+      // Denied permission or no async clipboard API: nothing to paste.
+    }
+    term.focus();
+  }
+
+  function selectAll() {
+    const term = xterm;
+    if (!term) return;
+    term.selectAll();
+    term.focus();
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    // Keep App's file-tree menu from opening over the terminal.
+    e.preventDefault();
+    e.stopPropagation();
+    setMenuHasSelection(xterm?.hasSelection() ?? false);
+    setMenuPos({ x: e.clientX, y: e.clientY });
+    setMenuVisible(true);
+  }
+
   /** Fit to the container; skipped while hidden (xterm can't lay out at 0×0). */
   function fit() {
     if (!containerEl || containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
     fitAddon?.fit();
   }
+
+  // Dismiss the menu on any outside press, scroll, resize, blur, or Escape —
+  // the same triggers App uses for the file-tree menu.
+  createEffect(() => {
+    if (!menuVisible()) return;
+    const outside = (e: Event) => {
+      if (menuEl && !menuEl.contains(e.target as Node)) closeMenu();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMenu();
+      }
+    };
+    window.addEventListener('pointerdown', outside, true);
+    window.addEventListener('contextmenu', outside, true);
+    window.addEventListener('scroll', outside, true);
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('blur', closeMenu);
+    window.addEventListener('resize', closeMenu);
+    onCleanup(() => {
+      window.removeEventListener('pointerdown', outside, true);
+      window.removeEventListener('contextmenu', outside, true);
+      window.removeEventListener('scroll', outside, true);
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('blur', closeMenu);
+      window.removeEventListener('resize', closeMenu);
+    });
+  });
 
   onMount(() => {
     if (!containerEl) return;
@@ -82,6 +213,16 @@ export default function Terminal(props: TerminalProps) {
 
     term.attachCustomKeyEventHandler((e) => {
       if (props.isPanelShortcut?.(e)) return false;
+      // Ctrl+Shift+C copies the selection, Ctrl+Shift+V pastes: handled
+      // here so nothing is sent to the shell. Plain Ctrl+C still interrupts.
+      if (isCopyKey(e)) {
+        if (term.hasSelection()) void copySelection();
+        return false;
+      }
+      if (isPasteKey(e)) {
+        void pasteFromClipboard();
+        return false;
+      }
       // Ctrl+C and the like on a non-Latin layout: sent as typed.
       const control = controlCharFor(e);
       if (control) {
@@ -146,6 +287,12 @@ export default function Terminal(props: TerminalProps) {
   });
 
   // Switched to: refit (its size may have changed while hidden) and focus.
+  // Switched away (e.g. keyboard tab switch): close the menu, which is
+  // position:fixed and would otherwise linger over the other tab while
+  // still acting on this hidden terminal.
+  createEffect(() => {
+    if (!props.active) closeMenu();
+  });
   createEffect(() => {
     if (!props.active) return;
     requestAnimationFrame(() => {
@@ -162,11 +309,34 @@ export default function Terminal(props: TerminalProps) {
   });
 
   return (
-    <div
-      class="terminal-instance"
-      classList={{ hidden: !props.active }}
-      ref={containerEl}
-      role="tabpanel"
-    />
+    <>
+      <div
+        class="terminal-instance"
+        classList={{ hidden: !props.active }}
+        ref={containerEl}
+        role="tabpanel"
+        onContextMenu={handleContextMenu}
+      />
+      <Show when={menuVisible()}>
+        <TerminalContextMenu
+          ref={setMenuEl}
+          x={menuPos().x}
+          y={menuPos().y}
+          hasSelection={menuHasSelection()}
+          onCopy={() => {
+            closeMenu();
+            void copySelection();
+          }}
+          onPaste={() => {
+            closeMenu();
+            void pasteFromClipboard();
+          }}
+          onSelectAll={() => {
+            closeMenu();
+            selectAll();
+          }}
+        />
+      </Show>
+    </>
   );
 }
