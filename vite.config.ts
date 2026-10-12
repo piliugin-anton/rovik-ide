@@ -24,5 +24,9 @@ export default defineConfig({
     target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari15',
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // The bundle (Monaco and the editor's languages) ships inside the app
+    // and loads from disk, so the 500 kB advice for pages served over the
+    // network doesn't apply; the limit is raised above what it is today.
+    chunkSizeWarningLimit: 6000,
   },
 });
