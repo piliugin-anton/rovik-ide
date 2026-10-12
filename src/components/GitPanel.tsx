@@ -958,15 +958,17 @@ export function GitPanel(props: GitPanelProps) {
     if (!n) return null;
     if (
       n === 'HEAD' ||
+      n === '@' ||
       n.startsWith('-') ||
       n.startsWith('/') ||
       n.endsWith('/') ||
       n.endsWith('.') ||
-      n.endsWith('.lock') ||
       n.includes('..') ||
       n.includes('//') ||
       n.includes('@{') ||
-      /[\s~^:?*\[\\]/.test(n)
+      // No path component may start with "." or end with ".lock".
+      n.split('/').some((part) => part.startsWith('.') || part.endsWith('.lock')) ||
+      /[\s~^:?*\[\\\x00-\x1f\x7f]/.test(n)
     ) {
       return `'${n}' isn't a valid branch name.`;
     }
@@ -1436,22 +1438,41 @@ export function GitPanel(props: GitPanelProps) {
                   />
                   <div class="git-base-field">
                     <div class="git-more-note">Create from</div>
+                    {/* Each option carries its own `selected`, rather than
+                        the select a `value`: the list loads after the view
+                        opens, and a value set before its option exists is
+                        lost, leaving the first branch shown while the
+                        current one would be used. */}
                     <select
                       class="git-more-input git-base-select"
-                      value={newBranchFrom() || status()?.branch || ''}
                       onChange={(e) => setNewBranchFrom(e.currentTarget.value)}
                       disabled={busy() || branchesLoading() || branches().length === 0}
                       title="The branch the new branch starts from"
                     >
+                      {/* Not on a branch in the list (detached HEAD, a rebase,
+                          the list still loading): the current commit. */}
+                      <Show when={!branches().some((b) => b.name === newBranchFrom())}>
+                        <option value="" selected>
+                          {status()?.branch || 'HEAD'}
+                        </option>
+                      </Show>
                       <optgroup label="Local">
                         <For each={branches().filter((b) => !b.is_remote)}>
-                          {(b) => <option value={b.name}>{b.name}</option>}
+                          {(b) => (
+                            <option value={b.name} selected={b.name === newBranchFrom()}>
+                              {b.name}
+                            </option>
+                          )}
                         </For>
                       </optgroup>
                       <Show when={branches().some((b) => b.is_remote)}>
                         <optgroup label="Remote">
                           <For each={branches().filter((b) => b.is_remote)}>
-                            {(b) => <option value={b.name}>{b.name}</option>}
+                            {(b) => (
+                              <option value={b.name} selected={b.name === newBranchFrom()}>
+                                {b.name}
+                              </option>
+                            )}
                           </For>
                         </optgroup>
                       </Show>
