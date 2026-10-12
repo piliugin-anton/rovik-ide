@@ -766,7 +766,7 @@ impl<R: Runtime> Run<R> {
                     &turn.message_id,
                     kept,
                     Vec::new(),
-                    turn.reasoning.clone(),
+                    turn.reasoning.clone().map(|r| json!({ "reasoning": r })),
                     None,
                 )
                 .await?;
@@ -843,7 +843,11 @@ impl<R: Runtime> Run<R> {
             )
             .await?;
             self.settle(true).await;
-            if self.stopped() {
+            // Stopped meanwhile: a reply with tool calls goes on to
+            // execute_tool_calls, which answers each with a "stopped" result
+            // (a call left without one reads as interrupted, and the chat
+            // would offer to resume it).
+            if self.stopped() && turn.tool_calls.is_empty() {
                 return Ok("stopped".into());
             }
 
@@ -949,6 +953,19 @@ impl<R: Runtime> Run<R> {
             .reasoning
             .map(|r| json!({ "reasoning": r }))
             .unwrap_or_else(|| json!({}));
+        // Cut for repeating itself (the request is cancelled for that, so
+        // it also reads as a failure): keep the reply up to there, as the
+        // run's loop does. The pause still follows; the user didn't stop.
+        if let Some(cut) = turn.repetition_cut {
+            let kept = format!(
+                "{}\n\n_[Stopped here: the reply kept repeating itself.]_",
+                turn.text[..cut.min(turn.text.len())].trim_end()
+            );
+            self.finalize(&turn.message_id, kept, Vec::new(), Some(meta), None)
+                .await?;
+            self.settle(true).await;
+            return Ok(self.stopped());
+        }
         let Some(error) = turn.failure else {
             // Calls the provider sent anyway aren't run: the run is pausing.
             self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)

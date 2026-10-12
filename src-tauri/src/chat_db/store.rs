@@ -524,9 +524,16 @@ pub fn append_messages(
 /// Makes a message final: large tool output moves to `message_bodies`,
 /// searchable text is indexed, and the chat's preview is refreshed.
 fn finalize(conn: &Connection, message_id: &str) -> DbResult<()> {
-    let (dialog_id, role, content, error, failed): (String, String, String, Option<String>, bool) =
-        conn.query_row(
-            "SELECT dialog_id, role, content, error, failed FROM messages WHERE id = ?1",
+    let (dialog_id, role, content, error, failed, external): (
+        String,
+        String,
+        String,
+        Option<String>,
+        bool,
+        bool,
+    ) = conn
+        .query_row(
+            "SELECT dialog_id, role, content, error, failed, body_external FROM messages WHERE id = ?1",
             params![message_id],
             |r| {
                 Ok((
@@ -535,12 +542,22 @@ fn finalize(conn: &Connection, message_id: &str) -> DbResult<()> {
                     r.get(2)?,
                     r.get(3)?,
                     r.get::<_, i64>(4)? != 0,
+                    r.get::<_, i64>(5)? != 0,
                 ))
             },
         )
         .map_err(err)?;
 
-    if role == "tool" && content.len() > EXTERNAL_BODY_BYTES {
+    if external && content.chars().count() <= PREVIEW_CHARS {
+        // Finalized before (a failed/error flag set on it since): its body is
+        // in `message_bodies` and `content` is the preview. Moving the preview
+        // there would lose the body; its size must stay the body's.
+        conn.execute(
+            "UPDATE messages SET finalized = 1 WHERE id = ?1",
+            params![message_id],
+        )
+        .map_err(err)?;
+    } else if role == "tool" && content.len() > EXTERNAL_BODY_BYTES {
         conn.execute(
             "INSERT OR REPLACE INTO message_bodies (message_id, content) VALUES (?1, ?2)",
             params![message_id, content],

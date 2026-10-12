@@ -313,6 +313,29 @@ async fn empty_responses_are_retried_until_one_succeeds() {
     assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 
+/// Some servers close the connection right after the last chunk, with no
+/// blank line after it and no [DONE]: that chunk is still part of the reply.
+#[tokio::test]
+async fn a_final_event_without_a_blank_line_is_read_when_the_connection_closes() {
+    let body = format!(
+        "{}\n{}\n",
+        r#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#,
+        r#"data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}"#
+    );
+    let raw = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+    );
+    let (url, _) = mock(vec![Reply::Raw(raw)]).await;
+    let (result, events) = run_against(&url, fast_limits(), None).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(names(&events), ["delta:Hel", "delta:lo", "done"]);
+    let usage = events.iter().find_map(|e| match e {
+        ChatStreamEvent::Finished { usage, .. } => usage.clone(),
+        _ => None,
+    });
+    assert_eq!(usage.and_then(|u| u["prompt_tokens"].as_u64()), Some(3));
+}
+
 #[tokio::test]
 async fn gives_up_after_max_attempts_with_typed_error() {
     let (url, _) = mock((0..MAX_ATTEMPTS).map(|_| sse(&[EMPTY, DONE])).collect()).await;
