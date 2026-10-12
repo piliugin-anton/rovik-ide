@@ -122,7 +122,10 @@ export class IntelliSenseProject {
       // Options first: a change restarts the worker, which then starts
       // with the complete lib set instead of receiving it twice.
       this.types.configure(config);
-      this.types.setInstalled(typingLibs.map((lib) => lib.filePath));
+      this.types.setInstalled(
+        typings.files.map((f) => dependencyUriFor(f.path)),
+        typings.links.map((l) => dependencyUriFor(l.path))
+      );
       this.types.apply();
       workerLibs.replace([...typingLibs, ...this.sourceLibs(sources)]);
     } finally {
@@ -170,7 +173,10 @@ export class IntelliSenseProject {
     this.warnIfTruncated('typings', typings);
     const typingLibs = this.typingLibs(typings);
     workerLibs.replace(typingLibs, isTypingsLib);
-    this.types.setInstalled(typingLibs.map((lib) => lib.filePath));
+    this.types.setInstalled(
+      typings.files.map((f) => dependencyUriFor(f.path)),
+      typings.links.map((l) => dependencyUriFor(l.path))
+    );
     this.types.apply();
   }
 

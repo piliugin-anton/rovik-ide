@@ -186,6 +186,24 @@ describe('ProjectTypeScriptWorker', () => {
     );
   });
 
+  it('a dependency file opened as a tab resolves its imports to the libs', async () => {
+    // Monaco encodes `@` in a model's URI; the libs keep it raw after node_modules.
+    const opened = `${NM}/%40mui/material/FormHelperText/FormHelperText.d.ts`;
+    const text = "import { Base } from '../OverridableComponent'; export declare const F: Base;";
+    const libs: Record<string, ExtraLib> = {
+      [`${NM}/@mui/material/OverridableComponent.d.ts`]: {
+        content: 'export interface Base { kind: string }',
+        version: 1,
+      },
+    };
+    const w = worker([model(opened, text)], { ...OPTIONS, types: [] }, libs);
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(opened)), []);
+    assert.equal(
+      w.realpath(`${NM}/%40mui/material/OverridableComponent.d.ts`),
+      `${NM}/@mui/material/OverridableComponent.d.ts`
+    );
+  });
+
   it('a changed lib is parsed again, the others are kept', async () => {
     const w = worker([model(APP, APP_TEXT)], { ...OPTIONS, types: ['node', 'vite/client'] });
     await w.getSemanticDiagnostics(APP);
