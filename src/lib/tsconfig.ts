@@ -180,16 +180,22 @@ function toProject(config: LoadedConfig): TsProject {
  * (tsserver then infers a project with the default types).
  */
 export function projectFor(projects: TsProject[], filePath: string): TsProject | undefined {
-  const file = normalize(filePath);
   let nearest: TsProject | undefined;
   for (const p of projects) {
-    const covers =
-      p.files.some((f) => samePath(f, file)) ||
-      (p.include.some((pattern) => matchesPattern(pattern, file)) &&
-        !p.exclude.some((pattern) => matchesPattern(pattern, file)));
-    if (covers && (!nearest || dirname(p.path).length > dirname(nearest.path).length)) nearest = p;
+    if (!projectCovers(p, filePath)) continue;
+    if (!nearest || dirname(p.path).length > dirname(nearest.path).length) nearest = p;
   }
   return nearest;
+}
+
+/** Whether a config's `files`, `include` and `exclude` take in `filePath` (absolute). */
+export function projectCovers(project: TsProject, filePath: string): boolean {
+  const file = normalize(filePath);
+  return (
+    project.files.some((f) => samePath(f, file)) ||
+    (project.include.some((pattern) => matchesPattern(pattern, file)) &&
+      !project.exclude.some((pattern) => matchesPattern(pattern, file)))
+  );
 }
 
 /** TypeScript's numeric values for `module` / `moduleResolution`. */

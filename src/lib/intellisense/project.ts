@@ -12,7 +12,7 @@ import { workerLibs, type LibEntry } from './libs';
 import { isProjectSource, isTsConfig, isTypingsLib, isTypingsManifest, LINKS_LIB } from './paths';
 import { QuietRunner } from './quietRunner';
 import { SourceChangeQueue, type SourceChangeSink } from './sourceChanges';
-import { TypesScope } from './typesScope';
+import { ActiveConfig } from './activeConfig';
 import { dependencyUriFor, modelUriFor } from './uris';
 
 /*
@@ -36,7 +36,7 @@ export class IntelliSenseProject {
   /** The definitions have fully reached the worker. */
   ready = false;
   private disposed = false;
-  private readonly types: TypesScope;
+  private readonly types: ActiveConfig;
   private readonly sources: SourceChangeQueue;
   private readonly typingsRefresh: QuietRunner;
   private readonly configReload: QuietRunner;
@@ -47,7 +47,7 @@ export class IntelliSenseProject {
     readonly root: string,
     activeFile: string | null
   ) {
-    this.types = new TypesScope(root);
+    this.types = new ActiveConfig(root);
     this.types.setActiveFile(activeFile);
     const sink: SourceChangeSink = {
       apply: (changes) => this.applySourceChanges(changes),

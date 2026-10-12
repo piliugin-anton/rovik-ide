@@ -30,6 +30,13 @@ export function isDependencyPath(pathOrUri: string): boolean {
  */
 export const LINKS_LIB = 'rovik://links';
 
+/**
+ * The lib that tells the worker which config's files make up its program
+ * (activeConfig.ts to projectWorker.ts): the active file's config as a
+ * `TsProject` (lib/tsconfig.ts), as JSON, or `null` for every source.
+ */
+export const PROJECT_LIB = 'rovik://project';
+
 /** A lib that comes and goes with the dependencies' typings. */
 export function isTypingsLib(uri: string): boolean {
   return uri === LINKS_LIB || isDependencyPath(uri);
