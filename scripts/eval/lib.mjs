@@ -1,5 +1,9 @@
 // The evaluation's pure parts: reading test runners' output, grading,
-// budget decisions and the summary. eval.mjs does the I/O.
+// budget decisions and the summary. eval.mjs does the I/O (but for a
+// campaign's lock file, which lives here with its tests).
+import { createHash } from 'node:crypto';
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** Results of `cargo test` (libtest's plain output): name -> pass|fail|skip. */
 export function parseCargo(text) {
@@ -207,6 +211,60 @@ export function stopAfter(results) {
  * it (`budgetAllows` over `knownSpend`), and the campaign stops where
  * `stopAfter` says. Returns the results and why it stopped ('' if it didn't).
  */
+/**
+ * The workspace folder name of one run: the campaign's, so two campaigns
+ * running at once (G02's variants in two terminals) don't check out, and
+ * grade, the same folder (round 3).
+ */
+export function workspaceName(campaignDir, taskId, rep) {
+  const owner = createHash('sha1').update(campaignDir).digest('hex').slice(0, 8);
+  return `run-${owner}-${taskId}-${rep}`;
+}
+
+/**
+ * Takes a campaign folder for this process: `.lock` in it names the pid.
+ * A lock whose process is gone is taken over; a live one is an error, so
+ * a campaign can't be resumed twice at once. Returns the release.
+ */
+export function lockCampaign(campaignDir) {
+  mkdirSync(campaignDir, { recursive: true });
+  const file = join(campaignDir, '.lock');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(file, 'wx');
+      writeFileSync(fd, String(process.pid));
+      closeSync(fd);
+      return () => {
+        try {
+          if (readFileSync(file, 'utf8') === String(process.pid)) unlinkSync(file);
+        } catch {
+          // gone already
+        }
+      };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const pid = Number(readFileSync(file, 'utf8'));
+      if (pid && (pid === process.pid || alive(pid)))
+        throw new Error(`${campaignDir} is being run by process ${pid} (${file})`);
+      try {
+        unlinkSync(file);
+      } catch {
+        // taken by another process this instant: the next attempt sees it
+      }
+    }
+  }
+  throw new Error(`${campaignDir} is being run by another process (${file})`);
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
 export async function runCampaign(plan, { cap, firstEstimate, runOne }) {
   const results = [];
   for (const item of plan) {

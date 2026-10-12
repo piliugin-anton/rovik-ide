@@ -16,10 +16,12 @@ pub const ANY_CASE: bool = cfg!(any(target_os = "macos", target_os = "windows"))
 pub fn norm_rel(path: &str) -> Option<String> {
     let p = path.trim().replace('\\', "/");
     let b = p.as_bytes();
+    // By shape, never by case (round 3): `C:`, `c:/x`; `a:b.txt`, `C:x`
+    // are names with a colon.
     let drive = b.len() > 1
         && b[1] == b':'
         && b[0].is_ascii_alphabetic()
-        && (b[0].is_ascii_uppercase() || b.len() == 2 || b[2] == b'/');
+        && (b.len() == 2 || b[2] == b'/');
     if p.starts_with('/') || drive {
         return None;
     }
@@ -77,13 +79,19 @@ pub fn drive(path: &str) -> &str {
 /// `src/a.rs:12:5` without its line and column, `C:/p/a.rs:12` too (a
 /// drive's colon isn't one); a path without them as it is.
 pub fn without_line(path: &str) -> &str {
+    // From the end (round 3): `src/a:b.rs:12:5` keeps the name's colon.
     let at = drive(path).len();
-    match path[at..].split_once(':') {
-        Some((file, rest)) if rest.chars().all(|c| c.is_ascii_digit() || c == ':') => {
-            &path[..at + file.len()]
+    let mut p = path;
+    while let Some((head, tail)) = p.rsplit_once(':') {
+        let number = tail.chars().all(|c| c.is_ascii_digit());
+        let name = head.len() > at && (!tail.is_empty() || head.contains(['/', '.']));
+        if number && name {
+            p = head;
+        } else {
+            break;
         }
-        _ => path,
     }
+    p
 }
 
 /// The folder `path` is in ("" for the root).
@@ -164,9 +172,13 @@ mod tests {
     fn colon_in_a_name_is_not_a_drive() {
         assert_eq!(norm_rel("a:b.txt").as_deref(), Some("a:b.txt"));
         assert_eq!(norm_rel("src/a:b.txt").as_deref(), Some("src/a:b.txt"));
-        for drive in ["C:x", "C:", "c:", "C:/x", "c:\\x"] {
+        for drive in ["C:", "c:", "C:/x", "c:\\x"] {
             assert_eq!(norm_rel(drive), None, "{drive}");
         }
+        // Round 3: by shape, not by case: `C:x` is the name `c:x` is.
+        assert_eq!(norm_rel("A:b.txt").as_deref(), Some("A:b.txt"));
+        assert_eq!(norm_rel("C:x").as_deref(), Some("C:x"));
+        assert_eq!(norm_rel("c:x").as_deref(), Some("c:x"));
     }
 
     #[test]

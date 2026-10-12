@@ -131,11 +131,14 @@ export async function redoGroup(
   group: string,
   deps: {
     redo: (dialogId: string, group: string) => Promise<string>;
-    askChat: (dialogId: string, request: string) => Promise<boolean>;
+    askChat: (dialogId: string, request: string, shown: string) => Promise<boolean>;
     notify: (options: NotificationOptions) => unknown;
   }
 ): Promise<boolean> {
   let request: string;
+  // What the chat shows as the user's message (round 3: not "Resolve the
+  // conflicts", which is the conflicts bar's request).
+  const shown = `Redo the group “${group}” one step at a time.`;
   try {
     request = await deps.redo(dialogId, group);
   } catch (e) {
@@ -146,7 +149,7 @@ export async function redoGroup(
   const rest =
     'Its files are back to what they were before it; ask the chat to carry out the steps again.';
   try {
-    if (await deps.askChat(dialogId, request)) return true;
+    if (await deps.askChat(dialogId, request, shown)) return true;
     deps.notify({ kind: 'error', title, message: `The chat didn’t start. ${rest}` });
   } catch (e) {
     deps.notify({ kind: 'error', title, message: `${String(e)}. ${rest}` });

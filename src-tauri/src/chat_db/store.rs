@@ -433,27 +433,18 @@ fn descendants_in(
 
 pub fn delete_dialog(conn: &mut Connection, id: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
+    // Round 3: the subagents' chats first, each once, however the parent
+    // links loop (the same walk `descendants` makes).
+    for child in descendants(&tx, id)? {
+        delete_dialog_in(&tx, &child)?;
+    }
     delete_dialog_in(&tx, id)?;
     tx.commit().map_err(err)
 }
 
-/// A chat, its subagents' chats first (the foreign key would remove their
-/// rows, but not their search rows).
+/// One chat's rows (the foreign key would remove a subagent's rows, but
+/// not its search rows, so `delete_dialog` removes those first).
 fn delete_dialog_in(tx: &Connection, id: &str) -> DbResult<()> {
-    let children: Vec<String> = {
-        let mut stmt = tx
-            .prepare_cached("SELECT id FROM dialogs WHERE parent_id = ?1")
-            .map_err(err)?;
-        let ids = stmt
-            .query_map(params![id], |r| r.get(0))
-            .map_err(err)?
-            .collect::<Result<_, _>>()
-            .map_err(err)?;
-        ids
-    };
-    for child in children {
-        delete_dialog_in(tx, &child)?;
-    }
     let rowids: Vec<i64> = {
         let mut stmt = tx
             .prepare("SELECT rowid FROM search_rows WHERE dialog_id = ?1")

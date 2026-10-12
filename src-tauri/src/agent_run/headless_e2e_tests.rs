@@ -484,6 +484,8 @@ async fn a_run_line_that_never_arrives_is_waited_for_5_s_at_most() {
     // started at the model's first request can start late.)
     let waited = started.elapsed();
     assert!(waited >= std::time::Duration::from_secs(5), "{waited:?}");
+    // And not for the run's own `--timeout`: the wait is the 5 s.
+    assert!(waited < std::time::Duration::from_secs(40), "{waited:?}");
     assert_eq!(report["outcome"], "done", "{report:#}");
     assert_eq!(report["runLog"], json!([]));
     // A request was made: not free, unknown.

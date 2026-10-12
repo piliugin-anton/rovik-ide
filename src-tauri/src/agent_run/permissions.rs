@@ -390,7 +390,13 @@ fn wrapper_words(name: &str, rest: &[String]) -> Option<usize> {
             "-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "--max-args", "--max-procs",
             "--delimiter", "--arg-file", "--max-lines",
         ],
-        "time" | "nohup" | "exec" | "command" | "caffeinate" => &[],
+        // Round 3: the other wrappers that only run the rest.
+        "stdbuf" => &["-i", "-o", "-e", "--input", "--output", "--error"],
+        "ionice" => &["-c", "-n", "-p", "--class", "--classdata"],
+        "chrt" => &["-p"],
+        "taskset" => &["-c", "--cpu-list", "-p"],
+        "exec" => &["-a"],
+        "time" | "nohup" | "command" | "caffeinate" | "setsid" | "unbuffer" | "chronic" => &[],
         _ => return None,
     };
     let mut at = 0;
@@ -448,9 +454,10 @@ fn split_string(name: &str, rest: &[String]) -> Option<String> {
             Some((rest.get(at + 1).cloned().unwrap_or_default(), at + 2))
         } else if let Some(cluster) = w.strip_prefix('-').filter(|c| !c.starts_with('-')) {
             // `-S`, `-S'…'`, `-iS …`.
+            // Round 3: `-0S` too (a digit option before it).
             cluster
                 .find('S')
-                .filter(|&i| cluster[..i].chars().all(|c| c.is_ascii_alphabetic()))
+                .filter(|&i| cluster[..i].chars().all(|c| c.is_ascii_alphanumeric()))
                 .map(|i| match &cluster[i + 1..] {
                     "" => (rest.get(at + 1).cloned().unwrap_or_default(), at + 2),
                     v => (v.to_string(), at + 1),
@@ -519,7 +526,10 @@ fn segment_denied(segment: &[String], denied: &[Vec<String>], depth: usize) -> b
         }
         let shell = matches!(program.as_str(), "bash" | "sh" | "zsh" | "dash" | "fish");
         if shell && depth < 3 {
-            if let Some(at) = args.iter().position(|a| a == "-c" || a == "-lc") {
+            // `-c`, `-lc`, `-ec`, `-euc` (round 3): the script is the next word.
+            if let Some(at) = args.iter().position(|a| {
+                short_cluster(a).is_some_and(|letters| letters.contains(&'c'))
+            }) {
                 if let Some(script) = args.get(at + 1) {
                     if command_denied(script, denied, depth + 1) {
                         return true;
@@ -1594,6 +1604,8 @@ mod tests {
             ("timeout 5", false),
             ("time -p cat f", false),
             ("command -v ls", false),
+            ("stdbuf -oL cat f", false),
+            ("stdbuf -oL rm x", true),
             ("xargs", false),
             ("find . | xargs grep foo", false),
         ] {
@@ -1688,10 +1700,25 @@ mod tests {
             "env -S git push",
             "/usr/bin/env -S 'sudo ls'",
             "git.exe push",
+            // Round 3: a `-c` in a cluster, the other wrappers, `exec -a`.
+            "bash -ec 'git push'",
+            "sh -euc 'git push origin'",
+            "bash -xc 'git push'",
+            "stdbuf -oL git push",
+            "ionice -c3 git push",
+            "taskset -c 0 git push",
+            "setsid git push",
+            "exec -a x git push",
+            "env -0S 'git push'",
         ] {
             assert!(refused(bad), "{bad}");
         }
-        for ok in ["timeout 5 git pull", "env -S 'git status'", "nice -n 5 ls"] {
+        for ok in [
+            "timeout 5 git pull",
+            "env -S 'git status'",
+            "nice -n 5 ls",
+            "stdbuf -oL git status",
+        ] {
             assert!(!refused(ok), "{ok}");
         }
     }

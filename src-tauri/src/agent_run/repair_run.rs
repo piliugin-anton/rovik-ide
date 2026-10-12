@@ -480,31 +480,40 @@ impl<R: Runtime> Run<R> {
             .await?;
         // D11 (P3.10): fixers share the run's limit with scouts and test
         // writers, not the plan's workers; counted once one can start.
-        self.ledger
+        let admitted = self
+            .ledger
             .admit(&brief, config.max_per_run())
             .map_err(|e| e.trim_start_matches("Error: ").to_string())?;
         sub.scope = Some(WriteScope::for_step(plan_step));
         sub.step = Some(*step);
         // The lead builds once, after the round's fixes (R04).
         sub.light_bash = true;
-        self.close_child_calls(&child).await?;
-        // Launched first (P3.10): its chat gets the fix's brief only when
-        // the fixer really starts.
-        let mut run = self.launch_child(child.clone(), &call_id, &goal, sub)?;
-        let mut message = new_message("user", &fixer_message(cause, round, results));
-        message.meta = Some(json!({
-            "subagentBrief": { "kind": "worker", "parentCallId": call_id, "followUp": true, "repair": true }
-        }));
-        let id = child.clone();
-        self.db
-            .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
-            .await?;
-        if let Some(root) = root {
-            run.root = Some(root);
-            // Its copy is discarded if it fails.
-            run.checkpoint = None;
+        // Round 3: a fixer that can't start from here gives its place back.
+        let started = async {
+            self.close_child_calls(&child).await?;
+            // Launched first (P3.10): its chat gets the fix's brief only when
+            // the fixer really starts.
+            let mut run = self.launch_child(child.clone(), &call_id, &goal, sub)?;
+            let mut message = new_message("user", &fixer_message(cause, round, results));
+            message.meta = Some(json!({
+                "subagentBrief": { "kind": "worker", "parentCallId": call_id, "followUp": true, "repair": true }
+            }));
+            let id = child.clone();
+            self.db
+                .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
+                .await?;
+            if let Some(root) = root {
+                run.root = Some(root);
+                // Its copy is discarded if it fails.
+                run.checkpoint = None;
+            }
+            Ok((child.clone(), run))
         }
-        Ok((child, run))
+        .await;
+        if started.is_err() {
+            self.ledger.release(&admitted);
+        }
+        started
     }
 
     /// R04: one cause, fixed by its worker in the chat's view.
@@ -713,7 +722,11 @@ impl<R: Runtime> Run<R> {
         if let Some(o) = chats::get(&self.dialog_id) {
             o.fs.flush();
         }
-        let mut started: Vec<Result<String, Fixed>> = Vec::new();
+        // A fixer's chat is its worker's; one kept from the join (a
+        // conflict's copy, for `continue "land it"`) outlives a fixer that
+        // doesn't start or fails: only a copy opened here is discarded
+        // (round 3).
+        let mut started: Vec<Result<(String, bool), Fixed>> = Vec::new();
         let mut futures: Vec<SubFuture> = Vec::new();
         for &i in which {
             let cause = &found[i];
@@ -726,6 +739,7 @@ impl<R: Runtime> Run<R> {
                     .map(|(_, _, c)| c.clone()),
                 _ => None,
             };
+            let fresh = child.as_deref().is_none_or(|c| chats::get(c).is_none());
             let overlay = match child
                 .as_deref()
                 .ok_or_else(|| "its chat isn't known".to_string())
@@ -749,7 +763,7 @@ impl<R: Runtime> Run<R> {
                 .await
             {
                 Ok((child, run)) => {
-                    started.push(Ok(child));
+                    started.push(Ok((child, fresh)));
                     futures.push(Box::pin(async move {
                         tauri::async_runtime::spawn(go_sub(run))
                             .await
@@ -758,14 +772,19 @@ impl<R: Runtime> Run<R> {
                     }));
                 }
                 Err(e) => {
-                    if let Some(c) = &child {
-                        chats::discard_child(c);
-                    }
+                    let said = match &child {
+                        Some(c) if fresh => {
+                            chats::discard_child(c);
+                            e
+                        }
+                        Some(_) => format!("{e}; its copy from the join is kept"),
+                        None => e,
+                    };
                     started.push(Err(Fixed {
                         status: "not started".into(),
                         child,
                         changed: Vec::new(),
-                        said: e,
+                        said,
                     }));
                     futures.push(Box::pin(async { None }));
                 }
@@ -777,7 +796,7 @@ impl<R: Runtime> Run<R> {
         let root = self.root.clone().unwrap_or_default();
         let mut out = Vec::new();
         for (s, result) in started.into_iter().zip(done) {
-            let child = match s {
+            let (child, fresh) = match s {
                 Err(f) => {
                     out.push(f);
                     continue;
@@ -787,12 +806,17 @@ impl<R: Runtime> Run<R> {
             let Some(mut result) =
                 result.filter(|r| !matches!(r.status, SubStatus::Failed | SubStatus::Stopped))
             else {
-                chats::discard_child(&child);
+                let said = if fresh {
+                    chats::discard_child(&child);
+                    "it failed or was stopped; its copy was discarded"
+                } else {
+                    "it failed or was stopped; its copy from the join is kept"
+                };
                 out.push(Fixed {
                     status: "failed".into(),
                     child: Some(child),
                     changed: Vec::new(),
-                    said: "it failed or was stopped; its copy was discarded".into(),
+                    said: said.into(),
                 });
                 continue;
             };
@@ -838,6 +862,8 @@ impl<R: Runtime> Run<R> {
                 }
                 Err(e) => {
                     self.note_models_of(&result);
+                    // Nothing landed: the snapshot's blobs go (round 3).
+                    self.add_to_redo(group, &[], &snapshot).await;
                     out.push(Fixed {
                         status: "not landed".into(),
                         child: Some(child),

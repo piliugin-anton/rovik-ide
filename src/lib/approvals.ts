@@ -156,10 +156,14 @@ export function pendingApprovalsOfTask(
   toolCallId: string,
   childId: string | null
 ): PendingApproval[] {
+  // A parallel group's workers run under "<call>#<label>" (group.rs), so
+  // their requests are the group's call's too (round 3).
+  const workers = `${toolCallId}#`;
   return Object.values(state.pending).filter(
     (p) =>
       (childId !== null && p.dialogId === childId) ||
-      (p.parentDialogId === dialogId && p.parentCallId === toolCallId)
+      (p.parentDialogId === dialogId &&
+        (p.parentCallId === toolCallId || (p.parentCallId?.startsWith(workers) ?? false)))
   );
 }
 

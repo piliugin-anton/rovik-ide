@@ -82,11 +82,16 @@ pub struct RoundFailures {
 /// and what it removes from a file is flagged by the file). A test file
 /// deleted by a command, or tests that stopped being found, show here.
 pub fn fewer_tests_flag(history: &[RoundFailures], now: &RoundFailures) -> Option<String> {
-    let others = |r: &RoundFailures| Some(r.tests_ran?.saturating_sub(r.own_tests?));
-    let before = history.iter().filter_map(others).max()?;
-    let after = others(now)?;
-    (after < before).then(|| {
-        format!("fewer tests ran than before, not counting the run's own test files ({before} → {after})")
+    // Round 3: a drop in the total beyond what removing tests from the
+    // run's own files explains. Its own count is read from the files, so
+    // tests it adds to a file the check doesn't run can't be "fewer".
+    let counted = |r: &RoundFailures| Some((r.tests_ran?, r.own_tests?));
+    let (before, own_before) = history.iter().filter_map(counted).max()?;
+    let (after, own_after) = counted(now)?;
+    let dropped = before.saturating_sub(after);
+    let removed_own = own_before.saturating_sub(own_after);
+    (dropped > removed_own).then(|| {
+        format!("fewer tests ran than before, beyond any the run removed from its own test files ({before} → {after})")
     })
 }
 
@@ -186,10 +191,12 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
     // can't be compared: nothing of it counts as fixed or broken.
     // Round 2: only a timeout; a check whose output had nothing to key
     // (`test|failed`) still ran and failed.
+    // Round 3: a check that couldn't run at all (its process didn't start)
+    // says nothing either.
     let blind = |r: &RoundFailures, kind: &str| {
-        r.keys
-            .iter()
-            .any(|k| kind_of(k) == kind && k.ends_with("|timed out"))
+        r.keys.iter().any(|k| {
+            kind_of(k) == kind && (k.ends_with("|timed out") || k.ends_with("|could not run"))
+        })
     };
     let both: BTreeSet<&String> = prev
         .ran
@@ -236,19 +243,47 @@ pub fn judge(history: &[RoundFailures], now: &RoundFailures) -> Judgement {
     }
 }
 
+/// Whether a path a tool printed is a file the round wrote. An absolute
+/// path under a known root is that root's file; one under no known root
+/// matches by its tail (the only reading left). A relative path is what a
+/// tool run from the project prints, or from a subfolder (cargo in
+/// src-tauri/ prints `src/x.rs` for `src-tauri/src/x.rs`): never the other
+/// way round, so `crates/x/src/lib.rs` isn't the written `src/lib.rs`.
+fn printed_is_written(printed: &str, written: &str, roots: &[&str]) -> bool {
+    let p = printed.replace('\\', "/");
+    let p = p.strip_prefix("./").unwrap_or(&p);
+    let Some(w) = super::paths::norm_rel(written) else {
+        return false;
+    };
+    let absolute = p.starts_with('/') || p.as_bytes().get(1) == Some(&b':');
+    if absolute {
+        for root in roots.iter().filter(|r| !r.is_empty()) {
+            let root = root.replace('\\', "/");
+            let root = root.trim_end_matches('/');
+            if let Some(rel) = p.strip_prefix(root).and_then(|r| r.strip_prefix('/')) {
+                return super::paths::same(rel, &w);
+            }
+        }
+        return p.ends_with(&format!("/{w}"));
+    }
+    super::paths::same(p, &w) || w.ends_with(&format!("/{p}"))
+}
+
 impl Judgement {
     /// P3.2: a new error in a file the round itself wrote (`written`) is a
     /// slip in the fix (an unused import), reported with the failures; the
     /// fix stays. A regression is a test that fails now, or an error in a
     /// file the round didn't touch. Tools print paths their own way
     /// (absolute, from a subfolder): compared by their tail (round 2).
-    pub fn keeping_slips_in(mut self, written: &[String]) -> Judgement {
-        use super::command_output::same_file_by_tail;
+    /// `roots` (round 3): the folders tools print absolute paths under
+    /// (the chat's view, the project), so `/p/packages/ui/src/a.ts` is
+    /// `packages/ui/src/a.ts`, not the written `src/a.ts`.
+    pub fn keeping_slips_in(mut self, written: &[String], roots: &[&str]) -> Judgement {
         self.broke.retain(|k| {
             is_test_key(k)
                 || k.split('|')
                     .nth(1)
-                    .is_none_or(|file| !written.iter().any(|w| same_file_by_tail(file, w)))
+                    .is_none_or(|file| !written.iter().any(|w| printed_is_written(file, w, roots)))
         });
         if self.verdict == Verdict::Regression && self.broke.is_empty() {
             self.verdict = if self.fixed.is_empty() || self.back_and_forth {
@@ -1131,11 +1166,11 @@ mod tests {
         let r1 = round(&["test|test|t::one"], &ran);
         let r2 = round(&["lint|src/a.ts|no-unused-vars|'x' is defined but never used."], &ran);
         assert_eq!(judge(std::slice::from_ref(&r1), &r2).verdict, Verdict::Regression);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["./src/a.ts".into()]);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["./src/a.ts".into()], &[]);
         assert_eq!(j.verdict, Verdict::Progress);
         assert!(j.broke.is_empty() && j.new.len() == 1);
         // In a file it didn't write: still a regression.
-        let j = judge(&[r1], &r2).keeping_slips_in(&["src/b.ts".into()]);
+        let j = judge(&[r1], &r2).keeping_slips_in(&["src/b.ts".into()], &[]);
         assert_eq!(j.verdict, Verdict::Regression);
     }
 
@@ -1165,13 +1200,38 @@ mod tests {
             ("lint|.\\src\\a.ts|rule|m", "src/a.ts"),
         ] {
             let r2 = round(&[key], &ran);
-            let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()]);
+            let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()], &[]);
             assert_eq!(j.verdict, Verdict::Progress, "{key}: {j:?}");
             assert!(j.broke.is_empty(), "{key}");
             // Another file of the same name elsewhere isn't the one written.
-            let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["lib/b.ts".into()]);
+            let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["lib/b.ts".into()], &[]);
             assert_eq!(j.verdict, Verdict::Regression, "{key}");
         }
+    }
+
+    /// Round 3: another file of the same name, in another crate or package,
+    /// isn't the written one: a relative path from a subfolder is only
+    /// ever shorter than the written path, and an absolute one under a
+    /// known root is that root's file.
+    #[test]
+    fn a_same_named_file_elsewhere_isnt_a_slip() {
+        let ran = ["test", "lint", "build"];
+        let r1 = round(&["test|test|t::one"], &ran);
+        let r2 = round(&["build|crates/x/src/lib.rs|E0308|m"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/lib.rs".into()], &[]);
+        assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
+        assert_eq!(j.broke, ["build|crates/x/src/lib.rs|E0308|m"]);
+        let r2 = round(&["lint|/p/packages/ui/src/a.ts|rule|m"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["/p"]);
+        assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
+        // The written file under the root is the slip it was.
+        let r2 = round(&["lint|/p/src/a.ts|rule|m"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["/p"]);
+        assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
+        // A Windows view root, printed with backslashes.
+        let r2 = round(&["lint|C:\\v\\src\\a.ts|rule|m"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["C:\\v"]);
+        assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
     }
 
     /// Round 2 (§4.2): an error in a file an earlier round changed (not
@@ -1182,13 +1242,13 @@ mod tests {
         let ran = ["test", "lint"];
         let r1 = round(&["test|test|t::one"], &ran);
         let r2 = round(&["lint|src/old.ts|rule|m"], &ran);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/new.ts".into()]);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/new.ts".into()], &[]);
         assert_eq!(j.verdict, Verdict::Regression);
         let r2 = round(
             &["lint|src/new.ts|rule|m", "lint|src/other.ts|rule|m"],
             &ran,
         );
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/new.ts".into()]);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/new.ts".into()], &[]);
         assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
         assert_eq!(j.broke, ["lint|src/other.ts|rule|m"]);
     }
@@ -1211,7 +1271,7 @@ mod tests {
                 (format!("lint|{other}|rule|m"), true),
             ] {
                 let r2 = round(&[key.as_str()], &ran);
-                let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()]);
+                let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()], &[]);
                 assert_eq!(j.broke.contains(&key), broken, "{written} / {key}: {j:?}");
             }
         }
@@ -1224,7 +1284,7 @@ mod tests {
         let ran = ["test", "lint"];
         let r1 = round(&["test|test|t::one"], &ran);
         let r2 = round(&["lint|src/a.ts|rule|m", "lint|src/b.ts|rule|m"], &ran);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()]);
+        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &[]);
         assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
         assert_eq!(j.broke, ["lint|src/b.ts|rule|m"]);
     }
@@ -1315,16 +1375,34 @@ mod tests {
         assert_eq!(
             fewer_tests_flag(&[r(5, Some(0)), r(7, Some(2))], &r(4, Some(1))),
             Some(
-                "fewer tests ran than before, not counting the run's own test files (5 → 3)".into()
+                "fewer tests ran than before, beyond any the run removed from its own test files (7 → 4)".into()
             )
         );
         assert_eq!(fewer_tests_flag(&[r(5, Some(0))], &r(6, Some(1))), None);
+        // Round 3: tests added to a file the check doesn't run aren't fewer.
+        assert_eq!(fewer_tests_flag(&[r(20, Some(10))], &r(20, Some(15))), None);
+        assert!(fewer_tests_flag(&[r(20, Some(10))], &r(12, Some(10))).is_some());
+        // Its own tests removed explain the drop; one more doesn't.
+        assert_eq!(fewer_tests_flag(&[r(20, Some(10))], &r(15, Some(5))), None);
+        assert!(fewer_tests_flag(&[r(20, Some(10))], &r(14, Some(5))).is_some());
         assert_eq!(
             fewer_tests_flag(&[r(9, None)], &r(3, Some(0))),
             None,
             "restored round"
         );
         assert_eq!(fewer_tests_flag(&[], &r(3, Some(0))), None);
+    }
+
+    /// Round 3: a check that couldn't run (its process didn't start) says
+    /// nothing either: not a regression after a green round.
+    #[test]
+    fn a_check_that_could_not_run_is_not_a_regression() {
+        let ran = ["lint", "test"];
+        let r1 = round(&["lint|a|x"], &ran);
+        let r2 = round(&["test|could not run"], &ran);
+        let j = judge(std::slice::from_ref(&r1), &r2);
+        assert_ne!(j.verdict, Verdict::Regression, "{j:?}");
+        assert_eq!(j.fixed, ["lint|a|x"]);
     }
 
     /// P3.3: a round whose tests timed out says nothing about them: not
@@ -1831,12 +1909,12 @@ mod tests {
             own_tests: Some(own),
             ..Default::default()
         };
-        // Others: 5, then 9 less its own 2, then 8 less its own 2.
+        // The most: 9 (its own 2 among them); 8 with the same own 2 is fewer.
         let history = [r(5, 0), r(9, 2), r(8, 2)];
         assert_eq!(
             fewer_tests_flag(&history, &r(8, 2)),
             Some(
-                "fewer tests ran than before, not counting the run's own test files (7 → 6)".into()
+                "fewer tests ran than before, beyond any the run removed from its own test files (9 → 8)".into()
             )
         );
         assert_eq!(

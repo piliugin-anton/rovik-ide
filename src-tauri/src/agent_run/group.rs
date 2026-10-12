@@ -566,8 +566,31 @@ impl<R: Runtime> Run<R> {
             max_tool_calls: None,
             step: Some(member.step.number),
         };
-        self.ledger
+        let admitted = self
+            .ledger
             .admit_worker(&brief, super::plan::steps(plan).len())?;
+        // Round 3: a worker that can't start from here gives its place back.
+        let started = self
+            .fork_worker_admitted(tc, member, plan_path, plan, owners, contract, group, config)
+            .await;
+        if started.is_err() {
+            self.ledger.release(&admitted);
+        }
+        started
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fork_worker_admitted(
+        &mut self,
+        tc: &ToolCall,
+        member: &Member,
+        plan_path: &str,
+        plan: &str,
+        owners: &[(String, usize, WriteScope)],
+        contract: &[String],
+        group: &str,
+        config: &SubagentConfig,
+    ) -> Result<Run<R>, String> {
         // The group's workers share what's left of the chat's space.
         let overlay = chats::open_child_shared(&self.dialog_id, &member.child_id, owners.len())?;
         let scope = member.scope.clone();

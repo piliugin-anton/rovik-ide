@@ -39,6 +39,8 @@ import {
   projection,
   resultsMarkdown,
   runCampaign,
+  lockCampaign,
+  workspaceName,
   subagentsOn,
   summarize,
   summaryMarkdown,
@@ -371,7 +373,7 @@ async function runOne(task, rep, campaignDir, opts) {
   if (!expected)
     throw new Error(`${task.id} isn't validated: run \`eval.mjs validate --tasks ${task.id}\``);
   mkdirSync(dir, { recursive: true });
-  const ws = join(CACHE, 'work', `run-${task.id}-${rep}`);
+  const ws = join(CACHE, 'work', workspaceName(campaignDir, task.id, rep));
   const { env, caches, start } = prepare(task, task.base, ws);
   const report = join(dir, 'report.json');
   const args = [
@@ -466,6 +468,27 @@ async function campaign(name, tasks, repeats, cap, flags) {
   const runner = runnerPath(flags);
   const policy = resolve(flags.policy ?? join(EVAL, 'policy.json'));
   const campaignDir = resolve(flags.out ?? join(RESULTS, name));
+  const unlock = lockCampaign(campaignDir);
+  try {
+    return await campaignIn(name, tasks, repeats, cap, campaignDir, {
+      settings,
+      price,
+      policy,
+      runner,
+    });
+  } finally {
+    unlock();
+  }
+}
+
+async function campaignIn(
+  name,
+  tasks,
+  repeats,
+  cap,
+  campaignDir,
+  { settings, price, policy, runner }
+) {
   // The first run's estimate: every token it may use at the input price.
   const firstEstimate = (BUDGET.perRun.maxTokens / 1e6) * price.inputPerMillion;
   const plan = [];

@@ -84,8 +84,38 @@ static CODE_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```.*?```
 /// A path with a folder (`src/a.rs`, `src/components/`) or a file name
 /// with an extension (`Cargo.toml`, `.env`).
 static PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:^|[\s`'"(\[*])(\.?[\w@~-][\w.@~-]*(?:/[\w.@~\[\]-]+)+/?|\.?[\w-]*[A-Za-z_][\w-]*(?:\.[\w-]+)*\.[A-Za-z][\w]{0,9})"#).unwrap()
+    // A segment may be a Next.js route group, `(auth)` (round 3).
+    Regex::new(r#"(?:^|[\s`'"(\[*])(\.?[\w@~-][\w.@~-]*(?:/(?:\([\w.-]+\)|[\w.@~\[\]-]+))+/?|\.?[\w-]*[A-Za-z_][\w-]*(?:\.[\w-]+)*\.[A-Za-z][\w]{0,9})"#).unwrap()
 });
+/// Root-level `.js` names with a capital that are files, not libraries.
+const ROOT_JS_FILES: &[&str] = &["app", "index", "gruntfile", "gulpfile", "main", "server"];
+/// Objects whose members read like root files (`process.env`, `req.json`).
+const MEMBER_RECEIVERS: &[&str] = &[
+    "process",
+    "import.meta",
+    "req",
+    "res",
+    "request",
+    "response",
+    "resp",
+    "ctx",
+    "context",
+    "state",
+    "this",
+    "self",
+    "window",
+    "document",
+    "console",
+    "err",
+    "error",
+    "event",
+    "result",
+    "message",
+    "msg",
+    "body",
+    "payload",
+    "props",
+];
 /// File names without an extension that are still clearly files.
 static BARE_FILE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(Makefile|Dockerfile|Justfile|Procfile|Gemfile|Rakefile|Containerfile)\b")
@@ -94,7 +124,7 @@ static BARE_FILE: LazyLock<Regex> = LazyLock::new(|| {
 /// Words that say what a step does to its files.
 static CHANGE_WORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(add\w*|chang\w*|creat\w*|remov\w*|delet\w*|renam\w*|mov\w*|updat\w*|replac\w*|extend\w*|edit\w*|modif\w*|introduc\w*|implement\w*|refactor\w*|split\w*|extract\w*|merg\w*|wire\w*|register\w*|expos\w*|export\w*|import\w*|call\w*|return\w*|handl\w*|pass\w*|store\w*|emit\w*|drop\w*|switch\w*|convert\w*|define\w*|declare\w*|new|fix\w*|adjust\w*|insert\w*|append\w*|keep\w*|use|uses|using|set|sets|write\w*|read\w*|check\w*|validat\w*|test\w*|migrat\w*|document\w*|configur\w*|enabl\w*|disabl\w*|wrap\w*|guard\w*|inline\w*|generat\w*|render\w*|show\w*|hide\w*|load\w*|sav\w*|pars\w*|map\w*|send\w*|fetch\w*|accept\w*|reject\w*|limit\w*|cach\w*)\b",
+        r"(?i)\b(add\w*|chang\w*|creat\w*|bump\w*|upgrad\w*|downgrad\w*|install\w*|pin|pins|pinned|rewrit\w*|rework\w*|revert\w*|restor\w*|simplif\w*|deprecat\w*|reorder\w*|run|runs|rais\w*|lower\w*|increas\w*|decreas\w*|apply|applies|requir\w*|allow\w*|skip\w*|ignor\w*|comput\w*|sort\w*|filter\w*|build\w*|compil\w*|format\w*|remov\w*|delet\w*|renam\w*|mov\w*|updat\w*|replac\w*|extend\w*|edit\w*|modif\w*|introduc\w*|implement\w*|refactor\w*|split\w*|extract\w*|merg\w*|wire\w*|register\w*|expos\w*|export\w*|import\w*|call\w*|return\w*|handl\w*|pass\w*|store\w*|emit\w*|drop\w*|switch\w*|convert\w*|define\w*|declare\w*|new|fix\w*|adjust\w*|insert\w*|append\w*|keep\w*|use|uses|using|set|sets|write\w*|read\w*|check\w*|validat\w*|test\w*|migrat\w*|document\w*|configur\w*|enabl\w*|disabl\w*|wrap\w*|guard\w*|inline\w*|generat\w*|render\w*|show\w*|hide\w*|load\w*|sav\w*|pars\w*|map\w*|send\w*|fetch\w*|accept\w*|reject\w*|limit\w*|cach\w*)\b",
     )
     .unwrap()
 });
@@ -102,7 +132,10 @@ static CHANGE_WORD: LazyLock<Regex> = LazyLock::new(|| {
 /// Whether a line opens or closes a fenced code block.
 fn is_fence(line: &str) -> bool {
     let t = line.trim_start();
-    t.starts_with("```") || t.starts_with("~~~")
+    // A span closed on its own line (```ts x = 1```) opens nothing (round 3).
+    ["```", "~~~"]
+        .iter()
+        .any(|m| t.starts_with(m) && !t[m.len()..].contains(m))
 }
 
 /// The lines of `text` with their byte offsets and whether each is inside
@@ -615,12 +648,25 @@ pub(super) const FILE_EXTENSIONS: &[&str] = &[
 fn as_path(token: &str) -> Option<String> {
     let token = token.replace('\\', "/");
     let t = token.trim().trim_start_matches("./");
+    // Parentheses: only as a route group's segment, `app/(auth)/page.tsx`
+    // (round 3); `fn a(x)` and `foo()` aren't paths.
+    let route_groups = t.contains('/')
+        && t.split('/').all(|seg| {
+            !seg.contains(['(', ')'])
+                || (seg.len() > 2
+                    && seg.starts_with('(')
+                    && seg.ends_with(')')
+                    && seg[1..seg.len() - 1]
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-')))
+        });
     if t.is_empty()
         || t.contains(char::is_whitespace)
         || t.contains("://")
         || t.contains([
-            '(', ')', '<', '>', '{', '}', '*', '?', '$', '=', ',', ';', '"', '\'', '|',
+            '<', '>', '{', '}', '*', '?', '$', '=', ',', ';', '"', '\'', '|',
         ])
+        || (t.contains(['(', ')']) && !route_groups)
         || t.starts_with('/')
         || t.starts_with('-')
         || t.starts_with('@')
@@ -640,12 +686,25 @@ fn as_path(token: &str) -> Option<String> {
             && e.chars().all(|c| c.is_ascii_alphanumeric())
             && e.chars().any(|c| c.is_ascii_alphabetic())
     });
-    // `Node.js` and its kind name a project, not a file.
+    // `Node.js` and its kind name a project, not a file; so does a
+    // capitalised `Solid.js` at the root (a root `App.js`, `Gruntfile.js`
+    // is a file), and `React/Vue.js` (every part capitalised) (round 3).
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-    if ext.as_deref() == Some("js")
-        && !t.contains('/')
-        && super::triage::JS_NAMES.contains(&stem.to_ascii_lowercase().as_str())
-    {
+    if ext.as_deref() == Some("js") {
+        let lower = stem.to_ascii_lowercase();
+        let capitalised = |s: &str| s.starts_with(|c: char| c.is_ascii_uppercase());
+        let library = super::triage::JS_NAMES.contains(&lower.as_str())
+            || (capitalised(stem) && !ROOT_JS_FILES.contains(&lower.as_str()));
+        if !t.contains('/') && library {
+            return None;
+        }
+        if t.contains('/') && t.split('/').all(capitalised) && library {
+            return None;
+        }
+    }
+    // Member access on the usual objects (`process.env`, `res.json`,
+    // `state.lock`) isn't a root file (round 3).
+    if !t.contains('/') && MEMBER_RECEIVERS.contains(&stem.to_ascii_lowercase().as_str()) {
         return None;
     }
     // P4.3: in a folder, any short extension (`grammar.pest`, `x.snap`); at
@@ -705,6 +764,11 @@ fn line_paths(line: &str) -> Vec<(String, usize)> {
         if !plain_path(token) || !plain_file_shaped(token) {
             continue;
         }
+        // A call, `res.json(users)`, isn't a file (round 3); a path's mark
+        // may follow it without a space (`src/a.rs(new)`).
+        if line[m.end()..].starts_with('(') && !token.contains('/') {
+            continue;
+        }
         if let Some(p) = as_path(token) {
             out.push((p, m.start() + token.len()));
         }
@@ -733,7 +797,19 @@ fn line_paths(line: &str) -> Vec<(String, usize)> {
 /// fraction or "and/or"; else a file name, not "e.g." or "vs.x".
 fn plain_path(token: &str) -> bool {
     if token.contains('/') {
+        // `github.com/foo/bar/README.md`: a web address (round 3).
+        let domain = token
+            .split('/')
+            .next()
+            .and_then(|host| host.rsplit_once('.'))
+            .is_some_and(|(_, tld)| {
+                matches!(
+                    tld.to_ascii_lowercase().as_str(),
+                    "com" | "org" | "io" | "dev" | "net" | "app" | "co" | "ai" | "me" | "sh"
+                )
+            });
         return !token.contains("://")
+            && !domain
             && token.split('/').filter(|s| !s.is_empty()).count() >= 2
             && token.chars().any(|ch| ch.is_ascii_alphabetic())
             && !matches!(
@@ -1591,6 +1667,87 @@ mod tests {
         1. Users table\n   - `migrations/002_users.sql` (new): create the `users` table with `id`, `email`.\n\
         2. API\n   - `src/api/users.rs`: add `fn list_users(db: &Db) -> Vec<User>` and register it in `src/api/mod.rs`.\n\n\
         ## Decisions\n- none\n\n## Validation\n- `cargo test`\n- open /users by hand";
+
+    /// Round 3: member access on the usual objects, and a call, aren't
+    /// root files, written plainly or in backticks; root files still are.
+    #[test]
+    fn member_access_is_not_a_root_file() {
+        let step = "1. **API**\n   - `src/api.ts`: parse with `req.json()`, read `process.env` and \
+                    `import.meta.env`; reply with res.json(users) and lock state.lock() first.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/api.ts"]);
+        for yes in ["package.json", ".env", "go.mod", "main.rs", "index.ts"] {
+            assert!(as_path(yes).is_some(), "{yes}");
+        }
+        for no in ["process.env", "res.json", "import.meta.env", "ctx.state"] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+    }
+
+    /// Round 3: a Next.js route group segment, `app/(auth)/page.tsx`, is a
+    /// path; parentheses anywhere else still aren't.
+    #[test]
+    fn route_group_segments_are_paths() {
+        assert_eq!(
+            as_path("app/(auth)/login/page.tsx").as_deref(),
+            Some("app/(auth)/login/page.tsx")
+        );
+        let step = "1. **L**\n   - `app/(auth)/login/page.tsx` (new): the form, next to app/(auth)/layout.tsx.";
+        let files = step_files(step);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["app/(auth)/login/page.tsx", "app/(auth)/layout.tsx"]);
+        assert!(files[0].new);
+        for no in ["fn a(x: u8)", "foo()", "a.b.c()", "src/(a b)/x.ts", "src/()/x.ts"] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+        let plan = "# L\n\nLogin.\n\n## Steps\n\n1. **Login page**\n   - Add `app/(auth)/login/page.tsx` (new): the form.\n\
+                    2. **Layout**\n   - Change `app/(auth)/layout.tsx` to wrap it in the card.\n\n## Validation\n- `npm test`\n";
+        assert_eq!(plan_problems(plan), Vec::<String>::new());
+    }
+
+    /// Round 3: a capitalised `X.js` at the root is a library's name, and
+    /// so is `React/Vue.js`; `App.js`, `Gruntfile.js`, `src/solid.js` are
+    /// files; a web address with a path isn't one.
+    #[test]
+    fn library_names_and_domains_are_prose() {
+        for no in ["Solid.js", "Discord.js", "Day.js", "PDF.js", "React/Vue.js", "Node.js"] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+        for yes in ["App.js", "Gruntfile.js", "src/solid.js", "server.js", "src/Day.js"] {
+            assert!(as_path(yes).is_some(), "{yes}");
+        }
+        let step = "1. **A**\n   - Build the React/Vue.js adapter in `src/a.ts`, per github.com/foo/bar/README.md, with Solid.js.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/a.ts"]);
+    }
+
+    /// Round 3: a code span opened and closed on one line isn't an open
+    /// block, and the steps after it are read.
+    #[test]
+    fn one_line_fence_is_not_open() {
+        let plan = GOOD_PLAN.replace(
+            "2. API\n",
+            "2. API\n   - ```ts export const x = 1``` is enough in `src/x.ts`.\n",
+        );
+        assert_eq!(plan_problems(&plan), Vec::<String>::new());
+        assert_eq!(steps(&plan).len(), 2);
+        let open = GOOD_PLAN.replace("2. API\n", "2. API\n   ```ts\n   const x = 1;\n");
+        assert!(plan_problems(&open)
+            .iter()
+            .any(|p| p.contains("Close the code block")));
+    }
+
+    /// Round 3: a precise one-line step with a verb the list lacked (bump,
+    /// upgrade, revert) isn't vague.
+    #[test]
+    fn bump_and_upgrade_steps_are_not_vague() {
+        let plan = GOOD_PLAN.replace(
+            "## Decisions",
+            "3. Bump `tokio` to 1.40 in `migrations/002_users.sql`.\n\
+             4. Revert the `--release` flag in `src/api/mod.rs`.\n\n## Decisions",
+        );
+        assert_eq!(plan_problems(&plan), Vec::<String>::new());
+    }
 
     /// A plan as Plan mode writes them: bold titles, sub-bullets, a code
     /// span that isn't a file, a member access, a `path:line`, a folder.

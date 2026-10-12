@@ -244,6 +244,21 @@ export const liveSubagent = (
   toolCallId: string
 ): LiveSubagent | undefined => (dialogId ? state.live[dialogId]?.[toolCallId] : undefined);
 
+/**
+ * A parallel group's workers while they run: the live entries under
+ * "<call>#<label>" (group.rs keys each worker's events so), by label.
+ */
+export function liveWorkersOf(
+  dialogId: string | null,
+  toolCallId: string
+): { label: string; live: LiveSubagent }[] {
+  if (!dialogId) return [];
+  const prefix = `${toolCallId}#`;
+  return Object.entries(state.live[dialogId] ?? {})
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, live]) => ({ label: key.slice(prefix.length), live }));
+}
+
 export const transcript = (childDialogId: string | null | undefined): Transcript | undefined =>
   childDialogId ? state.transcripts[childDialogId] : undefined;
 
@@ -288,6 +303,25 @@ export function forgetLive(dialogId: string | null, toolCallId: string, childDia
   setState(
     produce((s) => {
       delete s.live[dialogId]![toolCallId];
+      if (Object.keys(s.live[dialogId]!).length === 0) delete s.live[dialogId];
+    })
+  );
+}
+
+/**
+ * P5.9: a group's workers' live entries once the group's result is shown.
+ * By the call's prefix: a worker that ended without a result (its task
+ * panicked) has no `childDialogId` in the result to name it by, and a
+ * group's call id is never reused.
+ */
+export function forgetLiveWorkers(dialogId: string | null, toolCallId: string) {
+  if (!dialogId || !state.live[dialogId]) return;
+  const prefix = `${toolCallId}#`;
+  const keys = Object.keys(state.live[dialogId]).filter((k) => k.startsWith(prefix));
+  if (keys.length === 0) return;
+  setState(
+    produce((s) => {
+      for (const key of keys) delete s.live[dialogId]![key];
       if (Object.keys(s.live[dialogId]!).length === 0) delete s.live[dialogId];
     })
   );

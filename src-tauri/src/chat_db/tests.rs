@@ -580,6 +580,26 @@ fn descendants_terminate_on_a_cycle() {
     assert_eq!(found, ["g", "k1"]);
 }
 
+/// Round 3: deleting a chat whose parent links loop ends, and leaves none
+/// of the three chats or their search rows.
+#[test]
+fn deleting_a_chat_with_looping_parent_links_ends() {
+    let mut conn = db();
+    dialog(&mut conn, "p", "Pancakes", 0);
+    child(&mut conn, "k1", "p", "call-1");
+    child(&mut conn, "g", "k1", "call-2");
+    conn.execute("UPDATE dialogs SET parent_id = 'g' WHERE id = 'p'", [])
+        .unwrap();
+    delete_dialog(&mut conn, "p").unwrap();
+    let dialogs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM dialogs", [], |r| r.get(0))
+        .unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM search_rows", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!((dialogs, rows), (0, 0));
+}
+
 /// Round 2 (section 4.2): a handle shared by two subagents' ids finds the
 /// newest; another chat's call id finds nothing here; upper-case hex finds
 /// it too (SQLite's LIKE folds ASCII case).

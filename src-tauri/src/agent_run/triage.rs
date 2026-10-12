@@ -154,15 +154,15 @@ pub fn paths_in(text: &str) -> Vec<String> {
             // Round 2: a URL isn't a path (`http://x/y` gave `//x/y`).
             .filter(|t| !t.contains("://"))
             .flat_map(|t| {
-                // A drive's colon (`C:\proj\a.rs:12`) doesn't end the path.
-                let t = t.trim_start_matches('(');
-                let drive = super::paths::drive(t);
-                let mut words: Vec<String> = t[drive.len()..]
-                    .split([',', ':'])
-                    .map(str::to_string)
-                    .collect();
-                words[0].insert_str(0, drive);
-                words
+                // A list's commas end a path; a colon only when a line
+                // number follows (`src/a:b.rs:12`, round 3), a drive's never.
+                t.trim_start_matches('(')
+                    .split(',')
+                    .map(|w| {
+                        let w = w.trim().trim_end_matches(['.', ')', ';']);
+                        super::paths::without_line(w).to_string()
+                    })
+                    .collect::<Vec<_>>()
             })
             .map(|w| {
                 w.trim()
@@ -713,6 +713,16 @@ mod tests {
         );
         assert_eq!(paths_in("`Node.js` stays"), ["Node.js"], "backticks decide");
         assert!(paths_in("i.e. nothing, etc.").is_empty());
+    }
+
+    /// Round 3: a colon inside a file name in prose doesn't split it; a
+    /// line number after it still comes off.
+    #[test]
+    fn colon_in_a_file_name_in_prose() {
+        assert_eq!(
+            paths_in("see src/a:b.rs:12 and a:b.txt, then lib/x.rs."),
+            ["src/a:b.rs", "a:b.txt", "lib/x.rs"]
+        );
     }
 
     /// Round 2, P4.8: word pairs and URLs in prose aren't paths; folders

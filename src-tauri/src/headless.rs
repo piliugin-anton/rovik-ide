@@ -201,7 +201,7 @@ pub struct Args {
 
 pub const USAGE: &str =
     "usage: rovik-headless --project DIR --settings FILE --prompt TEXT --out FILE \
-     [--policy FILE] [--data DIR] [--timeout SECONDS]";
+     [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N]";
 
 pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut project = None;
@@ -669,9 +669,21 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     );
     let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&args.out, text).map_err(|e| format!("{}: {e}", args.out.display()))?;
+    // Closed first: Windows won't remove an open database's folder. The
+    // handle holds the app's managed copy of the database (round 3), so it
+    // goes before the database can be the last handle and close.
     drop(app);
-    // Closed first: Windows won't remove an open database's folder.
-    drop(db);
+    drop(handle);
+    // The run's tasks let go of theirs as they wind down.
+    for _ in 0..40 {
+        if db.handles() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if let Err(e) = db.close() {
+        eprintln!("rovik-headless: {e}");
+    }
     if own_data {
         let _ = std::fs::remove_dir_all(&data);
     }

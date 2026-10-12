@@ -10,6 +10,8 @@ import ToolCallGroup from './ToolCallGroup';
 import { chatApi } from '../lib/chatApi';
 import { clearApproval, registerApproval } from '../lib/approvals';
 import {
+  liveSubagent,
+  noteSubagentProgress,
   noteSubagentStarted,
   openTranscript,
   receiveSubagentMessages,
@@ -239,4 +241,145 @@ test('awaiting_ignores_a_task_with_a_result', () => {
   const root = taskLine('t1', 'lead-res', result);
   assert.equal(root.querySelector('.tool-group-calls'), null, 'its result is in: not held open');
   clearApproval('kid-res', 'b1');
+});
+
+const groupCall = (id: string) => ({
+  id,
+  name: 'task',
+  arguments: JSON.stringify({ kind: 'workers', group: 'api' }),
+});
+
+function startWorkers(dialogId: string, call: string, labels: string[]) {
+  for (const label of labels)
+    noteSubagentStarted({
+      dialogId,
+      toolCallId: `${call}#${label}`,
+      childDialogId: `kid-${dialogId}-${label}`,
+      kind: 'worker',
+      model: 'm',
+      goal: `Step ${label}`,
+    });
+}
+
+test('group_worker_approval_opens_the_group_block (round 3)', () => {
+  startWorkers('lead-gapp', 'g1', ['w1', 'w2']);
+  const root = container();
+  render(() => <ToolCallBlock toolCall={groupCall('g1')} dialogId="lead-gapp" running />, root);
+  const block = root.querySelector('.subagent-block')!;
+  assert.ok(!block.classList.contains('awaiting'), block.className);
+  registerApproval({
+    toolCallId: 'b1',
+    dialogId: 'kid-lead-gapp-w1',
+    toolName: 'bash',
+    summary: 'Run `npm test`',
+    command: 'npm test',
+    parentDialogId: 'lead-gapp',
+    parentCallId: 'g1#w1',
+  });
+  assert.ok(block.classList.contains('awaiting'), block.className);
+  assert.equal(root.querySelectorAll('.tool-approval').length, 1);
+  clearApproval('kid-lead-gapp-w1', 'b1');
+  assert.ok(!block.classList.contains('awaiting'), 'answered');
+});
+
+test('collapsed_row_opens_for_a_group_workers_approval (round 3)', () => {
+  // After a reload, nothing of the group is known but the request.
+  const root = container();
+  render(
+    () => (
+      <ToolCallGroup
+        name="task"
+        calls={[groupCall('g2')]}
+        dialogId="lead-grow"
+        result={() => undefined}
+        running={true}
+        renderCall={(call, expanded) => (
+          <ToolCallBlock
+            toolCall={call}
+            dialogId="lead-grow"
+            running
+            initiallyExpanded={expanded}
+          />
+        )}
+      />
+    ),
+    root
+  );
+  assert.equal(root.querySelector('.tool-group-calls'), null, 'collapsed');
+  registerApproval({
+    toolCallId: 'w1',
+    dialogId: 'kid-lead-grow-w2',
+    toolName: 'write',
+    summary: 'Write src/api.ts',
+    parentDialogId: 'lead-grow',
+    parentCallId: 'g2#w2',
+  });
+  assert.ok(root.querySelector('.tool-group-calls'), 'opened for the worker’s approval');
+  assert.equal(root.querySelectorAll('.tool-approval').length, 1);
+  clearApproval('kid-lead-grow-w2', 'w1');
+  assert.equal(root.querySelector('.tool-group-calls'), null, 'closed again once answered');
+});
+
+test('a_running_group_shows_its_workers_and_a_stop_for_each (round 3)', () => {
+  startWorkers('lead-grun', 'g3', ['w1', 'w2']);
+  noteSubagentProgress({
+    dialogId: 'lead-grun',
+    toolCallId: 'g3#w1',
+    toolCalls: 3,
+    currentTool: 'bash',
+    model: 'm',
+  });
+  const root = container();
+  render(
+    () => (
+      <ToolCallBlock toolCall={groupCall('g3')} dialogId="lead-grun" running initiallyExpanded />
+    ),
+    root
+  );
+  const block = root.querySelector('.subagent-block')!;
+  assert.ok(block.classList.contains('running'), block.className);
+  assert.equal(
+    root.querySelector('.tool-call-meta')?.textContent,
+    '2 workers · 3 tool calls · bash'
+  );
+  assert.equal(root.querySelectorAll('.tool-call-spinner').length, 1);
+  assert.ok(button(root, 'Stop worker w1'));
+  assert.ok(button(root, 'Stop worker w2'));
+  const rows = [...root.querySelectorAll('.subagent-group li')].map((li) => li.textContent);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0]!, /^w1: bash · 3 tool calls · m$/);
+});
+
+test('a_groups_result_forgets_a_worker_that_ended_without_a_result (round 3)', () => {
+  startWorkers('lead-gpanic', 'g4', ['w1', 'w2']);
+  const root = container();
+  render(
+    () => (
+      <ToolCallBlock
+        toolCall={groupCall('g4')}
+        dialogId="lead-gpanic"
+        result={{
+          id: 'r-gp',
+          role: 'tool',
+          tool_call_id: 'g4',
+          content: '',
+          meta: {
+            group: {
+              name: 'api',
+              conflict: false,
+              workers: [
+                { step: 1, label: 'w1', status: 'done', childDialogId: 'kid-lead-gpanic-w1' },
+                // Its task panicked: no result, so no child id in the group's.
+                { step: 2, label: 'w2', status: 'failed' },
+              ],
+            },
+          },
+        }}
+        running={false}
+      />
+    ),
+    root
+  );
+  assert.equal(liveSubagent('lead-gpanic', 'g4#w1'), undefined);
+  assert.equal(liveSubagent('lead-gpanic', 'g4#w2'), undefined);
 });

@@ -48,7 +48,9 @@ import {
   kindLabel,
   childOf,
   liveSubagent,
+  liveWorkersOf,
   forgetLive,
+  forgetLiveWorkers,
   reportBody,
   statusLabel,
   transcript,
@@ -639,7 +641,12 @@ function TaskBlock(props: ToolCallBlockProps) {
   const childId = () =>
     done()?.childDialogId ?? live()?.childDialogId ?? childOf(props.dialogId, props.toolCall.id);
   const kind = () => done()?.kind ?? live()?.kind ?? str(args().kind);
-  const working = () => !props.result && !!props.running && !!live() && !live()!.status;
+  /** A parallel group's workers while they run (round 3). */
+  const workers = () => (props.notLive ? [] : liveWorkersOf(props.dialogId, props.toolCall.id));
+  const working = () =>
+    !props.result &&
+    !!props.running &&
+    (live() ? !live()!.status : workers().some((w) => !w.live.status));
   const refused = () => !!props.result && !done() && !group();
   // Shown until the call has its result, whatever is known of the subagent:
   // after a reload its run may wait on one with nothing else seen (P1.5).
@@ -674,6 +681,14 @@ function TaskBlock(props: ToolCallBlockProps) {
       const doing = l.currentTool ? ` · ${l.currentTool}` : '';
       return `${workLabel(l.toolCalls)}${doing} · ${l.model}`;
     }
+    const ws = workers();
+    if (ws.length > 0 && working()) {
+      const calls = ws.reduce((n, w) => n + w.live.toolCalls, 0);
+      const doing = ws.map((w) => w.live.currentTool).filter(Boolean);
+      return [`${ws.length} workers`, workLabel(calls), doing.length ? doing.join(', ') : '']
+        .filter(Boolean)
+        .join(' · ');
+    }
     return props.running ? 'starting…' : 'not run';
   };
 
@@ -683,9 +698,7 @@ function TaskBlock(props: ToolCallBlockProps) {
   createEffect(() => {
     const id = done()?.childDialogId;
     if (id) forgetLive(props.dialogId, props.toolCall.id, id);
-    for (const w of group()?.workers ?? [])
-      if (w.childDialogId)
-        forgetLive(props.dialogId, `${props.toolCall.id}#${w.label}`, w.childDialogId);
+    if (group()) forgetLiveWorkers(props.dialogId, props.toolCall.id);
   });
   const hold = transcriptHold();
   onCleanup(hold.release);
@@ -745,6 +758,21 @@ function TaskBlock(props: ToolCallBlockProps) {
           </button>
         </div>
       </Show>
+      <Show when={working() && !childId() && workers().length > 0}>
+        <div class="subagent-actions">
+          <For each={workers().filter((w) => !w.live.status)}>
+            {(w) => (
+              <button
+                class="link-button"
+                title="Stop this worker only; the group goes on with the others"
+                onClick={() => void stopRun(w.live.childDialogId)}
+              >
+                Stop worker {w.label}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
 
       <For each={approvals()}>{(r) => <ApprovalBar request={r} />}</For>
 
@@ -760,6 +788,21 @@ function TaskBlock(props: ToolCallBlockProps) {
               <div class="subagent-paths">Look first at: {paths().join(', ')}</div>
             </Show>
           </section>
+          <Show when={!group() && workers().length > 0}>
+            <section class="tool-call-section">
+              <div class="tool-call-label">Workers</div>
+              <ul class="subagent-group">
+                <For each={workers()}>
+                  {(w) => (
+                    <li>
+                      {w.label}: {w.live.status ?? (w.live.currentTool || 'working')} ·{' '}
+                      {workLabel(w.live.toolCalls)} · {w.live.model}
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </section>
+          </Show>
           <Show when={group()}>
             {(g) => (
               <section class="tool-call-section">

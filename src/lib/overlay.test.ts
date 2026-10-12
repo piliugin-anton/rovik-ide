@@ -7,13 +7,16 @@ import type { NotificationOptions } from './notifications';
 function deps(redo: () => Promise<string>, askChat: () => Promise<boolean>) {
   const notes: NotificationOptions[] = [];
   const asked: string[] = [];
+  const shown: string[] = [];
   return {
     notes,
     asked,
+    shown,
     deps: {
       redo,
-      askChat: (_: string, request: string) => {
+      askChat: (_: string, request: string, display: string) => {
         asked.push(request);
+        shown.push(display);
         return askChat();
       },
       notify: (n: NotificationOptions) => void notes.push(n),
@@ -63,4 +66,14 @@ test('redo_group_logic: both steps work → no notice', async () => {
   );
   assert.equal(await redoGroup('chat', 'api', d.deps), true);
   assert.deepEqual(d.notes, []);
+});
+
+test('redo_group_logic: (d) the chat shows a redo message, not the conflicts one (round 3)', async () => {
+  const d = deps(
+    async () => 'Carry out steps 2 and 3',
+    async () => true
+  );
+  assert.equal(await redoGroup('chat', 'api', d.deps), true);
+  assert.deepEqual(d.asked, ['Carry out steps 2 and 3']);
+  assert.deepEqual(d.shown, ['Redo the group “api” one step at a time.']);
 });

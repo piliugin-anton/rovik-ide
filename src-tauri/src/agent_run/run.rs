@@ -289,6 +289,9 @@ pub struct Run<R: Runtime> {
     pub(super) cleaned_this_run: bool,
     pub(super) plan_reviews: u32,
     pub(super) plan_findings: Vec<super::change_review::Finding>,
+    /// The plan as it was held with those findings (round 3): sent again
+    /// unchanged, every repeated finding stands; revised, repeats may go.
+    pub(super) plan_held: Option<String>,
     pub(super) plan_review_call: Option<String>,
     /// Plan steps step workers finished in this run (worker.rs, D03).
     pub(super) worker_steps: Vec<super::worker::DoneStep>,
@@ -783,6 +786,7 @@ impl<R: Runtime> Run<R> {
             group_grants: Default::default(),
             plan_reviews: 0,
             plan_findings: Vec::new(),
+            plan_held: None,
             plan_review_call: None,
             worker_steps: Vec::new(),
             test_writer_files: Vec::new(),
@@ -906,6 +910,7 @@ impl<R: Runtime> Run<R> {
             group_grants: Default::default(),
             plan_reviews: 0,
             plan_findings: Vec::new(),
+            plan_held: None,
             plan_review_call: None,
             worker_steps: Vec::new(),
             test_writer_files: Vec::new(),
@@ -1591,17 +1596,16 @@ impl<R: Runtime> Run<R> {
                 if let Some(sub) = self.sub_mut() {
                     sub.note_usage(usage.as_ref());
                 }
-                log::write(
-                    &self.app,
-                    json!({
-                        "event": "reply",
-                        "dialogId": self.dialog_id,
-                        "model": self.profile.model,
-                        "error": "asked-again",
-                        "usage": usage,
-                        "ms": started.elapsed().as_millis() as u64,
-                    }),
-                );
+                let mut entry = json!({
+                    "event": "reply",
+                    "dialogId": self.dialog_id,
+                    "model": self.profile.model,
+                    "error": "asked-again",
+                    "usage": usage,
+                    "ms": started.elapsed().as_millis() as u64,
+                });
+                self.note_sub_fields(&mut entry);
+                log::write(&self.app, entry);
                 // Whatever the dropped attempt showed (its reasoning) goes.
                 if shown {
                     self.patch_ui(
@@ -1667,13 +1671,19 @@ impl<R: Runtime> Run<R> {
             if let Some(error) = &output.failure {
                 entry["error"] = json!(error.kind);
             }
-            if let Some(sub) = self.sub() {
-                entry["role"] = json!("sub");
-                entry["kind"] = json!(sub.kind.id());
-                entry["parentDialogId"] = json!(sub.parent_dialog_id);
-            }
+            self.note_sub_fields(&mut entry);
             log::write(&self.app, entry);
             return Ok(output);
+        }
+    }
+
+    /// A subagent's reply lines say whose they are (round 3: the asked-again
+    /// line too, so the report keeps its usage before the `task` call ends).
+    fn note_sub_fields(&self, entry: &mut Value) {
+        if let Some(sub) = self.sub() {
+            entry["role"] = json!("sub");
+            entry["kind"] = json!(sub.kind.id());
+            entry["parentDialogId"] = json!(sub.parent_dialog_id);
         }
     }
 
@@ -2219,13 +2229,15 @@ impl<R: Runtime> Run<R> {
 
     pub(super) async fn update_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
         let mut meta = self.with_max_rounds(meta);
-        // P1.7: the record whose checks found no carried state says so.
-        if self.carry_lost.as_deref() == Some(message_id) {
-            if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
+        // P1.7: the record whose checks found no carried state says so;
+        // round 3: so does one whose integrity check couldn't be complete
+        // (a spilled file lost), carry or not.
+        if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
+            if self.carry_lost.as_deref() == Some(message_id) {
                 v.insert("stateRestored".into(), json!(false));
-                if self.integrity_unchecked {
-                    v.insert("integrityChecked".into(), json!(false));
-                }
+            }
+            if self.integrity_unchecked {
+                v.insert("integrityChecked".into(), json!(false));
             }
         }
         self.store_meta(message_id, meta).await

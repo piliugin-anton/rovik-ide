@@ -293,6 +293,10 @@ static ESLINT_FILE: LazyLock<Regex> = LazyLock::new(|| {
 static ESLINT_ROW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s+\d+:\d+\s+error\s+(?P<msg>.+?)(?:\s{2,}(?P<code>[@\w/-]+))?\s*$").unwrap()
 });
+/// pytest's collection error: `ERROR tests/test_a.py - ImportError: …`
+/// (round 3: an error in that file, not "failed").
+static PYTEST_COLLECT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^ERROR (?P<file>\S+\.py)(?: - (?P<msg>.+))?$").unwrap());
 /// Failing tests: cargo, go, pytest, jest/vitest.
 static TEST_FAILS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
@@ -384,6 +388,14 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
             );
             continue;
         }
+        if let Some(c) = PYTEST_COLLECT.captures(line) {
+            let msg = c.name("msg").map_or("", |m| m.as_str());
+            push(
+                format!("{kind}|{}||{}", key_path(&c["file"]), key_message(msg)),
+                &mut keys,
+            );
+            continue;
+        }
         if let Some(c) = TEST_FAILS.iter().find_map(|r| r.captures(line)) {
             let name = c["name"].trim();
             // In a cargo workspace, the crate too: `alpha::tests::it`.
@@ -423,6 +435,15 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
             if BARE_EXCEPTION.is_match(c["msg"].trim()) {
                 continue;
             }
+            // Round 3: a compiler's note, warning or help line points at
+            // code that's fine (`src/b.h:3:5: note: declared here`).
+            let msg_lower = c["msg"].trim().to_ascii_lowercase();
+            if ["note:", "warning:", "help:"]
+                .iter()
+                .any(|p| msg_lower.starts_with(p))
+            {
+                continue;
+            }
             let code = c.name("code").map_or("", |m| m.as_str());
             let key = format!("{kind}|{file}|{code}|{}", key_message(&c["msg"]));
             // Round 2, P3.1: a compiler's line (`./a.go:3:2: undefined: foo`:
@@ -440,17 +461,20 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
             push(k, &mut keys);
         }
     }
-    if keys.is_empty() {
-        keys.push(format!(
-            "{kind}|{}",
-            if timed_out { "timed out" } else { "failed" }
-        ));
+    if keys.is_empty() && !timed_out {
+        keys.push(format!("{kind}|failed"));
     }
     keys.sort();
     if keys.len() > MAX_KEYS {
         let more = keys.len() - (MAX_KEYS - 1);
         keys.truncate(MAX_KEYS - 1);
         keys.push(format!("{kind}|and {more} more"));
+    }
+    // Round 3: a check that timed out says nothing about the tests it
+    // didn't reach, whatever it printed before the kill: the round can't
+    // be compared (repair.rs `blind`), so the key is always there.
+    if timed_out {
+        keys.push(format!("{kind}|timed out"));
     }
     keys
 }
@@ -639,6 +663,43 @@ mod tests {
         );
     }
 
+    /// Round 3: a compiler's note, warning and help lines next to an error
+    /// or a failing test aren't failures (gcc, mypy).
+    #[test]
+    fn notes_and_warnings_arent_keys() {
+        let out = "src/a.c:12:5: error: expected ';'\nsrc/b.h:3:5: note: declared here\n\
+                   src/c.c:1:1: warning: unused variable 'x' [-Wunused-variable]\n--- FAIL: TestA (0.00s)\n";
+        assert_eq!(
+            failure_keys("test", out, false),
+            ["test|src/a.c||expected ';'", "test|test|TestA"]
+        );
+        let mypy = "src/a.py:12: error: Argument 1 has incompatible type\nsrc/b.py:3: note: \"foo\" defined here\n";
+        assert_eq!(
+            failure_keys("typecheck", mypy, false),
+            ["typecheck|src/a.py||Argument 1 has incompatible type"]
+        );
+    }
+
+    /// Round 3: a timed-out check keeps its `timed out` key next to what
+    /// it printed before the kill, so the round stays incomparable.
+    #[test]
+    fn a_timeout_with_partial_output_is_still_blind() {
+        let keys = failure_keys("test", "--- FAIL: TestA (0.00s)\n", true);
+        assert_eq!(keys, ["test|test|TestA", "test|timed out"]);
+        let round = |keys: &[&str]| super::super::repair::RoundFailures {
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            ran: ["test".to_string()].into(),
+            tests_ran: None,
+            own_tests: None,
+        };
+        let j = super::super::repair::judge(
+            &[round(&["test|test|TestA", "test|test|TestB"])],
+            &round(&["test|test|TestA", "test|timed out"]),
+        );
+        assert!(j.fixed.is_empty(), "{j:?}");
+        assert_eq!(j.verdict, super::super::repair::Verdict::First);
+    }
+
     /// Round 2 (§4.2): a pytest collection error is an error key; the
     /// tests failing once it's fixed aren't "new" next to it.
     #[test]
@@ -648,8 +709,10 @@ mod tests {
             "ERROR tests/test_a.py - ImportError: no module named x\n",
             false,
         );
-        assert_eq!(before.len(), 1, "{before:?}");
-        assert!(!before[0].starts_with("test|test|"), "{before:?}");
+        assert_eq!(
+            before,
+            ["test|tests/test_a.py||ImportError: no module named x"]
+        );
         let after = failure_keys(
             "test",
             "FAILED tests/test_a.py::test_one - assert 1 == 2\n",

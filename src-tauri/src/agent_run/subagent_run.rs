@@ -431,11 +431,11 @@ impl<R: Runtime> Run<R> {
         let budget = brief.budget(config.budget(kind));
         let sub = self.new_sub(kind, &tc.id, budget, config).await?;
         // Counted once it can start (P2.7): no models left isn't a start.
-        if existing.is_none() {
-            self.ledger.admit(&brief, config.max_per_run())?;
-        }
+        let admitted = match existing {
+            None => Some(self.ledger.admit(&brief, config.max_per_run())?),
+            Some(_) => None,
+        };
         let message = existing.is_none().then(|| brief.message());
-        let admitted = existing.is_none().then_some(&brief);
         self.store_and_launch(&child_id, &tc.id, kind, &brief.goal, message, sub, admitted)
             .await
     }
@@ -544,7 +544,7 @@ impl<R: Runtime> Run<R> {
             max_tool_calls,
             step: step.as_ref().map(|s| s.number),
         };
-        match &step {
+        let admitted = match &step {
             Some(_) => {
                 let plan_steps = match self.implementing_plan().await {
                     Some((_, plan)) => super::plan::steps(&plan).len(),
@@ -553,7 +553,29 @@ impl<R: Runtime> Run<R> {
                 self.ledger.admit_worker(&brief, plan_steps)?
             }
             None => self.ledger.admit(&brief, config.max_per_run())?,
+        };
+        // Round 3: whatever fails from here gives the place back.
+        let started = self
+            .start_follow_up_admitted(tc, config, kind, &brief, &child, step, &goal, resumed)
+            .await;
+        if started.is_err() {
+            self.ledger.release(&admitted);
         }
+        started
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_follow_up_admitted(
+        &mut self,
+        tc: &ToolCall,
+        config: &SubagentConfig,
+        kind: Kind,
+        brief: &Brief,
+        child: &store::ChildDialog,
+        step: Option<super::plan::PlanStep>,
+        goal: &str,
+        resumed: bool,
+    ) -> Result<Run<R>, String> {
         let mut sub = self
             .new_sub(kind, &tc.id, brief.budget(config.budget(kind)), config)
             .await?;
@@ -607,7 +629,19 @@ impl<R: Runtime> Run<R> {
                         }))
                 })
                 .await?;
-        if !asked {
+        // Launched first (round 3): the question goes in its chat only
+        // when the follow-up really starts, so a failed one leaves none.
+        let mut run = self.launch_child(child.id.clone(), &tc.id, goal, sub)?;
+        if asked {
+            // Round 3: resumed, it goes on with the calls it already made.
+            let id = child.id.clone();
+            let made = self
+                .db
+                .read(move |c| store::count_tool_calls(c, &id))
+                .await
+                .unwrap_or(0);
+            run.guard.tool_calls = made as u32;
+        } else {
             let mut message = new_message(
                 "user",
                 &format!(
@@ -622,7 +656,6 @@ impl<R: Runtime> Run<R> {
                 .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
                 .await?;
         }
-        let mut run = self.launch_child(child.id, &tc.id, &goal, sub)?;
         if let Some(view) = kept_view {
             run.root = Some(view.to_string_lossy().into_owned());
             run.checkpoint = None;
@@ -1463,15 +1496,15 @@ impl<R: Runtime> Run<R> {
         });
         let budget = brief.budget(config.budget(Kind::Worker));
         let mut sub = self.new_sub(Kind::Worker, &tc.id, budget, config).await?;
-        if existing.is_none() {
-            self.ledger.admit_worker(&brief, steps.len())?;
-        }
+        let admitted = match existing {
+            None => Some(self.ledger.admit_worker(&brief, steps.len())?),
+            Some(_) => None,
+        };
         sub.scope = Some(scope);
         sub.step = Some(n);
         sub.other_steps = other_steps(&steps, n);
         let goal = format!("Step {n}: {}", step.title);
         let message = existing.is_none().then_some(message);
-        let admitted = existing.is_none().then_some(&brief);
         let mut child = self
             .store_and_launch(
                 &child_id,
@@ -1501,7 +1534,7 @@ impl<R: Runtime> Run<R> {
         goal: &str,
         message: Option<String>,
         sub: SubCtx,
-        admitted: Option<&Brief>,
+        admitted: Option<subagent::Admission>,
     ) -> Result<Run<R>, String> {
         let resumed = message.is_none();
         let started = async {
@@ -1514,8 +1547,8 @@ impl<R: Runtime> Run<R> {
         }
         .await;
         if started.is_err() {
-            if let Some(brief) = admitted {
-                self.ledger.release(brief);
+            if let Some(admission) = &admitted {
+                self.ledger.release(admission);
             }
         }
         started
@@ -1620,13 +1653,13 @@ impl<R: Runtime> Run<R> {
         let mut sub = self
             .new_sub(Kind::TestWriter, &tc.id, budget, config)
             .await?;
-        if existing.is_none() {
-            self.ledger.admit(&brief, config.max_per_run())?;
-        }
+        let admitted = match existing {
+            None => Some(self.ledger.admit(&brief, config.max_per_run())?),
+            Some(_) => None,
+        };
         self.limit_test_writer(&mut sub, touched);
         let goal = brief.goal.clone();
         let message = existing.is_none().then_some(message);
-        let admitted = existing.is_none().then_some(&brief);
         let mut child = self
             .store_and_launch(
                 &child_id,

@@ -125,7 +125,7 @@ impl Finding {
 
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(`?step\s+\d+`?:?|\S+)\s*(?:[—–-]+\s*(.*))?$",
+        r"(?i)^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(`?step\s+\d+`?:?|\S+)\s*(?:[—–:-]+\s*(.*))?$",
     )
     .unwrap()
 });
@@ -814,6 +814,15 @@ mod tests {
             assert_eq!(found[0].step, Some(3), "{location}");
             assert_eq!(found[0].title, "The order is wrong", "{location}");
         }
+        // Round 3: a colon alone separates the title too.
+        let text = "## Findings\n\n1. [medium] Step 3: The order is wrong\n - Scenario: s\n - Fix: f\n - Confidence: plausible\n\
+                    2. [high] src/a.ts:42: Off by one\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        let found = parse_findings(text).unwrap();
+        assert_eq!(found[0].step, Some(3));
+        assert_eq!(found[0].title, "The order is wrong");
+        assert_eq!(found[1].path.as_deref(), Some("src/a.ts"));
+        assert_eq!(found[1].line, Some(42));
+        assert_eq!(found[1].title, "Off by one");
     }
 
     const GOOD: &str = "## Findings\n\n\

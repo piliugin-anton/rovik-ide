@@ -1,7 +1,9 @@
 // lib.mjs tests. Run with: npm run test:eval
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   applyDefaults,
   budgetAllows,
@@ -11,6 +13,8 @@ import {
   variantSettings,
   grade,
   knownSpend,
+  lockCampaign,
+  workspaceName,
   parseCargo,
   parseGoJson,
   parseJunit,
@@ -463,5 +467,35 @@ describe('campaign (P6.6)', () => {
     const { stopped, ran } = await campaign(plan, made, { cap: 8 });
     assert.deepEqual(ran, ['a#1', 'b#1', 'c#1']);
     assert.match(stopped, /\$6\.00 spent; another run \(~\$3\.00\) would pass the \$8 cap/);
+  });
+});
+
+describe('two campaigns at once (round 3)', () => {
+  it('a workspace is its campaign’s: two campaigns, two folders for one run', () => {
+    const a = workspaceName('/results/base', 'mi-subfactorial', 1);
+    const b = workspaceName('/results/variant-scout', 'mi-subfactorial', 1);
+    assert.notEqual(a, b);
+    assert.equal(a, workspaceName('/results/base', 'mi-subfactorial', 1));
+    assert.match(a, /^run-[0-9a-f]{8}-mi-subfactorial-1$/);
+    assert.notEqual(a, workspaceName('/results/base', 'mi-subfactorial', 2));
+  });
+
+  it('a campaign folder is locked while it runs, and free after', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'eval-lock-'));
+    const unlock = lockCampaign(dir);
+    assert.equal(readFileSync(join(dir, '.lock'), 'utf8'), String(process.pid));
+    assert.throws(() => lockCampaign(dir), /is being run by process/);
+    unlock();
+    assert.ok(!existsSync(join(dir, '.lock')));
+    lockCampaign(dir)();
+  });
+
+  it('a lock a dead process left is taken over', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'eval-lock-'));
+    // A pid no process has: the largest allowed, long past the range in use.
+    writeFileSync(join(dir, '.lock'), '4194304');
+    const unlock = lockCampaign(dir);
+    assert.equal(readFileSync(join(dir, '.lock'), 'utf8'), String(process.pid));
+    unlock();
   });
 });

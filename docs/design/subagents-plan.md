@@ -2129,3 +2129,60 @@ root `Dockerfile`; a folder named before the step that creates a file in
 it isn't reported as out of order; tab indents count as one column when
 steps are found; subagents are never asked again with another effort (the
 effort applies to lead runs).
+
+### Review-fixes round 3
+
+A third review re-read the round-2 fixes on the branch head and traced
+each by hand. Everything it found is fixed here, one test per finding.
+
+**Frontend.** A parallel group's workers run under `<call>#<label>`, and
+their approval requests never reached the group's block: the lead's chat
+showed nothing while a worker waited for a yes. The group's block (and
+its collapsed row) now shows every worker's approvals, its workers'
+progress and a Stop for each, and lets go of a worker's live entry by the
+call's prefix, so one that ended without a result (its task panicked)
+isn't kept for the session. "Redo sequentially" shows a redo message in
+the chat, not the conflicts bar's.
+
+**Subagents.** An admission is a token naming the counter it took, so a
+follow-up, a group worker or a fixer that can't start from any point
+after it gives back exactly that place (a fixer's brief is a worker's,
+but its place is a shared one). A follow-up resumed after a restart counts
+the calls it already made, and its question goes in its chat only once it
+really starts. "## Blocked" with N/A, nothing or a dash isn't a block. A
+drive is decided by shape (`C:`, `c:/x`), never by case.
+
+**Commands.** `bash -ec '…'` (any cluster with `c`), `stdbuf`, `ionice`,
+`taskset`, `chrt`, `setsid`, `unbuffer`, `chronic`, `exec -a name` and
+`env -0S` are seen through by the denied list.
+
+**Checks and repair.** A compiler's `note:`, `warning:` and `help:` lines
+aren't failures. A timed-out check keeps its `timed out` key next to what
+it printed, so the tests it didn't reach never read as resolved; a check
+that couldn't run is incomparable too. A slip is matched against what
+the round wrote by resolving the printed path under the chat's view or
+the project root: `crates/x/src/lib.rs` isn't the written `src/lib.rs`.
+"Fewer tests" is a drop in the total beyond the tests the run removed
+from its own files, so tests added to a file the check doesn't run can't
+be fewer. A pytest collection error is an error in its file. A fixer that
+doesn't start or fails keeps a copy kept from the join (its conflict's
+version and journal); a failed fixer landing frees its Redo snapshot. A
+record whose integrity check couldn't be complete says so whether or not
+a carry was lost.
+
+**Plans and reviews.** `process.env`, `res.json(users)` and the other
+usual member accesses aren't root files; `app/(auth)/page.tsx` is a path;
+`Solid.js`, `React/Vue.js` and `github.com/…` paths are prose; a span
+opened and closed on one line isn't an open code block; "Bump", "Revert",
+"Upgrade" steps aren't vague. A reviewer's `Step 3: title` and
+`path:line: title` headers are read. After a hold, a plan revised and sent
+again without a word drops the findings the reviewer repeats; only the
+same plan sent again keeps them. A colon in a file name in a triage report
+doesn't split it.
+
+**Storage, headless, evaluation.** Deleting a chat whose parent links loop
+ends. The headless runner lets the run's tasks release the database, then
+closes every connection before removing its own folder; `--help` names
+`--max-tokens`. Two evaluation campaigns at once have their own
+workspaces, and a campaign folder is locked while it runs. A subagent's
+asked-again reply line names its parent, so its usage is in the report.

@@ -670,7 +670,21 @@ pub fn format_problem(spec: &KindSpec, text: &str) -> Option<String> {
 pub fn is_blocked(text: &str) -> bool {
     sections(text).get("Blocked").is_some_and(|b| {
         let b = b.trim().trim_end_matches('.').to_lowercase();
-        !b.is_empty() && b != "none" && b != "no"
+        // Filler under the heading isn't a block (round 3).
+        !matches!(
+            b.as_str(),
+            "" | "none"
+                | "no"
+                | "n/a"
+                | "na"
+                | "nothing"
+                | "nil"
+                | "-"
+                | "—"
+                | "no blockers"
+                | "not blocked"
+                | "nothing blocked"
+        )
     })
 }
 
@@ -1069,7 +1083,7 @@ impl Ledger {
 
     /// Takes one place for a brief, or says why not. A worker's limit is
     /// its plan's steps plus 2 retries (`plan_steps`), not `max_per_run`.
-    pub fn admit_worker(&mut self, brief: &Brief, plan_steps: usize) -> Result<(), String> {
+    pub fn admit_worker(&mut self, brief: &Brief, plan_steps: usize) -> Result<Admission, String> {
         let seen = self.briefs.get(&brief.key()).copied().unwrap_or(0);
         if seen >= MAX_SAME_BRIEF {
             return Err(format!(
@@ -1085,7 +1099,10 @@ impl Ledger {
         }
         self.workers += 1;
         *self.briefs.entry(brief.key()).or_insert(0) += 1;
-        Ok(())
+        Ok(Admission {
+            workers: true,
+            key: brief.key(),
+        })
     }
 
     /// Whether `n` more workers fit the run's limit (taking none: each is
@@ -1101,21 +1118,23 @@ impl Ledger {
         Ok(())
     }
 
-    /// Takes one place for a brief, or says why not.
     /// Round 2, P1.1: an admitted subagent that couldn't start (its chat
-    /// couldn't be stored, or it couldn't be launched) gives its place back.
-    pub fn release(&mut self, brief: &Brief) {
-        if brief.kind == Kind::Worker {
+    /// couldn't be stored, or it couldn't be launched) gives its place back:
+    /// the counter its admission took (round 3: a fixer's brief is a
+    /// worker's, but its place is a shared one).
+    pub fn release(&mut self, admission: &Admission) {
+        if admission.workers {
             self.workers = self.workers.saturating_sub(1);
         } else {
             self.started = self.started.saturating_sub(1);
         }
-        if let Some(n) = self.briefs.get_mut(&brief.key()) {
+        if let Some(n) = self.briefs.get_mut(&admission.key) {
             *n = n.saturating_sub(1);
         }
     }
 
-    pub fn admit(&mut self, brief: &Brief, max_per_run: usize) -> Result<(), String> {
+    /// Takes one place for a brief, or says why not.
+    pub fn admit(&mut self, brief: &Brief, max_per_run: usize) -> Result<Admission, String> {
         let seen = self.briefs.get(&brief.key()).copied().unwrap_or(0);
         if seen >= MAX_SAME_BRIEF {
             return Err(format!(
@@ -1131,8 +1150,19 @@ impl Ledger {
         }
         self.started += 1;
         *self.briefs.entry(brief.key()).or_insert(0) += 1;
-        Ok(())
+        Ok(Admission {
+            workers: false,
+            key: brief.key(),
+        })
     }
+}
+
+/// A place the ledger gave: which counter, and the brief's key, so a
+/// subagent that then can't start gives back exactly what it took.
+#[derive(Debug, Clone)]
+pub struct Admission {
+    workers: bool,
+    key: String,
 }
 
 #[cfg(test)]
@@ -1215,18 +1245,26 @@ mod tests {
             max_tool_calls: None,
             step: None,
         };
-        ledger.admit(&scout, 1).unwrap();
+        let taken = ledger.admit(&scout, 1).unwrap();
         assert!(ledger.admit(&scout, 1).is_err());
-        ledger.release(&scout);
+        ledger.release(&taken);
         ledger.admit(&scout, 1).unwrap();
         let worker = Brief {
             kind: Kind::Worker,
             step: Some(1),
             ..scout.clone()
         };
-        ledger.admit_worker(&worker, 1).unwrap();
-        ledger.release(&worker);
+        let taken = ledger.admit_worker(&worker, 1).unwrap();
+        ledger.release(&taken);
         assert_eq!(ledger.workers, 0);
+        assert_eq!(ledger.briefs[&worker.key()], 0);
+        // Round 3: a fixer's brief is a worker's, admitted to the shared
+        // places; releasing it gives that place back, not a worker's.
+        let mut ledger = Ledger::default();
+        let taken = ledger.admit(&worker, 12).unwrap();
+        assert_eq!((ledger.started, ledger.workers), (1, 0));
+        ledger.release(&taken);
+        assert_eq!((ledger.started, ledger.workers), (0, 0));
         assert_eq!(ledger.briefs[&worker.key()], 0);
     }
 
@@ -1241,6 +1279,13 @@ mod tests {
             format_problem(scout, "## Blocked\nThe repo is empty."),
             None
         );
+        // Round 3: filler under the heading isn't a block either.
+        for filler in ["N/A", "No blockers.", "Nothing.", "-", "none", "nil"] {
+            let text = format!("## Blocked\n{filler}");
+            assert!(format_problem(scout, &text).is_some(), "{filler}");
+            assert!(!is_blocked(&text), "{filler}");
+        }
+        assert!(is_blocked("## Answer\nx\n## Blocked\nNo access to src/."));
     }
 
     fn args(v: Value) -> Map<String, Value> {

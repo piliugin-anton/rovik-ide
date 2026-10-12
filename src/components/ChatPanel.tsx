@@ -2141,14 +2141,18 @@ export default function ChatPanel(props: ChatProps) {
    * An isolated chat's conflicts with the project, handed to it
    * (IsolationBar): markers are in its files; this asks it to settle them.
    */
-  async function askToResolve(dialogId: string, request: string): Promise<boolean> {
+  async function askToResolve(
+    dialogId: string,
+    request: string,
+    shown = 'Resolve the conflicts with the project’s changes.'
+  ): Promise<boolean> {
     if (!activeProfile() || isRunning(dialogId)) return false;
     setChatMode('agent');
     return sendMessage(
       dialogId,
       {
         id: crypto.randomUUID(),
-        content: 'Resolve the conflicts with the project’s changes.',
+        content: shown,
         meta: { mode: 'agent', sentContent: request },
       },
       request

@@ -327,11 +327,24 @@ impl<R: Runtime> Run<R> {
             Some(id) => replies_after(&recent, id),
             None => String::new(),
         };
+        // Round 3: the plan sent again as it was, with nothing said, keeps
+        // every repeated finding; a revision without comment may settle
+        // some (B04), and the reviewer is told which it was.
+        let unchanged = self
+            .plan_held
+            .as_deref()
+            .is_some_and(|held| changed_lines(held, plan) == 0);
+        let silent = replies.trim().is_empty();
+        let shown = if silent && !unchanged && !earlier.is_empty() {
+            "(none: it revised the plan without comment)".to_string()
+        } else {
+            replies.clone()
+        };
         let message = brief(&BriefParts {
             request: &request,
             answers: &answers,
             plan,
-            earlier: (!earlier.is_empty()).then_some((earlier.as_slice(), replies.as_str())),
+            earlier: (!earlier.is_empty()).then_some((earlier.as_slice(), shown.as_str())),
         });
 
         let started = Instant::now();
@@ -392,7 +405,7 @@ impl<R: Runtime> Run<R> {
                                     // B04 drops a repeat an answer may have
                                     // settled; with nothing said, it stands
                                     // (an unchanged plan sent again).
-                                    let (kept, dropped) = if replies.trim().is_empty() {
+                                    let (kept, dropped) = if silent && unchanged {
                                         (found, Vec::new())
                                     } else {
                                         drop_repeats(found, &earlier)
@@ -441,6 +454,7 @@ impl<R: Runtime> Run<R> {
         } else if round < MAX_PLAN_REVIEW_ROUNDS {
             self.plan_review_call = Some(call_id.to_string());
             self.plan_findings.extend(serious.iter().cloned());
+            self.plan_held = Some(plan.to_string());
             review["held"] = json!(true);
             Decision::Hold {
                 result: findings_result(&serious, round),

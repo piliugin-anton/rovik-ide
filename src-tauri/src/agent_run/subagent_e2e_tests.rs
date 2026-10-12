@@ -2684,8 +2684,8 @@ async fn workers_carry_out_the_plan_step_by_step() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|b| route_of(b, &["# Your step:"]).is_none())
-        .last()
+        .rev()
+        .find(|b| route_of(b, &["# Your step:"]).is_none())
         .cloned()
         .unwrap();
     let context = last_lead["messages"].to_string();
@@ -9833,6 +9833,65 @@ async fn hold_then_identical_resubmit_is_reviewed() {
     let files = h.plan_files();
     assert_eq!(files.len(), 1);
     assert!(files[0].contains("## Open review findings"), "{}", files[0]);
+}
+
+/// Round 3: held, the agent revises the plan and sends it again without a
+/// word (the hold allows a fix in place of a reply): a finding the reviewer
+/// repeats is dropped as before, and the plan is saved clean.
+#[tokio::test]
+async fn hold_then_silent_revision_drops_a_repeat() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            // Held: it adds the step the finding asked for, saying nothing.
+            submit("p2", users_plan("Users", 1)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert_eq!(
+        result_of(&messages, "p1").meta.as_ref().unwrap()["review"]["held"],
+        true
+    );
+    let briefs: Vec<String> = requests_with(&seen, PLAN_REVIEW)
+        .iter()
+        .map(|b| {
+            b["messages"][1]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(briefs.len(), 2);
+    assert!(
+        briefs[1].contains("(none: it revised the plan without comment)"),
+        "{}",
+        briefs[1]
+    );
+    let second = result_of(&messages, "p2");
+    assert!(
+        second
+            .content
+            .starts_with("Saved the plan to .rovik/plans/"),
+        "{}",
+        second.content
+    );
+    let review = &second.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["status"], "clean", "{review}");
+    assert_eq!(review["dropped"].as_array().map(Vec::len), Some(1), "{review}");
+    assert!(review.get("open").is_none(), "{review}");
+    let files = h.plan_files();
+    assert_eq!(files.len(), 1);
+    assert!(!files[0].contains("## Open review findings"), "{}", files[0]);
 }
 
 /// Round 2: a conflict's two versions, saved for the lead during a join,

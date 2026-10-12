@@ -43,7 +43,8 @@ interface Props {
   /** A run could start in this chat now (a model is set, none is going). */
   canAskChat: boolean;
   /** Sends `dialogId` a message, starting a run; whether it started. */
-  onAskChat: (dialogId: string, request: string) => Promise<boolean>;
+  /** Sends `request` to the chat as the user's; `shown` is the message it displays. */
+  onAskChat: (dialogId: string, request: string, shown?: string) => Promise<boolean>;
   /** A chat's title, to name the other chats a clash is with. */
   chatTitle?: (dialogId: string) => string | undefined;
 }

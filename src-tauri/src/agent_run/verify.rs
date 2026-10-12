@@ -831,7 +831,8 @@ impl<R: Runtime> Run<R> {
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
-            judgement = judgement.keeping_slips_in(&written);
+            let project = self.project_root.clone().unwrap_or_default();
+            judgement = judgement.keeping_slips_in(&written, &[root.as_str(), project.as_str()]);
         }
         // R05: what weakens the checks, and fewer tests than last round.
         let mut flags = if ran {
