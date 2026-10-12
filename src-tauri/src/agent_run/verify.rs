@@ -502,6 +502,15 @@ pub fn failure_report(
 }
 
 impl<R: Runtime> Run<R> {
+    /// The project's checks that run: on, and with a command.
+    fn enabled_checks(&self) -> Vec<ProjectCheck> {
+        self.checks
+            .iter()
+            .filter(|c| c.enabled && !c.command.trim().is_empty())
+            .cloned()
+            .collect()
+    }
+
     /// Appends a verification record; returns its id.
     async fn add_record(&self, meta: Value) -> Result<String, String> {
         let mut m = new_message("assistant", "");
@@ -739,12 +748,7 @@ impl<R: Runtime> Run<R> {
             .into());
         }
 
-        let checks: Vec<ProjectCheck> = self
-            .checks
-            .iter()
-            .filter(|c| c.enabled && !c.command.trim().is_empty())
-            .cloned()
-            .collect();
+        let checks = self.enabled_checks();
         if checks.is_empty() {
             self.add_record(record(
                 "unverified",
@@ -1178,12 +1182,7 @@ impl<R: Runtime> Run<R> {
         if !p.verify_changes {
             return None;
         }
-        let checks: Vec<ProjectCheck> = self
-            .checks
-            .iter()
-            .filter(|c| c.enabled && !c.command.trim().is_empty())
-            .cloned()
-            .collect();
+        let checks = self.enabled_checks();
         if checks.is_empty() {
             return None;
         }

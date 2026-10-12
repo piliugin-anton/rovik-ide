@@ -40,7 +40,7 @@
 //! needs the virtual-files driver).
 
 use crate::agent::OpenAIChatOptions;
-use crate::agent_run::log::token_count;
+use crate::agent_run::log::usage_counts;
 use crate::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
 use crate::agent_run::{
     self, events, AgentConfig, AgentState, ApprovalDecision, ModelProfile, StartKind, StartRequest,
@@ -259,16 +259,8 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
 /// Tokens in and out, and the cost when the provider says, of one reply's
 /// usage (OpenAI's names, or the Responses API's).
 pub fn usage_of(u: &Value) -> (u64, u64, Option<f64>) {
-    let n = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|k| token_count(u.get(*k)?))
-            .unwrap_or(0)
-    };
-    (
-        n(&["prompt_tokens", "input_tokens"]),
-        n(&["completion_tokens", "output_tokens"]),
-        u.get("cost").and_then(|c| c.as_f64()),
-    )
+    let (i, o, cost) = usage_counts(u);
+    (i.unwrap_or(0), o.unwrap_or(0), cost)
 }
 
 /// What a run's requests used, from its run log's reply lines.
@@ -302,14 +294,8 @@ impl Totals {
         }
         // P6.2: an object without token counts reports nothing either.
         let counted = |u: &&Value| {
-            [
-                "prompt_tokens",
-                "input_tokens",
-                "completion_tokens",
-                "output_tokens",
-            ]
-            .iter()
-            .any(|k| u.get(*k).and_then(token_count).is_some())
+            let (i, o, _) = usage_counts(u);
+            i.is_some() || o.is_some()
         };
         let Some(u) = line.get("usage").filter(|u| u.is_object()).filter(counted) else {
             // A request that failed or was cut short may have none.
@@ -561,15 +547,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                 // The provider doesn't report usage: the cap can't be kept.
                 let no_usage = watched.missing_usage > 0;
                 if no_usage || args.max_tokens.is_some_and(|max| watched.tokens() > max) {
-                    agent_run::agent_stop(handle.clone(), handle.state(), dialog_id.clone());
-                    let _ = tokio::time::timeout(Duration::from_secs(10), async {
-                        while let Some(e) = rx.recv().await {
-                            if e["type"] == "runEnded" && e["dialogId"] == dialog_id.as_str() {
-                                break;
-                            }
-                        }
-                    })
-                    .await;
+                    stop_and_wait(&handle, &mut rx, &dialog_id).await;
                     break if no_usage { "no-usage" } else { "budget" }.to_string();
                 }
                 continue;
@@ -579,16 +557,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             Ok(Some(e)) => e,
             Ok(None) => break "error".to_string(),
             Err(_) => {
-                agent_run::agent_stop(handle.clone(), handle.state(), dialog_id.clone());
-                // Let it end and store what it has.
-                let _ = tokio::time::timeout(Duration::from_secs(10), async {
-                    while let Some(e) = rx.recv().await {
-                        if e["type"] == "runEnded" && e["dialogId"] == dialog_id.as_str() {
-                            break;
-                        }
-                    }
-                })
-                .await;
+                stop_and_wait(&handle, &mut rx, &dialog_id).await;
                 break "timeout".to_string();
             }
         };
@@ -701,6 +670,24 @@ fn has_run_line(log: &Path, dialog_id: &str) -> bool {
     })
 }
 
+/// Stops the run and lets it end and store what it has: its `runEnded`,
+/// or ten seconds.
+async fn stop_and_wait<R: tauri::Runtime>(
+    handle: &tauri::AppHandle<R>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
+    dialog_id: &str,
+) {
+    agent_run::agent_stop(handle.clone(), handle.state(), dialog_id.to_string());
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(e) = rx.recv().await {
+            if e["type"] == "runEnded" && e["dialogId"] == dialog_id {
+                break;
+            }
+        }
+    })
+    .await;
+}
+
 /// Whether a run log line is this run's: the lead's (`dialog_id`) or one of
 /// its subagents' (`children`: the ones seen starting). P6.4: a subagent's
 /// line names its lead, so it counts even before its start event is seen.
@@ -763,17 +750,15 @@ fn report(
         .find(|m| m.role == "assistant" && !m.content.trim().is_empty())
         .map(|m| m.content.clone());
     // This run's lines only: other runs in the process may share the file.
+    let children: Vec<String> = subagents
+        .iter()
+        .filter_map(|s| s["childDialogId"].as_str().map(str::to_string))
+        .collect();
     let run_log: Vec<Value> = std::fs::read_to_string(log)
         .unwrap_or_default()
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|l| {
-            l["dialogId"] == dialog_id
-                || l["parentDialogId"] == dialog_id
-                || subagents
-                    .iter()
-                    .any(|s| s["childDialogId"] == l["dialogId"] && !l["dialogId"].is_null())
-        })
+        .filter(|l| of_run(l, dialog_id, &children))
         .collect();
     for line in &run_log {
         totals.add(line, dialog_id);

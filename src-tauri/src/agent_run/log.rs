@@ -31,6 +31,19 @@ pub fn token_count(v: &Value) -> Option<u64> {
     })
 }
 
+/// A reply's usage: tokens in and out (OpenAI's `prompt_tokens` and
+/// `completion_tokens`, or the Responses API's `input_tokens` and
+/// `output_tokens`), each when reported, and the cost when the provider
+/// says (OpenRouter and some others do).
+pub fn usage_counts(u: &Value) -> (Option<u64>, Option<u64>, Option<f64>) {
+    let n = |keys: &[&str]| keys.iter().find_map(|k| token_count(u.get(*k)?));
+    (
+        n(&["prompt_tokens", "input_tokens"]),
+        n(&["completion_tokens", "output_tokens"]),
+        u.get("cost").and_then(|c| c.as_f64()),
+    )
+}
+
 /// "2026-10-06T09:41:07.123Z"
 pub fn iso_now() -> String {
     iso(crate::chat_db::store::now_ms())
