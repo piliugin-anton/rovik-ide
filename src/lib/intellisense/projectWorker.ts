@@ -26,7 +26,7 @@ import {
   TypeScriptWorker,
   type MirrorModel,
 } from 'monaco-editor/language/typescript/ts.worker.js';
-import { isTypingsLib, LINKS_LIB } from './paths';
+import { isProjectSource, LINKS_LIB } from './paths';
 
 /** Links to links: pnpm's store is one hop, a linked member's own links two. */
 const MAX_LINK_HOPS = 8;
@@ -41,8 +41,10 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
       .filter((uri) => !isDefaultLib(uri))
       .map((uri) => uri.toString());
     const open = new Set(models);
+    // Libs that aren't sources (typings, package.json, the links) are only
+    // read when something resolves to them.
     const sources = Object.keys(this.getExtraLibs()).filter(
-      (uri) => !open.has(uri) && !isTypingsLib(uri)
+      (uri) => !open.has(uri) && isProjectSource(uri)
     );
     return models.concat(sources);
   }

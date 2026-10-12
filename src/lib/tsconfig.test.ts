@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   jsonc,
+  moduleSettings,
   normalize,
   projectFor,
   resolveTsOptions,
@@ -56,6 +57,8 @@ describe('resolveTsOptions', () => {
       baseUrl: undefined,
       jsx: 'preserve',
       jsxImportSource: 'solid-js',
+      module: undefined,
+      moduleResolution: undefined,
       paths: { '@/*': ['/p/src/*'] },
     });
   });
@@ -193,6 +196,49 @@ describe('projects', () => {
     );
     assert.equal(projectFor(projects, '/p/a/b.ts')?.path, '/p/tsconfig.json');
     assert.equal(projectFor(projects, '/p/node_modules/x/i.ts'), undefined);
+  });
+
+  it("a workspace member's config owns its files and adds its paths", async () => {
+    const files = {
+      '/p/tsconfig.json': `{ "compilerOptions": { "module": "nodenext", "paths": { "root/*": ["./src/*"] } } }`,
+      '/p/@scope/lib/tsconfig.json': `{
+        "extends": "../../tsconfig.json",
+        "compilerOptions": { "types": ["node"], "paths": { "@scope/api/*": ["../api/src/*"] } },
+        "exclude": ["dist"]
+      }`,
+      '/p/@scope/api/tsconfig.json': `{ "compilerOptions": { "moduleResolution": "Bundler" } }`,
+    };
+    const { options, projects } = await resolveTsProjects(
+      '/p',
+      ...Object.values(fsOfFiles(files)),
+      ['/p/@scope/lib/tsconfig.json', '/p/@scope/api/tsconfig.json']
+    );
+    assert.deepEqual(options.paths, {
+      'root/*': ['/p/src/*'],
+      '@scope/api/*': ['/p/@scope/api/src/*'],
+    });
+    assert.equal(options.module, 'nodenext');
+    assert.equal(options.moduleResolution, 'bundler', 'a member sets what the root leaves unset');
+    assert.equal(projectFor(projects, '/p/src/a.ts')?.path, '/p/tsconfig.json');
+    assert.equal(
+      projectFor(projects, '/p/@scope/lib/src/a.ts')?.path,
+      '/p/@scope/lib/tsconfig.json'
+    );
+    assert.deepEqual(projectFor(projects, '/p/@scope/lib/src/a.ts')?.types, ['node']);
+    assert.equal(projectFor(projects, '/p/@scope/lib/dist/a.d.ts')?.path, '/p/tsconfig.json');
+  });
+
+  it('moduleSettings: node16/nodenext need their module, bundler and node keep it', () => {
+    assert.deepEqual(moduleSettings({}), {});
+    assert.deepEqual(moduleSettings({ module: 'esnext' }), {});
+    assert.deepEqual(moduleSettings({ moduleResolution: 'node' }), { moduleResolution: 2 });
+    assert.deepEqual(moduleSettings({ moduleResolution: 'bundler' }), { moduleResolution: 100 });
+    assert.deepEqual(moduleSettings({ module: 'nodenext' }), { module: 199, moduleResolution: 99 });
+    assert.deepEqual(moduleSettings({ module: 'esnext', moduleResolution: 'node16' }), {
+      module: 100,
+      moduleResolution: 3,
+    });
+    assert.deepEqual(moduleSettings({ moduleResolution: 'weird' }), {});
   });
 
   it("typesFor: the config's types, or every installed package before TS 6", () => {
