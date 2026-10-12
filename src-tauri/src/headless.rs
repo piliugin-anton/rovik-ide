@@ -766,7 +766,16 @@ fn report(
     for line in &run_log {
         totals.add(line, dialog_id);
     }
-    let (cost, cost_source) = totals.cost(settings.price);
+    // Without the run's own line the log is short (lost or unwritable):
+    // what's in it isn't all the run used, so its cost isn't known.
+    let whole = run_log
+        .iter()
+        .any(|l| l["event"] == "run" && l["dialogId"] == dialog_id);
+    let (cost, cost_source) = if whole {
+        totals.cost(settings.price)
+    } else {
+        (None, "unknown")
+    };
     json!({
         "outcome": outcome,
         "ms": ms,
