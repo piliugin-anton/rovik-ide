@@ -1238,4 +1238,33 @@ mod tests {
         assert!(!dir.join("report.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Round 2, P6.3: the rename seen before the new file exists: the rest
+    /// of agent-log.1.jsonl, offset 0, and the .1 file isn't read again
+    /// once the new file comes.
+    #[test]
+    fn the_log_watcher_between_the_rename_and_the_new_file() {
+        let dir = std::env::temp_dir().join(format!("headless-log-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("agent-log.jsonl");
+        std::fs::write(&log, "{\"n\":1}\n").unwrap();
+        let mut offset = 0;
+        assert_eq!(new_log_lines(&log, &mut offset), [json!({ "n": 1 })]);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        std::io::Write::write_all(&mut f, b"{\"n\":2}\n").unwrap();
+        drop(f);
+        std::fs::rename(&log, dir.join("agent-log.1.jsonl")).unwrap();
+        // No agent-log.jsonl yet: the old file's rest, from the start next time.
+        assert_eq!(new_log_lines(&log, &mut offset), [json!({ "n": 2 })]);
+        assert_eq!(offset, 0);
+        assert!(
+            new_log_lines(&log, &mut offset).is_empty(),
+            "nothing read twice"
+        );
+        assert_eq!(offset, 0);
+        std::fs::write(&log, "{\"n\":3}\n").unwrap();
+        assert_eq!(new_log_lines(&log, &mut offset), [json!({ "n": 3 })]);
+        assert_eq!(offset, 8);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

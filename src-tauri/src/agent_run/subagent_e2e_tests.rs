@@ -9891,3 +9891,83 @@ async fn a_conflicts_saved_versions_outlive_the_runs_checks() {
     drop(run);
     crate::agent_run::check_output::clean(&h.dialog_id);
 }
+
+/// Round 2 (§4.2), P6.7: deleting a lead's chat removes what its
+/// subagent's chat left outside the database: its saved check output,
+/// its kept copy and landing records, and the checks state it carried.
+#[tokio::test]
+async fn deleting_a_lead_removes_its_subagents_checks_landings_and_carry() {
+    let mut h = harness(&[("a.txt", "x\n")]).await;
+    h.isolate().await;
+    let db = h.app.state::<DbState>().inner().clone();
+    let kid = uuid::Uuid::new_v4().to_string();
+    let (parent, k) = (h.dialog_id.clone(), kid.clone());
+    db.write(move |c| {
+        store::create_child_dialog(
+            c,
+            &store::NewChildDialog {
+                id: k,
+                parent_id: parent,
+                parent_call_id: "c".into(),
+                kind: "worker".into(),
+                title: "Worker".into(),
+                created_at: store::now_ms(),
+            },
+        )
+    })
+    .await
+    .unwrap();
+    // What the child's run leaves: saved check output, a kept copy, a
+    // landing record, and checks waiting with their state.
+    let saved =
+        crate::agent_run::check_output::save(&kid, "round-1", "test", "1 failed\n").unwrap();
+    let checks = crate::agent_run::check_output::resolve(&kid, &saved)
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let data = h._dir.0.join("data");
+    let left = [
+        data.join("overlays").join(&kid),
+        data.join("landings").join(&kid),
+    ];
+    for dir in &left {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("project.txt"), "x").unwrap();
+    }
+    let state = h.app.state::<AgentState>();
+    state.put_carry(
+        &kid,
+        crate::agent_run::verify::VerifyCarry::for_test("rec", Duration::ZERO, vec![]),
+    );
+    assert!(state.has_carry(&kid));
+
+    let app = h.app.handle().clone();
+    crate::chat_db::commands::chat_delete_dialog(
+        app.clone(),
+        app.state::<AgentState>(),
+        app.state::<crate::vfs::VfsState>(),
+        app.state::<DbState>(),
+        h.dialog_id.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!checks.exists(), "{} left", checks.display());
+    for dir in &left {
+        assert!(!dir.exists(), "{} left", dir.display());
+    }
+    assert!(!state.has_carry(&kid));
+    let ids = [h.dialog_id.clone(), kid];
+    let rows: i64 = db
+        .read(move |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM dialogs WHERE id IN (?1, ?2)",
+                rusqlite::params![ids[0], ids[1]],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}

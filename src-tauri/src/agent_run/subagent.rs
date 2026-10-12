@@ -1570,4 +1570,73 @@ mod tests {
             json!(["scout"])
         );
     }
+
+    /// Round 2 (§4.2): the result table in docs/design/subagents.md §4
+    /// says what each kind's `KindSpec` does: its `## ` sections in order,
+    /// the required ones before the `;` (all of them without one), and a
+    /// findings list for the reviewers, so the doc can't drift from the code.
+    #[test]
+    fn the_design_docs_result_table_matches_each_kinds_spec() {
+        let doc = include_str!("../../../docs/design/subagents.md");
+        let start = doc
+            .find("| Sections (required first)")
+            .expect("the result table in §4");
+        let mut seen = Vec::new();
+        for row in doc[start..]
+            .lines()
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+        {
+            let cells: Vec<&str> = row.trim_matches('|').split('|').map(str::trim).collect();
+            let kind = match cells[0] {
+                "scout" => Kind::Scout,
+                "worker" => Kind::Worker,
+                "test writer" => Kind::TestWriter,
+                "triage" => Kind::Triage,
+                "reviewer" => Kind::Reviewer,
+                "plan reviewer" => Kind::PlanReviewer,
+                other => panic!("the table names a kind there isn't: {other}"),
+            };
+            // The `Name` list the cell starts with: `;` ends the required
+            // ones; anything but a name after `,` or `;` ends the list.
+            let mut names: Vec<&str> = Vec::new();
+            let mut required = None;
+            let mut rest = cells[1];
+            while let Some(after) = rest.strip_prefix('`') {
+                let end = after.find('`').expect("a closing backtick");
+                names.push(&after[..end]);
+                let tail = after[end + 1..].trim_start();
+                let next = if let Some(t) = tail.strip_prefix(';') {
+                    if required.is_none() {
+                        required = Some(names.len());
+                    }
+                    t
+                } else if let Some(t) = tail.strip_prefix(',') {
+                    t
+                } else {
+                    break;
+                };
+                rest = next.trim_start();
+            }
+            let spec = kind.spec();
+            assert_eq!(names, spec.sections, "{}: sections", kind.id());
+            assert_eq!(
+                required.unwrap_or(names.len()),
+                spec.required,
+                "{}: required",
+                kind.id()
+            );
+            assert_eq!(
+                cells[1].contains("list"),
+                matches!(spec.format, Format::Findings),
+                "{}: format",
+                kind.id()
+            );
+            seen.push(kind);
+        }
+        let mut all = Kind::ALL.to_vec();
+        all.sort_by_key(|k| k.id());
+        seen.sort_by_key(|k| k.id());
+        assert_eq!(seen, all, "one row per kind");
+    }
 }

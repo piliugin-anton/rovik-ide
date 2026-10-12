@@ -733,15 +733,17 @@ pub fn append_agent_log<R: tauri::Runtime>(
     append_log_line(&dir, &line, 5 * 1024 * 1024)
 }
 
+/// P6.3: the agent log's one writer at a time (append_log_line).
+static LOG_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// One line at the end of `dir`'s agent-log.jsonl, rotated past `max_bytes`.
 /// P6.3: one writer at a time, and each line in one write, so lines from
 /// runs side by side never interleave and rotation never splits one.
 fn append_log_line(dir: &std::path::Path, line: &str, max_bytes: u64) -> Result<(), String> {
     use std::io::Write;
-    static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let path = dir.join("agent-log.jsonl");
-    let _one = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = LOG_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     if fs::metadata(&path)
         .map(|m| m.len() > max_bytes)
         .unwrap_or(false)
@@ -1067,5 +1069,76 @@ mod tests {
     fn empty_folder() {
         let p = detect(&project(&[]));
         assert!(p.stack.is_empty() && p.checks.is_empty() && p.instructions.is_none());
+    }
+
+    /// Round 2, P6.3: four writers of 1000 lines each, with one rotation
+    /// on the way (~63.5 kB in all, rotated past 40 kB): exactly 4000 lines
+    /// across the two files, each once.
+    #[test]
+    fn four_writers_leave_each_of_their_lines_exactly_once() {
+        let dir = std::env::temp_dir().join(format!("agent-log-{}", uuid::Uuid::new_v4()));
+        let threads: Vec<_> = (0..4)
+            .map(|t| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    for i in 0..1000 {
+                        append_log_line(&dir, &format!("{{\"t\":{t},\"i\":{i}}}"), 40_000).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut lines = 0;
+        for name in ["agent-log.1.jsonl", "agent-log.jsonl"] {
+            for l in fs::read_to_string(dir.join(name)).unwrap().lines() {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                let key = (v["t"].as_u64().unwrap(), v["i"].as_u64().unwrap());
+                assert!(seen.insert(key), "{l} twice");
+                lines += 1;
+            }
+        }
+        assert_eq!((lines, seen.len()), (4000, 4000));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Round 2, P6.3: pinned: the log rotates once it's past `max_bytes`
+    /// (`>`), so one of exactly `max_bytes` takes another line first.
+    #[test]
+    fn a_log_of_exactly_max_bytes_takes_one_more_line_before_rotating() {
+        let dir = std::env::temp_dir().join(format!("agent-log-{}", uuid::Uuid::new_v4()));
+        let (log, old) = (dir.join("agent-log.jsonl"), dir.join("agent-log.1.jsonl"));
+        // `{"n":1}` and its newline: 8 bytes, the limit.
+        append_log_line(&dir, "{\"n\":1}", 8).unwrap();
+        assert_eq!(fs::metadata(&log).unwrap().len(), 8);
+        append_log_line(&dir, "{\"n\":2}", 8).unwrap();
+        assert!(!old.exists(), "exactly the limit isn't past it");
+        assert_eq!(fs::read_to_string(&log).unwrap(), "{\"n\":1}\n{\"n\":2}\n");
+        append_log_line(&dir, "{\"n\":3}", 8).unwrap();
+        assert_eq!(fs::read_to_string(&old).unwrap(), "{\"n\":1}\n{\"n\":2}\n");
+        assert_eq!(fs::read_to_string(&log).unwrap(), "{\"n\":3}\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Round 2, P6.3: a writer that panicked holding the log's lock (now
+    /// poisoned) doesn't stop the log: the next lines still go in whole.
+    #[test]
+    fn a_poisoned_log_lock_doesnt_stop_the_log() {
+        let dir = std::env::temp_dir().join(format!("agent-log-{}", uuid::Uuid::new_v4()));
+        let _ = std::thread::spawn(|| {
+            let _one = LOG_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+            panic!("a writer panics holding the lock");
+        })
+        .join();
+        assert!(LOG_WRITE.is_poisoned());
+        append_log_line(&dir, "{\"n\":1}", 1_000).unwrap();
+        append_log_line(&dir, "{\"n\":2}", 1_000).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("agent-log.jsonl")).unwrap(),
+            "{\"n\":1}\n{\"n\":2}\n"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

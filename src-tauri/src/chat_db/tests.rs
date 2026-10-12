@@ -639,3 +639,108 @@ fn child_by_handle_prefers_the_newest_and_scopes_to_the_parent() {
     let by_call = child_by_handle(&conn, "p", "call-1").unwrap().unwrap();
     assert_eq!(by_call.id, "abcdef12-0000-4000-8000-000000000001");
 }
+
+/// Round 2 (§4.2), P6.7: deleting a project with two chats, each with two
+/// subagents, leaves no chat, message or search row behind.
+#[test]
+fn deleting_a_project_deletes_its_chats_subagents_and_search_rows() {
+    let mut conn = db();
+    conn.execute(
+        "INSERT INTO projects (id, name, path, created_at, last_opened_at)
+         VALUES ('proj', 'Kitchen', '/kitchen', 0, 0)",
+        [],
+    )
+    .unwrap();
+    for chat in ["c1", "c2"] {
+        create_dialog(
+            &mut conn,
+            &NewDialog {
+                id: chat.into(),
+                title: format!("Pancakes {chat}"),
+                created_at: now_ms(),
+                updated_at: now_ms(),
+                project_id: Some("proj".into()),
+            },
+        )
+        .unwrap();
+        add(
+            &mut conn,
+            chat,
+            vec![message(&format!("{chat}-u"), "user", "blueberry recipe")],
+        );
+        for n in 1..=2 {
+            let kid = format!("{chat}-k{n}");
+            child(&mut conn, &kid, chat, &format!("call-{n}"));
+            add(
+                &mut conn,
+                &kid,
+                vec![message(
+                    &format!("{kid}-m"),
+                    "assistant",
+                    "blueberry evidence",
+                )],
+            );
+        }
+    }
+    let in_project: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM dialogs WHERE project_id = 'proj'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_project, 6, "subagents are in their chat's project");
+
+    super::projects::delete(&mut conn, "proj").unwrap();
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(count("SELECT COUNT(*) FROM dialogs"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM messages"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM search_rows"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM search_index"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM title_trigrams"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM projects"), 0);
+}
+
+/// Round 2 (§4.2), P6.7: pinned: a subagent's message finalised while it
+/// had a parent stays out of search when the link goes (only a damaged
+/// database loses it): nothing re-indexes it, nor does a later update
+/// that doesn't finalise it again.
+#[test]
+fn a_subagents_message_stays_unindexed_after_its_parent_link_goes() {
+    let mut conn = db();
+    dialog(&mut conn, "p", "Pancakes", 0);
+    child(&mut conn, "k", "p", "call-1");
+    let mut pending = message("k1", "assistant", "");
+    pending.finalized = false;
+    add(&mut conn, "k", vec![pending]);
+    update_message(
+        &mut conn,
+        "k1",
+        &MessagePatch {
+            content: Some("blueberry evidence".into()),
+            finalize: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    conn.execute("UPDATE dialogs SET parent_id = NULL WHERE id = 'k'", [])
+        .unwrap();
+    update_message(
+        &mut conn,
+        "k1",
+        &MessagePatch {
+            meta: Some(serde_json::json!({ "note": 1 })),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM search_rows WHERE dialog_id = 'k'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0);
+    assert!(search(&conn, "blueberry", None, 10).unwrap().is_empty());
+}
