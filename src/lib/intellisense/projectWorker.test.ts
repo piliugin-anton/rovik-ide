@@ -204,6 +204,38 @@ describe('ProjectTypeScriptWorker', () => {
     );
   });
 
+  it('programInfo: files, packages held twice, and where imports resolve', async () => {
+    const libs: Record<string, ExtraLib> = {
+      ...LIBS,
+      [`${NM}/@scope/pkg/node_modules/@types/plain/index.d.ts`]: {
+        content: 'declare const y: number; export default y;',
+        version: 1,
+      },
+    };
+    const text = "import { x } from '@scope/pkg'; import y from 'plain'; import z from 'nowhere';";
+    const w = worker([model(APP, text)], { ...OPTIONS, types: [] }, libs);
+    await w.getSemanticDiagnostics(APP);
+    const info = await w.programInfo(APP);
+    assert.ok(info.files > 3);
+    assert.deepEqual(info.duplicates, {});
+    assert.deepEqual(info.imports, {
+      '@scope/pkg': `${NM}/@scope/pkg/dist/index.d.ts`,
+      plain: `${NM}/@types/plain/index.d.ts`,
+      nowhere: null,
+    });
+    // The same package reached under two folders is reported.
+    const pkgText = "import y from 'plain'; export declare const x: typeof y;";
+    const two = worker(
+      [model(APP, text), model(`${NM}/@scope/pkg/dist/index.d.ts`, pkgText)],
+      { ...OPTIONS, types: [] },
+      libs
+    );
+    await two.getSemanticDiagnostics(APP);
+    assert.deepEqual((await two.programInfo(APP)).duplicates, {
+      '@types/plain': [`${NM}/@scope/pkg/node_modules/@types/plain`, `${NM}/@types/plain`],
+    });
+  });
+
   it('a changed lib is parsed again, the others are kept', async () => {
     const w = worker([model(APP, APP_TEXT)], { ...OPTIONS, types: ['node', 'vite/client'] });
     await w.getSemanticDiagnostics(APP);

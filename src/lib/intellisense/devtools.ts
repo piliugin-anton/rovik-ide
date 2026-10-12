@@ -7,6 +7,7 @@
 // answers for the visible file.
 import * as monaco from 'monaco-editor';
 import { workerLibs } from './libs';
+import type { ProgramInfo } from './projectWorker';
 
 export interface IntelliSenseState {
   root: string | null;
@@ -25,7 +26,14 @@ interface IntellisenseDiag extends IntelliSenseState {
   models: { uri: string; language: string; attached: boolean; disposed: boolean }[];
   markers: { uri: string; owner: string; count: number; codes: string[] }[];
   /** Direct answers from the TS worker for the attached (visible) model. */
-  worker?: { uri: string; syntactic: string[]; semantic: string[]; error?: string };
+  worker?: {
+    uri: string;
+    syntactic: string[];
+    semantic: string[];
+    /** What the program holds and how this file's imports resolve. */
+    program?: ProgramInfo;
+    error?: string;
+  };
 }
 
 declare global {
@@ -79,14 +87,18 @@ async function intellisenseDiag(state: IntelliSenseState): Promise<IntellisenseD
           ? await monaco.typescript.getTypeScriptWorker()
           : await monaco.typescript.getJavaScriptWorker();
       const proxy = await getter(attached.uri);
-      const [syn, sem] = await Promise.all([
+      // The project worker's own method (projectWorker.ts): not in Monaco's type.
+      const project = proxy as unknown as { programInfo(fileName: string): Promise<ProgramInfo> };
+      const [syn, sem, program] = await Promise.all([
         proxy.getSyntacticDiagnostics(uri),
         proxy.getSemanticDiagnostics(uri),
+        project.programInfo(uri),
       ]);
       diag.worker = {
         uri,
         syntactic: syn.map((d) => String(d.code)).slice(0, 10),
         semantic: sem.map((d) => `${d.code}: ${flattenMessage(d.messageText)}`).slice(0, 10),
+        program,
       };
     } catch (err) {
       diag.worker = { uri, syntactic: [], semantic: [], error: String(err) };

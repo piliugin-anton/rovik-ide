@@ -29,6 +29,7 @@
 // form, so the opened file's imports resolve to the libs.
 import {
   libFileMap,
+  ts,
   TypeScriptWorker,
   type MirrorModel,
 } from 'monaco-editor/language/typescript/ts.worker.js';
@@ -91,6 +92,36 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
     return current;
   }
 
+  /**
+   * For the diagnostics aid (devtools.ts): what the program holds, which
+   * packages it holds more than once (the usual cause of "X is not
+   * assignable to X" between two copies of @types/react), and where each
+   * import of `fileName` resolves to.
+   */
+  async programInfo(fileName: string): Promise<ProgramInfo> {
+    const files = this.getLanguageService().getProgram()?.getSourceFiles() ?? [];
+    const byPackage = new Map<string, Set<string>>();
+    for (const { fileName: name } of files) {
+      const pkg = packageOf(name);
+      if (!pkg) continue;
+      const dirs = byPackage.get(pkg.name) ?? new Set();
+      dirs.add(pkg.dir);
+      byPackage.set(pkg.name, dirs);
+    }
+    const duplicates: Record<string, string[]> = {};
+    for (const [name, dirs] of byPackage) if (dirs.size > 1) duplicates[name] = [...dirs].sort();
+    const imports: Record<string, string | null> = {};
+    const text = this._getScriptText(fileName);
+    if (text !== undefined) {
+      const api = ts.typescript;
+      for (const { fileName: spec } of api.preProcessFile(text, true, true).importedFiles) {
+        const resolved = api.resolveModuleName(spec, fileName, this.getCompilationSettings(), this);
+        imports[spec] = resolved.resolvedModule?.resolvedFileName ?? null;
+      }
+    }
+    return { files: files.length, duplicates, imports };
+  }
+
   private links(): ReadonlyMap<string, string> {
     const lib = this.getExtraLibs()[LINKS_LIB];
     if (!lib) return new Map();
@@ -105,6 +136,23 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
     }
     return this.linksCache.links;
   }
+}
+
+export interface ProgramInfo {
+  /** Files in the program, Monaco's libs included. */
+  files: number;
+  /** Packages present under more than one folder, by name. */
+  duplicates: Record<string, string[]>;
+  /** Each import specifier of the file, and the file it resolves to (null: unresolved). */
+  imports: Record<string, string | null>;
+}
+
+const PACKAGE_DIR = /^(.*\/node_modules\/((?:@[^/]+\/)?[^/]+))\//;
+
+/** The package a dependency file belongs to: its name, and its folder (the last `node_modules/<name>` of the path). */
+function packageOf(fileName: string): { name: string; dir: string } | null {
+  const match = PACKAGE_DIR.exec(fileName);
+  return match ? { name: match[2], dir: match[1] } : null;
 }
 
 /** A path as the libs are keyed: raw after the first `node_modules`. */

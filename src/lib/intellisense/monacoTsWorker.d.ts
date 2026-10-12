@@ -25,8 +25,15 @@ declare module 'monaco-editor/language/typescript/ts.worker.js' {
     inlayHintsOptions?: typescript.InlayHintsOptions;
   }
 
+  /** A program of TypeScript's language service: what the worker built. */
+  export interface Program {
+    getSourceFiles(): readonly { fileName: string }[];
+  }
+
   export class TypeScriptWorker {
     constructor(ctx: WorkerContext, createData: CreateData);
+    getLanguageService(): { getProgram(): Program | undefined };
+    getCompilationSettings(): typescript.CompilerOptions;
     protected _ctx: WorkerContext;
     protected _getModel(fileName: string): MirrorModel | null;
     protected _getScriptText(fileName: string): string | undefined;
@@ -50,4 +57,23 @@ declare module 'monaco-editor/language/typescript/ts.worker.js' {
 
   /** Monaco's bundled lib.*.d.ts files, by name. */
   export const libFileMap: Record<string, string>;
+
+  /** The TypeScript services module the worker runs on (the parts used here). */
+  export const ts: {
+    typescript: TypeScriptApi;
+  };
+
+  export interface TypeScriptApi {
+    preProcessFile(
+      text: string,
+      readImportFiles?: boolean,
+      detectJavaScriptImports?: boolean
+    ): { importedFiles: { fileName: string }[] };
+    resolveModuleName(
+      moduleName: string,
+      containingFile: string,
+      options: typescript.CompilerOptions,
+      host: TypeScriptWorker
+    ): { resolvedModule?: { resolvedFileName: string } };
+  }
 }
