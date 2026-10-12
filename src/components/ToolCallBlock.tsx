@@ -407,11 +407,6 @@ function ChevronIcon() {
   );
 }
 
-/**
- * The request for the user's decision, under the tool call's header. File
- * edits are reviewed change by change in the editor; this offers the
- * shortcuts.
- */
 /** One check's score as a bar, with the reject and approve thresholds marked. */
 function CheckRow(props: { check: ReviewCheck }) {
   const percent = () => Math.round(props.check.score * 100);
@@ -484,6 +479,11 @@ function ApprovalDetails(props: { approval: ToolApproval }) {
   );
 }
 
+/**
+ * The request for the user's decision, under the tool call's header. File
+ * edits are reviewed change by change in the editor; this offers the
+ * shortcuts.
+ */
 function ApprovalBar(props: { request: PendingApproval }) {
   const dialogId = () => props.request.dialogId;
   const id = () => props.request.toolCallId;

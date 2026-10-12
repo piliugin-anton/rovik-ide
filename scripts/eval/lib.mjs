@@ -160,10 +160,6 @@ const stdev = (xs) => {
 };
 
 /**
- * The campaign's summary from its runs' results
- * ({task, rep, success, costUsd, tokens, peakLeadContext, ms, interventions, outcome}).
- */
-/**
  * P6.6: the runs whose cost is known (a provider that reports no usage
  * leaves it null): means are over these, and how many weren't is kept.
  */
@@ -205,13 +201,6 @@ export function stopAfter(results) {
   return '';
 }
 
-/**
- * A campaign's runs in order. `plan` lists them, each with `done` when its
- * result is kept from an earlier pass; `runOne(item)` makes the run (or
- * reads its kept result back). A new run starts only if the budget allows
- * it (`budgetAllows` over `knownSpend`), and the campaign stops where
- * `stopAfter` says. Returns the results and why it stopped ('' if it didn't).
- */
 /**
  * The workspace folder name of one run: the campaign's, so two campaigns
  * running at once (G02's variants in two terminals) don't check out, and
@@ -266,6 +255,13 @@ function alive(pid) {
   }
 }
 
+/**
+ * A campaign's runs in order. `plan` lists them, each with `done` when its
+ * result is kept from an earlier pass; `runOne(item)` makes the run (or
+ * reads its kept result back). A new run starts only if the budget allows
+ * it (`budgetAllows` over `knownSpend`), and the campaign stops where
+ * `stopAfter` says. Returns the results and why it stopped ('' if it didn't).
+ */
 export async function runCampaign(plan, { cap, firstEstimate, runOne }) {
   const results = [];
   for (const item of plan) {
@@ -281,6 +277,10 @@ export async function runCampaign(plan, { cap, firstEstimate, runOne }) {
   return { results, stopped: '' };
 }
 
+/**
+ * The campaign's summary from its runs' results
+ * ({task, rep, success, costUsd, tokens, peakLeadContext, ms, interventions, outcome}).
+ */
 export function summarize(results) {
   const byTask = new Map();
   for (const r of results) {

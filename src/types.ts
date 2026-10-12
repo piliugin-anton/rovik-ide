@@ -249,10 +249,10 @@ export interface ToolMeta {
   fromMessageId?: string | null;
   /** A Plan-mode plan: the file it's saved in (lib/plans.ts). */
   planFile?: string;
-  /** The model's reasoning for this reply, and how long it took. */
   /**
-   * The model's reasoning: `text` as shown; `details` and `model` are what
-   * is sent back to that model (src-tauri/src/reasoning_echo.rs).
+   * The model's reasoning for this reply: `text` as shown, `ms` how long it
+   * took; `details` and `model` are what is sent back to that model
+   * (src-tauri/src/reasoning_echo.rs).
    */
   reasoning?: { text?: string; ms?: number; details?: unknown[]; model?: string };
   /** A user message: the mode it was sent in (lib/chatMode.ts). */
