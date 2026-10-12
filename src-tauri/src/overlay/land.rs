@@ -419,7 +419,7 @@ impl std::fmt::Display for LandError {
 /// Lands the chat's changes in `project` (planning, journaling, writing).
 #[cfg_attr(not(test), allow(dead_code))]
 /// Replans when a file changes between planning and writing, up to three
-/// times.
+/// times. `keep_chat`: the chat's version wins every conflict.
 pub fn land(
     data_dir: &Path,
     dialog_id: &str,
@@ -427,22 +427,41 @@ pub fn land(
     changes: &[OverlayChange],
     keep_chat: bool,
 ) -> Result<Option<Landed>, LandError> {
-    land_checked(data_dir, dialog_id, project, changes, keep_chat, true)
+    land_checked(data_dir, dialog_id, project, changes, keep_chat, None, true)
 }
 
 /// [`land`]; with `allow_merge` false, refuses when any file would land
 /// merged with project changes (they came after the checks ran).
+///
+/// `known`, with `keep_chat`: the conflicts the user was shown and chose
+/// to override ("Land anyway"). A conflict in any other file came up since
+/// (the project changed it meanwhile): the chat's version isn't taken over
+/// it unseen, and the landing stops with those conflicts. `None`: every
+/// conflict is overridden.
 pub fn land_checked(
     data_dir: &Path,
     dialog_id: &str,
     project: &Path,
     changes: &[OverlayChange],
     keep_chat: bool,
+    known: Option<&[String]>,
     allow_merge: bool,
 ) -> Result<Option<Landed>, LandError> {
     let lock = project_lock(project);
     let _landing = lock.lock().unwrap_or_else(|e| e.into_inner());
     for _ in 0..3 {
+        if let (true, Some(known)) = (keep_chat, known) {
+            // Under the project's lock, so nothing lands in between: what
+            // conflicts now is what Land anyway would take over.
+            let unseen: Vec<Conflict> = plan(project, changes, false)
+                .conflicts
+                .into_iter()
+                .filter(|c| !known.iter().any(|k| *k == c.path))
+                .collect();
+            if !unseen.is_empty() {
+                return Err(LandError::Conflicts(unseen));
+            }
+        }
         let plan = plan(project, changes, keep_chat);
         if !plan.conflicts.is_empty() {
             return Err(LandError::Conflicts(plan.conflicts));
