@@ -1079,7 +1079,7 @@ impl<R: Runtime> Run<R> {
                     &turn.message_id,
                     kept,
                     Vec::new(),
-                    turn.reasoning.clone(),
+                    turn.reasoning.clone().map(|r| json!({ "reasoning": r })),
                     None,
                 )
                 .await?;
@@ -1133,7 +1133,11 @@ impl<R: Runtime> Run<R> {
             )
             .await?;
             self.settle(true).await;
-            if self.stopped() {
+            // Stopped meanwhile: a reply with tool calls goes on to
+            // execute_tool_calls, which answers each with a "stopped" result
+            // (a call left without one reads as interrupted, and the chat
+            // would offer to resume it).
+            if self.stopped() && turn.tool_calls.is_empty() {
                 return Ok("stopped".into());
             }
 

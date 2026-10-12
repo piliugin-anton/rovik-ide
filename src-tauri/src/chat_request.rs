@@ -552,8 +552,11 @@ impl ReplyParser {
             }
             // Reasoning: `reasoning_content` (DeepSeek, vLLM, many gateways)
             // or `reasoning` (OpenRouter). Shown, but not part of the reply.
+            // A provider sending both fields puts `null` in the one it
+            // doesn't use: look past it to the other.
             let reasoning = delta
                 .get("reasoning_content")
+                .filter(|v| !v.is_null())
                 .or_else(|| delta.get("reasoning"))
                 .and_then(|v| v.as_str());
             if let Some(reasoning) = reasoning.filter(|r| !r.is_empty()) {
@@ -812,7 +815,11 @@ impl ReplyParser {
                 "delta": {
                     "content": message.and_then(|m| m.get("content")).cloned().unwrap_or(serde_json::Value::Null),
                     "reasoning_content": message
-                        .and_then(|m| m.get("reasoning_content").or_else(|| m.get("reasoning")))
+                        .and_then(|m| {
+                            m.get("reasoning_content")
+                                .filter(|v| !v.is_null())
+                                .or_else(|| m.get("reasoning"))
+                        })
                         .cloned()
                         .unwrap_or(serde_json::Value::Null),
                     "reasoning_details": message
@@ -1001,6 +1008,8 @@ async fn attempt(
     let mut stream = response.bytes_stream();
     let mut buffer = BytesMut::new();
     let mut last_data: Option<Instant> = None;
+    // The server closed the connection: this pass over the buffer is the last.
+    let mut closed = false;
 
     loop {
         let wait_until = match last_data {
@@ -1042,11 +1051,15 @@ async fn attempt(
                 ));
             }
             Ok(None) => {
-                // Connection closed without [DONE].
+                // Connection closed without [DONE]. A last event the server
+                // didn't end with a blank line (some close right after the
+                // final chunk) is still in the buffer: read it below as if
+                // it had been, then stop.
                 if let Some(log) = log.as_mut() {
                     log.outcome = "closed";
                 }
-                break;
+                closed = true;
+                bytes::Bytes::new()
             }
             Ok(Some(Err(e))) => {
                 return Err(fail(
@@ -1058,6 +1071,9 @@ async fn attempt(
             Ok(Some(Ok(bytes))) => bytes,
         };
         buffer.extend_from_slice(&chunk);
+        if closed && buffer.iter().any(|b| !b.is_ascii_whitespace()) {
+            buffer.extend_from_slice(b"\n\n");
+        }
         if let Some(log) = log.as_mut() {
             log.raw.push_str(&String::from_utf8_lossy(&chunk));
         }
@@ -1105,6 +1121,9 @@ async fn attempt(
                     }
                 }
             }
+        }
+        if closed {
+            break;
         }
     }
     parser.finish(emit).map_err(|e| fail(e, parser.visible()))

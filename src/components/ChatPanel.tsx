@@ -712,6 +712,10 @@ export default function ChatPanel(props: ChatProps) {
     } finally {
       if (isMounted) {
         setLoadingHistory(false);
+        // Another folder was opened while the chats loaded: its project.
+        await catchUpWithProject();
+      }
+      if (isMounted) {
         // "Add to chat" may have opened this panel: its references waited
         // until the chat was loaded (opening one resets the composer).
         insertPendingReferences();
@@ -750,21 +754,37 @@ export default function ChatPanel(props: ChatProps) {
       () => props.projectId(),
       (id) => {
         if (id === undefined || id === store.projectId() || loadingHistory()) return;
-        void (async () => {
-          setLoadingHistory(true);
-          try {
-            await store.switchProject(id);
-            if (isMounted && props.projectId() === id) await openNewestChat();
-          } catch (err) {
-            setHistoryLoadError(String(err));
-          } finally {
-            if (isMounted) setLoadingHistory(false);
-          }
-        })();
+        void switchToProject(id);
       },
       { defer: true }
     )
   );
+
+  /**
+   * Shows the project's chats. A folder opened while this (or the first
+   * load) was still going is caught up with at the end: the effect above
+   * leaves a change alone while history loads, and it doesn't run again
+   * for a project that is already the current one.
+   */
+  async function switchToProject(id: string | null) {
+    setLoadingHistory(true);
+    try {
+      await store.switchProject(id);
+      if (isMounted && props.projectId() === id) await openNewestChat();
+    } catch (err) {
+      setHistoryLoadError(String(err));
+    } finally {
+      if (isMounted) setLoadingHistory(false);
+    }
+    await catchUpWithProject();
+  }
+
+  /** The project changed while chats were loading: load that one instead. */
+  async function catchUpWithProject() {
+    const now = props.projectId();
+    if (!isMounted || now === undefined || now === store.projectId() || loadingHistory()) return;
+    await switchToProject(now);
+  }
 
   const stopAddToChat = onAddToChat(() => {
     if (!loadingHistory()) insertPendingReferences();

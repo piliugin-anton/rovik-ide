@@ -82,7 +82,11 @@ export interface LandResult {
   error?: string | null;
 }
 
-/** Lands the chat's changes now; `keepChat`: on conflicts, its version wins. */
+/**
+ * Lands the chat's changes now. `keepChat`: on the conflicts shown (the
+ * status's pending list), its version wins; a conflict that came up since
+ * comes back in `conflicts` instead, and nothing lands.
+ */
 export function overlayLand(dialogId: string, keepChat: boolean): Promise<LandResult> {
   return invoke<LandResult>('overlay_land', { dialogId, keepChat });
 }

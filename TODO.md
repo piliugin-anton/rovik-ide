@@ -1,1 +1,4 @@
-1. При переименовании файла не подгружается intellisense
+Separate backend into modules:
+  - Gateway: sends requests, provider agnostic
+ - Parser: parses API responses
+ - Hooks: execute actions

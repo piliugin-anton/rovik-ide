@@ -3920,6 +3920,19 @@ body.is-resizing * {
   color: var(--error);
 }
 
+/* Base-branch dropdown in the "New branch" view: same size as the name
+   input above it (.git-more-input), dark popup to match the theme. */
+.git-base-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.git-base-select {
+  color-scheme: dark;
+  cursor: pointer;
+}
+
 /* Rows with an action button on the right (branches, stashes) */
 .git-branch-dropdown .context-menu-item.git-more-row {
   gap: 6px;

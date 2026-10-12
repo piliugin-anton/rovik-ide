@@ -144,6 +144,35 @@ fn large_tool_output_moves_out_and_loads_on_demand() {
     assert_eq!(reply.content, long_reply);
 }
 
+/// A flag set on a finalized tool message runs finalize again: the body
+/// that moved out must stay, and its size must stay the body's.
+#[test]
+fn finalizing_an_external_body_again_keeps_it() {
+    let mut conn = db();
+    dialog(&mut conn, "d", "Tools", 0);
+    // Multibyte: the preview's 2048 characters are more than 4096 bytes.
+    let big = "строка вывода\n".repeat(600);
+    let mut t = message("t1", "tool", &big);
+    t.tool_call_id = Some("c1".into());
+    add(&mut conn, "d", vec![t]);
+
+    let patch = MessagePatch {
+        error: Some("boom".into()),
+        ..Default::default()
+    };
+    update_message(&mut conn, "t1", &patch).unwrap();
+
+    let tool = get_messages(&conn, "d", None, 50)
+        .unwrap()
+        .messages
+        .pop()
+        .unwrap();
+    assert!(tool.body_external && tool.finalized);
+    assert_eq!(tool.body_bytes as usize, big.len());
+    assert_eq!(tool.content.chars().count(), PREVIEW_CHARS);
+    assert_eq!(get_message_body(&conn, "t1").unwrap(), big);
+}
+
 #[test]
 fn streaming_message_is_searchable_only_once_finalized() {
     let mut conn = db();

@@ -96,30 +96,45 @@ fn home_dir() -> Option<PathBuf> {
 /// cost of not being able to prompt interactively — repos needing a fresh
 /// login will surface an error asking the user to authenticate in a
 /// terminal once.
+///
+/// libgit2 calls back again after every credential the server turns down,
+/// for as long as the callback keeps answering. Each candidate is offered
+/// once; when they're all refused the attempt ends with an error instead
+/// of handing the same rejected key or token over for ever (a push that
+/// never returns, with the panel stuck on its spinner).
 fn make_callbacks<'a>() -> RemoteCallbacks<'a> {
     let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(|url, username_from_url, allowed_types| {
+    let mut tried_agent = false;
+    let mut tried_keys: Vec<PathBuf> = Vec::new();
+    let mut tried_helper = false;
+    callbacks.credentials(move |url, username_from_url, allowed_types| {
         if allowed_types.contains(CredentialType::SSH_KEY) {
             let username = username_from_url.unwrap_or("git");
 
-            if let Ok(cred) = Cred::ssh_key_from_agent(username) {
-                return Ok(cred);
+            if !tried_agent {
+                tried_agent = true;
+                if let Ok(cred) = Cred::ssh_key_from_agent(username) {
+                    return Ok(cred);
+                }
             }
 
             if let Some(home) = home_dir() {
                 let ssh_dir = home.join(".ssh");
                 for key_name in ["id_ed25519", "id_rsa"] {
                     let private_key = ssh_dir.join(key_name);
-                    if private_key.exists() {
-                        if let Ok(cred) = Cred::ssh_key(username, None, &private_key, None) {
-                            return Ok(cred);
-                        }
+                    if tried_keys.contains(&private_key) || !private_key.exists() {
+                        continue;
+                    }
+                    tried_keys.push(private_key.clone());
+                    if let Ok(cred) = Cred::ssh_key(username, None, &private_key, None) {
+                        return Ok(cred);
                     }
                 }
             }
         }
 
-        if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
+        if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) && !tried_helper {
+            tried_helper = true;
             if let Ok(config) = git2::Config::open_default() {
                 let mut helper = CredentialHelper::new(url);
                 helper.config(&config);
@@ -134,7 +149,13 @@ fn make_callbacks<'a>() -> RemoteCallbacks<'a> {
             }
         }
 
-        Cred::default()
+        if allowed_types.contains(CredentialType::DEFAULT) {
+            return Cred::default();
+        }
+        Err(git2::Error::from_str(
+            "authentication failed: no SSH key or stored credentials were accepted \
+             (sign in from a terminal once, with `git fetch`, so git remembers them)",
+        ))
     });
     callbacks
 }
@@ -150,6 +171,35 @@ fn default_remote_name(repo: &Repository) -> Result<String, String> {
         .map(|s| s.to_string())
         .next()
         .ok_or_else(|| "No remotes configured".to_string())
+}
+
+/// The remote the current branch fetches from (`branch.<name>.remote`),
+/// if it's on a branch that has one: where `git fetch` with no arguments
+/// goes, before falling back to origin.
+fn upstream_remote_name(repo: &Repository) -> Option<String> {
+    let head = repo.head().ok()?;
+    if !head.is_branch() {
+        return None;
+    }
+    let buf = repo.branch_upstream_remote(head.name().ok()?).ok()?;
+    buf.as_str().ok().map(str::to_string)
+}
+
+/// The remote `git push` with no arguments would use: `remote.pushDefault`,
+/// then `branch.<name>.pushRemote`, then the branch's upstream remote,
+/// then origin (or the only remote there is).
+fn push_remote_name(repo: &Repository, branch: &str) -> Result<String, String> {
+    let config = repo.config().and_then(|mut c| c.snapshot()).ok();
+    let configured = config.as_ref().and_then(|c| {
+        c.get_string("remote.pushDefault")
+            .ok()
+            .or_else(|| c.get_string(&format!("branch.{branch}.pushRemote")).ok())
+            .filter(|r| !r.is_empty())
+    });
+    match configured.or_else(|| upstream_remote_name(repo)) {
+        Some(name) if repo.find_remote(&name).is_ok() => Ok(name),
+        _ => default_remote_name(repo),
+    }
 }
 
 /// Per-file added/removed line counts for one diff, keyed by the
@@ -373,14 +423,23 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
     })
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitBranch {
+    pub name: String,
+    /// `origin/main` style remote-tracking branch (can't be deleted here,
+    /// checking it out creates a local tracking branch).
+    pub is_remote: bool,
+}
+
 #[tauri::command]
-pub async fn git_branches(path: String) -> Result<Vec<String>, String> {
+pub async fn git_branches(path: String) -> Result<Vec<GitBranch>, String> {
     off_main_thread(move || git_branches_blocking(path)).await
 }
 
-pub fn git_branches_blocking(path: String) -> Result<Vec<String>, String> {
+pub fn git_branches_blocking(path: String) -> Result<Vec<GitBranch>, String> {
     let repo = open_repo(&path)?;
-    let mut names = Vec::new();
+    let mut local: Vec<GitBranch> = Vec::new();
+    let mut remote: Vec<GitBranch> = Vec::new();
 
     let branches = repo
         .branches(Some(BranchType::Local))
@@ -389,12 +448,35 @@ pub fn git_branches_blocking(path: String) -> Result<Vec<String>, String> {
     for item in branches {
         let (branch, _) = item.map_err(|e| e.to_string())?;
         if let Some(name) = branch.name().map_err(|e| e.to_string())? {
-            names.push(name.to_string());
+            local.push(GitBranch {
+                name: name.to_string(),
+                is_remote: false,
+            });
         }
     }
 
-    names.sort();
-    Ok(names)
+    let branches = repo
+        .branches(Some(BranchType::Remote))
+        .map_err(|e| e.to_string())?;
+
+    for item in branches {
+        let (branch, _) = item.map_err(|e| e.to_string())?;
+        if let Some(name) = branch.name().map_err(|e| e.to_string())? {
+            // Skip the `origin/HEAD` symref; it's not a branch to switch to.
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            remote.push(GitBranch {
+                name: name.to_string(),
+                is_remote: true,
+            });
+        }
+    }
+
+    local.sort_by(|a, b| a.name.cmp(&b.name));
+    remote.sort_by(|a, b| a.name.cmp(&b.name));
+    local.extend(remote);
+    Ok(local)
 }
 
 #[tauri::command]
@@ -407,6 +489,55 @@ pub async fn git_checkout(path: String, branch: String) -> Result<(), String> {
 pub fn git_checkout_blocking(path: String, branch: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
 
+    // Switches to a local branch: its tree into the working folder (safely:
+    // uncommitted changes to files that differ between the branches stop
+    // it, like `git checkout` does), then HEAD onto it.
+    let switch_to_local = |name: &str| -> Result<(), String> {
+        let refname = format!("refs/heads/{name}");
+        let object = repo
+            .revparse_single(&refname)
+            .map_err(|e| format!("Checkout failed: {e}"))?;
+        repo.checkout_tree(&object, None)
+            .map_err(|e| format!("Checkout failed: {e}"))?;
+        repo.set_head(&refname).map_err(|e| e.to_string())
+    };
+
+    // A local branch: switch to it directly.
+    if repo.find_branch(&branch, BranchType::Local).is_ok() {
+        return switch_to_local(&branch);
+    }
+
+    // A remote-tracking branch (`origin/foo`): create a local tracking
+    // branch (`foo`, or `feature/foo` for `origin/feature/foo`) and switch
+    // to it, like `git switch` does. If that local branch already exists
+    // (created since the list was loaded), just switch to it — to its own
+    // commit, not the remote's: the two can differ, and a working folder
+    // at one with HEAD on the other would show every difference as an
+    // uncommitted change.
+    if let Ok(remote) = repo.find_branch(&branch, BranchType::Remote) {
+        let short = branch
+            .split_once('/')
+            .map(|(_, rest)| rest)
+            .unwrap_or(branch.as_str());
+        if short.is_empty() || short == "HEAD" {
+            return Err(format!("Can't check out '{branch}'"));
+        }
+        if repo.find_branch(short, BranchType::Local).is_err() {
+            let commit = remote
+                .get()
+                .peel_to_commit()
+                .map_err(|e| format!("Checkout failed: {e}"))?;
+            let mut local = repo
+                .branch(short, &commit, false)
+                .map_err(|e| format!("Couldn't create tracking branch '{short}': {e}"))?;
+            // Point `branch.<short>.remote/.merge` at the remote branch so
+            // pull/push and the ahead/behind badges work.
+            let _ = local.set_upstream(Some(branch.as_str()));
+        }
+        return switch_to_local(short);
+    }
+
+    // Fallback: a commit hash, tag, or anything else `git checkout` accepts.
     let (object, reference) = repo
         .revparse_ext(&branch)
         .map_err(|e| format!("Branch '{branch}' not found: {e}"))?;
@@ -414,11 +545,17 @@ pub fn git_checkout_blocking(path: String, branch: String) -> Result<(), String>
     repo.checkout_tree(&object, None)
         .map_err(|e| format!("Checkout failed: {e}"))?;
 
-    match reference {
-        Some(r) => repo.set_head(
-            r.name()
-                .map_err(|e| format!("Invalid reference name: {e}"))?,
-        ),
+    // Only a local branch is something HEAD can sit on; a tag or a
+    // remote-tracking ref (`refs/remotes/origin/foo` spelled out) leaves it
+    // detached at the commit, as git does, rather than pointing HEAD at a
+    // ref that commits must never move.
+    let local_ref = reference
+        .as_ref()
+        .and_then(|r| r.name().ok())
+        .filter(|n| n.starts_with("refs/heads/"))
+        .map(str::to_string);
+    match local_ref {
+        Some(name) => repo.set_head(&name),
         None => repo.set_head_detached(object.id()),
     }
     .map_err(|e| e.to_string())
@@ -473,7 +610,11 @@ pub async fn git_fetch(path: String) -> Result<(), String> {
 
 pub fn git_fetch_blocking(path: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
-    let remote_name = default_remote_name(&repo)?;
+    // Like `git fetch`: the current branch's remote, else origin.
+    let remote_name = match upstream_remote_name(&repo) {
+        Some(name) if repo.find_remote(&name).is_ok() => name,
+        _ => default_remote_name(&repo)?,
+    };
     let mut remote = repo.find_remote(&remote_name).map_err(|e| e.to_string())?;
 
     let mut fetch_opts = FetchOptions::new();
@@ -530,7 +671,7 @@ pub fn git_push_blocking(path: String) -> Result<PushOutcome, String> {
         .map_err(|e| format!("Could not determine current branch name: {e}"))?
         .to_string();
 
-    let remote_name = default_remote_name(&repo)?;
+    let remote_name = push_remote_name(&repo, &branch_name)?;
     let mut remote = repo.find_remote(&remote_name).map_err(|e| e.to_string())?;
 
     let refspec = format!("refs/heads/{branch_name}:refs/heads/{branch_name}");
@@ -615,17 +756,24 @@ fn validate_branch_name(name: &str) -> Result<String, String> {
     if name.is_empty() {
         return Err("Branch name can't be empty".to_string());
     }
+    // The rules of `git check-ref-format --branch`: no component may start
+    // with `.` or end with `.lock`, and the name can't be `@` or `HEAD`.
     if name == "HEAD"
+        || name == "@"
         || name.starts_with('-')
         || name.starts_with('/')
         || name.ends_with('/')
         || name.ends_with('.')
-        || name.ends_with(".lock")
         || name.contains("..")
         || name.contains("//")
         || name.contains("@{")
+        || name
+            .split('/')
+            .any(|part| part.starts_with('.') || part.ends_with(".lock"))
         || name.contains(|c: char| {
-            c.is_whitespace() || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+            c.is_whitespace()
+                || c.is_control()
+                || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
         })
     {
         return Err(format!("'{name}' isn't a valid branch name"));
@@ -633,30 +781,100 @@ fn validate_branch_name(name: &str) -> Result<String, String> {
     Ok(name)
 }
 
-/// Creates a local branch at the current HEAD; with `checkout`, switches to
-/// it straight away (the panel's usual "new branch" flow).
+/// Where a new branch starts: a branch from the panel's list first (a
+/// local one, then a remote-tracking one), so that a tag or a file that
+/// happens to share the name can't win the way `git rev-parse` would
+/// resolve it; then anything a commit can be found by (a tag, a hash).
+/// Returns the commit and, when it's a remote-tracking branch, its name.
+fn resolve_start_point<'r>(
+    repo: &'r Repository,
+    start: &str,
+) -> Result<(git2::Commit<'r>, Option<String>), String> {
+    if let Ok(local) = repo.find_branch(start, BranchType::Local) {
+        let commit = local
+            .get()
+            .peel_to_commit()
+            .map_err(|e| format!("Couldn't use '{start}' as a starting point: {e}"))?;
+        return Ok((commit, None));
+    }
+    if let Ok(remote) = repo.find_branch(start, BranchType::Remote) {
+        let commit = remote
+            .get()
+            .peel_to_commit()
+            .map_err(|e| format!("Couldn't use '{start}' as a starting point: {e}"))?;
+        return Ok((commit, Some(start.to_string())));
+    }
+    let commit = repo
+        .revparse_single(start)
+        .map_err(|_| format!("Couldn't find starting point '{start}'"))?
+        .peel_to_commit()
+        .map_err(|e| format!("Couldn't use '{start}' as a starting point: {e}"))?;
+    Ok((commit, None))
+}
+
+/// Creates a local branch at `from` (a local branch, remote-tracking
+/// branch, tag or commit; defaults to the current HEAD when empty);
+/// with `checkout`, switches to it straight away (the panel's usual
+/// "new branch" flow). `foo` started from `origin/foo` tracks it, so
+/// pull/push and the ahead/behind badges work (what checking the remote
+/// branch out does). A branch under another name doesn't: the panel's
+/// push goes to the remote branch of the same name, and that's what the
+/// badges would be wrong against.
 #[tauri::command]
-pub async fn git_create_branch(path: String, name: String, checkout: bool) -> Result<(), String> {
-    off_main_thread(move || git_create_branch_blocking(path, name, checkout)).await
+pub async fn git_create_branch(
+    path: String,
+    name: String,
+    checkout: bool,
+    from: Option<String>,
+) -> Result<(), String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = checkout.then(|| crate::overlay::chats::hold_busy(std::path::Path::new(&path)));
+    off_main_thread(move || git_create_branch_blocking(path, name, checkout, from)).await
 }
 
 pub fn git_create_branch_blocking(
     path: String,
     name: String,
     checkout: bool,
+    from: Option<String>,
 ) -> Result<(), String> {
     let name = validate_branch_name(&name)?;
+    let from = from.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let repo = open_repo(&path)?;
-    let head = repo
-        .head()
-        .ok()
-        .and_then(|h| h.peel_to_commit().ok())
-        .ok_or_else(|| "Can't create a branch yet: there are no commits".to_string())?;
-    repo.branch(&name, &head, false)
+    let (target, remote_start) = match &from {
+        Some(start) => resolve_start_point(&repo, start)?,
+        None => (
+            repo.head()
+                .ok()
+                .and_then(|h| h.peel_to_commit().ok())
+                .ok_or_else(|| "Can't create a branch yet: there are no commits".to_string())?,
+            None,
+        ),
+    };
+    let mut branch = repo
+        .branch(&name, &target, false)
         .map_err(|e| format!("Couldn't create branch '{name}': {e}"))?;
-    drop(head);
+    if let Some(start) = &remote_start {
+        let tracks_same_name = start
+            .split_once('/')
+            .is_some_and(|(_, short)| short == name);
+        if tracks_same_name {
+            let _ = branch.set_upstream(Some(start));
+        }
+    }
+    drop(target);
+    drop(branch);
     if checkout {
-        git_checkout_blocking(path, name)?;
+        // A switch the working folder refuses (uncommitted changes to files
+        // the branches differ in) leaves no branch behind, as `git checkout
+        // -b` wouldn't: the panel reports the error, and the user's next try
+        // under the same name must not hit "already exists".
+        if let Err(e) = git_checkout_blocking(path, name.clone()) {
+            if let Ok(mut created) = repo.find_branch(&name, BranchType::Local) {
+                let _ = created.delete();
+            }
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -2664,5 +2882,326 @@ mod revert_tests {
         assert_ne!(page.tip.as_deref(), Some(gone));
         assert_eq!(page.commits.len(), 1);
         assert_eq!(page.commits[0].summary, "init");
+    }
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "git-branch-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn p(dir: &Path) -> String {
+        dir.to_string_lossy().into_owned()
+    }
+
+    fn commit_all(repo: &Repository, message: &str) -> git2::Oid {
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.update_all(["*"].iter(), None).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+            .unwrap()
+    }
+
+    /// A repository on `main` with one commit (f.txt = "one").
+    fn repo_on_main(tag: &str) -> (PathBuf, Repository) {
+        let dir = temp_dir(tag);
+        let repo = Repository::init(&dir).unwrap();
+        {
+            let mut c = repo.config().unwrap();
+            c.set_str("user.name", "t").unwrap();
+            c.set_str("user.email", "t@t").unwrap();
+        }
+        fs::write(dir.join("f.txt"), "one\n").unwrap();
+        commit_all(&repo, "start");
+        if repo.head().unwrap().shorthand().ok() != Some("main") {
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("main", &head, true).unwrap();
+            repo.set_head("refs/heads/main").unwrap();
+        }
+        (dir, repo)
+    }
+
+    fn head_branch(repo: &Repository) -> Option<String> {
+        let head = repo.head().unwrap();
+        head.is_branch()
+            .then(|| head.shorthand().unwrap().to_string())
+    }
+
+    fn tip(repo: &Repository, refname: &str) -> git2::Oid {
+        repo.refname_to_id(refname).unwrap()
+    }
+
+    fn upstream_of(repo: &Repository, branch: &str) -> Option<String> {
+        repo.find_branch(branch, BranchType::Local)
+            .unwrap()
+            .upstream()
+            .ok()
+            .map(|u| u.name().unwrap().unwrap().to_string())
+    }
+
+    /// `origin` (a bare repository) with `main` and `feature` pushed to
+    /// it and fetched back, so `origin/main` and `origin/feature` are
+    /// known; the local `feature` is deleted again. Both at the start commit.
+    fn repo_with_origin(tag: &str) -> (PathBuf, Repository, PathBuf) {
+        let (dir, repo) = repo_on_main(tag);
+        let remote = temp_dir(&format!("{tag}-origin"));
+        Repository::init_bare(&remote).unwrap();
+        repo.remote("origin", &p(&remote)).unwrap();
+        assert_eq!(git_push_blocking(p(&dir)).unwrap().result, "pushed");
+        git_create_branch_blocking(p(&dir), "feature".into(), true, None).unwrap();
+        assert_eq!(git_push_blocking(p(&dir)).unwrap().result, "pushed");
+        git_checkout_blocking(p(&dir), "main".into()).unwrap();
+        git_delete_branch_blocking(p(&dir), "feature".into()).unwrap();
+        git_fetch_blocking(p(&dir)).unwrap();
+        assert!(repo
+            .find_branch("origin/feature", BranchType::Remote)
+            .is_ok());
+        (dir, repo, remote)
+    }
+
+    #[test]
+    fn branch_names_follow_gits_rules() {
+        for ok in ["feature", "feature/x", "v1.2", "a-b_c", "ünïcode"] {
+            assert_eq!(validate_branch_name(ok).unwrap(), ok, "{ok}");
+        }
+        for bad in [
+            "", " ", "HEAD", "@", "-x", "/x", "x/", "x.", "a..b", "a//b", "a@{1}", "a b", "a~b",
+            "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", ".hidden", "a/.b", "a.lock", "a.lock/b",
+            "a\x07b",
+        ] {
+            assert!(
+                validate_branch_name(bad).is_err(),
+                "{bad:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_branch_from_a_local_branch_starts_at_its_commit_without_tracking() {
+        let (dir, repo) = repo_on_main("from-local");
+        let start = tip(&repo, "refs/heads/main");
+        fs::write(dir.join("f.txt"), "two\n").unwrap();
+        commit_all(&repo, "two");
+        git_create_branch_blocking(
+            p(&dir),
+            "old".into(),
+            false,
+            Some("refs/heads/main~1".into()),
+        )
+        .unwrap();
+        assert_eq!(tip(&repo, "refs/heads/old"), start);
+        git_create_branch_blocking(p(&dir), "copy".into(), false, Some("old".into())).unwrap();
+        assert_eq!(tip(&repo, "refs/heads/copy"), start);
+        assert_eq!(upstream_of(&repo, "copy"), None);
+        // Still on main, with its tree: nothing was checked out.
+        assert_eq!(head_branch(&repo).as_deref(), Some("main"));
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "two\n");
+    }
+
+    #[test]
+    fn a_branch_from_a_remote_branch_tracks_it_only_under_the_same_name() {
+        let (dir, repo, _remote) = repo_with_origin("from-remote");
+        let remote_tip = tip(&repo, "refs/remotes/origin/feature");
+
+        git_create_branch_blocking(
+            p(&dir),
+            "feature".into(),
+            false,
+            Some("origin/feature".into()),
+        )
+        .unwrap();
+        assert_eq!(tip(&repo, "refs/heads/feature"), remote_tip);
+        assert_eq!(
+            upstream_of(&repo, "feature").as_deref(),
+            Some("origin/feature"),
+            "`feature` from `origin/feature` pulls from and pushes to it"
+        );
+
+        git_create_branch_blocking(p(&dir), "mine".into(), false, Some("origin/feature".into()))
+            .unwrap();
+        assert_eq!(tip(&repo, "refs/heads/mine"), remote_tip);
+        assert_eq!(
+            upstream_of(&repo, "mine"),
+            None,
+            "the panel pushes `mine` to origin/mine; tracking origin/feature would keep it 'ahead' for ever"
+        );
+        // Its first push sets the upstream, as for any new branch.
+        git_checkout_blocking(p(&dir), "mine".into()).unwrap();
+        assert_eq!(git_push_blocking(p(&dir)).unwrap().result, "pushed");
+        assert_eq!(upstream_of(&repo, "mine").as_deref(), Some("origin/mine"));
+    }
+
+    #[test]
+    fn a_branch_in_the_list_beats_a_tag_of_the_same_name() {
+        let (dir, repo) = repo_on_main("branch-vs-tag");
+        let first = tip(&repo, "refs/heads/main");
+        repo.branch("rel", &repo.find_commit(first).unwrap(), false)
+            .unwrap();
+        fs::write(dir.join("f.txt"), "two\n").unwrap();
+        let second = commit_all(&repo, "two");
+        // `git rev-parse rel` would pick the tag (refs/tags before refs/heads).
+        repo.tag_lightweight("rel", &repo.find_object(second, None).unwrap(), false)
+            .unwrap();
+        git_create_branch_blocking(p(&dir), "from-rel".into(), false, Some("rel".into())).unwrap();
+        assert_eq!(tip(&repo, "refs/heads/from-rel"), first);
+    }
+
+    #[test]
+    fn create_and_switch_carries_uncommitted_work_over() {
+        let (dir, repo) = repo_on_main("carry");
+        fs::write(dir.join("f.txt"), "edited\n").unwrap();
+        git_create_branch_blocking(p(&dir), "work".into(), true, Some("main".into())).unwrap();
+        assert_eq!(head_branch(&repo).as_deref(), Some("work"));
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "edited\n");
+    }
+
+    #[test]
+    fn a_switch_the_working_folder_refuses_leaves_no_branch_behind() {
+        let (dir, repo) = repo_on_main("refused");
+        git_create_branch_blocking(p(&dir), "other".into(), true, None).unwrap();
+        fs::write(dir.join("f.txt"), "two\n").unwrap();
+        commit_all(&repo, "two on other");
+        git_checkout_blocking(p(&dir), "main".into()).unwrap();
+        // An edit to the file the branches differ in: switching would lose it.
+        fs::write(dir.join("f.txt"), "local edit\n").unwrap();
+
+        let err = git_create_branch_blocking(p(&dir), "new".into(), true, Some("other".into()))
+            .unwrap_err();
+        assert!(err.contains("Checkout failed"), "{err}");
+        assert!(
+            repo.find_branch("new", BranchType::Local).is_err(),
+            "the branch that couldn't be switched to isn't left behind"
+        );
+        assert_eq!(head_branch(&repo).as_deref(), Some("main"));
+        assert_eq!(
+            fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "local edit\n"
+        );
+        // The same name works once the edit is out of the way.
+        fs::write(dir.join("f.txt"), "one\n").unwrap();
+        git_create_branch_blocking(p(&dir), "new".into(), true, Some("other".into())).unwrap();
+        assert_eq!(head_branch(&repo).as_deref(), Some("new"));
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "two\n");
+    }
+
+    #[test]
+    fn a_missing_start_point_is_an_error_and_creates_nothing() {
+        let (dir, repo) = repo_on_main("missing");
+        let err =
+            git_create_branch_blocking(p(&dir), "x".into(), true, Some("nope".into())).unwrap_err();
+        assert!(err.contains("nope"), "{err}");
+        assert!(repo.find_branch("x", BranchType::Local).is_err());
+        assert_eq!(head_branch(&repo).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn checking_out_a_remote_branch_creates_a_tracking_branch() {
+        let (dir, repo, _remote) = repo_with_origin("remote-checkout");
+        git_checkout_blocking(p(&dir), "origin/feature".into()).unwrap();
+        assert_eq!(head_branch(&repo).as_deref(), Some("feature"));
+        assert_eq!(
+            upstream_of(&repo, "feature").as_deref(),
+            Some("origin/feature")
+        );
+        assert_eq!(
+            tip(&repo, "refs/heads/feature"),
+            tip(&repo, "refs/remotes/origin/feature")
+        );
+    }
+
+    #[test]
+    fn checking_out_a_remote_branch_switches_to_the_local_one_it_already_has() {
+        let (dir, repo, _remote) = repo_with_origin("remote-vs-local");
+        // A local `feature`, one commit past origin/feature.
+        git_checkout_blocking(p(&dir), "origin/feature".into()).unwrap();
+        fs::write(dir.join("f.txt"), "local two\n").unwrap();
+        let local_tip = commit_all(&repo, "two");
+        git_checkout_blocking(p(&dir), "main".into()).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "one\n");
+
+        git_checkout_blocking(p(&dir), "origin/feature".into()).unwrap();
+        assert_eq!(head_branch(&repo).as_deref(), Some("feature"));
+        assert_eq!(tip(&repo, "refs/heads/feature"), local_tip);
+        // The working folder is at the local branch's commit, not the
+        // remote's: nothing shows up as changed.
+        assert_eq!(
+            fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "local two\n"
+        );
+        assert!(git_status_blocking(p(&dir)).unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn checking_out_a_tag_detaches_head() {
+        let (dir, repo) = repo_on_main("tag");
+        let first = tip(&repo, "refs/heads/main");
+        repo.tag_lightweight("v1", &repo.find_object(first, None).unwrap(), false)
+            .unwrap();
+        fs::write(dir.join("f.txt"), "two\n").unwrap();
+        commit_all(&repo, "two");
+        git_checkout_blocking(p(&dir), "v1".into()).unwrap();
+        let head = repo.head().unwrap();
+        assert!(!head.is_branch(), "HEAD must not point at refs/tags/v1");
+        assert!(repo.head_detached().unwrap());
+        assert_eq!(head.target(), Some(first));
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "one\n");
+        assert!(git_status_blocking(p(&dir))
+            .unwrap()
+            .branch
+            .starts_with("detached@"));
+    }
+
+    #[test]
+    fn fetch_and_push_go_to_the_branches_own_remote() {
+        let (dir, repo, origin) = repo_with_origin("two-remotes");
+        let fork = temp_dir("two-remotes-fork");
+        Repository::init_bare(&fork).unwrap();
+        repo.remote("fork", &p(&fork)).unwrap();
+        {
+            let mut c = repo.config().unwrap();
+            c.set_str("branch.main.remote", "fork").unwrap();
+            c.set_str("branch.main.merge", "refs/heads/main").unwrap();
+        }
+        let before = tip(&repo, "refs/heads/main");
+        fs::write(dir.join("f.txt"), "two\n").unwrap();
+        let after = commit_all(&repo, "two");
+
+        assert_eq!(git_push_blocking(p(&dir)).unwrap().result, "pushed");
+        let fork_tip = Repository::open_bare(&fork)
+            .unwrap()
+            .refname_to_id("refs/heads/main")
+            .unwrap();
+        assert_eq!(fork_tip, after, "pushed to the remote the branch tracks");
+        let origin_tip = Repository::open_bare(&origin)
+            .unwrap()
+            .refname_to_id("refs/heads/main")
+            .unwrap();
+        assert_eq!(origin_tip, before, "origin wasn't touched");
+
+        git_fetch_blocking(p(&dir)).unwrap();
+        assert_eq!(tip(&repo, "refs/remotes/fork/main"), after);
+        assert_eq!(tip(&repo, "refs/remotes/origin/main"), before);
+        assert_eq!(compute_ahead_behind(&repo), Some((0, 0)));
     }
 }
