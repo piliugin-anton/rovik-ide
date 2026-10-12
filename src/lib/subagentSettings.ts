@@ -125,6 +125,24 @@ export const LIMITS = {
   minutes: { min: 0.25, max: 120 },
 };
 
+type Limit = { min: number; max: number };
+
+/** The whole-number limits that always have a value: the field, its row's label and its range. */
+export const LIMIT_FIELDS: {
+  field: 'maxAtOnce' | 'maxPerRun' | 'reviewMinLines' | 'workerMinSteps';
+  label: string;
+  limit: Limit & { default: number };
+}[] = [
+  { field: 'maxAtOnce', label: 'At once per chat', limit: LIMITS.atOnce },
+  { field: 'maxPerRun', label: 'Per run', limit: LIMITS.perRun },
+  { field: 'reviewMinLines', label: 'Review changes from (lines)', limit: LIMITS.reviewMinLines },
+  {
+    field: 'workerMinSteps',
+    label: 'Step workers from (plan steps)',
+    limit: LIMITS.workerMinSteps,
+  },
+];
+
 const DEFAULT_KIND: KindSettings = {
   enabled: false,
   model: 'default',
@@ -160,18 +178,32 @@ function isSelection(v: unknown): v is ModelSelection {
   return !!s && typeof s.providerId === 'string' && typeof s.modelId === 'string';
 }
 
+/** A selection's own fields, whatever else was saved with it. */
+const pickSelection = (s: ModelSelection): ModelSelection => ({
+  providerId: s.providerId,
+  modelId: s.modelId,
+});
+
 function selections(v: unknown): ModelSelection[] {
   if (!Array.isArray(v)) return [];
   const out: ModelSelection[] = [];
   for (const s of v.filter(isSelection)) {
-    if (!out.some((o) => sameModel(o, s)))
-      out.push({ providerId: s.providerId, modelId: s.modelId });
+    if (!out.some((o) => sameModel(o, s))) out.push(pickSelection(s));
   }
   return out;
 }
 
-function clampNumber(v: unknown, min: number, max: number): number | undefined {
-  return typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : undefined;
+/** `v` within `limit`; undefined unless it's a finite number. */
+function inRange(v: unknown, limit: Limit): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v)
+    ? Math.min(limit.max, Math.max(limit.min, v))
+    : undefined;
+}
+
+/** `v` within `limit`, whole; undefined unless it's a finite number. */
+function wholeInRange(v: unknown, limit: Limit): number | undefined {
+  const n = inRange(v, limit);
+  return n === undefined ? undefined : Math.round(n);
 }
 
 function normalizeKind(raw: unknown): KindSettings {
@@ -180,10 +212,10 @@ function normalizeKind(raw: unknown): KindSettings {
     r.model === 'chat' || r.model === 'default'
       ? r.model
       : isSelection(r.model)
-        ? { providerId: r.model.providerId, modelId: r.model.modelId }
+        ? pickSelection(r.model)
         : 'default';
-  const toolCalls = clampNumber(r.maxToolCalls, LIMITS.toolCalls.min, LIMITS.toolCalls.max);
-  const minutes = clampNumber(r.maxMinutes, LIMITS.minutes.min, LIMITS.minutes.max);
+  const toolCalls = wholeInRange(r.maxToolCalls, LIMITS.toolCalls);
+  const minutes = inRange(r.maxMinutes, LIMITS.minutes);
   return {
     enabled: r.enabled === true,
     model,
@@ -191,7 +223,7 @@ function normalizeKind(raw: unknown): KindSettings {
       (f) => typeof model === 'string' || !sameModel(f, model)
     ),
     effort: EFFORT_IDS.includes(r.effort as Effort) ? (r.effort as Effort) : 'default',
-    ...(toolCalls !== undefined ? { maxToolCalls: Math.round(toolCalls) } : {}),
+    ...(toolCalls !== undefined ? { maxToolCalls: toolCalls } : {}),
     ...(minutes !== undefined ? { maxMinutes: minutes } : {}),
   };
 }
@@ -200,9 +232,8 @@ function normalizeKind(raw: unknown): KindSettings {
 export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const kinds = (r.kinds && typeof r.kinds === 'object' ? r.kinds : {}) as Record<string, unknown>;
-  const defaultModel = isSelection(r.defaultModel)
-    ? { providerId: r.defaultModel.providerId, modelId: r.defaultModel.modelId }
-    : 'chat';
+  const defaultModel = isSelection(r.defaultModel) ? pickSelection(r.defaultModel) : 'chat';
+  const maxRunTokens = wholeInRange(r.maxRunTokens, LIMITS.runTokens);
   return {
     enabled: r.enabled === true,
     defaultModel,
@@ -212,30 +243,16 @@ export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
     kinds: Object.fromEntries(
       SUBAGENT_KINDS.map((k) => [k.id, normalizeKind(kinds[k.id])])
     ) as Record<SubagentKindId, KindSettings>,
-    maxAtOnce: Math.round(
-      clampNumber(r.maxAtOnce, LIMITS.atOnce.min, LIMITS.atOnce.max) ?? LIMITS.atOnce.default
-    ),
-    maxPerRun: Math.round(
-      clampNumber(r.maxPerRun, LIMITS.perRun.min, LIMITS.perRun.max) ?? LIMITS.perRun.default
-    ),
-    reviewMinLines: Math.round(
-      clampNumber(r.reviewMinLines, LIMITS.reviewMinLines.min, LIMITS.reviewMinLines.max) ??
-        LIMITS.reviewMinLines.default
-    ),
-    workerMinSteps: Math.round(
-      clampNumber(r.workerMinSteps, LIMITS.workerMinSteps.min, LIMITS.workerMinSteps.max) ??
-        LIMITS.workerMinSteps.default
-    ),
+    ...(Object.fromEntries(
+      LIMIT_FIELDS.map(({ field, limit }) => [
+        field,
+        wholeInRange(r[field], limit) ?? limit.default,
+      ])
+    ) as Record<(typeof LIMIT_FIELDS)[number]['field'], number>),
     parallelWorkers: r.parallelWorkers === true,
     redCheck: r.redCheck === true,
     parallelRepair: r.parallelRepair === true,
-    ...(typeof r.maxRunTokens === 'number' && Number.isFinite(r.maxRunTokens)
-      ? {
-          maxRunTokens: Math.round(
-            Math.min(LIMITS.runTokens.max, Math.max(LIMITS.runTokens.min, r.maxRunTokens))
-          ),
-        }
-      : {}),
+    ...(maxRunTokens !== undefined ? { maxRunTokens } : {}),
   };
 }
 

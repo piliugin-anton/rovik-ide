@@ -11,6 +11,7 @@ import ModelWithFallbacks from './ModelWithFallbacks';
 import { vfsStatus } from '../lib/virtualFiles';
 import { EFFORTS, type Effort } from '../lib/reasoning';
 import {
+  LIMIT_FIELDS,
   LIMITS,
   numberFieldValue,
   otherProviders,
@@ -196,46 +197,20 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
         </button>
         <Show when={limitsOpen()}>
           <div class="subagent-limits">
-            <NumberInput
-              label="At once per chat"
-              value={s().maxAtOnce}
-              placeholder={LIMITS.atOnce.default}
-              min={LIMITS.atOnce.min}
-              max={LIMITS.atOnce.max}
-              disabled={off()}
-              onChange={(v) => patch({ maxAtOnce: Math.round(v ?? LIMITS.atOnce.default) })}
-            />
-            <NumberInput
-              label="Per run"
-              value={s().maxPerRun}
-              placeholder={LIMITS.perRun.default}
-              min={LIMITS.perRun.min}
-              max={LIMITS.perRun.max}
-              disabled={off()}
-              onChange={(v) => patch({ maxPerRun: Math.round(v ?? LIMITS.perRun.default) })}
-            />
-            <NumberInput
-              label="Review changes from (lines)"
-              value={s().reviewMinLines}
-              placeholder={LIMITS.reviewMinLines.default}
-              min={LIMITS.reviewMinLines.min}
-              max={LIMITS.reviewMinLines.max}
-              disabled={off()}
-              onChange={(v) =>
-                patch({ reviewMinLines: Math.round(v ?? LIMITS.reviewMinLines.default) })
-              }
-            />
-            <NumberInput
-              label="Step workers from (plan steps)"
-              value={s().workerMinSteps}
-              placeholder={LIMITS.workerMinSteps.default}
-              min={LIMITS.workerMinSteps.min}
-              max={LIMITS.workerMinSteps.max}
-              disabled={off()}
-              onChange={(v) =>
-                patch({ workerMinSteps: Math.round(v ?? LIMITS.workerMinSteps.default) })
-              }
-            />
+            <For each={LIMIT_FIELDS}>
+              {({ field, label, limit }) => (
+                <NumberInput
+                  label={label}
+                  value={s()[field]}
+                  placeholder={limit.default}
+                  min={limit.min}
+                  max={limit.max}
+                  disabled={off()}
+                  // Whole already: the field's step is 1 (numberFieldValue).
+                  onChange={(v) => patch({ [field]: v ?? limit.default })}
+                />
+              )}
+            </For>
           </div>
           <label class="setting-checkbox">
             <input

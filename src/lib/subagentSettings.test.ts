@@ -298,6 +298,44 @@ test('default_with_no_own_fallbacks', () => {
   assert.deepEqual(kindChain(chat, 'scout'), ['chat']);
 });
 
+test('limits_clamp_table: each limit is kept whole and within its range', () => {
+  const table: [string, unknown, number | undefined][] = [
+    ['maxPerRun', 0, 1],
+    ['maxPerRun', 99, 50],
+    ['maxPerRun', 7.4, 7],
+    ['maxPerRun', 'x', 12],
+    ['maxPerRun', undefined, 12],
+    ['reviewMinLines', -5, 1],
+    ['reviewMinLines', 20_000, 10_000],
+    ['reviewMinLines', 2.5, 3],
+    ['reviewMinLines', undefined, 10],
+    ['workerMinSteps', 0.2, 1],
+    ['workerMinSteps', 500, 100],
+    ['workerMinSteps', NaN, 6],
+    ['workerMinSteps', undefined, 6],
+    ['maxRunTokens', 10, 1000],
+    ['maxRunTokens', 1e9, 1e8],
+    ['maxRunTokens', 2500.6, 2501],
+    ['maxRunTokens', '5000', undefined],
+    ['maxRunTokens', undefined, undefined],
+  ];
+  for (const [field, raw, expected] of table) {
+    const s = normalizeSubagentSettings({ [field]: raw }) as unknown as Record<string, unknown>;
+    assert.equal(s[field], expected, `${field}: ${String(raw)}`);
+    assert.equal(field in s, expected !== undefined, `${field} present: ${String(raw)}`);
+  }
+  // A kind's budget: tool calls whole, minutes as given (a quarter minute is fine).
+  const kind = (k: Record<string, unknown>) =>
+    normalizeSubagentSettings({ kinds: { scout: k } }).kinds.scout;
+  assert.equal(kind({ maxMinutes: 0.1 }).maxMinutes, 0.25);
+  assert.equal(kind({ maxMinutes: 2.5 }).maxMinutes, 2.5);
+  assert.equal(kind({ maxMinutes: 999 }).maxMinutes, 120);
+  assert.equal('maxMinutes' in kind({}), false);
+  assert.equal(kind({ maxToolCalls: 2.6 }).maxToolCalls, 3);
+  assert.equal(kind({ maxToolCalls: 999 }).maxToolCalls, 200);
+  assert.equal('maxToolCalls' in kind({ maxToolCalls: 'many' }), false);
+});
+
 test('number_field_value_table', () => {
   const table: [Parameters<typeof numberFieldValue>, number | undefined][] = [
     [['500', 1000, 1e8], 1000],
