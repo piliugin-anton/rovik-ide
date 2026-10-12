@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  createAiSettingsHolder,
   loadAiSettings,
   saveAiSettings,
   saveKeepingSubagents,
@@ -100,6 +101,32 @@ test('save_keeping_subagents: known settings are saved as they are, without a re
   assert.deepEqual(result, mine);
   assert.equal(loads, 0);
   assert.deepEqual(saves[0].subagents, mine);
+});
+
+test('ai_settings_holder: a failed load is remembered until a save reads the saved ones', async () => {
+  const taken: SubagentSettings[] = [];
+  const saves: PersistedAiSettings[] = [];
+  let reload: PersistedAiSettings = { ...edited, version: 2, loadFailed: true };
+  const holder = createAiSettingsHolder(
+    { setProviders() {}, setPermissions() {}, setSubagents: (s) => void taken.push(s) },
+    { load: async () => reload, save: async (s) => void saves.push(s) }
+  );
+  // Loaded, but the file couldn't be read: defaults stand in.
+  holder.apply({ ...edited, version: 2, loadFailed: true });
+  assert.deepEqual(taken, [DEFAULT_SUBAGENT_SETTINGS]);
+  // Saving reads again; still unreadable: nothing is saved.
+  assert.equal(await quietly(() => holder.save(edited)), false);
+  assert.equal(saves.length, 0);
+  // Readable now: saved with the saved subagent settings, which are taken in.
+  reload = { ...edited, version: 2, subagents: mine };
+  assert.equal(await holder.save(edited), true);
+  assert.deepEqual(saves[0].subagents, mine);
+  assert.deepEqual(taken[1], mine);
+  // Known from then on: saved as they are, without a reload.
+  reload = { ...edited, version: 2, loadFailed: true };
+  assert.equal(await holder.save({ ...edited, subagents: mine }), true);
+  assert.deepEqual(saves[1].subagents, mine);
+  assert.equal(taken.length, 2);
 });
 
 test('save_keeping_subagents: the real load failing saves nothing', async () => {

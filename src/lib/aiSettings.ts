@@ -82,6 +82,50 @@ export async function saveKeepingSubagents(
   return subagents;
 }
 
+/** Where a component keeps its copy of the AI settings (its signals). */
+export interface AiSettingsTargets {
+  setProviders: (providers: Provider[]) => void;
+  setPermissions: (permissions: AgentPermissions) => void;
+  setSubagents: (subagents: SubagentSettings) => void;
+}
+
+/**
+ * A component's copy of the AI settings and whether its last load failed
+ * (P5.7): then the subagent settings it holds are defaults, not what's
+ * saved, and a save keeps the saved ones (saveKeepingSubagents) and takes
+ * them in once they're read.
+ */
+export function createAiSettingsHolder(
+  targets: AiSettingsTargets,
+  io?: Parameters<typeof saveKeepingSubagents>[2]
+) {
+  let unknown = false;
+  return {
+    /** Takes loaded settings in; `active` is the caller's own. */
+    apply(settings: PersistedAiSettings) {
+      targets.setProviders(settings.providers);
+      targets.setPermissions(settings.permissions);
+      targets.setSubagents(settings.subagents);
+      unknown = !!settings.loadFailed;
+    },
+    /** Saves; false (and a console error) when nothing could be saved. */
+    async save(settings: Omit<PersistedAiSettings, 'version' | 'loadFailed'>): Promise<boolean> {
+      // Read before the await: a load may land meanwhile.
+      const wasUnknown = unknown;
+      const saved = await saveKeepingSubagents(settings, wasUnknown, io);
+      if (!saved) {
+        console.error('AI settings not saved: the saved ones couldn’t be read.');
+        return false;
+      }
+      if (wasUnknown) {
+        unknown = false;
+        targets.setSubagents(saved);
+      }
+      return true;
+    },
+  };
+}
+
 /*
  * ---------------------------------------------------------------------------
  * Naming helpers

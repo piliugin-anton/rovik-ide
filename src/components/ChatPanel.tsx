@@ -34,10 +34,10 @@ import {
 } from '../lib/fileReferences';
 import { onAddToChat, takeChatReferences } from '../lib/editorBridge';
 import {
+  createAiSettingsHolder,
   loadAiSettings,
   reconcileSelection,
   resolveProfile,
-  saveKeepingSubagents,
 } from '../lib/aiSettings';
 import { chatStore } from '../lib/chatStore';
 import { chatApi } from '../lib/chatApi';
@@ -151,10 +151,14 @@ export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
-  /** The last settings load failed: `subagentSettings` are defaults (P5.7). */
-  let subagentsUnknown = false;
   const [subagentSettings, setSubagentSettings] =
     createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
+  // P5.7: after a failed load, `subagentSettings` are defaults, not what's saved.
+  const aiSettings = createAiSettingsHolder({
+    setProviders,
+    setPermissions,
+    setSubagents: setSubagentSettings,
+  });
 
   // Chat list page + open chats (the app's, kept while the panel is away);
   // everything else stays in the database.
@@ -281,11 +285,8 @@ export default function ChatPanel(props: ChatProps) {
           try {
             const settings = await loadAiSettings();
             if (!isMounted) return;
-            setProviders(settings.providers);
+            aiSettings.apply(settings);
             setSelection((sel) => reconcileSelection(settings.providers, sel ?? settings.active));
-            setPermissions(settings.permissions);
-            setSubagentSettings(settings.subagents);
-            subagentsUnknown = !!settings.loadFailed;
           } catch (err) {
             console.error('Failed to reload AI settings:', err);
           }
@@ -686,11 +687,8 @@ export default function ChatPanel(props: ChatProps) {
     try {
       const settings = await loadAiSettings();
       if (!isMounted) return;
-      setProviders(settings.providers);
+      aiSettings.apply(settings);
       setSelection(reconcileSelection(settings.providers, settings.active));
-      setPermissions(settings.permissions);
-      setSubagentSettings(settings.subagents);
-      subagentsUnknown = !!settings.loadFailed;
 
       try {
         // This project's chats (or, with no folder open, the ones with none).
@@ -1909,28 +1907,16 @@ export default function ChatPanel(props: ChatProps) {
     nextSelection: ModelSelection | null,
     nextPermissions: AgentPermissions = permissions()
   ) {
-    void (async () => {
-      // P5.7: after a failed reload, the subagent settings here are
-      // defaults: what's saved is read again, never written over.
-      const unknown = subagentsUnknown;
-      const saved = await saveKeepingSubagents(
-        {
-          providers: nextProviders,
-          active: nextSelection,
-          permissions: nextPermissions,
-          subagents: subagentSettings(),
-        },
-        unknown
-      );
-      if (!saved) {
-        console.error('AI settings not saved: the saved ones couldn’t be read.');
-        return;
-      }
-      if (unknown) {
-        subagentsUnknown = false;
-        setSubagentSettings(saved);
-      }
-    })().catch((err) => console.error('Failed to save AI settings:', err));
+    // P5.7: after a failed reload, the subagent settings here are
+    // defaults: what's saved is read again, never written over.
+    void aiSettings
+      .save({
+        providers: nextProviders,
+        active: nextSelection,
+        permissions: nextPermissions,
+        subagents: subagentSettings(),
+      })
+      .catch((err) => console.error('Failed to save AI settings:', err));
   }
 
   function handleModelChange(next: ModelSelection) {
