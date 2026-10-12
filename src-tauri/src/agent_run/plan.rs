@@ -480,6 +480,22 @@ static NEW_MARK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\((?:new|new file|created?)\)").unwrap());
 static READ_MARK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\((?:read|read-only|readonly|reads|context)\)").unwrap());
+/// A `Group:` line's name, in lower case: what's in its backticks, else
+/// its text; a note or a period after it isn't the name (`` `api`. ``,
+/// `api (runs alongside step 2)`).
+fn group_name(raw: &str) -> String {
+    let t = raw.trim();
+    let name = match t.strip_prefix('`').and_then(|r| r.split_once('`')) {
+        Some((inside, _)) => inside,
+        None => t
+            .split(" (")
+            .next()
+            .unwrap_or(t)
+            .trim_end_matches(['.', ',', ';']),
+    };
+    name.trim().to_lowercase()
+}
+
 static GROUP_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)^[\s>*-]*\**group\**\s*:\s*\**\s*([^*\n]+?)\s*\**\s*$").unwrap()
 });
@@ -814,7 +830,7 @@ pub fn steps(markdown: &str) -> Vec<PlanStep> {
                     .into_iter()
                     .filter(|(_, _, fenced)| !fenced)
                     .find_map(|(_, line, _)| GROUP_LINE.captures(line))
-                    .map(|c| c[1].trim().trim_matches('`').to_lowercase())
+                    .map(|c| group_name(&c[1]))
                     .filter(|g| !g.is_empty() && !matches!(g.as_str(), "none" | "-" | "n/a")),
             }
         })
@@ -2986,5 +3002,31 @@ mod tests {
         assert_eq!(without_dots("a/b/../../c"), Some("c".into()));
         assert_eq!(without_dots("a/../.."), None);
         assert_eq!(without_dots("./a/./b/"), Some("a/b/".into()));
+    }
+
+    /// Round 2, P4.4: a period or a note after a group's name isn't part of
+    /// it, so these steps are the group the lead asks for ("backend").
+    #[test]
+    fn group_name_followed_by_a_note_or_period() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **A**\n   - `src/a.rs`: add a.\n   - Group: `backend`.\n\
+            2. **B**\n   - `src/b.rs`: add b.\n   - Group: `Backend` (runs alongside step 1)\n\
+            3. **C**\n   - `src/c.rs`: add c.\n   - Group: backend.\n\
+            4. **D**\n   - `src/d.rs`: add d.\n   - **Group:** backend (with step 1)\n\
+            5. **E**\n   - `src/e.rs`: add e.\n   - Group: `none`.\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert_eq!(
+            steps(plan)
+                .iter()
+                .map(|s| s.group.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                None
+            ]
+        );
     }
 }
