@@ -10,6 +10,7 @@
 import { createStore, produce } from 'solid-js/store';
 import type { ChatMessage } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
+import type { MessagePatch } from './chatStore';
 
 /** What a finished `task` result keeps about its subagent (subagent.rs `SubResult::meta`). */
 export interface SubagentMeta {
@@ -29,6 +30,19 @@ export interface SubagentUsage {
   inputTokens: number;
   outputTokens: number;
   cost?: number;
+}
+
+/** A parallel group's result (task kind "workers"): each worker's step and outcome. */
+export interface GroupMeta {
+  name: string;
+  conflict: boolean;
+  workers: {
+    step: number;
+    label: string;
+    status: string;
+    childDialogId?: string | null;
+    landed?: string[];
+  }[];
 }
 
 /** A subagent while it runs, from the backend's events. */
@@ -64,14 +78,34 @@ const [state, setState] = createStore<{
  * ---------------------------------------------------------------------------
  */
 
-export function noteSubagentStarted(e: {
+/** The backend's `subagentStarted` event (lib/agentRuns.ts). */
+export interface SubagentStarted {
   dialogId: string;
   toolCallId: string;
   childDialogId: string;
   kind: string;
   model: string;
   goal: string;
-}) {
+}
+
+/** The backend's `subagentProgress` event. */
+export interface SubagentProgress {
+  dialogId: string;
+  toolCallId: string;
+  toolCalls: number;
+  currentTool: string | null;
+  model: string;
+}
+
+/** The backend's `subagentEnded` event. */
+export interface SubagentEnded {
+  dialogId: string;
+  toolCallId: string;
+  childDialogId: string;
+  status: string;
+}
+
+export function noteSubagentStarted(e: SubagentStarted) {
   setState(
     produce((s) => {
       (s.live[e.dialogId] ??= {})[e.toolCallId] = {
@@ -87,13 +121,7 @@ export function noteSubagentStarted(e: {
   );
 }
 
-export function noteSubagentProgress(e: {
-  dialogId: string;
-  toolCallId: string;
-  toolCalls: number;
-  currentTool: string | null;
-  model: string;
-}) {
+export function noteSubagentProgress(e: SubagentProgress) {
   if (!state.live[e.dialogId]?.[e.toolCallId]) return;
   setState('live', e.dialogId, e.toolCallId, {
     toolCalls: e.toolCalls,
@@ -102,12 +130,7 @@ export function noteSubagentProgress(e: {
   });
 }
 
-export function noteSubagentEnded(e: {
-  dialogId: string;
-  toolCallId: string;
-  childDialogId: string;
-  status: string;
-}) {
+export function noteSubagentEnded(e: SubagentEnded) {
   if (!state.live[e.dialogId]?.[e.toolCallId]) return;
   setState('live', e.dialogId, e.toolCallId, { status: e.status, currentTool: null });
 }
@@ -161,8 +184,6 @@ export function childOf(dialogId: string | null, toolCallId: string): string | n
 
 /** Whether a chat is a subagent's (its events don't go to the chat store). */
 export const isSubagentChat = (dialogId: string) => !!state.children[dialogId];
-
-type Patch = Omit<Partial<ChatMessage>, 'status'> & { status?: ChatMessage['status'] | null };
 
 /**
  * P5.4: what arrives while a transcript's first page loads (rows, and
@@ -219,7 +240,11 @@ export function receiveSubagentMessages(
     setState('transcripts', childDialogId, 'messages', (list) => [...list, ...added]);
 }
 
-export function patchSubagentMessage(childDialogId: string, messageId: string, patch: Patch) {
+export function patchSubagentMessage(
+  childDialogId: string,
+  messageId: string,
+  patch: MessagePatch
+) {
   const t = state.transcripts[childDialogId];
   if (!t) return;
   const { status, ...fields } = patch;

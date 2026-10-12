@@ -18,7 +18,7 @@ import { listen } from '@tauri-apps/api/event';
 import { createStore, produce } from 'solid-js/store';
 import type { ApiRoute, ChatMessage, ModelProfile, OpenAIChatOptions } from '../types';
 import type { AgentPermissions } from './permissions';
-import { chatStore, type MessageRow } from './chatStore';
+import { chatStore, type MessagePatch, type MessageRow } from './chatStore';
 import { noteChecklist, clearLiveChecklist, refreshChecklist } from './checklist';
 import {
   clearApproval,
@@ -36,6 +36,9 @@ import {
   isSubagentChat,
   seedRunningSubagent,
   type RunningSubagent,
+  type SubagentEnded,
+  type SubagentProgress,
+  type SubagentStarted,
   noteSubagentEnded,
   noteSubagentProgress,
   noteSubagentStarted,
@@ -85,10 +88,6 @@ export interface ReasoningLearned {
   reasons: boolean;
 }
 
-type MessagePatch = Partial<
-  Pick<ChatMessage, 'content' | 'toolCalls' | 'meta' | 'error' | 'failed' | 'pending' | 'finalized'>
-> & { status?: ChatMessage['status'] | null };
-
 type AgentEvent =
   | { type: 'runStarted'; dialogId: string; runId: string }
   | { type: 'runEnded'; dialogId: string; runId: string; outcome: string }
@@ -119,30 +118,9 @@ type AgentEvent =
       title: string;
       message: string;
     }
-  | {
-      type: 'subagentStarted';
-      dialogId: string;
-      toolCallId: string;
-      childDialogId: string;
-      kind: string;
-      model: string;
-      goal: string;
-    }
-  | {
-      type: 'subagentProgress';
-      dialogId: string;
-      toolCallId: string;
-      toolCalls: number;
-      currentTool: string | null;
-      model: string;
-    }
-  | {
-      type: 'subagentEnded';
-      dialogId: string;
-      toolCallId: string;
-      childDialogId: string;
-      status: string;
-    };
+  | ({ type: 'subagentStarted' } & SubagentStarted)
+  | ({ type: 'subagentProgress' } & SubagentProgress)
+  | ({ type: 'subagentEnded' } & SubagentEnded);
 
 const [state, setState] = createStore<{
   /**

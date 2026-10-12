@@ -266,17 +266,7 @@ export interface ToolMeta {
   /** A `task` result: the subagent that answered it (lib/subagents.ts). */
   subagent?: import('./lib/subagents').SubagentMeta;
   /** A parallel group's result (task kind "workers"): each worker's step and outcome. */
-  group?: {
-    name: string;
-    conflict: boolean;
-    workers: {
-      step: number;
-      label: string;
-      status: string;
-      childDialogId?: string | null;
-      landed?: string[];
-    }[];
-  };
+  group?: import('./lib/subagents').GroupMeta;
   /** A subagent chat's first message: the lead's brief. */
   subagentBrief?: { kind: string; parentCallId: string };
   /** An ask_user result: the questions and how they were answered. */
