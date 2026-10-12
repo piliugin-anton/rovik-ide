@@ -14,7 +14,7 @@
 use super::plan::PlanStep;
 use super::run::Run;
 use super::subagent::{self, Kind, SubResult, SubStatus, SubagentConfig};
-use super::subagent_run::{go_sub, SubFuture};
+use super::subagent_run::{none_future, run_child, SubFuture};
 use super::worker::{self, WriteScope};
 use super::{log, permissions, tools};
 use crate::chat_db::store::ToolCall;
@@ -373,13 +373,8 @@ impl<R: Runtime> Run<R> {
             .map(|(m, run)| {
                 pending.push(m);
                 match run {
-                    Some(run) => Box::pin(async move {
-                        tauri::async_runtime::spawn(go_sub(run))
-                            .await
-                            .ok()
-                            .flatten()
-                    }) as SubFuture,
-                    None => Box::pin(async { None }) as SubFuture,
+                    Some(run) => Box::pin(run_child(run)) as SubFuture,
+                    None => none_future(),
                 }
             })
             .collect();
@@ -438,10 +433,7 @@ impl<R: Runtime> Run<R> {
                     )
                     .await
                 {
-                    Ok(run) => tauri::async_runtime::spawn(go_sub(run))
-                        .await
-                        .ok()
-                        .flatten(),
+                    Ok(run) => run_child(run).await,
                     // Not retried (the run's workers are used up, say): why.
                     Err(e) => {
                         chats::discard_child(&again.child_id);

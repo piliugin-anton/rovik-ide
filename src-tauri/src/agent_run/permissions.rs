@@ -362,7 +362,7 @@ fn matches_allowed(segment: &[String], allowed: &[Vec<String>]) -> bool {
 
 /// A wrapper's or program's name: the file name, lower case, without
 /// `.exe`/`.cmd`/`.bat`.
-fn wrapper_name(word: &str) -> String {
+pub(super) fn program_name(word: &str) -> String {
     let name = word
         .rsplit(['/', '\\'])
         .next()
@@ -426,7 +426,7 @@ fn wrapper_words(name: &str, rest: &[String]) -> Option<usize> {
 pub fn unwrap_wrappers(seg: &[String]) -> &[String] {
     let mut rest = seg;
     while let Some(first) = rest.first() {
-        let name = wrapper_name(first);
+        let name = program_name(first);
         // `env -S "rm -rf x"`: the command is inside a string, so the
         // segment stays `env …`, which no list matches (round 2).
         if split_string(&name, &rest[1..]).is_some() {
@@ -488,7 +488,7 @@ pub fn elevated(seg: &[String]) -> bool {
     let inner = unwrap_wrappers(seg).len();
     seg[..seg.len() - inner]
         .iter()
-        .any(|w| matches!(wrapper_name(w).as_str(), "sudo" | "doas"))
+        .any(|w| matches!(program_name(w).as_str(), "sudo" | "doas"))
 }
 
 /// The program's name in a segment, past wrappers that run the rest
@@ -500,7 +500,7 @@ fn programs(segment: &[String]) -> Vec<(String, &[String])> {
     let mut out = Vec::new();
     let mut rest = segment;
     while let Some(first) = rest.first() {
-        let name = wrapper_name(first);
+        let name = program_name(first);
         out.push((name.clone(), &rest[1..]));
         if split_string(&name, &rest[1..]).is_some() {
             break;

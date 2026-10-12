@@ -122,15 +122,6 @@ fn is_context_path(path: Option<&str>, real_dir: Option<&str>) -> bool {
     p == dir || p.starts_with(&format!("{dir}/"))
 }
 
-fn line(v: Option<&Value>) -> Option<usize> {
-    let n = match v? {
-        Value::String(s) if !s.trim().is_empty() => s.trim().parse::<f64>().ok()?,
-        Value::Number(n) => n.as_f64()?,
-        _ => return None,
-    };
-    (n.is_finite() && n >= 0.0).then(|| n.floor() as usize)
-}
-
 /// Tells the model which of its changes were not applied.
 fn describe_rejected_hunks(path: &str, rejected: &[Hunk], total: usize) -> String {
     let preview = |lines: &[String]| {
@@ -976,8 +967,8 @@ impl<R: Runtime> Run<R> {
                     &vfs,
                     &self.dialog_id,
                     path,
-                    line(args.get("start_line")),
-                    line(args.get("end_line")),
+                    tools::line_arg(args.get("start_line")),
+                    tools::line_arg(args.get("end_line")),
                 )
                 .await
             }
@@ -991,8 +982,8 @@ impl<R: Runtime> Run<R> {
                         path,
                         old,
                         new,
-                        line(args.get("start_line")),
-                        line(args.get("end_line")),
+                        tools::line_arg(args.get("start_line")),
+                        tools::line_arg(args.get("end_line")),
                     ),
                 }
             }

@@ -17,7 +17,7 @@ use super::command_output::focus_failures;
 use super::repair::{self, Judgement, Verdict};
 use super::run::Run;
 use super::subagent::{self, Brief, Kind, SubResult, SubStatus};
-use super::subagent_run::{go_sub, SubFuture};
+use super::subagent_run::{none_future, run_child, SubFuture};
 use super::verify::{with, CheckResult};
 use super::worker::WriteScope;
 use super::{log, tools};
@@ -565,10 +565,7 @@ impl<R: Runtime> Run<R> {
                 (p, now)
             })
             .collect();
-        let result = tauri::async_runtime::spawn(go_sub(run))
-            .await
-            .ok()
-            .flatten();
+        let result = run_child(run).await;
         let fixed = self.fixer_done(child, result, Some(&before));
         self.add_to_redo(group, &fixed.changed, &snapshot).await;
         fixed
@@ -748,7 +745,7 @@ impl<R: Runtime> Run<R> {
                         changed: Vec::new(),
                         said: e,
                     }));
-                    futures.push(Box::pin(async { None }));
+                    futures.push(none_future());
                     continue;
                 }
             };
@@ -759,12 +756,7 @@ impl<R: Runtime> Run<R> {
             {
                 Ok((child, run)) => {
                     started.push(Ok((child, fresh)));
-                    futures.push(Box::pin(async move {
-                        tauri::async_runtime::spawn(go_sub(run))
-                            .await
-                            .ok()
-                            .flatten()
-                    }));
+                    futures.push(Box::pin(run_child(run)));
                 }
                 Err(e) => {
                     let said = match &child {
@@ -781,7 +773,7 @@ impl<R: Runtime> Run<R> {
                         changed: Vec::new(),
                         said,
                     }));
-                    futures.push(Box::pin(async { None }));
+                    futures.push(none_future());
                 }
             }
         }

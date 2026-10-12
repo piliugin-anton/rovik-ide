@@ -13,6 +13,7 @@
 
 use super::diff;
 use super::paths;
+use super::permissions::program_name;
 use super::plan::{self, PlanStep, TodoItem};
 use super::subagent::{self, Budget, Format, KindSpec};
 use serde_json::{json, Value};
@@ -454,15 +455,7 @@ pub fn mark_step_done(
     step: &PlanStep,
     steps: &[PlanStep],
 ) -> Option<Vec<TodoItem>> {
-    let simple = |s: &str| {
-        s.to_lowercase()
-            .chars()
-            .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
+    let simple = plan::simple_words;
     let title = simple(&step.title);
     let numbered = |t: &str| {
         let t = simple(t);
@@ -535,21 +528,6 @@ pub fn plan_file_named(request: &str, base: Option<&str>) -> Option<String> {
  * ---------------------------------------------------------------------------
  */
 
-/// The program's name: the file name, lower case, without `.exe`/`.cmd`.
-fn program(word: &str) -> String {
-    let name = word
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(word)
-        .to_lowercase();
-    for ext in [".exe", ".cmd", ".bat"] {
-        if let Some(n) = name.strip_suffix(ext) {
-            return n.to_string();
-        }
-    }
-    name
-}
-
 /// Flags that make a check change the code it checks.
 fn fixes(words: &[String]) -> bool {
     words.iter().any(|w| {
@@ -601,7 +579,7 @@ pub fn is_check_tool(words: &[String]) -> bool {
                 | "tsc"
         )
     };
-    match program(first).as_str() {
+    match program_name(first).as_str() {
         "cargo" => matches!(
             sub,
             Some("build" | "b" | "check" | "c" | "test" | "t" | "clippy" | "nextest" | "bench")
@@ -620,7 +598,7 @@ pub fn is_check_tool(words: &[String]) -> bool {
                     .position(|w| matches!(w.as_str(), "exec" | "dlx"));
                 at.is_some_and(|i| is_check_tool(&words[i + 1..]))
             }
-            Some(s) => program(first) == "yarn" && script(s),
+            Some(s) => program_name(first) == "yarn" && script(s),
             None => false,
         },
         "npx" | "bunx" => {
@@ -704,17 +682,17 @@ pub fn writer_command_problem(
         let Some(head) = seg.first() else {
             continue;
         };
-        if program(head) == "cd" {
+        if program_name(head) == "cd" {
             continue;
         }
         let ok = if is_check_tool(seg) {
             true
         } else if test_writer {
             // Names, not contents: what list_dir shows too.
-            matches!(program(head).as_str(), "ls" | "pwd" | "which") && super::permissions::segment_is_read_only(seg)
+            matches!(program_name(head).as_str(), "ls" | "pwd" | "which") && super::permissions::segment_is_read_only(seg)
                 ||
             // `cargo test 2>&1 | tail -50`, not `cat src/lib.rs`.
-            !first && FILTERS.contains(&program(head).as_str()) && program(head) != "tee" && !names_file(seg) && !expands
+            !first && FILTERS.contains(&program_name(head).as_str()) && program_name(head) != "tee" && !names_file(seg) && !expands
                 // Round 2, P2.5: and writes nothing (`sort -o`, `uniq in out`).
                 && super::permissions::segment_is_read_only(seg)
         } else {

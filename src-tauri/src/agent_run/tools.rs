@@ -512,7 +512,7 @@ fn text<'a>(args: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
 }
 
 /// A line number; models sometimes send "12" for 12.
-fn line_arg(v: Option<&Value>) -> Option<usize> {
+pub(super) fn line_arg(v: Option<&Value>) -> Option<usize> {
     let n = match v? {
         Value::String(s) if !s.trim().is_empty() => s.trim().parse::<f64>().ok()?,
         Value::Number(n) => n.as_f64()?,

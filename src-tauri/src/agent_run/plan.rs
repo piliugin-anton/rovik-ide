@@ -1193,6 +1193,18 @@ pub enum QuestionsOutcome {
 const MAX_QUESTIONS: usize = 3;
 const MAX_OPTIONS: usize = 6;
 
+/// A title's words alone: lower case, letters and digits, one space
+/// between; so two spellings of the same step or finding compare equal.
+pub fn simple_words(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn trimmed(v: Option<&Value>) -> Option<String> {
     super::permissions::trimmed_str(v).map(str::to_string)
 }

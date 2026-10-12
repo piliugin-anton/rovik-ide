@@ -159,6 +159,18 @@ enum Job<R: Runtime> {
 
 pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Send>>;
 
+/// A child's run as a task of its own: dropping the future that awaits it
+/// never cancels the child halfway (Stop ends it cleanly). None: it
+/// panicked.
+pub(super) async fn run_child<R: Runtime>(run: Run<R>) -> Option<SubResult> {
+    tauri::async_runtime::spawn(go_sub(run)).await.ok().flatten()
+}
+
+/// The place of a child that never started.
+pub(super) fn none_future() -> SubFuture {
+    Box::pin(async { None })
+}
+
 /// A subagent's whole run as a boxed future: a run's future can't contain
 /// itself (a child's tool calls go through the same code as the lead's).
 /// Tests: the subagent answering this `task` call panics as it starts.
@@ -270,19 +282,12 @@ impl<R: Runtime> Run<R> {
             .map(|job| match job {
                 Job::Answered(text, meta) => {
                     answered.push(Some((text, meta)));
-                    Box::pin(async { None }) as SubFuture
+                    none_future()
                 }
                 Job::Run(child) => {
                     answered.push(None);
-                    // Started when a place is free (`buffered` polls it
-                    // then), as a task of its own: dropping this future
-                    // never cancels a child halfway; Stop ends it cleanly.
-                    Box::pin(async move {
-                        tauri::async_runtime::spawn(go_sub(*child))
-                            .await
-                            .ok()
-                            .flatten()
-                    }) as SubFuture
+                    // Started when a place is free (`buffered` polls it then).
+                    Box::pin(run_child(*child)) as SubFuture
                 }
             })
             .collect();
@@ -796,10 +801,7 @@ impl<R: Runtime> Run<R> {
         self.store_child(&child_id, call_id, kind, goal, message)
             .await?;
         let child = self.launch_child(child_id.clone(), call_id, goal, sub)?;
-        let result = tauri::async_runtime::spawn(go_sub(child))
-            .await
-            .ok()
-            .flatten();
+        let result = run_child(child).await;
         if let Some(r) = &result {
             self.absorb_child_writes(&r.writes);
             self.note_models(r);

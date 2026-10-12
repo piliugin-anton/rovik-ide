@@ -281,21 +281,11 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
     Ok(out)
 }
 
-fn normalized(text: &str) -> String {
-    text.to_lowercase()
-        .chars()
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Whether two findings are about the same thing: the same file, and the
 /// same lines (near enough, edits move them) or the same title.
 fn same_finding(a: &Finding, b: &Finding) -> bool {
     let near = matches!((a.line, b.line), (Some(x), Some(y)) if x.abs_diff(y) <= 8);
-    let same_title = !a.title.is_empty() && normalized(&a.title) == normalized(&b.title);
+    let same_title = !a.title.is_empty() && super::plan::simple_words(&a.title) == super::plan::simple_words(&b.title);
     // P4.5: without lines to compare, or for one plan step, only the same
     // title is the same finding (another problem in the step is new).
     match (&a.path, &b.path) {
