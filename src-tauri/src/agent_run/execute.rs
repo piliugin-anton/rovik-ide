@@ -193,7 +193,7 @@ impl<R: Runtime> Run<R> {
                     let content = format!(
                         "Error: not run: it's past your time budget of about {wall} seconds. Write your report now with what you have."
                     );
-                    self.answer_unrun(tc, content, true).await?;
+                    self.answer_unrun(tc, content, true, None).await?;
                 }
                 break;
             }
@@ -326,20 +326,28 @@ impl<R: Runtime> Run<R> {
         tc: &ToolCall,
         mut content: String,
         refused: bool,
+        meta: Option<Value>,
     ) -> Result<(), String> {
+        self.note_finished(tc, &mut content, refused);
+        self.add_tool_result(&tc.id, content, meta, Vec::new())
+            .await
+    }
+
+    /// A call that didn't run a tool (or ran one here, without a write) is
+    /// still a finished call for the loop guard, whose note joins its
+    /// result.
+    fn note_finished(&mut self, tc: &ToolCall, content: &mut String, rejected: bool) {
         let verdict = self.guard.record(FinishedCall {
             name: &tc.name,
             args_json: &tc.arguments,
-            result: &content,
+            result: content,
             write: None,
-            rejected: refused,
+            rejected,
         });
         self.log_guard(&tc.name, &verdict);
         if let Some(note) = verdict.note() {
             content.push_str(note);
         }
-        self.add_tool_result(&tc.id, content, None, Vec::new())
-            .await
     }
 
     /// One call: authorized (asking if the settings say so), run, recorded.
@@ -363,7 +371,7 @@ impl<R: Runtime> Run<R> {
                     spec.label.to_lowercase(),
                     spec.tools.join(", ")
                 );
-                return self.answer_unrun(tc, content, true).await;
+                return self.answer_unrun(tc, content, true, None).await;
             }
         }
         let args = permissions::parse_args(&tc.arguments);
@@ -374,23 +382,9 @@ impl<R: Runtime> Run<R> {
         if tc.name == "extend_scope" && self.sub().is_some_and(|s| s.scope.is_some()) {
             let (content, granted) = self.extend_scope(&args);
             let refused = granted.is_empty();
-            let mut verdict_content = content;
-            let verdict = self.guard.record(FinishedCall {
-                name: &tc.name,
-                args_json: &tc.arguments,
-                result: &verdict_content,
-                write: None,
-                rejected: refused,
-            });
-            self.log_guard(&tc.name, &verdict);
-            if let Some(note) = verdict.note() {
-                verdict_content.push_str(note);
-            }
             // Kept with the result: a continued worker keeps its grants.
-            let meta = (!granted.is_empty()).then(|| json!({ "granted": granted }));
-            return self
-                .add_tool_result(&tc.id, verdict_content, meta, Vec::new())
-                .await;
+            let meta = (!refused).then(|| json!({ "granted": granted }));
+            return self.answer_unrun(tc, content, refused, meta).await;
         }
         // The test writer writes test files only (E02).
         if let (true, Some(path), Some(root)) = (
@@ -401,7 +395,7 @@ impl<R: Runtime> Run<R> {
             let key = super::repair::rel_key(root, path);
             if !super::project::is_test_path(&key) {
                 let content = super::test_writer::not_a_test_file(&key);
-                return self.answer_unrun(tc, content, true).await;
+                return self.answer_unrun(tc, content, true, None).await;
             }
         }
         // A writing subagent changes files only with write, where its scope
@@ -414,7 +408,7 @@ impl<R: Runtime> Run<R> {
                     sub.tests_only,
                     self.root.as_deref().map(std::path::Path::new),
                 ) {
-                    return self.answer_unrun(tc, content, true).await;
+                    return self.answer_unrun(tc, content, true, None).await;
                 }
             }
         }
@@ -437,7 +431,7 @@ impl<R: Runtime> Run<R> {
                 let content = format!(
                     "Error: `{command}` is {what}. The lead runs those after merging your work; use diagnostics, or a light check on one file, run directly."
                 );
-                return self.answer_unrun(tc, content, true).await;
+                return self.answer_unrun(tc, content, true, None).await;
             }
         }
         if tc.name == "write" {
@@ -450,7 +444,7 @@ impl<R: Runtime> Run<R> {
                 let exists = std::path::Path::new(&tools::to_absolute_path(&key, root)).exists();
                 if !scope.allows(&key, exists) {
                     let content = super::worker::outside_scope(&key, scope);
-                    return self.answer_unrun(tc, content, true).await;
+                    return self.answer_unrun(tc, content, true, None).await;
                 }
             }
         }
@@ -477,17 +471,7 @@ impl<R: Runtime> Run<R> {
             {
                 self.context_edited = true;
             }
-            let verdict = self.guard.record(FinishedCall {
-                name: &tc.name,
-                args_json: &tc.arguments,
-                result: &content,
-                write: None,
-                rejected: false,
-            });
-            self.log_guard(&tc.name, &verdict);
-            if let Some(note) = verdict.note() {
-                content.push_str(note);
-            }
+            self.note_finished(tc, &mut content, false);
             let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
             return self
                 .add_tool_result(&tc.id, content, meta, Vec::new())
