@@ -4,6 +4,8 @@
 // finishes a change, a reviewer subagent reads it with fresh eyes before
 // the project's checks run (src-tauri/src/agent_run/change_review.rs).
 // Each review is a message with `meta.review`, never sent to the model.
+import { modelLabel } from './subagents';
+import { plural } from './textUtils';
 
 export type FindingSeverity = 'high' | 'medium' | 'low';
 
@@ -68,7 +70,7 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
   if (interrupted) return 'The review didn’t finish: the run ended while it was running.';
   if (meta.kind === 'plan') return planHeadline(meta);
   const files = meta.files?.length ?? 0;
-  const what = `${meta.changedLines ?? 0} changed line${meta.changedLines === 1 ? '' : 's'} in ${files} file${files === 1 ? '' : 's'}`;
+  const what = `${plural(meta.changedLines ?? 0, 'changed line')} in ${plural(files, 'file')}`;
   switch (meta.status) {
     case 'running':
       return `Reviewing the change (${what})…`;
@@ -80,7 +82,7 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
       const serious = all.filter((f) =>
         meta.afterGreen ? f.severity === 'high' : f.severity !== 'low'
       ).length;
-      const count = `${all.length} finding${all.length === 1 ? '' : 's'}`;
+      const count = plural(all.length, 'finding');
       return serious
         ? `The reviewer found ${count}: ${serious} sent to the agent to fix or answer.`
         : `The reviewer found ${count}, none serious enough to send to the agent.`;
@@ -100,7 +102,7 @@ function planHeadline(meta: ReviewMeta): string {
       return 'The plan reviewer found nothing to fix.';
     case 'findings': {
       const all = meta.findings ?? [];
-      const count = `${all.length} finding${all.length === 1 ? '' : 's'}`;
+      const count = plural(all.length, 'finding');
       if (meta.held)
         return `The plan reviewer found ${count}: the plan goes back to the agent before it’s saved.`;
       if (meta.open)
@@ -123,10 +125,7 @@ export function reviewDetails(meta: ReviewMeta): string {
   ];
   if (meta.toolCalls !== undefined) parts.push(`${meta.toolCalls} tool calls`);
   if (meta.ms !== undefined) parts.push(`${Math.round(meta.ms / 1000)} s`);
-  if (meta.model) {
-    const failed = (meta.modelsTried?.length ?? 1) - 1;
-    parts.push(failed > 0 ? `${meta.model} (after ${failed} failed)` : meta.model);
-  }
+  if (meta.model) parts.push(modelLabel(meta.model, meta.modelsTried));
   if (meta.usage) {
     const t = meta.usage.inputTokens + meta.usage.outputTokens;
     parts.push(t >= 1000 ? `${(t / 1000).toFixed(1)}k tokens` : `${t} tokens`);

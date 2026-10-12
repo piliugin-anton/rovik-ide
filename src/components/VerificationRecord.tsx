@@ -5,6 +5,7 @@
 // checks on demand. Updates live while the checks run.
 import { For, Match, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
+import { plural } from '../lib/textUtils';
 import { liveLabel, liveSubagent } from '../lib/subagents';
 import {
   causeLine,
@@ -331,7 +332,7 @@ export default function VerificationRecord(props: {
           <summary>
             Still failing: {props.meta.remaining!.length}
             {props.meta.attempts?.length
-              ? ` · ${props.meta.attempts.length} fix attempt${props.meta.attempts.length === 1 ? '' : 's'} rolled back`
+              ? ` · ${plural(props.meta.attempts.length, 'fix attempt')} rolled back`
               : ''}
           </summary>
           <ul class="chat-verify-flags">

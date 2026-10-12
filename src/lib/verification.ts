@@ -7,6 +7,7 @@
 // recorded in the chat as a message with `meta.verification`.
 import type { CheckKind } from './projectProfile';
 import type { SubagentUsage } from './subagents';
+import { plural } from './textUtils';
 
 export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
 
@@ -188,7 +189,7 @@ export interface VerificationMeta {
 /** The repair round's one-line summary. */
 export function repairHeadline(r: RepairMeta): string {
   const n = r.causes.length;
-  const causes = `${n} cause${n === 1 ? '' : 's'}`;
+  const causes = plural(n, 'cause');
   if (r.leadOnly) return `${causes}: the agent fixes them all (${r.leadOnly}).`;
   const fixers = r.causes.filter((c) => c.owner.kind === 'worker').length;
   switch (r.status) {
@@ -207,7 +208,7 @@ export function repairHeadline(r: RepairMeta): string {
 
 /** A cause's line: what, how many failures, who, and how the fix went. */
 export function causeLine(c: RepairCause): string {
-  const count = `${c.keys.length} failure${c.keys.length === 1 ? '' : 's'}`;
+  const count = plural(c.keys.length, 'failure');
   let fix = '';
   if (c.fixer) {
     fix =
@@ -279,7 +280,7 @@ export function progressLine(meta: VerificationMeta): string | null {
       meta.testsRunBefore !== undefined && meta.testsRunBefore !== meta.testsRun
         ? ` (${meta.testsRunBefore} before)`
         : '';
-    parts.push(`${meta.testsRun} test${meta.testsRun === 1 ? '' : 's'} ran${before}`);
+    parts.push(`${plural(meta.testsRun, 'test')} ran${before}`);
   }
   return parts.length ? parts.join(' · ') : null;
 }

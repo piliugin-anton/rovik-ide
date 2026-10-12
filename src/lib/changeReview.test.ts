@@ -57,6 +57,23 @@ test('the review record’s details', () => {
     }),
     'Review 2 of at most 3 · 7 tool calls · 41 s · P/strong (after 1 failed)'
   );
+  // Tokens: whole under a thousand, else "12.3k"; the model alone when only it was tried.
+  const usage = (inputTokens: number, outputTokens: number) => ({
+    ...base,
+    round: 1,
+    model: 'P/strong',
+    modelsTried: ['P/strong'],
+    usage: { inputTokens, outputTokens },
+  });
+  assert.equal(reviewDetails(usage(600, 399)), 'Review 1 of at most 3 · P/strong · 999 tokens');
+  assert.equal(
+    reviewDetails(usage(12_000, 345)),
+    'Review 1 of at most 3 · P/strong · 12.3k tokens'
+  );
+  assert.equal(
+    reviewDetails({ ...usage(1, 1), modelsTried: undefined, partial: true }),
+    'Review 1 of at most 3 · P/strong · 2 tokens · out of budget'
+  );
 });
 
 test('a plan review’s headline says what happened to the plan', () => {

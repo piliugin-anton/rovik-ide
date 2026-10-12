@@ -13,6 +13,7 @@ import { StatusIcon } from './TodoPanel';
 import { parseTodo } from '../lib/todo';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
+import { plural } from '../lib/textUtils';
 import { describeToolCall } from '../lib/permissions';
 import {
   contextEdit,
@@ -57,6 +58,7 @@ import {
   liveSubagent,
   liveWorkersOf,
   forgetLiveWorkers,
+  modelLabel,
   reportBody,
   statusLabel,
   transcript,
@@ -117,10 +119,6 @@ async function loadBody(messageId: string): Promise<string> {
 function countLines(text: string): number {
   if (!text) return 0;
   return text.split(/\r?\n/).length;
-}
-
-function plural(n: number, one: string, many = `${one}s`) {
-  return `${n} ${n === 1 ? one : many}`;
 }
 
 /** "https://docs.rs/tokio/latest/" → "docs.rs/tokio/latest" */
@@ -495,7 +493,7 @@ function ApprovalBar(props: { request: PendingApproval }) {
     const c = counts();
     if (!c) return 'Waiting for your approval';
     if (c.pending === c.total) {
-      return `Waiting for your review · ${c.total} change${c.total === 1 ? '' : 's'}`;
+      return `Waiting for your review · ${plural(c.total, 'change')}`;
     }
     return `${c.pending} of ${c.total} left · ${c.accepted} accepted · ${c.rejected} rejected`;
   };
@@ -639,10 +637,7 @@ function TaskBlock(props: ToolCallBlockProps) {
     }
     const d = done();
     if (d) {
-      const model =
-        d.modelsTried.length > 1
-          ? `${d.model} (after ${d.modelsTried.length - 1} failed)`
-          : d.model;
+      const model = modelLabel(d.model, d.modelsTried);
       return [statusLabel(d.status), workLabel(d.toolCalls, d.ms), usageLabel(d.usage), model]
         .filter(Boolean)
         .join(' · ');

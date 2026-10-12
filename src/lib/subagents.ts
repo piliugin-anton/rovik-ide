@@ -11,6 +11,8 @@ import { createStore, produce } from 'solid-js/store';
 import type { ChatMessage } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
 import type { MessagePatch } from './chatStore';
+import { SUBAGENT_KINDS } from './subagentSettings';
+import { plural } from './textUtils';
 
 /** What a finished `task` result keeps about its subagent (subagent.rs `SubResult::meta`). */
 export interface SubagentMeta {
@@ -403,15 +405,11 @@ export function transcriptHold() {
  * ---------------------------------------------------------------------------
  */
 
-const KIND_LABELS: Record<string, string> = {
-  scout: 'Scout',
-  reviewer: 'Change reviewer',
-  triage: 'Failure triage',
-  planReviewer: 'Plan reviewer',
-  worker: 'Step worker',
-  testWriter: 'Test writer',
-  workers: 'Parallel workers',
-};
+/** The kinds' labels (lib/subagentSettings.ts), and a parallel group's. */
+const KIND_LABELS: Record<string, string> = Object.fromEntries([
+  ...SUBAGENT_KINDS.map((k) => [k.id, k.label]),
+  ['workers', 'Parallel workers'],
+]);
 
 export const kindLabel = (kind: string | undefined) =>
   (kind && KIND_LABELS[kind]) || (kind ? kind[0].toUpperCase() + kind.slice(1) : 'Subagent');
@@ -428,9 +426,18 @@ const STATUS_LABELS: Record<SubagentMeta['status'], string> = {
 export const statusLabel = (status: string | undefined) =>
   (status && STATUS_LABELS[status as SubagentMeta['status']]) || status || '';
 
+/** "P/strong (after 1 failed)": the model that answered, after the ones tried before it. */
+export function modelLabel<M extends string | null>(
+  model: M,
+  modelsTried: string[] | undefined
+): M | string {
+  const failed = (modelsTried?.length ?? 1) - 1;
+  return failed > 0 ? `${model} (after ${failed} failed)` : model;
+}
+
 /** "12 tool calls · 41 s" */
 export function workLabel(toolCalls: number, ms?: number): string {
-  const calls = `${toolCalls} tool call${toolCalls === 1 ? '' : 's'}`;
+  const calls = plural(toolCalls, 'tool call');
   if (ms === undefined) return calls;
   const s = Math.round(ms / 1000);
   const time = s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;

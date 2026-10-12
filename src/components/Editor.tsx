@@ -18,6 +18,7 @@ import { addToChat } from '../lib/editorBridge';
 import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
 import { gitBaseFor } from '../lib/gitMarks';
 import { diffLines, splitLines } from '../lib/lineDiff';
+import { plural } from '../lib/textUtils';
 import {
   ensureProjectIntelliSense,
   isIntelliSenseReady,
@@ -734,7 +735,6 @@ function agentChangeDecorations(
 ): monaco.editor.IModelDeltaDecoration[] {
   const lineCount = model.getLineCount();
   const out: monaco.editor.IModelDeltaDecoration[] = [];
-  const plural = (n: number) => `${n} line${n === 1 ? '' : 's'}`;
   // Hunks count lines of the old text; `shift` maps them onto the new one.
   let shift = 0;
   for (const hunk of change.hunks) {
@@ -757,7 +757,7 @@ function agentChangeDecorations(
             // A new file diffs as "one empty line replaced": that's an addition.
             value:
               hunk.deleted.length > 0 && hunk.deleted.join('') !== ''
-                ? `Changed by the agent (was ${plural(hunk.deleted.length)})`
+                ? `Changed by the agent (was ${plural(hunk.deleted.length, 'line')})`
                 : `Added by the agent`,
           },
         },
@@ -776,7 +776,7 @@ function agentChangeDecorations(
             color: '#e06c75',
             position: monaco.editor.OverviewRulerLane.Left,
           },
-          hoverMessage: { value: `${plural(hunk.deleted.length)} removed by the agent` },
+          hoverMessage: { value: `${plural(hunk.deleted.length, 'line')} removed by the agent` },
         },
       });
     }

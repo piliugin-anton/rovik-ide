@@ -17,6 +17,7 @@ import { ConflictResolver, forgetConflictChoices, type ConflictSource } from './
 import type { GitOperation } from '../types';
 import { requestCompare } from '../lib/editorBridge';
 import { notify } from '../lib/notifications';
+import { plural } from '../lib/textUtils';
 import {
   overlayConflictFile,
   overlayConflictResolve,
@@ -55,8 +56,6 @@ const LABEL: Record<ChangedFile['change'], string> = {
   deleted: 'D',
   moved: 'R',
 };
-
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** Paths for a message: the first few, then how many more. */
 const listPaths = (paths: string[], shown = 8) =>

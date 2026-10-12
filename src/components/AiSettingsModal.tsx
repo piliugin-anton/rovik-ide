@@ -16,6 +16,7 @@ import SubagentSettings from './SubagentSettings';
 import { subagentSummary, type SubagentSettings as SubagentChoices } from '../lib/subagentSettings';
 import EditorSettings from './EditorSettings';
 import { editorSettings, EDITOR_THEMES } from '../lib/editorSettings';
+import { plural } from '../lib/textUtils';
 
 export type AiSettingsPage =
   'menu' | 'editor' | 'providers' | 'permissions' | 'subagents' | 'project' | 'builds' | 'vfs';
@@ -93,7 +94,7 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
     const list = providers();
     if (list.length === 0) return 'No providers yet';
     const models = list.reduce((n, p) => n + p.models.filter((m) => m.enabled).length, 0);
-    return `${list.length} provider${list.length === 1 ? '' : 's'}, ${models} model${models === 1 ? '' : 's'} enabled`;
+    return `${plural(list.length, 'provider')}, ${plural(models, 'model')} enabled`;
   };
 
   const permissionsSummary = () => {

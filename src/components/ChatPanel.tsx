@@ -49,6 +49,7 @@ import ContextMeter, { type ContextUsage } from './ContextMeter';
 import { chatMode, implementationRequest, setChatMode, type ChatMode } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
 import { notify } from '../lib/notifications';
+import { plural } from '../lib/textUtils';
 import ModeSelector from './ModeSelector';
 import EffortSelector from './EffortSelector';
 import ContextControls from './ContextControls';
@@ -909,10 +910,9 @@ export default function ChatPanel(props: ChatProps) {
       message: (
         <>
           <strong>{dialog.title || 'Untitled chat'}</strong>
-          {count > 0 ? ` and its ${count} message${count === 1 ? '' : 's'}` : ''} will be
-          permanently deleted.
+          {count > 0 ? ` and its ${plural(count, 'message')}` : ''} will be permanently deleted.
           {unlanded > 0
-            ? ` So will its ${unlanded} changed file${unlanded === 1 ? '' : 's'} that haven’t landed in the project.`
+            ? ` So will its ${plural(unlanded, 'changed file')} that haven’t landed in the project.`
             : ''}
         </>
       ),
