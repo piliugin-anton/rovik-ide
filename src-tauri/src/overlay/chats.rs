@@ -442,6 +442,7 @@ pub fn discard(dialog_id: &str) -> Result<(), String> {
     let project = project_of(dialog_id);
     close(dialog_id);
     drop_peer_state(dialog_id);
+    forget_shown(dialog_id, None);
     if let Some(project) = project {
         refresh_project_peers(&project);
     }
@@ -1557,7 +1558,24 @@ pub fn land_now_with(
         return Err(e);
     }
     let changes = changes(dialog_id);
-    match super::land::land_checked(&data, dialog_id, &project, &changes, keep_chat, allow_merge) {
+    // Land anyway takes the chat's version over the conflicts the user was
+    // shown (the bar's list, which the confirmation named), not over one
+    // the project caused since: that one is reported instead.
+    let known: Vec<super::land::Conflict> = if keep_chat {
+        pending(dialog_id).map(|p| p.conflicts).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let known_paths: Vec<String> = known.iter().map(|c| c.path.clone()).collect();
+    match super::land::land_checked(
+        &data,
+        dialog_id,
+        &project,
+        &changes,
+        keep_chat,
+        keep_chat.then_some(known_paths.as_slice()),
+        allow_merge,
+    ) {
         Ok(landed) => {
             let _ = discard(dialog_id);
             // Other chats on the project hear about it now, not only when
@@ -1569,10 +1587,19 @@ pub fn land_now_with(
             Ok(landed)
         }
         Err(e) => {
-            let conflicts = match &e {
+            let mut conflicts = match &e {
                 LandError::Conflicts(c) => c.clone(),
                 _ => Vec::new(),
             };
+            // The new conflicts are the error's; the bar keeps showing the
+            // ones the user already knew about with them.
+            if matches!(e, LandError::Conflicts(_)) {
+                for k in known {
+                    if !conflicts.iter().any(|c| c.path == k.path) {
+                        conflicts.push(k);
+                    }
+                }
+            }
             set_pending(
                 dialog_id,
                 Some(&Pending {
@@ -1804,11 +1831,65 @@ fn current_version(dialog_id: &str, path: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// The project's version of a conflicted file as the resolver last showed
+/// it, per chat and path (None: not in the project then). A resolution is
+/// made against it, so it's what the resolved file is merged against when
+/// landing: if the project changed the file again meanwhile, that change
+/// is merged in or reported as a new conflict, not dropped.
+static SHOWN: LazyLock<Mutex<HashMap<String, HashMap<String, Option<Vec<u8>>>>>> =
+    LazyLock::new(Default::default);
+
+fn note_shown(dialog_id: &str, path: &str, project: Option<&[u8]>) {
+    SHOWN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(dialog_id.to_string())
+        .or_default()
+        .insert(path.to_string(), project.map(<[u8]>::to_vec));
+}
+
+/// The project version last shown for `path`, forgotten once taken.
+fn take_shown(dialog_id: &str, path: &str) -> Option<Option<Vec<u8>>> {
+    let mut shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
+    let chat = shown.get_mut(dialog_id)?;
+    let taken = chat.remove(path);
+    if chat.is_empty() {
+        shown.remove(dialog_id);
+    }
+    taken
+}
+
+/// Forgets what was shown for `path` (None: for every file of the chat).
+fn forget_shown(dialog_id: &str, path: Option<&str>) {
+    let mut shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
+    match path {
+        Some(p) => {
+            if let Some(chat) = shown.get_mut(dialog_id) {
+                chat.remove(p);
+                if chat.is_empty() {
+                    shown.remove(dialog_id);
+                }
+            }
+        }
+        None => {
+            shown.remove(dialog_id);
+        }
+    }
+}
+
 /// A conflicted file for the conflict resolver: the project's version on the
 /// left ("ours", it's where the chat's changes go), the chat's on the right.
+/// The project's version shown is what a resolution of the file is then
+/// merged against ([`resolve_conflict`]).
 pub fn conflict_file(dialog_id: &str, path: &str) -> Result<crate::git_sync::ConflictFile, String> {
-    use crate::merge::{is_binary, merge3_raw, parse_merged, MergeSegment};
     let s = sides(dialog_id, path)?;
+    note_shown(dialog_id, path, s.project.as_deref());
+    Ok(conflict_file_of(path, &s))
+}
+
+/// [`conflict_file`], from the three versions as read.
+fn conflict_file_of(path: &str, s: &Sides) -> crate::git_sync::ConflictFile {
+    use crate::merge::{is_binary, merge3_raw, parse_merged, MergeSegment};
     let binary = [&s.base, &s.chat, &s.project]
         .iter()
         .any(|b| b.as_deref().is_some_and(is_binary));
@@ -1819,8 +1900,16 @@ pub fn conflict_file(dialog_id: &str, path: &str) -> Result<crate::git_sync::Con
     let segments = if binary {
         Vec::new()
     } else if let (Some(p), Some(c)) = (&s.project, &s.chat) {
-        let merged = merge3_raw(s.base.as_deref().unwrap_or(&[]), p, c)?;
-        parse_merged(&String::from_utf8_lossy(&merged.content))
+        // Refused by libgit2 (not for text, but just in case): the whole
+        // file as one conflict.
+        match merge3_raw(s.base.as_deref().unwrap_or(&[]), p, c) {
+            Ok(merged) => parse_merged(&String::from_utf8_lossy(&merged.content)),
+            Err(_) => vec![MergeSegment::Conflict {
+                ours: text(&s.project).unwrap_or_default(),
+                base: text(&s.base).unwrap_or_default(),
+                theirs: text(&s.chat).unwrap_or_default(),
+            }],
+        }
     } else {
         vec![MergeSegment::Conflict {
             ours: text(&s.project).unwrap_or_default(),
@@ -1828,7 +1917,7 @@ pub fn conflict_file(dialog_id: &str, path: &str) -> Result<crate::git_sync::Con
             theirs: text(&s.chat).unwrap_or_default(),
         }]
     };
-    Ok(crate::git_sync::ConflictFile {
+    crate::git_sync::ConflictFile {
         path: path.to_string(),
         ours: text(&s.project),
         theirs: text(&s.chat),
@@ -1839,13 +1928,16 @@ pub fn conflict_file(dialog_id: &str, path: &str) -> Result<crate::git_sync::Con
         current: None,
         ours_label: "Project (now)".into(),
         theirs_label: "This chat".into(),
-    })
+    }
 }
 
 /// Settles a conflicted file: the chat's version becomes `content` (None:
 /// deleted), or the whole of one `side` ("ours": the project's, "theirs":
-/// the chat's), and it's merged against the project's file as it is now, so
-/// it lands as it is. Returns the conflicts left.
+/// the chat's). It's merged against the project's version the resolver
+/// showed (the one the resolution was made from), so it lands as it is;
+/// if the project changed the file again since, the landing merges that
+/// change in, or reports a new conflict, rather than drop it. Taking the
+/// project's side takes its file as it is now. Returns the conflicts left.
 pub fn resolve_conflict(
     dialog_id: &str,
     path: &str,
@@ -1855,14 +1947,16 @@ pub fn resolve_conflict(
     let lock = state_lock(dialog_id);
     let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
     let s = sides(dialog_id, path)?;
-    let content = match side {
-        Some("ours") => s.project.clone(),
-        Some("theirs") => s.chat.clone(),
+    // Not shown first (nothing to have resolved against): the project now.
+    let shown = take_shown(dialog_id, path).unwrap_or_else(|| s.project.clone());
+    let (content, base) = match side {
+        Some("ours") => (s.project.clone(), s.project.clone()),
+        Some("theirs") => (s.chat.clone(), shown),
         Some(other) => return Err(format!("unknown side: {other}")),
-        None => content,
+        None => (content, shown),
     };
     with_fs(dialog_id, |fs| {
-        fs.rebase_file(path, content.as_deref(), s.project.as_deref())
+        fs.rebase_file(path, content.as_deref(), base.as_deref())
     })?
     .map_err(|e| format!("{path}: {e:?}"))?;
     // Settled: no markers to wait for, no older version to go back to.
@@ -1971,7 +2065,12 @@ pub fn mark_conflicts(dialog_id: &str) -> Result<Vec<String>, String> {
 
 /// Puts conflict markers in one file; false when it can't have them.
 fn mark_one(dialog_id: &str, path: &str) -> Result<bool, String> {
-    let file = conflict_file(dialog_id, path)?;
+    // The three versions read once: the markers show the project's version
+    // the file is then merged against. Whatever the resolver showed before
+    // is superseded.
+    let s = sides(dialog_id, path)?;
+    forget_shown(dialog_id, Some(path));
+    let file = conflict_file_of(path, &s);
     if file.binary || file.ours.is_none() || file.theirs.is_none() {
         return Ok(false);
     }
@@ -1997,11 +2096,10 @@ fn mark_one(dialog_id: &str, path: &str) -> Result<bool, String> {
             }
         }
     }
-    let project = std::fs::read(project_of(dialog_id).unwrap_or_default().join(path)).ok();
     // The chat's own version is kept: Resolve… and Undo the merge use it.
-    keep_versions(dialog_id, path, &sides(dialog_id, path)?)?;
+    keep_versions(dialog_id, path, &s)?;
     with_fs(dialog_id, |fs| {
-        fs.rebase_file(path, Some(text.as_bytes()), project.as_deref())
+        fs.rebase_file(path, Some(text.as_bytes()), s.project.as_deref())
     })?
     .map_err(|e| format!("{e:?}"))?;
     note_written(dialog_id, path, text.as_bytes());
@@ -2454,6 +2552,124 @@ mod conflict_tests {
             std::fs::read_to_string(project.join("a.txt")).unwrap(),
             "PROJECT CHAT\n2\n3\n4\n5\n"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn read(project: &Path, name: &str) -> String {
+        std::fs::read_to_string(project.join(name)).unwrap()
+    }
+
+    /// The project changes the file again (another chat lands, the user
+    /// saves) while the resolver shows it: the resolution, made against the
+    /// older version, is merged with the newer change when landing instead
+    /// of replacing it.
+    #[test]
+    fn a_resolution_made_against_an_older_project_version_is_merged_with_the_newer_one() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (root, project, id) = conflicted("stale");
+        let file = conflict_file(&id, "a.txt").unwrap();
+        assert_eq!(file.ours.as_deref(), Some("PROJECT\n2\n3\n4\n5\n"));
+        std::fs::write(project.join("a.txt"), "PROJECT\n2\n3\n4\nFIVE\n").unwrap();
+        resolve_conflict(
+            &id,
+            "a.txt",
+            Some(b"PROJECT CHAT\n2\n3\n4\n5\n".to_vec()),
+            None,
+        )
+        .unwrap();
+        land_now(&id, false).unwrap().unwrap();
+        assert_eq!(read(&project, "a.txt"), "PROJECT CHAT\n2\n3\n4\nFIVE\n");
+
+        // Taking the chat's side: the same, with its version.
+        let (root2, project, id) = conflicted("stale-theirs");
+        conflict_file(&id, "a.txt").unwrap();
+        std::fs::write(project.join("a.txt"), "PROJECT\n2\n3\n4\nFIVE\n").unwrap();
+        resolve_conflict(&id, "a.txt", None, Some("theirs")).unwrap();
+        land_now(&id, false).unwrap().unwrap();
+        assert_eq!(read(&project, "a.txt"), "CHAT\n2\n3\n4\nFIVE\n");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(root2);
+    }
+
+    /// The newer change is to the lines the resolution changed: a conflict
+    /// again, not the resolution over it. Taking the project's side takes
+    /// its file as it is now.
+    #[test]
+    fn a_resolution_made_against_an_older_project_version_conflicts_with_a_newer_change_to_the_same_lines(
+    ) {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (root, project, id) = conflicted("stale-conflict");
+        conflict_file(&id, "a.txt").unwrap();
+        std::fs::write(project.join("a.txt"), "PROJECT AGAIN\n2\n3\n4\n5\n").unwrap();
+        assert!(resolve_conflict(
+            &id,
+            "a.txt",
+            Some(b"PROJECT CHAT\n2\n3\n4\n5\n".to_vec()),
+            None,
+        )
+        .unwrap()
+        .is_empty());
+        let err = land_now(&id, false).unwrap_err();
+        assert!(
+            matches!(&err, super::super::land::LandError::Conflicts(c) if c.len() == 1 && c[0].path == "a.txt"),
+            "{err:?}"
+        );
+        assert_eq!(read(&project, "a.txt"), "PROJECT AGAIN\n2\n3\n4\n5\n");
+        assert_eq!(pending(&id).unwrap().conflicts.len(), 1);
+        conflict_file(&id, "a.txt").unwrap();
+        resolve_conflict(&id, "a.txt", None, Some("ours")).unwrap();
+        // The project has it already: nothing to write.
+        assert!(land_now(&id, false).unwrap().is_none());
+        assert_eq!(read(&project, "a.txt"), "PROJECT AGAIN\n2\n3\n4\n5\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Land anyway takes the chat's version over the conflicts the user was
+    /// shown. One that came up since (the project changed another file the
+    /// chat changed too) stops it and joins the bar's list instead.
+    #[test]
+    fn land_anyway_takes_over_only_the_conflicts_the_user_saw() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (root, project, id) = conflicted("anyway");
+        std::fs::write(project.join("b.txt"), "b1\nb2\n").unwrap();
+        with_fs(&id, |fs| {
+            let ino = fs.resolve("b.txt").unwrap();
+            fs.setattr(
+                ino,
+                &SetAttr {
+                    size: Some(0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            fs.write(ino, 0, b"CHAT B\nb2\n").unwrap();
+        })
+        .unwrap();
+        std::fs::write(project.join("b.txt"), "PROJECT B\nb2\n").unwrap();
+        // The bar names a.txt only.
+        assert_eq!(pending(&id).unwrap().conflicts.len(), 1);
+        let err = land_now(&id, true).unwrap_err();
+        let super::super::land::LandError::Conflicts(new) = err else {
+            panic!("{err:?}")
+        };
+        assert_eq!(
+            new.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(),
+            ["b.txt"]
+        );
+        assert_eq!(read(&project, "a.txt"), "PROJECT\n2\n3\n4\n5\n");
+        assert_eq!(read(&project, "b.txt"), "PROJECT B\nb2\n");
+        let mut shown: Vec<String> = pending(&id)
+            .unwrap()
+            .conflicts
+            .into_iter()
+            .map(|c| c.path)
+            .collect();
+        shown.sort();
+        assert_eq!(shown, ["a.txt", "b.txt"]);
+        // Both seen now: the chat's version of both.
+        land_now(&id, true).unwrap().unwrap();
+        assert_eq!(read(&project, "a.txt"), "CHAT\n2\n3\n4\n5\n");
+        assert_eq!(read(&project, "b.txt"), "CHAT B\nb2\n");
         let _ = std::fs::remove_dir_all(root);
     }
 

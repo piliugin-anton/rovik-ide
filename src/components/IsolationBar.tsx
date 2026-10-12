@@ -3,7 +3,8 @@
 // Above the composer of an isolated chat: what the chat changed that isn't
 // in the project yet, and why it didn't land if it didn't. Each file opens
 // as a comparison with the project's version. Land puts the changes in the
-// project (Land anyway: the chat's version wins over conflicting changes);
+// project (Land anyway: the chat's version wins over the conflicts listed;
+// one the project caused since is shown as new instead);
 // Discard throws them away; after a landing, Undo takes it back. Conflicts
 // are resolved in the conflict resolver (Resolve…), or handed to the chat
 // (Ask the chat): markers go into its files and it's asked to settle them.
