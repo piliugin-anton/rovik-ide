@@ -561,6 +561,17 @@ pub fn parse_brief(args: &Map<String, Value>, enabled: &[Kind]) -> Result<Brief,
 
 impl Brief {
     /// The budget for this brief: the kind's, or less if the lead asked.
+    /// The lead's note to a writer: the goal, unless it's the default one
+    /// (`is_default`), and the context; empty when there's neither.
+    pub fn note(&self, is_default: impl Fn(&str) -> bool) -> String {
+        (!is_default(&self.goal))
+            .then(|| self.goal.clone())
+            .into_iter()
+            .chain(self.context.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
     pub fn budget(&self, kind_budget: Budget) -> Budget {
         Budget {
             tool_calls: self.max_tool_calls.map_or(kind_budget.tool_calls, |n| {

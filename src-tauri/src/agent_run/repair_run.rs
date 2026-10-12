@@ -221,6 +221,16 @@ fn fixer_brief(step: usize, summary: &str) -> Brief {
     }
 }
 
+/// A fix round's setting, the same for each of its fixers: the group
+/// whose workers fix, the round, the checks' results and the record.
+#[derive(Clone, Copy)]
+struct FixRound<'a> {
+    group: &'a GroupRecord,
+    round: u32,
+    results: &'a [CheckResult],
+    record_id: &'a str,
+}
+
 impl<R: Runtime> Run<R> {
     /// Whether the repair loop runs here: the lead of an isolated chat in
     /// which a parallel group joined, with step workers on.
@@ -249,6 +259,12 @@ impl<R: Runtime> Run<R> {
         }
         let Some(group) = self.groups.last().cloned() else {
             return Ok(Repair::None);
+        };
+        let fix = FixRound {
+            group: &group,
+            round,
+            results,
+            record_id,
         };
         let root = self.root.clone().unwrap_or_default();
         let keys: Vec<String> = results
@@ -332,9 +348,7 @@ impl<R: Runtime> Run<R> {
             self.take_checkpoint();
         }
         if !parallel.is_empty() {
-            let outcomes = self
-                .fix_in_parallel(&group, &found, &parallel, round, results, record_id)
-                .await;
+            let outcomes = self.fix_in_parallel(&fix, &found, &parallel).await;
             for (i, f) in parallel.iter().zip(outcomes) {
                 fixed[*i] = Some(f);
             }
@@ -343,9 +357,7 @@ impl<R: Runtime> Run<R> {
                 if self.stopped() {
                     break;
                 }
-                let f = self
-                    .fix_one(&group, &found[i], round, results, record_id, None)
-                    .await;
+                let f = self.fix_one(&fix, &found[i], None).await;
                 fixed[i] = Some(f);
                 self.update_meta(
                     record_id,
@@ -441,13 +453,16 @@ impl<R: Runtime> Run<R> {
     /// overlay it works in (R07), else the chat's view.
     async fn start_fixer(
         &mut self,
-        group: &GroupRecord,
+        fix: &FixRound<'_>,
         cause: &Cause,
-        round: u32,
-        results: &[CheckResult],
-        record_id: &str,
         root: Option<String>,
     ) -> Result<(String, super::run::Run<R>), String> {
+        let FixRound {
+            group,
+            round,
+            results,
+            record_id,
+        } = *fix;
         let Owner::Worker { label, step } = &cause.owner else {
             return Err("not a worker's cause".into());
         };
@@ -512,19 +527,9 @@ impl<R: Runtime> Run<R> {
     }
 
     /// R04: one cause, fixed by its worker in the chat's view.
-    async fn fix_one(
-        &mut self,
-        group: &GroupRecord,
-        cause: &Cause,
-        round: u32,
-        results: &[CheckResult],
-        record_id: &str,
-        root: Option<String>,
-    ) -> Fixed {
-        let (child, run) = match self
-            .start_fixer(group, cause, round, results, record_id, root)
-            .await
-        {
+    async fn fix_one(&mut self, fix: &FixRound<'_>, cause: &Cause, root: Option<String>) -> Fixed {
+        let group = fix.group;
+        let (child, run) = match self.start_fixer(fix, cause, root).await {
             Ok(started) => started,
             Err(e) => {
                 return Fixed {
@@ -704,13 +709,11 @@ impl<R: Runtime> Run<R> {
     /// of the chat's view, at the same time; then joined one at a time.
     async fn fix_in_parallel(
         &mut self,
-        group: &GroupRecord,
+        fix: &FixRound<'_>,
         found: &[Cause],
         which: &[usize],
-        round: u32,
-        results: &[CheckResult],
-        record_id: &str,
     ) -> Vec<Fixed> {
+        let group = fix.group;
         if let Some(o) = chats::get(&self.dialog_id) {
             o.fs.flush();
         }
@@ -751,7 +754,7 @@ impl<R: Runtime> Run<R> {
             };
             let view = overlay.view.to_string_lossy().into_owned();
             match self
-                .start_fixer(group, cause, round, results, record_id, Some(view))
+                .start_fixer(fix, cause, Some(view))
                 .await
             {
                 Ok((child, run)) => {
@@ -807,26 +810,7 @@ impl<R: Runtime> Run<R> {
                 });
                 continue;
             };
-            let paths: Vec<String> = chats::get(&child)
-                .map(|o| {
-                    o.fs.flush();
-                    o.fs.changes()
-                        .iter()
-                        .filter(|c| !c.by_product())
-                        .map(|c| c.path().replace('\\', "/"))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let before: Vec<subagent::ChildWrite> = paths
-                .iter()
-                .map(|p| subagent::ChildWrite {
-                    path: p.clone(),
-                    original: subagent::Original::new(
-                        std::fs::read(tools::to_absolute_path(p, &root)).ok(),
-                        subagent::Source::ViewAtRoundStart,
-                    ),
-                })
-                .collect();
+            let (paths, before) = super::group::copy_writes(&child, &root);
             let snapshot = self.redo_snapshot(&paths).await;
             // Round 2, P1.3: landed with retries; on an error the copy and
             // its landing journal stay, so a landing that stopped half way

@@ -185,6 +185,32 @@ pub fn attribute(location: &str, owners: &[(String, usize, WriteScope)], created
 }
 
 /// The note in a group worker's brief.
+/// What a copy (a worker's, a fixer's) changed: the paths, with what each
+/// is in the project now (a round's starting point, for the rollback).
+pub(super) fn copy_writes(child: &str, root: &str) -> (Vec<String>, Vec<subagent::ChildWrite>) {
+    let paths: Vec<String> = chats::get(child)
+        .map(|o| {
+            o.fs.flush();
+            o.fs.changes()
+                .iter()
+                .filter(|c| !c.by_product())
+                .map(|c| c.path().replace('\\', "/"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let before = paths
+        .iter()
+        .map(|p| subagent::ChildWrite {
+            path: p.clone(),
+            original: subagent::Original::new(
+                std::fs::read(tools::to_absolute_path(p, root)).ok(),
+                subagent::Source::ViewAtRoundStart,
+            ),
+        })
+        .collect();
+    (paths, before)
+}
+
 fn group_note(group: &str, label: &str, others: &[(String, usize, WriteScope)]) -> String {
     let list = others
         .iter()
@@ -209,6 +235,19 @@ fn cap(text: &str, max: usize) -> String {
 }
 
 /// One worker's place in a group.
+/// What every worker of a group is forked from: the plan and the group's
+/// owners and contract, for the `task` call that started the group.
+#[derive(Clone, Copy)]
+struct GroupPlan<'a> {
+    tc: &'a ToolCall,
+    plan_path: &'a str,
+    plan: &'a str,
+    owners: &'a [(String, usize, WriteScope)],
+    contract: &'a [String],
+    group: &'a str,
+    config: &'a SubagentConfig,
+}
+
 struct Member {
     label: String,
     step: PlanStep,
@@ -340,6 +379,15 @@ impl<R: Runtime> Run<R> {
         self.group_grants = GroupGrants::default();
         let started = std::time::Instant::now();
 
+        let gp = GroupPlan {
+            tc,
+            plan_path: &plan_path,
+            plan: &plan,
+            owners: &owners,
+            contract: &contract,
+            group,
+            config,
+        };
         let mut runs: Vec<(Member, Option<Run<R>>)> = Vec::new();
         for (i, step) in members.iter().enumerate() {
             let label = owners[i].0.clone();
@@ -349,11 +397,7 @@ impl<R: Runtime> Run<R> {
                 child_id: uuid::Uuid::new_v4().to_string(),
                 scope: owners[i].2.clone(),
             };
-            let child = self
-                .fork_worker(
-                    tc, &member, &plan_path, &plan, &owners, &contract, group, config,
-                )
-                .await;
+            let child = self.fork_worker(&gp, &member).await;
             match child {
                 Ok(run) => runs.push((member, Some(run))),
                 Err(e) => {
@@ -427,12 +471,7 @@ impl<R: Runtime> Run<R> {
                     child_id: uuid::Uuid::new_v4().to_string(),
                     scope: member.scope.clone(),
                 };
-                let result = match self
-                    .fork_worker(
-                        tc, &again, &plan_path, &plan, &owners, &contract, group, config,
-                    )
-                    .await
-                {
+                let result = match self.fork_worker(&gp, &again).await {
                     Ok(run) => run_child(run).await,
                     // Not retried (the run's workers are used up, say): why.
                     Err(e) => {
@@ -538,17 +577,7 @@ impl<R: Runtime> Run<R> {
     /// A worker for one step of the group, in a child overlay of the chat's
     /// view, ready to run.
     #[allow(clippy::too_many_arguments)]
-    async fn fork_worker(
-        &mut self,
-        tc: &ToolCall,
-        member: &Member,
-        plan_path: &str,
-        plan: &str,
-        owners: &[(String, usize, WriteScope)],
-        contract: &[String],
-        group: &str,
-        config: &SubagentConfig,
-    ) -> Result<Run<R>, String> {
+    async fn fork_worker(&mut self, gp: &GroupPlan<'_>, member: &Member) -> Result<Run<R>, String> {
         // Each worker started counts, a retry too (P2.7).
         let brief = subagent::Brief {
             kind: Kind::Worker,
@@ -560,29 +589,29 @@ impl<R: Runtime> Run<R> {
         };
         let admitted = self
             .ledger
-            .admit_worker(&brief, super::plan::steps(plan).len())?;
+            .admit_worker(&brief, super::plan::steps(gp.plan).len())?;
         // Round 3: a worker that can't start from here gives its place back.
-        let started = self
-            .fork_worker_admitted(tc, member, plan_path, plan, owners, contract, group, config)
-            .await;
+        let started = self.fork_worker_admitted(gp, member).await;
         if started.is_err() {
             self.ledger.release(&admitted);
         }
         started
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn fork_worker_admitted(
         &mut self,
-        tc: &ToolCall,
+        gp: &GroupPlan<'_>,
         member: &Member,
-        plan_path: &str,
-        plan: &str,
-        owners: &[(String, usize, WriteScope)],
-        contract: &[String],
-        group: &str,
-        config: &SubagentConfig,
     ) -> Result<Run<R>, String> {
+        let GroupPlan {
+            tc,
+            plan_path,
+            plan,
+            owners,
+            contract,
+            group,
+            config,
+        } = *gp;
         // The group's workers share what's left of the chat's space.
         let overlay = chats::open_child_shared(&self.dialog_id, &member.child_id, owners.len())?;
         let scope = member.scope.clone();
@@ -723,26 +752,7 @@ impl<R: Runtime> Run<R> {
         }
         // What the chat's files were before this worker landed (S03b).
         let root = self.root.clone().unwrap_or_default();
-        let paths: Vec<String> = chats::get(&member.child_id)
-            .map(|o| {
-                o.fs.flush();
-                o.fs.changes()
-                    .iter()
-                    .filter(|c| !c.by_product())
-                    .map(|c| c.path().replace('\\', "/"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let before: Vec<subagent::ChildWrite> = paths
-            .iter()
-            .map(|p| subagent::ChildWrite {
-                path: p.clone(),
-                original: subagent::Original::new(
-                    std::fs::read(tools::to_absolute_path(p, &root)).ok(),
-                    subagent::Source::ViewAtRoundStart,
-                ),
-            })
-            .collect();
+        let (paths, before) = copy_writes(&member.child_id, &root);
         // R06: what the chat had at these paths, for Redo sequentially.
         let fresh: Vec<String> = paths
             .iter()
@@ -954,29 +964,8 @@ impl<R: Runtime> Run<R> {
             return;
         }
         let root = self.root.clone().unwrap_or_default();
-        let view = chats::get(child).map(|o| {
-            o.fs.flush();
-            o.view.clone()
-        });
-        let paths: Vec<String> = chats::get(child)
-            .map(|o| {
-                o.fs.changes()
-                    .iter()
-                    .filter(|c| !c.by_product())
-                    .map(|c| c.path().replace('\\', "/"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let before: Vec<subagent::ChildWrite> = paths
-            .iter()
-            .map(|p| subagent::ChildWrite {
-                path: p.clone(),
-                original: subagent::Original::new(
-                    std::fs::read(tools::to_absolute_path(p, &root)).ok(),
-                    subagent::Source::ViewAtRoundStart,
-                ),
-            })
-            .collect();
+        let view = chats::get(child).map(|o| o.view.clone());
+        let (paths, before) = copy_writes(child, &root);
         // P2.6: only what's in its step's scope lands.
         let outside = match self.worker_step_of(child).await {
             Some(step) => {

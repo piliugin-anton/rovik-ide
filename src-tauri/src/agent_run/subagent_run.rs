@@ -122,20 +122,17 @@ impl SubCtx {
     /// or `input_tokens`/`output_tokens`).
     pub fn note_usage(&mut self, usage: Option<&Value>) {
         let Some(u) = usage else { return };
-        let n = |keys: &[&str]| {
-            keys.iter()
-                .find_map(|k| super::log::token_count(u.get(*k)?))
-        };
-        if let Some(i) = n(&["prompt_tokens", "input_tokens"]) {
+        let (tokens_in, tokens_out, cost) = log::usage_counts(u);
+        if let Some(i) = tokens_in {
             self.tokens_in += i;
             self.usage_seen = true;
         }
-        if let Some(o) = n(&["completion_tokens", "output_tokens"]) {
+        if let Some(o) = tokens_out {
             self.tokens_out += o;
             self.usage_seen = true;
         }
         // OpenRouter and some others say what the request cost.
-        if let Some(c) = u.get("cost").and_then(|c| c.as_f64()) {
+        if let Some(c) = cost {
             *self.cost.get_or_insert(0.0) += c;
         }
     }
@@ -694,6 +691,18 @@ impl<R: Runtime> Run<R> {
         Ok(sub)
     }
 
+    /// A file a child changed, counted among the run's changed files once
+    /// (by its key under `root`).
+    fn note_changed_file(&mut self, root: &str, key: &str) {
+        if !self
+            .changed_files
+            .iter()
+            .any(|c| super::repair::rel_key(root, c) == key)
+        {
+            self.changed_files.push(key.to_string());
+        }
+    }
+
     /// Registers a child under this run and prepares its run; the chat
     /// hears it started.
     pub(super) fn launch_child(
@@ -1028,13 +1037,7 @@ impl<R: Runtime> Run<R> {
             return;
         };
         for w in writes {
-            if !self
-                .changed_files
-                .iter()
-                .any(|c| super::repair::rel_key(&root, c) == w.path)
-            {
-                self.changed_files.push(w.path.clone());
-            }
+            self.note_changed_file(&root, &w.path);
             self.baseline
                 .entry(w.path.clone())
                 .or_insert_with(|| w.original.clone());
@@ -1413,12 +1416,7 @@ impl<R: Runtime> Run<R> {
         let (existing, child_id) = self.child_for(tc, config, resumed).await?;
         let scope = WriteScope::for_step(&step);
         let diff = self.step_diff(&step);
-        let lead_note = (!brief.goal.starts_with("Carry out step "))
-            .then(|| brief.goal.clone())
-            .into_iter()
-            .chain(brief.context.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let lead_note = brief.note(|goal| goal.starts_with("Carry out step "));
         let message = worker::brief(&worker::BriefParts {
             plan_path: &plan_path,
             plan: &plan,
@@ -1575,12 +1573,7 @@ impl<R: Runtime> Run<R> {
             .iter()
             .find(|c| c.kind == "test" && c.enabled)
             .map(|c| c.command.clone());
-        let note = (brief.goal != "Write tests for the change")
-            .then(|| brief.goal.clone())
-            .into_iter()
-            .chain(brief.context.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let note = brief.note(|goal| goal == "Write tests for the change");
         let message = super::test_writer::brief(&super::test_writer::BriefParts {
             request: &request,
             plan: plan.as_ref().map(|(p, t)| (p.as_str(), t.as_str())),
@@ -1643,13 +1636,7 @@ impl<R: Runtime> Run<R> {
                 child.baseline.entry(key.clone()).or_insert(original);
             }
             // The lead's checks and reviewer look at it either way.
-            if !self
-                .changed_files
-                .iter()
-                .any(|c| super::repair::rel_key(&root, c) == *key)
-            {
-                self.changed_files.push(key.clone());
-            }
+            self.note_changed_file(&root, key);
             self.writes_since_verify = true;
             self.writes_since_review = true;
         }
