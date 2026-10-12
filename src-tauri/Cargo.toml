@@ -3,6 +3,7 @@ name = "rovik-ide"
 version = "0.1.0"
 description = "A minimal, low-memory IDE shell"
 edition = "2021"
+default-run = "rovik-ide"
 
 [lib]
 name = "rovik_ide_lib"
@@ -17,6 +18,10 @@ headless = ["tauri/test"]
 name = "rovik-headless"
 path = "src/bin/rovik-headless.rs"
 required-features = ["headless"]
+
+[[bin]]
+name = "rovik-ide"
+path = "src/main.rs"
 
 [dev-dependencies]
 # A mock app for the agent's end-to-end tests (agent_run/e2e_tests.rs).
