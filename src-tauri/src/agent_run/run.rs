@@ -1732,7 +1732,8 @@ impl<R: Runtime> Run<R> {
         self.add_harness(
             format!(
                 "{IDE_NOTE}You wrote the plan in your reply, so it wasn't saved. Submit it with submit_plan (the complete plan, \
-                 once), then reply in a sentence or two. Don't write it out again in the reply."
+                 once), then reply in a sentence or two. Don't write it out again in the reply. (If the user only asked a \
+                 question, answer it in words instead: no plan is needed.)"
             ),
             "plan",
         )

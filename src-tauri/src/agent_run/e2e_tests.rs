@@ -2194,7 +2194,7 @@ async fn stop_while_a_question_waits_ends_the_run() {
 #[tokio::test]
 async fn a_bad_plan_is_sent_back_and_a_written_out_plan_nudged_once() {
     let h = harness(&[]).await;
-    let written = "Here it is:\n\n## Steps\n1. One\n2. Two";
+    let written = "Here it is:\n\n# Plan\n\n## Steps\n1. One\n2. Two\n\n## Validation\n- tests";
     let (url, _) = model(vec![
         Reply::Call {
             id: "p1",

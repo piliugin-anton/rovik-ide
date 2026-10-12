@@ -30,6 +30,8 @@ pub const PLAN_MODE_INSTRUCTIONS: &str = r###"## Plan mode
 
 The user chose Plan mode: plan the task, don't carry it out. You can read files, list folders, search the code and use the web; you can't change files or run commands. The plan is a detailed, file-level spec the user reviews (and may edit) before it's built, so precision matters more than brevity: a precise, well-scoped plan builds cleanly.
 
+Not every message asks for a plan. When the user asks a question or wants something explained (why something happens, how a part of the code works, what causes a bug, what an error means), investigate and answer in your reply, naming the files and functions involved, and don't call submit_plan: there's nothing to build yet. Plan when the user asks for a change (add, fix, remove or rework something) or for a plan.
+
 1. Investigate first: read the relevant code, find the files that will change, the functions and types involved, and the existing patterns and conventions the change should follow.
 2. Ask only what the code can't tell you and what really changes the design, the behavior or the scope (two existing approaches to choose between, an unclear requirement, a trade-off only the user can make). Use the ask_user tool, early, with all your questions in one call, as concrete options with a short reason. Don't ask about names, formatting or anything you can decide from the repository: decide it and say so in the plan. Never ask a question in plain text and stop; use ask_user.
 3. Save the plan with the submit_plan tool, as Markdown. It's saved as a file the user may edit before implementing it, so make it stand on its own:
@@ -37,7 +39,7 @@ The user chose Plan mode: plan the task, don't carry it out. You can read files,
    - a one-paragraph summary of the approach;
    - "## Steps": a numbered list, in order, one reviewable change per step. Each step has:
      - a short title;
-     - the files it touches, as repo-relative paths in backticks (e.g. `src/db/users.rs`). Name only paths you have seen in the repository; mark files the step creates as "(new)";
+     - the files it touches, each as its full path from the project root in backticks (`src/db/users.rs`), never the file name alone (`users.rs`) or a path from a folder inside the project, even when the name is unique. Name only paths you have seen in the repository; mark files the step creates as "(new)". Only files and folders count as the step's files: CSS classes and selectors (`.btn-primary`), identifiers, labels and commands in backticks don't name one, so a step that changes styles names the stylesheet (`src/styles/app.css`) and then the classes in it;
      - what to add, change or remove in them, by name: the functions, methods, types, components, fields or settings, and how they behave. A one-line signature (e.g. `fn load_users(db: &Db) -> Result<Vec<User>>`) or a config line is welcome; leave out function bodies and longer code;
      - anything that calls or depends on the change and must be updated with it.
      Use as many steps as the task needs (usually 3 to 12);
@@ -278,9 +280,9 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
                     .collect();
                 if !no_file.is_empty() {
                     problems.push(format!(
-                        "Step{} {} name{} no file: give the repo-relative path of each file a step changes, in backticks \
-                         (e.g. `src/db/users.rs`), and mark files it creates as \"(new)\". Name only paths you've seen in the \
-                         repository.",
+                        "Step{} {} name{} no file: give the full path from the project root of each file a step changes, in \
+                         backticks (e.g. `src/db/users.rs`, not `users.rs`), and mark files it creates as \"(new)\". Name only \
+                         paths you've seen in the repository; CSS classes, selectors and other names in backticks aren't files.",
                         if no_file.len() > 1 { "s" } else { "" },
                         list_steps(&no_file),
                         if no_file.len() > 1 { "" } else { "s" },
@@ -455,10 +457,20 @@ pub fn current_plan_context(plan_file: Option<&str>, root: Option<&str>) -> Stri
 static LOOKS_LIKE_STEPS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b").unwrap());
 static NUMBERED_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d+[.)]\s").unwrap());
+static TITLE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#\s+\S").unwrap());
+/// A section a plan has besides its steps.
+static PLAN_SECTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^##\s+.*\b(decisions?|validat\w*|verif\w*|risks?)\b").unwrap()
+});
 
-/// A reply that reads like a plan (written out instead of submitted).
+/// A reply that reads like a plan (written out instead of submitted): a
+/// steps section with numbered steps, and a title or another of a plan's
+/// sections. An answer with "## Steps to reproduce" and a numbered list
+/// is an explanation, not a plan to submit.
 pub fn looks_like_plan(text: &str) -> bool {
-    LOOKS_LIKE_STEPS.is_match(text) && NUMBERED_LINE.is_match(text)
+    LOOKS_LIKE_STEPS.is_match(text)
+        && NUMBERED_LINE.is_match(text)
+        && (TITLE_LINE.is_match(text) || PLAN_SECTION.is_match(text))
 }
 
 /*
@@ -644,6 +656,81 @@ pub(super) const FILE_EXTENSIONS: &[&str] = &[
     "dockerfile",
 ];
 
+/// Dotfile stems (`.env`, `.gitignore`, `.env.local`'s `.env`) that name
+/// a file at the project root, where a dot-leading name is otherwise a CSS
+/// class or selector (`.btn-primary`, `.nav-item.active`) or a bare
+/// extension (`.ts`).
+const DOTFILES: &[&str] = &[
+    "env",
+    "envrc",
+    "gitignore",
+    "gitattributes",
+    "gitmodules",
+    "gitkeep",
+    "gitconfig",
+    "git-blame-ignore-revs",
+    "mailmap",
+    "dockerignore",
+    "gcloudignore",
+    "helmignore",
+    "npmignore",
+    "npmrc",
+    "nvmrc",
+    "yarnrc",
+    "eslintrc",
+    "eslintignore",
+    "prettierrc",
+    "prettierignore",
+    "stylelintrc",
+    "babelrc",
+    "browserslistrc",
+    "editorconfig",
+    "huskyrc",
+    "lintstagedrc",
+    "mocharc",
+    "nycrc",
+    "swcrc",
+    "tool-versions",
+    "python-version",
+    "ruby-version",
+    "node-version",
+    "java-version",
+    "terraform-version",
+    "flake8",
+    "pylintrc",
+    "coveragerc",
+    "pre-commit-config",
+    "clang-format",
+    "clang-tidy",
+    "rustfmt",
+    "cargo",
+    "htaccess",
+    "htpasswd",
+    "bashrc",
+    "zshrc",
+    "vimrc",
+    "github",
+    "gitlab",
+    "vscode",
+    "idea",
+    "devcontainer",
+    "husky",
+    "storybook",
+    "circleci",
+    "well-known",
+    "rovik",
+];
+
+/// Whether `.{stem}` (the name up to its second dot) is a dotfile or a
+/// hidden folder of the project, not a CSS class or a bare extension.
+fn known_dotfile(stem: &str) -> bool {
+    let lower = stem.to_ascii_lowercase();
+    DOTFILES.contains(&lower.as_str())
+        || ["rc", "ignore", "config", "version", "versions"]
+            .iter()
+            .any(|suffix| lower.len() > suffix.len() && lower.ends_with(suffix))
+}
+
 /// The repo-relative path a backticked token names, if it's one.
 fn as_path(token: &str) -> Option<String> {
     let token = token.replace('\\', "/");
@@ -686,6 +773,20 @@ fn as_path(token: &str) -> Option<String> {
             && e.chars().all(|c| c.is_ascii_alphanumeric())
             && e.chars().any(|c| c.is_ascii_alphabetic())
     });
+    // At the root, a dot-leading name is a file when it's a known dotfile
+    // (`.env`, `.gitignore`, `.env.local`, `.tool-versions`) or has a file
+    // extension after it (`.foo.json`); a CSS class or selector
+    // (`.btn-primary`, `.card`, `.nav-item.active`) or a bare extension
+    // (`.ts`) isn't one. (Plans used to read backticked classes as missing
+    // files, and asked for them to be fixed or marked new.)
+    if !t.contains('/') && name.starts_with('.') {
+        let first = name[1..].split('.').next().unwrap_or("");
+        let with_extension =
+            name[1..].contains('.') && ext.as_deref().is_some_and(|e| FILE_EXTENSIONS.contains(&e));
+        if !(known_dotfile(first) || with_extension) {
+            return None;
+        }
+    }
     // `Node.js` and its kind name a project, not a file; so does a
     // capitalised `Solid.js` at the root (a root `App.js`, `Gruntfile.js`
     // is a file), and `React/Vue.js` (every part capitalised) (round 3).
@@ -986,6 +1087,16 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
                     .any(|(p, _)| super::paths::under(path, p) && !super::paths::same(path, p)))
     };
     let mut missing: Vec<String> = Vec::new();
+    // A file named by its file name alone (`users.rs`) that isn't at the
+    // root: where it is in the project, so the step can name it in full.
+    let bare = |path: &str| !path.trim_end_matches('/').contains('/');
+    let bare_missing: Vec<&str> = steps
+        .iter()
+        .flat_map(|s| s.files.iter())
+        .filter(|f| !f.new && bare(&f.path) && !exists(&f.path))
+        .map(|f| f.path.as_str())
+        .collect();
+    let located = files_named(root, &bare_missing);
     // P4.9: a path out of the project (`../x`) is never a step's file
     // (`as_path` drops it, so nothing probes the disk for it): say so.
     for step in &steps {
@@ -1022,12 +1133,54 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
                 Some(_) => {}
                 None if !exists(&file.path) && !missing.contains(&file.path) => {
                     missing.push(file.path.clone());
-                    problems.push(format!(
-                        "Step {} names `{}`, which isn't in the project: fix the path, or mark it \"(new)\" if the step creates it.",
-                        step.named(), file.path
-                    ));
+                    let found = located
+                        .iter()
+                        .find(|(name, _)| *name == file.path)
+                        .map(|(_, paths)| paths)
+                        .filter(|paths| !paths.is_empty());
+                    match found {
+                        Some(paths) => problems.push(format!(
+                            "Step {} names `{}` by its file name alone: write its full path from the project root, {}.",
+                            step.named(),
+                            file.path,
+                            match paths.as_slice() {
+                                [one] => format!("`{one}`"),
+                                many => format!(
+                                    "one of {}",
+                                    many.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ")
+                                ),
+                            }
+                        )),
+                        None => problems.push(format!(
+                            "Step {} names `{}`, which isn't in the project: fix the path (in full from the project root), \
+                             or mark it \"(new)\" if the step creates it.",
+                            step.named(),
+                            file.path
+                        )),
+                    }
                 }
                 None => {}
+            }
+        }
+        // A new file named by its file name alone goes at the project
+        // root; a source file there is almost always a path cut short.
+        for file in step.files.iter().filter(|f| f.new && bare(&f.path)) {
+            let ext = file
+                .path
+                .rsplit_once('.')
+                .map(|(_, e)| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            if SOURCE_EXTENSIONS.contains(&ext.as_str())
+                && !root_has_extension(root, &ext)
+                && !missing.contains(&file.path)
+            {
+                missing.push(file.path.clone());
+                problems.push(format!(
+                    "Step {} creates `{}` at the project root (a file name alone is a root file), where the project keeps no \
+                     `.{ext}` file: write its full path from the project root, with the folder it goes in.",
+                    step.named(),
+                    file.path
+                ));
             }
         }
     }
@@ -1106,6 +1259,75 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
         }
     }
     problems
+}
+
+/// Extensions of source files, which live in a folder, not at the root.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "swift", "c", "h",
+    "cc", "cpp", "hpp", "cs", "rb", "php", "css", "scss", "sass", "less", "vue", "svelte", "ex",
+    "exs", "dart", "scala", "lua", "sql", "astro", "elm", "zig", "hs",
+];
+
+/// Whether a file with this extension is at the project root.
+fn root_has_extension(root: &Path, ext: &str) -> bool {
+    std::fs::read_dir(root).is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            e.file_type().is_ok_and(|t| t.is_file())
+                && e.path()
+                    .extension()
+                    .is_some_and(|x| x.to_string_lossy().eq_ignore_ascii_case(ext))
+        })
+    })
+}
+
+/// How many paths `files_named` gives for one name, and how many files
+/// it looks at.
+const NAMED_PATHS: usize = 4;
+const NAMED_WALK_LIMIT: usize = 50_000;
+
+/// Where the project keeps files with these names: each name with its
+/// repo-relative paths (up to NAMED_PATHS, sorted), as git sees the
+/// project (ignored files, `.git`, `node_modules` and `target` left out).
+fn files_named(root: &Path, names: &[&str]) -> Vec<(String, Vec<String>)> {
+    let mut names: Vec<&str> = names.to_vec();
+    names.sort_unstable();
+    names.dedup();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let mut found: Vec<(String, Vec<String>)> =
+        names.iter().map(|n| (n.to_string(), Vec::new())).collect();
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(false)
+        .require_git(false)
+        .filter_entry(|e| {
+            let name = e.file_name();
+            name != ".git" && name != "node_modules" && name != "target"
+        })
+        .build();
+    for entry in walker.flatten().take(NAMED_WALK_LIMIT) {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy();
+        let Some((_, paths)) = found.iter_mut().find(|(n, _)| *n == file_name) else {
+            continue;
+        };
+        if let Ok(rel) = entry.path().strip_prefix(root) {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if !rel.contains('/') || paths.contains(&rel) {
+                continue;
+            }
+            paths.push(rel);
+        }
+    }
+    for (_, paths) in &mut found {
+        paths.sort();
+        paths.truncate(NAMED_PATHS);
+    }
+    found
 }
 
 /// P4.1: two plan paths that touch the same files: the same path in any
@@ -1837,6 +2059,11 @@ mod tests {
             "src/components/",
             "Dockerfile",
             ".env",
+            ".env.local",
+            ".gitignore",
+            ".eslintrc.json",
+            ".tool-versions",
+            ".rovik",
             "src/a.rs:10-20",
             "docs/design",
         ] {
@@ -1844,6 +2071,11 @@ mod tests {
         }
         for no in [
             "fn a(x: u8)",
+            ".btn-primary",
+            ".card",
+            ".nav-item.active",
+            ".modal:hover",
+            ".ts",
             "state.config",
             "self.items",
             "users",
@@ -2118,8 +2350,15 @@ mod tests {
             "{:?}",
             plan_problems(&sigs)
         );
-        assert!(looks_like_plan("## Steps\n1. do it"));
+        assert!(looks_like_plan("# P\n## Steps\n1. do it"));
+        assert!(looks_like_plan(
+            "Here:\n\n## Steps\n1. a\n2. b\n\n## Validation\n- `cargo test`"
+        ));
         assert!(!looks_like_plan("Done. 1. thing"));
+        // An explanation with numbered steps isn't a plan to submit.
+        assert!(!looks_like_plan(
+            "The panel flickers because of a race.\n\n## Steps to reproduce\n1. Open a file\n2. Resize\n\n## Cause\nx"
+        ));
     }
 
     #[test]
@@ -2216,6 +2455,95 @@ mod tests {
             p[0].contains("`../secrets/key.rs`, which is outside the project"),
             "{p:?}"
         );
+    }
+
+    /// CSS classes and selectors in backticks aren't a step's files: a
+    /// step that names only them names no file, and one that names the
+    /// stylesheet too is checked against the project without them.
+    #[test]
+    fn css_classes_are_not_files() {
+        let tree = Tree::new(&["src/styles/app.css", "src/App.tsx"]);
+        let classes = "# Tidy the sidebar\n\nx\n\n## Steps\n\n\
+            1. **Narrow it**\n   - `.sidebar`: set the width to 240px; `.sidebar__item`: add padding.\n\
+            2. **Hover**\n   - `src/styles/app.css`: add a `.sidebar__item:hover` rule and change `.nav-item.active`.\n\n\
+            ## Validation\n- `npm run build`\n";
+        let p = plan_problems(classes);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with("Step 1 names no file")
+                && p[0].contains("CSS classes, selectors and other names in backticks aren't files"),
+            "{p:?}"
+        );
+        let with_file =
+            classes.replace("`.sidebar`: set", "`src/styles/app.css`: in `.sidebar`, set");
+        assert_eq!(
+            plan_problems_in(&with_file, Some(&tree.0)),
+            Vec::<String>::new()
+        );
+        let s = steps(&with_file);
+        assert_eq!(s[0].files.len(), 1, "{:?}", s[0].files);
+        assert_eq!(s[1].files.len(), 1, "{:?}", s[1].files);
+        // Dotfiles still count, and are checked.
+        let dotfile = classes.replace("`.sidebar`: set", "`.env.local`: set");
+        let p = project_problems(&dotfile, &tree.0);
+        assert!(
+            p.iter()
+                .any(|p| p.starts_with("Step 1 names `.env.local`, which isn't in the project")),
+            "{p:?}"
+        );
+    }
+
+    /// A file named by its file name alone is pointed to its full path;
+    /// a new source file without a folder is sent back for one.
+    #[test]
+    fn bare_file_names_get_their_full_path() {
+        let tree = Tree::new(&[
+            "src/db/users.rs",
+            "src/api/users.rs",
+            "src/db/mod.rs",
+            "Cargo.toml",
+            "index.html",
+        ]);
+        let plan = |a: &str, b: &str| {
+            format!(
+                "# P\n\nx\n\n## Steps\n\n1. **One**\n   - {a}: add `fn load()`.\n2. **Two**\n   - {b}: add `fn save()`.\n\n## Validation\n- `cargo test`\n"
+            )
+        };
+        let p = project_problems(&plan("`mod.rs`", "`Cargo.toml`"), &tree.0);
+        assert_eq!(
+            p,
+            ["Step 1 names `mod.rs` by its file name alone: write its full path from the project root, `src/db/mod.rs`."]
+        );
+        let p = project_problems(&plan("`users.rs`", "`src/db/mod.rs`"), &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].ends_with("one of `src/api/users.rs`, `src/db/users.rs`."),
+            "{p:?}"
+        );
+        // Reported once, with the full-path hint when nothing matches.
+        let p = project_problems(&plan("`other.rs`", "`other.rs`"), &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with(
+                "Step 1 names `other.rs`, which isn't in the project: fix the path (in full"
+            ),
+            "{p:?}"
+        );
+        // New: a source file at the root needs its folder; a root file is fine.
+        let p = project_problems(&plan("`handlers.rs` (new)", "`src/db/mod.rs`"), &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with("Step 1 creates `handlers.rs` at the project root")
+                && p[0].contains("no `.rs` file"),
+            "{p:?}"
+        );
+        assert!(
+            project_problems(&plan("`CHANGELOG.md` (new)", "`Dockerfile` (new)"), &tree.0)
+                .is_empty()
+        );
+        assert!(project_problems(&plan("`src/db/new.rs` (new)", "`index.html`"), &tree.0).is_empty());
+        // The form check alone doesn't know the project: no hint without a root.
+        assert!(plan_problems_in(&plan("`mod.rs`", "`Cargo.toml`"), None).is_empty());
     }
 
     #[test]
