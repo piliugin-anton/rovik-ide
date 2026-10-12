@@ -1,0 +1,226 @@
+// project.ts
+//
+// One project's definitions in the TypeScript worker: loaded once, then
+// kept current from the file watcher (App.tsx) through the facade
+// (index.ts). A new project replaces the old one: the worker holds one
+// project's libs and options.
+import { loadProjectSources, loadProjectTypings, readFileContent } from '../commands';
+import type { LoadedFiles } from '../../types';
+import { readProjectConfig } from './compilerOptions';
+import { clearTypeScriptMarkers, setSemanticValidationEnabled } from './defaults';
+import { workerLibs, type LibEntry } from './libs';
+import {
+  isLoadedLib,
+  isProjectSource,
+  isSourceLib,
+  isTsConfig,
+  isTypingsLib,
+  isTypingsManifest,
+  LINKS_LIB,
+} from './paths';
+import { QuietRunner } from './quietRunner';
+import { SourceChangeQueue, type SourceChangeSink } from './sourceChanges';
+import { ActiveConfig } from './activeConfig';
+import { dependencyUriFor, modelUriFor } from './uris';
+
+/*
+ * A dependency install writes root manifests (package.json, lockfiles) and
+ * then settles node_modules; node_modules itself is watcher-ignored, so the
+ * manifest write is the signal. Debounced past it (an install writes
+ * manifests several times, before node_modules settles), then the typings
+ * are fetched again and swapped file by file, the sources untouched: the
+ * old libs stay valid throughout, so at most a new import shows a (true)
+ * TS2307 until the refresh lands. A failed fetch keeps the old libs.
+ */
+const TYPINGS_QUIET_MS = 2_500;
+/** A tsconfig write: the configs are read again once writes settle. */
+const CONFIG_QUIET_MS = 500;
+
+const NOTHING: LoadedFiles = { files: [], links: [], truncated: false };
+
+export class IntelliSenseProject {
+  /** Resolves when the first load is done (success or not). */
+  readonly loaded: Promise<void>;
+  /** The definitions have fully reached the worker. */
+  ready = false;
+  private disposed = false;
+  private readonly types: ActiveConfig;
+  private readonly sources: SourceChangeQueue;
+  private readonly typingsRefresh: QuietRunner;
+  private readonly configReload: QuietRunner;
+  /** tsconfig/jsconfig files found in the project (members' included). */
+  private configPaths = new Set<string>();
+
+  constructor(
+    readonly root: string,
+    activeFile: string | null
+  ) {
+    this.types = new ActiveConfig(root);
+    this.types.setActiveFile(activeFile);
+    const sink: SourceChangeSink = {
+      apply: (changes) => this.applySourceChanges(changes),
+      reload: () => this.reloadSources(),
+    };
+    this.sources = new SourceChangeQueue(sink);
+    this.typingsRefresh = new QuietRunner(() => this.refreshTypings(), TYPINGS_QUIET_MS);
+    this.configReload = new QuietRunner(() => this.reloadConfig(), CONFIG_QUIET_MS);
+    this.loaded = this.load();
+  }
+
+  /** Stops every pending update; the worker's libs are left for the next project. */
+  dispose(): void {
+    this.disposed = true;
+    this.sources.dispose();
+    this.typingsRefresh.dispose();
+    this.configReload.dispose();
+  }
+
+  /** The file shown in the editor: its config's @types become the worker's. */
+  setActiveFile(path: string | null): void {
+    this.types.setActiveFile(path);
+    if (this.ready) this.types.apply();
+  }
+
+  typesScopeCovers(path: string): boolean {
+    return this.types.covers(path);
+  }
+
+  /** A source changed on disk: `content` if known, null when deleted, undefined to read it. */
+  sourceChanged(path: string, content?: string | null): void {
+    if (!this.owns(path) || !isProjectSource(path)) return;
+    this.sources.queue(path, content);
+  }
+
+  /** Any file was written: a manifest or a tsconfig means more than one source. */
+  fileWritten(path: string): void {
+    // The initial load reads node_modules and the configs itself.
+    if (!this.owns(path) || !this.ready) return;
+    if (isTypingsManifest(path)) this.typingsRefresh.trigger();
+    if (isTsConfig(path)) {
+      this.configPaths.add(path);
+      this.configReload.trigger();
+    }
+  }
+
+  private owns(path: string): boolean {
+    return path.startsWith(this.root);
+  }
+
+  private async load(): Promise<void> {
+    // A new project has no libs yet: no semantic errors until it is loaded.
+    setSemanticValidationEnabled(false);
+    try {
+      const [typings, sources] = await Promise.all([
+        loadProjectTypings(this.root).catch(() => NOTHING),
+        loadProjectSources(this.root).catch(() => NOTHING),
+      ]);
+      if (this.disposed) return;
+      // The configs are among the sources: no second trip to disk for them.
+      this.noteConfigs(sources);
+      const loaded = new Map(sources.files.map((f) => [f.path, f.content]));
+      const config = await readProjectConfig(
+        this.root,
+        [...this.configPaths],
+        async (path) => loaded.get(path) ?? readFileContent(path)
+      );
+      if (this.disposed) return;
+      this.warnIfTruncated('typings', typings);
+      this.warnIfTruncated('sources', sources);
+      const typingLibs = this.typingLibs(typings);
+      // Options first: a change restarts the worker, which then starts
+      // with the complete lib set instead of receiving it twice.
+      this.types.configure(config);
+      this.types.setInstalled(
+        typings.files.map((f) => dependencyUriFor(f.path)),
+        typings.links.map((l) => dependencyUriFor(l.path))
+      );
+      this.types.apply();
+      workerLibs.replace([...typingLibs, ...this.sourceLibs(sources)], isLoadedLib);
+    } finally {
+      // Even a throw must not leave validation off and the overlay up
+      // forever: mark it ready, clear the markers of the half-loaded
+      // program so no false TS2307 survives, and validate again.
+      if (!this.disposed) {
+        this.ready = true;
+        clearTypeScriptMarkers();
+        setSemanticValidationEnabled(true);
+      }
+    }
+  }
+
+  private async applySourceChanges(
+    changes: ReadonlyMap<string, string | null | undefined>
+  ): Promise<void> {
+    const read = await Promise.all(
+      [...changes].map(async ([path, content]) => {
+        // A read that fails leaves the lib as it is: a deletion comes as
+        // its own event.
+        const text =
+          content !== undefined ? content : await readFileContent(path).catch(() => undefined);
+        return [modelUriFor(path).toString(), text] as const;
+      })
+    );
+    if (this.disposed) return;
+    for (const [uri, text] of read) {
+      if (text === null) workerLibs.delete(uri);
+      else if (text !== undefined) workerLibs.set(uri, text);
+    }
+  }
+
+  private async reloadSources(): Promise<void> {
+    const sources = await loadProjectSources(this.root).catch(() => null);
+    if (this.disposed || !sources) return;
+    this.warnIfTruncated('sources', sources);
+    this.noteConfigs(sources);
+    workerLibs.replace(this.sourceLibs(sources), isSourceLib);
+  }
+
+  private async refreshTypings(): Promise<void> {
+    const typings = await loadProjectTypings(this.root).catch(() => null);
+    if (this.disposed || !typings) return; // keep the old libs
+    this.warnIfTruncated('typings', typings);
+    const typingLibs = this.typingLibs(typings);
+    workerLibs.replace(typingLibs, isTypingsLib);
+    this.types.setInstalled(
+      typings.files.map((f) => dependencyUriFor(f.path)),
+      typings.links.map((l) => dependencyUriFor(l.path))
+    );
+    this.types.apply();
+  }
+
+  private async reloadConfig(): Promise<void> {
+    const config = await readProjectConfig(this.root, [...this.configPaths]);
+    if (this.disposed) return;
+    this.types.configure(config);
+    this.types.apply();
+  }
+
+  /** The typings, and the links the worker resolves paths through. */
+  private typingLibs(typings: LoadedFiles): { filePath: string; content: string }[] {
+    const links: Record<string, string> = {};
+    for (const link of typings.links)
+      links[dependencyUriFor(link.path)] = dependencyUriFor(link.target);
+    return [
+      ...typings.files.map((f) => ({ filePath: dependencyUriFor(f.path), content: f.content })),
+      { filePath: LINKS_LIB, content: JSON.stringify(links) },
+    ];
+  }
+
+  private noteConfigs(sources: LoadedFiles): void {
+    this.configPaths = new Set(sources.files.map((f) => f.path).filter(isTsConfig));
+  }
+
+  /** The sources, with the package.json files the worker reads for node16 resolution. */
+  private sourceLibs(sources: LoadedFiles): LibEntry[] {
+    return sources.files.map((f) => ({
+      filePath: modelUriFor(f.path).toString(),
+      content: f.content,
+    }));
+  }
+
+  private warnIfTruncated(what: string, loaded: LoadedFiles): void {
+    if (loaded.truncated) {
+      console.warn(`IntelliSense: not all ${what} of ${this.root} were loaded (limit reached)`);
+    }
+  }
+}

@@ -14,7 +14,7 @@ import * as monaco from 'monaco-editor';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { readFileContent } from '../commands';
 import { languageForFile } from '../language';
-import { dropProjectSourceLib, modelUriFor } from '../intellisense';
+import { modelUriFor } from '../intellisense';
 import { scheduleModelPrune } from '../models';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -228,7 +228,9 @@ export class LspClient {
   }
 
   private send(message: Json) {
-    void invoke('lsp_send', { id: this.serverId, message: JSON.stringify(message) }).catch(() => {});
+    void invoke('lsp_send', { id: this.serverId, message: JSON.stringify(message) }).catch(
+      () => {}
+    );
   }
 
   /* -------------------------------------------------------------------------
@@ -467,9 +469,6 @@ export class LspClient {
       let model = monaco.editor.getModel(parsed);
       if (!model) {
         model = monaco.editor.createModel(text, languageForFile(parsed.path), parsed);
-        // The model is now the file's copy in the TS worker, as for a tab
-        // (Editor): its extra-lib copy goes, or the worker sees it twice.
-        dropProjectSourceLib(parsed.fsPath);
       }
       // A model for a file no tab holds: counts toward the idle limit.
       scheduleModelPrune();

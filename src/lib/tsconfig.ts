@@ -20,7 +20,7 @@
 //
 // Each config is also kept as a project (its file patterns and `types`),
 // so the editor can tell which config owns a file and give that file only
-// the global @types its config allows (see projectFor / visibleTypes).
+// the global @types its config allows (see projectFor).
 //
 // Pure (file access is injected) so it can be unit-tested without Tauri.
 
@@ -36,6 +36,10 @@ export interface ResolvedTsOptions {
   paths?: Record<string, string[]>;
   jsx?: string;
   jsxImportSource?: string;
+  /** Lower-case, as written (`esnext`, `nodenext`...). */
+  module?: string;
+  /** Lower-case, as written (`node`, `node16`, `bundler`...). */
+  moduleResolution?: string;
 }
 
 /** One config file with its `extends` chain applied. */
@@ -74,11 +78,17 @@ export async function resolveTsOptions(
   return (await resolveTsProjects(root, readFile, listDir)).options;
 }
 
-/** The merged options, and every config found as a project, in priority order. */
+/**
+ * The merged options, and every config found as a project, in priority
+ * order. `configPaths` are configs found anywhere in the project (workspace
+ * members' tsconfig.json): they own their files and add their `paths`, but
+ * the root's configs come first for the options both set.
+ */
 export async function resolveTsProjects(
   root: string,
   readFile: ReadFile,
-  listDir?: ListDir
+  listDir?: ListDir,
+  configPaths: readonly string[] = []
 ): Promise<{ options: ResolvedTsOptions; projects: TsProject[] }> {
   const rootDir = normalize(root);
   const configs: LoadedConfig[] = [];
@@ -128,17 +138,27 @@ export async function resolveTsProjects(
   }
   if (!found) configs.push(...siblings.splice(0));
 
+  // Configs elsewhere in the project (members), after the root's.
+  const members: LoadedConfig[] = [];
+  for (const path of [...configPaths].map(normalize).sort()) {
+    const before = configs.length;
+    await visit(path, 0);
+    members.push(...configs.splice(before));
+  }
+
   const merged: ResolvedTsOptions = {};
-  for (const { options } of configs) {
+  for (const { options } of [...configs, ...members]) {
     merged.baseUrl ??= options.baseUrl;
     merged.jsx ??= options.jsx;
     merged.jsxImportSource ??= options.jsxImportSource;
+    merged.module ??= options.module;
+    merged.moduleResolution ??= options.moduleResolution;
     if (options.paths) {
       merged.paths ??= {};
       for (const [key, subs] of Object.entries(options.paths)) merged.paths[key] ??= subs;
     }
   }
-  return { options: merged, projects: [...configs, ...siblings].map(toProject) };
+  return { options: merged, projects: [...configs, ...siblings, ...members].map(toProject) };
 }
 
 function toProject(config: LoadedConfig): TsProject {
@@ -153,85 +173,83 @@ function toProject(config: LoadedConfig): TsProject {
 }
 
 /**
- * The first project whose files include `filePath` (absolute), like
- * tsserver picking the configured project for an open file; undefined when
- * none does (tsserver then infers a project with the default types).
+ * The project whose files include `filePath` (absolute), like tsserver
+ * picking the configured project for an open file: the nearest one (a
+ * workspace member's config before a root config covering everything),
+ * the first listed among those in one folder; undefined when none does
+ * (tsserver then infers a project with the default types).
  */
 export function projectFor(projects: TsProject[], filePath: string): TsProject | undefined {
+  let nearest: TsProject | undefined;
+  for (const p of projects) {
+    if (!projectCovers(p, filePath)) continue;
+    if (!nearest || dirname(p.path).length > dirname(nearest.path).length) nearest = p;
+  }
+  return nearest;
+}
+
+/** Whether a config's `files`, `include` and `exclude` take in `filePath` (absolute). */
+export function projectCovers(project: TsProject, filePath: string): boolean {
   const file = normalize(filePath);
-  return projects.find(
-    (p) =>
-      p.files.some((f) => samePath(f, file)) ||
-      (p.include.some((pattern) => matchesPattern(pattern, file)) &&
-        !p.exclude.some((pattern) => matchesPattern(pattern, file)))
+  return (
+    project.files.some((f) => samePath(f, file)) ||
+    (project.include.some((pattern) => matchesPattern(pattern, file)) &&
+      !project.exclude.some((pattern) => matchesPattern(pattern, file)))
   );
 }
 
+/** TypeScript's numeric values for `module` / `moduleResolution`. */
+const MODULE_KIND: Record<string, number> = {
+  node16: 100,
+  node18: 101,
+  node20: 102,
+  nodenext: 199,
+};
+const MODULE_RESOLUTION: Record<string, number> = {
+  classic: 1,
+  node: 2,
+  node10: 2,
+  node16: 3,
+  nodenext: 99,
+  bundler: 100,
+};
+
 /**
- * The @types packages (folder names under node_modules/@types) a program
- * with these `types` sees as globals, or 'all'. Unset `types` means every
- * @types package before TypeScript 6 and none from 6 on. A visible package's
- * own `/// <reference types="..." />` pulls that one in too, as in tsc.
+ * `moduleResolution` as the project resolves modules, with the `module`
+ * it requires: a `node16`/`nodenext` resolution (package.json `exports`
+ * and `type`, as Node) needs the matching `module`, which also implies it
+ * when `moduleResolution` is unset; `bundler` (exports, no extensions) and
+ * `node` (node10: `main`/`types`, no exports) keep the editor's `module`.
+ * Unset, or unknown, leaves both as the editor has them.
  */
-export function visibleTypes(
-  types: string[] | undefined,
+export function moduleSettings(options: ResolvedTsOptions): {
+  module?: number;
+  moduleResolution?: number;
+} {
+  const resolution =
+    options.moduleResolution ?? (MODULE_KIND[options.module ?? ''] && options.module);
+  if (!resolution || MODULE_RESOLUTION[resolution] === undefined) return {};
+  const out: { module?: number; moduleResolution?: number } = {
+    moduleResolution: MODULE_RESOLUTION[resolution],
+  };
+  if (MODULE_KIND[resolution] !== undefined) out.module = MODULE_KIND[resolution];
+  return out;
+}
+
+/**
+ * The `types` a config gives its program, as tsc: the packages it names,
+ * or every installed @types package (`installed`: the folder names under
+ * node_modules/@types) when unset before TypeScript 6, none from 6 on.
+ * `*` (not a tsc value, but seen in the wild) means all of them.
+ */
+export function typesFor(
+  types: readonly string[] | undefined,
   defaultsToAll: boolean,
-  referencesOf: (typesPackage: string) => string[]
-): Set<string> | 'all' {
-  if (types === undefined && defaultsToAll) return 'all';
-  if (types?.includes('*')) return 'all';
-  const visible = new Set<string>();
-  const queue = (types ?? []).map(typesPackageName);
-  while (queue.length > 0) {
-    const name = queue.pop()!;
-    if (visible.has(name)) continue;
-    visible.add(name);
-    queue.push(...referencesOf(name).map(typesPackageName));
-  }
-  return visible;
-}
-
-/** `node` → `node`, `@scope/pkg` → `scope__pkg`, `jest/globals` → `jest`. */
-export function typesPackageName(reference: string): string {
-  const parts = reference.replace(/^@types\//, '').split('/');
-  return parts[0].startsWith('@') && parts.length > 1
-    ? `${parts[0].slice(1)}__${parts[1]}`
-    : parts[0];
-}
-
-/** `/// <reference types="x" />` directives in a declaration file. */
-export function typeReferences(text: string): string[] {
-  return [...text.matchAll(/^\s*\/\/\/\s*<reference\s+types\s*=\s*["']([^"']+)["']/gm)].map(
-    (m) => m[1]
-  );
-}
-
-/**
- * Whether a declaration file adds globals just by being in the program: a
- * script (no top-level import/export, e.g. most of @types/node) or one with
- * `declare global`. A module file only matters once something imports it.
- * Top level means column 0, as declaration files are written.
- */
-export function declaresGlobals(text: string): boolean {
-  return /^\s*declare\s+global\b/m.test(text) || !/^(?:import|export)\b/m.test(text);
-}
-
-/**
- * The @types package names a source file pulls in by import, require,
- * dynamic import, export-from or `/// <reference types>`: `lodash` →
- * `lodash`, `@scope/pkg/sub` → `scope__pkg`. Relative paths and `node:`
- * built-ins (typed by @types/node's ambient modules, not by import) aren't.
- */
-export function importedTypesPackages(text: string): string[] {
-  const out = new Set<string>(typeReferences(text).map(typesPackageName));
-  const specifiers = text.matchAll(
-    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["']([^"'\n]+)["']/gm
-  );
-  for (const [, spec] of specifiers) {
-    if (/^(\.|\/|[A-Za-z]:|node:|[a-z][a-z0-9+.-]*:\/\/)/.test(spec)) continue;
-    out.add(typesPackageName(spec));
-  }
-  return [...out];
+  installed: readonly string[]
+): string[] {
+  if (types === undefined) return defaultsToAll ? [...installed] : [];
+  if (types.includes('*')) return [...installed];
+  return [...types];
 }
 
 /**
@@ -341,6 +359,9 @@ async function loadConfig(
     result.options.paths = paths;
   }
   if (typeof co.jsx === 'string') result.options.jsx = co.jsx.toLowerCase();
+  if (typeof co.module === 'string') result.options.module = co.module.toLowerCase();
+  if (typeof co.moduleResolution === 'string')
+    result.options.moduleResolution = co.moduleResolution.toLowerCase();
   if (typeof co.jsxImportSource === 'string') result.options.jsxImportSource = co.jsxImportSource;
 
   if (Array.isArray(co.types)) {

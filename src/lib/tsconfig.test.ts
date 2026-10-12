@@ -3,16 +3,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  declaresGlobals,
-  importedTypesPackages,
   jsonc,
+  moduleSettings,
   normalize,
   projectFor,
   resolveTsOptions,
   resolveTsProjects,
-  typeReferences,
-  typesPackageName,
-  visibleTypes,
+  typesFor,
 } from './tsconfig';
 
 function fsOf(files: Record<string, string>) {
@@ -60,6 +57,8 @@ describe('resolveTsOptions', () => {
       baseUrl: undefined,
       jsx: 'preserve',
       jsxImportSource: 'solid-js',
+      module: undefined,
+      moduleResolution: undefined,
       paths: { '@/*': ['/p/src/*'] },
     });
   });
@@ -199,57 +198,56 @@ describe('projects', () => {
     assert.equal(projectFor(projects, '/p/node_modules/x/i.ts'), undefined);
   });
 
-  it('visibleTypes follows types, the default and references', () => {
-    const refs = { react: ['prop-types'], 'prop-types': [] };
-    const of = (pkg) => refs[pkg] ?? [];
-    assert.equal(visibleTypes(undefined, true, of), 'all');
-    assert.deepEqual([...visibleTypes(undefined, false, of)], []);
-    assert.deepEqual([...visibleTypes(['vite/client'], true, of)], ['vite']);
-    assert.deepEqual([...visibleTypes(['react'], false, of)].sort(), ['prop-types', 'react']);
-    assert.equal(visibleTypes(['*'], false, of), 'all');
-  });
-
-  it('typesPackageName and typeReferences', () => {
-    assert.equal(typesPackageName('node'), 'node');
-    assert.equal(typesPackageName('@babel/core'), 'babel__core');
-    assert.equal(typesPackageName('jest/globals'), 'jest');
-    assert.deepEqual(
-      typeReferences('/// <reference types="node" />\n// x\n///<reference types=\'react\'/>'),
-      ['node', 'react']
+  it("a workspace member's config owns its files and adds its paths", async () => {
+    const files = {
+      '/p/tsconfig.json': `{ "compilerOptions": { "module": "nodenext", "paths": { "root/*": ["./src/*"] } } }`,
+      '/p/@scope/lib/tsconfig.json': `{
+        "extends": "../../tsconfig.json",
+        "compilerOptions": { "types": ["node"], "paths": { "@scope/api/*": ["../api/src/*"] } },
+        "exclude": ["dist"]
+      }`,
+      '/p/@scope/api/tsconfig.json': `{ "compilerOptions": { "moduleResolution": "Bundler" } }`,
+    };
+    const { options, projects } = await resolveTsProjects(
+      '/p',
+      ...Object.values(fsOfFiles(files)),
+      ['/p/@scope/lib/tsconfig.json', '/p/@scope/api/tsconfig.json']
     );
+    assert.deepEqual(options.paths, {
+      'root/*': ['/p/src/*'],
+      '@scope/api/*': ['/p/@scope/api/src/*'],
+    });
+    assert.equal(options.module, 'nodenext');
+    assert.equal(options.moduleResolution, 'bundler', 'a member sets what the root leaves unset');
+    assert.equal(projectFor(projects, '/p/src/a.ts')?.path, '/p/tsconfig.json');
+    assert.equal(
+      projectFor(projects, '/p/@scope/lib/src/a.ts')?.path,
+      '/p/@scope/lib/tsconfig.json'
+    );
+    assert.deepEqual(projectFor(projects, '/p/@scope/lib/src/a.ts')?.types, ['node']);
+    assert.equal(projectFor(projects, '/p/@scope/lib/dist/a.d.ts')?.path, '/p/tsconfig.json');
   });
-});
 
-describe('global and imported typings', () => {
-  it('declaresGlobals: scripts and declare global, not plain modules', () => {
-    assert.equal(declaresGlobals('declare var process: any;\ninterface X {}'), true);
-    assert.equal(declaresGlobals('declare module "fs" {\n  export function a(): void;\n}'), true);
-    assert.equal(declaresGlobals('export = _;\ndeclare const _: any;'), false);
-    assert.equal(declaresGlobals('import * as R from "react";\nexport function f(): void;'), false);
-    assert.equal(declaresGlobals('export = React;\ndeclare global {\n  namespace JSX {}\n}'), true);
+  it('moduleSettings: node16/nodenext need their module, bundler and node keep it', () => {
+    assert.deepEqual(moduleSettings({}), {});
+    assert.deepEqual(moduleSettings({ module: 'esnext' }), {});
+    assert.deepEqual(moduleSettings({ moduleResolution: 'node' }), { moduleResolution: 2 });
+    assert.deepEqual(moduleSettings({ moduleResolution: 'bundler' }), { moduleResolution: 100 });
+    assert.deepEqual(moduleSettings({ module: 'nodenext' }), { module: 199, moduleResolution: 99 });
+    assert.deepEqual(moduleSettings({ module: 'esnext', moduleResolution: 'node16' }), {
+      module: 100,
+      moduleResolution: 3,
+    });
+    assert.deepEqual(moduleSettings({ moduleResolution: 'weird' }), {});
   });
 
-  it('importedTypesPackages', () => {
-    const src = [
-      "import _ from 'lodash';",
-      "import type { X } from '@tanstack/solid-virtual/core';",
-      "export * from 'zod';",
-      "import 'reflect-metadata';",
-      "const m = await import('dayjs');",
-      'const r = require("express");',
-      "import fs from 'node:fs';",
-      "import a from './a';",
-      '/// <reference types="jest" />',
-    ].join('\n');
-    assert.deepEqual(importedTypesPackages(src).sort(), [
-      'dayjs',
-      'express',
-      'jest',
-      'lodash',
-      'reflect-metadata',
-      'tanstack__solid-virtual',
-      'zod',
-    ]);
+  it("typesFor: the config's types, or every installed package before TS 6", () => {
+    const installed = ['node', 'react'];
+    assert.deepEqual(typesFor(undefined, true, installed), ['node', 'react']);
+    assert.deepEqual(typesFor(undefined, false, installed), []);
+    assert.deepEqual(typesFor(['vite/client', 'node'], false, installed), ['vite/client', 'node']);
+    assert.deepEqual(typesFor([], true, installed), []);
+    assert.deepEqual(typesFor(['*'], false, installed), ['node', 'react']);
   });
 });
 

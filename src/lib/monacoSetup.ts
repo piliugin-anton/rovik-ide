@@ -12,8 +12,10 @@
 // both `vite dev` and `tauri build`. Paths go through the package's `exports`
 // map (`./*.js` → `./esm/vs/*.js`): `monaco-editor/esm/...` paths bypass it
 // and fail to resolve, so `monaco-editor/editor/editor.worker.js` form is used.
+// The TypeScript worker is the app's own (lib/intellisense/worker.ts), built
+// on Monaco's.
 import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';
-import TsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
+import TsWorker from './intellisense/worker?worker';
 import JsonWorker from 'monaco-editor/language/json/json.worker.js?worker';
 import CssWorker from 'monaco-editor/language/css/css.worker.js?worker';
 import HtmlWorker from 'monaco-editor/language/html/html.worker.js?worker';

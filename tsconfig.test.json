@@ -4,6 +4,6 @@
   "compilerOptions": {
     "types": ["node", "vite/client"]
   },
-  "include": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test/**/*.ts"],
+  "include": ["src/**/*.test.ts", "src/**/*.d.ts"],
   "exclude": []
 }

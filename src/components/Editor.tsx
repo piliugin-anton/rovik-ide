@@ -23,7 +23,6 @@ import {
   ensureProjectIntelliSense,
   isIntelliSenseReady,
   modelUriFor,
-  dropProjectSourceLib,
   setActiveTypesFile,
 } from '../lib/intellisense';
 import { touchModel } from '../lib/models';
@@ -133,14 +132,12 @@ export default function Editor(props: EditorProps) {
     // Shown again: the most recently used (idle clean-up, lib/models.ts).
     touchModel(uri);
 
-    // From here on the worker serves this file from its model (mirror sync),
-    // so its extra-lib snapshot must go — one file in the program, not two.
-    dropProjectSourceLib(props.currentFilePath);
-    // Its tsconfig's `types` decide which global @types the worker sees.
+    // From here on the TS worker serves this file from its model (mirror
+    // sync). Its tsconfig's `types` decide which global @types the worker sees.
     setActiveTypesFile(props.currentFilePath);
 
     // Create the editor SYNCHRONOUSLY during mount. The previous version
-    // awaited `load_nodejs_project_typings` first, so the editor did not
+    // awaited the project's typings first, so the editor did not
     // exist when the content-sync effect below ran - and since `editor`
     // is a plain (non-reactive) variable, that effect never re-ran after
     // creation. The editor got exactly one chance to receive content.

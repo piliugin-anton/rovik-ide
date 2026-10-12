@@ -4,6 +4,7 @@ import type {
   BrowsedPage,
   BrowserScreenshot,
   DirEntryInfo,
+  LoadedFiles,
   ToolDirEntry,
   ToolSearchResult,
   WebSearchHit,
@@ -24,6 +25,16 @@ export async function readDirEntries(rootPath: string, path: string): Promise<Di
 
 export async function readFileContent(path: string): Promise<string> {
   return invoke<string>('read_file_content', { path });
+}
+
+/** The project's JS/TS sources, for IntelliSense (within limits). */
+export async function loadProjectSources(root: string): Promise<LoadedFiles> {
+  return invoke<LoadedFiles>('load_project_sources', { root });
+}
+
+/** The type declarations under the project's node_modules (within limits). */
+export async function loadProjectTypings(root: string): Promise<LoadedFiles> {
+  return invoke<LoadedFiles>('load_project_typings', { root });
 }
 
 /** Starts the error of a save refused because the file changed on disk. */

@@ -217,7 +217,7 @@ src/                     frontend (SolidJS + TypeScript)
     agentRuns.ts         starts, stops and follows agent runs
     approvals.ts         approvals waiting for the user
     permissions.ts       permission settings (enforced in the backend)
-    intellisense.ts      project-wide TypeScript IntelliSense
+    intellisense/        project-wide TypeScript IntelliSense (and its worker)
     lsp/                 language server client (rust-analyzer)
     commands.ts          typed wrappers around backend commands
 

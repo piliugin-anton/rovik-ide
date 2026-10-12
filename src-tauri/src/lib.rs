@@ -29,6 +29,7 @@ mod opencode;
 mod outline;
 mod overlay;
 mod process;
+mod project_files;
 mod project_profile;
 mod read_file;
 mod read_symbol;
@@ -156,9 +157,9 @@ pub fn run() {
             git::git_log,
             git::git_commit_show,
             git::git_commit_file_preview,
-            typings::nodejs::load_nodejs_project_typings,
+            typings::node_modules::load_project_typings,
             typings::sources::load_project_sources,
-            typings::sources::list_project_files,
+            project_files::list_project_files,
             lsp::lsp_start,
             lsp::lsp_send,
             lsp::lsp_stop,
