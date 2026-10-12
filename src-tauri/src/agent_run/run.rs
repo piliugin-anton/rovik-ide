@@ -697,155 +697,80 @@ impl<R: Runtime> Run<R> {
             };
 
         let run = Run {
-            app: app.clone(),
-            state: state.clone(),
-            db: db.clone(),
-            seen: crate::file_guard::Seen::new(dialog_id.clone()),
-            dialog_id,
-            profile: request.profile,
-            options: request.options,
             plan_mode,
             context_mode: request
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
             project_root,
-            merged_from_project: None,
-            marker_reminders: 0,
-            landed: false,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
-            questions_asked: 0,
             checks,
             project_context,
             base_project_context,
             repo_map,
             repo_map_chars,
-            map_writes_since_refresh: 0,
-            map_refreshed_at: Instant::now(),
-            map_refreshes: 0,
             writes_since_verify: !changed_files.is_empty(),
             changed_files,
             verify_rounds,
-            last_verify_failed: false,
-            checklist_nudges: 0,
             force_todo_next,
-            checklist_gate_refused: false,
-            open_steps_at_end: None,
-            pending_step_compaction: None,
-            clm_restricted: false,
-            restricted_turns: 0,
-            restricted_stall: 0,
-            clm_non_compliant: false,
-            clm_turns: 0,
-            clm_peak_pct: 0,
-            clm_edits_seen: 0,
-            clm_edit_deltas: Vec::new(),
-            clm_recall_hits: 0,
-            clm_reminders_fired: Vec::new(),
-            step_asked_turn: None,
-            step_turns_to_edit: None,
-            tier75_turns_to_edit: None,
-            urgent_turns_to_edit: None,
-            tier75_since: None,
-            urgent_since: None,
-            clm_tracking_started: false,
-            context_edited: false,
-            edit_delta_pending: None,
-            words_only: false,
             plan_context,
-            plan_nudged: false,
-            repetition_stops: 0,
-            started_at: Instant::now(),
-            stop: controls.stop,
-            effort: controls.effort,
-            refused_formats: Vec::new(),
             settle_message,
             continue_reply,
-            role: Role::Lead,
-            ledger: subagent::Ledger::default(),
-            verify_history: Vec::new(),
-            last_verify_results: Vec::new(),
-            checkpoint: None,
-            baseline: Default::default(),
-            integrity_open: Vec::new(),
-            writes_since_review: false,
-            reviews_total: 0,
-            review_outcome: None,
-            carry_lost: None,
-            round_commands: Vec::new(),
-            integrity_unchecked: false,
-            rechecks: 0,
-            carry_lost_told: false,
-            reviews_in_row: 0,
-            review_findings: Vec::new(),
-            review_note_id: None,
-            last_triage: None,
-            cleaned_this_run: false,
-            group_grants: Default::default(),
-            plan_reviews: 0,
-            plan_findings: Vec::new(),
-            plan_held: None,
-            plan_review_call: None,
-            worker_steps: Vec::new(),
-            test_writer_files: Vec::new(),
-            tests_changed: Vec::new(),
-            tests_changed_listed: 0,
-            groups: Vec::new(),
-            rolled_back_attempts: Vec::new(),
-            bonus_rounds: 0,
-            asked_integrity: false,
+            ..Run::blank(
+                app.clone(),
+                state.clone(),
+                db.clone(),
+                crate::file_guard::Seen::new(dialog_id.clone()),
+                dialog_id,
+                request.profile,
+                request.options,
+                controls,
+                Role::Lead,
+            )
         };
         Ok(Some((run, entry)))
     }
 
-    /// A subagent's run, in the child chat `dialog_id` (already stored, its
-    /// brief its first message). It works in the parent's root (D5) and
-    /// never opens an overlay of its own (K04); it shares the parent's
-    /// project section and repository map, gets its kind's tools and
-    /// prompt, and none of the lead's end-of-run machinery: no checklist,
-    /// no checks, no CLM, no plan mode, no checkpoints (K03).
-    pub(super) fn prepare_child(
-        parent: &Run<R>,
+    /// A run with nothing set yet: every counter at zero, nothing changed,
+    /// no plan, no checks. `prepare` and `prepare_child` fill in the rest.
+    #[allow(clippy::too_many_arguments)]
+    fn blank(
+        app: AppHandle<R>,
+        state: AgentState,
+        db: DbState,
+        seen: Arc<crate::file_guard::Seen>,
         dialog_id: String,
-        sub: SubCtx,
+        profile: ModelProfile,
+        options: Option<OpenAIChatOptions>,
         controls: Controls,
+        role: Role,
     ) -> Run<R> {
-        let profile = sub.models[0].clone();
-        let options = sub.options.clone();
-        // A writing kind works for the lead: the lead's record of what it
-        // read and wrote, so its files aren't "changed by another chat"
-        // and the lead can go on from what the worker wrote.
-        let seen = if sub.kind.writes() {
-            parent.seen.clone()
-        } else {
-            crate::file_guard::Seen::new(dialog_id.clone())
-        };
         Run {
-            app: parent.app.clone(),
-            state: parent.state.clone(),
-            db: parent.db.clone(),
+            app,
+            state,
+            db,
             seen,
             dialog_id,
             profile,
             options,
             plan_mode: false,
             context_mode: crate::clm::MODE_TRIMMING.into(),
-            root: parent.root.clone(),
-            project_root: parent.project_root.clone(),
+            root: None,
+            project_root: None,
             merged_from_project: None,
             marker_reminders: 0,
             landed: false,
             current_user_content: None,
-            local_date: parent.local_date.clone(),
+            local_date: String::new(),
             guard: Guard::new(None, 0),
             questions_asked: 0,
             checks: Vec::new(),
-            project_context: parent.project_context.clone(),
-            base_project_context: parent.base_project_context.clone(),
-            repo_map: parent.repo_map.clone(),
-            repo_map_chars: parent.repo_map_chars,
+            project_context: String::new(),
+            base_project_context: String::new(),
+            repo_map: None,
+            repo_map_chars: 0,
             map_writes_since_refresh: 0,
             map_refreshed_at: Instant::now(),
             map_refreshes: 0,
@@ -887,7 +812,7 @@ impl<R: Runtime> Run<R> {
             refused_formats: Vec::new(),
             settle_message: None,
             continue_reply: false,
-            role: Role::Sub(Box::new(sub)),
+            role,
             ledger: subagent::Ledger::default(),
             verify_history: Vec::new(),
             last_verify_results: Vec::new(),
@@ -920,6 +845,50 @@ impl<R: Runtime> Run<R> {
             rolled_back_attempts: Vec::new(),
             bonus_rounds: 0,
             asked_integrity: false,
+        }
+    }
+
+    /// A subagent's run, in the child chat `dialog_id` (already stored, its
+    /// brief its first message). It works in the parent's root (D5) and
+    /// never opens an overlay of its own (K04); it shares the parent's
+    /// project section and repository map, gets its kind's tools and
+    /// prompt, and none of the lead's end-of-run machinery: no checklist,
+    /// no checks, no CLM, no plan mode, no checkpoints (K03).
+    pub(super) fn prepare_child(
+        parent: &Run<R>,
+        dialog_id: String,
+        sub: SubCtx,
+        controls: Controls,
+    ) -> Run<R> {
+        let profile = sub.models[0].clone();
+        let options = sub.options.clone();
+        // A writing kind works for the lead: the lead's record of what it
+        // read and wrote, so its files aren't "changed by another chat"
+        // and the lead can go on from what the worker wrote.
+        let seen = if sub.kind.writes() {
+            parent.seen.clone()
+        } else {
+            crate::file_guard::Seen::new(dialog_id.clone())
+        };
+        Run {
+            root: parent.root.clone(),
+            project_root: parent.project_root.clone(),
+            local_date: parent.local_date.clone(),
+            project_context: parent.project_context.clone(),
+            base_project_context: parent.base_project_context.clone(),
+            repo_map: parent.repo_map.clone(),
+            repo_map_chars: parent.repo_map_chars,
+            ..Run::blank(
+                parent.app.clone(),
+                parent.state.clone(),
+                parent.db.clone(),
+                seen,
+                dialog_id,
+                profile,
+                options,
+                controls,
+                Role::Sub(Box::new(sub)),
+            )
         }
     }
 
