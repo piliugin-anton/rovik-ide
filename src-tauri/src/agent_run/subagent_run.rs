@@ -120,7 +120,10 @@ impl SubCtx {
     /// or `input_tokens`/`output_tokens`).
     pub fn note_usage(&mut self, usage: Option<&Value>) {
         let Some(u) = usage else { return };
-        let n = |keys: &[&str]| keys.iter().find_map(|k| u.get(*k)?.as_u64());
+        let n = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|k| super::log::token_count(u.get(*k)?))
+        };
         if let Some(i) = n(&["prompt_tokens", "input_tokens"]) {
             self.tokens_in += i;
             self.usage_seen = true;
@@ -2266,5 +2269,27 @@ mod tests {
             (1000, 20, true)
         );
         assert_eq!(sub.cost, None);
+    }
+
+    /// Round 2, P6.2: a subagent's usage in whole floats (`10.0`), as some
+    /// proxies send it, counts as the runner's does; a fraction doesn't.
+    #[test]
+    fn note_usage_reads_whole_float_counts() {
+        let mut sub = ctx();
+        sub.note_usage(Some(
+            &json!({ "prompt_tokens": 600000.0, "completion_tokens": 20.0 }),
+        ));
+        assert_eq!(
+            (sub.tokens_in, sub.tokens_out, sub.usage_seen),
+            (600_000, 20, true)
+        );
+        let mut sub = ctx();
+        sub.note_usage(Some(
+            &json!({ "prompt_tokens": 1.5, "completion_tokens": -2.0 }),
+        ));
+        assert_eq!(
+            (sub.tokens_in, sub.tokens_out, sub.usage_seen),
+            (0, 0, false)
+        );
     }
 }

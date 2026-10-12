@@ -40,6 +40,7 @@
 //! needs the virtual-files driver).
 
 use crate::agent::OpenAIChatOptions;
+use crate::agent_run::log::token_count;
 use crate::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
 use crate::agent_run::{
     self, events, AgentConfig, AgentState, ApprovalDecision, ModelProfile, StartKind, StartRequest,
@@ -257,16 +258,6 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
 
 /// Tokens in and out, and the cost when the provider says, of one reply's
 /// usage (OpenAI's names, or the Responses API's).
-/// A token count: a whole number, as some proxies send them as floats
-/// (`10.0`); not a fraction or a negative (round 2, P6.2).
-fn token_count(v: &Value) -> Option<u64> {
-    v.as_u64().or_else(|| {
-        v.as_f64()
-            .filter(|f| f.is_finite() && *f >= 0.0 && f.fract() == 0.0)
-            .map(|f| f as u64)
-    })
-}
-
 pub fn usage_of(u: &Value) -> (u64, u64, Option<f64>) {
     let n = |keys: &[&str]| {
         keys.iter()
