@@ -1,0 +1,16 @@
+{
+  "id": "self-checklist-clear",
+  "repo": "self",
+  "base": "f28967201035061524d91f43d5c03eac5f315182",
+  "reference": "e2a9a1ed77e9264fe963c138f3b701c936a33b33",
+  "lang": "ts",
+  "request": "Bug: a finished run's checklist reappears when the next run in the same chat starts. clearLiveChecklist(chatId) in src/lib/checklist.ts returns a copy of the store's `live` object without the key, but a Solid store setter merges objects, so the key stays. After clearLiveChecklist(id), liveChecklist(id) must return null, and other chats' lists must be untouched; clearing a chat with no list is harmless; noteChecklist(id, items) replaces a chat's list. The same pattern leaves `pending` set; fix it too. Also clear the chat's live checklist when a run starts (startRun in src/lib/agentRuns.ts), before asking the backend to start.",
+  "hidden": ["src/lib/checklist.test.ts"],
+  "checks": [
+    {
+      "kind": "ts",
+      "files": ["src/lib/checklist.test.ts"]
+    }
+  ],
+  "setup": ["node"]
+}

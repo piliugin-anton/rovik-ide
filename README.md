@@ -47,7 +47,10 @@ Electron-based editors.
   also let a second "reviewer" AI model approve routine actions.
 - **Automatic checks.** When the agent finishes, the IDE runs the project's
   type check, lint and tests. If anything fails, the agent is sent back to
-  fix it.
+  fix it. It's told when a fix made no progress, a fix that breaks
+  something that passed before is rolled back, and tests weakened to pass
+  (skipped, deleted, fewer assertions) are flagged for you instead of
+  counting as verified.
 - **Several chats at once, safely.** Each chat works on its own private
   copy of your changes, so two chats (or a chat and you) never overwrite
   each other. When a chat finishes, its changes are merged into the
@@ -55,6 +58,24 @@ Electron-based editors.
 - **Long tasks stay on track.** Older history is trimmed automatically, or
   the agent can manage its own context (see
   [Context management](#context-management)).
+- **Subagents (optional, off by default).** The agent can send scouts:
+  read-only helpers that explore one question about the code in a fresh
+  context and hand back a short report, so long explorations don't fill
+  the agent's own context. A change reviewer can read each finished
+  change with fresh eyes before the checks run; the agent fixes or
+  answers what it finds. When a check fails with a long output, or fails
+  again, a triage helper reads all of it and tells the agent the root
+  cause, instead of the agent getting pages of compiler output. In Plan
+  mode, a plan reviewer checks each plan against the code before it's
+  saved. When the agent implements a long plan, step workers can carry it
+  out one step at a time, each writing only its step's files; in an
+  isolated chat, steps the plan groups can run side by side, each in its
+  own copy, then merged and checked once. If those checks fail, each
+  failure's cause goes back to the worker whose files it's in, the agent
+  fixes the rest, and the checks run once more; if it still fails, you
+  can redo the group one step at a time. A test writer can write tests
+  from the request and the plan without reading the new code. Turn them
+  on, and pick their models, in Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
 - Chats are saved and searchable, and they keep running in the background

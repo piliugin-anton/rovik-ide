@@ -12,9 +12,10 @@ use super::events::{emit, AgentEvent, OutMessage, Patch, Status};
 use super::guard::Guard;
 use super::permissions::ChecklistMode;
 use super::project::{self, ProjectCheck};
+use super::subagent_run::SubCtx;
 use super::{
-    failure, log, plan, repetition, tools, AgentState, Controls, EffortPick, ModelProfile,
-    StartKind, StartRequest, StopSignal,
+    failure, log, plan, repair, repetition, subagent, tools, AgentState, Controls, EffortPick,
+    ModelProfile, StartKind, StartRequest, StopSignal,
 };
 use crate::agent::{
     ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS,
@@ -238,6 +239,85 @@ pub struct Run<R: Runtime> {
     /// The sent message waiting for its first answer.
     pub(super) settle_message: Option<String>,
     continue_reply: bool,
+    /// The chat's lead, or a subagent of a lead (subagent_run.rs).
+    pub(super) role: Role,
+    /// The subagents this run started (a lead's).
+    pub(super) ledger: subagent::Ledger,
+    /// Each verification round's failures, oldest first (repair.rs, R01):
+    /// a rolled-back round isn't among them.
+    pub(super) verify_history: Vec<repair::RoundFailures>,
+    /// The last round's results, reported again after a rollback.
+    pub(super) last_verify_results: Vec<super::verify::CheckResult>,
+    /// The files as they were before the current fix round (R02).
+    pub(super) checkpoint: Option<repair::Checkpoint>,
+    /// Each file as it was when the run first wrote it (R05), by path
+    /// relative to the root; None: it didn't exist.
+    pub(super) baseline: std::collections::HashMap<String, super::subagent::Original>,
+    /// Changes that weaken the checks, which the agent was asked about (R05).
+    pub(super) integrity_open: Vec<String>,
+    /// Files changed since the change reviewer last ran (change_review.rs).
+    pub(super) writes_since_review: bool,
+    /// Change reviews in this run, and since the checks last ran.
+    pub(super) reviews_total: u32,
+    /// How the last change review went: its status and why it was skipped.
+    /// None when it didn't start.
+    pub(super) review_outcome: Option<(String, Option<String>)>,
+    /// The checks were started from `record` with no carried state for it
+    /// (P1.7): its record says so, and the agent is told once.
+    pub(super) carry_lost: Option<String>,
+    /// Commands that may have changed files since the round's checkpoint
+    /// (P3.5): a rollback can't undo them, and says so.
+    pub(super) round_commands: Vec<String>,
+    /// What files were before the run couldn't all be rebuilt after a
+    /// restart (P3.9): checks that pass aren't "verified".
+    pub(super) integrity_unchecked: bool,
+    /// Rounds checked again at once after fixers (P3.10, `MAX_RECHECKS`).
+    pub(super) rechecks: u32,
+    pub(super) carry_lost_told: bool,
+    pub(super) reviews_in_row: u32,
+    /// The findings sent to the agent so far, and the note that sent the
+    /// latest (its answers follow it).
+    pub(super) review_findings: Vec<super::change_review::Finding>,
+    pub(super) review_note_id: Option<String>,
+    /// What the last failure triage found, for the next one (triage.rs).
+    pub(super) last_triage: Option<super::triage::Triage>,
+    /// Plan reviews in this run, the findings that held a plan back, and
+    /// the `submit_plan` call they answered (plan_review.rs).
+    /// The running parallel group's extend_scope grants.
+    pub(super) group_grants: super::group::GroupGrants,
+    /// P4.7: earlier runs' saved check output was removed.
+    pub(super) cleaned_this_run: bool,
+    pub(super) plan_reviews: u32,
+    pub(super) plan_findings: Vec<super::change_review::Finding>,
+    /// The plan as it was held with those findings (round 3): sent again
+    /// unchanged, every repeated finding stands; revised, repeats may go.
+    pub(super) plan_held: Option<String>,
+    pub(super) plan_review_call: Option<String>,
+    /// Plan steps step workers finished in this run (worker.rs, D03).
+    pub(super) worker_steps: Vec<super::worker::DoneStep>,
+    /// Files the test writer wrote, those the lead changed after it, and
+    /// how many of those the final message listed already (E03).
+    pub(super) test_writer_files: Vec<String>,
+    pub(super) tests_changed: Vec<String>,
+    pub(super) tests_changed_listed: usize,
+    /// Parallel groups joined in this run, for the repair loop (R03).
+    pub(super) groups: Vec<super::repair_run::GroupRecord>,
+    /// Fix attempts rolled back in this run, for a gave-up record (R06).
+    pub(super) rolled_back_attempts: Vec<super::repair::Rollback>,
+    /// Fix rounds beyond MAX_VERIFY_ROUNDS a review after green granted (R08).
+    pub(super) bonus_rounds: u32,
+    /// The last round asked the agent about changes that weaken the checks
+    /// (R05): the next round's new failures aren't a regression.
+    pub(super) asked_integrity: bool,
+}
+
+/// Who a run works for.
+pub(super) enum Role {
+    /// The chat's own agent: talks to the user, owns the plan, the checklist
+    /// and the checks.
+    Lead,
+    /// A subagent of a lead (subagent_run.rs).
+    Sub(Box<SubCtx>),
 }
 
 /// Where a run starts.
@@ -251,14 +331,28 @@ pub(super) enum Entry {
 }
 
 /// What one model turn produced.
-struct TurnOutput {
-    message_id: String,
-    text: String,
-    tool_calls: Vec<ToolCall>,
-    failure: Option<ChatError>,
-    repetition_cut: Option<usize>,
+pub(super) struct TurnOutput {
+    pub(super) message_id: String,
+    pub(super) text: String,
+    pub(super) tool_calls: Vec<ToolCall>,
+    pub(super) failure: Option<ChatError>,
+    pub(super) repetition_cut: Option<usize>,
     /// `{ text, ms }`, when the model reasoned.
-    reasoning: Option<Value>,
+    pub(super) reasoning: Option<Value>,
+}
+
+/// A reply up to where it started repeating itself (`cut`; all of it
+/// when it didn't).
+pub(super) fn text_before_cut(text: &str, cut: Option<usize>) -> &str {
+    match cut {
+        Some(cut) => text[..cut.min(text.len())].trim_end(),
+        None => text,
+    }
+}
+
+/// A reply's meta from what the model reasoned, if it did.
+pub(super) fn reasoning_meta(reasoning: Option<Value>) -> Option<Value> {
+    reasoning.map(|r| json!({ "reasoning": r }))
 }
 
 impl<R: Runtime> Run<R> {
@@ -423,12 +517,11 @@ impl<R: Runtime> Run<R> {
             dialog_id: &str,
             recent: &mut Vec<MessageRow>,
             content: String,
-            kind: &str,
-            from_message_id: Option<String>,
-            items: Vec<plan::TodoItem>,
+            meta: Value,
+            items: Option<Vec<plan::TodoItem>>,
         ) {
             let mut m = new_message("user", &content);
-            m.meta = Some(json!({ "harness": kind, "fromMessageId": from_message_id }));
+            m.meta = Some(meta);
             let stored = vec![m.clone()];
             let id = dialog_id.to_string();
             if let Ok(seqs) = db
@@ -465,13 +558,15 @@ impl<R: Runtime> Run<R> {
                     created_at: mcreated,
                 });
             }
-            emit(
-                app,
-                AgentEvent::Checklist {
-                    dialog_id: dialog_id.to_string(),
-                    items,
-                },
-            );
+            if let Some(items) = items {
+                emit(
+                    app,
+                    AgentEvent::Checklist {
+                        dialog_id: dialog_id.to_string(),
+                        items,
+                    },
+                );
+            }
         }
 
         // Agent mode only: Plan mode has no `todo` tool, so a note asking
@@ -485,9 +580,8 @@ impl<R: Runtime> Run<R> {
                         &dialog_id,
                         &mut recent,
                         plan::carry_note(&carried.items),
-                        "checklistCarried",
-                        carried.from_message_id,
-                        carried.items,
+                        json!({ "harness": "checklistCarried", "fromMessageId": carried.from_message_id }),
+                        Some(carried.items),
                     )
                     .await;
                 }
@@ -502,12 +596,32 @@ impl<R: Runtime> Run<R> {
                         &dialog_id,
                         &mut recent,
                         plan::continue_note(&current.items),
-                        "checklistContinued",
-                        current.from_message_id,
-                        current.items,
+                        json!({ "harness": "checklistContinued", "fromMessageId": current.from_message_id }),
+                        Some(current.items),
                     )
                     .await;
                 }
+            }
+        }
+
+        // B07b: implementing a plan file, which the user may have edited
+        // since it was checked. Its problems now go to the agent before it
+        // starts, and show in the chat.
+        if implements_plan && !plan_mode {
+            if let Some((file, problems)) =
+                plan_check_at_start(&recent, root.as_deref(), project_root.as_deref())
+            {
+                let shown = plan::relative_plan_path(&file, project_root.as_deref());
+                append_carry_note(
+                    app,
+                    db,
+                    &dialog_id,
+                    &mut recent,
+                    plan::plan_check_note(&shown, &problems),
+                    json!({ "harness": "planCheck", "planCheck": { "file": shown, "problems": problems } }),
+                    None,
+                )
+                .await;
             }
         }
 
@@ -597,40 +711,89 @@ impl<R: Runtime> Run<R> {
             };
 
         let run = Run {
-            app: app.clone(),
-            state: state.clone(),
-            db: db.clone(),
-            seen: crate::file_guard::Seen::new(dialog_id.clone()),
-            dialog_id,
-            profile: request.profile,
-            options: request.options,
             plan_mode,
             context_mode: request
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
             root,
             project_root,
-            merged_from_project: None,
-            marker_reminders: 0,
-            landed: false,
             current_user_content,
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
-            questions_asked: 0,
             checks,
             project_context,
             base_project_context,
             repo_map,
             repo_map_chars,
-            map_writes_since_refresh: 0,
-            map_refreshed_at: Instant::now(),
-            map_refreshes: 0,
             writes_since_verify: !changed_files.is_empty(),
             changed_files,
             verify_rounds,
+            force_todo_next,
+            plan_context,
+            settle_message,
+            continue_reply,
+            ..Run::blank(
+                app.clone(),
+                state.clone(),
+                db.clone(),
+                crate::file_guard::Seen::new(dialog_id.clone()),
+                dialog_id,
+                request.profile,
+                request.options,
+                controls,
+                Role::Lead,
+            )
+        };
+        Ok(Some((run, entry)))
+    }
+
+    /// A run with nothing set yet: every counter at zero, nothing changed,
+    /// no plan, no checks. `prepare` and `prepare_child` fill in the rest.
+    #[allow(clippy::too_many_arguments)]
+    fn blank(
+        app: AppHandle<R>,
+        state: AgentState,
+        db: DbState,
+        seen: Arc<crate::file_guard::Seen>,
+        dialog_id: String,
+        profile: ModelProfile,
+        options: Option<OpenAIChatOptions>,
+        controls: Controls,
+        role: Role,
+    ) -> Run<R> {
+        Run {
+            app,
+            state,
+            db,
+            seen,
+            dialog_id,
+            profile,
+            options,
+            plan_mode: false,
+            context_mode: crate::clm::MODE_TRIMMING.into(),
+            root: None,
+            project_root: None,
+            merged_from_project: None,
+            marker_reminders: 0,
+            landed: false,
+            current_user_content: None,
+            local_date: String::new(),
+            guard: Guard::new(None, 0),
+            questions_asked: 0,
+            checks: Vec::new(),
+            project_context: String::new(),
+            base_project_context: String::new(),
+            repo_map: None,
+            repo_map_chars: 0,
+            map_writes_since_refresh: 0,
+            map_refreshed_at: Instant::now(),
+            map_refreshes: 0,
+            writes_since_verify: false,
+            changed_files: Vec::new(),
+            verify_rounds: 0,
             last_verify_failed: false,
             checklist_nudges: 0,
-            force_todo_next,
+            force_todo_next: false,
             checklist_gate_refused: false,
             open_steps_at_end: None,
             pending_step_compaction: None,
@@ -654,17 +817,152 @@ impl<R: Runtime> Run<R> {
             context_edited: false,
             edit_delta_pending: None,
             words_only: false,
-            plan_context,
+            plan_context: String::new(),
             plan_nudged: false,
             repetition_stops: 0,
             started_at: Instant::now(),
             stop: controls.stop,
             effort: controls.effort,
             refused_formats: Vec::new(),
-            settle_message,
-            continue_reply,
+            settle_message: None,
+            continue_reply: false,
+            role,
+            ledger: subagent::Ledger::default(),
+            verify_history: Vec::new(),
+            last_verify_results: Vec::new(),
+            checkpoint: None,
+            baseline: Default::default(),
+            integrity_open: Vec::new(),
+            writes_since_review: false,
+            reviews_total: 0,
+            review_outcome: None,
+            carry_lost: None,
+            round_commands: Vec::new(),
+            integrity_unchecked: false,
+            rechecks: 0,
+            carry_lost_told: false,
+            reviews_in_row: 0,
+            review_findings: Vec::new(),
+            review_note_id: None,
+            last_triage: None,
+            cleaned_this_run: false,
+            group_grants: Default::default(),
+            plan_reviews: 0,
+            plan_findings: Vec::new(),
+            plan_held: None,
+            plan_review_call: None,
+            worker_steps: Vec::new(),
+            test_writer_files: Vec::new(),
+            tests_changed: Vec::new(),
+            tests_changed_listed: 0,
+            groups: Vec::new(),
+            rolled_back_attempts: Vec::new(),
+            bonus_rounds: 0,
+            asked_integrity: false,
+        }
+    }
+
+    /// A subagent's run, in the child chat `dialog_id` (already stored, its
+    /// brief its first message). It works in the parent's root (D5) and
+    /// never opens an overlay of its own (K04); it shares the parent's
+    /// project section and repository map, gets its kind's tools and
+    /// prompt, and none of the lead's end-of-run machinery: no checklist,
+    /// no checks, no CLM, no plan mode, no checkpoints (K03).
+    pub(super) fn prepare_child(
+        parent: &Run<R>,
+        dialog_id: String,
+        sub: SubCtx,
+        controls: Controls,
+    ) -> Run<R> {
+        let profile = sub.models[0].clone();
+        let options = sub.options.clone();
+        // A writing kind works for the lead: the lead's record of what it
+        // read and wrote, so its files aren't "changed by another chat"
+        // and the lead can go on from what the worker wrote.
+        let seen = if sub.kind.writes() {
+            parent.seen.clone()
+        } else {
+            crate::file_guard::Seen::new(dialog_id.clone())
         };
-        Ok(Some((run, entry)))
+        Run {
+            root: parent.root.clone(),
+            project_root: parent.project_root.clone(),
+            local_date: parent.local_date.clone(),
+            project_context: parent.project_context.clone(),
+            base_project_context: parent.base_project_context.clone(),
+            repo_map: parent.repo_map.clone(),
+            repo_map_chars: parent.repo_map_chars,
+            ..Run::blank(
+                parent.app.clone(),
+                parent.state.clone(),
+                parent.db.clone(),
+                seen,
+                dialog_id,
+                profile,
+                options,
+                controls,
+                Role::Sub(Box::new(sub)),
+            )
+        }
+    }
+
+    /// Who this run's requests are for, for ROVIK_API_LOG (S09).
+    fn log_tags(&self) -> Value {
+        match self.sub() {
+            Some(sub) => json!({
+                "role": "sub",
+                "kind": sub.kind.id(),
+                "dialogId": self.dialog_id,
+                "parentDialogId": sub.parent_dialog_id,
+            }),
+            None => json!({ "role": "lead", "dialogId": self.dialog_id }),
+        }
+    }
+
+    /// The subagent's context, when this run is one.
+    pub(super) fn sub(&self) -> Option<&SubCtx> {
+        match &self.role {
+            Role::Sub(sub) => Some(sub),
+            Role::Lead => None,
+        }
+    }
+
+    pub(super) fn sub_mut(&mut self) -> Option<&mut SubCtx> {
+        match &mut self.role {
+            Role::Sub(sub) => Some(sub),
+            Role::Lead => None,
+        }
+    }
+
+    /// The kinds of subagent this lead may start now (none for a subagent:
+    /// depth 1, D3). Read at each turn: settings changes apply at once.
+    /// Plan mode changes nothing, so no kind that writes (step workers, the
+    /// test writer) is offered there.
+    pub(super) fn subagent_kinds(&self) -> Vec<subagent::Kind> {
+        if self.sub().is_some() || self.root.is_none() || self.profile.no_tools {
+            return Vec::new();
+        }
+        let mut kinds = self.state.config().subagents.lead_kinds();
+        if self.plan_mode {
+            kinds.retain(|k| !k.writes());
+        }
+        kinds
+    }
+
+    /// Parallel groups can be started now: they can run, and this isn't
+    /// Plan mode (which writes the plan's groups, not their code).
+    pub(super) fn groups_now(&self) -> bool {
+        self.parallel_on() && !self.plan_mode
+    }
+
+    /// Parallel groups can run (F): the setting is on, step workers are
+    /// on, and the chat is isolated (child overlays need its view).
+    pub(super) fn parallel_on(&self) -> bool {
+        let config = self.state.config().subagents;
+        self.sub().is_none()
+            && config.parallel_workers
+            && config.kind(subagent::Kind::Worker).is_some()
+            && crate::overlay::chats::get(&self.dialog_id).is_some()
     }
 
     pub(super) fn stopped(&self) -> bool {
@@ -695,6 +993,11 @@ impl<R: Runtime> Run<R> {
                 "error".to_string()
             }
         };
+        // P1.8: a lead's run that leaves no checks waiting leaves no state
+        // for them either (an older run's is stale now).
+        if self.sub().is_none() && outcome != "verify-needs-approval" {
+            self.state.drop_carry(&self.dialog_id);
+        }
         // An isolated chat's changes land now, or say why they don't.
         self.land_at_end(&outcome).await;
         // Ended before the message got any answer.
@@ -718,9 +1021,19 @@ impl<R: Runtime> Run<R> {
     }
 
     async fn drive(&mut self, entry: Entry) -> Result<String, String> {
+        // P1.7: a new run makes the checks older runs left waiting stale:
+        // their records say so (no "Run checks" any more).
+        if !matches!(entry, Entry::Verify { .. }) && self.sub().is_none() {
+            self.supersede_waiting_checks().await;
+        }
         match entry {
             Entry::Turn => {}
             Entry::Verify { record_id } => {
+                // What the last run's fix rounds knew (command approval on).
+                self.restore_verify_state(&record_id);
+                if self.carry_lost.is_some() {
+                    self.rebuild_baseline(&record_id).await;
+                }
                 // The waiting record becomes the running one, then the results.
                 let outcome = self.verify_at_end(true, Some(record_id)).await?;
                 if outcome != "continue" {
@@ -756,11 +1069,11 @@ impl<R: Runtime> Run<R> {
 
             // Stopped for repeating itself: keep the reply up to where it
             // started, tell the model once, and go on; a second time, the run ends.
-            if let Some(cut) = turn.repetition_cut {
+            if turn.repetition_cut.is_some() {
                 self.repetition_stops += 1;
                 let kept = format!(
                     "{}\n\n_[Stopped here: the reply kept repeating itself.]_",
-                    turn.text[..cut.min(turn.text.len())].trim_end()
+                    text_before_cut(&turn.text, turn.repetition_cut)
                 );
                 self.finalize(
                     &turn.message_id,
@@ -799,32 +1112,10 @@ impl<R: Runtime> Run<R> {
             }
 
             if let Some(error) = turn.failure {
-                let stored = failure::stored(&error);
-                if !turn.text.trim().is_empty() {
-                    // Part of the reply arrived: keep it (it stays in the
-                    // history) and let the user continue. Incomplete tool
-                    // calls are dropped.
-                    let mut meta = turn
-                        .reasoning
-                        .map(|r| json!({ "reasoning": r }))
-                        .unwrap_or_else(|| json!({}));
-                    meta["interrupted"] = stored;
-                    self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
-                        .await?;
-                    self.settle(true).await;
-                } else {
-                    let meta = json!({ "failure": stored });
-                    let text = failure::describe(&error);
-                    self.finalize(
-                        &turn.message_id,
-                        String::new(),
-                        Vec::new(),
-                        Some(meta),
-                        Some(text),
-                    )
+                let kept = self
+                    .store_failed_turn(&turn.message_id, &turn.text, turn.reasoning, &error)
                     .await?;
-                    self.settle(false).await;
-                }
+                self.settle(kept).await;
                 return Ok(if error.kind == ErrorKind::Cancelled {
                     "stopped"
                 } else {
@@ -833,12 +1124,11 @@ impl<R: Runtime> Run<R> {
                 .into());
             }
 
-            let meta = turn.reasoning.map(|r| json!({ "reasoning": r }));
             self.finalize(
                 &turn.message_id,
                 turn.text.clone(),
                 turn.tool_calls.clone(),
-                meta,
+                reasoning_meta(turn.reasoning),
                 None,
             )
             .await?;
@@ -853,6 +1143,19 @@ impl<R: Runtime> Run<R> {
 
             // The model says it's done: the checks decide.
             if turn.tool_calls.is_empty() {
+                // E03: test-writer tests it changed are listed for the user.
+                if self.sub().is_none() && self.tests_changed.len() > self.tests_changed_listed {
+                    let line = super::test_writer::changed_tests_line(&self.tests_changed);
+                    self.tests_changed_listed = self.tests_changed.len();
+                    self.finalize(
+                        &turn.message_id,
+                        format!("{}{line}", turn.text.trim_end()),
+                        Vec::new(),
+                        None,
+                        None,
+                    )
+                    .await?;
+                }
                 if self.plan_mode {
                     if self.finish_plan_reply(&turn.message_id, &turn.text).await? {
                         continue;
@@ -863,6 +1166,13 @@ impl<R: Runtime> Run<R> {
                 // Conflicts handed to it: not done while their markers are left.
                 if self.remind_of_markers().await? {
                     continue;
+                }
+                // A fresh-context review of the change, before the checks.
+                if self.review_change().await? {
+                    continue;
+                }
+                if self.stopped() {
+                    return Ok("stopped".into());
                 }
                 let outcome = self.verify_at_end(false, None).await?;
                 if outcome == "continue" {
@@ -949,50 +1259,49 @@ impl<R: Runtime> Run<R> {
         .await?;
         self.words_only = true;
         let turn = self.model_turn().await?;
-        let mut meta = turn
-            .reasoning
-            .map(|r| json!({ "reasoning": r }))
-            .unwrap_or_else(|| json!({}));
-        // Cut for repeating itself (the request is cancelled for that, so
-        // it also reads as a failure): keep the reply up to there, as the
-        // run's loop does. The pause still follows; the user didn't stop.
-        if let Some(cut) = turn.repetition_cut {
-            let kept = format!(
-                "{}\n\n_[Stopped here: the reply kept repeating itself.]_",
-                turn.text[..cut.min(turn.text.len())].trim_end()
-            );
-            self.finalize(&turn.message_id, kept, Vec::new(), Some(meta), None)
-                .await?;
-            self.settle(true).await;
-            return Ok(self.stopped());
-        }
         let Some(error) = turn.failure else {
             // Calls the provider sent anyway aren't run: the run is pausing.
+            let meta = reasoning_meta(turn.reasoning).unwrap_or_else(|| json!({}));
             self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
                 .await?;
             self.settle(true).await;
             return Ok(self.stopped());
         };
         // As a failed turn in the run: what arrived is kept, else the error shows.
-        let stored = failure::stored(&error);
-        if !turn.text.trim().is_empty() {
+        let kept = self
+            .store_failed_turn(&turn.message_id, &turn.text, turn.reasoning, &error)
+            .await?;
+        self.settle(kept).await;
+        Ok(error.kind == ErrorKind::Cancelled || self.stopped())
+    }
+
+    /// A turn the provider failed, stored: what arrived is kept as an
+    /// interrupted reply (true), else the reply shows the error (false).
+    pub(super) async fn store_failed_turn(
+        &self,
+        message_id: &str,
+        text: &str,
+        reasoning: Option<Value>,
+        error: &ChatError,
+    ) -> Result<bool, String> {
+        let stored = failure::stored(error);
+        if !text.trim().is_empty() {
+            let mut meta = reasoning_meta(reasoning).unwrap_or_else(|| json!({}));
             meta["interrupted"] = stored;
-            self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
+            self.finalize(message_id, text.to_string(), Vec::new(), Some(meta), None)
                 .await?;
-            self.settle(true).await;
+            Ok(true)
         } else {
-            let text = failure::describe(&error);
             self.finalize(
-                &turn.message_id,
+                message_id,
                 String::new(),
                 Vec::new(),
                 Some(json!({ "failure": stored })),
-                Some(text),
+                Some(failure::describe(error)),
             )
             .await?;
-            self.settle(false).await;
+            Ok(false)
         }
-        Ok(error.kind == ErrorKind::Cancelled || self.stopped())
     }
 
     /*
@@ -1005,7 +1314,7 @@ impl<R: Runtime> Run<R> {
     /// history is read from the database, so everything up to here must be
     /// stored. Failed attempts are retried in chat_request.rs, which reports
     /// each retry, then succeeds or fails for good.
-    async fn model_turn(&mut self) -> Result<TurnOutput, String> {
+    pub(super) async fn model_turn(&mut self) -> Result<TurnOutput, String> {
         let mut started = Instant::now();
         let mut pending = new_message("assistant", "");
         pending.finalized = false;
@@ -1022,7 +1331,7 @@ impl<R: Runtime> Run<R> {
         // context tools (90%+ at once, step/75% after 4 calls with no edit).
         self.update_clm_pressure(clm).await;
         let context_only = clm && self.clm_restricted;
-        let tools = tools::tools_for(
+        let mut tools = tools::tools_for(
             self.root.is_some(),
             self.profile.vision,
             self.profile.no_tools,
@@ -1031,10 +1340,45 @@ impl<R: Runtime> Run<R> {
             clm,
             context_only,
         );
+        // A subagent gets its kind's tools only; a lead with subagents on,
+        // the `task` tool (not on a turn restricted to context tools).
+        let kinds = self.subagent_kinds();
+        let mut system_prompt = None;
+        if let Some(sub) = self.sub() {
+            let spec = sub.kind.spec();
+            tools.retain(|t| {
+                sub.allows(
+                    t.pointer("/function/name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or(""),
+                )
+            });
+            if sub.scope.is_some() {
+                tools.push(super::worker::extend_scope_schema());
+            }
+            system_prompt = Some(format!(
+                "{}\n\n{}",
+                spec.prompt(&sub.budget),
+                self.project_context
+            ));
+        } else if !kinds.is_empty() && !context_only && !tools.is_empty() {
+            tools.push(subagent::task_schema(&kinds, self.groups_now()));
+        }
+        let subagent_section = if context_only {
+            None
+        } else {
+            subagent::lead_prompt(
+                &kinds,
+                config.subagents.worker_min_steps(),
+                self.groups_now(),
+            )
+        };
+        let group_rules = subagent::plan_group_rules(self.parallel_on());
         let project_context = if self.plan_mode {
             [
                 self.project_context.as_str(),
                 plan::PLAN_MODE_INSTRUCTIONS,
+                group_rules,
                 self.plan_context.as_str(),
             ]
             .iter()
@@ -1044,6 +1388,10 @@ impl<R: Runtime> Run<R> {
             .join("\n\n")
         } else {
             self.project_context.clone()
+        };
+        let project_context = match subagent_section {
+            Some(section) => format!("{project_context}\n\n{section}"),
+            None => project_context,
         };
         let continue_reply = std::mem::take(&mut self.continue_reply);
         let no_tool_calls = std::mem::take(&mut self.words_only);
@@ -1101,7 +1449,7 @@ impl<R: Runtime> Run<R> {
                 continue_reply: Some(continue_reply),
                 assistant_message_id: Some(message_id.clone()),
                 tools: Some(tools.clone()),
-                system_prompt: None,
+                system_prompt: system_prompt.clone(),
                 project_context: Some(project_context.clone()),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
@@ -1133,8 +1481,11 @@ impl<R: Runtime> Run<R> {
             let mut ask_again = false;
             let vfs = self.app.state::<crate::vfs::VfsState>();
             let result = {
-                let request =
-                    crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event);
+                // ROVIK_API_LOG writes who each request is for (S09).
+                let request = crate::api_log::TAGS.scope(
+                    self.log_tags(),
+                    crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event),
+                );
                 tokio::pin!(request);
                 let mut stop_rx = self.stop.subscribe();
                 let mut ticker = tokio::time::interval(Duration::from_millis(100));
@@ -1206,6 +1557,8 @@ impl<R: Runtime> Run<R> {
                     .is_some_and(|e| e.kind == ErrorKind::Cancelled);
             if asked_again {
                 let shown = s.shown_anything();
+                // P6.2: what the dropped request used, when it said.
+                let usage = s.usage.take();
                 for note in std::mem::take(&mut s.notes) {
                     if !carried_notes.contains(&note) {
                         carried_notes.push(note);
@@ -1216,16 +1569,19 @@ impl<R: Runtime> Run<R> {
                     self.drop_reasoning_formats(&rejected, &unresolved);
                 }
                 self.take_effort();
-                log::write(
-                    &self.app,
-                    json!({
-                        "event": "reply",
-                        "dialogId": self.dialog_id,
-                        "model": self.profile.model,
-                        "error": "asked-again",
-                        "ms": started.elapsed().as_millis() as u64,
-                    }),
-                );
+                if let Some(sub) = self.sub_mut() {
+                    sub.note_usage(usage.as_ref());
+                }
+                let mut entry = json!({
+                    "event": "reply",
+                    "dialogId": self.dialog_id,
+                    "model": self.profile.model,
+                    "error": "asked-again",
+                    "usage": usage,
+                    "ms": started.elapsed().as_millis() as u64,
+                });
+                self.note_sub_fields(&mut entry);
+                log::write(&self.app, entry);
                 // Whatever the dropped attempt showed (its reasoning) goes.
                 if shown {
                     self.patch_ui(
@@ -1273,6 +1629,9 @@ impl<R: Runtime> Run<R> {
                 self.drop_reasoning_formats(&rejected, &unresolved);
             }
 
+            if let Some(sub) = self.sub_mut() {
+                sub.note_usage(usage.as_ref());
+            }
             let mut entry = json!({
                 "event": "reply",
                 "dialogId": self.dialog_id,
@@ -1288,8 +1647,19 @@ impl<R: Runtime> Run<R> {
             if let Some(error) = &output.failure {
                 entry["error"] = json!(error.kind);
             }
+            self.note_sub_fields(&mut entry);
             log::write(&self.app, entry);
             return Ok(output);
+        }
+    }
+
+    /// A subagent's reply lines say whose they are (round 3: the asked-again
+    /// line too, so the report keeps its usage before the `task` call ends).
+    fn note_sub_fields(&self, entry: &mut Value) {
+        if let Some(sub) = self.sub() {
+            entry["role"] = json!("sub");
+            entry["kind"] = json!(sub.kind.id());
+            entry["parentDialogId"] = json!(sub.parent_dialog_id);
         }
     }
 
@@ -1621,7 +1991,7 @@ impl<R: Runtime> Run<R> {
     }
 
     /// Recombines the fixed project section with the current map.
-    fn rebuild_project_context(&mut self) {
+    pub(super) fn rebuild_project_context(&mut self) {
         self.project_context = join_project_context(&self.base_project_context, &self.repo_map);
     }
 
@@ -1765,6 +2135,10 @@ impl<R: Runtime> Run<R> {
         meta: Option<Value>,
         attachments: Vec<String>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if FAIL_TOOL_RESULT.lock().unwrap().contains(tool_call_id) {
+            return Err("the database is gone (test)".into());
+        }
         let mut m = new_message("tool", &content);
         m.tool_call_id = Some(tool_call_id.to_string());
         m.meta = meta;
@@ -1773,7 +2147,7 @@ impl<R: Runtime> Run<R> {
     }
 
     /// A reply's final content: stored (indexed for search), and shown.
-    async fn finalize(
+    pub(super) async fn finalize(
         &self,
         message_id: &str,
         content: String,
@@ -1810,7 +2184,43 @@ impl<R: Runtime> Run<R> {
 
     /// Replaces a stored message's meta and shows it (records that change
     /// after they're added, like the verification gate's rounds).
+    /// Marks the chat's records still waiting for "Run checks" superseded.
+    async fn supersede_waiting_checks(&self) {
+        let Ok(recent) = self.recent().await else {
+            return;
+        };
+        for m in recent {
+            let Some(mut meta) = m.meta.clone() else {
+                continue;
+            };
+            let waiting = meta.pointer("/verification/status").and_then(|s| s.as_str())
+                == Some("needs-approval");
+            if waiting {
+                meta["verification"]["status"] = json!("superseded");
+                // Its own round limit stays (round 2): not this run's.
+                let _ = self.store_meta(&m.id, meta).await;
+            }
+        }
+    }
+
     pub(super) async fn update_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
+        let mut meta = self.with_max_rounds(meta);
+        // P1.7: the record whose checks found no carried state says so;
+        // round 3: so does one whose integrity check couldn't be complete
+        // (a spilled file lost), carry or not.
+        if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
+            if self.carry_lost.as_deref() == Some(message_id) {
+                v.insert("stateRestored".into(), json!(false));
+            }
+            if self.integrity_unchecked {
+                v.insert("integrityChecked".into(), json!(false));
+            }
+        }
+        self.store_meta(message_id, meta).await
+    }
+
+    /// Stores a message's meta as given and shows it.
+    async fn store_meta(&self, message_id: &str, meta: Value) -> Result<(), String> {
         let id = message_id.to_string();
         let patch = MessagePatch {
             meta: Some(meta.clone()),
@@ -1879,6 +2289,11 @@ impl<R: Runtime> Run<R> {
 
     /// The user's latest request in the chat, as sent (for the AI reviewer).
     pub(super) async fn latest_user_request(&self) -> String {
+        // A subagent acts for the lead's user request, not for the brief the
+        // lead wrote (K06): the AI reviewer judges by the user's intent.
+        if let Some(sub) = self.sub() {
+            return sub.parent_request.clone();
+        }
         let recent = self.recent().await.unwrap_or_default();
         recent
             .iter()
@@ -2370,6 +2785,11 @@ fn effort_label(options: &Option<OpenAIChatOptions>) -> &'static str {
     }
 }
 
+/// Tests: storing this call's result fails, as with a broken database.
+#[cfg(test)]
+pub(crate) static FAIL_TOOL_RESULT: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
 pub(super) fn new_message(role: &str, content: &str) -> NewMessage {
     NewMessage {
         id: uuid::Uuid::new_v4().to_string(),
@@ -2408,6 +2828,38 @@ fn run_mode_for(messages: &[MessageRow]) -> Option<String> {
         .rev()
         .find(|m| m.role == "user" && !plan::is_harness(m))?;
     m.meta.as_ref()?.get("mode")?.as_str().map(str::to_string)
+}
+
+/// B07b: the plan file a "Implement the plan in `…`" request names (or the
+/// chat's own), and what the checker finds in it as it is now.
+fn plan_check_at_start(
+    recent: &[MessageRow],
+    root: Option<&str>,
+    project_root: Option<&str>,
+) -> Option<(String, Vec<String>)> {
+    let named = recent
+        .iter()
+        .rev()
+        .find(|m| m.role == "user" && !plan::is_harness(m))
+        .and_then(|m| {
+            let rest = m.content.strip_prefix("Implement the plan in `")?;
+            Some(rest[..rest.find('`')?].to_string())
+        });
+    let file = match named {
+        Some(rel) => {
+            let base = project_root.or(root)?;
+            let p = std::path::Path::new(&rel);
+            if p.is_absolute() {
+                rel
+            } else {
+                std::path::Path::new(base).join(p).to_string_lossy().into_owned()
+            }
+        }
+        None => chat_plan_file(recent)?,
+    };
+    let text = std::fs::read_to_string(&file).ok()?;
+    let problems = plan::plan_problems_in(&text, root.map(std::path::Path::new));
+    (!problems.is_empty()).then_some((file, problems))
 }
 
 /// The chat's plan file: the latest one a plan was saved to.

@@ -1,0 +1,19 @@
+{
+  "id": "mi-one-falsy-exception",
+  "repo": {
+    "url": "https://github.com/more-itertools/more-itertools",
+    "name": "more-itertools"
+  },
+  "base": "4ebeea3e569388911a0bec740092f3cf996d79f3",
+  "reference": "b2f3aff7633057d234ec9186c18a53f4df306d08",
+  "lang": "python",
+  "request": "more_itertools.one() and only(): a custom too_long/too_short exception whose instances are falsy is ignored and the default exception raised instead. Treat \"given\" as `is not None`. Also, when too_long is given, never build the default message (it reprs the first items).",
+  "hidden": ["tests/test_more.py"],
+  "checks": [
+    {
+      "kind": "pytest",
+      "files": ["tests/test_more.py"]
+    }
+  ],
+  "setup": ["python"]
+}

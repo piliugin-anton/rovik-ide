@@ -512,7 +512,7 @@ fn text<'a>(args: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
 }
 
 /// A line number; models sometimes send "12" for 12.
-fn line_arg(v: Option<&Value>) -> Option<usize> {
+pub(super) fn line_arg(v: Option<&Value>) -> Option<usize> {
     let n = match v? {
         Value::String(s) if !s.trim().is_empty() => s.trim().parse::<f64>().ok()?,
         Value::Number(n) => n.as_f64()?,
@@ -574,6 +574,11 @@ pub struct CallContext {
     pub seen: Arc<Seen>,
     /// The chat (dialog id) the call is for.
     pub owner: String,
+    /// The chat whose saved check output `@checks/…` reads: the lead's,
+    /// for a subagent (check_output.rs).
+    pub checks_owner: String,
+    /// Files this call may not read or search (the test writer's, K11).
+    pub hidden: Vec<String>,
     /// A note on the call while it runs ("Waiting for a CPU slot: …");
     /// `None` clears it.
     pub note: Arc<dyn Fn(Option<String>) + Send + Sync>,
@@ -621,6 +626,27 @@ async fn run<R: Runtime>(
     ctx: &CallContext,
 ) -> Result<ToolResult, String> {
     let seen: &Seen = &ctx.seen;
+    // A check's whole output, saved by the verification gate (C01).
+    if name == "read" {
+        if let Some(path) = text(args, "path").filter(|p| super::check_output::is_checks_path(p)) {
+            return super::check_output::read(
+                &ctx.checks_owner,
+                path,
+                uint(args, "start_line"),
+                uint(args, "end_line"),
+            )
+            .map(ToolResult::text);
+        }
+    }
+    // The test writer doesn't read the change's code by any tool (P2.4).
+    if !ctx.hidden.is_empty() && matches!(name, "read" | "neighbours" | "diagnostics") {
+        if let (Some(path), Some(root)) = (text(args, "path"), root) {
+            let key = super::repair::rel_key(root, path);
+            if super::test_writer::is_hidden(&ctx.hidden, &key) {
+                return Ok(ToolResult::text(super::test_writer::hidden_file(&key)));
+            }
+        }
+    }
     match name {
         "web_search" => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
@@ -875,6 +901,24 @@ async fn run<R: Runtime>(
                     result = retried;
                 }
             }
+            // The test writer doesn't see the files the change touches.
+            let mut left_out = 0usize;
+            if !ctx.hidden.is_empty() {
+                let before = result.lines.iter().filter(|l| l.is_match).count();
+                result
+                    .lines
+                    .retain(|l| !super::test_writer::is_hidden(&ctx.hidden, &l.path));
+                let after = result.lines.iter().filter(|l| l.is_match).count();
+                left_out = before - after;
+                if left_out > 0 {
+                    let mut files: Vec<&str> =
+                        result.lines.iter().map(|l| l.path.as_str()).collect();
+                    files.dedup();
+                    result.match_count = after;
+                    result.file_count = files.len();
+                    result.total_matches = result.total_matches.saturating_sub(left_out);
+                }
+            }
             // The declaration each line is in: the files' outlines, briefly.
             let root = root_owned;
             let outlines = tauri::async_runtime::spawn_blocking(move || {
@@ -885,13 +929,21 @@ async fn run<R: Runtime>(
             .await
             .map_err(|e| e.to_string())?;
             let shown = format_search_result(&outlines.0, &outlines.1);
-            match as_regex {
+            let shown = match as_regex {
                 Some(true) => format!(
                     "{shown}\n[The literal text had no matches, so the query was searched as a regular expression. \
                      Pass regex: true for patterns.]"
                 ),
                 Some(false) => format!("{shown}\n[No matches as a regular expression either.]"),
                 None => shown,
+            };
+            if left_out > 0 {
+                format!(
+                    "{shown}\n[{left_out} match{} in the files the change touches left out: you write tests from the specification. Use outline on those files.]",
+                    if left_out == 1 { "" } else { "es" }
+                )
+            } else {
+                shown
             }
         }
         "neighbours" => {
@@ -919,6 +971,12 @@ async fn run<R: Runtime>(
                 .map(str::to_string),
         )?,
         _ => format!("Error: unknown tool \"{name}\"."),
+    };
+    // P2.4: what these show of other files leaves out the hidden ones.
+    let content = if !ctx.hidden.is_empty() && matches!(name, "callers" | "neighbours" | "diagnostics") {
+        super::test_writer::without_hidden_lines(&content, &ctx.hidden)
+    } else {
+        content
     };
     Ok(ToolResult::text(content))
 }

@@ -1,0 +1,17 @@
+{
+  "id": "self-formatter-kill-tree",
+  "repo": "self",
+  "base": "3e098ba59c65d80398da31833865673ef519fa56",
+  "reference": "7e8b5e58757870b80c461aeec249bc0229ab1b31",
+  "lang": "rust",
+  "request": "Formatters (src-tauri/src/formatter.rs) are often wrapper scripts that start the real tool; on timeout only the wrapper is killed and the tool keeps running. Give fn run a timeout parameter: run(cmd: Command, input: String, ok_codes: &[i32], timeout: Duration) -> Result<String, String>. Start the formatter in its own process group on Unix and on timeout kill the whole tree (command_tool::kill_tree), returning Err(\"timed out after 1 s\") for a 1 s timeout, without waiting on pipes the killed children held. Also convert the output to the file's own line endings, and match the project root ignoring case on Windows and macOS.",
+  "hidden": ["src-tauri/src/formatter/tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["formatter::tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

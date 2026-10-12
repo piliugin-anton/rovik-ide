@@ -1,0 +1,17 @@
+{
+  "id": "self-clm-heads-up",
+  "repo": "self",
+  "base": "065179e1327168b1d09fb5806bd5a5ee5eaef627",
+  "reference": "7d8760f45d68407c06d9108b7a9c2f2abb9e7cfe",
+  "lang": "rust",
+  "request": "CLM reminders: add a tier at 25% of the context budget. It's a heads-up, not a compaction request: it says \"No edit is needed now\", to keep working, and to shorten big tool outputs at the next natural break - it must not ask to tidy the context file. It fires once and re-arms like the 50/75 tiers (state.nudged records 25), isn't counted as a due compaction, and doesn't start the pressure escalation (still from 50%). Add clm::prompt::percent(tokens, budget) used for the tiers.",
+  "hidden": ["src-tauri/src/clm/edge_tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["clm::edge_tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

@@ -18,25 +18,42 @@ import { listen } from '@tauri-apps/api/event';
 import { createStore, produce } from 'solid-js/store';
 import type { ApiRoute, ChatMessage, ModelProfile, OpenAIChatOptions } from '../types';
 import type { AgentPermissions } from './permissions';
-import { chatStore, type MessageRow } from './chatStore';
+import { chatStore, type MessagePatch, type MessageRow } from './chatStore';
 import { noteChecklist, clearLiveChecklist, refreshChecklist } from './checklist';
 import {
   clearApproval,
+  notifyFileDeleted,
   notifyFileWritten,
   registerApproval,
   type ApprovalRequest,
 } from './approvals';
 import { clearQuestions, registerQuestions, type PendingQuestions } from './questions';
-import { recordAgentEdit } from './agentChanges';
+import { clearAgentChanges, recordAgentEdit } from './agentChanges';
 import { clearPendingDraft } from './pendingDraft';
 import { dismiss, notify } from './notifications';
 import { noteClmStatus, type ClmStatus } from './contextMode';
+import {
+  isSubagentChat,
+  seedRunningSubagent,
+  type RunningSubagent,
+  type SubagentEnded,
+  type SubagentProgress,
+  type SubagentStarted,
+  noteSubagentEnded,
+  noteSubagentProgress,
+  noteSubagentStarted,
+  patchSubagentMessage,
+  receiveSubagentMessages,
+} from './subagents';
+import type { SubagentConfig } from './subagentSettings';
 
 /** Settings runs follow (agent_run::AgentConfig). */
 export interface AgentConfig {
   permissions: AgentPermissions;
   /** The AI reviewer, then its fallbacks: enabled models only. */
   approvalProfiles: ModelProfile[];
+  /** Subagents (lib/subagentSettings.ts), resolved. */
+  subagents: SubagentConfig;
 }
 
 export type StartKind =
@@ -71,10 +88,6 @@ export interface ReasoningLearned {
   reasons: boolean;
 }
 
-type MessagePatch = Partial<
-  Pick<ChatMessage, 'content' | 'toolCalls' | 'meta' | 'error' | 'failed' | 'pending' | 'finalized'>
-> & { status?: ChatMessage['status'] | null };
-
 type AgentEvent =
   | { type: 'runStarted'; dialogId: string; runId: string }
   | { type: 'runEnded'; dialogId: string; runId: string; outcome: string }
@@ -92,6 +105,8 @@ type AgentEvent =
       before: string | null;
       content: string;
       reviewed: boolean;
+      /** Removed: a rollback of a file the run created. */
+      deleted?: boolean;
     }
   | ({ type: 'reasoningLearned' } & ReasoningLearned)
   | { type: 'apiRouteLearned'; profileId: string; route: ApiRoute }
@@ -102,7 +117,10 @@ type AgentEvent =
       kind: 'info' | 'success' | 'warning' | 'error';
       title: string;
       message: string;
-    };
+    }
+  | ({ type: 'subagentStarted' } & SubagentStarted)
+  | ({ type: 'subagentProgress' } & SubagentProgress)
+  | ({ type: 'subagentEnded' } & SubagentEnded);
 
 const [state, setState] = createStore<{
   /**
@@ -252,10 +270,23 @@ function handle(event: AgentEvent) {
       void refreshChecklist(event.dialogId);
       break;
     case 'messagesAdded':
-      chatStore.receiveMessages(event.dialogId, event.messages);
+      // A subagent's chat isn't a chat in the list: only its open transcript follows it.
+      if (isSubagentChat(event.dialogId)) receiveSubagentMessages(event.dialogId, event.messages);
+      else chatStore.receiveMessages(event.dialogId, event.messages);
       break;
     case 'messagePatched':
-      chatStore.applyPatch(event.dialogId, event.messageId, event.patch);
+      if (isSubagentChat(event.dialogId))
+        patchSubagentMessage(event.dialogId, event.messageId, event.patch);
+      else chatStore.applyPatch(event.dialogId, event.messageId, event.patch);
+      break;
+    case 'subagentStarted':
+      noteSubagentStarted(event);
+      break;
+    case 'subagentProgress':
+      noteSubagentProgress(event);
+      break;
+    case 'subagentEnded':
+      noteSubagentEnded(event);
       break;
     case 'approvalRequested':
       registerApproval(event.request);
@@ -307,6 +338,11 @@ function handle(event: AgentEvent) {
       noteChecklist(event.dialogId, event.items);
       break;
     case 'fileWritten':
+      if (event.deleted) {
+        clearAgentChanges(event.absPath);
+        notifyFileDeleted(event.absPath);
+        break;
+      }
       // An edit the user didn't review shows in the editor until they save.
       if (!event.reviewed) recordAgentEdit(event.absPath, event.before, event.content);
       notifyFileWritten(event.absPath, event.content);
@@ -336,6 +372,8 @@ function handle(event: AgentEvent) {
 
 interface AgentStatus {
   runs: { dialogId: string; runId: string }[];
+  /** Subagents' runs: their chats and their leads'. */
+  subagents?: RunningSubagent[];
   approvals: ApprovalRequest[];
   questions: PendingQuestions[];
 }
@@ -353,6 +391,7 @@ export function initAgentRuns(): Promise<void> {
     try {
       const status = await invoke<AgentStatus>('agent_status');
       for (const run of status.runs) chatStore.setRunning(run.dialogId, true);
+      for (const sub of status.subagents ?? []) seedRunningSubagent(sub);
       for (const request of status.approvals) registerApproval(request);
       for (const request of status.questions) registerQuestions(request);
     } catch (err) {

@@ -1,0 +1,21 @@
+{
+  "id": "self-write-counts",
+  "repo": "self",
+  "base": "a99282b299b36be9fce91e3e5df4428fcaef3ce7",
+  "reference": "389da75fcdaffd584c0ef282ea8a7bf6413568ed",
+  "lang": "ts",
+  "request": "Whole-file writes should report lines added and removed too. The backend write tool (agent_tools.rs, used by agent_run/tools.rs) compares the file before and after (a line diff) and says so in its result: \"wrote 3 bytes to hello.txt (+1 -0 lines)\", with {added, removed} in the result's meta. In the frontend, editCounts in src/lib/toolGroups.ts now takes a list of {args, result?} (result being the meta) and counts a whole-file write from its result's counts, edits with old_text as before, skipping context edits; a whole-file write without counts doesn't count. Update callers and show the counts on \"Wrote\" lines and blocks.",
+  "hidden": ["src/lib/toolGroups.test.ts", "src-tauri/src/agent_run/e2e_tests.rs"],
+  "checks": [
+    {
+      "kind": "ts",
+      "files": ["src/lib/toolGroups.test.ts"]
+    },
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["agent_run::e2e_tests"]
+    }
+  ],
+  "setup": ["node", "cargo"]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "self-edit-counts",
+  "reference": "a99282b299b36be9fce91e3e5df4428fcaef3ce7",
+  "ok": true,
+  "problems": [],
+  "failingAtBase": [
+    "src/lib/toolGroups.test.ts > commandName > skips variable assignments and paths",
+    "src/lib/toolGroups.test.ts > describeGroup > describes questions, checklists, plans and context edits",
+    "src/lib/toolGroups.test.ts > describeGroup > names commands by their program and pages by their site",
+    "src/lib/toolGroups.test.ts > describeGroup > names files once each, with where to open them",
+    "src/lib/toolGroups.test.ts > describeGroup > says editing for partial writes and caps the list",
+    "src/lib/toolGroups.test.ts > domainName > takes the host from a URL with or without a scheme",
+    "src/lib/toolGroups.test.ts > editCounts > totals the lines edits add and remove, skipping whole writes and context",
+    "src/lib/toolGroups.test.ts > groupToolCalls > groups consecutive calls to one tool, whatever their arguments",
+    "src/lib/toolGroups.test.ts > groupToolCalls > keeps questions, checklists and context edits apart"
+  ],
+  "flaky": [],
+  "required": [
+    "src/lib/toolGroups.test.ts > commandName > skips variable assignments and paths",
+    "src/lib/toolGroups.test.ts > describeGroup > describes questions, checklists, plans and context edits",
+    "src/lib/toolGroups.test.ts > describeGroup > names commands by their program and pages by their site",
+    "src/lib/toolGroups.test.ts > describeGroup > names files once each, with where to open them",
+    "src/lib/toolGroups.test.ts > describeGroup > says editing for partial writes and caps the list",
+    "src/lib/toolGroups.test.ts > domainName > takes the host from a URL with or without a scheme",
+    "src/lib/toolGroups.test.ts > editCounts > totals the lines edits add and remove, skipping whole writes and context",
+    "src/lib/toolGroups.test.ts > groupToolCalls > groups consecutive calls to one tool, whatever their arguments",
+    "src/lib/toolGroups.test.ts > groupToolCalls > keeps questions, checklists and context edits apart"
+  ]
+}

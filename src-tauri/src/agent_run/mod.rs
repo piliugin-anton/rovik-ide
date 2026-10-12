@@ -12,11 +12,17 @@
 //!   execute.rs    one turn's tool calls: permission, approval, running them
 //!   review.rs     the AI reviewer (approval "by AI")
 //!   verify.rs     the verification gate: the project's checks after a run
+//!   repair.rs     its fix rounds: progress, rollback, test integrity
 //!   guard.rs      checkpoints and loop detection
+//!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
+//!   change_review.rs  a fresh-context review of the change before the checks
 //!   tools.rs      tool schemas and running a tool
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
 //!   command_output.rs: the rules and text they use
 
+pub mod change_review;
+pub mod causes;
+pub mod check_output;
 pub mod command_output;
 pub mod diff;
 #[cfg(test)]
@@ -24,17 +30,27 @@ mod e2e_tests;
 pub mod events;
 mod execute;
 pub mod failure;
+pub mod group;
 pub mod guard;
 mod landing;
 pub mod log;
 mod parallel;
+pub mod paths;
 pub mod permissions;
 pub mod plan;
+pub mod plan_review;
 pub mod project;
+pub mod repair;
+mod repair_run;
 pub mod repetition;
 pub mod review;
 mod run;
+pub mod subagent;
+mod subagent_run;
+pub mod test_writer;
 pub mod tools;
+pub mod triage;
+pub mod worker;
 mod verify;
 
 use crate::agent::OpenAIChatOptions;
@@ -84,6 +100,8 @@ pub struct AgentConfig {
     pub permissions: Permissions,
     /// The AI reviewer, then its fallbacks (enabled models only).
     pub approval_profiles: Vec<ModelProfile>,
+    /// Subagents (subagent.rs): off unless the user turns them on.
+    pub subagents: subagent::SubagentConfig,
 }
 
 /// The user's decision on a tool call waiting for approval.
@@ -124,7 +142,9 @@ impl StopSignal {
 
     pub(crate) fn set(&self) {
         self.flag.store(true, Ordering::SeqCst);
-        let _ = self.tx.send(true);
+        // Kept with no request listening too (`send` would drop it), so a
+        // request that subscribes later still sees it.
+        self.tx.send_replace(true);
     }
 
     pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
@@ -134,11 +154,28 @@ impl StopSignal {
 
 struct RunControl {
     run_id: String,
+    /// A subagent's run: its lead's chat and `task` call. Stop there stops it too.
+    parent: Option<String>,
+    parent_call: Option<String>,
     /// The run's model (`ModelProfile::id`): an effort chosen for it applies.
     profile_id: String,
     stop: Arc<StopSignal>,
     /// The reasoning effort picked while the run goes on (see `set_effort`).
     effort: watch::Sender<EffortPick>,
+    /// A subagent's: what its block shows, for a page reloaded mid-run (P1.5).
+    child: Option<ChildInfo>,
+}
+
+/// A running subagent as its block shows it.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildInfo {
+    pub kind: String,
+    pub goal: String,
+    pub model: String,
+    /// Milliseconds since the epoch.
+    pub started_at: u64,
+    pub tool_calls: u32,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -174,6 +211,22 @@ struct Inner {
     /// (Gemini: "function-call-1"), so two chats can wait on the same id.
     approvals: HashMap<WaitKey, Waiting<ApprovalDecision, ApprovalRequest>>,
     questions: HashMap<WaitKey, Waiting<QuestionsOutcome, QuestionsRequest>>,
+    /// A run's fix-round state while its checks wait for the user's
+    /// approval, by chat (verify.rs `VerifyCarry`).
+    carries: HashMap<String, verify::VerifyCarry>,
+}
+
+/// See `AgentState::registered`.
+pub(super) struct Registered {
+    state: AgentState,
+    dialog_id: String,
+    run_id: String,
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        self.state.unregister(&self.dialog_id, &self.run_id);
+    }
 }
 
 /// Runs in progress (one per chat at most), what they wait on, and the settings.
@@ -189,6 +242,48 @@ impl AgentState {
         self.lock().config.clone()
     }
 
+    /// Keeps a run's fix-round state until the user starts its checks
+    /// (one per chat: a newer one replaces it). Carries past their time go.
+    fn put_carry(&self, dialog_id: &str, carry: verify::VerifyCarry) {
+        let mut inner = self.lock();
+        inner
+            .carries
+            .retain(|_, c| c.stored.elapsed() < verify::CARRY_TTL);
+        inner.carries.insert(dialog_id.to_string(), carry);
+    }
+
+    /// The state a run left for the checks waiting in `record_id`, if it
+    /// left it for those. Another record's (an older one) leaves the chat's
+    /// carry as it is (P1.7).
+    fn take_carry(&self, dialog_id: &str, record_id: &str) -> Option<verify::VerifyCarry> {
+        let mut inner = self.lock();
+        let c = inner.carries.get(dialog_id)?;
+        if c.record_id != record_id {
+            return None;
+        }
+        let carry = inner.carries.remove(dialog_id)?;
+        (carry.stored.elapsed() < verify::CARRY_TTL).then_some(carry)
+    }
+
+    /// Drops a chat's carry: deleted or discarded, or a newer run ended
+    /// without leaving checks waiting (P1.8).
+    pub fn drop_carry(&self, dialog_id: &str) {
+        self.lock().carries.remove(dialog_id);
+    }
+
+    /// Makes the chat's carry `by` older (its time running out).
+    #[cfg(test)]
+    pub(super) fn age_carry(&self, dialog_id: &str, by: std::time::Duration) {
+        if let Some(c) = self.lock().carries.get_mut(dialog_id) {
+            c.stored -= by;
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_carry(&self, dialog_id: &str) -> bool {
+        self.lock().carries.contains_key(dialog_id)
+    }
+
     fn set_config(&self, config: AgentConfig) {
         self.lock().config = config;
     }
@@ -197,6 +292,35 @@ impl AgentState {
     fn register(
         &self,
         dialog_id: &str,
+        profile_id: &str,
+        options: Option<OpenAIChatOptions>,
+    ) -> Option<Controls> {
+        self.register_in(dialog_id, None, profile_id, options)
+    }
+
+    /// Registers a subagent's run in its own chat, under its lead's chat.
+    /// Stopped already when the lead was stopped meanwhile.
+    pub(super) fn register_child(
+        &self,
+        dialog_id: &str,
+        parent: &str,
+        parent_call: &str,
+        profile_id: &str,
+        options: Option<OpenAIChatOptions>,
+    ) -> Option<Controls> {
+        let controls =
+            self.register_in(dialog_id, Some((parent, parent_call)), profile_id, options)?;
+        let parent_stopped = self.lock().runs.get(parent).is_none_or(|r| r.stop.is_set());
+        if parent_stopped {
+            controls.stop.set();
+        }
+        Some(controls)
+    }
+
+    fn register_in(
+        &self,
+        dialog_id: &str,
+        parent: Option<(&str, &str)>,
         profile_id: &str,
         options: Option<OpenAIChatOptions>,
     ) -> Option<Controls> {
@@ -214,9 +338,12 @@ impl AgentState {
             dialog_id.to_string(),
             RunControl {
                 run_id: run_id.clone(),
+                parent: parent.map(|(p, _)| p.to_string()),
+                parent_call: parent.map(|(_, c)| c.to_string()),
                 profile_id: profile_id.to_string(),
                 stop: stop.clone(),
                 effort: effort_tx,
+                child: None,
             },
         );
         Some(Controls {
@@ -241,7 +368,7 @@ impl AgentState {
         for (dialog, run) in inner
             .runs
             .iter()
-            .filter(|(_, r)| r.profile_id == profile_id)
+            .filter(|(_, r)| r.profile_id == profile_id && r.parent.is_none())
         {
             let here = dialog_id == Some(dialog.as_str());
             run.effort.send_replace(EffortPick {
@@ -253,7 +380,7 @@ impl AgentState {
         reached
     }
 
-    fn unregister(&self, dialog_id: &str, run_id: &str) {
+    pub(super) fn unregister(&self, dialog_id: &str, run_id: &str) {
         let mut inner = self.lock();
         if inner
             .runs
@@ -264,23 +391,95 @@ impl AgentState {
         }
     }
 
-    /// Whether the chat has a run going.
+    /// A guard that unregisters the run when dropped, however its task
+    /// ends: a panic or an aborted future too.
+    pub(super) fn registered(&self, dialog_id: &str, run_id: &str) -> Registered {
+        Registered {
+            state: self.clone(),
+            dialog_id: dialog_id.to_string(),
+            run_id: run_id.to_string(),
+        }
+    }
+
+    /// What a subagent's block shows (P1.5): kept with its run.
+    pub(super) fn describe_child(&self, dialog_id: &str, info: ChildInfo) {
+        if let Some(run) = self.lock().runs.get_mut(dialog_id) {
+            run.child = Some(info);
+        }
+    }
+
+    /// A subagent's progress, as its block's event says.
+    pub(super) fn note_child_progress(&self, dialog_id: &str, tool_calls: u32, model: &str) {
+        if let Some(info) = self
+            .lock()
+            .runs
+            .get_mut(dialog_id)
+            .and_then(|r| r.child.as_mut())
+        {
+            info.tool_calls = tool_calls;
+            info.model = model.to_string();
+        }
+    }
+
+    /// How many subagents are running for the chat.
+    pub fn running_children(&self, dialog_id: &str) -> usize {
+        self.lock()
+            .runs
+            .values()
+            .filter(|r| r.parent.as_deref() == Some(dialog_id))
+            .count()
+    }
+
+    /// Whether the chat has a run going (a lead's subagents count as its own).
     pub fn is_running(&self, dialog_id: &str) -> bool {
-        self.lock().runs.contains_key(dialog_id)
+        let inner = self.lock();
+        inner.runs.contains_key(dialog_id)
+            || inner
+                .runs
+                .values()
+                .any(|r| r.parent.as_deref() == Some(dialog_id))
     }
 
     /// Stops the chat's run: its current request, its next steps, and
     /// whatever it waits on (approvals count as denied, questions as stopped).
+    /// A lead's subagents stop with it; a subagent's chat stops only itself.
+    /// False when nothing ran there (neither the chat nor a subagent of it).
     pub fn stop<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) -> bool {
+        self.stop_in(app, dialog_id, true)
+    }
+
+    /// Stops a lead's subagents only (the lead itself goes on, e.g. to
+    /// report an error once they've ended).
+    pub(super) fn stop_children<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) {
+        self.stop_in(app, dialog_id, false);
+    }
+
+    fn stop_in<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str, itself: bool) -> bool {
         let mut inner = self.lock();
-        let Some(run) = inner.runs.get(dialog_id) else {
-            return false;
+        let own = if itself {
+            inner.runs.get(dialog_id).map(|run| run.stop.set()).is_some()
+        } else {
+            false
         };
-        run.stop.set();
+        let children: Vec<String> = inner
+            .runs
+            .iter()
+            .filter(|(_, r)| r.parent.as_deref() == Some(dialog_id))
+            .map(|(d, r)| {
+                r.stop.set();
+                d.clone()
+            })
+            .collect();
+        // A lead that isn't registered (its run ended in an error) still
+        // stops the subagents it left.
+        if !own && children.is_empty() {
+            return false;
+        }
+        let stopping = |d: &String| (itself && d == dialog_id) || children.contains(d);
         let approvals: Vec<WaitKey> = inner
             .approvals
             .keys()
-            .filter(|(d, _)| d == dialog_id)
+            .filter(|(d, _)| stopping(d))
             .cloned()
             .collect();
         for key in approvals {
@@ -299,7 +498,7 @@ impl AgentState {
         let questions: Vec<WaitKey> = inner
             .questions
             .keys()
-            .filter(|(d, _)| d == dialog_id)
+            .filter(|(d, _)| stopping(d))
             .cloned()
             .collect();
         for key in questions {
@@ -700,8 +899,20 @@ pub struct RunningRun {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RunningSubagent {
+    dialog_id: String,
+    parent_dialog_id: String,
+    parent_call_id: String,
+    /// Its kind, goal, model, start and tool calls (once it's launched).
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    info: Option<ChildInfo>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentStatus {
     runs: Vec<RunningRun>,
+    subagents: Vec<RunningSubagent>,
     approvals: Vec<ApprovalRequest>,
     questions: Vec<QuestionsRequest>,
 }
@@ -711,12 +922,27 @@ pub struct AgentStatus {
 pub fn agent_status(state: State<'_, AgentState>) -> AgentStatus {
     let inner = state.lock();
     AgentStatus {
+        // A subagent's chat isn't a chat in the list: its lead's run stands
+        // for it (its blocks show it running).
         runs: inner
             .runs
             .iter()
+            .filter(|(_, r)| r.parent.is_none())
             .map(|(dialog_id, r)| RunningRun {
                 dialog_id: dialog_id.clone(),
                 run_id: r.run_id.clone(),
+            })
+            .collect(),
+        subagents: inner
+            .runs
+            .iter()
+            .filter_map(|(dialog_id, r)| {
+                Some(RunningSubagent {
+                    dialog_id: dialog_id.clone(),
+                    parent_dialog_id: r.parent.clone()?,
+                    parent_call_id: r.parent_call.clone().unwrap_or_default(),
+                    info: r.child.clone(),
+                })
             })
             .collect(),
         approvals: inner
@@ -796,4 +1022,88 @@ pub async fn chat_dismiss_checklist<R: Runtime>(
         },
     );
     chat_checklist(db, dialog_id).await
+}
+
+#[cfg(test)]
+mod run_control_tests {
+    use super::StopSignal;
+
+    #[test]
+    fn a_stop_set_before_anyone_listens_is_seen_by_later_listeners() {
+        let stop = StopSignal::new();
+        stop.set();
+        assert!(*stop.subscribe().borrow());
+    }
+
+    #[tokio::test]
+    async fn a_run_that_panics_is_unregistered() {
+        let state = super::AgentState::default();
+        let controls = state.register_in("kid", None, "m", None).unwrap();
+        let guard = state.registered("kid", &controls.run_id);
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            panic!("the run broke");
+        });
+        assert!(task.await.is_err());
+        assert!(!state.lock().runs.contains_key("kid"));
+        // A new run in the chat can start.
+        assert!(state.register_in("kid", None, "m", None).is_some());
+    }
+
+    /// Round 2 (§4.2): a carry past its time is dropped when it's taken,
+    /// and its spilled files with it.
+    #[test]
+    fn a_carry_past_its_ttl_is_dropped_on_take() {
+        use super::verify::{VerifyCarry, CARRY_TTL};
+        let state = super::AgentState::default();
+        let file = std::env::temp_dir().join(format!("carry-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, "x").unwrap();
+        let old = CARRY_TTL + std::time::Duration::from_secs(1);
+        state.put_carry(
+            "chat",
+            VerifyCarry::for_test("rec", old, vec![file.clone()]),
+        );
+        assert!(state.take_carry("chat", "rec").is_none());
+        assert!(!file.exists(), "its spilled file went");
+        // Within its time it's taken.
+        state.put_carry(
+            "chat",
+            VerifyCarry::for_test("rec", std::time::Duration::ZERO, vec![]),
+        );
+        assert!(state.take_carry("chat", "rec").is_some());
+    }
+
+    /// Round 2 (§4.2): a newer carry replaces the chat's older one, whose
+    /// spilled files go; another record's take leaves it in place.
+    #[test]
+    fn a_newer_carry_replaces_and_removes_the_old_spill_files() {
+        use super::verify::VerifyCarry;
+        let state = super::AgentState::default();
+        let file = std::env::temp_dir().join(format!("carry-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&file, "x").unwrap();
+        let now = std::time::Duration::ZERO;
+        state.put_carry(
+            "chat",
+            VerifyCarry::for_test("old", now, vec![file.clone()]),
+        );
+        state.put_carry("chat", VerifyCarry::for_test("new", now, vec![]));
+        assert!(!file.exists());
+        assert!(state.take_carry("chat", "old").is_none());
+        assert!(state.has_carry("chat"), "an older record's take leaves it");
+        assert!(state.take_carry("chat", "new").is_some());
+    }
+
+    /// Round 2 (section 4.2): run A's guard, dropped after run B started in
+    /// the same chat, leaves B running.
+    #[test]
+    fn unregister_ignores_a_newer_run_with_the_same_dialog() {
+        let state = super::AgentState::default();
+        let a = state.register_in("chat", None, "m", None).unwrap();
+        let guard_a = state.registered("chat", &a.run_id);
+        state.unregister("chat", &a.run_id);
+        let b = state.register_in("chat", None, "m", None).unwrap();
+        drop(guard_a);
+        assert!(state.is_running("chat"));
+        assert_eq!(state.lock().runs["chat"].run_id, b.run_id);
+    }
 }

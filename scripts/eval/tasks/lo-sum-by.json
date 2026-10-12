@@ -1,0 +1,19 @@
+{
+  "id": "lo-sum-by",
+  "repo": {
+    "url": "https://github.com/samber/lo",
+    "name": "lo"
+  },
+  "base": "d54996c1579da50f5a12d12c6301286014f0908a",
+  "reference": "109ef0cf2d5a414288fa70a637209ddd2592aefb",
+  "lang": "go",
+  "request": "Add lo.SumBy[T any, R constraints.Float | constraints.Integer](collection []T, iteratee func(T) R) R in math.go: the sum of iteratee over the items (0 for none). Document it in README.md.",
+  "hidden": ["math_test.go"],
+  "checks": [
+    {
+      "kind": "go",
+      "packages": ["."]
+    }
+  ],
+  "setup": ["go"]
+}

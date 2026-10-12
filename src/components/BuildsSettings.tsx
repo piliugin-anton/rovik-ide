@@ -9,6 +9,7 @@
 import { createResource, createSignal, onCleanup, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { notify } from '../lib/notifications';
+import { plural } from '../lib/textUtils';
 
 interface WorkloadStatus {
   /** As set; null: auto. */
@@ -20,8 +21,6 @@ interface WorkloadStatus {
   cores: number;
   memoryGb: number;
 }
-
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 export default function BuildsSettings() {
   const [status, { refetch, mutate }] = createResource(() =>

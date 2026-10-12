@@ -8,6 +8,10 @@
 //!     and final summary, not thousands of lines of passing tests.
 //!   - `error_locations`: the files the errors point at, so a report can say
 //!     whether they're files the agent changed.
+//!   - `failure_keys`: a stable key for each failure (an error, a failing
+//!     test), the same when only line numbers moved, so the verification
+//!     gate can tell progress from churn between rounds (repair.rs).
+//!   - `tests_ran`: how many tests a test run ran, from its summary.
 //!
 //! Plain text heuristics that work across tsc, eslint, cargo, rustc, jest,
 //! vitest, pytest and go test, without parsing any one tool's format.
@@ -231,19 +235,287 @@ pub fn split_by_changed(
     locations: &[String],
     changed_files: &[String],
 ) -> (Vec<String>, Vec<String>) {
+    locations
+        .iter()
+        .cloned()
+        .partition(|loc| changed_files.iter().any(|c| same_file_by_tail(loc, c)))
+}
+
+/// Whether a path a tool printed (absolute, or relative to where it ran)
+/// is a project file: compared by their tail (cargo in src-tauri/ prints
+/// "src/x.rs" for "src-tauri/src/x.rs"; eslint prints "/home/me/p/src/a.ts").
+pub fn same_file_by_tail(printed: &str, file: &str) -> bool {
     let norm = |p: &str| {
         let p = p.replace('\\', "/");
         let p = p.strip_prefix("./").unwrap_or(&p);
         p.trim_start_matches('/').to_string()
     };
-    let changed: Vec<String> = changed_files.iter().map(|c| norm(c)).collect();
-    let is_changed = |loc: &str| {
-        let l = norm(loc);
-        changed
-            .iter()
-            .any(|c| *c == l || c.ends_with(&format!("/{l}")) || l.ends_with(&format!("/{c}")))
+    let (l, c) = (norm(printed), norm(file));
+    !l.is_empty()
+        && !c.is_empty()
+        && (c == l || c.ends_with(&format!("/{l}")) || l.ends_with(&format!("/{c}")))
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Failure keys
+ * ---------------------------------------------------------------------------
+ */
+
+/// Most keys kept for one check: past this, the rest are one key.
+pub const MAX_KEYS: usize = 50;
+const MAX_MESSAGE_CHARS: usize = 160;
+
+/// tsc: `src/a.ts(12,5): error TS2322: …` and `src/a.ts:12:5 - error TS2322: …`.
+static TSC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?P<file>[^\s(:]+\.[A-Za-z0-9]+)(?:\(\d+,\d+\)|:\d+:\d+)\s*[:-]\s*error\s+(?P<code>TS\d+)\s*:\s*(?P<msg>.+)$").unwrap()
+});
+/// rustc and other compilers: `error[E0308]: mismatched types` (its file on
+/// a later `--> src/main.rs:3:5` line).
+static RUST_ERROR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^error(?:\[(?P<code>[A-Z]+\d+)\])?:\s*(?P<msg>.+)$").unwrap());
+static RUST_ARROW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*-->\s*(?P<file>[^\s:]+\.[A-Za-z0-9]+):\d+").unwrap());
+/// Summary lines that say it failed, not what did.
+static RUST_SUMMARY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(could not compile|aborting due to|test failed|\d+ previous errors?|build failed|failed to run|Some errors have detailed|\d+ targets? failed|doctest failed|process didn't exit successfully)").unwrap()
+});
+/// `path:12:5: error: msg` (gcc, clang), `path:12:5: F401 msg` (ruff),
+/// `./a.go:3:2: msg` (go vet).
+static GENERIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?P<file>(?:\.{1,2}/)?[A-Za-z0-9_@./+-]+\.[A-Za-z][A-Za-z0-9]{0,5}):\d+(?P<col>:\d+)?:\s*(?:(?:fatal\s+)?error:\s*|(?P<code>[A-Z]{1,4}\d{2,5})\s+)?(?P<msg>.+)$").unwrap()
+});
+/// eslint (stylish): a file on its own line, then `  12:5  error  msg  rule`.
+static ESLINT_FILE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?P<file>(?:/|\.{0,2}/?)[A-Za-z0-9_@./+-]+\.[A-Za-z][A-Za-z0-9]{0,5})\s*$")
+        .unwrap()
+});
+static ESLINT_ROW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s+\d+:\d+\s+error\s+(?P<msg>.+?)(?:\s{2,}(?P<code>[@\w/-]+))?\s*$").unwrap()
+});
+/// pytest's collection error: `ERROR tests/test_a.py - ImportError: …`
+/// (round 3: an error in that file, not "failed").
+static PYTEST_COLLECT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^ERROR (?P<file>\S+\.py)(?: - (?P<msg>.+))?$").unwrap());
+/// Failing tests: cargo, go, pytest, jest/vitest.
+static TEST_FAILS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"^test (?P<name>\S+) \.\.\. FAILED$",
+        r"^\s*--- FAIL: (?P<name>\S+)",
+        r"^(?:FAILED|ERROR) (?P<name>\S+::\S+)",
+        r"^\s*(?:✕|×|✗)\s+(?P<name>.+?)(?:\s+\d+\s*m?s)?$",
+        r"^\s*FAIL\s+(?P<name>\S+\s+>\s+.+?)(?:\s+\d+\s*m?s)?$",
+        r"^\s*●\s+(?P<name>.+›.+)$",
+    ]
+    .iter()
+    .map(|r| Regex::new(r).unwrap())
+    .collect()
+});
+/// cargo's `Running unittests src/lib.rs (target/debug/deps/alpha-1a2b)`:
+/// the crate the tests after it are in (P3.1: two crates' `tests::it`).
+static CARGO_RUNNING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*Running .*\((?:[^)]*[/\\])?deps[/\\](?P<krate>[A-Za-z0-9_]+)-[0-9a-f]+(?:\.exe)?\)\s*$").unwrap()
+});
+/// A message that's only an exception's class (`AssertionError`): a
+/// traceback's last line, not a failure of its own (P3.1).
+static BARE_EXCEPTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][\w.]*(?:Error|Exception|Failure)\s*$").unwrap());
+
+/// Line and column numbers inside a message, which move when code above
+/// them changes: `a.rs:12:5`, `(12,5)`, `line 12`.
+static MESSAGE_LOCATION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r":\d+(?::\d+)?\b|\(\d+,\s*\d+\)|\bline \d+\b").unwrap());
+
+fn key_message(msg: &str) -> String {
+    let m = MESSAGE_LOCATION.replace_all(msg, "");
+    let m = m.split_whitespace().collect::<Vec<_>>().join(" ");
+    crate::chat_db::store::char_prefix(&m, MAX_MESSAGE_CHARS).to_string()
+}
+
+fn key_path(path: &str) -> String {
+    let p = path.replace('\\', "/");
+    p.strip_prefix("./").unwrap_or(&p).to_string()
+}
+
+/// A key for each failure in a failed check's output: for an error, the
+/// check, file, error code and message without line numbers; for a failing
+/// test, its name. Output with neither is the check alone. Each key once,
+/// sorted; at most MAX_KEYS (the rest are counted in one key).
+pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
+    let clean = clean_output(output);
+    let lines: Vec<&str> = clean.lines().collect();
+    let mut keys: Vec<String> = Vec::new();
+    let push = |k: String, keys: &mut Vec<String>| {
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
     };
-    locations.iter().cloned().partition(|loc| is_changed(loc))
+    let mut eslint_file: Option<String> = None;
+    // Keys from the generic `path:line: msg` shape: tracebacks, assertion
+    // lines. Next to failing tests they're the same failures again (P3.1).
+    let mut generic: Vec<String> = Vec::new();
+    let mut tests = false;
+    let mut krate: Option<String> = None;
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(c) = CARGO_RUNNING.captures(line) {
+            krate = Some(c["krate"].to_string());
+            continue;
+        }
+        if let Some(c) = TSC.captures(line) {
+            push(
+                format!(
+                    "{kind}|{}|{}|{}",
+                    key_path(&c["file"]),
+                    &c["code"],
+                    key_message(&c["msg"])
+                ),
+                &mut keys,
+            );
+            continue;
+        }
+        if let Some(c) = RUST_ERROR.captures(line) {
+            if RUST_SUMMARY.is_match(&c["msg"]) {
+                continue;
+            }
+            let file = lines[i + 1..lines.len().min(i + 6)]
+                .iter()
+                .find_map(|l| RUST_ARROW.captures(l).map(|a| key_path(&a["file"])))
+                .unwrap_or_default();
+            let code = c.name("code").map_or("", |m| m.as_str());
+            push(
+                format!("{kind}|{file}|{code}|{}", key_message(&c["msg"])),
+                &mut keys,
+            );
+            continue;
+        }
+        if let Some(c) = PYTEST_COLLECT.captures(line) {
+            let msg = c.name("msg").map_or("", |m| m.as_str());
+            push(
+                format!("{kind}|{}||{}", key_path(&c["file"]), key_message(msg)),
+                &mut keys,
+            );
+            continue;
+        }
+        if let Some(c) = TEST_FAILS.iter().find_map(|r| r.captures(line)) {
+            let name = c["name"].trim();
+            // In a cargo workspace, the crate too: `alpha::tests::it`.
+            let name = match &krate {
+                Some(k) if line.starts_with("test ") => format!("{k}::{name}"),
+                _ => name.to_string(),
+            };
+            push(format!("{kind}|test|{name}"), &mut keys);
+            tests = true;
+            continue;
+        }
+        if let Some(c) = ESLINT_FILE.captures(line) {
+            eslint_file = Some(key_path(&c["file"]));
+            continue;
+        }
+        if let (Some(file), Some(c)) = (&eslint_file, ESLINT_ROW.captures(line)) {
+            let code = c.name("code").map_or("", |m| m.as_str());
+            push(
+                format!("{kind}|{file}|{code}|{}", key_message(&c["msg"])),
+                &mut keys,
+            );
+            continue;
+        }
+        if line.trim().is_empty() {
+            eslint_file = None;
+        }
+        if let Some(c) = GENERIC.captures(line) {
+            let file = key_path(&c["file"]);
+            // Stack frames (indented) and library paths aren't the errors;
+            // a line that starts with its path is (go vet, gcc).
+            let indented = line.starts_with(char::is_whitespace);
+            if file.contains("node_modules/")
+                || indented && !FAILURE_LINE.is_match(line) && c.name("code").is_none()
+            {
+                continue;
+            }
+            if BARE_EXCEPTION.is_match(c["msg"].trim()) {
+                continue;
+            }
+            // Round 3: a compiler's note, warning or help line points at
+            // code that's fine (`src/b.h:3:5: note: declared here`).
+            let msg_lower = c["msg"].trim().to_ascii_lowercase();
+            if ["note:", "warning:", "help:"]
+                .iter()
+                .any(|p| msg_lower.starts_with(p))
+            {
+                continue;
+            }
+            let code = c.name("code").map_or("", |m| m.as_str());
+            let key = format!("{kind}|{file}|{code}|{}", key_message(&c["msg"]));
+            // Round 2, P3.1: a compiler's line (`./a.go:3:2: undefined: foo`:
+            // its path first, with a column) is an error of its own, even
+            // next to failing tests; tracebacks and assertion lines aren't.
+            if c.name("col").is_some() && !indented {
+                push(key, &mut keys);
+            } else if !generic.contains(&key) {
+                generic.push(key);
+            }
+        }
+    }
+    if !tests {
+        for k in generic {
+            push(k, &mut keys);
+        }
+    }
+    if keys.is_empty() && !timed_out {
+        keys.push(format!("{kind}|failed"));
+    }
+    keys.sort();
+    if keys.len() > MAX_KEYS {
+        let more = keys.len() - (MAX_KEYS - 1);
+        keys.truncate(MAX_KEYS - 1);
+        keys.push(format!("{kind}|and {more} more"));
+    }
+    // Round 3: a check that timed out says nothing about the tests it
+    // didn't reach, whatever it printed before the kill: the round can't
+    // be compared (repair.rs `blind`), so the key is always there.
+    if timed_out {
+        keys.push(format!("{kind}|timed out"));
+    }
+    keys
+}
+
+/// How many tests a run ran, from its summary lines (cargo, vitest, jest,
+/// pytest); None when it doesn't say.
+pub fn tests_ran(output: &str) -> Option<u32> {
+    static CARGO: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"test result: \w+\. (\d+) passed; (\d+) failed").unwrap());
+    static JS_TOTAL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*Tests:?\s+(.*?)(?:\((\d+)\)|(\d+) total)").unwrap());
+    static JS_PARTS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(\d+) (?:passed|failed)").unwrap());
+    static PYTEST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^=+ (.*\b(?:passed|failed)\b.*) in [\d.]+s").unwrap());
+    let clean = clean_output(output);
+    let cargo: Vec<u32> = CARGO
+        .captures_iter(&clean)
+        .map(|c| c[1].parse::<u32>().unwrap_or(0) + c[2].parse::<u32>().unwrap_or(0))
+        .collect();
+    if !cargo.is_empty() {
+        return Some(cargo.iter().sum());
+    }
+    if let Some(c) = JS_TOTAL.captures_iter(&clean).last() {
+        if let Some(total) = c.get(2).or(c.get(3)) {
+            return total.as_str().parse().ok();
+        }
+        let sum: u32 = JS_PARTS
+            .captures_iter(&c[1])
+            .filter_map(|p| p[1].parse::<u32>().ok())
+            .sum();
+        return (sum > 0).then_some(sum);
+    }
+    if let Some(c) = PYTEST.captures_iter(&clean).last() {
+        let sum: u32 = JS_PARTS
+            .captures_iter(&c[1])
+            .filter_map(|p| p[1].parse::<u32>().ok())
+            .sum();
+        return Some(sum);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -345,5 +617,275 @@ mod tests {
             ["src/a.ts"],
             "each once"
         );
+    }
+
+    /// Round 2, P3.1: a build error in one Go package next to a failing
+    /// test in another is kept; once it compiles, its own failing tests
+    /// aren't a regression of the round before.
+    #[test]
+    fn go_build_error_next_to_another_packages_test_failure_is_kept() {
+        let before = "# example.com/a\n./a.go:3:2: undefined: foo\nFAIL\texample.com/a [build failed]\n\
+            --- FAIL: TestB (0.00s)\n    b_test.go:9: got 1, want 2\nFAIL\nFAIL\texample.com/b\t0.002s\n";
+        let keys = failure_keys("test", before, false);
+        assert!(
+            keys.contains(&"test|a.go||undefined: foo".to_string()),
+            "{keys:?}"
+        );
+        assert!(keys.contains(&"test|test|TestB".to_string()), "{keys:?}");
+        let after = "--- FAIL: TestA (0.00s)\n    a_test.go:4: wrong\nFAIL\nFAIL\texample.com/a\t0.001s\nok\texample.com/b\n";
+        let round = |out: &str| super::super::repair::RoundFailures {
+            keys: failure_keys("test", out, false).into_iter().collect(),
+            ran: ["test".to_string()].into(),
+            tests_ran: None,
+            own_tests: None,
+        };
+        let j = super::super::repair::judge(&[round(before)], &round(after));
+        assert_ne!(
+            j.verdict,
+            super::super::repair::Verdict::Regression,
+            "{j:?}"
+        );
+    }
+
+    /// Round 2 (§4.2): a pytest long traceback is one failing test, not
+    /// its frames or its assertion line.
+    #[test]
+    fn pytest_long_traceback_frames_arent_keys() {
+        let out = "_____ test_add _____\n\ndef test_add():\n>       assert add(2, 2) == 4\n\
+            src/math.py:10: in add\n    return a - b\n\
+            tests/test_math.py:5: in test_add\n    assert add(2, 2) == 4\n\
+            E   AssertionError: expected 4\n\
+            tests/test_math.py:5: AssertionError: expected 4\n\
+            FAILED tests/test_math.py::test_add - AssertionError: expected 4\n";
+        assert_eq!(
+            failure_keys("test", out, false),
+            ["test|test|tests/test_math.py::test_add"]
+        );
+    }
+
+    /// Round 3: a compiler's note, warning and help lines next to an error
+    /// or a failing test aren't failures (gcc, mypy).
+    #[test]
+    fn notes_and_warnings_arent_keys() {
+        let out = "src/a.c:12:5: error: expected ';'\nsrc/b.h:3:5: note: declared here\n\
+                   src/c.c:1:1: warning: unused variable 'x' [-Wunused-variable]\n--- FAIL: TestA (0.00s)\n";
+        assert_eq!(
+            failure_keys("test", out, false),
+            ["test|src/a.c||expected ';'", "test|test|TestA"]
+        );
+        let mypy = "src/a.py:12: error: Argument 1 has incompatible type\nsrc/b.py:3: note: \"foo\" defined here\n";
+        assert_eq!(
+            failure_keys("typecheck", mypy, false),
+            ["typecheck|src/a.py||Argument 1 has incompatible type"]
+        );
+    }
+
+    /// Round 3: a timed-out check keeps its `timed out` key next to what
+    /// it printed before the kill, so the round stays incomparable.
+    #[test]
+    fn a_timeout_with_partial_output_is_still_blind() {
+        let keys = failure_keys("test", "--- FAIL: TestA (0.00s)\n", true);
+        assert_eq!(keys, ["test|test|TestA", "test|timed out"]);
+        let round = |keys: &[&str]| super::super::repair::RoundFailures {
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            ran: ["test".to_string()].into(),
+            tests_ran: None,
+            own_tests: None,
+        };
+        let j = super::super::repair::judge(
+            &[round(&["test|test|TestA", "test|test|TestB"])],
+            &round(&["test|test|TestA", "test|timed out"]),
+        );
+        assert!(j.fixed.is_empty(), "{j:?}");
+        assert_eq!(j.verdict, super::super::repair::Verdict::First);
+    }
+
+    /// Round 2 (§4.2): a pytest collection error is an error key; the
+    /// tests failing once it's fixed aren't "new" next to it.
+    #[test]
+    fn pytest_collection_error_is_an_error_key() {
+        let before = failure_keys(
+            "test",
+            "ERROR tests/test_a.py - ImportError: no module named x\n",
+            false,
+        );
+        assert_eq!(
+            before,
+            ["test|tests/test_a.py||ImportError: no module named x"]
+        );
+        let after = failure_keys(
+            "test",
+            "FAILED tests/test_a.py::test_one - assert 1 == 2\n",
+            false,
+        );
+        let round = |keys: Vec<String>| super::super::repair::RoundFailures {
+            keys: keys.into_iter().collect(),
+            ran: ["test".to_string()].into(),
+            tests_ran: None,
+            own_tests: None,
+        };
+        let j = super::super::repair::judge(&[round(before)], &round(after));
+        assert_ne!(
+            j.verdict,
+            super::super::repair::Verdict::Regression,
+            "{j:?}"
+        );
+    }
+
+    /// Round 2 (§4.2): a crate's name is added only to cargo's own test
+    /// lines (after its Running line), on any platform's path.
+    #[test]
+    fn crate_prefix_only_on_cargo_test_lines() {
+        let go = "     Running unittests src/lib.rs (target/debug/deps/alpha-1a2b)\n--- FAIL: TestX (0.00s)\n";
+        assert_eq!(failure_keys("test", go, false), ["test|test|TestX"]);
+        let it = "     Running tests/it.rs (target/debug/deps/it-0a1b)\ntest adds ... FAILED\n";
+        assert_eq!(failure_keys("test", it, false), ["test|test|it::adds"]);
+        let win = "     Running unittests src\\lib.rs (target\\debug\\deps\\alpha-1a2b.exe)\ntest t ... FAILED\n";
+        assert_eq!(failure_keys("test", win, false), ["test|test|alpha::t"]);
+    }
+
+    /// Round 2 (§4.2): with more errors than keys kept, one fewer is
+    /// progress and one more isn't a regression of passing code.
+    #[test]
+    fn eslint_sixty_errors_round_pair() {
+        use super::super::repair::{judge, RoundFailures, Verdict};
+        let lint = |n: usize| {
+            let mut out = String::from("/p/src/a.ts\n");
+            for i in 0..n {
+                out.push_str(&format!(
+                    "  {}:1  error  rule {i} broken  rule-{i}\n",
+                    i + 1
+                ));
+            }
+            RoundFailures {
+                keys: failure_keys("lint", &out, false).into_iter().collect(),
+                ran: ["lint".to_string()].into(),
+                tests_ran: None,
+                own_tests: None,
+            }
+        };
+        let j = judge(&[lint(60)], &lint(59));
+        assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
+        assert!(j.broke.is_empty());
+        assert_ne!(judge(&[lint(60)], &lint(61)).verdict, Verdict::Regression);
+    }
+
+    /// Round 2 (§4.2): cargo's compile error and a failing test from the
+    /// same run are both kept.
+    #[test]
+    fn cargo_compile_error_and_test_failure_keep_both() {
+        let out = "error[E0425]: cannot find value `x` in this scope\n --> src/lib.rs:3:5\n\
+            test tests::adds ... FAILED\n";
+        let keys = failure_keys("test", out, false);
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert!(
+            keys.iter().any(|k| k.starts_with("test|src/lib.rs|E0425|")),
+            "{keys:?}"
+        );
+        assert!(keys.contains(&"test|test|tests::adds".to_string()));
+    }
+
+    /// Round 2, P3.1: cargo's closing summaries aren't errors of their own.
+    #[test]
+    fn cargo_summaries_arent_keys() {
+        let out = "test tests::it ... FAILED\n\nerror: doctest failed, to rerun pass `--doc`\n\
+            error: process didn't exit successfully: `target/debug/deps/a-1a2b` (exit status: 101)\n\
+            error: 1 target failed:\n    `-p a --lib`\n";
+        assert_eq!(failure_keys("test", out, false), ["test|test|tests::it"]);
+    }
+
+    #[test]
+    fn failure_keys_survive_moved_lines() {
+        let before = "src/a.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.";
+        let after = "src/a.ts(40,9): error TS2322: Type 'string' is not assignable to type 'number'.\nFound 1 error.";
+        assert_eq!(
+            failure_keys("typecheck", before, false),
+            failure_keys("typecheck", after, false)
+        );
+        assert_eq!(
+            failure_keys("typecheck", before, false),
+            ["typecheck|src/a.ts|TS2322|Type 'string' is not assignable to type 'number'."]
+        );
+        let pretty = "src/b.ts:3:1 - error TS2304: Cannot find name 'x'.";
+        assert_eq!(
+            failure_keys("typecheck", pretty, false),
+            ["typecheck|src/b.ts|TS2304|Cannot find name 'x'."]
+        );
+    }
+
+    #[test]
+    fn failure_keys_for_rust_and_other_tools() {
+        let cargo = "error[E0308]: mismatched types\n  --> src/main.rs:3:5\n   |\n3  |     x\n\nerror: could not compile `app` due to 1 previous error";
+        assert_eq!(
+            failure_keys("build", cargo, false),
+            ["build|src/main.rs|E0308|mismatched types"]
+        );
+        let moved = cargo.replace("main.rs:3:5", "main.rs:30:1");
+        assert_eq!(
+            failure_keys("build", &moved, false),
+            failure_keys("build", cargo, false)
+        );
+
+        let eslint = "/p/src/a.ts\n  3:7  error  'x' is assigned a value but never used  no-unused-vars\n  9:1  warning  Unexpected console  no-console\n\n✖ 1 problem";
+        assert_eq!(
+            failure_keys("lint", eslint, false),
+            ["lint|/p/src/a.ts|no-unused-vars|'x' is assigned a value but never used"]
+        );
+        let ruff = "app/x.py:1:8: F401 [*] `os` imported but unused\nFound 1 error.";
+        assert_eq!(
+            failure_keys("lint", ruff, false),
+            ["lint|app/x.py|F401|[*] `os` imported but unused"]
+        );
+        let go = "./main.go:7:2: undefined: foo";
+        assert_eq!(
+            failure_keys("build", go, false),
+            ["build|main.go||undefined: foo"]
+        );
+        // A stack frame isn't an error of its own.
+        assert_eq!(
+            failure_keys("test", "    at src/a.ts:3:4\nError: boom", false),
+            ["test|failed"]
+        );
+    }
+
+    #[test]
+    fn failing_tests_are_keyed_by_name() {
+        let cargo = "running 3 tests\ntest a::ok ... ok\ntest a::bad ... FAILED\n\nfailures:\n\n---- a::bad stdout ----\nthread panicked at src/a.rs:9:5\n\ntest result: FAILED. 2 passed; 1 failed";
+        let keys = failure_keys("test", cargo, false);
+        assert!(keys.contains(&"test|test|a::bad".to_string()), "{keys:?}");
+        assert_eq!(tests_ran(cargo), Some(3));
+
+        let pytest = "FAILED tests/test_x.py::test_add - assert 1 == 2\n===== 1 failed, 4 passed in 0.12s =====";
+        assert_eq!(
+            failure_keys("test", pytest, false),
+            ["test|test|tests/test_x.py::test_add"]
+        );
+        assert_eq!(tests_ran(pytest), Some(5));
+
+        let vitest = " FAIL  src/a.test.ts > math > adds 3ms\n × math > adds\n Test Files  1 failed (1)\n      Tests  1 failed | 6 passed (7)";
+        let keys = failure_keys("test", vitest, false);
+        assert!(
+            keys.contains(&"test|test|math > adds".to_string()),
+            "{keys:?}"
+        );
+        assert_eq!(tests_ran(vitest), Some(7));
+        assert_eq!(
+            tests_ran("Tests:       1 failed, 2 passed, 3 total"),
+            Some(3)
+        );
+        assert_eq!(tests_ran("nothing to see"), None);
+    }
+
+    #[test]
+    fn a_failure_with_nothing_recognizable_is_the_check_alone() {
+        assert_eq!(
+            failure_keys("build", "Segmentation fault", false),
+            ["build|failed"]
+        );
+        assert_eq!(failure_keys("test", "", true), ["test|timed out"]);
+        let many: String = (0..80).map(|i| format!("test t{i} ... FAILED\n")).collect();
+        let keys = failure_keys("test", &many, false);
+        assert_eq!(keys.len(), MAX_KEYS);
+        assert!(keys.last().unwrap().ends_with("and 31 more"));
     }
 }

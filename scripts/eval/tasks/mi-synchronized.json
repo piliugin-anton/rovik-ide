@@ -1,0 +1,19 @@
+{
+  "id": "mi-synchronized",
+  "repo": {
+    "url": "https://github.com/more-itertools/more-itertools",
+    "name": "more-itertools"
+  },
+  "base": "04d266400d31920c65f26e9e57fa17bef9d45679",
+  "reference": "68a4c96b547378831f4ddffc6a5d1675715422cd",
+  "lang": "python",
+  "request": "Add more_itertools.synchronized: a decorator for a generator function so each generator it returns can be used from several threads at once: next() calls on the same generator are serialized with a lock (one lock per generator). Export it (__all__, more.pyi) and document it.",
+  "hidden": ["tests/test_more.py"],
+  "checks": [
+    {
+      "kind": "pytest",
+      "files": ["tests/test_more.py"]
+    }
+  ],
+  "setup": ["python"]
+}

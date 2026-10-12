@@ -1,0 +1,21 @@
+{
+  "id": "self-clm-later-once",
+  "reference": "2a38c297f04724a3c563aadb0379e5a22e30f722",
+  "ok": true,
+  "problems": [],
+  "failingAtBase": [
+    "clm::tests::a_rendering_whose_state_was_not_saved_doubles_nothing",
+    "clm::tests::agent_paths",
+    "clm::tests::edits_become_the_context_and_survive_a_restart",
+    "clm::tests::later_messages_are_added_once",
+    "clm::tests::repeated_calls"
+  ],
+  "flaky": [],
+  "required": [
+    "clm::tests::a_rendering_whose_state_was_not_saved_doubles_nothing",
+    "clm::tests::agent_paths",
+    "clm::tests::edits_become_the_context_and_survive_a_restart",
+    "clm::tests::later_messages_are_added_once",
+    "clm::tests::repeated_calls"
+  ]
+}

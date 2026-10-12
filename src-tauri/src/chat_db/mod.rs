@@ -35,6 +35,7 @@ const READERS: usize = 2;
 
 struct Inner {
     writer: Mutex<mpsc::Sender<Job>>,
+    writer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     readers: Vec<Mutex<Connection>>,
     next_reader: AtomicUsize,
     data_dir: PathBuf,
@@ -71,7 +72,7 @@ impl DbState {
 
         let (tx, rx) = mpsc::channel::<Job>();
         let dir = data_dir.to_path_buf();
-        std::thread::Builder::new()
+        let writer_thread = std::thread::Builder::new()
             .name("chat-db-writer".into())
             .spawn(move || {
                 maintenance(&mut writer, &dir, unclean);
@@ -83,6 +84,7 @@ impl DbState {
 
         Ok(DbState(Arc::new(Inner {
             writer: Mutex::new(tx),
+            writer_thread: Mutex::new(Some(writer_thread)),
             readers,
             next_reader: AtomicUsize::new(0),
             data_dir: data_dir.to_path_buf(),
@@ -148,6 +150,33 @@ impl DbState {
     /// Clean exit: the next start skips the integrity check.
     pub fn mark_clean_exit(&self) {
         let _ = std::fs::remove_file(self.0.data_dir.join(RUNNING_MARKER));
+    }
+
+    /// How many handles share this database (one: this is the last).
+    pub fn handles(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
+
+    /// Closes every connection, the writer's once its queued jobs are done.
+    /// Only the last handle can: another one would keep its connections
+    /// open (and a folder removed next would still hold open files).
+    pub fn close(self) -> Result<(), String> {
+        let inner = Arc::try_unwrap(self.0)
+            .map_err(|_| "the chat database is still in use".to_string())?;
+        let Inner {
+            writer,
+            writer_thread,
+            readers,
+            ..
+        } = inner;
+        drop(writer);
+        drop(readers);
+        if let Some(thread) = writer_thread.into_inner().ok().flatten() {
+            thread
+                .join()
+                .map_err(|_| "the chat database writer panicked".to_string())?;
+        }
+        Ok(())
     }
 }
 

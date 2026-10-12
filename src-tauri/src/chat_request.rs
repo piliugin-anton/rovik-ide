@@ -1020,6 +1020,11 @@ async fn attempt(
 
         let chunk = tokio::select! {
             _ = cancelled(cancel) => {
+                // P6.2: what the provider already said the request used (a
+                // request asked again counts it: agent_run/run.rs).
+                if let Some(usage) = parser.usage.take() {
+                    emit(ChatStreamEvent::Finished { finish_reason: None, usage: Some(usage) });
+                }
                 return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), parser.visible()));
             }
             r = tokio::time::timeout_at(wait_until.into(), stream.next()) => r,

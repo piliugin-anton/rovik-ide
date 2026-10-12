@@ -1,0 +1,16 @@
+{
+  "id": "self-tool-alone",
+  "repo": "self",
+  "base": "5621866e37299d981bb41d95f2d9828888d1dd7a",
+  "reference": "2f2375940f231607fa381894cbda680a3639087f",
+  "lang": "ts",
+  "request": "Show every tool call in the chat as one line (\"Read App.tsx\", \"Ran npm\"), not only groups of consecutive calls; opening a single call's line shows its block already expanded. Questions, checklists, plans and context edits keep their own cards. In src/lib/toolGroups.ts, a ToolRun gets an optional `alone: boolean`, set to true by groupToolCalls for runs of a call that keeps its own block (the calls standsAlone already picks out) and left unset for every other run. Render accordingly in MessageList.tsx, ToolCallGroup.tsx and ToolCallBlock.tsx.",
+  "hidden": ["src/lib/toolGroups.test.ts"],
+  "checks": [
+    {
+      "kind": "ts",
+      "files": ["src/lib/toolGroups.test.ts"]
+    }
+  ],
+  "setup": ["node"]
+}

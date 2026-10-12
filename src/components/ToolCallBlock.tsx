@@ -10,10 +10,10 @@ import EditDiffBlock from './EditDiffBlock';
 import ContextEditView from './ContextEditView';
 import QuestionCard from './QuestionCard';
 import { StatusIcon } from './TodoPanel';
-import { parseTodo, progressLabel } from '../lib/todo';
+import { parseTodo } from '../lib/todo';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
-import { diffRows, snippetLines } from '../lib/lineDiff';
+import { plural } from '../lib/textUtils';
 import { describeToolCall } from '../lib/permissions';
 import {
   contextEdit,
@@ -25,16 +25,49 @@ import {
 } from '../lib/contextDoc';
 import { APPROVE_AT, REJECT_AT, reviewChecks } from '../lib/aiApproval';
 import { requestOpenFile } from '../lib/editorBridge';
-import { dirName, isErrorResult, parseArgsLenient, type Args } from '../lib/toolArgs';
+import {
+  callStatus,
+  dirName,
+  isErrorResult,
+  isPartialWrite,
+  lineArg,
+  num,
+  parseArgsLenient,
+  planTitle,
+  str,
+  todoSummary,
+  type Args,
+  type CallStatus,
+} from '../lib/toolArgs';
+import { editCounts } from '../lib/toolGroups';
+import LineCounts from './LineCounts';
 import {
   allow,
   decideRemaining,
   deny,
   hunkCounts,
   pendingApproval,
+  pendingApprovalsOfTask,
   revealEdit,
   type PendingApproval,
 } from '../lib/approvals';
+import {
+  kindLabel,
+  childOf,
+  liveLabel,
+  liveSubagent,
+  liveWorkersOf,
+  forgetLiveWorkers,
+  modelLabel,
+  reportBody,
+  statusLabel,
+  transcript,
+  usageLabel,
+  workLabel,
+} from '../lib/subagents';
+import { indexToolResults } from '../lib/toolResults';
+import { stopRun } from '../lib/agentRuns';
+import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 
 export interface ToolCallBlockProps {
   toolCall: ChatToolCall;
@@ -42,6 +75,8 @@ export interface ToolCallBlockProps {
   dialogId: string | null;
   /** Content of the matching role:"tool" message, if it has arrived. */
   result?: ChatMessage;
+  /** P5.8: an older call whose id a later call reused: live progress isn't its. */
+  notLive?: boolean;
   /** True while the agent loop is still running (args streaming or tool executing). */
   running?: boolean;
   /** Live note while the call waits, e.g. for approval. */
@@ -81,24 +116,9 @@ async function loadBody(messageId: string): Promise<string> {
   return body;
 }
 
-type Status = 'running' | 'done' | 'error' | 'idle';
-
-const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
-const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
-
-/** A line-number argument; models sometimes send it as a string ("12"). */
-function lineArg(v: unknown): number | undefined {
-  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : num(v);
-  return n !== undefined && Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined;
-}
-
 function countLines(text: string): number {
   if (!text) return 0;
   return text.split(/\r?\n/).length;
-}
-
-function plural(n: number, one: string, many = `${one}s`) {
-  return `${n} ${n === 1 ? one : many}`;
 }
 
 /** "https://docs.rs/tokio/latest/" → "docs.rs/tokio/latest" */
@@ -168,11 +188,6 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
   }
 }
 
-/** A write that replaces one quoted piece of a file (old_text) rather than all of it. */
-function isPartialWrite(name: string, args: Args): boolean {
-  return name === 'write' && args.old_text !== undefined && args.old_text !== null;
-}
-
 /** write on the agent's context file (CLM mode), block by block. */
 function contextChange(name: string, args: Args): ContextEdit | undefined {
   if (name !== 'write' || !isLiveContextPath(str(args.path))) return undefined;
@@ -185,7 +200,7 @@ function contextChange(name: string, args: Args): ContextEdit | undefined {
   return contextWrite(content);
 }
 
-function describeContextChange(name: string, args: Args, status: Status): Summary {
+function describeContextChange(name: string, args: Args, status: CallStatus): Summary {
   const active = status === 'running';
   const whole = !isPartialWrite(name, args);
   const title = whole
@@ -204,7 +219,7 @@ function describeContextChange(name: string, args: Args, status: Status): Summar
   return { title, meta: [describeChanges(change.changes), size].filter(Boolean).join(' · ') };
 }
 
-function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Summary {
+function describe(name: string, args: Args, status: CallStatus, meta?: ToolMeta): Summary {
   const active = status === 'running';
   const failed = status === 'error';
   const path = str(args.path);
@@ -236,23 +251,15 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
 
     case 'submit_plan': {
       const plan = str(args.plan);
-      const title = plan?.match(/^#\s+(.+)$/m)?.[1];
+      const title = planTitle(plan);
       return {
         title: active ? 'Saving the plan' : 'Saved the plan',
         meta: title ?? (plan ? plural(countLines(plan), 'line') : undefined),
       };
     }
 
-    case 'todo': {
-      const items = parseTodo(args);
-      const current = items.find((i) => i.status === 'in_progress');
-      return {
-        title: 'Checklist',
-        meta: items.length
-          ? `${progressLabel(items)}${current ? ` · ${current.title}` : ''}`
-          : undefined,
-      };
-    }
+    case 'todo':
+      return { title: 'Checklist', meta: todoSummary(args) };
 
     case 'write': {
       const content = str(args.content);
@@ -271,18 +278,9 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       const start = lineArg(args.start_line);
       const end = lineArg(args.end_line) ?? start;
       const range = start !== undefined ? `only lines ${start}–${end}` : undefined;
-      const oldText = str(args.old_text);
-      const newText = content;
       // The same line diff as the expanded view (EditDiffBlock), once the
       // arguments are complete: an edited line counts as one removed and one added.
-      let counts: Summary['counts'];
-      if (!active && oldText !== undefined && newText !== undefined) {
-        const rows = diffRows(snippetLines(oldText), snippetLines(newText));
-        counts = {
-          added: rows.filter((r) => r.kind === 'added').length,
-          removed: rows.filter((r) => r.kind === 'removed').length,
-        };
-      }
+      const counts = active ? undefined : editCounts([{ args }]);
       return { title, meta: range, counts };
     }
 
@@ -409,11 +407,6 @@ function ChevronIcon() {
   );
 }
 
-/**
- * The request for the user's decision, under the tool call's header. File
- * edits are reviewed change by change in the editor; this offers the
- * shortcuts.
- */
 /** One check's score as a bar, with the reject and approve thresholds marked. */
 function CheckRow(props: { check: ReviewCheck }) {
   const percent = () => Math.round(props.check.score * 100);
@@ -486,6 +479,11 @@ function ApprovalDetails(props: { approval: ToolApproval }) {
   );
 }
 
+/**
+ * The request for the user's decision, under the tool call's header. File
+ * edits are reviewed change by change in the editor; this offers the
+ * shortcuts.
+ */
 function ApprovalBar(props: { request: PendingApproval }) {
   const dialogId = () => props.request.dialogId;
   const id = () => props.request.toolCallId;
@@ -495,7 +493,7 @@ function ApprovalBar(props: { request: PendingApproval }) {
     const c = counts();
     if (!c) return 'Waiting for your approval';
     if (c.pending === c.total) {
-      return `Waiting for your review · ${c.total} change${c.total === 1 ? '' : 's'}`;
+      return `Waiting for your review · ${plural(c.total, 'change')}`;
     }
     return `${c.pending} of ${c.total} left · ${c.accepted} accepted · ${c.rejected} rejected`;
   };
@@ -553,7 +551,260 @@ function ApprovalBar(props: { request: PendingApproval }) {
   );
 }
 
+/** A shortened goal for a header line. */
+function shortGoal(goal: string | undefined): string {
+  const line = (goal ?? '').trim().split('\n')[0];
+  return line.length > 80 ? `${line.slice(0, 77)}…` : line;
+}
+
+/**
+ * A subagent's work: its chat's tool calls and replies, loaded when the
+ * block asks for it and followed live from then on (lib/subagents.ts).
+ */
+export function SubagentTranscript(props: { childDialogId: string; running: boolean }) {
+  const t = () => transcript(props.childDialogId);
+  // P5.8: by the call itself, as a child's calls can reuse ids across replies.
+  const toolIndex = createMemo(() => indexToolResults(t()?.messages ?? []));
+  const shown = () =>
+    (t()?.messages ?? []).filter(
+      (m) => m.role === 'assistant' && (m.toolCalls?.length || m.content.trim() || m.error)
+    );
+  return (
+    <div class="subagent-transcript">
+      <Show when={!t()?.loading} fallback={<div class="tool-call-pending">Loading…</div>}>
+        <Show when={!t()?.error} fallback={<div class="tool-call-pending">{t()?.error}</div>}>
+          <For each={shown()} fallback={<div class="tool-call-pending">Nothing yet</div>}>
+            {(m) => (
+              <>
+                <Show when={m.content.trim() || m.error}>
+                  <pre class="tool-call-pre subagent-reply">{m.error ?? m.content}</pre>
+                </Show>
+                <For each={m.toolCalls ?? []}>
+                  {(call) => (
+                    <ToolCallBlock
+                      toolCall={call}
+                      dialogId={props.childDialogId}
+                      result={toolIndex().results.get(call)}
+                      running={props.running}
+                    />
+                  )}
+                </For>
+              </>
+            )}
+          </For>
+        </Show>
+      </Show>
+    </div>
+  );
+}
+
+/**
+ * A `task` call: a subagent at work for the lead. Live progress while it
+ * runs (with its own approvals and a Stop for it alone), then its report;
+ * its work opens on demand.
+ */
+function TaskBlock(props: ToolCallBlockProps) {
+  const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
+  const live = () => (props.notLive ? undefined : liveSubagent(props.dialogId, props.toolCall.id));
+  const done = () => props.result?.meta?.subagent;
+  /** A parallel group (kind "workers"): its workers, joined. */
+  const group = () => props.result?.meta?.group;
+  const childId = () =>
+    done()?.childDialogId ?? live()?.childDialogId ?? childOf(props.dialogId, props.toolCall.id);
+  const kind = () => done()?.kind ?? live()?.kind ?? str(args().kind);
+  /** A parallel group's workers while they run (round 3). */
+  const workers = () => (props.notLive ? [] : liveWorkersOf(props.dialogId, props.toolCall.id));
+  const working = () =>
+    !props.result &&
+    !!props.running &&
+    (live() ? !live()!.status : workers().some((w) => !w.live.status));
+  const refused = () => !!props.result && !done() && !group();
+  // Shown until the call has its result, whatever is known of the subagent:
+  // after a reload its run may wait on one with nothing else seen (P1.5).
+  const approvals = () =>
+    props.result || !props.dialogId
+      ? []
+      : pendingApprovalsOfTask(props.dialogId, props.toolCall.id, childId());
+  const [expanded, setExpanded] = createSignal(!!props.initiallyExpanded);
+
+  const meta = () => {
+    const g = group();
+    if (g) {
+      const landed = g.workers.filter((w) => (w.landed?.length ?? 0) > 0).length;
+      return [`${g.workers.length} workers`, `${landed} landed`, g.conflict ? 'a conflict' : '']
+        .filter(Boolean)
+        .join(' · ');
+    }
+    const d = done();
+    if (d) {
+      const model = modelLabel(d.model, d.modelsTried);
+      return [statusLabel(d.status), workLabel(d.toolCalls, d.ms), usageLabel(d.usage), model]
+        .filter(Boolean)
+        .join(' · ');
+    }
+    if (refused()) return 'not started';
+    const l = live();
+    if (l && working()) return liveLabel(l);
+    const ws = workers();
+    if (ws.length > 0 && working()) {
+      const calls = ws.reduce((n, w) => n + w.live.toolCalls, 0);
+      const doing = ws.map((w) => w.live.currentTool).filter(Boolean);
+      return [`${ws.length} workers`, workLabel(calls), doing.length ? doing.join(', ') : '']
+        .filter(Boolean)
+        .join(' · ');
+    }
+    return props.running ? 'starting…' : 'not run';
+  };
+
+  // P5.9: the store keeps neither a finished subagent's live entry (a
+  // group's: each worker's, under "<call>#<label>") nor a transcript once
+  // no block shows it.
+  const work = createSubagentWork({
+    dialogId: () => props.dialogId,
+    toolCallId: () => props.toolCall.id,
+    childId,
+    finishedChildId: () => done()?.childDialogId,
+    alsoForget: () => {
+      if (group()) forgetLiveWorkers(props.dialogId, props.toolCall.id);
+    },
+  });
+
+  const paths = () =>
+    Array.isArray(args().paths)
+      ? (args().paths as unknown[]).filter((p) => typeof p === 'string')
+      : [];
+
+  return (
+    <div
+      class="tool-call subagent-block"
+      classList={{
+        expanded: expanded(),
+        awaiting: approvals().length > 0,
+        running: working(),
+        error: refused() || done()?.status === 'failed',
+      }}
+    >
+      <button
+        type="button"
+        class="tool-call-header"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded()}
+        title={str(args().goal)}
+      >
+        <ChevronIcon />
+        <span class="subagent-kind">{kindLabel(kind())}</span>
+        <span class="tool-call-title">
+          {str(args().continue) ? 'Follow-up: ' : ''}
+          {str(args().group)
+            ? `Group “${str(args().group)}”`
+            : shortGoal(str(args().goal) ?? live()?.goal)}
+        </span>
+        <Show when={meta()}>
+          <span class="tool-call-meta">{meta()}</span>
+        </Show>
+        <Show when={working() && approvals().length === 0}>
+          <span class="tool-call-spinner" aria-label="Running" />
+        </Show>
+      </button>
+      <Show when={working() && childId()}>
+        <div class="subagent-actions">
+          <button
+            class="link-button"
+            title="Stop this subagent only; the agent goes on with what it found"
+            onClick={() => void stopRun(childId()!)}
+          >
+            Stop this {kindLabel(kind()).toLowerCase()}
+          </button>
+        </div>
+      </Show>
+      <Show when={working() && !childId() && workers().length > 0}>
+        <div class="subagent-actions">
+          <For each={workers().filter((w) => !w.live.status)}>
+            {(w) => (
+              <button
+                class="link-button"
+                title="Stop this worker only; the group goes on with the others"
+                onClick={() => void stopRun(w.live.childDialogId)}
+              >
+                Stop worker {w.label}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
+
+      <For each={approvals()}>{(r) => <ApprovalBar request={r} />}</For>
+
+      <Show when={expanded()}>
+        <div class="tool-call-body">
+          <section class="tool-call-section">
+            <div class="tool-call-label">Task</div>
+            <pre class="tool-call-pre">{str(args().goal) ?? ''}</pre>
+            <Show when={str(args().context)}>
+              {(context) => <pre class="tool-call-pre subagent-context">{context()}</pre>}
+            </Show>
+            <Show when={paths().length > 0}>
+              <div class="subagent-paths">Look first at: {paths().join(', ')}</div>
+            </Show>
+          </section>
+          <Show when={!group() && workers().length > 0}>
+            <section class="tool-call-section">
+              <div class="tool-call-label">Workers</div>
+              <ul class="subagent-group">
+                <For each={workers()}>
+                  {(w) => (
+                    <li>
+                      {w.label}: {w.live.status ?? (w.live.currentTool || 'working')} ·{' '}
+                      {workLabel(w.live.toolCalls)} · {w.live.model}
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </section>
+          </Show>
+          <Show when={group()}>
+            {(g) => (
+              <section class="tool-call-section">
+                <div class="tool-call-label">Workers</div>
+                <ul class="subagent-group">
+                  <For each={g().workers}>
+                    {(w) => (
+                      <li>
+                        Step {w.step} ({w.label}): {w.status}
+                        {w.landed?.length ? ` · landed ${w.landed.join(', ')}` : ''}
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </section>
+            )}
+          </Show>
+          <section class="tool-call-section">
+            <div class="tool-call-label">Report</div>
+            <Show
+              when={props.result}
+              fallback={<div class="tool-call-pending">{working() ? 'Working…' : 'No report'}</div>}
+            >
+              {(r) => <pre class="tool-call-pre">{reportBody(r().content)}</pre>}
+            </Show>
+          </section>
+          <Show when={childId()}>
+            <section class="tool-call-section">
+              <ShowWorkButton work={work} />
+              <Show when={work.shown()}>
+                <SubagentTranscript childDialogId={childId()!} running={working()} />
+              </Show>
+            </section>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 export default function ToolCallBlock(props: ToolCallBlockProps) {
+  // A subagent's work has its own block.
+  if (props.toolCall.name === 'task') return <TaskBlock {...props} />;
   // The agent's questions have their own card, always open.
   if (props.toolCall.name === 'ask_user') {
     return (
@@ -572,13 +823,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
 
   const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
 
-  const status = createMemo<Status>(() => {
-    if (props.result === undefined)
-      // A superseded snapshot never spins: its "in progress" step is history,
-      // not work happening now — even while a later run goes.
-      return props.superseded ? 'idle' : props.running ? 'running' : 'idle';
-    return isErrorResult(props.result.content) ? 'error' : 'done';
-  });
+  const status = createMemo(() => callStatus(props.result, props.running, props.superseded));
 
   // Stored counts; computed from the text only for results that predate them.
   const resultMeta = createMemo(() => {
@@ -717,15 +962,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
           <span class="tool-call-meta">{meta()}</span>
         </Show>
         <Show when={!request() && status() !== 'error' && summary().counts}>
-          {(counts) => (
-            <span
-              class="tool-call-counts"
-              title={`${counts().added} lines added, ${counts().removed} removed`}
-            >
-              <span class="added">+{counts().added}</span>
-              <span class="removed">−{counts().removed}</span>
-            </span>
-          )}
+          {(counts) => <LineCounts counts={counts()} />}
         </Show>
         <Show when={status() === 'running' && !request() && !props.superseded}>
           <span class="tool-call-spinner" aria-label="Running" />

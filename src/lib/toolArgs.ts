@@ -1,9 +1,41 @@
 // toolArgs.ts
 //
 // A tool call's arguments and result, as the chat shows them: shared by a
-// call's own block (ToolCallBlock) and a group of calls (ToolCallGroup).
+// call's own block (ToolCallBlock) and a group of calls (ToolCallGroup,
+// lib/toolGroups.ts).
+import { parseTodo, progressLabel } from './todo';
 
 export type Args = Record<string, unknown>;
+
+export const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+export const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
+
+/** A line-number argument; models sometimes send it as a string ("12"). */
+export function lineArg(v: unknown): number | undefined {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : num(v);
+  return n !== undefined && Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined;
+}
+
+/** A write that replaces one quoted piece of a file (old_text) rather than all of it. */
+export function isPartialWrite(name: string, args: Args): boolean {
+  return name === 'write' && args.old_text !== undefined && args.old_text !== null;
+}
+
+/** A plan's title: its first heading, as written. */
+export function planTitle(plan: string | undefined): string | undefined {
+  return plan?.match(/^#\s+(.+)$/m)?.[1];
+}
+
+/**
+ * A checklist update's line: "1 of 3 done · <the step in progress>", or
+ * undefined for an empty checklist. `title` shortens the step's title.
+ */
+export function todoSummary(args: Args, title = (t: string) => t): string | undefined {
+  const items = parseTodo(args);
+  const current = items.find((i) => i.status === 'in_progress');
+  if (!items.length) return undefined;
+  return `${progressLabel(items)}${current ? ` · ${title(current.title)}` : ''}`;
+}
 
 /**
  * Arguments stream in as partial JSON, so a strict parse fails until the
@@ -52,6 +84,23 @@ export function parseArgsLenient(raw: string): Args {
 /** A tool result reporting a failure. */
 export function isErrorResult(result?: string) {
   return result !== undefined && /^Error:/.test(result.trimStart());
+}
+
+export type CallStatus = 'running' | 'done' | 'error' | 'idle';
+
+/**
+ * Where a call is, from its result (the role:"tool" message, once it has
+ * arrived) and whether the run still goes. A superseded call (an earlier
+ * `todo` snapshot) never runs: its "in progress" step is history, not work
+ * happening now, even while a later run goes.
+ */
+export function callStatus(
+  result: { content: string } | undefined,
+  running: boolean | undefined,
+  superseded?: boolean
+): CallStatus {
+  if (!result) return running && !superseded ? 'running' : 'idle';
+  return isErrorResult(result.content) ? 'error' : 'done';
 }
 
 /**

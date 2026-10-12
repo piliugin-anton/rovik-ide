@@ -4626,9 +4626,77 @@ body.is-resizing * {
   border-left-color: var(--error);
 }
 
+.chat-review.clean {
+  border-left-color: var(--success);
+}
+
+.chat-review.findings,
+.chat-review.skipped,
 .chat-verify.needs-approval,
-.chat-verify.unverified {
+.chat-verify.superseded,
+.chat-verify.unverified,
+.chat-verify.rolled-back,
+.chat-verify.flagged {
   border-left-color: var(--warning);
+}
+
+.chat-verify-progress {
+  color: var(--fg-dim);
+}
+
+/* P5.6: a record at work, and one the run left unfinished. */
+.chat-verify.running,
+.chat-review.running {
+  border-left-color: var(--info);
+}
+
+.chat-verify.stopped,
+.chat-review.stopped {
+  border-left-color: var(--fg-dim);
+  opacity: 0.8;
+}
+
+/* A check round's triage and repair, inside its record. */
+.chat-verify-triage,
+.chat-verify-repair {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--fg-dim);
+  border-radius: 4px;
+  background: var(--tool-background);
+}
+
+.chat-verify-triage.running {
+  border-left-color: var(--info);
+}
+
+.chat-verify-triage.done {
+  border-left-color: var(--accent);
+}
+
+.chat-verify-triage.skipped {
+  border-left-color: var(--warning);
+}
+
+.chat-verify-triage.stopped {
+  opacity: 0.8;
+}
+
+.chat-verify-repair {
+  border-left-color: var(--warning);
+}
+
+.chat-verify-rollback summary {
+  cursor: pointer;
+}
+
+.chat-verify-flags {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--warning);
 }
 
 .chat-verify-head {
@@ -7657,4 +7725,195 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .tool-group.superseded > .tool-group-header {
   opacity: 0.55;
+}
+
+/* Subagents: a `task` call's block (ToolCallBlock) and the settings page. */
+.subagent-kind {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+/* P5.6: a subagent's block stands apart from the lead's own calls. */
+.subagent-block {
+  border-left: 2px solid var(--accent-soft);
+}
+
+.subagent-block.running {
+  border-left-color: var(--accent);
+}
+
+.subagent-context {
+  margin-top: 4px;
+  color: var(--fg-muted);
+}
+
+.subagent-group {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.subagent-limits-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.subagent-actions {
+  padding: 2px 10px 4px 30px;
+}
+
+.subagent-paths {
+  color: var(--fg-dim);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.subagent-transcript {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.subagent-reply {
+  white-space: pre-wrap;
+}
+
+.subagent-settings .settings-section.disabled .subagent-kind-row,
+.subagent-settings .settings-section.disabled .model-with-fallbacks,
+.subagent-settings .settings-section.disabled .subagent-limits {
+  opacity: 0.55;
+}
+
+.subagent-kind-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.subagent-kind-row:last-child {
+  border-bottom: none;
+}
+
+.subagent-kind-controls,
+.model-with-fallbacks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.subagent-kind-controls {
+  padding-left: 24px;
+}
+
+.subagent-limits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.subagent-limits-kind {
+  min-width: 90px;
+  color: var(--fg-dim);
+}
+
+.subagent-limit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.subagent-number {
+  width: 72px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+}
+
+/* The change reviewer's record (ReviewRecord.tsx). */
+.review-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-finding.dropped {
+  opacity: 0.7;
+}
+
+.review-finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--fg);
+}
+
+.review-severity {
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 15px;
+  text-transform: uppercase;
+  background: var(--bg-editor);
+}
+
+.review-severity.high {
+  color: var(--error);
+}
+
+.review-severity.medium {
+  color: var(--warning);
+}
+
+.review-location {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.review-confidence {
+  margin-left: auto;
+  color: var(--fg-dim);
+}
+
+.review-finding-body {
+  margin: 2px 0 0 12px;
+  white-space: pre-wrap;
+}
+
+.review-label {
+  color: var(--fg-dim);
+}
+
+.review-dropped summary {
+  cursor: pointer;
+}
+
+.subagent-run-usage {
+  padding: 0 12px 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
 }

@@ -1,0 +1,15 @@
+{
+  "id": "self-checklist-clear",
+  "reference": "e2a9a1ed77e9264fe963c138f3b701c936a33b33",
+  "ok": true,
+  "problems": [],
+  "failingAtBase": [
+    "src/lib/checklist.test.ts > live checklist > is gone once cleared (a store merges objects, so the key must be unset)"
+  ],
+  "flaky": [],
+  "required": [
+    "src/lib/checklist.test.ts > live checklist > a new list replaces the old one",
+    "src/lib/checklist.test.ts > live checklist > clearing a chat with no list is harmless",
+    "src/lib/checklist.test.ts > live checklist > is gone once cleared (a store merges objects, so the key must be unset)"
+  ]
+}

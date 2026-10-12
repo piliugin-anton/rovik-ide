@@ -430,6 +430,12 @@ pub fn land(
     land_checked(data_dir, dialog_id, project, changes, keep_chat, None, true)
 }
 
+/// Tests: landings into this folder find it changing under them this many
+/// more times (Busy); and how many were tried.
+#[cfg(test)]
+pub(crate) static BUSY_TIMES: std::sync::LazyLock<Mutex<HashMap<PathBuf, (usize, usize)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// [`land`]; with `allow_merge` false, refuses when any file would land
 /// merged with project changes (they came after the checks ran).
 ///
@@ -447,6 +453,14 @@ pub fn land_checked(
     known: Option<&[String]>,
     allow_merge: bool,
 ) -> Result<Option<Landed>, LandError> {
+    #[cfg(test)]
+    if let Some((left, calls)) = BUSY_TIMES.lock().unwrap().get_mut(project) {
+        *calls += 1;
+        if *left > 0 {
+            *left -= 1;
+            return Err(LandError::Busy);
+        }
+    }
     let lock = project_lock(project);
     let _landing = lock.lock().unwrap_or_else(|e| e.into_inner());
     for _ in 0..3 {
@@ -596,6 +610,13 @@ fn set_perm(_path: &Path, _perm: u16) {}
 #[cfg(test)]
 /// Fails once, for that project's path.
 pub(crate) static FAIL_WRITING: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+/// Tests that inject failures hold this: the hooks are process-wide.
+#[cfg(test)]
+pub(crate) static FAIL_LOCK: Mutex<()> = Mutex::new(());
+/// Tests: FAIL_WRITING fails every time (putting it back too), not once.
+#[cfg(test)]
+pub(crate) static FAIL_WRITING_ALWAYS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn write_content(
     project: &Path,
@@ -607,7 +628,9 @@ fn write_content(
     {
         let mut fail = FAIL_WRITING.lock().unwrap();
         if fail.as_ref().is_some_and(|(p, r)| p == project && r == rel) {
-            *fail = None;
+            if !FAIL_WRITING_ALWAYS.load(std::sync::atomic::Ordering::SeqCst) {
+                *fail = None;
+            }
             return Err(format!("{rel}: injected failure"));
         }
         let _ = content;
@@ -746,7 +769,9 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
                     left.push(done.path.clone());
                 }
             }
-            journal.state = "failed".into();
+            // P1.3: put back whole, it failed; half put back, it's still
+            // applying: recovery finishes it, and Land waits for that.
+            journal.state = if left.is_empty() { "failed" } else { "applying" }.into();
             let _ = save_journal(&dir, &journal);
             return Err(if left.is_empty() {
                 format!("{err} (nothing landed)")
@@ -770,16 +795,81 @@ pub fn project_of(data_dir: &Path, dialog_id: &str) -> Option<PathBuf> {
         .map(|p| PathBuf::from(p.trim()))
 }
 
+/// P6.9: a child chat's landings go into its parent's view: the parent's
+/// id is recorded, so they're found by it, not by the view's path (which
+/// can change between sessions).
+pub fn mark_into_chat(data_dir: &Path, child: &str, parent: &str) -> Result<(), String> {
+    let dir = landings_dir(data_dir, child);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join(INTO_CHAT), parent).map_err(|e| e.to_string())
+}
+
+const INTO_CHAT: &str = "into-chat.txt";
+
+/// The chat whose view a chat's landings went into, if they did.
+fn into_chat(data_dir: &Path, dialog_id: &str) -> Option<String> {
+    fs::read_to_string(landings_dir(data_dir, dialog_id).join(INTO_CHAT))
+        .ok()
+        .map(|p| p.trim().to_string())
+}
+
 /// Finishes landings a crash interrupted: their journals say "applying".
 /// Returns the paths written.
 pub fn recover(data_dir: &Path) -> Vec<String> {
+    // A child chat's landing went into its parent's view, which isn't
+    // mounted yet: it's finished when the parent's view is (F01). Older
+    // records without the parent's id: by the path's look.
+    recover_where(data_dir, |id, project| {
+        (into_chat(data_dir, id).is_none() && !super::chats::is_chat_view(project))
+            .then(|| project.to_path_buf())
+    })
+}
+
+/// Finishes the interrupted landings into one chat's view (its children's),
+/// once that view (`view`) is mounted: into it, wherever it's mounted now.
+pub fn recover_into(data_dir: &Path, parent: &str, view: &Path) -> Vec<String> {
+    recover_where(data_dir, |id, project| {
+        into_chat(data_dir, id)
+            .map_or(project == view, |p| p == parent)
+            .then(|| view.to_path_buf())
+    })
+}
+
+/// Whether a landing into `parent`'s view was interrupted and is still to
+/// be finished.
+pub fn interrupted_into(data_dir: &Path, parent: &str, view: &Path) -> bool {
+    let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
+        return false;
+    };
+    chats.flatten().any(|chat| {
+        let id = chat.file_name().to_string_lossy().into_owned();
+        let into = match into_chat(data_dir, &id) {
+            Some(p) => p == parent,
+            None => project_of(data_dir, &id).is_some_and(|p| p == view),
+        };
+        into && fs::read_dir(chat.path()).is_ok_and(|landings| {
+            landings.flatten().any(|l| {
+                fs::read(l.path().join("journal.json"))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Journal>(&b).ok())
+                    .is_some_and(|j| j.state == "applying")
+            })
+        })
+    })
+}
+
+/// `wanted`: whether a chat's landings are finished here, and into where.
+fn recover_where(data_dir: &Path, wanted: impl Fn(&str, &Path) -> Option<PathBuf>) -> Vec<String> {
     let mut done = Vec::new();
     let Ok(chats) = fs::read_dir(data_dir.join("landings")) else {
         return done;
     };
     for chat in chats.flatten() {
         let dialog_id = chat.file_name().to_string_lossy().into_owned();
-        let Some(project) = project_of(data_dir, &dialog_id) else {
+        let Some(recorded) = project_of(data_dir, &dialog_id) else {
+            continue;
+        };
+        let Some(project) = wanted(&dialog_id, &recorded) else {
             continue;
         };
         let Ok(landings) = fs::read_dir(chat.path()) else {
@@ -810,6 +900,9 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
                 by_path.entry(&e.path).or_default().push(e);
             }
             let mut skipped = Vec::new();
+            // A write that failed (not a path changed since): the landing
+            // stays to finish, tried again next time (P1.3).
+            let mut unwritten = Vec::new();
             for path in order {
                 let group = &by_path[path];
                 if group
@@ -824,18 +917,27 @@ pub fn recover(data_dir: &Path) -> Vec<String> {
                         continue;
                     }
                     let before = if k == 0 { &e.old } else { &group[k - 1].new };
-                    if !is_content(&project, path, before)
-                        || write_content(&project, path, &e.new, &dialog_id).is_err()
-                    {
+                    if !is_content(&project, path, before) {
+                        ok = false;
+                        break;
+                    }
+                    if write_content(&project, path, &e.new, &dialog_id).is_err() {
+                        unwritten.push(path.to_string());
                         ok = false;
                         break;
                     }
                 }
                 if ok {
                     done.push(path.to_string());
-                } else {
+                } else if !unwritten.iter().any(|u| u == path) {
                     skipped.push(path.to_string());
                 }
+            }
+            if !unwritten.is_empty() {
+                for p in unwritten {
+                    done.push(format!("{p} (not finished: it couldn't be written)"));
+                }
+                continue;
             }
             journal.state = if skipped.is_empty() {
                 "done".into()

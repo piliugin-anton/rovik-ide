@@ -1,0 +1,17 @@
+{
+  "id": "self-code-tools",
+  "repo": "self",
+  "base": "7d8760f45d68407c06d9108b7a9c2f2abb9e7cfe",
+  "reference": "def0058f91beb037c2faa2849722ba19f7bdd75e",
+  "lang": "rust",
+  "request": "Fix the agent's code tools. callers (repo_map): for a qualified query (\"Parser::parse_input\", \"Parser > parse_input\", \"Parser.parse_input\") list under \"Declared in:\" only declarations matching the qualifier, and say the others as \"also declared in N other file(s)\" rather than as declarations \"not shown\"; unqualified queries list all. Tool errors that already start with \"Error:\" (neighbours, callers) are not prefixed again, e.g. \"Error: no declaration named ...\"; a missing path reads exactly 'Error: \"path\" is required.'. diagnostics for a reported file with no problems says it \"parses clean\"/\"no problems\"; outline stops at its size cap; cut long diagnostic messages on a char boundary.",
+  "hidden": ["src-tauri/src/agent_run/e2e_tests.rs", "src-tauri/src/repo_map/tests.rs"],
+  "checks": [
+    {
+      "kind": "cargo",
+      "dir": "src-tauri",
+      "filters": ["agent_run::e2e_tests", "repo_map::tests"]
+    }
+  ],
+  "setup": ["cargo"]
+}

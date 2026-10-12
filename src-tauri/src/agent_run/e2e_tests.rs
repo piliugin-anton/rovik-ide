@@ -34,6 +34,15 @@ enum Reply {
     /// Reasoning (`reasoning` text, and `reasoning_details` fragments, one
     /// per chunk, as OpenRouter streams them), then the reply.
     Thought(&'static str, Vec<Value>, Box<Reply>),
+    /// The reply, after this many milliseconds.
+    Slow(u64, Box<Reply>),
+    /// 429 with a Retry-After of this many seconds.
+    RateLimited(u64),
+    /// The reply, then the usage the provider reports (prompt, completion);
+    /// before a reply that hangs, its usage, then silence.
+    Usage(u64, u64, Box<Reply>),
+    /// The reply, then this usage object, as the provider sends it.
+    UsageAs(Value, Box<Reply>),
 }
 
 impl Reply {
@@ -81,6 +90,13 @@ impl Reply {
                 }
                 out + &then.sse()
             }
+            Reply::Slow(_, then) => then.sse(),
+            Reply::RateLimited(_) => String::new(),
+            Reply::Usage(prompt, completion, then) => Reply::usage_sse(
+                json!({ "prompt_tokens": prompt, "completion_tokens": completion }),
+                then,
+            ),
+            Reply::UsageAs(usage, then) => Reply::usage_sse(usage.clone(), then),
         }
     }
 
@@ -91,6 +107,18 @@ impl Reply {
                 "HTTP/1.1 {code} Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             ),
+            Reply::Slow(_, then) => then.response(),
+            Reply::Usage(..) => format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
+                self.sse()
+            ),
+            Reply::RateLimited(secs) => {
+                let body = r#"{"error":{"message":"rate limited"}}"#;
+                format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {secs}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+            }
             _ => format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
                 self.sse()
@@ -99,7 +127,30 @@ impl Reply {
     }
 
     fn hangs(&self) -> bool {
-        matches!(self, Reply::Hang(_))
+        match self {
+            Reply::Hang(_) => true,
+            Reply::Slow(_, then) => then.hangs(),
+            Reply::Usage(_, _, then) | Reply::UsageAs(_, then) => then.hangs(),
+            _ => false,
+        }
+    }
+
+    fn delay(&self) -> Duration {
+        match self {
+            Reply::Slow(ms, _) => Duration::from_millis(*ms),
+            _ => Duration::ZERO,
+        }
+    }
+
+    /// The usage in a chunk of its own, as providers send it: just before
+    /// [DONE]; for a reply that hangs, after what it sends.
+    fn usage_sse(usage: Value, then: &Reply) -> String {
+        let usage = format!("data: {}\n\n", json!({ "choices": [], "usage": usage }));
+        if then.hangs() {
+            return then.sse() + &usage;
+        }
+        then.sse()
+            .replace("data: [DONE]\n\n", &format!("{usage}data: [DONE]\n\n"))
     }
 }
 
@@ -107,28 +158,78 @@ impl Reply {
 /// last one again once they run out). Returns its base URL and the request
 /// bodies it saw.
 async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    model_routed(Vec::new(), replies).await
+}
+
+/// The script a request is answered from: the first route whose marker is
+/// in the request's first message after the system prompt (a subagent's
+/// brief, or the user's request), else the default script (K05: parallel
+/// runs each get their own replies, in their own order).
+fn route_of(body: &Value, markers: &[&str]) -> Option<usize> {
+    let first = body["messages"]
+        .as_array()?
+        .iter()
+        .find(|m| m["role"] != "system")?;
+    let text = match &first["content"] {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    markers.iter().position(|m| text.contains(m))
+}
+
+/// `model`, with one script per run: `routes` pairs a marker (found in the
+/// run's first message) with that run's replies; anything else is answered
+/// from `default`. Each script is answered in order, the last reply again
+/// once it runs out.
+async fn model_routed(
+    routes: Vec<(&'static str, Vec<Reply>)>,
+    default: Vec<Reply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    let bodies: Vec<(String, bool)> = replies.iter().map(|r| (r.response(), r.hangs())).collect();
+    let script = |replies: &[Reply]| -> Vec<(String, bool, Duration)> {
+        replies
+            .iter()
+            .map(|r| (r.response(), r.hangs(), r.delay()))
+            .collect()
+    };
+    let markers: Vec<&'static str> = routes.iter().map(|(m, _)| *m).collect();
+    let mut scripts: Vec<Vec<(String, bool, Duration)>> =
+        routes.iter().map(|(_, r)| script(r)).collect();
+    scripts.push(script(&default));
+    let next = Arc::new(Mutex::new(vec![0usize; scripts.len()]));
+    let scripts = Arc::new(scripts);
     tokio::spawn(async move {
-        let mut n = 0;
         while let Ok((mut socket, _)) = listener.accept().await {
-            let body = read_request(&mut socket).await;
-            log.lock().unwrap().push(body);
-            let (reply, hangs) = bodies[n.min(bodies.len() - 1)].clone();
-            n += 1;
-            let _ = socket.write_all(reply.as_bytes()).await;
-            if hangs {
-                // Keeps the connection open, saying nothing more.
-                tokio::spawn(async move {
+            let (log, next, scripts, markers) =
+                (log.clone(), next.clone(), scripts.clone(), markers.clone());
+            // Each connection answered on its own: a slow reply to one run
+            // doesn't hold up another's.
+            tokio::spawn(async move {
+                let body = read_request(&mut socket).await;
+                let which = route_of(&body, &markers).unwrap_or(scripts.len() - 1);
+                log.lock().unwrap().push(body);
+                let (reply, hangs, delay) = {
+                    let mut next = next.lock().unwrap();
+                    let bodies = &scripts[which];
+                    let n = next[which];
+                    next[which] += 1;
+                    bodies[n.min(bodies.len() - 1)].clone()
+                };
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                let _ = socket.write_all(reply.as_bytes()).await;
+                if hangs {
+                    // Keeps the connection open, saying nothing more.
                     tokio::time::sleep(Duration::from_secs(120)).await;
                     drop(socket);
-                });
-                continue;
-            }
-            let _ = socket.shutdown().await;
+                    return;
+                }
+                let _ = socket.shutdown().await;
+            });
         }
     });
     (url, seen)
@@ -162,6 +263,18 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Value {
     Value::Null
 }
 
+#[cfg(test)]
+#[path = "subagent_e2e_tests.rs"]
+mod subagent_tests;
+
+#[cfg(test)]
+#[path = "repair_e2e_tests.rs"]
+mod repair_tests;
+
+#[cfg(test)]
+#[path = "headless_e2e_tests.rs"]
+mod headless_tests;
+
 /*
  * The app
  */
@@ -172,6 +285,9 @@ struct Harness {
     events: Arc<Mutex<Vec<Value>>>,
     dialog_id: String,
     _dir: TempDir,
+    /// An isolated chat's tests hold this: the overlays' data folder is
+    /// the process's, so they run one at a time.
+    _isolated: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 struct TempDir(PathBuf);
@@ -236,6 +352,16 @@ async fn harness(files: &[(&str, &str)]) -> Harness {
         events,
         dialog_id,
         _dir: dir,
+        _isolated: None,
+    }
+}
+
+impl Harness {
+    /// Isolated chats: the overlays' data folder is this test's, and no
+    /// other isolated test runs meanwhile.
+    async fn isolate(&mut self) {
+        self._isolated = Some(crate::overlay::chats::TEST_DATA.clone().lock_owned().await);
+        crate::overlay::chats::init(&self._dir.0.join("data"));
     }
 }
 
@@ -273,6 +399,7 @@ impl Harness {
             config: Some(AgentConfig {
                 permissions,
                 approval_profiles: Vec::new(),
+                subagents: Default::default(),
             }),
             isolate: Some(false),
         }
@@ -764,12 +891,14 @@ async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
 }
 
 /// An isolated chat: its writes and commands change its overlay, not the
-/// project. Needs FUSE: cargo test -- --ignored.
+/// project. Needs FUSE (skipped without it).
 #[tokio::test]
-#[ignore]
 async fn an_isolated_chat_changes_only_its_overlay() {
-    let h = harness(&[("src/a.txt", "one\ntwo\n"), ("README.md", "hi\n")]).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[("src/a.txt", "one\ntwo\n"), ("README.md", "hi\n")]).await;
+    h.isolate().await;
     let (url, _) = model(vec![
         Reply::Call { id: "w1", name: "write", args: json!({ "path": "src/a.txt", "old_text": "one", "content": "ONE" }) },
         Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sed -i 's/hi/hello/' README.md && cat README.md && echo new > new.txt" }) },
@@ -822,10 +951,12 @@ async fn an_isolated_chat_changes_only_its_overlay() {
 
 /// Changes that conflict with the project's own wait for the user.
 #[tokio::test]
-#[ignore]
 async fn an_isolated_chats_conflicting_changes_wait() {
-    let h = harness(&[("a.txt", "one\n")]).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[("a.txt", "one\n")]).await;
+    h.isolate().await;
     let project_file = h.project.join("a.txt");
     let (url, _) = model(vec![
         Reply::Call {
@@ -874,11 +1005,13 @@ async fn an_isolated_chats_conflicting_changes_wait() {
 
 /// The project changed a file the chat changed too, and the merged result
 /// fails the checks: the chat gets the failures and fixes them before its
-/// changes land. Needs FUSE and npm: cargo test -- --ignored.
+/// changes land. Needs FUSE and npm (skipped without them).
 #[tokio::test]
-#[ignore]
 async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
-    let h = harness(&[
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[
         ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
         ("check.js", "if (require('fs').readFileSync('a.txt', 'utf8').includes('BAD')) { console.error('a.txt: BAD'); process.exit(1); }"),
         ("a.txt", "1\n2\n3\n4\n5\n"),
@@ -892,7 +1025,7 @@ async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
         eprintln!("npm isn't installed: skipped");
         return;
     }
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    h.isolate().await;
     let (url, _) = model(vec![
         Reply::Call {
             id: "w1",
@@ -966,13 +1099,15 @@ async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
 }
 
 /// A conflict found while the chat runs goes to it: markers in its file and
-/// a note; it combines both changes and they land. Needs FUSE:
-/// cargo test -- --ignored.
+/// a note; it combines both changes and they land. Needs FUSE
+/// (skipped without it).
 #[tokio::test]
-#[ignore]
 async fn a_running_chat_resolves_its_own_conflict() {
-    let h = harness(&[("a.txt", "one\n")]).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[("a.txt", "one\n")]).await;
+    h.isolate().await;
     crate::overlay::chats::set_chat_resolves(true);
     let (url, _) = model(vec![
         Reply::Call {
@@ -1036,12 +1171,14 @@ async fn a_running_chat_resolves_its_own_conflict() {
 }
 
 /// While many files change in the project (a branch switch), an isolated
-/// run waits before its next step. Needs FUSE: cargo test -- --ignored.
+/// run waits before its next step. Needs FUSE (skipped without it).
 #[tokio::test]
-#[ignore]
 async fn an_isolated_run_waits_while_the_project_switches_branches() {
-    let h = harness(&[("a.txt", "one\n")]).await;
-    crate::overlay::chats::init(&h._dir.0.join("data"));
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[("a.txt", "one\n")]).await;
+    h.isolate().await;
     let (url, _) = model(vec![
         Reply::Call {
             id: "b1",
@@ -1249,8 +1386,11 @@ async fn failing_checks_go_back_to_the_model_until_they_pass() {
 
 #[tokio::test]
 async fn plan_mode_asks_and_saves_the_plan() {
-    let h = harness(&[]).await;
-    let plan = "# Users\n\nAdd a table.\n\n## Steps\n1. Schema\n2. API\n\n## Decisions\n- SQLite";
+    let h = harness(&[("src/db.rs", ""), ("src/api.rs", "")]).await;
+    let plan = "# Users\n\nAdd a table.\n\n## Steps\n\
+        1. Schema: in `src/db.rs`, add a `users` table with `id` and `email`.\n\
+        2. API: in `src/api.rs`, add `fn list_users()` returning every user.\n\n\
+        ## Decisions\n- SQLite\n\n## Validation\n- `cargo test`";
     let (url, _) = model(vec![
         Reply::Call {
             id: "q1",
@@ -2089,8 +2229,13 @@ async fn a_bad_plan_is_sent_back_and_a_written_out_plan_nudged_once() {
 
 #[tokio::test]
 async fn a_revised_plan_replaces_the_chats_plan_file() {
-    let h = harness(&[]).await;
-    let plan = |title: &str| format!("# {title}\n\n## Steps\n1. a\n2. b");
+    let h = harness(&[("src/a.rs", ""), ("src/b.rs", "")]).await;
+    let plan = |title: &str| {
+        format!(
+            "# {title}\n\n## Steps\n1. Change `src/a.rs`: add `fn a()` that returns 1.\n\
+             2. Change `src/b.rs`: add `fn b()` that calls `a()`.\n\n## Validation\n- `cargo test`"
+        )
+    };
     let first: &'static str = Box::leak(plan("First").into_boxed_str());
     let second: &'static str = Box::leak(plan("Second").into_boxed_str());
     let (url, _) = model(vec![
@@ -2344,6 +2489,72 @@ async fn plan_implementation_forces_todo_on_the_first_turn() {
         requests[0]["tool_choice"]
     );
     assert_eq!(requests[1]["tool_choice"], json!("auto"));
+}
+
+/// B07b: a plan edited by hand after it was checked: the agent hears what's
+/// wrong with it before its first turn, and the user sees it.
+#[tokio::test]
+async fn a_plan_edited_to_name_a_missing_file_is_flagged_at_implementation() {
+    let plan = "# Greet\n\nSay hello.\n\n## Steps\n\
+        1. **Greeting**\n   - `src/greet.rs`: change `fn greet()` to return \"hello\".\n\
+        2. **Use it**\n   - `src/main.rs`: call `greet()` and print the result.\n\n\
+        ## Validation\n- `cargo test`\n";
+    let h = harness(&[
+        ("src/main.rs", "fn main() {}\n"),
+        (".rovik/plans/2026-10-06-greet.md", plan),
+    ])
+    .await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Greeting", "status": "done" }] }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/2026-10-06-greet.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let note = messages
+        .iter()
+        .find(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "planCheck"))
+        .expect("a plan check note");
+    // The user sees it: the chat shows `planCheck` as a card.
+    let check = &note.meta.as_ref().unwrap()["planCheck"];
+    assert_eq!(check["file"], ".rovik/plans/2026-10-06-greet.md");
+    assert!(
+        check["problems"][0].as_str().unwrap().starts_with("Step 1 names `src/greet.rs`, which isn't in the project"),
+        "{check}"
+    );
+    // And the agent has it on its first turn.
+    let first = seen.lock().unwrap()[0].clone();
+    let text = first["messages"].to_string();
+    assert!(text.contains("Step 1 names `src/greet.rs`"), "{text}");
+    assert!(text.contains("may have been edited since it was written"));
+
+    // A plan that holds up: no note.
+    let h = harness(&[("src/main.rs", "fn main() {}\n"), ("src/greet.rs", "\n"), (".rovik/plans/p.md", plan)]).await;
+    let (url, _) = model(vec![Reply::Text("Done.")]).await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/p.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
+        .await;
+    h.run_end().await;
+    assert!(!h
+        .messages()
+        .await
+        .iter()
+        .any(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == "planCheck")));
 }
 
 #[tokio::test]
@@ -3414,6 +3625,594 @@ async fn nothing_to_continue_or_check_starts_no_run() {
     assert!(seen.lock().unwrap().is_empty());
 }
 
+/// P1.7, P1.8: a newer run's waiting checks make an older run's stale:
+/// starting those is refused and doesn't touch the newer run's state;
+/// checks with no state left say so; deleting the chat frees its state.
+#[tokio::test]
+async fn an_older_waiting_check_is_superseded_and_carries_are_freed() {
+    let h = harness(&[(
+        "package.json",
+        r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(0)\"" } }"#,
+    )])
+    .await;
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "y.txt", "content": "y" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w3",
+            name: "write",
+            args: json!({ "path": "z.txt", "content": "z" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w4",
+            name: "write",
+            args: json!({ "path": "w.txt", "content": "w" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..Permissions::default()
+    };
+    let waiting = |messages: &[MessageRow], status: &str| -> Vec<String> {
+        messages
+            .iter()
+            .filter(|m| {
+                m.meta
+                    .as_ref()
+                    .is_some_and(|m| m["verification"]["status"] == status)
+            })
+            .map(|m| m.id.clone())
+            .collect()
+    };
+    let state = h.app.state::<AgentState>();
+    h.start(h.request(&url, Harness::send("Write x"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let first = waiting(&h.messages().await, "needs-approval")[0].clone();
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Write y"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let messages = h.messages().await;
+    assert_eq!(waiting(&messages, "superseded"), std::slice::from_ref(&first));
+    let second = waiting(&messages, "needs-approval")[0].clone();
+    assert!(state.has_carry(&h.dialog_id));
+
+    // The older record's checks don't start, and the newer state stays.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: first.clone(),
+        },
+        permissions.clone(),
+    ))
+    .await;
+    assert!(h.events_of("runStarted").is_empty());
+    assert!(state.has_carry(&h.dialog_id));
+
+    // The newer one's run with its state: nothing says it was lost.
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: second.clone(),
+        },
+        permissions.clone(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verified");
+    let record = h
+        .messages()
+        .await
+        .into_iter()
+        .find(|m| m.id == second)
+        .unwrap();
+    assert!(record.meta.unwrap()["verification"].get("stateRestored").is_none());
+    assert!(!state.has_carry(&h.dialog_id));
+
+    // A third waits; its state is gone (as after a restart): it says so.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Write z"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let third = waiting(&h.messages().await, "needs-approval")[0].clone();
+    state.drop_carry(&h.dialog_id);
+    h.events.lock().unwrap().clear();
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: third.clone(),
+        },
+        permissions.clone(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verified");
+    let record = h
+        .messages()
+        .await
+        .into_iter()
+        .find(|m| m.id == third)
+        .unwrap();
+    assert_eq!(record.meta.unwrap()["verification"]["stateRestored"], false);
+
+    // Deleting a chat frees what it carried.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Again"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(state.has_carry(&h.dialog_id));
+    let app = h.app.handle().clone();
+    crate::chat_db::commands::chat_delete_dialog(
+        app.clone(),
+        app.state::<AgentState>(),
+        app.state::<crate::vfs::VfsState>(),
+        app.state::<DbState>(),
+        h.dialog_id.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!state.has_carry(&h.dialog_id));
+}
+
+/// Stores verification records as earlier runs left them; their ids, in
+/// order.
+async fn store_records(h: &Harness, records: &[Value]) -> Vec<String> {
+    let id = h.dialog_id.clone();
+    let db = h.app.state::<DbState>().inner().clone();
+    let mut stored = vec![run::new_message("user", "Earlier")];
+    for r in records {
+        stored.push(store::NewMessage {
+            meta: Some(json!({ "verification": r })),
+            ..run::new_message("assistant", "")
+        });
+    }
+    let ids: Vec<String> = stored[1..].iter().map(|m| m.id.clone()).collect();
+    db.write(move |c| store::append_messages(c, &id, &stored))
+        .await
+        .unwrap();
+    ids
+}
+
+fn verification_of(messages: &[MessageRow], id: &str) -> Value {
+    messages
+        .iter()
+        .find(|m| m.id == id)
+        .and_then(|m| m.meta.as_ref())
+        .map(|m| m["verification"].clone())
+        .unwrap()
+}
+
+/// Round 2 (§4.2): a new run supersedes only records waiting for "Run
+/// checks"; results stay as they were, and the superseded record keeps
+/// its own round limit (not the new run's).
+#[tokio::test]
+async fn superseding_marks_only_waiting_records() {
+    let h = harness(&[]).await;
+    let ids = store_records(
+        &h,
+        &[
+            json!({ "status": "passed", "maxRounds": 4 }),
+            json!({ "status": "failed", "maxRounds": 4 }),
+            json!({ "status": "flagged", "maxRounds": 4 }),
+            json!({ "status": "needs-approval", "maxRounds": 4, "changedFiles": ["a.txt"] }),
+        ],
+    )
+    .await;
+    let (url, _) = model(vec![Reply::Text("Hi.")]).await;
+    h.start(h.request(&url, Harness::send("Hello"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    for (id, status) in ids
+        .iter()
+        .zip(["passed", "failed", "flagged", "superseded"])
+    {
+        let v = verification_of(&messages, id);
+        assert_eq!(v["status"], status, "{v}");
+        assert_eq!(v["maxRounds"], 4, "{v}");
+    }
+
+    // Its checks don't start any more: no run.
+    h.events.lock().unwrap().clear();
+    let none = h
+        .start(h.request(
+            &url,
+            StartKind::RunChecks {
+                record_id: ids[3].clone(),
+            },
+            quiet_permissions(),
+        ))
+        .await;
+    assert!(none.is_none());
+    assert!(h.events_of("runStarted").is_empty());
+}
+
+/// Round 2 (§4.2): a chat resumed after a restart is a new run too: the
+/// checks it left waiting are superseded.
+#[tokio::test]
+async fn a_resume_after_restart_supersedes_waiting_checks() {
+    let h = harness(&[]).await;
+    let ids = store_records(
+        &h,
+        &[json!({ "status": "needs-approval", "changedFiles": ["a.txt"] })],
+    )
+    .await;
+    let id = h.dialog_id.clone();
+    let db = h.app.state::<DbState>().inner().clone();
+    let stored = vec![store::NewMessage {
+        tool_calls: Some(vec![store::ToolCall {
+            id: "l1".into(),
+            name: "list_dir".into(),
+            arguments: "{}".into(),
+            extra_content: None,
+        }]),
+        ..run::new_message("assistant", "")
+    }];
+    db.write(move |c| store::append_messages(c, &id, &stored))
+        .await
+        .unwrap();
+    let (url, _) = model(vec![Reply::Text("Nothing there.")]).await;
+    assert!(h
+        .start(h.request(&url, StartKind::Resume, quiet_permissions()))
+        .await
+        .is_some());
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    let app = h.app.handle().clone();
+    agent_resolve_approval(
+        app.clone(),
+        app.state(),
+        h.dialog_id.clone(),
+        "l1".into(),
+        ApprovalDecision::Allow,
+    );
+    assert_eq!(h.run_end().await, "done");
+    let v = verification_of(&h.messages().await, &ids[0]);
+    assert_eq!(v["status"], "superseded", "{v}");
+}
+
+/// Round 2 (§4.2): checks started with their state lost tell the agent so
+/// once, in the first round's note, not in every round after.
+#[tokio::test]
+async fn the_lead_is_told_once_that_state_was_lost() {
+    let h = harness(&[(
+        "package.json",
+        r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(require('fs').existsSync('ok.txt') ? 0 : 1)\"" } }"#,
+    )])
+    .await;
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+        // The checks' rounds, after "Run checks".
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "not-yet.txt", "content": "y" }),
+        },
+        Reply::Text("Fixed."),
+        Reply::Call {
+            id: "w3",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok" }),
+        },
+        Reply::Text("Fixed."),
+    ])
+    .await;
+    let permissions = Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Write x"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let record = h.messages().await.last().unwrap().id.clone();
+    // As after a restart.
+    h.app.state::<AgentState>().drop_carry(&h.dialog_id);
+    // Each fix waits for approval again: "Run checks" until they pass.
+    let mut record = record;
+    let mut runs = 0;
+    loop {
+        runs += 1;
+        h.events.lock().unwrap().clear();
+        h.start(h.request(
+            &url,
+            StartKind::RunChecks { record_id: record },
+            permissions.clone(),
+        ))
+        .await;
+        match h.run_end().await.as_str() {
+            "verified" => break,
+            "verify-needs-approval" if runs < 4 => {
+                record = h.messages().await.last().unwrap().id.clone();
+            }
+            other => panic!("{other}"),
+        }
+    }
+    assert_eq!(runs, 3, "two failed rounds went back to the agent");
+    let lost = "didn't carry over to these";
+    let messages = h.messages().await;
+    let told: Vec<bool> = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.content.contains(lost))
+        .collect();
+    assert_eq!(told.iter().filter(|t| **t).count(), 1, "{told:?}");
+}
+
+fn needs_user_approval() -> Permissions {
+    Permissions {
+        command_approval: permissions::ApprovalRule {
+            required: true,
+            by: permissions::Approver::User,
+        },
+        ..Permissions::default()
+    }
+}
+
+fn has_npm() -> bool {
+    std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+const PASSING_TESTS: &str =
+    r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(0)\"" } }"#;
+
+/// Round 2 (§4.2): a carry past its time isn't taken up: the checks run
+/// afresh, and the record says the state wasn't restored.
+#[tokio::test]
+async fn an_expired_carry_runs_afresh_and_says_so() {
+    let h = harness(&[("package.json", PASSING_TESTS)]).await;
+    if !has_npm() {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Write x"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    let record = h.messages().await.last().unwrap().id.clone();
+    let state = h.app.state::<AgentState>();
+    state.age_carry(&h.dialog_id, verify::CARRY_TTL);
+    h.events.lock().unwrap().clear();
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: record.clone(),
+        },
+        needs_user_approval(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verified");
+    let v = verification_of(&h.messages().await, &record);
+    assert_eq!(v["status"], "passed", "{v}");
+    assert_eq!(v["stateRestored"], false, "{v}");
+    assert!(!state.has_carry(&h.dialog_id));
+}
+
+/// Round 2 (§4.2): discarding a chat's changes, or deleting the chat,
+/// frees its carry and the folder its large originals spilled to.
+#[tokio::test]
+async fn discard_and_delete_free_the_carry_and_spill_dir() {
+    let big = "a".repeat(verify::CARRY_MEMORY_BYTES + 1);
+    let h = harness(&[("package.json", PASSING_TESTS), ("big.txt", big.as_str())]).await;
+    if !has_npm() {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "big.txt", "content": "small" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "big.txt", "content": "small" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let state = h.app.state::<AgentState>();
+    let spill_dir = check_output::carry_dir(&h.dialog_id).unwrap();
+    let app = h.app.handle().clone();
+
+    h.start(h.request(&url, Harness::send("Shrink"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(state.has_carry(&h.dialog_id));
+    assert!(spill_dir.read_dir().unwrap().next().is_some(), "spilled");
+    let _ = crate::overlay::chats::overlay_discard(app.state(), h.dialog_id.clone()).await;
+    assert!(!state.has_carry(&h.dialog_id));
+    assert!(!spill_dir.exists(), "{}", spill_dir.display());
+
+    std::fs::write(h.project.join("big.txt"), &big).unwrap();
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Shrink again"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(spill_dir.read_dir().unwrap().next().is_some(), "spilled");
+    crate::chat_db::commands::chat_delete_dialog(
+        app.clone(),
+        app.state::<AgentState>(),
+        app.state::<crate::vfs::VfsState>(),
+        app.state::<DbState>(),
+        h.dialog_id.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(!state.has_carry(&h.dialog_id));
+    assert!(!spill_dir.exists(), "{}", spill_dir.display());
+}
+
+/// Round 2 (§4.2): a lead's run that ends in an error, or is stopped,
+/// leaves no checks waiting: the older run's state goes.
+#[tokio::test]
+async fn a_lead_that_errors_or_is_stopped_drops_the_carry() {
+    let h = harness(&[("package.json", PASSING_TESTS)]).await;
+    if !has_npm() {
+        return;
+    }
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "x.txt", "content": "x" }),
+        },
+        Reply::Text("Done."),
+        Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}"),
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "y.txt", "content": "y" }),
+        },
+        Reply::Text("Done."),
+        Reply::Hang(None),
+    ])
+    .await;
+    let state = h.app.state::<AgentState>();
+    h.start(h.request(&url, Harness::send("Write x"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(state.has_carry(&h.dialog_id));
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("And?"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "error");
+    assert!(!state.has_carry(&h.dialog_id));
+
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Write y"), needs_user_approval()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-needs-approval");
+    assert!(state.has_carry(&h.dialog_id));
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Wait"), needs_user_approval()))
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let app = h.app.handle().clone();
+    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    assert_eq!(h.run_end().await, "stopped");
+    assert!(!state.has_carry(&h.dialog_id));
+}
+
+/// Round 2 (§4.2): a waiting record from before the hashes were kept,
+/// after a restart: nothing to rebuild from, so the checks pass but the
+/// run isn't verified, and the record says integrity wasn't checked.
+#[tokio::test]
+async fn rebuild_without_baseline_hashes_is_unchecked() {
+    let h = harness(&[("package.json", PASSING_TESTS), ("x.txt", "x")]).await;
+    if !has_npm() {
+        return;
+    }
+    let ids = store_records(
+        &h,
+        &[json!({ "status": "needs-approval", "round": 0, "changedFiles": ["x.txt"] })],
+    )
+    .await;
+    let (url, _) = model(vec![Reply::Text("Fine.")]).await;
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: ids[0].clone(),
+        },
+        needs_user_approval(),
+    ))
+    .await;
+    assert_eq!(h.run_end().await, "verify-unchecked");
+    let v = verification_of(&h.messages().await, &ids[0]);
+    assert_eq!(v["status"], "passed", "{v}");
+    assert_eq!(v["stateRestored"], false, "{v}");
+    assert_eq!(v["integrityChecked"], false, "{v}");
+}
+
+/// Round 2 (§4.2): checks waiting at round 3 of 4 (a review after green
+/// granted a round), after a restart: the round they run is the record's
+/// last; failing, it gives up, and says 4 of 4, not 4 of 3.
+#[tokio::test]
+async fn restart_with_persisted_baseline_and_bonus_round() {
+    let h = harness(&[(
+        "package.json",
+        r#"{ "name": "t", "scripts": { "test": "node -e \"process.exit(1)\"" } }"#,
+    )])
+    .await;
+    if !has_npm() {
+        return;
+    }
+    let ids = store_records(
+        &h,
+        &[json!({
+            "status": "needs-approval",
+            "round": 3,
+            "maxRounds": 4,
+            "changedFiles": ["x.txt"],
+            "baselineHashes": [{ "path": "x.txt", "hash": null }],
+        })],
+    )
+    .await;
+    std::fs::write(h.project.join("x.txt"), "x").unwrap();
+    let (url, _) = model(vec![Reply::Text("Hmm.")]).await;
+    h.start(h.request(
+        &url,
+        StartKind::RunChecks {
+            record_id: ids[0].clone(),
+        },
+        needs_user_approval(),
+    ))
+    .await;
+    let outcome = h.run_end().await;
+    let v = verification_of(&h.messages().await, &ids[0]);
+    assert_eq!(outcome, "verify-gave-up", "{v}");
+    assert_eq!(v["round"], 4, "{v}");
+    assert_eq!(v["maxRounds"], 4, "{v}");
+}
+
 #[tokio::test]
 async fn checks_wait_for_approval_then_run_when_started() {
     let h = harness(&[(
@@ -4299,6 +5098,8 @@ async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
         command: Some("ls".into()),
         note: None,
         edit: None,
+        parent_dialog_id: None,
+        parent_call_id: None,
     };
     let wait = |dialog: &str| {
         let (state, app, request) = (state.clone(), app.clone(), request(dialog));

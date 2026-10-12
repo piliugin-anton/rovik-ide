@@ -8,8 +8,10 @@
 import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
 import { describeGroup, editCounts } from '../lib/toolGroups';
-import { isErrorResult, parseArgsLenient } from '../lib/toolArgs';
-import { pendingApproval } from '../lib/approvals';
+import { callStatus, parseArgsLenient } from '../lib/toolArgs';
+import LineCounts from './LineCounts';
+import { pendingApproval, pendingApprovalsOfTask } from '../lib/approvals';
+import { childOf } from '../lib/subagents';
 import { pendingQuestions } from '../lib/questions';
 import { requestOpenFile } from '../lib/editorBridge';
 
@@ -17,7 +19,8 @@ export default function ToolCallGroup(props: {
   name: string;
   calls: ChatToolCall[];
   dialogId: string | null;
-  result: (id: string) => ChatMessage | undefined;
+  /** A call's result (P5.8: by the call, as ids can repeat across replies). */
+  result: (call: ChatToolCall) => ChatMessage | undefined;
   /** True while the agent loop is still running. */
   running: boolean;
   /** Earlier checklist snapshots: history, dimmed. */
@@ -28,11 +31,7 @@ export default function ToolCallGroup(props: {
   const [userOpen, setUserOpen] = createSignal(false);
 
   const states = createMemo(() =>
-    props.calls.map((call) => {
-      const result = props.result(call.id);
-      if (!result) return props.running ? 'running' : 'idle';
-      return isErrorResult(result.content) ? 'error' : 'done';
-    })
+    props.calls.map((call) => callStatus(props.result(call), props.running))
   );
   const active = () => states().includes('running');
   const failed = () => states().filter((s) => s === 'error').length;
@@ -40,7 +39,13 @@ export default function ToolCallGroup(props: {
   const awaiting = () =>
     !!props.dialogId &&
     props.calls.some(
-      (c) => pendingApproval(props.dialogId!, c.id) || pendingQuestions(props.dialogId!, c.id)
+      (c) =>
+        pendingApproval(props.dialogId!, c.id) ||
+        pendingQuestions(props.dialogId!, c.id) ||
+        // A subagent's approvals are its own chat's (P1.6).
+        (c.name === 'task' &&
+          !props.result(c) &&
+          pendingApprovalsOfTask(props.dialogId!, c.id, childOf(props.dialogId, c.id)).length > 0)
     );
   const open = () => userOpen() || awaiting();
   const meta = () =>
@@ -60,9 +65,9 @@ export default function ToolCallGroup(props: {
     return editCounts(
       props.calls
         .filter(
-          (c, i) => state[i] === 'done' && props.result(c.id)?.meta?.approval?.approved !== false
+          (c, i) => state[i] === 'done' && props.result(c)?.meta?.approval?.approved !== false
         )
-        .map((c) => ({ args: parseArgsLenient(c.arguments), result: props.result(c.id)?.meta }))
+        .map((c) => ({ args: parseArgsLenient(c.arguments), result: props.result(c)?.meta }))
     );
   });
 
@@ -71,7 +76,7 @@ export default function ToolCallGroup(props: {
       props.name,
       props.calls.map((c) => parseArgsLenient(c.arguments)),
       active(),
-      props.calls.map((c) => props.result(c.id)?.meta)
+      props.calls.map((c) => props.result(c)?.meta)
     )
   );
 
@@ -136,17 +141,7 @@ export default function ToolCallGroup(props: {
             <span class="tool-group-item"> and {label().more} more</span>
           </Show>
         </span>
-        <Show when={counts()}>
-          {(c) => (
-            <span
-              class="tool-call-counts"
-              title={`${c().added} lines added, ${c().removed} removed`}
-            >
-              <span class="added">+{c().added}</span>
-              <span class="removed">−{c().removed}</span>
-            </span>
-          )}
-        </Show>
+        <Show when={counts()}>{(c) => <LineCounts counts={c()} />}</Show>
         <Show when={meta()}>
           <span class="tool-group-meta" classList={{ error: failed() > 0 }}>
             {meta()}

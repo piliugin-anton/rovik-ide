@@ -33,6 +33,10 @@ import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
+import ReviewRecord from './ReviewRecord';
+import { liveSubagent } from '../lib/subagents';
+import { indexToolResults } from '../lib/toolResults';
+import type { ReviewMeta } from '../lib/changeReview';
 import { requestOpenFile } from '../lib/editorBridge';
 import { isSettled, parseTodo } from '../lib/todo';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
@@ -138,14 +142,30 @@ export default function MessageList(props: {
     return left > 500 ? `${status.text} in ${formatDuration(left)}…` : `${status.text}…`;
   };
 
-  // tool_call_id -> its result message, so each call renders with its result.
-  const toolResults = createMemo(() => {
-    const map = new Map<string, ChatMessage>();
-    for (const m of messages()) {
-      if (m.role === 'tool' && m.tool_call_id) map.set(m.tool_call_id, m);
-    }
-    return map;
-  });
+  /** Each call's result, by the call itself (P5.8: ids can repeat). */
+  const toolIndex = createMemo(() => indexToolResults(messages()));
+  const resultOf = (tc: ChatToolCall) => toolIndex().results.get(tc);
+  /** Live progress (keyed by call id) is the newest call's with that id. */
+  const newestOfId = (tc: ChatToolCall) => toolIndex().latest.get(tc.id) === tc;
+
+  const runningPlanReview: ReviewMeta = {
+    kind: 'plan',
+    status: 'running',
+    round: 0,
+    maxRounds: 2,
+  };
+  /**
+   * A submit_plan call's review (B10): from its result, or running while
+   * the reviewer works.
+   */
+  const planReviewOf = (tc: ChatToolCall): ReviewMeta | undefined => {
+    const result = resultOf(tc);
+    if (result) return result.meta?.review;
+    return newestOfId(tc) && liveSubagent(props.dialogId, tc.id) ? runningPlanReview : undefined;
+  };
+  /** P5.1: the calls themselves (stable), so each record keeps its state. */
+  const planCalls = (m: ChatMessage) =>
+    (m.toolCalls ?? []).filter((tc) => tc.name === 'submit_plan');
 
   // Checklist snapshots (step 10): every `todo` call writes the whole list,
   // so only the latest call in the chat is the current state. Earlier ones
@@ -196,13 +216,18 @@ export default function MessageList(props: {
     isBlank(m.content) &&
     !m.error &&
     !m.meta?.reasoning?.text &&
+    !hasPlanSubmit(m) &&
     !(m.pending && m.status);
+  /** A submit_plan call: its plan review shows after the reply's calls (B10). */
+  const hasPlanSubmit = (m: ChatMessage) => !!m.toolCalls?.some((tc) => tc.name === 'submit_plan');
   /** Nothing shown after its tool calls, so the next reply's can follow on. */
   const toolCallsLast = (m: ChatMessage) =>
     !m.meta?.interrupted &&
     !m.meta?.paused &&
     !m.meta?.verification &&
+    !m.meta?.review &&
     !m.meta?.planFile &&
+    !hasPlanSubmit(m) &&
     props.planMessageId !== m.id &&
     !(m.pending && m.status);
 
@@ -247,7 +272,8 @@ export default function MessageList(props: {
       initiallyExpanded={initiallyExpanded}
       dialogId={props.dialogId}
       toolCall={tc}
-      result={toolResults().get(tc.id)}
+      result={resultOf(tc)}
+      notLive={!newestOfId(tc)}
       running={props.sending}
       note={props.toolNotes?.[tc.id]}
       superseded={todoCallStates().superseded.has(tc.id)}
@@ -1246,10 +1272,54 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
+                <Show when={m.meta?.review}>
+                  {(r) => (
+                    <ReviewRecord
+                      meta={r()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.planCheck}>
+                  {(c) => (
+                    <div class="chat-verify flagged" role="status">
+                      <div class="chat-verify-head">
+                        <span class="chat-verify-title">
+                          The plan in {c().file} has problems as it is now; the agent was told
+                          before it started:
+                        </span>
+                      </div>
+                      <ul class="chat-verify-flags">
+                        <For each={c().problems}>{(p) => <li>{p}</li>}</For>
+                      </ul>
+                    </div>
+                  )}
+                </Show>
+
+                <For each={planCalls(m)}>
+                  {(tc) => (
+                    <Show when={planReviewOf(tc)}>
+                      {(meta) => (
+                        <ReviewRecord
+                          meta={meta()}
+                          dialogId={props.dialogId}
+                          recordId={tc.id}
+                          live={props.sending && newestOfId(tc)}
+                        />
+                      )}
+                    </Show>
+                  )}
+                </For>
+
                 <Show when={m.meta?.verification}>
                   {(v) => (
                     <VerificationRecord
                       meta={v()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
                       latest={isLatest(m)}
                       live={props.sending && messages()[messages().length - 1]?.id === m.id}
                       onRunChecks={() => props.onRunChecks()}
@@ -1269,7 +1339,7 @@ export default function MessageList(props: {
                               name={run()!.name}
                               calls={run()!.calls}
                               dialogId={props.dialogId}
-                              result={(id) => toolResults().get(id)}
+                              result={resultOf}
                               running={props.sending}
                               superseded={run()!.calls.every((c) =>
                                 todoCallStates().superseded.has(c.id)

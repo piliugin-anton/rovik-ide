@@ -236,23 +236,39 @@ export interface ToolMeta {
     | 'checklistContinued'
     | 'pauseSummary'
     | 'repetition'
-    | 'plan';
+    | 'plan'
+    | 'subagentBudget'
+    | 'subagentFormat'
+    | 'integrity'
+    | 'review'
+    /** The saved plan's problems, found when it's implemented (B07b). */
+    | 'planCheck';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */
   fromMessageId?: string | null;
   /** A Plan-mode plan: the file it's saved in (lib/plans.ts). */
   planFile?: string;
-  /** The model's reasoning for this reply, and how long it took. */
   /**
-   * The model's reasoning: `text` as shown; `details` and `model` are what
-   * is sent back to that model (src-tauri/src/reasoning_echo.rs).
+   * The model's reasoning for this reply: `text` as shown, `ms` how long it
+   * took; `details` and `model` are what is sent back to that model
+   * (src-tauri/src/reasoning_echo.rs).
    */
   reasoning?: { text?: string; ms?: number; details?: unknown[]; model?: string };
   /** A user message: the mode it was sent in (lib/chatMode.ts). */
   mode?: import('./lib/chatMode').ChatMode;
   /** Agent message implementing a saved plan: the first turn forces the `todo` tool. */
   implementsPlan?: boolean;
+  /** The change reviewer's record (lib/changeReview.ts). */
+  review?: import('./lib/changeReview').ReviewMeta;
+  /** The plan checker's problems with a plan Agent mode was asked to implement (B07b). */
+  planCheck?: { file: string; problems: string[] };
+  /** A `task` result: the subagent that answered it (lib/subagents.ts). */
+  subagent?: import('./lib/subagents').SubagentMeta;
+  /** A parallel group's result (task kind "workers"): each worker's step and outcome. */
+  group?: import('./lib/subagents').GroupMeta;
+  /** A subagent chat's first message: the lead's brief. */
+  subagentBrief?: { kind: string; parentCallId: string };
   /** An ask_user result: the questions and how they were answered. */
   questions?: {
     questions: import('./lib/questions').Question[];

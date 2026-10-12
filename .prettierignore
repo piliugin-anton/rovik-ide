@@ -5,3 +5,6 @@ build
 coverage
 *.local
 src-tauri
+scripts/eval/expected
+.eval-cache
+eval-results

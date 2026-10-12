@@ -1,0 +1,14 @@
+{
+  "profile": {
+    "id": "anthropic::MODEL_ID",
+    "label": "Anthropic/MODEL_ID",
+    "model": "MODEL_ID",
+    "baseUrl": "https://api.anthropic.com/v1",
+    "stream": true,
+    "contextTokens": 200000
+  },
+  "apiKeyEnv": "ROVIK_EVAL_API_KEY",
+  "mode": "agent",
+  "price": { "inputPerMillion": 0, "outputPerMillion": 0 },
+  "config": { "permissions": { "allowAnyCommand": true, "toolCallCheckpoint": null } }
+}

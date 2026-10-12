@@ -8,6 +8,9 @@
 // Discard throws them away; after a landing, Undo takes it back. Conflicts
 // are resolved in the conflict resolver (Resolve…), or handed to the chat
 // (Ask the chat): markers go into its files and it's asked to settle them.
+// A parallel group whose checks gave up can be redone one step at a time
+// (Redo sequentially): its merge is thrown away and the chat is asked to
+// carry out its steps with step workers.
 
 import { createEffect, createResource, createSignal, For, Show, untrack } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
@@ -15,6 +18,7 @@ import { ConflictResolver, forgetConflictChoices, type ConflictSource } from './
 import type { GitOperation } from '../types';
 import { requestCompare } from '../lib/editorBridge';
 import { notify } from '../lib/notifications';
+import { plural } from '../lib/textUtils';
 import {
   overlayConflictFile,
   overlayConflictResolve,
@@ -22,7 +26,9 @@ import {
   overlayDiscard,
   overlayFile,
   overlayLand,
+  overlayRedoGroup,
   overlayStatus,
+  redoGroup,
   overlayUndo,
   overlayUndoMerge,
   overlayUnmark,
@@ -38,8 +44,11 @@ interface Props {
   running: boolean;
   /** A run could start in this chat now (a model is set, none is going). */
   canAskChat: boolean;
-  /** Sends `dialogId` a message, starting a run; whether it started. */
-  onAskChat: (dialogId: string, request: string) => Promise<boolean>;
+  /**
+   * Sends `request` to the chat as the user's, starting a run; `shown` is
+   * the message it displays. Resolves with whether the run started.
+   */
+  onAskChat: (dialogId: string, request: string, shown?: string) => Promise<boolean>;
   /** A chat's title, to name the other chats a clash is with. */
   chatTitle?: (dialogId: string) => string | undefined;
 }
@@ -50,8 +59,6 @@ const LABEL: Record<ChangedFile['change'], string> = {
   deleted: 'D',
   moved: 'R',
 };
-
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** Paths for a message: the first few, then how many more. */
 const listPaths = (paths: string[], shown = 8) =>
@@ -67,6 +74,24 @@ const gb = (bytes: number) => `${(bytes / (1 << 30)).toFixed(1)} GB`;
 export default function IsolationBar(props: Props) {
   const [open, setOpen] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
+  /**
+   * Runs `body` with the bar busy, then reads the status again. An error
+   * is a notification titled `errorTitle` (and undefined), or, without
+   * one, the caller's.
+   */
+  async function withBusy<T>(body: () => Promise<T>, errorTitle?: string): Promise<T | undefined> {
+    setBusy(true);
+    try {
+      return await body();
+    } catch (e) {
+      if (errorTitle === undefined) throw e;
+      notify({ kind: 'error', title: errorTitle, message: String(e) });
+      return undefined;
+    } finally {
+      setBusy(false);
+      void refetch();
+    }
+  }
   const [status, { refetch }] = createResource(
     () => ({ id: props.dialogId, revision: props.revision }),
     ({ id }) => overlayStatus(id).catch((): OverlayStatus | undefined => undefined)
@@ -129,6 +154,27 @@ export default function IsolationBar(props: Props) {
     sideNames: { ours: 'Project', theirs: 'Chat' },
   };
 
+  async function confirmRedo(group: string) {
+    const id = props.dialogId;
+    if (!props.canAskChat) {
+      notify({
+        kind: 'warning',
+        title: 'The chat can’t take it now',
+        message: 'Pick a model, and wait for its run to end, then try again.',
+      });
+      return;
+    }
+    const ok = await confirmDialog({
+      title: 'Redo sequentially?',
+      message: `The parallel group “${group}” is thrown away: its files go back to what they were before it. Then the chat carries out its steps again, one at a time, with step workers.`,
+      confirmLabel: 'Redo sequentially',
+    });
+    if (!ok) return;
+    await withBusy(() =>
+      redoGroup(id, group, { redo: overlayRedoGroup, askChat: props.onAskChat, notify })
+    );
+  }
+
   async function askChat() {
     // This chat, whichever is on screen by the time the markers are in.
     const id = props.dialogId;
@@ -140,8 +186,7 @@ export default function IsolationBar(props: Props) {
       });
       return;
     }
-    setBusy(true);
-    try {
+    await withBusy(async () => {
       const handed = await overlayConflictsToChat(id);
       if (!handed.request) {
         notify({
@@ -154,12 +199,7 @@ export default function IsolationBar(props: Props) {
         // merged before them).
         await overlayUnmark(id, handed.files).catch(() => {});
       }
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t hand the conflicts over', message: String(e) });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    }, 'Couldn’t hand the conflicts over');
   }
 
   async function compare(file: ChangedFile) {
@@ -197,8 +237,7 @@ export default function IsolationBar(props: Props) {
         return false;
       }
     }
-    setBusy(true);
-    try {
+    const landed = await withBusy(async () => {
       const result = await overlayLand(props.dialogId, keepChat);
       if (result.landed) {
         notify({
@@ -218,18 +257,12 @@ export default function IsolationBar(props: Props) {
         notify({ kind: 'error', title: 'Didn’t land', message: result.error });
       }
       return false;
-    } catch (e) {
-      notify({ kind: 'error', title: 'Didn’t land', message: String(e) });
-      return false;
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    }, 'Didn’t land');
+    return landed ?? false;
   }
 
   async function undo(id: string) {
-    setBusy(true);
-    try {
+    await withBusy(async () => {
       const kept = await overlayUndo(props.dialogId, id);
       notify({
         kind: kept.length ? 'warning' : 'success',
@@ -238,12 +271,7 @@ export default function IsolationBar(props: Props) {
           ? `${plural(kept.length, 'file')} changed since and stayed as they are: ${listPaths(kept.map((k) => k.path))}.`
           : 'The project is back to how it was before.',
       });
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t undo', message: String(e) });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    }, 'Couldn’t undo');
   }
 
   async function discard() {
@@ -260,22 +288,13 @@ export default function IsolationBar(props: Props) {
       notify({ kind: 'warning', title: 'Didn’t discard', message: 'Stop the run first.' });
       return;
     }
-    setBusy(true);
-    try {
-      await overlayDiscard(props.dialogId);
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t discard', message: String(e) });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    await withBusy(() => overlayDiscard(props.dialogId), 'Couldn’t discard');
   }
 
   const disabled = () => props.running || busy();
 
   async function undoMerge() {
-    setBusy(true);
-    try {
+    await withBusy(async () => {
       const { restored, changedSince } = await overlayUndoMerge(props.dialogId);
       notify({
         kind: changedSince.length ? 'warning' : 'success',
@@ -286,12 +305,7 @@ export default function IsolationBar(props: Props) {
             ? ` The chat changed ${plural(changedSince.length, 'file')} since, kept as they are: ${listPaths(changedSince)}.`
             : ''),
       });
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t take the merge back', message: String(e) });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    }, 'Couldn’t take the merge back');
   }
 
   return (
@@ -364,12 +378,28 @@ export default function IsolationBar(props: Props) {
             <Show when={s().pending}>
               {(p) => <div class="isolation-bar-reason">{p().reason}</div>}
             </Show>
+            <For each={s().redoGroups ?? []}>
+              {(group) => (
+                <div class="isolation-bar-merged">
+                  The parallel group “{group}” is in these changes.
+                  <button
+                    class="isolation-bar-action"
+                    disabled={disabled()}
+                    title="Throw the group’s merged changes away and carry out its steps one at a time"
+                    onClick={() => void confirmRedo(group)}
+                  >
+                    Redo sequentially
+                  </button>
+                </div>
+              )}
+            </For>
             <Show when={s().peerConflicts.length > 0}>
               <div class="isolation-bar-reason">
                 {peerNames(s())} changing{' '}
                 {s().peerConflicts.length === 1 ? 'this file' : 'these files'} too:{' '}
-                {listPaths(s().peerConflicts.map((c) => c.path))}. Only one version of {s().peerConflicts.length === 1 ? 'it' : 'them'} lands as it
-                is; the other then has to be resolved.
+                {listPaths(s().peerConflicts.map((c) => c.path))}. Only one version of{' '}
+                {s().peerConflicts.length === 1 ? 'it' : 'them'} lands as it is; the other then has
+                to be resolved.
               </div>
             </Show>
             <Show when={s().byProducts >= BY_PRODUCTS_SHOWN}>

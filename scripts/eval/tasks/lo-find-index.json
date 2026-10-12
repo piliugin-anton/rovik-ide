@@ -1,0 +1,19 @@
+{
+  "id": "lo-find-index",
+  "repo": {
+    "url": "https://github.com/samber/lo",
+    "name": "lo"
+  },
+  "base": "62b3831d152904db816fad709b21ccb5f8b878c4",
+  "reference": "adfe5d41aed6013a8ae2d8572be0207dc7d45d0e",
+  "lang": "go",
+  "request": "Add lo.FindIndex[T any](collection []T, predicate func(T) bool) (int, bool) in find.go: the index of the first item matching the predicate and true, or -1 and false. Document it in README.md.",
+  "hidden": ["find_test.go"],
+  "checks": [
+    {
+      "kind": "go",
+      "packages": ["."]
+    }
+  ],
+  "setup": ["go"]
+}

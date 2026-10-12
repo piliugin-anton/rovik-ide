@@ -368,8 +368,11 @@ mod mounted {
     }
 
     #[test]
-    #[ignore] // needs FUSE: cargo test -- --ignored
+    // Needs FUSE: skipped where mounts don't work.
     fn common_tools_change_only_the_overlay() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
         let d = setup(&[
             ("src/main.rs", "fn main() {}\n"),
             ("README.md", "hi\n"),
@@ -432,8 +435,11 @@ mod mounted {
     }
 
     #[test]
-    #[ignore] // needs FUSE
+    // Needs FUSE: skipped where mounts don't work.
     fn random_operations_match_a_plain_copy() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
         let files: Vec<(String, String)> = (0..6)
             .map(|i| (format!("d{}/f{i}.txt", i % 3), format!("content {i}\n")))
             .collect();
@@ -624,6 +630,104 @@ mod landing {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// Round 2 (section 4.2): after a restart, landings into a chat's view
+    /// (children's, marked with their parent) are left for that view; of
+    /// them only an "applying" one is finished, and only there.
+    #[test]
+    fn app_restart_with_a_journal_in_each_state() {
+        let d = setup(&[
+            ("a.txt", "a\n"),
+            ("b.txt", "b\n"),
+            ("c.txt", "c\n"),
+            ("e.txt", "e\n"),
+        ]);
+        let o = overlay(&d);
+        for f in ["a", "b", "c", "e"] {
+            write_all(&o, &format!("{f}.txt"), &format!("{f} landed\n"));
+        }
+        let all = landable(&o);
+        let states = [
+            ("a", "applying"),
+            ("b", "done"),
+            ("c", "failed"),
+            ("e", "partial"),
+        ];
+        for (f, state) in states {
+            let child = format!("kid-{f}");
+            let one: Vec<_> = all
+                .iter()
+                .filter(|c| c.path() == format!("{f}.txt"))
+                .cloned()
+                .collect();
+            land::mark_into_chat(&data(&d), &child, "parent").unwrap();
+            land::land(&data(&d), &child, &d.project(), &one, false).unwrap();
+            let (id, _, _) = land::latest(&data(&d), &child).unwrap();
+            let journal = data(&d)
+                .join("landings")
+                .join(&child)
+                .join(&id)
+                .join("journal.json");
+            let text = fs::read_to_string(&journal)
+                .unwrap()
+                .replace("\"done\"", &format!("\"{state}\""));
+            fs::write(&journal, text).unwrap();
+            // As if each stopped before writing its file.
+            fs::write(d.project().join(format!("{f}.txt")), format!("{f}\n")).unwrap();
+        }
+        // At start, nothing of a chat's children: its view isn't mounted.
+        assert!(land::recover(&data(&d)).is_empty());
+        for f in ["a", "b", "c", "e"] {
+            assert_eq!(
+                project_file(&d, &format!("{f}.txt")),
+                Some(format!("{f}\n"))
+            );
+        }
+        assert!(land::interrupted_into(&data(&d), "parent", &d.project()));
+        assert!(!land::interrupted_into(&data(&d), "another", &d.project()));
+        // With the view: only the applying one is finished.
+        let done = land::recover_into(&data(&d), "parent", &d.project());
+        assert_eq!(done, ["a.txt"]);
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("a landed\n"));
+        for f in ["b", "c", "e"] {
+            assert_eq!(
+                project_file(&d, &format!("{f}.txt")),
+                Some(format!("{f}\n"))
+            );
+        }
+        assert!(!land::interrupted_into(&data(&d), "parent", &d.project()));
+    }
+
+    /// Round 2 (section 4.2): a landing recorded before into-chat.txt
+    /// existed is found by the view's path.
+    #[test]
+    fn a_legacy_landing_without_into_chat_is_still_found_by_the_views_path() {
+        let d = setup(&[("a.txt", "a\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "a landed\n");
+        land::land(&data(&d), "old-kid", &d.project(), &landable(&o), false).unwrap();
+        let (id, _, _) = land::latest(&data(&d), "old-kid").unwrap();
+        let journal = data(&d)
+            .join("landings")
+            .join("old-kid")
+            .join(&id)
+            .join("journal.json");
+        let text = fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        fs::write(&journal, text).unwrap();
+        fs::write(d.project().join("a.txt"), "a\n").unwrap();
+        assert!(land::interrupted_into(
+            &data(&d),
+            "any-parent",
+            &d.project()
+        ));
+        assert_eq!(
+            land::recover_into(&data(&d), "any-parent", &d.project()),
+            ["a.txt"]
+        );
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("a landed\n"));
     }
 
     #[test]
@@ -828,6 +932,7 @@ mod safety {
 
     #[test]
     fn a_landing_that_fails_partway_puts_everything_back() {
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let d = setup(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")]);
         let o = overlay(&d);
         for f in ["a.txt", "b.txt", "c.txt"] {
@@ -849,6 +954,69 @@ mod safety {
         );
         // Nothing for recovery to finish either.
         assert!(land::recover(&data(&d)).is_empty());
+    }
+
+    /// P1.3: a landing that fails and can't put everything back stays
+    /// "applying": it's interrupted until recovery finishes it.
+    #[test]
+    fn a_landing_that_cant_be_put_back_is_finished_by_recovery() {
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = setup(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        for f in ["a.txt", "b.txt"] {
+            write_all(&o, f, "CHAT\n");
+        }
+        // a.txt fails, and so does putting it back.
+        *land::FAIL_WRITING.lock().unwrap() = Some((d.project(), "a.txt".into()));
+        land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = land::land(&data(&d), "chat-half", &d.project(), &landable(&o), false);
+        land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
+        *land::FAIL_WRITING.lock().unwrap() = None;
+        assert!(
+            matches!(result, Err(LandError::Failed(ref e)) if e.contains("couldn't be put back")),
+            "{result:?}"
+        );
+        assert!(land::interrupted_into(&data(&d), "", &d.project()));
+        land::recover_into(&data(&d), "", &d.project());
+        assert!(!land::interrupted_into(&data(&d), "", &d.project()));
+        for f in ["a.txt", "b.txt"] {
+            assert_eq!(project_file(&d, f).as_deref(), Some("CHAT\n"), "{f}");
+        }
+    }
+
+    /// P6.9: a child's landing into its parent's view is found by the
+    /// parent's id, never finished at start as if into a project, and
+    /// finished into the view wherever it's mounted now.
+    #[test]
+    fn a_childs_landing_is_found_by_its_parent_and_finished_where_the_view_is() {
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = setup(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        for f in ["a.txt", "b.txt"] {
+            write_all(&o, f, "CHILD\n");
+        }
+        land::mark_into_chat(&data(&d), "kid", "parent-p").unwrap();
+        *land::FAIL_WRITING.lock().unwrap() = Some((d.project(), "a.txt".into()));
+        land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = land::land(&data(&d), "kid", &d.project(), &landable(&o), false);
+        land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
+        *land::FAIL_WRITING.lock().unwrap() = None;
+        assert!(result.is_err());
+        // The parent's view is mounted somewhere else now.
+        let moved = d.root.join("view-now");
+        fs::rename(d.project(), &moved).unwrap();
+        assert!(land::interrupted_into(&data(&d), "parent-p", &moved));
+        assert!(!land::interrupted_into(&data(&d), "another", &d.project()));
+        assert!(land::recover(&data(&d)).is_empty(), "not at start");
+        land::recover_into(&data(&d), "parent-p", &moved);
+        assert!(!land::interrupted_into(&data(&d), "parent-p", &moved));
+        for f in ["a.txt", "b.txt"] {
+            assert_eq!(
+                fs::read_to_string(moved.join(f)).ok().as_deref(),
+                Some("CHILD\n"),
+                "{f}"
+            );
+        }
     }
 
     #[test]

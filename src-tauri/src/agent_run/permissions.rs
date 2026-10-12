@@ -46,6 +46,10 @@ pub struct Permissions {
     pub allow_any_command: bool,
     /// Command prefixes, e.g. "git status" permits "git status -s".
     pub allowed_commands: Vec<String>,
+    /// Commands refused even when any command is permitted: a program and
+    /// words it's run with, in order ("git push" refuses `git -C . push
+    /// origin`). For unattended runs (the headless runner's policy).
+    pub denied_commands: Vec<String>,
     /// bash.
     pub command_approval: ApprovalRule,
     /// write and edit.
@@ -111,6 +115,7 @@ impl Default for Permissions {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            denied_commands: Vec::new(),
             command_approval: NO_APPROVAL,
             edit_approval: NO_APPROVAL,
             tool_approval: NO_APPROVAL,
@@ -144,6 +149,11 @@ pub struct ParsedCommand {
     pub writes_via_redirect: bool,
     /// Command substitution or subshells: $( ), backticks, <( ), ( ).
     pub opaque: bool,
+    /// For each segment: words the shell expands (globs `*?[`, `~`, `$VAR`,
+    /// braces), so its arguments aren't what's written (P2.5).
+    pub expands: Vec<bool>,
+    /// The files input is redirected from (`< src/lib.rs`), as written.
+    pub reads_from: Vec<String>,
 }
 
 #[derive(Default)]
@@ -152,6 +162,8 @@ struct Splitter {
     words: Vec<String>,
     word: String,
     in_word: bool,
+    expands: Vec<bool>,
+    expanding: bool,
 }
 
 impl Splitter {
@@ -166,8 +178,10 @@ impl Splitter {
     fn end_segment(&mut self) {
         self.end_word();
         let body = drop_assignments(std::mem::take(&mut self.words));
+        let expanding = std::mem::take(&mut self.expanding);
         if !body.is_empty() {
             self.segments.push(body);
+            self.expands.push(expanding);
         }
     }
 }
@@ -182,6 +196,7 @@ pub fn parse_command(command: &str) -> ParsedCommand {
     let mut quote: Option<char> = None;
     let mut writes_via_redirect = false;
     let mut opaque = false;
+    let mut reads_from = Vec::new();
 
     let mut i = 0;
     while i < chars.len() {
@@ -197,6 +212,9 @@ pub fn parse_command(command: &str) -> ParsedCommand {
             } else {
                 if q == '"' && (c == '`' || (c == '$' && next == Some('('))) {
                     opaque = true;
+                }
+                if q == '"' && c == '$' {
+                    s.expanding = true;
                 }
                 s.word.push(c);
             }
@@ -279,14 +297,25 @@ pub fn parse_command(command: &str) -> ParsedCommand {
             continue;
         }
         if c == '<' {
-            // Input redirection: drop the file name, it doesn't change permissions.
+            // Input redirection: not a word of the command; the file is
+            // kept apart (it's read: round 2, P2.5). `<<` and `<<<` are
+            // text, not a file.
             s.end_word();
+            let text = next == Some('<');
             let mut j = i + 1;
+            while chars.get(j) == Some(&'<') {
+                j += 1;
+            }
             while matches!(chars.get(j), Some(' ' | '\t')) {
                 j += 1;
             }
+            let mut target = String::new();
             while j < chars.len() && !is_target_end(chars[j]) {
+                target.push(chars[j]);
                 j += 1;
+            }
+            if !text && !target.is_empty() {
+                reads_from.push(target.trim_matches(['"', '\'']).to_string());
             }
             i = j;
             continue;
@@ -295,6 +324,9 @@ pub fn parse_command(command: &str) -> ParsedCommand {
             s.end_word();
             i += 1;
             continue;
+        }
+        if matches!(c, '*' | '?' | '[' | '~' | '{' | '$') {
+            s.expanding = true;
         }
         s.word.push(c);
         s.in_word = true;
@@ -306,6 +338,8 @@ pub fn parse_command(command: &str) -> ParsedCommand {
         segments: s.segments,
         writes_via_redirect,
         opaque,
+        expands: s.expands,
+        reads_from,
     }
 }
 
@@ -323,6 +357,258 @@ fn matches_allowed(segment: &[String], allowed: &[Vec<String>]) -> bool {
         !entry.is_empty()
             && entry.len() <= segment.len()
             && entry.iter().zip(segment).all(|(w, s)| w == s)
+    })
+}
+
+/// A wrapper's or program's name: the file name, lower case, without
+/// `.exe`/`.cmd`/`.bat`.
+pub(super) fn program_name(word: &str) -> String {
+    let name = word
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(word)
+        .to_lowercase();
+    for ext in [".exe", ".cmd", ".bat"] {
+        if let Some(n) = name.strip_suffix(ext) {
+            return n.to_string();
+        }
+    }
+    name
+}
+
+/// How many words a wrapper takes before the command it runs: its name,
+/// its options (with their values) and, for `timeout`, the duration.
+/// None: `word` isn't a wrapper.
+fn wrapper_words(name: &str, rest: &[String]) -> Option<usize> {
+    // Options that take the next word as their value.
+    let takes: &[&str] = match name {
+        "env" => &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+        "timeout" | "gtimeout" => &["-s", "--signal", "-k", "--kill-after"],
+        "nice" => &["-n", "--adjustment"],
+        "sudo" | "doas" => &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"],
+        "xargs" => &[
+            "-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "--max-args", "--max-procs",
+            "--delimiter", "--arg-file", "--max-lines",
+        ],
+        // Round 3: the other wrappers that only run the rest.
+        "stdbuf" => &["-i", "-o", "-e", "--input", "--output", "--error"],
+        "ionice" => &["-c", "-n", "-p", "--class", "--classdata"],
+        "chrt" => &["-p"],
+        "taskset" => &["-c", "--cpu-list", "-p"],
+        "exec" => &["-a"],
+        "time" | "nohup" | "command" | "caffeinate" | "setsid" | "unbuffer" | "chronic" => &[],
+        _ => return None,
+    };
+    let mut at = 0;
+    while let Some(w) = rest.get(at) {
+        if name == "env" && w.contains('=') && !w.starts_with('-') {
+            at += 1;
+        } else if takes.contains(&w.as_str()) {
+            at += 2;
+        } else if w.starts_with('-') && w.len() > 1 {
+            at += 1;
+        } else {
+            break;
+        }
+    }
+    if matches!(name, "timeout" | "gtimeout") {
+        // The duration.
+        at += 1;
+    }
+    Some(1 + at)
+}
+
+/// The words of a segment past the wrappers that only run the rest (P0.2):
+/// `env X=1 -u Y`, `timeout 5`, `nice -n 10`, `time`, `nohup`, `exec`,
+/// `command`, `xargs -n 1`, `sudo -u x`. Empty when the segment is only
+/// wrappers (a bare `env` prints the environment). Every matcher of a
+/// command (read-only, checks, light commands) starts from here.
+pub fn unwrap_wrappers(seg: &[String]) -> &[String] {
+    let mut rest = seg;
+    while let Some(first) = rest.first() {
+        let name = program_name(first);
+        // `env -S "rm -rf x"`: the command is inside a string, so the
+        // segment stays `env …`, which no list matches (round 2).
+        if split_string(&name, &rest[1..]).is_some() {
+            break;
+        }
+        match wrapper_words(&name, &rest[1..]) {
+            Some(n) => rest = &rest[n.min(rest.len())..],
+            None => break,
+        }
+    }
+    rest
+}
+
+/// The command `env -S`/`--split-string` runs: its string, then the words
+/// after it. None: not `env`, or no split string.
+fn split_string(name: &str, rest: &[String]) -> Option<String> {
+    if name != "env" {
+        return None;
+    }
+    let mut at = 0;
+    while let Some(w) = rest.get(at) {
+        let found = if let Some(v) = w.strip_prefix("--split-string=") {
+            Some((v.to_string(), at + 1))
+        } else if w == "--split-string" {
+            Some((rest.get(at + 1).cloned().unwrap_or_default(), at + 2))
+        } else if let Some(cluster) = w.strip_prefix('-').filter(|c| !c.starts_with('-')) {
+            // `-S`, `-S'…'`, `-iS …`.
+            // Round 3: `-0S` too (a digit option before it).
+            cluster
+                .find('S')
+                .filter(|&i| cluster[..i].chars().all(|c| c.is_ascii_alphanumeric()))
+                .map(|i| match &cluster[i + 1..] {
+                    "" => (rest.get(at + 1).cloned().unwrap_or_default(), at + 2),
+                    v => (v.to_string(), at + 1),
+                })
+        } else {
+            None
+        };
+        if let Some((value, after)) = found {
+            let tail = rest.get(after..).unwrap_or_default();
+            let words = std::iter::once(value).chain(tail.iter().cloned());
+            return Some(words.collect::<Vec<_>>().join(" "));
+        }
+        if matches!(w.as_str(), "-u" | "--unset" | "-C" | "--chdir") {
+            // The option's value goes with it.
+            at += 2;
+        } else if (w.starts_with('-') && w.len() > 1) || w.contains('=') {
+            at += 1;
+        } else {
+            return None;
+        }
+    }
+    None
+}
+
+/// Whether a segment runs its command as another user (`sudo`, `doas`),
+/// which is never read-only nor a check.
+pub fn elevated(seg: &[String]) -> bool {
+    let inner = unwrap_wrappers(seg).len();
+    seg[..seg.len() - inner]
+        .iter()
+        .any(|w| matches!(program_name(w).as_str(), "sudo" | "doas"))
+}
+
+/// The program's name in a segment, past wrappers that run the rest
+/// (`sudo`, `env X=1`, `time`, `nice`, `nohup`, `exec`, `command`): each
+/// wrapper's own name comes first, so `sudo` itself can be denied.
+/// Round 2: the same unwrapping as `unwrap_wrappers` (`timeout 5`,
+/// `nice -n 5`, `xargs -I {}`, `sudo -u bob`).
+fn programs(segment: &[String]) -> Vec<(String, &[String])> {
+    let mut out = Vec::new();
+    let mut rest = segment;
+    while let Some(first) = rest.first() {
+        let name = program_name(first);
+        out.push((name.clone(), &rest[1..]));
+        if split_string(&name, &rest[1..]).is_some() {
+            break;
+        }
+        match wrapper_words(&name, &rest[1..]) {
+            Some(n) => rest = &rest[n.min(rest.len())..],
+            None => break,
+        }
+    }
+    out
+}
+
+/// Whether a segment runs a denied command: its program, then the entry's
+/// other words in order anywhere after it; a shell's `-c` script is
+/// checked as a command of its own.
+fn segment_denied(segment: &[String], denied: &[Vec<String>], depth: usize) -> bool {
+    programs(segment).iter().any(|(program, args)| {
+        // `env -S 'git push'`: its string is a command of its own.
+        if let Some(script) = split_string(program, args) {
+            if depth < 3 && command_denied(&script, denied, depth + 1) {
+                return true;
+            }
+        }
+        let shell = matches!(program.as_str(), "bash" | "sh" | "zsh" | "dash" | "fish");
+        if shell && depth < 3 {
+            // `-c`, `-lc`, `-ec`, `-euc` (round 3): the script is the next word.
+            if let Some(at) = args.iter().position(|a| {
+                short_cluster(a).is_some_and(|letters| letters.contains(&'c'))
+            }) {
+                if let Some(script) = args.get(at + 1) {
+                    if command_denied(script, denied, depth + 1) {
+                        return true;
+                    }
+                }
+            }
+        }
+        denied.iter().any(|entry| {
+            let Some((head, words)) = entry.split_first() else {
+                return false;
+            };
+            if head.to_lowercase() != *program {
+                return false;
+            }
+            // P6.10: a word of short options (`-rf`) is denied however
+            // they're written (`-r -f`, `-fr`, `--recursive --force`).
+            let given = short_options(program, args);
+            let mut it = args.iter();
+            words.iter().all(|w| match short_cluster(w) {
+                Some(letters) => letters.iter().all(|l| given.contains(l)),
+                None => it.any(|a| a == w),
+            })
+        })
+    })
+}
+
+/// The letters of a word of short options (`-rf` → r, f).
+fn short_cluster(word: &str) -> Option<Vec<char>> {
+    let letters = word.strip_prefix('-').filter(|l| !l.starts_with('-'))?;
+    (!letters.is_empty() && letters.chars().all(|c| c.is_ascii_alphabetic()))
+        .then(|| letters.chars().collect())
+}
+
+/// Every short option a command was given, its long names (for `rm`) as
+/// their letters.
+fn short_options(program: &str, args: &[String]) -> Vec<char> {
+    let mut out = Vec::new();
+    for a in args {
+        if let Some(letters) = short_cluster(a) {
+            out.extend(letters);
+        } else if program == "rm" {
+            match a.as_str() {
+                "--recursive" => out.extend(['r', 'R']),
+                "--force" => out.push('f'),
+                _ => {}
+            }
+        }
+    }
+    // `rm -R` is `rm -r`.
+    if program == "rm" && out.contains(&'R') {
+        out.push('r');
+    }
+    out
+}
+
+fn command_denied(command: &str, denied: &[Vec<String>], depth: usize) -> bool {
+    let parsed = parse_command(command);
+    if parsed
+        .segments
+        .iter()
+        .any(|seg| segment_denied(seg, denied, depth))
+    {
+        return true;
+    }
+    // Inside $( ), backticks or ( ): the words in order in the text.
+    parsed.opaque && {
+        let text = split_words(&command.replace(['(', ')', '`', '$', ';', '&', '|'], " "));
+        denied.iter().any(|entry| {
+            !entry.is_empty() && text.windows(entry.len()).any(|w| w == entry.as_slice())
+        })
+    }
+}
+
+/// The denied entry a command runs, if any (`Permissions::denied_commands`).
+pub fn denied_entry(command: &str, permissions: &Permissions) -> Option<String> {
+    permissions.denied_commands.iter().find_map(|entry| {
+        let words = split_words(entry);
+        (!words.is_empty() && command_denied(command, std::slice::from_ref(&words), 0))
+            .then(|| entry.trim().to_string())
     })
 }
 
@@ -352,7 +638,6 @@ const READ_ONLY_COMMANDS: &[&str] = &[
     "type",
     "whoami",
     "date",
-    "env",
     "printenv",
     "stat",
     "file",
@@ -447,7 +732,12 @@ static BRANCH_CHANGES: LazyLock<Regex> =
 static REWRITES_FILES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(--fix|--write|--in-place)\b").unwrap());
 
-fn segment_is_read_only(seg: &[String]) -> bool {
+pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
+    // `env rm -rf x` runs `rm`; `sudo` anything changes who runs it.
+    if elevated(seg) {
+        return false;
+    }
+    let seg = unwrap_wrappers(seg);
     let Some((cmd, rest)) = seg.split_first() else {
         return true;
     };
@@ -467,7 +757,20 @@ fn segment_is_read_only(seg: &[String]) -> bool {
         });
     }
     if cmd == "sort" {
-        return !rest.iter().any(|a| a == "-o" || a.starts_with("--output"));
+        // `-o f`, `-of`, `-ro f`, `--output=f`.
+        return !rest.iter().any(|a| {
+            a.starts_with("--output")
+                || a.strip_prefix('-')
+                    .is_some_and(|c| !c.starts_with('-') && c.contains('o'))
+        });
+    }
+    if cmd == "uniq" {
+        // `uniq in out` writes `out` (round 2, P2.5).
+        return rest
+            .iter()
+            .filter(|a| !a.starts_with('-') || *a == "-")
+            .count()
+            < 2;
     }
     if cmd == "awk" {
         return !rest.iter().any(|a| AWK_WRITES.is_match(a));
@@ -533,6 +836,12 @@ pub fn check_command(command: &str, permissions: &Permissions) -> Verdict {
     let modifies_files = parsed.writes_via_redirect
         || parsed.opaque
         || !parsed.segments.iter().all(|s| segment_is_read_only(s));
+
+    if let Some(entry) = denied_entry(command, permissions) {
+        return Verdict::Refused(format!(
+            "`{entry}` isn't allowed in this run. Do without it, or finish and say what's left."
+        ));
+    }
 
     if permissions.allow_any_command {
         return Verdict::Permitted { modifies_files };
@@ -612,6 +921,20 @@ pub fn str_arg(args_json: &str, key: &str) -> Option<String> {
         .get(key)
         .and_then(|v| v.as_str())
         .map(str::to_string)
+}
+
+/// A string value, trimmed, when there's something left of it.
+pub fn trimmed_str(v: Option<&serde_json::Value>) -> Option<&str> {
+    v.and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// A count argument: a whole number of at least 1 (a float is floored).
+pub fn count_arg(v: Option<&serde_json::Value>) -> Option<u32> {
+    v.and_then(|n| n.as_f64())
+        .filter(|n| n.is_finite() && *n >= 1.0)
+        .map(|n| n.floor() as u32)
 }
 
 /// Permission first, then who (if anyone) has to approve.
@@ -834,6 +1157,57 @@ mod tests {
 
     fn words(seg: &[&str]) -> Vec<String> {
         seg.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// P0.2: every matcher reads a command past the same wrappers.
+    #[test]
+    fn wrappers_are_seen_through_by_every_matcher() {
+        use crate::workload::classify::classify;
+        for (command, modifies) in [
+            ("env rm x", true),
+            ("env sed -i s/a/b/ f", true),
+            ("timeout 5 rm x", true),
+            ("timeout -s KILL 5m rm x", true),
+            ("nice -n 10 rm x", true),
+            ("xargs -n 1 rm", true),
+            ("sudo cat f", true),
+            ("env -u HOME rm x", true),
+            ("env FOO=1 cat f", false),
+            ("time cat f", false),
+            ("xargs -I {} cat", false),
+            ("env", false),
+        ] {
+            assert_eq!(command_modifies_files(command), modifies, "{command}");
+            let seg = split_words(command);
+            assert_eq!(
+                segment_is_read_only(&seg),
+                !modifies,
+                "segment_is_read_only({command})"
+            );
+        }
+        for (command, check) in [
+            ("env CI=1 timeout 60 cargo test", true),
+            ("nice -n 10 cargo test", true),
+            ("time npm test", true),
+            ("sudo cargo test", false),
+            ("env rm x", false),
+        ] {
+            assert_eq!(
+                super::super::worker::is_check_tool(&split_words(command)),
+                check,
+                "is_check_tool({command})"
+            );
+        }
+        for (wrapped, bare) in [
+            ("env CI=1 cargo test", "cargo test"),
+            ("timeout -s KILL 5m cargo build", "cargo build"),
+            ("nice -n 10 cargo check", "cargo check"),
+            ("xargs -n 1 ls", "ls"),
+            ("env -u X ls", "ls"),
+        ] {
+            assert_eq!(classify(wrapped, None), classify(bare, None), "{wrapped}");
+        }
+        assert_eq!(unwrap_wrappers(&split_words("env -i A=1 -u B time nice -5 x y")), ["x", "y"]);
     }
 
     /// The cases the frontend's hints are tested with too
@@ -1173,5 +1547,241 @@ mod tests {
         assert!(is_secret_path("C:\\Users\\me\\.aws\\config"));
         assert!(is_secret_path("deploy/KEY.PEM"));
         assert!(!is_secret_path("src/keyboard.ts"));
+    }
+
+    /// Round 2 (§4.2): what the shell expands is read from the quoting,
+    /// segment by segment.
+    #[test]
+    fn quoting_decides_expansion() {
+        let expands = |c: &str| parse_command(c).expands;
+        for (command, want) in [
+            ("grep \"fn *\"", false),
+            ("ls fn*", true),
+            ("echo '$X'", false),
+            ("echo \"$X\"", true),
+            ("ls ~", true),
+            ("ls '~'", false),
+            ("ls {a,b}", true),
+            ("grep -E \"a{2}\"", false),
+            ("echo \\$HOME", false),
+        ] {
+            assert_eq!(expands(command), [want], "{command}");
+        }
+        assert_eq!(expands("a | b*"), [false, true]);
+        assert_eq!(expands("ls * ; ls"), [true, false]);
+        assert_eq!(expands("ls * && ls"), [true, false]);
+    }
+
+    /// Round 2 (§4.2): one entry per segment, empty ones skipped.
+    #[test]
+    fn expands_vector_aligns_with_segments() {
+        for command in ["; ; ls * ; ", "| | |", "", "ls &&", "&& ls *"] {
+            let p = parse_command(command);
+            assert_eq!(p.expands.len(), p.segments.len(), "{command}");
+        }
+        assert_eq!(parse_command("; ; ls * ; ").expands, [true]);
+    }
+
+    /// Round 2 (§4.2): a wrapper with its option's value missing is
+    /// nothing to run, not a panic.
+    #[test]
+    fn dangling_wrapper_options_dont_panic() {
+        for seg in [
+            vec!["env", "-u"],
+            vec!["timeout"],
+            vec!["timeout", "-s"],
+            vec!["nice", "-n"],
+            vec!["xargs", "-I"],
+            vec!["sudo", "-u"],
+            vec![],
+        ] {
+            let seg = words(&seg);
+            assert!(unwrap_wrappers(&seg).is_empty(), "{seg:?}");
+            let _ = programs(&seg);
+            let _ = elevated(&seg);
+        }
+        assert!(segment_is_read_only(&[]));
+    }
+
+    /// Round 2 (§4.2): wrappers in all their forms.
+    #[test]
+    fn wrapper_edge_cases() {
+        for (command, modifies) in [
+            ("env -i A=1 cat f", false),
+            ("env -- rm x", true),
+            ("env -C dir rm x", true),
+            ("/usr/bin/env rm x", true),
+            ("timeout --signal=KILL 5 rm x", true),
+            ("exec -a name rm x", true),
+            ("nohup rm x &", true),
+            ("xargs -P4 -I{} sh -c 'rm {}'", true),
+            ("timeout 5", false),
+            ("time -p cat f", false),
+            ("command -v ls", false),
+            ("stdbuf -oL cat f", false),
+            ("stdbuf -oL rm x", true),
+            ("xargs", false),
+            ("find . | xargs grep foo", false),
+        ] {
+            assert_eq!(command_modifies_files(command), modifies, "{command}");
+        }
+        assert!(elevated(&split_words("doas cat f")));
+        assert!(!segment_is_read_only(&split_words("doas cat f")));
+    }
+
+    /// Round 2 (§4.2): the denied list, however `rm -rf` is written or
+    /// wrapped; long options are read only for rm (as the README says);
+    /// an option's value is read as options too (pinned: refusing more is
+    /// the safe side for a denied list).
+    #[test]
+    fn denied_rm_forms_and_wrappers() {
+        let p = Permissions {
+            allow_any_command: true,
+            denied_commands: vec!["rm -rf".into(), "curl -f".into(), "grep -r".into()],
+            ..Permissions::default()
+        };
+        let refused = |c: &str| matches!(check_command(c, &p), Verdict::Refused(_));
+        for bad in [
+            "rm -r -f x",
+            "rm -fr x",
+            "rm -Rf x",
+            "rm --recursive --force x",
+            "rm -r build -f",
+            "env rm -rf x",
+            "timeout 5 rm -rf x",
+            "bash -c 'rm -rf x'",
+            "xargs rm -rf",
+            "grep -e -r f",
+        ] {
+            assert!(refused(bad), "{bad}");
+        }
+        for ok in ["rm -r x", "rm -f x", "curl --fail x"] {
+            assert!(!refused(ok), "{ok}");
+        }
+    }
+
+    /// Round 2, P0.2: `env -S` hides its command in a string, so the
+    /// segment matches no list: it may change files, isn't read-only, a
+    /// check nor light.
+    #[test]
+    fn env_split_string_is_opaque() {
+        use crate::workload::classify::{classify, Class};
+        for command in [
+            "env -S \"rm -rf x\"",
+            "env --split-string=\"rm -rf x\"",
+            "env -S 'cat f'",
+            "env -iS 'cat f'",
+            "env -u X -S 'cat f'",
+            "env -S 'cargo test'",
+        ] {
+            assert!(command_modifies_files(command), "{command}");
+            let seg = split_words(command);
+            let parsed = parse_command(command);
+            assert!(!segment_is_read_only(&parsed.segments[0]), "{command}");
+            assert!(
+                !super::super::worker::is_check_tool(&parsed.segments[0]),
+                "{command}"
+            );
+            assert_ne!(classify(command, None), Class::Light, "{command}");
+            assert_eq!(
+                unwrap_wrappers(&seg).first().map(String::as_str),
+                Some("env")
+            );
+        }
+        // Without -S, env still runs the rest.
+        assert!(!command_modifies_files("env -i A=1 cat f"));
+    }
+
+    /// Round 2, P0.2: the denied list unwraps the same wrappers as every
+    /// other matcher, and reads `env -S`'s string as a command.
+    #[test]
+    fn the_denied_list_sees_through_every_wrapper() {
+        let p = Permissions {
+            allow_any_command: true,
+            denied_commands: vec!["git push".into(), "sudo".into()],
+            ..Permissions::default()
+        };
+        let refused = |c: &str| matches!(check_command(c, &p), Verdict::Refused(_));
+        for bad in [
+            "timeout 5 git push",
+            "timeout -s KILL 5m git push",
+            "nice -n 5 git push",
+            "xargs -I {} git push",
+            "sudo -u bob git push",
+            "env -u X git push",
+            "env -S 'git push'",
+            "env --split-string='git push origin'",
+            "env -S git push",
+            "/usr/bin/env -S 'sudo ls'",
+            "git.exe push",
+            // Round 3: a `-c` in a cluster, the other wrappers, `exec -a`.
+            "bash -ec 'git push'",
+            "sh -euc 'git push origin'",
+            "bash -xc 'git push'",
+            "stdbuf -oL git push",
+            "ionice -c3 git push",
+            "taskset -c 0 git push",
+            "setsid git push",
+            "exec -a x git push",
+            "env -0S 'git push'",
+        ] {
+            assert!(refused(bad), "{bad}");
+        }
+        for ok in [
+            "timeout 5 git pull",
+            "env -S 'git status'",
+            "nice -n 5 ls",
+            "stdbuf -oL git status",
+        ] {
+            assert!(!refused(ok), "{ok}");
+        }
+    }
+
+    #[test]
+    fn denied_commands_are_refused_however_they_are_written() {
+        let p = Permissions {
+            allow_any_command: true,
+            denied_commands: vec!["git push".into(), "sudo".into(), "rm -rf".into()],
+            ..Permissions::default()
+        };
+        let refused = |c: &str| matches!(check_command(c, &p), Verdict::Refused(_));
+        for bad in [
+            "git push",
+            "git  push origin main",
+            "git -C . push",
+            "/usr/bin/git push --force",
+            "cd x && git push",
+            "env GIT_TRACE=1 git push",
+            "sudo ls",
+            "sudo -u root cat x",
+            "bash -c 'git push'",
+            "sh -c \"sudo ls\"",
+            "echo $(git push)",
+            "rm -rf build",
+            "time git push",
+            // P6.10: however the options are written.
+            "rm -r -f build",
+            "rm -fr build",
+            "rm -Rf build",
+            "rm --recursive --force build",
+            "rm -r build -f",
+        ] {
+            assert!(refused(bad), "{bad}");
+        }
+        for ok in [
+            "git status",
+            "git pull",
+            "echo git push",
+            "ls sudo",
+            "rm build",
+            "rm -r build",
+            "rm -f build",
+        ] {
+            assert!(!refused(ok), "{ok}");
+        }
+        assert_eq!(
+            denied_entry("git -C . push", &p).as_deref(),
+            Some("git push")
+        );
     }
 }

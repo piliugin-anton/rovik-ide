@@ -1,0 +1,41 @@
+{
+  "id": "self-git-mode-lines",
+  "reference": "0443ad021f1285c578ee46829b9f3008319b3683",
+  "ok": true,
+  "problems": [],
+  "failingAtBase": [
+    "git_sync::tests::a_mode_change_alone_adds_no_lines",
+    "git_sync::tests::a_push_behind_the_remote_is_rejected_not_failed",
+    "git_sync::tests::abort_puts_the_branch_back",
+    "git_sync::tests::delete_modify_conflict_resolves_to_a_deletion",
+    "git_sync::tests::diverged_without_a_strategy_asks",
+    "git_sync::tests::ff_only_refuses_diverged_branches",
+    "git_sync::tests::merge_conflict_resolve_and_continue",
+    "git_sync::tests::merge_without_conflicts_commits_with_two_parents",
+    "git_sync::tests::parse_merged_splits_common_text_and_conflicts",
+    "git_sync::tests::pull_config_follows_gits_precedence",
+    "git_sync::tests::rebase_conflict_resolve_and_continue",
+    "git_sync::tests::rebase_without_conflicts_is_linear",
+    "git_sync::tests::remember_stores_pull_rebase",
+    "git_sync::tests::taking_a_whole_side_writes_its_bytes",
+    "git_sync::tests::uncommitted_changes_stop_a_merge"
+  ],
+  "flaky": [],
+  "required": [
+    "git_sync::tests::a_mode_change_alone_adds_no_lines",
+    "git_sync::tests::a_push_behind_the_remote_is_rejected_not_failed",
+    "git_sync::tests::abort_puts_the_branch_back",
+    "git_sync::tests::delete_modify_conflict_resolves_to_a_deletion",
+    "git_sync::tests::diverged_without_a_strategy_asks",
+    "git_sync::tests::ff_only_refuses_diverged_branches",
+    "git_sync::tests::merge_conflict_resolve_and_continue",
+    "git_sync::tests::merge_without_conflicts_commits_with_two_parents",
+    "git_sync::tests::parse_merged_splits_common_text_and_conflicts",
+    "git_sync::tests::pull_config_follows_gits_precedence",
+    "git_sync::tests::rebase_conflict_resolve_and_continue",
+    "git_sync::tests::rebase_without_conflicts_is_linear",
+    "git_sync::tests::remember_stores_pull_rebase",
+    "git_sync::tests::taking_a_whole_side_writes_its_bytes",
+    "git_sync::tests::uncommitted_changes_stop_a_merge"
+  ]
+}

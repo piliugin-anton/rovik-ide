@@ -1,0 +1,16 @@
+{
+  "id": "self-imported-types",
+  "repo": "self",
+  "base": "b9c707665891cc59fa3ce70a0cead4baa9c92ee5",
+  "reference": "3c7e847bba4501610a1e54b3d5d767367f6519fe",
+  "lang": "ts",
+  "request": "In the editor, an installed @types package missing from tsconfig `types` hides its typings even when the code imports it. Add to src/lib/tsconfig.ts: declaresGlobals(dtsText) - true when a .d.ts declares globals (a script with no top-level import/export, or one containing `declare global`, or `declare module \"x\"` blocks), false for plain modules; importedTypesPackages(sourceText) - the @types package names a file imports via import/import type/ export-from/side-effect imports/dynamic import()/require()/`/// <reference types>`, skipping relative paths and node: builtins, taking the package name from deep paths, and mapping scoped names to the @types form (\"@tanstack/solid-virtual/core\" -> \"tanstack__solid-virtual\"). Use them in intellisense.ts so imported packages count as allowed and only global-declaring files of hidden packages are held back.",
+  "hidden": ["src/lib/tsconfig.test.ts"],
+  "checks": [
+    {
+      "kind": "ts",
+      "files": ["src/lib/tsconfig.test.ts"]
+    }
+  ],
+  "setup": ["node"]
+}

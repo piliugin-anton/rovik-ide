@@ -5,23 +5,61 @@
 // checks on demand. Updates live while the checks run.
 import { For, Match, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
-import type { CheckResult, VerificationMeta } from '../lib/verification';
+import { plural } from '../lib/textUtils';
+import { liveLabel, liveSubagent } from '../lib/subagents';
+import {
+  causeLine,
+  describeFailure,
+  progressLine,
+  repairHeadline,
+  reviewAfterGreenLine,
+  triageHeadline,
+  type CheckResult,
+  type TriageMeta,
+  type VerificationMeta,
+} from '../lib/verification';
+import { SubagentTranscript } from './ToolCallBlock';
+import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 
 function headline(meta: VerificationMeta, interrupted: boolean): string {
   if (interrupted) return 'Checks didn’t finish: the run ended while they were running.';
+  if (meta.midRun) {
+    switch (meta.status) {
+      case 'running':
+        return 'Checking the workers’ merged changes…';
+      case 'passed':
+        return 'Checks pass on the workers’ merged changes.';
+      case 'failed':
+        return 'Checks fail on the workers’ merged changes: sent to the agent, with whose step each error is in.';
+      default:
+        break;
+    }
+  }
   switch (meta.status) {
     case 'running':
       return 'Checking the changes…';
     case 'passed':
       return 'Checks passed.';
     case 'failed':
+      if (meta.repair?.status === 'recheck')
+        return `Checks failed (attempt ${meta.round} of ${meta.maxRounds}): the workers that own the failures fixed them.`;
+      if (meta.repair?.status === 'fixing')
+        return `Checks failed (attempt ${meta.round} of ${meta.maxRounds}): the workers that own the failures are fixing them.`;
       return `Checks failed: sent to the agent to fix (attempt ${meta.round} of ${meta.maxRounds}).`;
     case 'gave-up':
-      return `Checks still fail after ${meta.round} attempts. The agent stopped here.`;
+      return meta.rolledBack
+        ? `The last fix broke something that passed before, so it was rolled back. Checks still fail after ${meta.round} attempts: the agent stopped here.`
+        : `Checks still fail after ${meta.round} attempts. The agent stopped here.`;
+    case 'rolled-back':
+      return `The fix broke something that passed before, so it was rolled back (attempt ${meta.round} of ${meta.maxRounds}).`;
+    case 'flagged':
+      return 'Checks pass, but the change weakens tests or what the checks run: review it before relying on it.';
     case 'unresolved':
       return 'The agent finished without changing anything after the failed checks.';
     case 'needs-approval':
       return 'The changes weren’t checked yet: command approval is on.';
+    case 'superseded':
+      return 'These checks didn’t run: a newer request came after them.';
     case 'unverified':
       return `The changes weren’t checked: ${meta.reason ?? 'no check could run'}.`;
     case 'stopped':
@@ -80,8 +118,77 @@ function shownStatus(check: CheckResult, interrupted: boolean): CheckResult['sta
     : check.status;
 }
 
+/** The round's failure triage (C03): what it found, or why it was skipped. */
+function TriageBlock(props: {
+  triage: TriageMeta;
+  dialogId: string | null;
+  recordId: string;
+  live: boolean;
+}) {
+  const callId = () => `${props.recordId}:triage`;
+  const progress = () => liveSubagent(props.dialogId, callId());
+  const childId = () => props.triage.childDialogId ?? progress()?.childDialogId ?? null;
+  const interrupted = () => props.triage.status === 'running' && !props.live;
+  // P5.9: neither a finished triage's live entry nor an unshown transcript stays.
+  const work = createSubagentWork({
+    dialogId: () => props.dialogId,
+    toolCallId: callId,
+    childId,
+    finishedChildId: () => {
+      const id = props.triage.childDialogId;
+      return props.triage.status !== 'running' ? id : null;
+    },
+  });
+  return (
+    <div class={`chat-verify-triage ${interrupted() ? 'stopped' : props.triage.status}`}>
+      <div class="chat-verify-progress">
+        {triageHeadline(props.triage, CHECK_LABEL[props.triage.check] ?? 'check', interrupted())}
+        <Show when={props.triage.status === 'running' && !interrupted() && progress()}>
+          {(p) => <> {liveLabel(p(), false)}</>}
+        </Show>
+        <Show when={childId() && props.triage.status !== 'running'}>
+          {' '}
+          <ShowWorkButton work={work} />
+        </Show>
+      </div>
+      <Show when={props.triage.result}>
+        {(r) => (
+          <div class="review-finding-body">
+            <div>
+              <span class="review-label">Root cause:</span> {r().rootCause}
+            </div>
+            <Show when={r().files.length}>
+              <div>
+                <span class="review-label">Files to fix:</span> {r().files.join('; ')}
+              </div>
+            </Show>
+            <div>
+              <span class="review-label">Next step:</span> {r().nextStep}
+            </div>
+            <Show when={r().confidenceNote}>
+              <div>
+                <span class="review-label">Confidence:</span> {r().confidence} ({r().confidenceNote}
+                )
+              </div>
+            </Show>
+          </div>
+        )}
+      </Show>
+      <Show when={work.shown() && childId()}>
+        <SubagentTranscript
+          childDialogId={childId()!}
+          running={props.triage.status === 'running'}
+        />
+      </Show>
+    </div>
+  );
+}
+
 export default function VerificationRecord(props: {
   meta: VerificationMeta;
+  /** The chat it's in, and this record's id (its triage's events name it). */
+  dialogId: string | null;
+  recordId: string;
   /** The newest message, nothing running: its buttons are live. */
   latest: boolean;
   /** Checks for this record are running right now. */
@@ -107,6 +214,18 @@ export default function VerificationRecord(props: {
         </Show>
       </div>
 
+      <Show when={props.meta.integrityChecked === false}>
+        <div class="chat-verify-progress">
+          Whether the change weakens tests couldn’t be checked: part of what the files were before
+          the run was lost. Review the changes before relying on them.
+        </div>
+      </Show>
+      <Show when={props.meta.stateRestored === false}>
+        <div class="chat-verify-progress">
+          The earlier rounds’ state was gone (the app restarted, or it expired): these checks
+          started afresh.
+        </div>
+      </Show>
       <Show when={props.meta.checks.length > 0}>
         <ul class="chat-verify-checks">
           <For each={props.meta.checks}>
@@ -164,6 +283,99 @@ export default function VerificationRecord(props: {
               </li>
             )}
           </For>
+        </ul>
+      </Show>
+
+      <Show when={props.meta.status !== 'running' && progressLine(props.meta)}>
+        {(line) => <div class="chat-verify-progress">{line()}</div>}
+      </Show>
+
+      <Show when={props.meta.rolledBack}>
+        {(rb) => (
+          <details class="chat-verify-rollback">
+            <summary>
+              Broke: {rb().broke.map(describeFailure).join(', ')}
+              {rb().restored.length ? ` · put back: ${rb().restored.join(', ')}` : ''}
+              {rb().skipped.length ? ` · left as they were: ${rb().skipped.join(', ')}` : ''}
+            </summary>
+            <Show when={rb().diff}>
+              <pre class="chat-verify-output">{rb().diff}</pre>
+            </Show>
+          </details>
+        )}
+      </Show>
+
+      <Show when={props.meta.triage}>
+        {(t) => (
+          <TriageBlock
+            triage={t()}
+            dialogId={props.dialogId}
+            recordId={props.recordId}
+            live={props.live}
+          />
+        )}
+      </Show>
+
+      <Show when={props.meta.repair}>
+        {(r) => (
+          <div class="chat-verify-repair">
+            <div class="chat-verify-progress">{repairHeadline(r())}</div>
+            <ul class="chat-verify-flags">
+              <For each={r().causes}>{(c) => <li>{causeLine(c)}</li>}</For>
+            </ul>
+          </div>
+        )}
+      </Show>
+
+      <Show when={props.meta.status === 'gave-up' && props.meta.remaining?.length}>
+        <details class="chat-verify-rollback">
+          <summary>
+            Still failing: {props.meta.remaining!.length}
+            {props.meta.attempts?.length
+              ? ` · ${plural(props.meta.attempts.length, 'fix attempt')} rolled back`
+              : ''}
+          </summary>
+          <ul class="chat-verify-flags">
+            <For each={props.meta.remaining}>{(k) => <li>{describeFailure(k)}</li>}</For>
+          </ul>
+          <Show when={props.meta.triageSummary}>
+            <div>
+              <span class="review-label">Last triage:</span> {props.meta.triageSummary}
+            </div>
+          </Show>
+          <For each={props.meta.attempts ?? []}>
+            {(rb) => (
+              <div>
+                <span class="review-label">Rolled back:</span>{' '}
+                {rb.broke.map(describeFailure).join(', ')}
+                <Show when={rb.diff}>
+                  <pre class="chat-verify-output">{rb.diff}</pre>
+                </Show>
+              </div>
+            )}
+          </For>
+        </details>
+      </Show>
+
+      <Show when={reviewAfterGreenLine(props.meta)}>
+        {(line) => <div class="chat-verify-progress">{line()}</div>}
+      </Show>
+
+      <Show when={props.meta.attribution?.length}>
+        <ul class="chat-verify-flags">
+          <For each={props.meta.attribution}>
+            {(a) => (
+              <li>
+                {a.location}: {a.owner}
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+
+      <Show when={props.meta.integrity?.length}>
+        <ul class="chat-verify-flags">
+          <For each={props.meta.integrity}>{(flag) => <li>{flag}</li>}</For>
         </ul>
       </Show>
 

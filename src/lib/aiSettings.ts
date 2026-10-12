@@ -2,6 +2,11 @@ import { settingOf } from './reasoning';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelProfile, ModelSelection, Provider, ProviderModel } from '../types';
 import { DEFAULT_PERMISSIONS, normalizePermissions, type AgentPermissions } from './permissions';
+import {
+  DEFAULT_SUBAGENT_SETTINGS,
+  normalizeSubagentSettings,
+  type SubagentSettings,
+} from './subagentSettings';
 
 export interface PersistedAiSettings {
   version: 2;
@@ -9,6 +14,13 @@ export interface PersistedAiSettings {
   active: ModelSelection | null;
   /** Missing in files written before permissions existed. */
   permissions: AgentPermissions;
+  /** Missing in files written before subagents existed: all off. */
+  subagents: SubagentSettings;
+  /**
+   * P5.7: the file couldn't be read: these are defaults, not what's saved,
+   * so they mustn't be written over it. Never saved.
+   */
+  loadFailed?: boolean;
 }
 
 const EMPTY: PersistedAiSettings = {
@@ -16,6 +28,7 @@ const EMPTY: PersistedAiSettings = {
   providers: [],
   active: null,
   permissions: DEFAULT_PERMISSIONS,
+  subagents: DEFAULT_SUBAGENT_SETTINGS,
 };
 
 export async function loadAiSettings(): Promise<PersistedAiSettings> {
@@ -29,18 +42,88 @@ export async function loadAiSettings(): Promise<PersistedAiSettings> {
         providers: parsed.providers,
         active: parsed.active ?? null,
         permissions: normalizePermissions(parsed.permissions),
+        subagents: normalizeSubagentSettings(parsed.subagents),
       };
     }
 
     return EMPTY;
   } catch (err) {
     console.error('Failed to load AI settings:', err);
-    return EMPTY;
+    return { ...EMPTY, loadFailed: true };
   }
 }
 
 export async function saveAiSettings(settings: PersistedAiSettings): Promise<void> {
-  await invoke<void>('save_ai_settings', { json: JSON.stringify(settings) });
+  const { loadFailed: _, ...saved } = settings;
+  await invoke<void>('save_ai_settings', { json: JSON.stringify(saved) });
+}
+
+/**
+ * P5.7: saves the AI settings, but never the defaults a failed load left in
+ * place of the subagent settings: when `subagentsUnknown`, the saved ones
+ * are read again and kept, and nothing is saved if they still can't be read.
+ * Resolves with the subagent settings saved, or null when nothing was.
+ */
+export async function saveKeepingSubagents(
+  settings: Omit<PersistedAiSettings, 'version' | 'loadFailed'>,
+  subagentsUnknown: boolean,
+  io: {
+    load: () => Promise<PersistedAiSettings>;
+    save: (settings: PersistedAiSettings) => Promise<void>;
+  } = { load: loadAiSettings, save: saveAiSettings }
+): Promise<SubagentSettings | null> {
+  let subagents = settings.subagents;
+  if (subagentsUnknown) {
+    const saved = await io.load();
+    if (saved.loadFailed) return null;
+    subagents = saved.subagents;
+  }
+  await io.save({ ...settings, version: 2, subagents });
+  return subagents;
+}
+
+/** Where a component keeps its copy of the AI settings (its signals). */
+export interface AiSettingsTargets {
+  setProviders: (providers: Provider[]) => void;
+  setPermissions: (permissions: AgentPermissions) => void;
+  setSubagents: (subagents: SubagentSettings) => void;
+}
+
+/**
+ * A component's copy of the AI settings and whether its last load failed
+ * (P5.7): then the subagent settings it holds are defaults, not what's
+ * saved, and a save keeps the saved ones (saveKeepingSubagents) and takes
+ * them in once they're read.
+ */
+export function createAiSettingsHolder(
+  targets: AiSettingsTargets,
+  io?: Parameters<typeof saveKeepingSubagents>[2]
+) {
+  let unknown = false;
+  return {
+    /** Takes loaded settings in; `active` is the caller's own. */
+    apply(settings: PersistedAiSettings) {
+      targets.setProviders(settings.providers);
+      targets.setPermissions(settings.permissions);
+      targets.setSubagents(settings.subagents);
+      unknown = !!settings.loadFailed;
+    },
+    /** Saves; false (and a console error) when nothing could be saved. */
+    async save(settings: Omit<PersistedAiSettings, 'version' | 'loadFailed'>): Promise<boolean> {
+      // Read before the await: a load may land meanwhile.
+      const wasUnknown = unknown;
+      const saved = await saveKeepingSubagents(settings, wasUnknown, io);
+      if (!saved) {
+        console.error('AI settings not saved: the saved ones couldn’t be read.');
+        return false;
+      }
+      if (wasUnknown) {
+        unknown = false;
+        targets.setSubagents(saved);
+      }
+      return true;
+    },
+  };
 }
 
 /*

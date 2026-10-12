@@ -1,0 +1,19 @@
+{
+  "id": "lo-compact",
+  "repo": {
+    "url": "https://github.com/samber/lo",
+    "name": "lo"
+  },
+  "base": "4149716ede82e65e0d0096a10a9e9a3c69940773",
+  "reference": "2fd7a5ae9893acae1c97c5959a6c44cd35671ae3",
+  "lang": "go",
+  "request": "Add lo.Compact[T comparable](collection []T) []T in slice.go: the slice without zero values, keeping order (an empty, non-nil slice when nothing is left). Document it in README.md.",
+  "hidden": ["slice_test.go"],
+  "checks": [
+    {
+      "kind": "go",
+      "packages": ["."]
+    }
+  ],
+  "setup": ["go"]
+}

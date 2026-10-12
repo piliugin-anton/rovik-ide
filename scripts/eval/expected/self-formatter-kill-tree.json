@@ -1,0 +1,33 @@
+{
+  "id": "self-formatter-kill-tree",
+  "reference": "7e8b5e58757870b80c461aeec249bc0229ab1b31",
+  "ok": true,
+  "problems": [],
+  "failingAtBase": [
+    "formatter::tests::a_declared_formatter_beats_an_earlier_undeclared_one",
+    "formatter::tests::a_declared_formatter_that_isnt_installed_blocks_the_fallbacks",
+    "formatter::tests::a_failing_formatter_reports_its_error",
+    "formatter::tests::a_hanging_formatter_is_killed_with_everything_it_started",
+    "formatter::tests::formatting_pipes_the_text_through_the_tool",
+    "formatter::tests::only_toml_files_of_the_ini_language_are_formatted_as_toml",
+    "formatter::tests::standard_formatters_run_without_a_config",
+    "formatter::tests::the_project_root_matches_whatever_the_case_where_case_doesnt_count",
+    "formatter::tests::the_projects_own_copy_of_its_formatter_comes_first",
+    "formatter::tests::the_rust_edition_comes_from_the_nearest_cargo_toml",
+    "formatter::tests::the_search_stops_at_the_project_root"
+  ],
+  "flaky": [],
+  "required": [
+    "formatter::tests::a_declared_formatter_beats_an_earlier_undeclared_one",
+    "formatter::tests::a_declared_formatter_that_isnt_installed_blocks_the_fallbacks",
+    "formatter::tests::a_failing_formatter_reports_its_error",
+    "formatter::tests::a_hanging_formatter_is_killed_with_everything_it_started",
+    "formatter::tests::formatting_pipes_the_text_through_the_tool",
+    "formatter::tests::only_toml_files_of_the_ini_language_are_formatted_as_toml",
+    "formatter::tests::standard_formatters_run_without_a_config",
+    "formatter::tests::the_project_root_matches_whatever_the_case_where_case_doesnt_count",
+    "formatter::tests::the_projects_own_copy_of_its_formatter_comes_first",
+    "formatter::tests::the_rust_edition_comes_from_the_nearest_cargo_toml",
+    "formatter::tests::the_search_stops_at_the_project_root"
+  ]
+}

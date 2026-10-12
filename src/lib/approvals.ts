@@ -46,6 +46,9 @@ export interface PendingApproval {
   note?: string;
   /** write on an existing file: the reviewable diff. */
   edit?: EditReview;
+  /** A subagent's request: its lead's chat and the `task` call there. */
+  parentDialogId?: string;
+  parentCallId?: string;
 }
 
 /** As a run asks: an edit comes with the file's text before and after it. */
@@ -136,6 +139,32 @@ export function clearApproval(dialogId: string, toolCallId: string) {
 
 export function pendingApproval(dialogId: string, toolCallId: string): PendingApproval | undefined {
   return state.pending[keyOf(dialogId, toolCallId)];
+}
+
+/** Every approval a chat waits on (a subagent's, shown on its block). */
+export function pendingApprovalsOf(dialogId: string): PendingApproval[] {
+  return Object.values(state.pending).filter((p) => p.dialogId === dialogId);
+}
+
+/**
+ * The approvals a lead's `task` call waits on: its subagent's, found by the
+ * subagent's chat when it's known and by the call the requests name
+ * (P1.5: after a reload, before anything else about the subagent is).
+ */
+export function pendingApprovalsOfTask(
+  dialogId: string,
+  toolCallId: string,
+  childId: string | null
+): PendingApproval[] {
+  // A parallel group's workers run under "<call>#<label>" (group.rs), so
+  // their requests are the group's call's too (round 3).
+  const workers = `${toolCallId}#`;
+  return Object.values(state.pending).filter(
+    (p) =>
+      (childId !== null && p.dialogId === childId) ||
+      (p.parentDialogId === dialogId &&
+        (p.parentCallId === toolCallId || (p.parentCallId?.startsWith(workers) ?? false)))
+  );
 }
 
 /** The pending edit review of a file, if any. */
@@ -249,4 +278,16 @@ export function notifyFileWritten(absPath: string, content: string) {
 export function onFileWritten(listener: (absPath: string, content: string) => void): () => void {
   writtenListeners.add(listener);
   return () => writtenListeners.delete(listener);
+}
+
+const deletedListeners = new Set<(absPath: string) => void>();
+
+/** The agent removed a file (a rollback of one it created, P3.4). */
+export function notifyFileDeleted(absPath: string) {
+  for (const listener of deletedListeners) listener(absPath);
+}
+
+export function onFileDeleted(listener: (absPath: string) => void): () => void {
+  deletedListeners.add(listener);
+  return () => deletedListeners.delete(listener);
 }

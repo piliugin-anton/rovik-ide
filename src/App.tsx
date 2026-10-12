@@ -58,7 +58,7 @@ import { currentProject, projectList, refreshProjects, resolveProject } from './
 import { chatApi, type ProjectSummary } from './lib/chatApi';
 import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
-import { notifyFileWritten, onFileWritten, onRevealEdit } from './lib/approvals';
+import { notifyFileWritten, onFileDeleted, onFileWritten, onRevealEdit } from './lib/approvals';
 import { editorSettings } from './lib/editorSettings';
 import {
   onAddToChat,
@@ -95,7 +95,8 @@ import {
   notifyAiSettingsSaved,
   openAppSettings,
 } from './lib/appSettings';
-import { loadAiSettings, reconcileSelection, saveAiSettings } from './lib/aiSettings';
+import { createAiSettingsHolder, loadAiSettings, reconcileSelection } from './lib/aiSettings';
+import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './lib/subagentSettings';
 import { DEFAULT_PERMISSIONS, type AgentPermissions } from './lib/permissions';
 import type { ModelSelection, Provider } from './types';
 import { dismissBootSplash } from './lib/bootSplash';
@@ -158,38 +159,66 @@ export default function App() {
   const [settingsProviders, setSettingsProviders] = createSignal<Provider[]>([]);
   const [settingsPermissions, setSettingsPermissions] =
     createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
+  const [settingsSubagents, setSettingsSubagents] =
+    createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
+  const [settingsChatModel, setSettingsChatModel] = createSignal<ModelSelection | null>(null);
+  // P5.7: after a failed load, the subagent settings here are defaults, not what's saved.
+  const aiSettings = createAiSettingsHolder({
+    setProviders: setSettingsProviders,
+    setPermissions: setSettingsPermissions,
+    setSubagents: setSettingsSubagents,
+  });
   onMount(async () => {
     try {
       const settings = await loadAiSettings();
-      setSettingsProviders(settings.providers);
-      setSettingsPermissions(settings.permissions);
+      aiSettings.apply(settings);
+      setSettingsChatModel(reconcileSelection(settings.providers, settings.active));
     } catch (err) {
       console.error('Failed to load AI settings for Settings dialog:', err);
     }
   });
+  // The chat's model may have been switched since: read it again each time
+  // the dialog opens (the "code will also be sent to …" warning uses it).
+  createEffect(
+    on(
+      () => appSettingsPage() !== null,
+      (open) => {
+        if (!open) return;
+        loadAiSettings()
+          .then((settings) =>
+            setSettingsChatModel(reconcileSelection(settings.providers, settings.active))
+          )
+          .catch((err) => console.error('Failed to reload the chat model for Settings:', err));
+      }
+    )
+  );
   function handleAppSettingsSaved(changes: {
     providers: Provider[];
     permissions: AgentPermissions;
+    subagents: SubagentSettings;
   }) {
     setSettingsProviders(changes.providers);
     setSettingsPermissions(changes.permissions);
+    setSettingsSubagents(changes.subagents);
     // Keep the chat's current model choice: only the providers/permissions
     // changed here, so reconcile against the saved selection.
     void loadAiSettings()
       .catch(() => null)
-      .then((current) => {
+      .then(async (current) => {
         const active: ModelSelection | null = reconcileSelection(
           changes.providers,
           current?.active ?? null
         );
-        return saveAiSettings({
-          version: 2,
+        setSettingsChatModel(active);
+        // P5.7: never the defaults a failed load left over the saved ones.
+        const saved = await aiSettings.save({
           providers: changes.providers,
           active,
           permissions: changes.permissions,
+          subagents: changes.subagents,
         });
+        if (saved) notifyAiSettingsSaved();
       })
-      .then(() => notifyAiSettingsSaved())
       .catch((err) => console.error('Failed to save AI settings:', err));
   }
   const [cursorInfo, setCursorInfo] = createSignal<CursorInfo | null>(null);
@@ -463,6 +492,17 @@ export default function App() {
     }
     void openPath(path, { activate: activePath() === null });
   });
+  // A file the agent removed (a rolled-back creation, P3.4): its tab goes,
+  // unless it holds the user's unsaved text.
+  const stopDeleted = onFileDeleted((path) => {
+    const file = openFiles().find((f) => f.path === path);
+    if (!file || file.dirty) return;
+    const remaining = openFiles().filter((f) => f.path !== path);
+    setOpenFiles(remaining);
+    if (activePath() === path) {
+      setActivePath(remaining.length ? remaining[remaining.length - 1].path : null);
+    }
+  });
   // An unreviewed agent edit: when "Open files after agent edits" is on,
   // its file opens in a tab so the changes can be seen. In the background
   // while another file is being worked on, so a long run doesn't keep
@@ -577,6 +617,7 @@ export default function App() {
   onCleanup(() => {
     stopReveal();
     stopWritten();
+    stopDeleted();
     stopOpenRequests();
     stopAddToChat();
     stopAgentEdits();
@@ -1964,6 +2005,8 @@ export default function App() {
           <AiSettingsModal
             providers={settingsProviders()}
             permissions={settingsPermissions()}
+            subagents={settingsSubagents()}
+            chatModel={settingsChatModel()}
             initialPage={page}
             rootPath={rootPath()}
             onSave={handleAppSettingsSaved}

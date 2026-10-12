@@ -34,7 +34,8 @@ pub enum ChatStreamEvent {
     Done,
     /// How the reply ended, sent just before `Done`: for diagnostics (the
     /// frontend's agent log). `usage` is the provider's token counts, when it
-    /// reports them.
+    /// reports them; a request cancelled after they came sends them too,
+    /// without a finish reason.
     Finished {
         finish_reason: Option<String>,
         usage: Option<serde_json::Value>,
@@ -1248,7 +1249,8 @@ pub async fn run_chat(
     if let Some(tokens) = reported_prompt_tokens {
         calibration::learn(&calibration_key, prompt_chars, prompt_images, tokens);
     }
-    if let Some(tokens) = reported_output_tokens {
+    // A cut-off reply's size isn't a reply's.
+    if let (Some(tokens), Ok(())) = (reported_output_tokens, &result) {
         reply_reserve::learn(&reply_key, tokens);
     }
 

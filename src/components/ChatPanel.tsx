@@ -34,10 +34,10 @@ import {
 } from '../lib/fileReferences';
 import { onAddToChat, takeChatReferences } from '../lib/editorBridge';
 import {
+  createAiSettingsHolder,
   loadAiSettings,
   reconcileSelection,
   resolveProfile,
-  saveAiSettings,
 } from '../lib/aiSettings';
 import { chatStore } from '../lib/chatStore';
 import { chatApi } from '../lib/chatApi';
@@ -49,6 +49,7 @@ import ContextMeter, { type ContextUsage } from './ContextMeter';
 import { chatMode, implementationRequest, setChatMode, type ChatMode } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
 import { notify } from '../lib/notifications';
+import { plural } from '../lib/textUtils';
 import ModeSelector from './ModeSelector';
 import EffortSelector from './EffortSelector';
 import ContextControls from './ContextControls';
@@ -111,6 +112,12 @@ import {
 } from '../lib/composerDraft';
 import { toRelativePath } from '../lib/fileTools';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
+import { runUsage, usageLabel } from '../lib/subagents';
+import {
+  DEFAULT_SUBAGENT_SETTINGS,
+  resolveSubagentConfig,
+  type SubagentSettings,
+} from '../lib/subagentSettings';
 import { readFileContent } from '../lib/commands';
 
 const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
@@ -145,6 +152,14 @@ export default function ChatPanel(props: ChatProps) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
+  const [subagentSettings, setSubagentSettings] =
+    createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
+  // P5.7: after a failed load, `subagentSettings` are defaults, not what's saved.
+  const aiSettings = createAiSettingsHolder({
+    setProviders,
+    setPermissions,
+    setSubagents: setSubagentSettings,
+  });
 
   // Chat list page + open chats (the app's, kept while the panel is away);
   // everything else stays in the database.
@@ -271,9 +286,8 @@ export default function ChatPanel(props: ChatProps) {
           try {
             const settings = await loadAiSettings();
             if (!isMounted) return;
-            setProviders(settings.providers);
+            aiSettings.apply(settings);
             setSelection((sel) => reconcileSelection(settings.providers, sel ?? settings.active));
-            setPermissions(settings.permissions);
           } catch (err) {
             console.error('Failed to reload AI settings:', err);
           }
@@ -674,9 +688,8 @@ export default function ChatPanel(props: ChatProps) {
     try {
       const settings = await loadAiSettings();
       if (!isMounted) return;
-      setProviders(settings.providers);
+      aiSettings.apply(settings);
       setSelection(reconcileSelection(settings.providers, settings.active));
-      setPermissions(settings.permissions);
 
       try {
         // This project's chats (or, with no folder open, the ones with none).
@@ -917,10 +930,9 @@ export default function ChatPanel(props: ChatProps) {
       message: (
         <>
           <strong>{dialog.title || 'Untitled chat'}</strong>
-          {count > 0 ? ` and its ${count} message${count === 1 ? '' : 's'}` : ''} will be
-          permanently deleted.
+          {count > 0 ? ` and its ${plural(count, 'message')}` : ''} will be permanently deleted.
           {unlanded > 0
-            ? ` So will its ${unlanded} changed file${unlanded === 1 ? '' : 's'} that haven’t landed in the project.`
+            ? ` So will its ${plural(unlanded, 'changed file')} that haven’t landed in the project.`
             : ''}
         </>
       ),
@@ -1915,12 +1927,16 @@ export default function ChatPanel(props: ChatProps) {
     nextSelection: ModelSelection | null,
     nextPermissions: AgentPermissions = permissions()
   ) {
-    void saveAiSettings({
-      version: 2,
-      providers: nextProviders,
-      active: nextSelection,
-      permissions: nextPermissions,
-    }).catch((err) => console.error('Failed to save AI settings:', err));
+    // P5.7: after a failed reload, the subagent settings here are
+    // defaults: what's saved is read again, never written over.
+    void aiSettings
+      .save({
+        providers: nextProviders,
+        active: nextSelection,
+        permissions: nextPermissions,
+        subagents: subagentSettings(),
+      })
+      .catch((err) => console.error('Failed to save AI settings:', err));
   }
 
   function handleModelChange(next: ModelSelection) {
@@ -2019,6 +2035,7 @@ export default function ChatPanel(props: ChatProps) {
   const agentConfig = (): AgentConfig => ({
     permissions: permissions(),
     approvalProfiles: approvalProfiles(permissions()),
+    subagents: resolveSubagentConfig(subagentSettings(), providers(), resolveProfile),
   });
   createEffect(() => configureAgent(agentConfig()));
 
@@ -2130,14 +2147,18 @@ export default function ChatPanel(props: ChatProps) {
    * An isolated chat's conflicts with the project, handed to it
    * (IsolationBar): markers are in its files; this asks it to settle them.
    */
-  async function askToResolve(dialogId: string, request: string): Promise<boolean> {
+  async function askToResolve(
+    dialogId: string,
+    request: string,
+    shown = 'Resolve the conflicts with the project’s changes.'
+  ): Promise<boolean> {
     if (!activeProfile() || isRunning(dialogId)) return false;
     setChatMode('agent');
     return sendMessage(
       dialogId,
       {
         id: crypto.randomUUID(),
-        content: 'Resolve the conflicts with the project’s changes.',
+        content: shown,
         meta: { mode: 'agent', sentContent: request },
       },
       request
@@ -3047,6 +3068,14 @@ export default function ChatPanel(props: ChatProps) {
       {/* The agent's questions, one at a time, above the input. */}
       <Show when={waitingQuestion()} keyed>
         {(pending) => <QuestionPanel pending={pending} />}
+      </Show>
+      {/* What this request's subagents used, as their providers reported it. */}
+      <Show when={usageLabel(runUsage(messages()))}>
+        {(label) => (
+          <div class="subagent-run-usage" title="Tokens used by subagents for the latest request">
+            Subagents: {label()}
+          </div>
+        )}
       </Show>
       {/* In CLM mode the context row shows the size of the agent's own context. */}
       <Show when={contextModeFor(activeDialogId()) !== 'clm' && contextUsage()}>

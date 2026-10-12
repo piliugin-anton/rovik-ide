@@ -1,0 +1,16 @@
+{
+  "id": "self-edit-counts",
+  "repo": "self",
+  "base": "04855a705540e10bf685184e53734a2ffdce0543",
+  "reference": "a99282b299b36be9fce91e3e5df4428fcaef3ce7",
+  "lang": "ts",
+  "request": "Show the total lines added and removed on an edit's line in the chat, and on a group of edits. In src/lib/toolGroups.ts export editCounts(argsList) taking the args of write calls ({path, old_text?, content}) and returning {added, removed} summed over the edits (calls with old_text: lines of content added, lines of old_text removed, by a line diff), or undefined when no call counts. Whole-file writes (no old_text) and edits to the agent's context (path \"@context\" or under \"@context/\") don't count. Show the counts green/red in ToolCallGroup.tsx.",
+  "hidden": ["src/lib/toolGroups.test.ts"],
+  "checks": [
+    {
+      "kind": "ts",
+      "files": ["src/lib/toolGroups.test.ts"]
+    }
+  ],
+  "setup": ["node"]
+}

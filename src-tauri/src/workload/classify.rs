@@ -76,28 +76,19 @@ fn program(word: &str) -> String {
     name
 }
 
-/// Wrappers that run the rest of the line: `env X=1 cargo test`, `time make`.
-fn skip_wrappers(words: &[String]) -> &[String] {
-    let mut rest = words;
-    loop {
-        let Some(first) = rest.first() else {
-            return rest;
-        };
-        match program(first).as_str() {
-            "env" => {
-                let skip = 1 + rest[1..]
-                    .iter()
-                    .take_while(|w| w.contains('=') || w.starts_with('-'))
-                    .count();
-                rest = &rest[skip..];
-            }
-            "time" | "nice" | "nohup" | "exec" | "command" | "sudo" | "caffeinate" => {
-                let skip = 1 + rest[1..].iter().take_while(|w| w.starts_with('-')).count();
-                rest = &rest[skip..];
-            }
-            _ => return rest,
-        }
-    }
+/// Whether a command names files (`x.py`, `src/a.ts`), not folders or
+/// the whole project.
+fn file_args(words: &[String]) -> bool {
+    let args: Vec<&String> = words
+        .iter()
+        .skip(1)
+        .filter(|w| !w.starts_with('-'))
+        .collect();
+    !args.is_empty()
+        && args.iter().all(|a| {
+            let name = a.rsplit(['/', '\\']).next().unwrap_or(a);
+            name.contains('.') && !name.ends_with('.') && *a != "." && *a != ".."
+        })
 }
 
 fn has_flag(words: &[String], flags: &[&str]) -> bool {
@@ -118,8 +109,8 @@ const LIGHT: &[&str] = &[
     "wc", "sort", "uniq", "cut", "tr", "diff", "which", "where", "true", "false", "test", "[",
     "mkdir", "rm", "rmdir", "cp", "mv", "touch", "chmod", "ln", "stat", "file", "du", "df", "tree",
     "jq", "yq", "curl", "wget", "type", "dir", "rustfmt", "basename", "dirname", "realpath",
-    "date", "sleep", "whoami", "uname", "xargs", "tee", "less", "more", "open", "set", "export",
-    "source", ".", "exit", "cd",
+    "date", "sleep", "whoami", "uname", "tee", "less", "more", "open", "set", "export", "source",
+    ".", "exit", "cd",
 ];
 
 /// Programs whose own processes do the heavy work (also used by the tracker).
@@ -160,6 +151,7 @@ pub const HEAVY_PROGRAMS: &[&str] = &[
     "sbt",
     "ant",
     "pytest",
+    "mypy",
     "py.test",
     "tox",
     "nox",
@@ -189,7 +181,7 @@ const LONG_RUNNING: &[&str] = &[
 const LONG_SCRIPTS: &[&str] = &["dev", "start", "serve", "watch", "preview"];
 
 fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
-    let words = skip_wrappers(words);
+    let words = crate::agent_run::permissions::unwrap_wrappers(words);
     let Some(first) = words.first() else {
         return Class::Light;
     };
@@ -224,6 +216,27 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
                     | "pkgid" | "locate-project" | "version" | "help" | "new" | "init" | "clean",
                 ) => Class::Light,
                 _ => Class::Unknown,
+            };
+        }
+        // F05b: light checks on a file or one package (project::light_check_for).
+        "ruff" => return Class::Light,
+        "pyright" | "eslint" => {
+            return if file_args(words) {
+                Class::Light
+            } else {
+                Class::Heavy
+            };
+        }
+        "go" if sub == Some("vet") => {
+            let pkgs: Vec<&String> = words
+                .iter()
+                .skip(2)
+                .filter(|w| !w.starts_with('-'))
+                .collect();
+            return if pkgs.len() == 1 && !pkgs[0].contains("...") {
+                Class::Light
+            } else {
+                Class::Heavy
             };
         }
         "go" => {
@@ -322,12 +335,27 @@ fn classify_words(words: &[String], cwd: Option<&Path>, depth: usize) -> Class {
     match prog.as_str() {
         "npm" | "pnpm" | "yarn" | "bun" => package_script(&prog, words, cwd, depth),
         "npx" | "bunx" => tool_after(words, 1, cwd, depth),
+        // `uv run pytest`, `poetry run mypy .`: what they run.
+        "uv" | "poetry" | "pipenv" | "pdm" | "hatch" | "rye" if sub == Some("run") => {
+            let at = words.iter().position(|w| w == "run").unwrap_or(1);
+            tool_after(words, at + 1, cwd, depth)
+        }
+        "uvx" | "pipx" => tool_after(words, if sub == Some("run") { 2 } else { 1 }, cwd, depth),
         "just" => recipe(cwd, sub, depth, just_recipe),
         "task" => recipe(cwd, sub, depth, taskfile_recipe),
-        "sh" | "bash" | "zsh" | "dash" => match words.get(1).filter(|w| !w.starts_with('-')) {
-            Some(script) => shell_script(cwd, script, depth),
-            None => Class::Unknown,
-        },
+        "sh" | "bash" | "zsh" | "dash" => {
+            // `bash -c 'cargo test'`: the command it runs.
+            if let Some(at) = words.iter().position(|w| w == "-c" || w == "-lc") {
+                return match words.get(at + 1) {
+                    Some(script) => classify_at(script, cwd.map(Path::to_path_buf), depth + 1),
+                    None => Class::Unknown,
+                };
+            }
+            match words.get(1).filter(|w| !w.starts_with('-')) {
+                Some(script) => shell_script(cwd, script, depth),
+                None => Class::Unknown,
+            }
+        }
         _ if first.starts_with("./") || first.starts_with(".\\") => shell_script(cwd, first, depth),
         _ => Class::Unknown,
     }
@@ -523,6 +551,21 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Round 2 (§4.2): a wrapped command classifies as the bare one;
+    /// `env -S` hides its command, so it isn't light.
+    #[test]
+    fn classify_light_commands_through_wrappers() {
+        for (wrapped, bare) in [
+            ("env CI=1 cargo check", "cargo check"),
+            ("timeout 60 npx tsc --noEmit", "npx tsc --noEmit"),
+            ("nice -n 5 ruff check .", "ruff check ."),
+            ("time cargo build", "cargo build"),
+        ] {
+            assert_eq!(classify(wrapped, None), classify(bare, None), "{wrapped}");
+        }
+        assert_ne!(classify("env -S \"cargo build\"", None), Class::Light);
+    }
+
     fn project(files: &[(&str, &str)]) -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
@@ -555,6 +598,15 @@ mod tests {
         assert_eq!(c("vite"), Class::LongRunning);
         assert_eq!(c("python -m pytest -q"), Class::Heavy);
         assert_eq!(c("pytest"), Class::Heavy);
+        // F05b: light checks on one file or package.
+        assert_eq!(c("ruff check src/a.py"), Class::Light);
+        assert_eq!(c("pyright src/a.py"), Class::Light);
+        assert_eq!(c("pyright"), Class::Heavy);
+        assert_eq!(c("npx eslint src/a.ts"), Class::Light);
+        assert_eq!(c("eslint ."), Class::Heavy);
+        assert_eq!(c("go vet ./pkg/util"), Class::Light);
+        assert_eq!(c("go vet ./..."), Class::Heavy);
+        assert_eq!(c("python -m pytest tests/test_a.py"), Class::Heavy);
         assert_eq!(c("make"), Class::Heavy);
         assert_eq!(c("ls -la"), Class::Light);
         assert_eq!(c("git status"), Class::Light);
@@ -621,5 +673,31 @@ mod tests {
         assert_eq!(c("./build.sh"), Class::Heavy);
         assert_eq!(c("sh tidy.sh"), Class::Light);
         assert_eq!(c("bash missing.sh"), Class::Unknown);
+    }
+
+    #[test]
+    fn wrappers_and_runners_are_seen_through() {
+        let c = |cmd: &str| classify(cmd, None);
+        for heavy in [
+            "timeout 600 cargo test",
+            "timeout -s KILL 5m cargo build",
+            "xargs cargo test",
+            "bash -c 'cargo test'",
+            "sh -c \"npm test\"",
+            "uv run pytest",
+            "poetry run mypy .",
+            "pipenv run pytest tests/",
+            "env CI=1 timeout 60 cargo check",
+        ] {
+            assert_eq!(c(heavy), Class::Heavy, "{heavy}");
+        }
+        for light in [
+            "uvx ruff check a.py",
+            "timeout 5 ls",
+            "bash -c 'git status'",
+            "npx eslint src/a.ts",
+        ] {
+            assert_eq!(c(light), Class::Light, "{light}");
+        }
     }
 }

@@ -6,6 +6,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type { GitConflictFile } from '../types';
+import type { NotificationOptions } from './notifications';
 
 export interface ChangedFile {
   path: string;
@@ -52,6 +53,8 @@ export interface OverlayStatus {
   limit: number;
   /** Build output and dependencies in the chat's view (not landed). */
   byProducts: number;
+  /** Parallel groups whose merge can be thrown away and redone one step at a time. */
+  redoGroups?: string[];
 }
 
 export interface FileVersions {
@@ -109,6 +112,49 @@ export function overlayConflictResolve(
   side?: 'ours' | 'theirs'
 ): Promise<Conflict[]> {
   return invoke<Conflict[]>('overlay_conflict_resolve', { dialogId, path, content, side });
+}
+
+/** Redo sequentially: the group's merge is thrown away; returns the message to send the chat. */
+export function overlayRedoGroup(dialogId: string, group: string): Promise<string> {
+  return invoke<string>('overlay_redo_group', { dialogId, group });
+}
+
+/**
+ * Redo sequentially, once the user said yes: the group's merge is thrown
+ * away, then the chat is asked to carry out its steps. Two steps, each
+ * reported on its own (P5.9): when only the first worked, the files are
+ * back and the user is told to ask the chat. Resolves with whether the
+ * chat was asked.
+ */
+export async function redoGroup(
+  dialogId: string,
+  group: string,
+  deps: {
+    redo: (dialogId: string, group: string) => Promise<string>;
+    askChat: (dialogId: string, request: string, shown: string) => Promise<boolean>;
+    notify: (options: NotificationOptions) => unknown;
+  }
+): Promise<boolean> {
+  let request: string;
+  // What the chat shows as the user's message (round 3: not "Resolve the
+  // conflicts", which is the conflicts bar's request).
+  const shown = `Redo the group “${group}” one step at a time.`;
+  try {
+    request = await deps.redo(dialogId, group);
+  } catch (e) {
+    deps.notify({ kind: 'error', title: 'Couldn’t redo the group', message: String(e) });
+    return false;
+  }
+  const title = 'The group was undone, but the chat couldn’t be asked to redo it';
+  const rest =
+    'Its files are back to what they were before it; ask the chat to carry out the steps again.';
+  try {
+    if (await deps.askChat(dialogId, request, shown)) return true;
+    deps.notify({ kind: 'error', title, message: `The chat didn’t start. ${rest}` });
+  } catch (e) {
+    deps.notify({ kind: 'error', title, message: `${String(e)}. ${rest}` });
+  }
+  return false;
 }
 
 /**

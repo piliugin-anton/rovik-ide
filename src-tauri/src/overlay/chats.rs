@@ -259,8 +259,22 @@ static DATA_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Where overlays are kept: the app's data folder. Landings a crash
 /// interrupted are finished first.
+/// Tests that use the overlays' data folder (the process's) take this, so
+/// they don't set it under each other.
+#[cfg(test)]
+pub static TEST_DATA: LazyLock<Arc<tokio::sync::Mutex<()>>> = LazyLock::new(Default::default);
+
+/// A test's data folder, held until the guard goes.
+#[cfg(test)]
+pub fn test_data(data_dir: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    let held = TEST_DATA.clone().blocking_lock_owned();
+    init(data_dir);
+    held
+}
+
 pub fn init(data_dir: &Path) {
     *DATA_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.to_path_buf());
+    sweep_scratch(data_dir);
     let finished = super::land::recover(data_dir);
     if !finished.is_empty() {
         eprintln!(
@@ -292,7 +306,7 @@ pub fn tell_not_isolated(dialog_id: &str) -> bool {
         .insert(dialog_id.to_string())
 }
 
-fn data_dir() -> Option<PathBuf> {
+pub(crate) fn data_dir() -> Option<PathBuf> {
     DATA_DIR.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -311,7 +325,7 @@ fn store_dir(dialog_id: &str) -> Option<PathBuf> {
         .flatten()
 }
 
-fn mountpoint(dialog_id: &str) -> PathBuf {
+pub(crate) fn mountpoint(dialog_id: &str) -> PathBuf {
     #[cfg(target_os = "linux")]
     let base = match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| Path::new(d).is_dir()) {
         Some(dir) => PathBuf::from(dir).join("rovik-ide").join("chats"),
@@ -322,6 +336,12 @@ fn mountpoint(dialog_id: &str) -> PathBuf {
     #[cfg(not(target_os = "linux"))]
     let base = std::env::temp_dir().join("rovik-chats");
     base.join(dialog_id)
+}
+
+/// Whether `path` is a chat's view (a mount made here), not a project.
+pub fn is_chat_view(path: &Path) -> bool {
+    let base = mountpoint("x");
+    path.parent().is_some_and(|p| Some(p) == base.parent())
 }
 
 /// The chat's overlay, opened (and mounted) if it isn't yet. `on_warn`:
@@ -380,6 +400,16 @@ pub fn open(
     OPEN.lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(dialog_id.to_string(), overlay.clone());
+    // A child's landing into this view that a crash interrupted (F01).
+    if let Some(data) = data_dir() {
+        let finished = super::land::recover_into(&data, dialog_id, &overlay.view);
+        if !finished.is_empty() {
+            eprintln!(
+                "overlay: finished an interrupted landing into {dialog_id}: {}",
+                finished.join(", ")
+            );
+        }
+    }
     // Before the check: it may mark conflicts, which takes the gate.
     drop(opening);
     // Closed until now (a restart): the project may have changed meanwhile.
@@ -438,6 +468,12 @@ pub fn close(dialog_id: &str) {
 
 /// Throws the chat's changes away.
 pub fn discard(dialog_id: &str) -> Result<(), String> {
+    // Its checks' saved output goes with it (landing discards too).
+    crate::agent_run::check_output::clean(dialog_id);
+    // And its children's overlays, which stood on its view (F02).
+    for child in children_of(dialog_id) {
+        discard_child(&child);
+    }
     // The project, so the chats left open on it stop warning about this one.
     let project = project_of(dialog_id);
     close(dialog_id);
@@ -469,14 +505,346 @@ pub fn forget(dialog_id: &str) {
 
 /// At exit: every view unmounted, or its folder stays a dead mount.
 pub fn close_all() {
-    let all: Vec<Arc<ChatOverlay>> = OPEN
+    let mut all: Vec<(String, Arc<ChatOverlay>)> = OPEN
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .drain()
-        .map(|(_, o)| o)
         .collect();
-    for o in all {
+    // Children first: they read from their parents' views.
+    all.sort_by_key(|(id, _)| parent_of(id).is_none());
+    for (_, o) in all {
         o.unmount();
+    }
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Child overlays (F01, F02): a parallel worker's view, stacked on its
+ * parent chat's view and landed back into it
+ * ---------------------------------------------------------------------------
+ */
+
+/// Child chat id -> its parent's.
+static CHILDREN: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
+/// The least room a child gets, whatever its parent has used.
+const MIN_CHILD_LIMIT: u64 = 1 << 20;
+
+/// The open children of a chat.
+pub fn children_of(parent: &str) -> Vec<String> {
+    let mut kids: Vec<String> = CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, p)| p.as_str() == parent)
+        .map(|(c, _)| c.clone())
+        .collect();
+    // Saved ones a restart left behind, too.
+    if let Some(data) = data_dir() {
+        if let Ok(dirs) = std::fs::read_dir(data.join("overlays")) {
+            for d in dirs.flatten() {
+                let id = d.file_name().to_string_lossy().into_owned();
+                let saved = std::fs::read_to_string(d.path().join("parent.txt")).ok();
+                if saved.as_deref().map(str::trim) == Some(parent) && !kids.contains(&id) {
+                    kids.push(id);
+                }
+            }
+        }
+    }
+    kids
+}
+
+/// The parent of a child chat, while it's open.
+pub fn parent_of(child: &str) -> Option<String> {
+    CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(child)
+        .cloned()
+}
+
+/// F02: opens (and mounts) a child overlay of `parent`'s view. Its changes
+/// count inside the parent's limit: it gets what the parent and its other
+/// open children leave of it.
+#[cfg(test)]
+pub fn open_child(parent: &str, child: &str) -> Result<Arc<ChatOverlay>, String> {
+    open_child_shared(parent, child, 1)
+}
+
+/// [`open_child`] for one of `parts` children opened together (a parallel
+/// group's workers): each gets an equal part of what's left. The other
+/// open children's limits are taken as theirs, whatever they've used so
+/// far, so children opened before any of them writes don't each get it all.
+pub fn open_child_shared(
+    parent: &str,
+    child: &str,
+    parts: usize,
+) -> Result<Arc<ChatOverlay>, String> {
+    if !valid_id(child) {
+        return Err("not a chat id".into());
+    }
+    let p = get(parent).ok_or("the chat isn't isolated, so it can't have child overlays")?;
+    if let Some(o) = get(child) {
+        return Ok(o);
+    }
+    let (used, limit) = p.fs.used();
+    let siblings: Vec<Arc<ChatOverlay>> =
+        children_of(parent).iter().filter_map(|c| get(c)).collect();
+    let reserved: u64 = siblings.iter().map(|o| o.fs.used().1).sum();
+    // Of the parts, those not opened yet share what's left.
+    let left = parts.saturating_sub(siblings.len()).max(1) as u64;
+    let room = (limit.saturating_sub(used).saturating_sub(reserved) / left).max(MIN_CHILD_LIMIT);
+    let overlay = mount_on(child, &p.view, room, Some(parent))?;
+    CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(child.to_string(), parent.to_string());
+    Ok(overlay)
+}
+
+/// E04: a throwaway overlay of `base` (the project, the code before a
+/// chat's change), for running something there without touching it.
+/// Removed with `discard_child`.
+pub fn open_scratch(id: &str, base: &Path) -> Result<Arc<ChatOverlay>, String> {
+    if !valid_id(id) {
+        return Err("not a chat id".into());
+    }
+    // P6.8: marked, so one a crash left is swept at the next start; marked
+    // before it's mounted, so a crash in between leaves it marked (round 2).
+    if let Some(store) = store_dir(id) {
+        std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
+        std::fs::write(store.join(SCRATCH_MARK), "").map_err(|e| e.to_string())?;
+    }
+    mount_on(id, base, DEFAULT_LIMIT, None)
+}
+
+/// Scratch overlays' ids start with this (the test writer's red check).
+pub const SCRATCH_PREFIX: &str = "red-";
+
+/// The file that marks a scratch overlay's store (never a chat's).
+const SCRATCH_MARK: &str = "scratch.txt";
+
+/// Scratch overlays a crash left: none is open at start.
+fn sweep_scratch(data_dir: &Path) {
+    let Ok(dirs) = std::fs::read_dir(data_dir.join("overlays")) else {
+        return;
+    };
+    for d in dirs.flatten() {
+        // Marked, or named as one (a chat's id is a bare uuid).
+        let named = d.file_name().to_string_lossy().starts_with(SCRATCH_PREFIX);
+        if named || d.path().join(SCRATCH_MARK).is_file() {
+            let _ = std::fs::remove_dir_all(d.path());
+        }
+    }
+}
+
+/// An overlay of `base`, mounted, registered as open.
+fn mount_on(
+    id: &str,
+    base: &Path,
+    limit: u64,
+    parent: Option<&str>,
+) -> Result<Arc<ChatOverlay>, String> {
+    let store = store_dir(id).ok_or("the app's data folder isn't known yet")?;
+    std::fs::create_dir_all(&store).map_err(|e| e.to_string())?;
+    if let Some(parent) = parent {
+        std::fs::write(store.join("parent.txt"), parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(store.join("project.txt"), base.to_string_lossy().as_bytes())
+        .map_err(|e| e.to_string())?;
+    let fs = Arc::new(OverlayFs::open(base, &store, limit).map_err(|e| e.to_string())?);
+    fs.sweep_orphans();
+    let at = mountpoint(id);
+    let (mount, view) = crate::vfs::platform_mount(fs.clone(), Some(&at))
+        .map_err(|e| format!("couldn't mount the view: {}", e.message()))?;
+    let overlay = Arc::new(ChatOverlay {
+        fs,
+        project: base.to_path_buf(),
+        view,
+        store,
+        mount: Mutex::new(Some(mount)),
+    });
+    OPEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.to_string(), overlay.clone());
+    Ok(overlay)
+}
+
+/// F02: lands a child's changes into its parent's view (merged three ways,
+/// journaled: land.rs), then removes the child. The app lands with retries
+/// and keeps the copy on an error (`group::land_copy`).
+#[cfg(test)]
+pub fn land_child(child: &str) -> Result<Vec<String>, super::land::LandError> {
+    let landed = land_child_paths(child, &[])?;
+    discard_child(child);
+    Ok(landed)
+}
+
+/// P1.2: lands a child's changes except at `except` (paths that conflict),
+/// and keeps the child: what's left of it can land later, merged again.
+pub fn land_child_except(
+    child: &str,
+    except: &[String],
+) -> Result<Vec<String>, super::land::LandError> {
+    land_child_paths(child, except)
+}
+
+fn land_child_paths(child: &str, except: &[String]) -> Result<Vec<String>, super::land::LandError> {
+    use super::land::LandError;
+    let o = get(child).ok_or_else(|| LandError::Failed("the worker's view isn't open".into()))?;
+    let data = data_dir()
+        .ok_or_else(|| LandError::Failed("the app's data folder isn't known yet".into()))?;
+    // An earlier landing of it that stopped half way is finished first
+    // (P1.3): landing again over it would leave the chat's view mixed.
+    let parent = parent_of(child)
+        .or_else(|| {
+            store_dir(child)
+                .and_then(|s| std::fs::read_to_string(s.join("parent.txt")).ok())
+                .map(|p| p.trim().to_string())
+        })
+        .unwrap_or_default();
+    if super::land::interrupted_into(&data, &parent, &o.project) {
+        super::land::recover_into(&data, &parent, &o.project);
+        if super::land::interrupted_into(&data, &parent, &o.project) {
+            return Err(LandError::Failed(
+                "an earlier landing into the chat's view isn't finished".into(),
+            ));
+        }
+    }
+    o.fs.flush();
+    let changes: Vec<_> =
+        o.fs.changes()
+            .into_iter()
+            .filter(|c| {
+                let path = c.path().replace('\\', "/");
+                !except
+                    .iter()
+                    .any(|e| crate::agent_run::paths::under(e, &path))
+            })
+            .collect();
+    // P6.9: before anything is written: recovery finds it by the parent.
+    if !parent.is_empty() {
+        super::land::mark_into_chat(&data, child, &parent).map_err(LandError::Failed)?;
+    }
+    let landed = super::land::land(&data, child, &o.project, &changes, false)?;
+    // The parent's overlay saves what came in.
+    if let Some(parent) = parent_of(child).and_then(|p| get(&p)) {
+        parent.fs.flush();
+    }
+    Ok(landed.map(|l| l.paths).unwrap_or_default())
+}
+
+/// Round 2, P1.3: a child's landing into this chat's view that stopped
+/// half way is finished now, before anything removes its journal. Err: it
+/// couldn't be, so nothing may land into the view or discard its copies.
+pub fn finish_landing_into(dialog_id: &str) -> Result<(), String> {
+    let Some(data) = data_dir() else {
+        return Ok(());
+    };
+    if !super::land::interrupted_into(&data, dialog_id, &mountpoint(dialog_id)) {
+        return Ok(());
+    }
+    if let Some(o) = get(dialog_id) {
+        super::land::recover_into(&data, dialog_id, &o.view);
+    }
+    if super::land::interrupted_into(&data, dialog_id, &mountpoint(dialog_id)) {
+        return Err(
+            "a worker's landing into this chat's files stopped half way and couldn't be finished"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Round 2, P1.2: a kept copy conflicted on `paths`: the chat's version of
+/// each (in `view`) is noted by hash, to know later whether the lead has
+/// merged it since.
+pub fn note_conflicts(child: &str, view: &Path, paths: &[String]) {
+    let Some(store) = store_dir(child) else {
+        return;
+    };
+    let mut noted: HashMap<String, String> = std::fs::read(store.join(CONFLICTS))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    for p in paths {
+        noted.insert(p.clone(), content_hash(&view.join(p)));
+    }
+    if let Ok(json) = serde_json::to_vec(&noted) {
+        let _ = std::fs::write(store.join(CONFLICTS), json);
+    }
+}
+
+/// The paths a kept copy conflicted on whose version in `view` changed
+/// since (the lead merged them).
+pub fn merged_since(child: &str, view: &Path) -> Vec<String> {
+    let noted: HashMap<String, String> = store_dir(child)
+        .and_then(|s| std::fs::read(s.join(CONFLICTS)).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let mut merged: Vec<String> = noted
+        .into_iter()
+        .filter(|(p, hash)| content_hash(&view.join(p)) != *hash)
+        .map(|(p, _)| p)
+        .collect();
+    merged.sort();
+    merged
+}
+
+/// Where a kept copy's conflicts are noted, in its store.
+const CONFLICTS: &str = "conflicts.json";
+
+fn content_hash(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    match std::fs::read(path) {
+        Ok(bytes) => Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+        Err(_) => "absent".into(),
+    }
+}
+
+/// Round 2, P1.2: a kept copy of `parent`'s, opened again after the app
+/// closed (it was registered in memory only), so a follow-up goes on in it.
+/// None: `child` has no copy kept for `parent`.
+pub fn reopen_child(parent: &str, child: &str) -> Option<Arc<ChatOverlay>> {
+    if let Some(o) = get(child) {
+        return (parent_of(child).as_deref() == Some(parent)).then_some(o);
+    }
+    let store = store_dir(child)?;
+    let saved = std::fs::read_to_string(store.join("parent.txt")).ok()?;
+    if saved.trim() != parent {
+        return None;
+    }
+    open_child_shared(parent, child, 1).ok()
+}
+
+/// What an app restart does to an open child: unmounted, and its parent
+/// forgotten (only its store on disk is left).
+#[cfg(test)]
+pub fn forget_child_as_if_restarted(child: &str) {
+    close(child);
+    CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(child);
+}
+
+/// F02: a child's overlay, unmounted and removed with its landing journals.
+pub fn discard_child(child: &str) {
+    if !valid_id(child) {
+        return;
+    }
+    close(child);
+    CHILDREN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(child);
+    if let Some(store) = store_dir(child) {
+        let _ = std::fs::remove_dir_all(store);
+    }
+    if let Some(data) = data_dir() {
+        let _ = std::fs::remove_dir_all(data.join("landings").join(child));
     }
 }
 
@@ -1317,6 +1685,9 @@ pub struct OverlayStatus {
     pub limit: u64,
     /// Build output and dependencies in the chat's view (not landed).
     pub by_products: u64,
+    /// Parallel groups whose merge can be thrown away and redone one step
+    /// at a time (R06), while the chat's changes wait to land.
+    pub redo_groups: Vec<String>,
 }
 
 fn summarize(changes: &[OverlayChange]) -> Vec<ChangedFile> {
@@ -1404,6 +1775,15 @@ fn status(dialog_id: String) -> OverlayStatus {
         used,
         limit,
         by_products,
+        redo_groups: if isolated && pending(&dialog_id).is_some() {
+            saved_groups(&dialog_id)
+                .into_iter()
+                .filter(|g| !g.redone && g.unavailable.is_none())
+                .map(|g| g.name)
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -1459,9 +1839,19 @@ fn file_versions(dialog_id: String, path: String) -> Result<FileVersions, String
 
 /// Throws away the chat's changes (all of them).
 /// Refused while the chat's run is going: its files would go from under it.
+/// Its subagents run inside its run (agent_run/subagent_run.rs), so they
+/// count: Stop ends them with it (S15).
 fn not_running(agent: &crate::agent_run::AgentState, dialog_id: &str) -> Result<(), String> {
     if agent.is_running(dialog_id) {
-        return Err("this chat's run is still going: stop it first".into());
+        let helpers = agent.running_children(dialog_id);
+        return Err(if helpers == 0 {
+            "this chat's run is still going: stop it first".into()
+        } else {
+            format!(
+                "this chat's run is still going, with {helpers} subagent{} at work: stop it first",
+                if helpers == 1 { "" } else { "s" }
+            )
+        });
     }
     Ok(())
 }
@@ -1472,6 +1862,7 @@ pub async fn overlay_discard(
     dialog_id: String,
 ) -> Result<(), String> {
     not_running(&agent, &dialog_id)?;
+    agent.drop_carry(&dialog_id);
     tauri::async_runtime::spawn_blocking(move || discard(&dialog_id))
         .await
         .map_err(|e| e.to_string())?
@@ -1541,6 +1932,31 @@ pub fn land_now_with(
         .ok_or_else(|| LandError::Failed("the app's data folder isn't known yet".into()))?;
     let project = project_of(dialog_id)
         .ok_or_else(|| LandError::Failed("this chat has no isolated changes".into()))?;
+    // A child's landing into this chat's view that a crash interrupted is
+    // finished first, which needs the view: landing the half of it that
+    // got in would put half a worker's step in the project.
+    // P1.3: whether the view is open or not (a group's landing can fail
+    // half way while the chat runs).
+    if super::land::interrupted_into(&data, dialog_id, &mountpoint(dialog_id)) {
+        match get(dialog_id) {
+            Some(o) => {
+                super::land::recover_into(&data, dialog_id, &o.view);
+            }
+            None => {
+                open(dialog_id, &project, Box::new(|_, _| {})).map_err(|e| {
+                    LandError::Failed(format!(
+                        "a step that was landing into this chat when the app closed isn't finished, and the chat's view couldn't be opened to finish it ({e})"
+                    ))
+                })?;
+            }
+        }
+        if super::land::interrupted_into(&data, dialog_id, &mountpoint(dialog_id)) {
+            return Err(LandError::Failed(
+                "a step that was landing into this chat when the app closed couldn't be finished"
+                    .into(),
+            ));
+        }
+    }
     if let Some(o) = get(dialog_id) {
         o.fs.flush();
     }
@@ -2476,6 +2892,491 @@ pub async fn overlay_conflicts_to_chat(
     .map_err(|e| e.to_string())?
 }
 
+// ---------------------------------------------------------------------------
+// Redo sequentially (R06)
+// ---------------------------------------------------------------------------
+
+/// What a path was in the chat just before a group's join, so the join can
+/// be undone exactly: bytes, not text, and the base the chat's own version
+/// is merged against when it lands.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "was", rename_all = "camelCase")]
+pub enum Before {
+    /// The chat hadn't changed it: the project's version (or nothing) shows.
+    Untouched,
+    /// The chat's own file. `content` and `base` name files in the group's
+    /// folder; `base`: what it's merged against (None: the chat created it).
+    File {
+        content: String,
+        base: Option<String>,
+    },
+    /// The chat's own folder (created, or moved there).
+    Dir,
+    /// Not there: the chat had deleted it.
+    Absent,
+    /// Something a join doesn't change (a symlink): left as it is.
+    Other,
+}
+
+/// A parallel group joined into the chat: what its paths were before the
+/// join, so the merge can be thrown away and its steps redone one at a time.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedGroup {
+    pub name: String,
+    pub plan_path: String,
+    pub steps: Vec<usize>,
+    /// Each path the join wrote (files and folders), as it was before.
+    pub before: Vec<(String, Before)>,
+    /// Redo sequentially was used: the group's steps run one at a time now.
+    pub redone: bool,
+    /// Why Redo sequentially can't be offered (P1.4): what a path was before
+    /// couldn't be read. Never recorded as untouched instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+fn groups_file(dialog_id: &str) -> Option<PathBuf> {
+    store_dir(dialog_id).map(|s| s.join("groups.json"))
+}
+
+/// Where the snapshots' bytes are kept.
+fn group_blobs(dialog_id: &str) -> Option<PathBuf> {
+    store_dir(dialog_id).map(|s| s.join("groups"))
+}
+
+/// How many saved versions the chat's groups keep (tests).
+#[cfg(test)]
+pub fn group_blob_count(dialog_id: &str) -> usize {
+    group_blobs(dialog_id)
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .map_or(0, |d| d.count())
+}
+
+pub fn saved_groups(dialog_id: &str) -> Vec<SavedGroup> {
+    groups_file(dialog_id)
+        .and_then(|f| std::fs::read(f).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn write_groups(dialog_id: &str, groups: &[SavedGroup]) -> Result<(), String> {
+    let file = groups_file(dialog_id).ok_or("this chat has no isolated changes")?;
+    let bytes = serde_json::to_vec(groups).map_err(|e| e.to_string())?;
+    crate::atomic_file::write_atomic(&file, &bytes).map_err(|e| e.to_string())
+}
+
+/// Keeps bytes in the chat's group folder; returns their file's name.
+fn keep_blob(dialog_id: &str, bytes: &[u8]) -> Result<String, String> {
+    let dir = group_blobs(dialog_id).ok_or("this chat has no isolated changes")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name = uuid::Uuid::new_v4().to_string();
+    std::fs::write(dir.join(&name), bytes).map_err(|e| e.to_string())?;
+    Ok(name)
+}
+
+fn read_blob(dialog_id: &str, name: &str) -> Result<Vec<u8>, String> {
+    if !valid_id(name) {
+        return Err(format!("{name}: not a saved version"));
+    }
+    let dir = group_blobs(dialog_id).ok_or("this chat has no isolated changes")?;
+    std::fs::read(dir.join(name)).map_err(|e| format!("a saved version is missing ({e})"))
+}
+
+/// What `paths` are in the chat now, before a join writes them (R06).
+/// Call it before each worker's copy lands.
+pub fn snapshot(dialog_id: &str, paths: &[String]) -> Result<Vec<(String, Before)>, String> {
+    snapshot_each(dialog_id, paths)?
+        .into_iter()
+        .map(|(p, b)| b.map(|b| (p, b)))
+        .collect()
+}
+
+/// Each path with what it was, or why that couldn't be read.
+pub type PathSnapshots = Vec<(String, Result<Before, String>)>;
+
+/// `snapshot`, path by path (P1.4): one that can't be read is its own
+/// error, not the whole snapshot's.
+pub fn snapshot_each(dialog_id: &str, paths: &[String]) -> Result<PathSnapshots, String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let changes = changes(dialog_id);
+    let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    let mut out = Vec::new();
+    for path in paths {
+        let before = (|| -> Result<Before, String> {
+            check_rel(path)?;
+            let own = changes.iter().rev().find(|c| c.path() == path);
+            // Inside a folder the chat deleted (and not written since): gone.
+            let under_deleted = || {
+                changes.iter().any(|c| {
+                    matches!(c, OverlayChange::Delete { path: d, .. } if path.starts_with(&format!("{d}/")))
+                })
+            };
+            Ok(match own {
+                Some(OverlayChange::Delete { .. }) => Before::Absent,
+                Some(OverlayChange::Write {
+                    kind,
+                    upper,
+                    origin,
+                    ..
+                }) => match kind {
+                    crate::vfs::store::Kind::Dir => Before::Dir,
+                    crate::vfs::store::Kind::Symlink => Before::Other,
+                    crate::vfs::store::Kind::File => {
+                        let bytes = match (upper, origin) {
+                            (Some(file), _) => {
+                                std::fs::read(file).map_err(|e| format!("{path}: {e}"))?
+                            }
+                            (None, Some(o)) => std::fs::read(project.join(o))
+                                .map_err(|e| format!("{path}: {e}"))?,
+                            (None, None) => Vec::new(),
+                        };
+                        let base = with_fs(dialog_id, |fs| fs.versions(path))?
+                            .map(|(_, base)| {
+                                std::fs::read(base).map_err(|e| format!("{path}: {e}"))
+                            })
+                            .transpose()?;
+                        Before::File {
+                            content: keep_blob(dialog_id, &bytes)?,
+                            base: base.map(|b| keep_blob(dialog_id, &b)).transpose()?,
+                        }
+                    }
+                },
+                None if under_deleted() => Before::Absent,
+                None => Before::Untouched,
+            })
+        })();
+        out.push((path.clone(), before));
+    }
+    Ok(out)
+}
+
+/// A snapshot's saved versions that weren't kept for a group: they go.
+pub fn forget_snapshot(dialog_id: &str, unused: &[Before]) {
+    let Some(dir) = group_blobs(dialog_id) else {
+        return;
+    };
+    for b in unused {
+        if let Before::File { content, base } = b {
+            for name in std::iter::once(content).chain(base.iter()) {
+                if valid_id(name) {
+                    let _ = std::fs::remove_file(dir.join(name));
+                }
+            }
+        }
+    }
+}
+
+/// P1.4: Redo sequentially can't put the group back as the chat had it
+/// (what a path was couldn't be read): it isn't offered, and says why.
+pub fn mark_redo_unavailable(dialog_id: &str, name: &str, reason: &str) -> Result<(), String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = saved_groups(dialog_id);
+    let Some(group) = all.iter_mut().find(|g| g.name == name) else {
+        return Ok(());
+    };
+    if group.unavailable.is_none() {
+        group.unavailable = Some(reason.to_string());
+    }
+    write_groups(dialog_id, &all)
+}
+
+/// Keeps a joined group. A later join of the same name adds the paths it
+/// wrote that the first didn't; what a path was before the first stays.
+pub fn save_group(dialog_id: &str, group: SavedGroup) -> Result<(), String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = saved_groups(dialog_id);
+    match all.iter_mut().find(|g| g.name == group.name) {
+        Some(g) => {
+            let mut before = g.before.clone();
+            let mut superseded = Vec::new();
+            for (path, was) in group.before {
+                if !before.iter().any(|(p, _)| *p == path) {
+                    before.push((path, was));
+                } else {
+                    superseded.push(was);
+                }
+            }
+            *g = SavedGroup { before, ..group };
+            write_groups(dialog_id, &all)?;
+            // P6.8: versions of a path the group already had aren't kept.
+            forget_snapshot(dialog_id, &superseded);
+            return Ok(());
+        }
+        None => all.push(group),
+    }
+    write_groups(dialog_id, &all)
+}
+
+/// Adds paths written after a group's join (by the repair loop's fixers)
+/// to what Redo sequentially puts back; a path it has already stays as
+/// it was before the group.
+pub fn add_group_paths(
+    dialog_id: &str,
+    name: &str,
+    entries: Vec<(String, Before)>,
+) -> Result<(), String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = saved_groups(dialog_id);
+    let Some(group) = all.iter_mut().find(|g| g.name == name) else {
+        return Ok(());
+    };
+    let mut superseded = Vec::new();
+    for (path, was) in entries {
+        if !group.before.iter().any(|(p, _)| *p == path) {
+            group.before.push((path, was));
+        } else {
+            superseded.push(was);
+        }
+    }
+    write_groups(dialog_id, &all)?;
+    forget_snapshot(dialog_id, &superseded);
+    Ok(())
+}
+
+/// Whether the group is being redone one step at a time.
+pub fn group_redone(dialog_id: &str, name: &str) -> bool {
+    saved_groups(dialog_id)
+        .iter()
+        .any(|g| g.name == name && g.redone)
+}
+
+/// Makes the folders up to `rel`'s parent in the chat's view.
+fn make_parents(fs: &OverlayFs, rel: &str) -> Result<(), String> {
+    use crate::vfs::backend::Backend;
+    let mut at = String::new();
+    let parts: Vec<&str> = rel.split('/').collect();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        let parent = Backend::resolve(fs, &at).map_err(|e| format!("{rel}: {e:?}"))?;
+        at = if at.is_empty() {
+            part.to_string()
+        } else {
+            format!("{at}/{part}")
+        };
+        match Backend::resolve(fs, &at) {
+            Ok(_) => {}
+            Err(crate::vfs::store::VfsError::NotFound) => {
+                Backend::create(
+                    fs,
+                    parent,
+                    part,
+                    crate::vfs::store::Kind::Dir,
+                    0o755,
+                    0,
+                    0,
+                    None,
+                )
+                .map_err(|e| format!("{at}: {e:?}"))?;
+            }
+            Err(e) => return Err(format!("{at}: {e:?}")),
+        }
+    }
+    Ok(())
+}
+
+/// Puts one path back as it was before the join; a note when it couldn't
+/// be, entirely.
+fn restore_path(
+    dialog_id: &str,
+    fs: &OverlayFs,
+    project: &Path,
+    path: &str,
+    was: &Before,
+) -> Result<Option<String>, String> {
+    use crate::vfs::backend::Backend;
+    use crate::vfs::store::VfsError;
+    let in_project = project.join(path);
+    let now = Backend::resolve(fs, path)
+        .ok()
+        .and_then(|ino| Backend::getattr(fs, ino).ok())
+        .map(|a| a.kind);
+    let remove_dir = |path: &str| -> Result<Option<String>, String> {
+        let (parent, name) =
+            Backend::resolve_parent(fs, path).map_err(|e| format!("{path}: {e:?}"))?;
+        match Backend::rmdir(fs, parent, name) {
+            Ok(()) | Err(VfsError::NotFound) => Ok(None),
+            Err(VfsError::NotEmpty) => Ok(Some(format!(
+                "`{path}/` was kept: it has files the group didn't write"
+            ))),
+            Err(e) => Err(format!("{path}: {e:?}")),
+        }
+    };
+    match was {
+        Before::Other => Ok(None),
+        Before::Dir => {
+            if now != Some(crate::vfs::store::Kind::Dir) {
+                make_parents(fs, &format!("{path}/x"))?;
+            }
+            Ok(None)
+        }
+        Before::File { content, base } => {
+            if now == Some(crate::vfs::store::Kind::Dir) {
+                if let Some(note) = remove_dir(path)? {
+                    return Ok(Some(note));
+                }
+            }
+            make_parents(fs, path)?;
+            let content = read_blob(dialog_id, content)?;
+            let base = base
+                .as_deref()
+                .map(|b| read_blob(dialog_id, b))
+                .transpose()?;
+            fs.rebase_file(path, Some(&content), base.as_deref())
+                .map_err(|e| format!("{path}: {e:?}"))?;
+            Ok(None)
+        }
+        Before::Untouched | Before::Absent => {
+            let project_file = in_project
+                .is_file()
+                .then(|| std::fs::read(&in_project).ok())
+                .flatten();
+            match now {
+                Some(crate::vfs::store::Kind::Dir) => {
+                    if in_project.is_dir() && matches!(was, Before::Untouched) {
+                        Ok(None)
+                    } else {
+                        remove_dir(path)
+                    }
+                }
+                None if matches!(was, Before::Untouched) && project_file.is_none() => Ok(None),
+                _ => {
+                    match (was, project_file) {
+                        // The project's file as it is now, and nothing to
+                        // land: the chat leaves it alone, as before.
+                        (Before::Untouched, Some(bytes)) => {
+                            make_parents(fs, path)
+                                .and_then(|_| {
+                                    if fs.revert_file(path).map_err(|e| format!("{e:?}"))? {
+                                        return Ok(());
+                                    }
+                                    // Deleted or replaced by the group: back
+                                    // first, then the project's again.
+                                    fs.rebase_file(path, Some(&bytes), Some(&bytes))
+                                        .and_then(|_| fs.revert_file(path).map(|_| ()))
+                                        .map_err(|e| format!("{e:?}"))
+                                })
+                                .map_err(|e| format!("{path}: {e}"))?;
+                            return Ok(None);
+                        }
+                        // The chat had deleted it: deleted again, against
+                        // the project's file as it is now.
+                        (Before::Absent, Some(bytes)) => fs.rebase_file(path, None, Some(&bytes)),
+                        _ => fs.rebase_file(path, None, None),
+                    }
+                    .map_err(|e| format!("{path}: {e:?}"))?;
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+/// Throws the group's merge away (each path it wrote goes back to what the
+/// chat had before the join, with the base it lands against) and returns
+/// the request that has its steps redone by step workers, one at a time.
+/// Nothing is marked redone unless every path went back.
+pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
+    let lock = state_lock(dialog_id);
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all = saved_groups(dialog_id);
+    let group = all
+        .iter_mut()
+        .find(|g| g.name == name)
+        .ok_or_else(|| format!("no parallel group \"{name}\" in this chat"))?;
+    if let Some(why) = &group.unavailable {
+        return Err(format!(
+            "the group \"{name}\" can't be redone: what the chat had before it isn't known ({why})"
+        ));
+    }
+    if group.redone {
+        return Err(format!("the group \"{name}\" was redone already"));
+    }
+    let project = project_of(dialog_id).ok_or("this chat has no isolated changes")?;
+    // Files before folders, deepest first: a folder the group made is
+    // empty by the time it's removed.
+    let mut order: Vec<&(String, Before)> = group.before.iter().collect();
+    order.sort_by_key(|(p, was)| {
+        (
+            matches!(was, Before::Untouched | Before::Absent) && !project.join(p).is_file(),
+            std::cmp::Reverse(p.matches('/').count()),
+        )
+    });
+    let mut notes = Vec::new();
+    let mut failed = Vec::new();
+    for (path, _) in &order {
+        check_rel(path)?;
+    }
+    // P6.8: the chat's overlay opened once for every path.
+    let restored = with_fs(dialog_id, |fs| {
+        order
+            .iter()
+            .map(|(path, was)| restore_path(dialog_id, fs, &project, path, was))
+            .collect::<Vec<_>>()
+    })?;
+    for r in restored {
+        match r {
+            Ok(Some(note)) => notes.push(note),
+            Ok(None) => {}
+            Err(e) => failed.push(e),
+        }
+    }
+    if !failed.is_empty() {
+        return Err(format!(
+            "the group's changes couldn't all be undone: {}. Try again, or Discard this chat's changes.",
+            failed.join("; ")
+        ));
+    }
+    group.redone = true;
+    let steps = group
+        .steps
+        .iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let files = group
+        .before
+        .iter()
+        .map(|(p, _)| format!("`{p}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut request = format!(
+        "Redo sequentially: the parallel group \"{name}\" didn't pass its checks, so its merged changes were thrown away \
+         ({files} are back as they were before it). Carry out its steps ({steps}) of the plan in `{}` again, one at a time, \
+         each with a step worker (task with kind \"worker\" and its step), not as a parallel group.",
+        group.plan_path
+    );
+    if !notes.is_empty() {
+        request.push_str(&format!(" Note: {}.", notes.join("; ")));
+    }
+    // P6.8: what the group's paths were is spent: its saved versions go.
+    let spent: Vec<Before> = all
+        .iter()
+        .find(|g| g.name == name)
+        .map(|g| g.before.iter().map(|(_, b)| b.clone()).collect())
+        .unwrap_or_default();
+    write_groups(dialog_id, &all)?;
+    forget_snapshot(dialog_id, &spent);
+    set_pending(dialog_id, None);
+    Ok(request)
+}
+
+/// The Redo sequentially button: returns the message to send the chat.
+#[tauri::command]
+pub async fn overlay_redo_group(
+    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    dialog_id: String,
+    group: String,
+) -> Result<String, String> {
+    not_running(&agent, &dialog_id)?;
+    tauri::async_runtime::spawn_blocking(move || redo_group(&dialog_id, &group))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod conflict_tests {
     use super::*;
@@ -2484,13 +3385,13 @@ mod conflict_tests {
 
     /// A chat whose change to a.txt conflicts with the project's, saved
     /// (not mounted): as between runs.
-    fn conflicted(name: &str) -> (PathBuf, PathBuf, String) {
+    fn conflicted(name: &str) -> (PathBuf, PathBuf, String, tokio::sync::OwnedMutexGuard<()>) {
         let root = std::env::temp_dir().join(format!("conflicts-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let project = root.join("project");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\n5\n").unwrap();
-        init(&root.join("data"));
+        let held = test_data(&root.join("data"));
         let id = format!("conflict-chat-{name}");
         let store = store_dir(&id).unwrap();
         std::fs::create_dir_all(&store).unwrap();
@@ -2521,7 +3422,7 @@ mod conflict_tests {
                 conflicts: plan.conflicts,
             }),
         );
-        (root, project, id)
+        (root, project, id, held)
     }
 
     // One at a time: the data folder is the app's, one for all.
@@ -2530,7 +3431,7 @@ mod conflict_tests {
     #[test]
     fn a_conflict_resolved_in_the_resolver_lands() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("resolver");
+        let (root, project, id, _data) = conflicted("resolver");
         let file = conflict_file(&id, "a.txt").unwrap();
         assert_eq!(file.ours.as_deref(), Some("PROJECT\n2\n3\n4\n5\n"));
         assert_eq!(file.theirs.as_deref(), Some("CHAT\n2\n3\n4\n5\n"));
@@ -2676,7 +3577,7 @@ mod conflict_tests {
     #[test]
     fn a_conflict_handed_to_the_chat_lands_once_its_markers_are_gone() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("chat");
+        let (root, project, id, _data) = conflicted("chat");
         assert_eq!(mark_conflicts(&id).unwrap(), vec!["a.txt"]);
         let marked = String::from_utf8(current_version(&id, "a.txt").unwrap()).unwrap();
         // The resolver still sees the real conflict (the chat's own version).
@@ -2719,7 +3620,7 @@ mod conflict_tests {
     #[test]
     fn markers_handed_to_the_chat_can_be_taken_back() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, _project, id) = conflicted("unmark");
+        let (root, _project, id, _data) = conflicted("unmark");
         mark_conflicts(&id).unwrap();
         assert!(!markers_left(&id).is_empty());
         // Marking again leaves files already handed over as they are.
@@ -2742,7 +3643,7 @@ mod conflict_tests {
     #[test]
     fn merging_the_project_in_can_be_taken_back() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("undo-merge");
+        let (root, project, id, _data) = conflicted("undo-merge");
         // Not a conflict this time: the project changed another line.
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
         set_pending(&id, None);
@@ -2777,7 +3678,7 @@ mod conflict_tests {
     #[test]
     fn undoing_a_merge_keeps_what_the_chat_did_since() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("changed-since");
+        let (root, project, id, _data) = conflicted("changed-since");
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\nFIVE\n").unwrap();
         set_pending(&id, None);
         let plan = super::super::land::plan(&project, &changes(&id), false);
@@ -2804,7 +3705,7 @@ mod conflict_tests {
     #[test]
     fn kept_versions_never_share_a_file() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, _project, id) = conflicted("kept-names");
+        let (root, _project, id, _data) = conflicted("kept-names");
         let s = |chat: &str| Sides {
             base: Some(b"base".to_vec()),
             chat: Some(chat.as_bytes().to_vec()),
@@ -2951,17 +3852,267 @@ mod hub_tests {
         o.fs.write(ino, 0, content.as_bytes()).unwrap();
     }
 
+    /// A chat with saved (not mounted) changes on a project of `files`,
+    /// made by `change` on its overlay; returns the project's folder.
+    fn closed_chat(
+        id: &str,
+        root: &Path,
+        files: &[(&str, &str)],
+        change: impl FnOnce(&OverlayFs),
+    ) -> PathBuf {
+        let project = root.join("project");
+        for (p, c) in files {
+            let path = project.join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, c).unwrap();
+        }
+        let store = store_dir(id).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(
+            store.join("project.txt"),
+            project.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        let fs = OverlayFs::open(&project, &store, DEFAULT_LIMIT).unwrap();
+        change(&fs);
+        fs.flush();
+        project
+    }
+
+    fn put(fs: &OverlayFs, rel: &str, content: &str) {
+        let ino = match fs.resolve(rel) {
+            Ok(ino) => ino,
+            Err(_) => {
+                let (parent, name) = fs.resolve_parent(rel).unwrap();
+                fs.create(
+                    parent,
+                    name,
+                    crate::vfs::store::Kind::File,
+                    0o644,
+                    0,
+                    0,
+                    None,
+                )
+                .unwrap()
+                .ino
+            }
+        };
+        fs.setattr(
+            ino,
+            &SetAttr {
+                size: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fs.write(ino, 0, content.as_bytes()).unwrap();
+    }
+
+    fn text(id: &str, rel: &str) -> Option<String> {
+        with_fs(id, |fs| {
+            let ino = fs.resolve(rel).ok()?;
+            let size = fs.getattr(ino).ok()?.size as usize;
+            fs.read(ino, 0, size)
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// Round 2 (section 4.2): a path whose saved version can't be read is
+    /// an error of its own, never "untouched"; the all-or-nothing snapshot
+    /// fails with it.
+    #[test]
+    fn an_unreadable_path_marks_redo_unavailable_not_untouched() {
+        let root = std::env::temp_dir().join(format!("redo-unreadable-{}", uuid::Uuid::new_v4()));
+        let _data = test_data(&root.join("data"));
+        let id = "redo-unreadable-chat";
+        closed_chat(id, &root, &[("a.rs", "a\n"), ("b.rs", "b\n")], |fs| {
+            put(fs, "a.rs", "a by the chat\n");
+        });
+        // Its saved copy goes missing behind the overlay's back.
+        let upper = changes(id)
+            .into_iter()
+            .find_map(|c| match c {
+                OverlayChange::Write {
+                    path,
+                    upper: Some(u),
+                    ..
+                } if path == "a.rs" => Some(u),
+                _ => None,
+            })
+            .unwrap();
+        std::fs::remove_file(&upper).unwrap();
+        let each = snapshot_each(id, &["a.rs".into(), "b.rs".into()]).unwrap();
+        assert!(each[0].1.is_err(), "{:?}", each[0]);
+        assert!(matches!(each[1].1, Ok(Before::Untouched)), "{:?}", each[1]);
+        assert!(snapshot(id, &["a.rs".into(), "b.rs".into()]).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round 2 (section 4.2): Redo on a chat whose overlay is closed puts
+    /// a file the group moved back where it was, removes where it went,
+    /// and spends the saved versions.
+    #[test]
+    fn redo_on_a_closed_overlay_and_of_a_moved_file() {
+        let root = std::env::temp_dir().join(format!("redo-moved-{}", uuid::Uuid::new_v4()));
+        let _data = test_data(&root.join("data"));
+        let id = "redo-moved-chat";
+        closed_chat(id, &root, &[("a.rs", "a\n")], |fs| {
+            put(fs, "a.rs", "a by the chat\n");
+        });
+        let before = snapshot(id, &["a.rs".into(), "b.rs".into()]).unwrap();
+        assert!(matches!(before[0].1, Before::File { .. }));
+        assert!(matches!(before[1].1, Before::Untouched));
+        // The group moves a.rs to b.rs.
+        with_fs(id, |fs| {
+            let root_ino = fs.resolve("").unwrap();
+            fs.rename(
+                root_ino,
+                "a.rs",
+                root_ino,
+                "b.rs",
+                crate::vfs::store::RenameMode::Replace,
+            )
+            .unwrap();
+        })
+        .unwrap();
+        save_group(
+            id,
+            SavedGroup {
+                name: "g".into(),
+                plan_path: "p.md".into(),
+                steps: vec![1, 2],
+                before,
+                redone: false,
+                unavailable: None,
+            },
+        )
+        .unwrap();
+        assert!(group_blob_count(id) > 0);
+        redo_group(id, "g").unwrap();
+        assert_eq!(text(id, "a.rs").as_deref(), Some("a by the chat\n"));
+        assert_eq!(text(id, "b.rs"), None);
+        assert_eq!(group_blob_count(id), 0, "spent");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round 2 (section 4.2): a path inside a folder the chat deleted was
+    /// absent before the group (pinned: Absent, so Redo removes it).
+    #[test]
+    fn a_fixer_file_under_a_folder_the_chat_deleted() {
+        let root = std::env::temp_dir().join(format!("redo-deleted-{}", uuid::Uuid::new_v4()));
+        let _data = test_data(&root.join("data"));
+        let id = "redo-deleted-chat";
+        closed_chat(
+            id,
+            &root,
+            &[("old/x.rs", "x\n"), ("keep.rs", "k\n")],
+            |fs| {
+                let root_ino = fs.resolve("").unwrap();
+                let old = fs.resolve("old").unwrap();
+                fs.unlink(old, "x.rs").unwrap();
+                fs.rmdir(root_ino, "old").unwrap();
+            },
+        );
+        let each = snapshot_each(id, &["old/x.rs".into(), "old/new.rs".into()]).unwrap();
+        assert!(matches!(each[0].1, Ok(Before::Absent)), "{:?}", each[0]);
+        assert!(matches!(each[1].1, Ok(Before::Absent)), "{:?}", each[1]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P1.4: a group whose snapshot failed isn't offered for Redo, and
+    /// says why, rather than putting paths back as if untouched.
+    #[test]
+    fn a_group_whose_snapshot_failed_isnt_redone() {
+        let root = std::env::temp_dir().join(format!("redo-unknown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _data = test_data(&root.join("data"));
+        let id = "redo-unknown-chat";
+        std::fs::create_dir_all(store_dir(id).unwrap()).unwrap();
+        save_group(
+            id,
+            SavedGroup {
+                name: "g".into(),
+                plan_path: "p.md".into(),
+                steps: vec![1, 2],
+                before: Vec::new(),
+                redone: false,
+                unavailable: None,
+            },
+        )
+        .unwrap();
+        mark_redo_unavailable(id, "g", "src/a.rs: permission denied").unwrap();
+        let e = redo_group(id, "g").unwrap_err();
+        assert!(
+            e.contains("can't be redone") && e.contains("permission denied"),
+            "{e}"
+        );
+        assert!(saved_groups(id)[0].unavailable.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P6.8: a version a group already has isn't kept twice; a scratch
+    /// overlay a crash left is swept at the next start.
+    #[test]
+    fn superseded_versions_and_left_scratch_overlays_go() {
+        let root = std::env::temp_dir().join(format!("group-blobs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data = root.join("data");
+        let _data = test_data(&data);
+        let id = "group-blobs-chat";
+        std::fs::create_dir_all(store_dir(id).unwrap()).unwrap();
+        let file = |text: &str| Before::File {
+            content: keep_blob(id, text.as_bytes()).unwrap(),
+            base: None,
+        };
+        let blobs = || std::fs::read_dir(group_blobs(id).unwrap()).unwrap().count();
+        let group = |before| SavedGroup {
+            name: "g".into(),
+            plan_path: "p.md".into(),
+            steps: vec![1, 2],
+            before,
+            redone: false,
+            unavailable: None,
+        };
+        save_group(id, group(vec![("a.rs".into(), file("first"))])).unwrap();
+        assert_eq!(blobs(), 1);
+        // A second join of the group: a.rs keeps its first version.
+        save_group(
+            id,
+            group(vec![
+                ("a.rs".into(), file("again")),
+                ("b.rs".into(), file("b")),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(blobs(), 2, "the second a.rs version went");
+        add_group_paths(id, "g", vec![("b.rs".into(), file("b again"))]).unwrap();
+        assert_eq!(blobs(), 2);
+
+        let scratch = data.join("overlays").join("red-left");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join(SCRATCH_MARK), "").unwrap();
+        init(&data);
+        assert!(!scratch.exists(), "swept");
+        assert!(store_dir(id).unwrap().exists(), "a chat's store stays");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Two isolated chats on one project; one lands. Needs FUSE.
     #[test]
-    #[ignore]
     fn a_landing_reaches_other_chats_at_once() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
         let root = std::env::temp_dir().join(format!("hub-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let project = root.join("project");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("a.txt"), "1\n2\n3\n4\n5\n").unwrap();
         std::fs::write(project.join("b.txt"), "b\n").unwrap();
-        init(&root.join("data"));
+        let _data = test_data(&root.join("data"));
         let a = open("hub-chat-a", &project, Box::new(|_, _| {})).unwrap();
         let b = open("hub-chat-b", &project, Box::new(|_, _| {})).unwrap();
         // B looks at b.txt and changes line 1 of a.txt; A changes line 1 of
@@ -3048,5 +4199,314 @@ mod bench {
         }
         super::discard("bench-chat").unwrap();
         let _ = std::fs::remove_dir_all(&data);
+    }
+}
+
+/// F01–F02: child overlays stacked on a chat's view. Needs FUSE (skipped
+/// where mounts don't work).
+#[cfg(test)]
+mod child_tests {
+    use super::*;
+
+    /// Round 2 (section 4.2): a child that renames, deletes and creates
+    /// lands all three; what the parent had before lets Redo put them back.
+    #[test]
+    fn a_worker_that_deletes_renames_and_creates_lands_all_three() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("kids3-{}", uuid::Uuid::new_v4()));
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        for f in ["a", "c"] {
+            std::fs::write(project.join(f), format!("{f}\n")).unwrap();
+        }
+        let _data = test_data(&root.join("data"));
+        let parent = open("kids3-parent", &project, Box::new(|_, _| {})).unwrap();
+        let w = open_child("kids3-parent", "kids3-w").unwrap();
+        std::fs::rename(w.view.join("a"), w.view.join("b")).unwrap();
+        std::fs::remove_file(w.view.join("c")).unwrap();
+        std::fs::write(w.view.join("d"), "x\n").unwrap();
+        w.fs.flush();
+        let paths = ["a", "b", "c", "d"].map(String::from);
+        let before = snapshot("kids3-parent", &paths).unwrap();
+        land_child("kids3-w").unwrap();
+        let has = |f: &str| parent.view.join(f).exists();
+        assert!(has("b") && has("d") && !has("a") && !has("c"));
+        save_group(
+            "kids3-parent",
+            SavedGroup {
+                name: "g".into(),
+                plan_path: "p.md".into(),
+                steps: vec![1, 2],
+                before,
+                redone: false,
+                unavailable: None,
+            },
+        )
+        .unwrap();
+        redo_group("kids3-parent", "g").unwrap();
+        assert!(has("a") && has("c") && !has("b") && !has("d"));
+        assert_eq!(read(&parent.view.join("a")).as_deref(), Some("a\n"));
+        close("kids3-parent");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round 2 (section 4.2): a child's landing records its parent before
+    /// it writes anything, so one that fails at the first file is still
+    /// found by its parent.
+    #[test]
+    fn land_child_paths_marks_the_parent_before_any_write() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
+        use super::super::land;
+        let _hook = land::FAIL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("kidsmark-{}", uuid::Uuid::new_v4()));
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.rs"), "a\n").unwrap();
+        let data = root.join("data");
+        let _data = test_data(&data);
+        let parent = open("kidsmark-parent", &project, Box::new(|_, _| {})).unwrap();
+        let w = open_child("kidsmark-parent", "kidsmark-w").unwrap();
+        std::fs::write(w.view.join("a.rs"), "a from w\n").unwrap();
+        w.fs.flush();
+        *land::FAIL_WRITING.lock().unwrap() = Some((parent.view.clone(), "a.rs".into()));
+        land::FAIL_WRITING_ALWAYS.store(true, std::sync::atomic::Ordering::SeqCst);
+        let landed = land_child_except("kidsmark-w", &[]);
+        land::FAIL_WRITING_ALWAYS.store(false, std::sync::atomic::Ordering::SeqCst);
+        *land::FAIL_WRITING.lock().unwrap() = None;
+        assert!(landed.is_err(), "{landed:?}");
+        assert_eq!(
+            std::fs::read_to_string(
+                data.join("landings")
+                    .join("kidsmark-w")
+                    .join("into-chat.txt")
+            )
+            .ok()
+            .as_deref(),
+            Some("kidsmark-parent")
+        );
+        assert!(land::interrupted_into(
+            &data,
+            "kidsmark-parent",
+            &parent.view
+        ));
+        discard_child("kidsmark-w");
+        close("kidsmark-parent");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round 2 (section 4.2): scratch overlays a crash left are swept at
+    /// start, marked or only named as one; a chat's store stays.
+    #[test]
+    fn a_scratch_overlay_left_by_a_crash_is_swept_even_without_its_mark() {
+        let root = std::env::temp_dir().join(format!("sweep-{}", uuid::Uuid::new_v4()));
+        let overlays = root.join("data").join("overlays");
+        let unmarked = overlays.join(format!("{SCRATCH_PREFIX}{}", uuid::Uuid::new_v4()));
+        let marked = overlays.join(uuid::Uuid::new_v4().to_string());
+        let chat = overlays.join(uuid::Uuid::new_v4().to_string());
+        for (dir, files) in [
+            (&unmarked, vec!["project.txt"]),
+            (&marked, vec!["project.txt", SCRATCH_MARK]),
+            (&chat, vec!["project.txt"]),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+            for f in files {
+                std::fs::write(dir.join(f), "x").unwrap();
+            }
+        }
+        let _data = test_data(&root.join("data"));
+        assert!(!unmarked.exists() && !marked.exists());
+        assert!(chat.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn read(p: &Path) -> Option<String> {
+        std::fs::read_to_string(p).ok()
+    }
+
+    #[test]
+    fn child_overlays_land_into_their_parent_not_the_project() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("kids-{}", uuid::Uuid::new_v4()));
+        let project = root.join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("src/a.rs"), "a\n").unwrap();
+        std::fs::write(project.join("src/b.rs"), "b\n").unwrap();
+        let _data = test_data(&root.join("data"));
+        let parent = open("kids-parent", &project, Box::new(|_, _| {})).unwrap();
+        // The parent changed a file before the workers start.
+        std::fs::write(parent.view.join("src/a.rs"), "a from the lead\n").unwrap();
+
+        // Two children of one parent: each sees the parent's view.
+        let w1 = open_child("kids-parent", "kids-w1").unwrap();
+        assert_eq!(
+            read(&w1.view.join("src/a.rs")).as_deref(),
+            Some("a from the lead\n")
+        );
+        std::fs::write(w1.view.join("src/a.rs"), "a from w1\n").unwrap();
+        std::fs::write(w1.view.join("src/new.rs"), "new\n").unwrap();
+        w1.fs.flush();
+        let w2 = open_child("kids-parent", "kids-w2").unwrap();
+        std::fs::write(w2.view.join("src/b.rs"), "b from w2\n").unwrap();
+        // Their space counts inside the parent's limit.
+        let (parent_used, parent_limit) = parent.fs.used();
+        assert!(
+            w1.fs.used().1 <= parent_limit - parent_used,
+            "{:?}",
+            w1.fs.used()
+        );
+        assert!(w2.fs.used().1 <= parent_limit - parent_used - w1.fs.used().0);
+        // Neither sees the other before landing.
+        assert_eq!(
+            read(&w2.view.join("src/a.rs")).as_deref(),
+            Some("a from the lead\n")
+        );
+
+        // One after another, into the parent.
+        let landed = land_child("kids-w1").unwrap();
+        assert_eq!(landed.len(), 2, "{landed:?}");
+        assert!(land_child("kids-w2").is_ok());
+        assert_eq!(
+            read(&parent.view.join("src/a.rs")).as_deref(),
+            Some("a from w1\n")
+        );
+        assert_eq!(
+            read(&parent.view.join("src/new.rs")).as_deref(),
+            Some("new\n")
+        );
+        assert_eq!(
+            read(&parent.view.join("src/b.rs")).as_deref(),
+            Some("b from w2\n")
+        );
+        // The project is unchanged; the children are gone.
+        assert_eq!(read(&project.join("src/a.rs")).as_deref(), Some("a\n"));
+        assert!(!project.join("src/new.rs").exists());
+        assert!(get("kids-w1").is_none() && children_of("kids-parent").is_empty());
+        // The parent's changes include theirs, for its own landing.
+        let mut paths: Vec<String> = changes("kids-parent")
+            .iter()
+            .map(|c| c.path().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, ["src/a.rs", "src/b.rs", "src/new.rs"]);
+
+        // A conflict: a child changed what the parent changed meanwhile.
+        let w3 = open_child("kids-parent", "kids-w3").unwrap();
+        std::fs::write(w3.view.join("src/b.rs"), "b from w3\n").unwrap();
+        std::fs::write(parent.view.join("src/b.rs"), "b from the lead again\n").unwrap();
+        match land_child("kids-w3") {
+            Err(super::super::land::LandError::Conflicts(c)) => assert_eq!(c[0].path, "src/b.rs"),
+            other => panic!("expected a conflict: {other:?}"),
+        }
+        assert!(get("kids-w3").is_some(), "kept for the lead");
+        assert_eq!(
+            read(&parent.view.join("src/b.rs")).as_deref(),
+            Some("b from the lead again\n")
+        );
+        discard_child("kids-w3");
+
+        // A crash during a child's landing: its journal waits for the
+        // parent's view, then finishes there.
+        let w4 = open_child("kids-parent", "kids-w4").unwrap();
+        std::fs::write(w4.view.join("src/new.rs"), "new from w4\n").unwrap();
+        w4.fs.flush();
+        let data = root.join("data");
+        super::super::land::land(&data, "kids-w4", &w4.project, &w4.fs.changes(), false).unwrap();
+        // As if the app died mid-write: the journal says "applying" and
+        // the parent's file is still the old one.
+        let journals = data.join("landings").join("kids-w4");
+        let landing = std::fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .find(|d| d.path().is_dir())
+            .unwrap()
+            .path();
+        let journal = landing.join("journal.json");
+        let text = std::fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        std::fs::write(&journal, text).unwrap();
+        std::fs::write(parent.view.join("src/new.rs"), "new\n").unwrap();
+        assert!(
+            super::super::land::recover(&data).is_empty(),
+            "not into an unmounted view"
+        );
+        let finished = super::super::land::recover_into(&data, "kids-parent", &parent.view);
+        assert_eq!(finished, ["src/new.rs"]);
+        assert_eq!(
+            read(&parent.view.join("src/new.rs")).as_deref(),
+            Some("new from w4\n")
+        );
+        discard_child("kids-w4");
+
+        // The same with the parent's view closed, then Land: the
+        // interrupted landing is finished first, so the whole of the
+        // worker's change lands, not the half that got in.
+        let w6 = open_child("kids-parent", "kids-w6").unwrap();
+        std::fs::write(w6.view.join("src/new.rs"), "new from w6\n").unwrap();
+        std::fs::write(w6.view.join("src/b.rs"), "b from w6\n").unwrap();
+        w6.fs.flush();
+        super::super::land::land(&data, "kids-w6", &w6.project, &w6.fs.changes(), false).unwrap();
+        let journals = data.join("landings").join("kids-w6");
+        let landing = std::fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .find(|d| d.path().is_dir())
+            .unwrap()
+            .path();
+        let journal = landing.join("journal.json");
+        let text = std::fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        std::fs::write(&journal, text).unwrap();
+        // Half of it got in: b.rs did, new.rs didn't.
+        std::fs::write(parent.view.join("src/new.rs"), "new from w4\n").unwrap();
+        close("kids-w6");
+        close("kids-parent");
+        assert!(super::super::land::interrupted_into(
+            &data,
+            "kids-parent",
+            &mountpoint("kids-parent")
+        ));
+        land_now("kids-parent", false).unwrap();
+        assert_eq!(
+            read(&project.join("src/new.rs")).as_deref(),
+            Some("new from w6\n")
+        );
+        assert_eq!(
+            read(&project.join("src/b.rs")).as_deref(),
+            Some("b from w6\n")
+        );
+        assert!(!super::super::land::interrupted_into(
+            &data,
+            "kids-parent",
+            &mountpoint("kids-parent")
+        ));
+        discard_child("kids-w6");
+        let _parent = open("kids-parent", &project, Box::new(|_, _| {})).unwrap();
+
+        // Two children opened together, before either writes, share
+        // what's left: together they can't pass the parent's limit.
+        let p = get("kids-parent").unwrap();
+        let (used, limit) = p.fs.used();
+        let s1 = open_child_shared("kids-parent", "kids-s1", 2).unwrap();
+        let s2 = open_child_shared("kids-parent", "kids-s2", 2).unwrap();
+        let (l1, l2) = (s1.fs.used().1, s2.fs.used().1);
+        assert!(l1 + l2 <= limit - used, "{l1} + {l2} > {}", limit - used);
+        assert!(l1.abs_diff(l2) <= 1, "{l1} vs {l2}");
+        discard_child("kids-s1");
+        discard_child("kids-s2");
+
+        // Discarding the parent takes any child with it.
+        open_child("kids-parent", "kids-w5").unwrap();
+        discard("kids-parent").unwrap();
+        assert!(get("kids-w5").is_none());
+        assert!(!data.join("overlays").join("kids-w5").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

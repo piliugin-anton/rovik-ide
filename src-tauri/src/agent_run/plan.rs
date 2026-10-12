@@ -57,6 +57,23 @@ Keep it concrete enough that it can be implemented step by step without re-inves
 
 static STEPS_HEADING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?im)^##\s+.*\bsteps?\b.*$").unwrap());
+/// `## Steps` itself, taken before any other heading with "step" in it
+/// (P4.4: a "## Next steps" note before it isn't the steps).
+static STEPS_HEADING_EXACT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?im)^##\s+(?:the\s+)?steps\s*:?\s*$").unwrap());
+/// Then one that starts with "Steps" (`## Steps (ordered)`, `## 3. Steps`),
+/// still before one that only mentions them.
+static STEPS_HEADING_LEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^##[ \t]+(?:\d+[.)][ \t]*)?(?:the[ \t]+)?steps\b[^\n]*$").unwrap()
+});
+
+/// The steps section's heading (P4.4).
+fn steps_heading(text: &str) -> Option<regex::Match<'_>> {
+    STEPS_HEADING_EXACT
+        .find(text)
+        .or_else(|| STEPS_HEADING_LEADING.find(text))
+        .or_else(|| STEPS_HEADING.find(text))
+}
 static VALIDATION_HEADING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)^##\s+.*\b(verif\w*|validat\w*|test\w*|check\w*|acceptance)\b.*$").unwrap()
 });
@@ -67,8 +84,38 @@ static CODE_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```.*?```
 /// A path with a folder (`src/a.rs`, `src/components/`) or a file name
 /// with an extension (`Cargo.toml`, `.env`).
 static PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:^|[\s`'"(\[*])(\.?[\w@~-][\w.@~-]*(?:/[\w.@~\[\]-]+)+/?|\.?[\w-]*[A-Za-z_][\w-]*\.[A-Za-z][\w]{0,9})"#).unwrap()
+    // A segment may be a Next.js route group, `(auth)` (round 3).
+    Regex::new(r#"(?:^|[\s`'"(\[*])(\.?[\w@~-][\w.@~-]*(?:/(?:\([\w.-]+\)|[\w.@~\[\]-]+))+/?|\.?[\w-]*[A-Za-z_][\w-]*(?:\.[\w-]+)*\.[A-Za-z][\w]{0,9})"#).unwrap()
 });
+/// Root-level `.js` names with a capital that are files, not libraries.
+const ROOT_JS_FILES: &[&str] = &["app", "index", "gruntfile", "gulpfile", "main", "server"];
+/// Objects whose members read like root files (`process.env`, `req.json`).
+const MEMBER_RECEIVERS: &[&str] = &[
+    "process",
+    "import.meta",
+    "req",
+    "res",
+    "request",
+    "response",
+    "resp",
+    "ctx",
+    "context",
+    "state",
+    "this",
+    "self",
+    "window",
+    "document",
+    "console",
+    "err",
+    "error",
+    "event",
+    "result",
+    "message",
+    "msg",
+    "body",
+    "payload",
+    "props",
+];
 /// File names without an extension that are still clearly files.
 static BARE_FILE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(Makefile|Dockerfile|Justfile|Procfile|Gemfile|Rakefile|Containerfile)\b")
@@ -77,46 +124,69 @@ static BARE_FILE: LazyLock<Regex> = LazyLock::new(|| {
 /// Words that say what a step does to its files.
 static CHANGE_WORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(add\w*|chang\w*|creat\w*|remov\w*|delet\w*|renam\w*|mov\w*|updat\w*|replac\w*|extend\w*|edit\w*|modif\w*|introduc\w*|implement\w*|refactor\w*|split\w*|extract\w*|merg\w*|wire\w*|register\w*|expos\w*|export\w*|import\w*|call\w*|return\w*|handl\w*|pass\w*|store\w*|emit\w*|drop\w*|switch\w*|convert\w*|define\w*|declare\w*|new|fix\w*|adjust\w*|insert\w*|append\w*|keep\w*|use|uses|using|set|sets|write\w*|read\w*|check\w*|validat\w*|test\w*|migrat\w*|document\w*|configur\w*|enabl\w*|disabl\w*|wrap\w*|guard\w*|inline\w*|generat\w*|render\w*|show\w*|hide\w*|load\w*|sav\w*|pars\w*|map\w*|send\w*|fetch\w*|accept\w*|reject\w*|limit\w*|cach\w*)\b",
+        r"(?i)\b(add\w*|chang\w*|creat\w*|bump\w*|upgrad\w*|downgrad\w*|install\w*|pin|pins|pinned|rewrit\w*|rework\w*|revert\w*|restor\w*|simplif\w*|deprecat\w*|reorder\w*|run|runs|rais\w*|lower\w*|increas\w*|decreas\w*|apply|applies|requir\w*|allow\w*|skip\w*|ignor\w*|comput\w*|sort\w*|filter\w*|build\w*|compil\w*|format\w*|remov\w*|delet\w*|renam\w*|mov\w*|updat\w*|replac\w*|extend\w*|edit\w*|modif\w*|introduc\w*|implement\w*|refactor\w*|split\w*|extract\w*|merg\w*|wire\w*|register\w*|expos\w*|export\w*|import\w*|call\w*|return\w*|handl\w*|pass\w*|store\w*|emit\w*|drop\w*|switch\w*|convert\w*|define\w*|declare\w*|new|fix\w*|adjust\w*|insert\w*|append\w*|keep\w*|use|uses|using|set|sets|write\w*|read\w*|check\w*|validat\w*|test\w*|migrat\w*|document\w*|configur\w*|enabl\w*|disabl\w*|wrap\w*|guard\w*|inline\w*|generat\w*|render\w*|show\w*|hide\w*|load\w*|sav\w*|pars\w*|map\w*|send\w*|fetch\w*|accept\w*|reject\w*|limit\w*|cach\w*)\b",
     )
     .unwrap()
 });
 
-/// The text of the `## ...` section that starts at `heading_end`.
+/// Whether a line opens or closes a fenced code block.
+fn is_fence(line: &str) -> bool {
+    let t = line.trim_start();
+    // A span closed on its own line (```ts x = 1```) opens nothing (round 3).
+    ["```", "~~~"]
+        .iter()
+        .any(|m| t.starts_with(m) && !t[m.len()..].contains(m))
+}
+
+/// The lines of `text` with their byte offsets and whether each is inside
+/// a fenced code block (fence lines count as inside).
+fn lines_with_fences(text: &str) -> Vec<(usize, &str, bool)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    let mut fence = false;
+    for line in text.split_inclusive('\n') {
+        let opens = is_fence(line);
+        out.push((at, line, fence || opens));
+        if opens {
+            fence = !fence;
+        }
+        at += line.len();
+    }
+    out
+}
+
+/// The text of the `## ...` section that starts at `heading_end`: up to
+/// the next `## ` heading outside a code block.
 fn section_after(text: &str, heading_end: usize) -> &str {
     let after = &text[heading_end..];
-    match NEXT_HEADING.find(after) {
-        Some(next) => &after[..next.start()],
-        None => after,
-    }
+    let end = lines_with_fences(after)
+        .into_iter()
+        .find(|(_, line, fenced)| !fenced && NEXT_HEADING.is_match(line))
+        .map_or(after.len(), |(at, _, _)| at);
+    &after[..end]
 }
 
-/// Whether a step names a file or folder of the repository.
+/// Whether a step names a file or folder of the repository: the same
+/// reading as its scope's (P4.3).
 fn names_a_file(step: &str) -> bool {
-    if BARE_FILE.is_match(step) {
-        return true;
-    }
-    PATH.captures_iter(step).any(|c| {
-        let token = c[1].trim_end_matches('.');
-        if token.contains('/') {
-            // Not a URL, a fraction or "and/or".
-            return !token.contains("://")
-                && token.split('/').filter(|s| !s.is_empty()).count() >= 2
-                && token.chars().any(|ch| ch.is_ascii_alphabetic())
-                && !matches!(
-                    token.to_ascii_lowercase().as_str(),
-                    "and/or" | "either/or" | "i/o" | "n/a"
-                );
-        }
-        // "e.g", "i.e", "vs.x": abbreviations, not file names.
-        let (name, ext) = token.rsplit_once('.').unwrap_or((token, ""));
-        !(name.trim_start_matches('.').len() <= 2 && ext.len() <= 2) && token.len() >= 3
-    })
+    !step_files(step).is_empty()
 }
 
-/// The numbered items of a steps section, each with its sub-lines.
+/// The numbered items of a steps section, each with its sub-lines: the
+/// least indented numbered lines outside code blocks (a numbered list
+/// nested in a step is part of that step).
 fn split_steps(section: &str) -> Vec<&str> {
-    let starts: Vec<usize> = NUMBERED.find_iter(section).map(|m| m.start()).collect();
+    let numbered: Vec<(usize, usize)> = lines_with_fences(section)
+        .into_iter()
+        .filter(|(_, line, fenced)| !fenced && NUMBERED.is_match(line) && !line.trim().is_empty())
+        .map(|(at, line, _)| (at, line.len() - line.trim_start().len()))
+        .collect();
+    let indent = numbered.iter().map(|(_, i)| *i).min().unwrap_or(0);
+    let starts: Vec<usize> = numbered
+        .into_iter()
+        .filter(|(_, i)| *i == indent)
+        .map(|(at, _)| at)
+        .collect();
     starts
         .iter()
         .enumerate()
@@ -124,12 +194,46 @@ fn split_steps(section: &str) -> Vec<&str> {
         .collect()
 }
 
+/// P4.4: each step's number, as written when the plan's numbers go up one
+/// by one, else its place (`1. 1. 1.`, as some editors number lists), and
+/// the number the plan shows when that's another.
+fn step_numbers(raws: &[&str]) -> Vec<(usize, Option<usize>)> {
+    let written: Vec<Option<usize>> = raws
+        .iter()
+        .map(|raw| {
+            STEP_NUMBER
+                .captures(raw.trim_start().lines().next().unwrap_or(""))
+                .and_then(|c| c[1].parse().ok())
+        })
+        .collect();
+    let increasing = written.iter().all(Option::is_some) && written.windows(2).all(|w| w[0] < w[1]);
+    written
+        .into_iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let number = if increasing {
+                w.unwrap_or(i + 1)
+            } else {
+                i + 1
+            };
+            (number, w.filter(|w| *w != number))
+        })
+        .collect()
+}
+
+/// "4", or "4 (numbered 3. in the plan)": how messages name a step.
+fn step_name(number: usize, written: Option<usize>) -> String {
+    match written {
+        Some(w) => format!("{number} (numbered {w}. in the plan)"),
+        None => number.to_string(),
+    }
+}
+
 /// "2", "2 and 4", "2, 4 and 5".
-fn list_numbers(numbers: &[usize]) -> String {
-    let words: Vec<String> = numbers.iter().map(usize::to_string).collect();
-    match words.split_last() {
+fn list_steps(names: &[&str]) -> String {
+    match names.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => words.join(""),
+        _ => names.join(""),
     }
 }
 
@@ -138,6 +242,8 @@ fn list_numbers(numbers: &[usize]) -> String {
 /// file and what changes there, a way to validate it), so a model doesn't
 /// invent detail just to get past the check.
 pub fn plan_problems(markdown: &str) -> Vec<String> {
+    // P4.4: one kind of line ending.
+    let markdown = markdown.replace("\r\n", "\n");
     let text = markdown.trim();
     if text.is_empty() {
         return vec!["The plan is empty.".into()];
@@ -147,7 +253,7 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
     if !first.is_some_and(|l| TITLE.is_match(l)) {
         problems.push("Start with a \"# \" title line.".into());
     }
-    let steps_heading = STEPS_HEADING.find(text);
+    let steps_heading = steps_heading(text);
     match steps_heading {
         None => {
             problems.push("Add a \"## Steps\" section with the steps as a numbered list.".into())
@@ -161,8 +267,14 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
                     "List the steps under \"## Steps\" as a numbered list (1., 2., ...).".into(),
                 );
             } else {
-                let no_file: Vec<usize> = (1..=steps.len())
-                    .filter(|&n| !names_a_file(steps[n - 1]))
+                // P4.4: named as `steps` numbers them (`2. 4. 7.` keeps its numbers).
+                let names: Vec<String> = step_numbers(&steps)
+                    .into_iter()
+                    .map(|(n, w)| step_name(n, w))
+                    .collect();
+                let no_file: Vec<&str> = (0..steps.len())
+                    .filter(|&i| !names_a_file(steps[i]))
+                    .map(|i| names[i].as_str())
                     .collect();
                 if !no_file.is_empty() {
                     problems.push(format!(
@@ -170,22 +282,23 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
                          (e.g. `src/db/users.rs`), and mark files it creates as \"(new)\". Name only paths you've seen in the \
                          repository.",
                         if no_file.len() > 1 { "s" } else { "" },
-                        list_numbers(&no_file),
+                        list_steps(&no_file),
                         if no_file.len() > 1 { "" } else { "s" },
                     ));
                 }
-                let vague: Vec<usize> = (1..=steps.len())
-                    .filter(|&n| {
-                        let step = steps[n - 1];
+                let vague: Vec<&str> = (0..steps.len())
+                    .filter(|&i| {
+                        let step = steps[i];
                         step.split_whitespace().count() < 6 || !CHANGE_WORD.is_match(step)
                     })
+                    .map(|i| names[i].as_str())
                     .collect();
                 if !vague.is_empty() {
                     problems.push(format!(
                         "Step{} {} {} too vague: say what to add, change or remove in the files, by name (the functions, \
                          types, components or settings, and how they behave); a one-line signature is fine.",
                         if vague.len() > 1 { "s" } else { "" },
-                        list_numbers(&vague),
+                        list_steps(&vague),
                         if vague.len() > 1 { "are" } else { "is" },
                     ));
                 }
@@ -203,6 +316,13 @@ pub fn plan_problems(markdown: &str) -> Vec<String> {
              update, and what to check by hand."
                 .into(),
         ),
+    }
+    // A code block left open runs to the end: the steps after it would be
+    // its step's body, silently.
+    if text.lines().filter(|l| is_fence(l)).count() % 2 == 1 {
+        problems.push(
+            "Close the code block that's left open (```): everything after it reads as code, steps included.".into(),
+        );
     }
     // Code belongs in the implementation, not the plan. Signatures and
     // config lines (up to 3 lines) are welcome and don't count.
@@ -271,6 +391,8 @@ pub fn save_plan_file(
             path
         }
     };
+    // Round 2: one kind of line ending in the file, as the plan is read.
+    let plan = plan.replace("\r\n", "\n");
     let body = plan.trim();
     // A title, if the plan doesn't start with one.
     let titled = if body.starts_with("# ") || body.starts_with("#\t") {
@@ -296,8 +418,12 @@ pub fn relative_plan_path(path: &str, root: Option<&str>) -> String {
     };
     let r = root.trim_end_matches(['/', '\\']);
     match path.strip_prefix(r) {
-        Some(rest) if !rest.is_empty() => rest[1..].to_string(),
-        _ => path.to_string(),
+        // P4.9: only at a separator (`/a/bc` isn't under `/a/b`).
+        Some(rest) => match rest.strip_prefix(['/', '\\']) {
+            Some(r) if !r.is_empty() => r.to_string(),
+            _ => path.to_string(),
+        },
+        None => path.to_string(),
     }
 }
 
@@ -333,6 +459,679 @@ static NUMBERED_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d
 /// A reply that reads like a plan (written out instead of submitted).
 pub fn looks_like_plan(text: &str) -> bool {
     LOOKS_LIKE_STEPS.is_match(text) && NUMBERED_LINE.is_match(text)
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * A plan's structure (D01) and the checks against the project (B07)
+ * ---------------------------------------------------------------------------
+ */
+
+/// A file a plan step names.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanFile {
+    /// Repo-relative, as written (a folder ends with `/`).
+    pub path: String,
+    /// Marked "(new)": the step creates it.
+    pub new: bool,
+    /// Marked "(read)" or "(read-only)": context the step uses but doesn't
+    /// change (F03: what a contract step settles).
+    pub read_only: bool,
+}
+
+/// One numbered step of a plan's "## Steps" section.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanStep {
+    /// As numbered in the plan, or its place when the plan's numbers don't
+    /// go up one by one (P4.4).
+    pub number: usize,
+    /// The number the plan shows, when it isn't `number` (`1. 2. 2. 3.`:
+    /// the last is step 4, written "3.").
+    pub written: Option<usize>,
+    pub title: String,
+    /// The files it names, each once, in order.
+    pub files: Vec<PlanFile>,
+    /// The whole step, its first line included.
+    pub body: String,
+    /// `Group: <name>`: steps that may be built side by side (F03).
+    pub group: Option<String>,
+}
+
+impl PlanStep {
+    /// "4", or "4 (numbered 3. in the plan)": how messages name it.
+    pub fn named(&self) -> String {
+        step_name(self.number, self.written)
+    }
+}
+
+static STEP_NUMBER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(\d+)[.)]\s+(.*)$").unwrap());
+static BACKTICKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());
+static NEW_MARK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\((?:new|new file|created?)\)").unwrap());
+static READ_MARK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\((?:read|read-only|readonly|reads|context)\)").unwrap());
+/// A `Group:` line's name, in lower case: what's in its backticks, else
+/// its text; a note or a period after it isn't the name (`` `api`. ``,
+/// `api (runs alongside step 2)`).
+fn group_name(raw: &str) -> String {
+    let t = raw.trim();
+    let name = match t.strip_prefix('`').and_then(|r| r.split_once('`')) {
+        Some((inside, _)) => inside,
+        None => t
+            .split(" (")
+            .next()
+            .unwrap_or(t)
+            .trim_end_matches(['.', ',', ';']),
+    };
+    name.trim().to_lowercase()
+}
+
+static GROUP_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^[\s>*-]*\**group\**\s*:\s*\**\s*([^*\n]+?)\s*\**\s*$").unwrap()
+});
+
+/// Extensions a backticked name must have to count as a file, so that
+/// `state.config` or `self.items` isn't taken for one.
+pub(super) const FILE_EXTENSIONS: &[&str] = &[
+    "rs",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "mts",
+    "cts",
+    "json",
+    "jsonc",
+    "json5",
+    "toml",
+    "yaml",
+    "yml",
+    "md",
+    "mdx",
+    "txt",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "html",
+    "htm",
+    "vue",
+    "svelte",
+    "py",
+    "pyi",
+    "go",
+    "mod",
+    "sum",
+    "work",
+    "java",
+    "kt",
+    "kts",
+    "gradle",
+    "swift",
+    "m",
+    "mm",
+    "c",
+    "h",
+    "cc",
+    "cpp",
+    "hpp",
+    "cs",
+    "csproj",
+    "sln",
+    "rb",
+    "php",
+    "lua",
+    "sh",
+    "bash",
+    "zsh",
+    "ps1",
+    "bat",
+    "cmd",
+    "sql",
+    "graphql",
+    "gql",
+    "proto",
+    "xml",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "lock",
+    "dart",
+    "ex",
+    "exs",
+    "erl",
+    "hs",
+    "ml",
+    "mli",
+    "fs",
+    "fsx",
+    "scala",
+    "clj",
+    "cljs",
+    "elm",
+    "zig",
+    "nim",
+    "r",
+    "jl",
+    "tf",
+    "hcl",
+    "nix",
+    "svg",
+    "png",
+    "jpg",
+    "ico",
+    "wasm",
+    "vert",
+    "frag",
+    "wgsl",
+    "glsl",
+    "astro",
+    "prisma",
+    "pl",
+    "pm",
+    "tex",
+    "rst",
+    "adoc",
+    "csv",
+    "tsv",
+    "makefile",
+    "dockerfile",
+];
+
+/// The repo-relative path a backticked token names, if it's one.
+fn as_path(token: &str) -> Option<String> {
+    let token = token.replace('\\', "/");
+    let t = token.trim().trim_start_matches("./");
+    // Parentheses: only as a route group's segment, `app/(auth)/page.tsx`
+    // (round 3); `fn a(x)` and `foo()` aren't paths.
+    let route_groups = t.contains('/')
+        && t.split('/').all(|seg| {
+            !seg.contains(['(', ')'])
+                || (seg.len() > 2
+                    && seg.starts_with('(')
+                    && seg.ends_with(')')
+                    && seg[1..seg.len() - 1]
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-')))
+        });
+    if t.is_empty()
+        || t.contains(char::is_whitespace)
+        || t.contains("://")
+        || t.contains([
+            '<', '>', '{', '}', '*', '?', '$', '=', ',', ';', '"', '\'', '|',
+        ])
+        || (t.contains(['(', ')']) && !route_groups)
+        || t.starts_with('/')
+        || t.starts_with('-')
+        || t.starts_with('@')
+        || (t.len() > 1 && t.as_bytes()[1] == b':')
+    {
+        return None;
+    }
+    // `path:line` points into a file.
+    let t = t.split(':').next().unwrap_or(t);
+    let name = t.trim_end_matches('/').rsplit('/').next().unwrap_or(t);
+    let folder = t.ends_with('/') || t.trim_end_matches('/').contains('/');
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    let named_file = BARE_FILE.is_match(name) && name.len() == BARE_FILE.find(name)?.len();
+    // With a letter: `docs/v1.2` and HTTP/1.1 are versions.
+    let short_ext = ext.as_deref().is_some_and(|e| {
+        (1..=10).contains(&e.len())
+            && e.chars().all(|c| c.is_ascii_alphanumeric())
+            && e.chars().any(|c| c.is_ascii_alphabetic())
+    });
+    // `Node.js` and its kind name a project, not a file; so does a
+    // capitalised `Solid.js` at the root (a root `App.js`, `Gruntfile.js`
+    // is a file), and `React/Vue.js` (every part capitalised) (round 3).
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+    if ext.as_deref() == Some("js") {
+        let lower = stem.to_ascii_lowercase();
+        let capitalised = |s: &str| s.starts_with(|c: char| c.is_ascii_uppercase());
+        let library = super::triage::JS_NAMES.contains(&lower.as_str())
+            || (capitalised(stem) && !ROOT_JS_FILES.contains(&lower.as_str()));
+        if !t.contains('/') && library {
+            return None;
+        }
+        if t.contains('/') && t.split('/').all(capitalised) && library {
+            return None;
+        }
+    }
+    // Member access on the usual objects (`process.env`, `res.json`,
+    // `state.lock`) isn't a root file (round 3).
+    if !t.contains('/') && MEMBER_RECEIVERS.contains(&stem.to_ascii_lowercase().as_str()) {
+        return None;
+    }
+    // P4.3: in a folder, any short extension (`grammar.pest`, `x.snap`); at
+    // the root one when the stem says it's a file name (`.env.local`,
+    // `Dockerfile.dev`, `docker-compose.override`), not `self.items`.
+    let in_folder_file = t.contains('/') && short_ext;
+    let root_file = short_ext
+        && (stem.starts_with('.')
+            || stem.contains('-')
+            || BARE_FILE.find(stem).is_some_and(|m| m.len() == stem.len()));
+    let known = ext.as_deref().is_some_and(|e| FILE_EXTENSIONS.contains(&e))
+        || in_folder_file
+        || root_file
+        || named_file
+        || (name.starts_with('.') && name.len() > 2 && !name[1..].contains('.'));
+    // `a::b` paths, `x.y` member access: not files.
+    if t.contains("::") {
+        return None;
+    }
+    if !(known || (folder && t.ends_with('/')) || (folder && ext.is_none() && t.contains('/'))) {
+        return None;
+    }
+    // One spelling (`paths`); a folder keeps its `/`; `..` isn't the project's.
+    let p = super::paths::norm_rel(t).filter(|p| !p.is_empty())?;
+    Some(if t.ends_with('/') { format!("{p}/") } else { p })
+}
+
+fn step_title(first_line: &str) -> String {
+    let t = first_line.trim().trim_matches('*').trim();
+    let t = t.split(" — ").next().unwrap_or(t);
+    t.trim_end_matches(':').trim_matches('*').trim().to_string()
+}
+
+/// The paths a line names, each with where it ends: backticked, or (P4.3)
+/// written plainly, the same way the form check reads them.
+fn line_paths(line: &str) -> Vec<(String, usize)> {
+    let mut out: Vec<(String, usize)> = Vec::new();
+    let mut ticked: Vec<(usize, usize)> = Vec::new();
+    for c in BACKTICKED.captures_iter(line) {
+        let m = c.get(0).expect("a match");
+        ticked.push((m.start(), m.end()));
+        if let Some(p) = as_path(&c[1]) {
+            out.push((p, m.end()));
+        }
+    }
+    let mut tokens: Vec<(usize, usize)> = Vec::new();
+    for c in PATH.captures_iter(line) {
+        let m = c.get(1).expect("a group");
+        tokens.push((m.start(), m.end()));
+        if ticked
+            .iter()
+            .any(|(a, b)| m.start() >= *a && m.start() < *b)
+        {
+            continue;
+        }
+        let token = m.as_str().trim_end_matches('.');
+        if !plain_path(token) || !plain_file_shaped(token) {
+            continue;
+        }
+        // A call, `res.json(users)`, isn't a file (round 3); a path's mark
+        // may follow it without a space (`src/a.rs(new)`).
+        if line[m.end()..].starts_with('(') && !token.contains('/') {
+            continue;
+        }
+        if let Some(p) = as_path(token) {
+            out.push((p, m.start() + token.len()));
+        }
+    }
+    // Bare file names: Dockerfile, Makefile.
+    for m in BARE_FILE.find_iter(line) {
+        // Part of a longer name (`Dockerfile.dev`): that name's.
+        if ticked
+            .iter()
+            .chain(&tokens)
+            .any(|(a, b)| m.start() >= *a && m.start() < *b)
+        {
+            continue;
+        }
+        if let Some(p) = as_path(m.as_str()) {
+            if !out.iter().any(|(q, _)| *q == p) {
+                out.push((p, m.end()));
+            }
+        }
+    }
+    out.sort_by_key(|(_, end)| *end);
+    out
+}
+
+/// A plainly written token that's a path: with a `/`, not a URL, a
+/// fraction or "and/or"; else a file name, not "e.g." or "vs.x".
+fn plain_path(token: &str) -> bool {
+    if token.contains('/') {
+        // `github.com/foo/bar/README.md`: a web address (round 3).
+        let domain = token
+            .split('/')
+            .next()
+            .and_then(|host| host.rsplit_once('.'))
+            .is_some_and(|(_, tld)| {
+                matches!(
+                    tld.to_ascii_lowercase().as_str(),
+                    "com" | "org" | "io" | "dev" | "net" | "app" | "co" | "ai" | "me" | "sh"
+                )
+            });
+        return !token.contains("://")
+            && !domain
+            && token.split('/').filter(|s| !s.is_empty()).count() >= 2
+            && token.chars().any(|ch| ch.is_ascii_alphabetic())
+            && !matches!(
+                token.to_ascii_lowercase().as_str(),
+                "and/or" | "either/or" | "i/o" | "n/a"
+            );
+    }
+    let (name, ext) = token.rsplit_once('.').unwrap_or((token, ""));
+    !(name.trim_start_matches('.').len() <= 2 && ext.len() <= 2) && token.len() >= 3
+}
+
+/// P4.3: written plainly, a path counts only with an extension or a
+/// closing `/` (`src/a.rs`, `src/api/`): "add/remove", "A/B" and
+/// "client/server" are prose.
+fn plain_file_shaped(token: &str) -> bool {
+    let name = token.rsplit('/').next().unwrap_or(token);
+    token.ends_with('/')
+        || name
+            .rsplit_once('.')
+            .is_some_and(|(stem, ext)| !ext.is_empty() && (!stem.is_empty() || name.len() > 2))
+}
+
+/// The files a step names (its raw text): one reading for the form check
+/// and the steps' scopes (P4.3). Paths in code blocks are code.
+fn step_files(raw: &str) -> Vec<PlanFile> {
+    let mut files: Vec<PlanFile> = Vec::new();
+    for (_, line, _) in lines_with_fences(raw)
+        .into_iter()
+        .filter(|(_, _, fenced)| !fenced)
+    {
+        // P4.2: a mark is its path's when it follows it; anywhere on the
+        // line only when the line names one path.
+        let named = line_paths(line);
+        let one = named.len() == 1;
+        for (path, end) in named {
+            // Emphasis isn't a gap: `a.rs` **(new)**, **`a.rs`** (new).
+            let next =
+                line[end..].trim_start_matches(|c: char| c.is_whitespace() || c == '*' || c == '_');
+            let adjacent = |mark: &Regex| {
+                next.starts_with('(') && mark.find(next).is_some_and(|m| m.start() == 0)
+            };
+            let new = adjacent(&NEW_MARK) || (one && NEW_MARK.is_match(line));
+            let read_only = adjacent(&READ_MARK) || (one && READ_MARK.is_match(line));
+            match files.iter_mut().find(|f| f.path == path) {
+                Some(f) => {
+                    f.new |= new;
+                    // Changed anywhere in the step: not read-only.
+                    f.read_only &= read_only;
+                }
+                None => files.push(PlanFile {
+                    path,
+                    new,
+                    read_only,
+                }),
+            }
+        }
+    }
+    files
+}
+
+/// D01: the plan's steps, in order (empty when it has no steps section).
+pub fn steps(markdown: &str) -> Vec<PlanStep> {
+    // P4.4: one kind of line ending.
+    let markdown = markdown.replace("\r\n", "\n");
+    let text = markdown.trim();
+    let Some(heading) = steps_heading(text) else {
+        return Vec::new();
+    };
+    // Code blocks stay in a step's body (an exact signature, a schema).
+    let section = section_after(text, heading.end());
+    let raws: Vec<&str> = split_steps(section)
+        .into_iter()
+        // NUMBERED's `^\s*` can start at the blank line before a step.
+        .map(str::trim_start)
+        .collect();
+    let numbers = step_numbers(&raws);
+    raws.into_iter()
+        .enumerate()
+        .map(|(i, raw)| {
+            let first = raw.lines().next().unwrap_or("");
+            let rest = STEP_NUMBER
+                .captures(first)
+                .map_or_else(|| first.to_string(), |c| c[2].to_string());
+            let (number, written) = numbers[i];
+            let files = step_files(raw);
+            PlanStep {
+                number,
+                written,
+                title: step_title(&rest),
+                files,
+                body: raw.trim_end().to_string(),
+                // P4.4: outside code blocks; one name, any case; "none" isn't.
+                group: lines_with_fences(raw)
+                    .into_iter()
+                    .filter(|(_, _, fenced)| !fenced)
+                    .find_map(|(_, line, _)| GROUP_LINE.captures(line))
+                    .map(|c| group_name(&c[1]))
+                    .filter(|g| !g.is_empty() && !matches!(g.as_str(), "none" | "-" | "n/a")),
+            }
+        })
+        .collect()
+}
+
+#[allow(dead_code)] // D03's worker brief reads "## Decisions" with it.
+/// D01: the text of the plan's `## <name>` section (a heading that starts
+/// with the name, case aside), without its heading.
+pub fn section(markdown: &str, name: &str) -> Option<String> {
+    let markdown = markdown.replace("\r\n", "\n");
+    let markdown = markdown.as_str();
+    let lower = name.to_lowercase();
+    let mut at = 0;
+    while let Some(h) = NEXT_HEADING.find(&markdown[at..]) {
+        let start = at + h.start();
+        let line_end = markdown[start..]
+            .find('\n')
+            .map_or(markdown.len(), |e| start + e);
+        let title = markdown[start + 2..line_end].trim().to_lowercase();
+        // `## 5. Decisions` is the Decisions section, as `## 3. Steps` is the steps.
+        let title = title
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .strip_prefix(['.', ')'])
+            .filter(|_| title.starts_with(|c: char| c.is_ascii_digit()))
+            .map_or(title.as_str(), str::trim_start);
+        if title.starts_with(&lower) {
+            return Some(section_after(markdown, line_end).trim().to_string());
+        }
+        at = line_end;
+    }
+    None
+}
+
+/// Where a relative path's `..` parts take it, as written (no links
+/// followed); None when out of the project.
+fn without_dots(path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(if path.ends_with('/') && !parts.is_empty() {
+        format!("{}/", parts.join("/"))
+    } else {
+        parts.join("/")
+    })
+}
+
+/// B07: what's wrong with a plan against the project, beyond its form:
+/// files that aren't there, a file used before the step that creates it,
+/// and steps of one group that share a file.
+pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
+    let steps = steps(markdown);
+    let mut problems = Vec::new();
+    // Created by which step.
+    let created: Vec<(&str, usize)> = steps
+        .iter()
+        .flat_map(|s| {
+            s.files
+                .iter()
+                .filter(|f| f.new)
+                .map(move |f| (f.path.as_str(), s.number))
+        })
+        .collect();
+    // A folder a new file of the plan is in comes with it (P4.2).
+    let exists = |path: &str| {
+        root.join(path.trim_end_matches('/')).exists()
+            || (path.ends_with('/')
+                && created
+                    .iter()
+                    .any(|(p, _)| super::paths::under(path, p) && !super::paths::same(path, p)))
+    };
+    let mut missing: Vec<String> = Vec::new();
+    // P4.9: a path out of the project (`../x`) is never a step's file
+    // (`as_path` drops it, so nothing probes the disk for it): say so.
+    for step in &steps {
+        for token in step.body.split('`').skip(1).step_by(2) {
+            let t = token.trim().replace('\\', "/");
+            let escapes = t.starts_with("../") || t.contains("/../") || t == "..";
+            if escapes && super::paths::norm_rel(&t).is_none() && !missing.contains(&t) {
+                missing.push(t.clone());
+                // `src/../x.rs` is `x.rs`: inside, but not read as a file.
+                match without_dots(&t) {
+                    None => problems.push(format!(
+                        "Step {} names `{t}`, which is outside the project: use a path inside it.",
+                        step.named()
+                    )),
+                    Some(inside) if !inside.is_empty() => problems.push(format!(
+                        "Step {} names `{t}`: write it as `{inside}`, without `..`.",
+                        step.named()
+                    )),
+                    // The root itself is no step's file (as `./`).
+                    Some(_) => {}
+                }
+            }
+        }
+        for file in step.files.iter().filter(|f| !f.new) {
+            let creator = created
+                .iter()
+                .find(|(p, _)| p.trim_end_matches('/') == file.path.trim_end_matches('/'))
+                .map(|(_, n)| *n);
+            match creator {
+                Some(n) if n > step.number && !exists(&file.path) => problems.push(format!(
+                    "Step {} uses `{}`, which step {n} creates: put the steps in an order where a file is created before it's used.",
+                    step.named(), file.path
+                )),
+                Some(_) => {}
+                None if !exists(&file.path) && !missing.contains(&file.path) => {
+                    missing.push(file.path.clone());
+                    problems.push(format!(
+                        "Step {} names `{}`, which isn't in the project: fix the path, or mark it \"(new)\" if the step creates it.",
+                        step.named(), file.path
+                    ));
+                }
+                None => {}
+            }
+        }
+    }
+    // A group's steps run side by side: they can't share a file.
+    let mut groups: Vec<&str> = steps.iter().filter_map(|s| s.group.as_deref()).collect();
+    groups.dedup();
+    let mut seen_groups: Vec<&str> = Vec::new();
+    for group in groups {
+        if seen_groups.contains(&group) {
+            continue;
+        }
+        seen_groups.push(group);
+        let members: Vec<&PlanStep> = steps
+            .iter()
+            .filter(|s| s.group.as_deref() == Some(group))
+            .collect();
+        for (i, a) in members.iter().enumerate() {
+            for b in &members[i + 1..] {
+                // P4.1: what one changes, the other may not name at all
+                // (read-only too: it would read a moving target), and a
+                // folder covers what's in it. (New files in one folder are
+                // kept apart by the workers' scopes: see group.rs.)
+                let mut shared: Vec<String> = Vec::new();
+                for (x, y) in [(a, b), (b, a)] {
+                    for f in x.files.iter().filter(|f| !f.read_only) {
+                        for g in &y.files {
+                            if files_overlap(&f.path, &g.path) {
+                                let p = format!("`{}`", f.path.trim_end_matches('/'));
+                                if !shared.contains(&p) {
+                                    shared.push(p);
+                                }
+                            }
+                        }
+                    }
+                }
+                if !shared.is_empty() {
+                    problems.push(format!(
+                        "Steps {} and {} are both in group \"{group}\" but both name {}: steps in a group are built side by side, \
+                         so they can't share a file. Move the shared change into a step before the group, or take one of the steps out of it.",
+                        a.number,
+                        b.number,
+                        shared.join(", ")
+                    ));
+                }
+            }
+        }
+        // F03: a file the group's steps use as shared context is settled
+        // first, by a contract step before the group that changes it.
+        let first = members.iter().map(|s| s.number).min().unwrap_or(0);
+        let mut context: Vec<&str> = Vec::new();
+        for f in members
+            .iter()
+            .flat_map(|s| s.files.iter().filter(|f| f.read_only))
+        {
+            let users = members
+                .iter()
+                .filter(|s| s.files.iter().any(|g| g.path == f.path))
+                .count();
+            if users >= 2 && !context.contains(&f.path.as_str()) {
+                context.push(&f.path);
+            }
+        }
+        for path in context {
+            let settled = steps.iter().any(|s| {
+                s.number < first
+                    && s.group.as_deref() != Some(group)
+                    && s.files.iter().any(|f| f.path == path && !f.read_only)
+            });
+            if !settled {
+                problems.push(format!(
+                    "The steps of group \"{group}\" all build on `{path}`, but no step before the group settles it: add a contract step \
+                     before the group that adds the shared types, signatures or names there (with stub bodies), so the group's steps \
+                     work against the same interface."
+                ));
+            }
+        }
+    }
+    problems
+}
+
+/// P4.1: two plan paths that touch the same files: the same path in any
+/// spelling, or one a folder (`src/api/`) the other is in.
+fn files_overlap(a: &str, b: &str) -> bool {
+    use super::paths::{same, under};
+    let folder = |p: &str| p.trim_end().ends_with('/');
+    same(a, b) || (folder(a) && under(a, b)) || (folder(b) && under(b, a))
+}
+
+/// B07b: the note the agent gets when the plan it's asked to implement
+/// has problems (the user may have edited it after it was checked).
+pub fn plan_check_note(file: &str, problems: &[String]) -> String {
+    format!(
+        "[Automatic check by the IDE, not written by the user]\nThe plan file {file} was checked as it is now (it may have been edited since it was written), and the checker found:\n- {}\n\nCheck each against the code before you start. Where the plan is wrong, follow the code and the user's intent, and say what you changed from the plan when you finish.",
+        problems.join("\n- ")
+    )
+}
+
+/// `plan_problems` and, with a project, `project_problems`.
+pub fn plan_problems_in(markdown: &str, root: Option<&Path>) -> Vec<String> {
+    let mut problems = plan_problems(markdown);
+    if let Some(root) = root {
+        problems.extend(project_problems(markdown, root));
+    }
+    problems
 }
 
 /*
@@ -394,11 +1193,20 @@ pub enum QuestionsOutcome {
 const MAX_QUESTIONS: usize = 3;
 const MAX_OPTIONS: usize = 6;
 
+/// A title's words alone: lower case, letters and digits, one space
+/// between; so two spellings of the same step or finding compare equal.
+pub fn simple_words(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn trimmed(v: Option<&Value>) -> Option<String> {
-    v.and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    super::permissions::trimmed_str(v).map(str::to_string)
 }
 
 /// The questions from the tool's arguments, tolerating the shapes models
@@ -610,6 +1418,16 @@ pub fn is_checklist_dismissed(m: &MessageRow) -> bool {
 
 /// The latest `todo` call in one message, if it parses to a non-empty list.
 fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
+    // A step worker's result: the checklist with its step marked done (D04).
+    if let Some(items) = m
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("checklistUpdate"))
+        .and_then(|v| serde_json::from_value::<Vec<TodoItem>>(v.clone()).ok())
+        .filter(|items| !items.is_empty())
+    {
+        return Some(items);
+    }
     let call = m
         .tool_calls
         .iter()
@@ -728,7 +1546,7 @@ pub fn checklist_gate_reason(
     changed_files: &[String],
     tool_calls: u32,
 ) -> Option<String> {
-    let norm = |p: &str| p.trim().trim_start_matches("./").to_string();
+    let norm = |p: &str| super::paths::key(p).unwrap_or_else(|| p.trim().to_string());
     match tool {
         "write" => {
             let new_file = path
@@ -827,12 +1645,454 @@ pub fn checklist_note(items: &[TodoItem], carried: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_lists_belong_to_their_step_and_code_blocks_stay() {
+        let plan = "# API\n\nTwo parts.\n\n## Steps\n\n\
+            1. **API**\n   1. Add `src/api/users.rs` (new).\n   2. Register it in `src/api/mod.rs`.\n\
+            2. **Pages**\n   - `src/pages.rs`: render it, with exactly this signature:\n\n     ```rust\n     \
+            ## not a heading\n     pub fn page(id: u32) -> Html { todo!(`src/other.rs`) }\n     ```\n\
+            3. **Docs**\n   - `README.md`: say so.\n\n## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        let numbers: Vec<usize> = s.iter().map(|x| x.number).collect();
+        assert_eq!(numbers, [1, 2, 3], "{s:#?}");
+        assert_eq!(s[0].title, "API");
+        let files = |i: usize| {
+            s[i].files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(files(0), ["src/api/users.rs", "src/api/mod.rs"]);
+        // The code stays in the body; its paths aren't the step's files.
+        assert!(s[1].body.contains("pub fn page(id: u32)"), "{}", s[1].body);
+        assert_eq!(files(1), ["src/pages.rs"]);
+        // A `## ` line in a code block doesn't end the steps.
+        assert_eq!(files(2), ["README.md"]);
+    }
     use serde_json::json;
 
     const GOOD_PLAN: &str = "# Add users\n\nSummary.\n\n## Steps\n\
         1. Users table\n   - `migrations/002_users.sql` (new): create the `users` table with `id`, `email`.\n\
         2. API\n   - `src/api/users.rs`: add `fn list_users(db: &Db) -> Vec<User>` and register it in `src/api/mod.rs`.\n\n\
         ## Decisions\n- none\n\n## Validation\n- `cargo test`\n- open /users by hand";
+
+    /// Round 3: member access on the usual objects, and a call, aren't
+    /// root files, written plainly or in backticks; root files still are.
+    #[test]
+    fn member_access_is_not_a_root_file() {
+        let step = "1. **API**\n   - `src/api.ts`: parse with `req.json()`, read `process.env` and \
+                    `import.meta.env`; reply with res.json(users) and lock state.lock() first.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/api.ts"]);
+        for yes in ["package.json", ".env", "go.mod", "main.rs", "index.ts"] {
+            assert!(as_path(yes).is_some(), "{yes}");
+        }
+        for no in ["process.env", "res.json", "import.meta.env", "ctx.state"] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+    }
+
+    /// Round 3: a Next.js route group segment, `app/(auth)/page.tsx`, is a
+    /// path; parentheses anywhere else still aren't.
+    #[test]
+    fn route_group_segments_are_paths() {
+        assert_eq!(
+            as_path("app/(auth)/login/page.tsx").as_deref(),
+            Some("app/(auth)/login/page.tsx")
+        );
+        let step = "1. **L**\n   - `app/(auth)/login/page.tsx` (new): the form, next to app/(auth)/layout.tsx.";
+        let files = step_files(step);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["app/(auth)/login/page.tsx", "app/(auth)/layout.tsx"]);
+        assert!(files[0].new);
+        for no in ["fn a(x: u8)", "foo()", "a.b.c()", "src/(a b)/x.ts", "src/()/x.ts"] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+        let plan = "# L\n\nLogin.\n\n## Steps\n\n1. **Login page**\n   - Add `app/(auth)/login/page.tsx` (new): the form.\n\
+                    2. **Layout**\n   - Change `app/(auth)/layout.tsx` to wrap it in the card.\n\n## Validation\n- `npm test`\n";
+        assert_eq!(plan_problems(plan), Vec::<String>::new());
+    }
+
+    /// Round 3: a capitalised `X.js` at the root is a library's name, and
+    /// so is `React/Vue.js`; `App.js`, `Gruntfile.js`, `src/solid.js` are
+    /// files; a web address with a path isn't one.
+    #[test]
+    fn library_names_and_domains_are_prose() {
+        for no in ["Solid.js", "Discord.js", "Day.js", "PDF.js", "React/Vue.js", "Node.js"] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+        for yes in ["App.js", "Gruntfile.js", "src/solid.js", "server.js", "src/Day.js"] {
+            assert!(as_path(yes).is_some(), "{yes}");
+        }
+        let step = "1. **A**\n   - Build the React/Vue.js adapter in `src/a.ts`, per github.com/foo/bar/README.md, with Solid.js.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/a.ts"]);
+    }
+
+    /// Round 3: a code span opened and closed on one line isn't an open
+    /// block, and the steps after it are read.
+    #[test]
+    fn one_line_fence_is_not_open() {
+        let plan = GOOD_PLAN.replace(
+            "2. API\n",
+            "2. API\n   - ```ts export const x = 1``` is enough in `src/x.ts`.\n",
+        );
+        assert_eq!(plan_problems(&plan), Vec::<String>::new());
+        assert_eq!(steps(&plan).len(), 2);
+        let open = GOOD_PLAN.replace("2. API\n", "2. API\n   ```ts\n   const x = 1;\n");
+        assert!(plan_problems(&open)
+            .iter()
+            .any(|p| p.contains("Close the code block")));
+    }
+
+    /// Round 3: a precise one-line step with a verb the list lacked (bump,
+    /// upgrade, revert) isn't vague.
+    #[test]
+    fn bump_and_upgrade_steps_are_not_vague() {
+        let plan = GOOD_PLAN.replace(
+            "## Decisions",
+            "3. Bump `tokio` to 1.40 in `migrations/002_users.sql`.\n\
+             4. Revert the `--release` flag in `src/api/mod.rs`.\n\n## Decisions",
+        );
+        assert_eq!(plan_problems(&plan), Vec::<String>::new());
+    }
+
+    /// A plan as Plan mode writes them: bold titles, sub-bullets, a code
+    /// span that isn't a file, a member access, a `path:line`, a folder.
+    const REAL_PLAN: &str = "# Add a users page\n\nServe users from the API and list them.\n\n\
+        ## Steps\n\n\
+        1. **Users table**\n   - `migrations/002_users.sql` (new): create `users` with `id`, `email`.\n   - Register it in `migrations/README.md`.\n\n\
+        2. **List users in the API** — the backend part\n   - `src/api/users.rs` (new): add `fn list_users(db: &Db) -> Result<Vec<User>>`; read `state.config` for the page size.\n   - `src/api/mod.rs:12`: register the route.\n   - Group: backend\n\n\
+        3. **Page**\n   - `src/pages/Users.tsx` (new) under `src/pages/`: render the list; call `api.listUsers()`.\n   - Group: backend\n\n\
+        ## Decisions\n- Paginate at 50 (the existing default).\n- Keep `users` in SQLite.\n\n\
+        ## Validation\n- `cargo test`\n- open /users by hand\n";
+
+    #[test]
+    fn steps_parse_into_number_title_files_and_group() {
+        let s = steps(REAL_PLAN);
+        assert_eq!(s.len(), 3);
+        assert_eq!((s[0].number, s[0].title.as_str()), (1, "Users table"));
+        assert_eq!(s[1].title, "List users in the API");
+        assert_eq!(s[2].title, "Page");
+        let files = |i: usize| {
+            s[i].files
+                .iter()
+                .map(|f| (f.path.as_str(), f.new))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            files(0),
+            [
+                ("migrations/002_users.sql", true),
+                ("migrations/README.md", false)
+            ]
+        );
+        // Not files: the signature, `state.config`, `users`; a path:line is its file.
+        assert_eq!(
+            files(1),
+            [("src/api/users.rs", true), ("src/api/mod.rs", false)]
+        );
+        assert_eq!(
+            files(2),
+            // P4.2: the mark is the path's it follows.
+            [("src/pages/Users.tsx", true), ("src/pages/", false)]
+        );
+        assert_eq!(s[1].group.as_deref(), Some("backend"));
+        assert_eq!(s[0].group, None);
+        assert!(s[1].body.contains("register the route"));
+        assert!(
+            !s[0].body.contains("List users"),
+            "a step ends where the next begins"
+        );
+
+        assert_eq!(
+            section(REAL_PLAN, "Decisions").as_deref(),
+            Some("- Paginate at 50 (the existing default).\n- Keep `users` in SQLite.")
+        );
+        assert_eq!(
+            section(REAL_PLAN, "validation").as_deref(),
+            Some("- `cargo test`\n- open /users by hand")
+        );
+        assert_eq!(section(REAL_PLAN, "Risks"), None);
+        // The checker's own fixture.
+        let g = steps(GOOD_PLAN);
+        assert_eq!(g.len(), 2);
+        assert_eq!(
+            g[1].files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/api/users.rs", "src/api/mod.rs"]
+        );
+        assert!(steps("# No steps\n\nJust text.").is_empty());
+    }
+
+    #[test]
+    fn what_counts_as_a_file() {
+        for yes in [
+            "src/a.rs",
+            "Cargo.toml",
+            "./src/b.ts",
+            "src/components/",
+            "Dockerfile",
+            ".env",
+            "src/a.rs:10-20",
+            "docs/design",
+        ] {
+            assert!(as_path(yes).is_some(), "{yes}");
+        }
+        for no in [
+            "fn a(x: u8)",
+            "state.config",
+            "self.items",
+            "users",
+            "std::fs::read",
+            "https://x.io/a.js",
+            "/etc/hosts",
+            "--flag",
+            "a.b.c()",
+            "*.ts",
+            "@context/TASK.md",
+            "C:/x.rs",
+            "e.g",
+        ] {
+            assert!(as_path(no).is_none(), "{no}");
+        }
+    }
+
+    struct Tree(std::path::PathBuf);
+    impl Tree {
+        fn new(files: &[&str]) -> Tree {
+            let dir = std::env::temp_dir().join(format!("plan-tree-{}", uuid::Uuid::new_v4()));
+            for f in files {
+                let p = dir.join(f);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, "x").unwrap();
+            }
+            std::fs::create_dir_all(&dir).unwrap();
+            Tree(dir)
+        }
+    }
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// P4.4: CRLF, `1. 1. 1.` numbering, `Group: none`, a "Next steps"
+    /// note before the steps.
+    #[test]
+    fn steps_parse_robustly() {
+        let plan =
+            "# P\r\n\r\n## Next steps (later)\r\n\r\n1. Nothing here.\r\n\r\n## Steps\r\n\r\n\
+            1. **One**\r\n   - `src/a.rs`: add a.\r\n   - Group: Pages\r\n\
+            1. **Two**\r\n   - `src/b.rs`: add b.\r\n   - Group: none\r\n\
+            1. **Three**\r\n   - `src/c.rs`: add c.\r\n   - Group: pages\r\n\r\n\
+            ## Validation\r\n- `cargo test`\r\n";
+        let s = steps(plan);
+        assert_eq!(s.iter().map(|s| s.number).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(s[0].title, "One");
+        assert_eq!(s[0].files[0].path, "src/a.rs");
+        assert_eq!(s[0].group.as_deref(), Some("pages"));
+        assert_eq!(s[1].group, None);
+        assert_eq!(s[2].group.as_deref(), Some("pages"));
+        assert!(!s[0].body.contains('\r'));
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+    }
+
+    /// Round 2, P4.4: `1. 2. 2. 3.` is steps 1 to 4, and the last two say
+    /// what the plan numbers them, in messages too.
+    #[test]
+    fn duplicate_number_in_the_middle() {
+        let plan = "# P\n\n## Steps\n\n1. **A**\n   - `src/a.rs`: add a.\n\
+            2. **B**\n   - `src/b.rs`: add b.\n2. **C**\n   - `src/c.rs`: add c.\n\
+            3. **D**\n   - `src/gone.rs`: add d.\n\n## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.iter().map(|s| s.number).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert_eq!(
+            s.iter().map(|s| s.written).collect::<Vec<_>>(),
+            [None, None, Some(2), Some(3)]
+        );
+        let tree = Tree::new(&["src/a.rs", "src/b.rs", "src/c.rs"]);
+        let p = project_problems(plan, &tree.0);
+        assert!(
+            p[0].starts_with("Step 4 (numbered 3. in the plan) names `src/gone.rs`"),
+            "{p:?}"
+        );
+        // Numbers that go up one by one are as written.
+        assert!(steps(REAL_PLAN).iter().all(|s| s.written.is_none()));
+    }
+
+    #[test]
+    fn plans_are_checked_against_the_project() {
+        let tree = Tree::new(&["migrations/README.md", "src/api/mod.rs"]);
+        // Every file exists or is new: only the group shares a file? No:
+        // steps 2 and 3 name different files.
+        assert_eq!(project_problems(REAL_PLAN, &tree.0), Vec::<String>::new());
+
+        // A missing path, reported once.
+        let missing = REAL_PLAN.replace("`src/api/mod.rs:12`", "`src/api/routes.rs`");
+        let p = project_problems(&missing, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with("Step 2 names `src/api/routes.rs`, which isn't in the project"),
+            "{p:?}"
+        );
+
+        // Used before the step that creates it.
+        let early = REAL_PLAN.replace(
+            "Register it in `migrations/README.md`.",
+            "Use the helper in `src/api/users.rs`.",
+        );
+        let p = project_problems(&early, &tree.0);
+        assert_eq!(p, ["Step 1 uses `src/api/users.rs`, which step 2 creates: put the steps in an order where a file is created before it's used."]);
+
+        // Two steps of a group naming one file.
+        let shared = REAL_PLAN.replace("call `api.listUsers()`", "register it in `src/api/mod.rs`");
+        let p = project_problems(&shared, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with(
+                "Steps 2 and 3 are both in group \"backend\" but both name `src/api/mod.rs`"
+            ),
+            "{p:?}"
+        );
+        // P4.2: `a.rs` (new): register in `routs.rs` leaves routs.rs to the
+        // existence check.
+        let marks = "# M\n\n## Steps\n\n1. **A**\n   - `src/a.rs` (new): register it in `src/routs.rs`.\n\n## Validation\n- `cargo test`\n";
+        let p = project_problems(marks, &tree.0);
+        assert!(
+            p.iter()
+                .any(|p| p.starts_with("Step 1 names `src/routs.rs`, which isn't in the project")),
+            "{p:?}"
+        );
+        // P4.1: a folder and a file in it; a file one changes and another
+        // reads; each refused with its steps.
+        let group = |a: &str, b: &str| {
+            format!(
+                "# G\n\n## Steps\n\n1. **Contract**\n   - `src/api/mod.rs`: stubs.\n\
+                 2. **A**\n   - {a}\n   - Group: g\n3. **B**\n   - {b}\n   - Group: g\n\n## Validation\n- `cargo test`\n"
+            )
+        };
+        let p = project_problems(
+            &group(
+                "`src/api/`: the handlers.",
+                "`src/api/mod.rs`: register them.",
+            ),
+            &tree.0,
+        );
+        assert!(
+            p.iter()
+                .any(|p| p
+                    .starts_with("Steps 2 and 3 are both in group \"g\" but both name `src/api`")),
+            "{p:?}"
+        );
+        let p = project_problems(
+            &group(
+                "`src/api/mod.rs`: change the signature.",
+                "`src/api/mod.rs` (read): uses it.",
+            ),
+            &tree.0,
+        );
+        assert!(
+            p.iter().any(|p| p.starts_with(
+                "Steps 2 and 3 are both in group \"g\" but both name `src/api/mod.rs`"
+            )),
+            "{p:?}"
+        );
+        // F03: shared context needs a contract step before the group.
+        let contract = "# C\n\n## Steps\n\n\
+            1. **Contract**\n   - `src/api/mod.rs`: declare `fn list_users()` and `fn add_user()` with stub bodies.\n\
+            2. **List**\n   - `src/api/users.rs` (new): implement `list_users`.\n   - `src/api/mod.rs` (read): the signature.\n   - Group: api\n\
+            3. **Add**\n   - `src/api/add.rs` (new): implement `add_user`.\n   - `src/api/mod.rs` (read-only): the signature.\n   - Group: api\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert_eq!(project_problems(contract, &tree.0), Vec::<String>::new());
+        let s = steps(contract);
+        assert!(s[1]
+            .files
+            .iter()
+            .any(|f| f.path == "src/api/mod.rs" && f.read_only));
+        assert!(!s[0].files[0].read_only);
+        let no_contract = contract.replace(
+            "`src/api/mod.rs`: declare",
+            "`migrations/README.md`: declare",
+        );
+        let p = project_problems(&no_contract, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].contains("all build on `src/api/mod.rs`, but no step before the group settles it"),
+            "{p:?}"
+        );
+        // Out of a group, sharing is fine.
+        let ungrouped = shared.replace("   - Group: backend\n", "");
+        assert!(project_problems(&ungrouped, &tree.0).is_empty());
+
+        // With a project, plan_problems_in adds these to the form checks.
+        assert_eq!(plan_problems_in(&missing, Some(&tree.0)).len(), 1);
+        assert!(plan_problems_in(&missing, None).is_empty());
+    }
+
+    /// Round 2, P4.3: word pairs and project names in prose aren't step
+    /// files, so they don't stop the plan being saved.
+    #[test]
+    fn prose_word_pairs_are_not_files() {
+        let plan = "# UI\n\nTidy the toolbar.\n\n## Steps\n\n\
+            1. **Buttons**\n   - Change the add/remove buttons and an A/B test, bump Node.js in `src/ui.rs`.\n\
+            2. **Client**\n   - Keep the client/server split; update `src/ui.rs` docs.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        let files: Vec<&str> = s[0].files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(files, ["src/ui.rs"], "{s:#?}");
+        assert_eq!(s[1].files.len(), 1, "{s:#?}");
+        let tree = Tree::new(&["src/ui.rs"]);
+        assert_eq!(plan_problems_in(plan, Some(&tree.0)), Vec::<String>::new());
+        // Written plainly, a path still counts with an extension or a `/`.
+        let plain = plan.replace("`src/ui.rs`", "src/ui.rs");
+        assert_eq!(steps(&plain)[0].files[0].path, "src/ui.rs");
+        assert_eq!(
+            steps("## Steps\n1. change src/api/ here")[0].files[0].path,
+            "src/api/"
+        );
+    }
+
+    /// Round 2, P4.3: root files with extensions the list doesn't know.
+    #[test]
+    fn root_level_unknown_extensions_still_count() {
+        for name in [
+            ".env.local",
+            "vite.config.mts",
+            "Dockerfile.dev",
+            "go.work",
+            "renovate.json5",
+        ] {
+            for written in [format!("`{name}`"), name.to_string()] {
+                let step = format!("1. **Config**\n   - Change {written} to set the port.");
+                assert!(names_a_file(&step), "{written}");
+                let files: Vec<String> = step_files(&step).into_iter().map(|f| f.path).collect();
+                assert_eq!(files, [name], "{written}");
+            }
+        }
+        // Member access stays code.
+        assert!(step_files("1. Update `self.items` and `config.port`.").is_empty());
+    }
+
+    /// Round 2: a plan written with CRLF is saved with LF only.
+    #[test]
+    fn save_plan_file_normalises_line_endings() {
+        let tree = Tree::new(&["src/a.rs"]);
+        let root = tree.0.to_string_lossy().into_owned();
+        let path = save_plan_file(
+            &root,
+            "Do it",
+            "# P\r\n\r\n## Steps\r\n1. x\r\n",
+            None,
+            "2026-01-01",
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert_eq!(saved, "# P\n\n## Steps\n1. x\n");
+    }
 
     #[test]
     fn plan_checks() {
@@ -882,6 +2142,24 @@ mod tests {
         assert_eq!(plan_problems(one), vec![plan_problems(one)[0].clone()]);
         assert!(plan_problems(one)[0].starts_with("Step 2 names no file"));
         // Bare names, folders and new files count; URLs and "and/or" don't.
+        // P4.3: the form check and the step's scope read paths alike: any
+        // extension in a folder, backslashes, no backticks needed.
+        for (step, path) in [
+            (
+                "1. **G**\n   - `src/grammar.pest`: add a rule.",
+                "src/grammar.pest",
+            ),
+            (
+                "1. **S**\n   - `tests/x.snap`: update the snapshot.",
+                "tests/x.snap",
+            ),
+            ("1. **P**\n   - change src/plain.rs to log.", "src/plain.rs"),
+            ("1. **W**\n   - `src\\x.rs`: add a field.", "src/x.rs"),
+        ] {
+            assert!(names_a_file(step), "{step}");
+            let files = step_files(step);
+            assert_eq!(files.first().map(|f| f.path.as_str()), Some(path), "{step}");
+        }
         assert!(names_a_file("change the base image in Dockerfile"));
         assert!(names_a_file("move it under src/components/"));
         assert!(names_a_file("set the flag in Cargo.toml (new section)"));
@@ -922,6 +2200,22 @@ mod tests {
             ".rovik/plans/a.md"
         );
         assert_eq!(relative_plan_path("/q/a.md", Some("/p")), "/q/a.md");
+        // P4.9: a sibling folder with the same start; no panic on a
+        // multi-byte character after the root.
+        assert_eq!(relative_plan_path("/pq/a.md", Some("/p")), "/pq/a.md");
+        assert_eq!(relative_plan_path("/pé/a.md", Some("/p")), "/pé/a.md");
+    }
+
+    #[test]
+    fn paths_outside_the_project_are_named() {
+        let tree = Tree::new(&["src/a.rs"]);
+        let plan = "# P\n\nx\n\n## Steps\n\n1. **One**\n   - `../secrets/key.rs`: read it.\n   - `src/a.rs`: use it.\n\n## Validation\n- `cargo test`\n";
+        let p = project_problems(plan, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].contains("`../secrets/key.rs`, which is outside the project"),
+            "{p:?}"
+        );
     }
 
     #[test]
@@ -1259,5 +2553,646 @@ mod tests {
             row("u2", "user", None),
         ];
         assert!(current_checklist(&messages).is_some());
+    }
+
+    /// Round 2 (§4.2), P4.2: on a line naming two paths, "(read)" is the mark
+    /// of the path it follows; one after neither marks neither; a file the
+    /// step changes on another line isn't read-only.
+    #[test]
+    fn read_mark_adjacent_only() {
+        let marked = |step: &str| -> Vec<String> {
+            step_files(step)
+                .into_iter()
+                .map(|f| {
+                    if f.read_only {
+                        format!("{} (read)", f.path)
+                    } else {
+                        f.path
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(
+            marked("1. **A**\n   - `src/a.rs`: use the type in `src/types.rs` (read)."),
+            ["src/a.rs", "src/types.rs (read)"]
+        );
+        assert_eq!(
+            marked("1. **A**\n   - `src/types.rs` (read) for `src/a.rs`: the signature."),
+            ["src/types.rs (read)", "src/a.rs"]
+        );
+        assert_eq!(
+            marked("1. **A**\n   - `src/a.rs` and `src/b.rs`, with the types as context (read)."),
+            ["src/a.rs", "src/b.rs"]
+        );
+        assert_eq!(
+            marked("1. **A**\n   - `src/types.rs` (read): the signature.\n   - `src/types.rs`: add a field."),
+            ["src/types.rs"]
+        );
+    }
+
+    /// Round 2 (§4.2), P4.2: a mark right after its path with no space
+    /// (`` `a.rs`(new) ``) is that path's, backticked or plain.
+    #[test]
+    fn mark_with_no_space() {
+        for (line, path) in [
+            ("`a.rs`(new): register it in `src/mod.rs`.", "a.rs"),
+            ("src/a.rs(new): register it in `src/mod.rs`.", "src/a.rs"),
+        ] {
+            let files = step_files(&format!("1. **A**\n   - {line}"));
+            let got: Vec<(&str, bool)> = files.iter().map(|f| (f.path.as_str(), f.new)).collect();
+            assert_eq!(got, [(path, true), ("src/mod.rs", false)], "{line}");
+        }
+        let files = step_files("1. **A**\n   - `src/types.rs`(read) for `src/a.rs`.");
+        assert_eq!(files.len(), 2, "{files:?}");
+        assert!(files[0].read_only && !files[1].read_only, "{files:?}");
+    }
+
+    /// Round 2 (§4.2), P4.2: on a line that names one path, a mark anywhere
+    /// on it is that path's; a mark on a line naming no path marks nothing.
+    #[test]
+    fn one_path_mark_anywhere() {
+        for (step, new, read_only) in [
+            (
+                "1. **A**\n   - Create (new file) `src/a.rs` with the helper.",
+                true,
+                false,
+            ),
+            (
+                "1. **A**\n   - `src/a.rs`: the helper module (new).",
+                true,
+                false,
+            ),
+            (
+                "1. **A**\n   - Context (read-only): the signature in `src/a.rs`.",
+                false,
+                true,
+            ),
+            (
+                "1. **A** (new)\n   - `src/a.rs`: the helper.\n   - It's new (new).",
+                false,
+                false,
+            ),
+        ] {
+            let files = step_files(step);
+            assert_eq!(files.len(), 1, "{step}: {files:?}");
+            assert_eq!(files[0].path, "src/a.rs", "{step}");
+            assert_eq!(
+                (files[0].new, files[0].read_only),
+                (new, read_only),
+                "{step}"
+            );
+        }
+    }
+
+    /// Round 2 (§4.2), P4.2: a folder that only a new file of the plan is in
+    /// counts as there, from another step and a level up; a folder whose
+    /// name only starts the same doesn't.
+    #[test]
+    fn new_file_makes_its_folder_exist() {
+        let tree = Tree::new(&["src/lib.rs"]);
+        let plan = "# F\n\n## Steps\n\n\
+            1. **Module**\n   - `src/feature/sub/mod.rs` (new): add the module.\n\
+            2. **Wire**\n   - `src/feature/`: register the module.\n   - `src/lib.rs`: declare it.\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert_eq!(project_problems(plan, &tree.0), Vec::<String>::new());
+        let p = project_problems(&plan.replace("`src/feature/`", "`src/feat/`"), &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with("Step 2 names `src/feat/`, which isn't in the project"),
+            "{p:?}"
+        );
+    }
+
+    /// Round 2 (§4.2), P4.3: library names written like files (Node.js,
+    /// `Vue.js`, Three.js) aren't step files, in prose or backticks; a `.js`
+    /// file in a folder or with another stem still is.
+    #[test]
+    fn node_js_in_prose_is_not_a_file() {
+        let step = "1. **Deps**\n   - Bump Node.js, `Vue.js` and Three.js; load them in `src/app.js` and server.js.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/app.js", "server.js"]);
+        assert!(!names_a_file("1. **Deps**\n   - Bump Node.js."));
+        assert_eq!(as_path("Node.js"), None);
+    }
+
+    /// Round 2 (§4.2): an absolute Windows path (drive, UNC), backticked or
+    /// plain, isn't the project's; a relative one with `\` is folded.
+    #[test]
+    fn windows_absolute_rejected() {
+        for no in [
+            "C:\\proj\\src\\a.rs",
+            "c:/proj/a.rs",
+            "D:a.rs",
+            "\\\\server\\share\\a.rs",
+        ] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+        assert_eq!(as_path(".\\src\\a.rs").as_deref(), Some("src/a.rs"));
+        let step = "1. **Win**\n   - Change `C:\\proj\\src\\a.rs` and C:/proj/src/b.rs to log.";
+        assert!(step_files(step).is_empty(), "{:?}", step_files(step));
+        assert!(!names_a_file(step));
+    }
+
+    /// Round 2 (§4.2): the path form (`as_path`) refuses a name with a space
+    /// and keeps accented and CJK names, backticked or plain.
+    #[test]
+    fn spaces_and_unicode() {
+        assert_eq!(as_path("src/my file.rs"), None);
+        assert_eq!(
+            as_path("src/données/é.rs").as_deref(),
+            Some("src/données/é.rs")
+        );
+        assert_eq!(as_path("src/深/a.rs").as_deref(), Some("src/深/a.rs"));
+        let step =
+            "1. **I18n**\n   - `src/données/é.rs`: add the strings; load them in src/深/a.rs.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/données/é.rs", "src/深/a.rs"]);
+        assert!(step_files("1. **S**\n   - `src/my file.rs`: add a field.").is_empty());
+    }
+
+    /// Round 2 (§4.2): a folder three deep keeps its closing `/` in every
+    /// spelling, so it's read as a folder, and is checked as one.
+    #[test]
+    fn three_deep_folder_keeps_slash() {
+        for t in ["src/a/b/c/", "./src//a/b/c/", "src\\a\\b\\c\\"] {
+            assert_eq!(as_path(t).as_deref(), Some("src/a/b/c/"), "{t}");
+        }
+        assert_eq!(as_path("src/a/b/c").as_deref(), Some("src/a/b/c"));
+        let step = "1. **C**\n   - Move the helpers under src/a/b/c/ and `src/a/b/d/`.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["src/a/b/c/", "src/a/b/d/"]);
+        let tree = Tree::new(&["src/a/b/c/x.rs", "src/a/b/d/y.rs"]);
+        assert_eq!(
+            project_problems(&format!("## Steps\n{step}"), &tree.0),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Round 2 (§4.2), pinned: a path with `\` written plainly isn't read
+    /// (only backticked ones are folded to `/`), so a step naming only that
+    /// names no file and the form check asks for a backticked path.
+    #[test]
+    fn unbackticked_backslash() {
+        let plain = "1. **W**\n   - Change src\\api\\users.rs to log the id.";
+        assert!(step_files(plain).is_empty(), "{:?}", step_files(plain));
+        assert!(!names_a_file(plain));
+        let ticked = plain.replace("src\\api\\users.rs", "`src\\api\\users.rs`");
+        assert_eq!(step_files(&ticked)[0].path, "src/api/users.rs");
+        let plan = format!(
+            "# W\n\n## Steps\n\n{plain}\n2. **X**\n   - `src/x.rs`: add the log helper.\n\n## Validation\n- `cargo test`\n"
+        );
+        let p = plan_problems(&plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 1 names no file"), "{p:?}");
+    }
+
+    /// Round 2 (§4.2): a step that names no file is still a step (number,
+    /// title and body kept, no files); the form check names it, the project
+    /// check adds nothing, and its worker's scope is empty until a grant.
+    #[test]
+    fn step_with_zero_files() {
+        use crate::agent_run::worker::WriteScope;
+        let plan = "# Z\n\nx\n\n## Steps\n\n\
+            1. **Helper**\n   - `src/a.rs`: add `fn helper()`.\n\
+            2. **Run it** — run the migration by hand and check the logs for errors.\n\
+            3. **Use**\n   - `src/b.rs`: call `helper()` from `main`.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.iter().map(|s| s.number).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(s[1].title, "Run it");
+        assert!(s[1].files.is_empty(), "{:?}", s[1].files);
+        assert!(s[1].body.contains("check the logs"), "{}", s[1].body);
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 2 names no file"), "{p:?}");
+        let tree = Tree::new(&["src/a.rs", "src/b.rs"]);
+        assert_eq!(project_problems(plan, &tree.0), Vec::<String>::new());
+        let scope = WriteScope::for_step(&s[1]);
+        assert_eq!(scope, WriteScope::default());
+        assert_eq!(scope.describe(), "nothing yet");
+        assert!(!scope.allows("src/a.rs", true) && !scope.allows("new.rs", false));
+    }
+
+    /// Round 2 (§4.2), P4.2: a mark in bold or italics right after a path is
+    /// that path's, also on a line that names another path.
+    #[test]
+    fn bold_mark_after_path() {
+        for line in [
+            "`src/a.rs` **(new)**: register it in `src/mod.rs`.",
+            "**`src/a.rs`** (new): register it in `src/mod.rs`.",
+            "`src/a.rs` _(new)_: register it in `src/mod.rs`.",
+        ] {
+            let files = step_files(&format!("1. **A**\n   - {line}"));
+            let got: Vec<(&str, bool)> = files.iter().map(|f| (f.path.as_str(), f.new)).collect();
+            assert_eq!(got, [("src/a.rs", true), ("src/mod.rs", false)], "{line}");
+        }
+        let files =
+            step_files("1. **A**\n   - `src/types.rs` **(read)** for `src/a.rs`: the signature.");
+        let got: Vec<(&str, bool)> = files
+            .iter()
+            .map(|f| (f.path.as_str(), f.read_only))
+            .collect();
+        assert_eq!(got, [("src/types.rs", true), ("src/a.rs", false)]);
+    }
+
+    /// Round 2 (§4.2), P4.3: an extension has a letter, so a version
+    /// (`docs/v1.2`, HTTP/1.1, node-v18.2) isn't a file; `media/intro.mp4`
+    /// and a versioned folder with its `/` are.
+    #[test]
+    fn digit_extension_is_not_a_file() {
+        for no in ["docs/v1.2", "api/v2.0.1", "HTTP/1.1", "node-v18.2"] {
+            assert_eq!(as_path(no), None, "{no}");
+        }
+        assert_eq!(
+            as_path("media/intro.mp4").as_deref(),
+            Some("media/intro.mp4")
+        );
+        assert_eq!(as_path("docs/v1.2/").as_deref(), Some("docs/v1.2/"));
+        let step = "1. **Docs**\n   - Move the docs/v1.2 notes and the HTTP/1.1 caveat into `docs/guide.md`.";
+        let files: Vec<String> = step_files(step).into_iter().map(|f| f.path).collect();
+        assert_eq!(files, ["docs/guide.md"]);
+    }
+
+    /// Round 2, P4.4: numbers that go up with gaps (`2. 4. 7.`) are kept as
+    /// written, with no separate written number, and the checks use them.
+    #[test]
+    fn gapped_numbers_are_kept() {
+        let plan = "# P\n\n## Steps\n\n2. **B**\n   - `src/b.rs`: add b.\n\
+            4. **D**\n   - `src/d.rs`: add d.\n7. **G**\n   - `src/gone.rs`: add g.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.iter().map(|s| s.number).collect::<Vec<_>>(), [2, 4, 7]);
+        assert!(s.iter().all(|s| s.written.is_none()), "{s:#?}");
+        assert_eq!(s[2].named(), "7");
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+        let tree = Tree::new(&["src/b.rs", "src/d.rs"]);
+        let p = project_problems(plan, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 7 names `src/gone.rs`"), "{p:?}");
+    }
+
+    /// P4.4: `## Steps:` is `## Steps` (any case, a space before the colon
+    /// too), taken before a "## Next steps" note.
+    #[test]
+    fn steps_heading_colon() {
+        let plan = "# P\n\n## Next steps (later)\n\n1. Nothing here.\n\n## Steps:\n\n\
+            1. **One**\n   - `src/a.rs`: add a.\n2. **Two**\n   - `src/b.rs`: add b.\n\n## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(
+            s.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
+            ["One", "Two"]
+        );
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+        let spaced = plan.replace("## Steps:", "## STEPS :");
+        assert_eq!(steps(&spaced).len(), 2);
+    }
+
+    /// P4.4: a `Group:` line in a ``` or ~~~ code block isn't the step's
+    /// group; a real one after the block still is.
+    #[test]
+    fn group_in_fenced_code_ignored() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **One**\n   - `src/a.rs`: add a, configured as:\n\n     ```yaml\n     Group: fenced\n     ```\n\
+            2. **Two**\n   - `src/b.rs`: add b, configured as:\n\n     ~~~\n     group: tilde\n     ~~~\n\
+            3. **Three**\n   - `src/c.rs`: add c.\n\n     ```\n     Group: fenced\n     ```\n   - Group: Real\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.len(), 3, "{s:#?}");
+        assert_eq!(s[0].group, None);
+        assert_eq!(s[1].group, None);
+        assert_eq!(s[2].group.as_deref(), Some("real"));
+        // The code stays in the body.
+        assert!(s[1].body.contains("group: tilde"), "{}", s[1].body);
+    }
+
+    /// P4.4: numbered sub-lists indented with tabs, spaces or both belong
+    /// to their step: only the least indented numbered lines are steps.
+    #[test]
+    fn tabs_vs_spaces_sub_lists() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **Tabs**\n\t1. Add `src/a.rs` (new).\n\t2. Register it in `src/lib.rs`.\n\
+            2. **Spaces**\n    1. Add `src/b.rs` (new).\n    2. Register it in `src/lib.rs`.\n\
+            3. **Both**\n\t1. Add `src/c.rs` (new).\n  \t2. Register it in `src/lib.rs`.\n\t\t1. Export it.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(
+            s.iter().map(|s| s.number).collect::<Vec<_>>(),
+            [1, 2, 3],
+            "{s:#?}"
+        );
+        for (step, new) in s.iter().zip(["src/a.rs", "src/b.rs", "src/c.rs"]) {
+            let files: Vec<(&str, bool)> = step
+                .files
+                .iter()
+                .map(|f| (f.path.as_str(), f.new))
+                .collect();
+            assert_eq!(files, [(new, true), ("src/lib.rs", false)], "{}", step.body);
+        }
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+    }
+
+    /// P4.4: numbered sub-lists (`.` or `)`, nested twice) belong to their
+    /// step: they aren't steps, don't renumber the steps and don't count as
+    /// the numbers the plan shows.
+    #[test]
+    fn numbered_sub_lists_inside_step() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **Store**\n   1. Add `src/store.rs` (new) with `fn save(x: &X)`.\n   2. Register it in `src/lib.rs`.\n      1. Export `save` from the crate root.\n\
+            2. **Use it**\n   1) Call `save` from `src/api.rs`.\n   2) Update `src/api_test.rs` to check it.\n   3) Document it in `README.md`.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(
+            s.iter().map(|s| (s.number, s.written)).collect::<Vec<_>>(),
+            [(1, None), (2, None)],
+            "{s:#?}"
+        );
+        assert_eq!(s[1].title, "Use it");
+        let files = |i: usize| {
+            s[i].files
+                .iter()
+                .map(|f| (f.path.as_str(), f.new))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(files(0), [("src/store.rs", true), ("src/lib.rs", false)]);
+        assert_eq!(
+            files(1),
+            [
+                ("src/api.rs", false),
+                ("src/api_test.rs", false),
+                ("README.md", false)
+            ]
+        );
+        assert!(s[0].body.contains("1. Export `save`"), "{}", s[0].body);
+        assert!(!s[0].body.contains("Use it"));
+        assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+    }
+
+    /// P4.4: a group's name reads the same in backticks, in bold or both,
+    /// in any case, so these steps are one group; `none` in backticks is
+    /// still no group.
+    #[test]
+    fn group_name_with_backticks_and_bold() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **A**\n   - `src/a.rs`: add a.\n   - Group: `Backend`\n\
+            2. **B**\n   - `src/b.rs`: add b.\n   - **Group:** backend\n\
+            3. **C**\n   - `src/c.rs`: add c.\n   - **Group**: **backend**\n\
+            4. **D**\n   - `src/d.rs`: add d.\n   - Group: **`backend`**\n\
+            5. **E**\n   - `src/e.rs`: add e.\n   - **Group: `BACKEND`**\n\
+            6. **F**\n   - `src/f.rs`: add f.\n   - Group: `none`\n\n\
+            ## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(
+            s.iter().map(|s| s.group.as_deref()).collect::<Vec<_>>(),
+            [
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                None
+            ],
+            "{s:#?}"
+        );
+        // One group: two of its steps can't share a file.
+        let shared = plan.replace("`src/b.rs`: add b.", "`src/a.rs`: add b.");
+        let tree = Tree::new(&["src/a.rs", "src/c.rs", "src/d.rs", "src/e.rs", "src/f.rs"]);
+        let p = project_problems(&shared, &tree.0);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with(
+                "Steps 1 and 2 are both in group \"backend\" but both name `src/a.rs`"
+            ),
+            "{p:?}"
+        );
+    }
+
+    /// Round 2, P4.4: `## Steps (ordered)` is the steps heading, alone and
+    /// after a "## Next steps" note (which would otherwise be read first).
+    #[test]
+    fn steps_heading_with_suffix() {
+        let plan = "# P\n\n## Next steps (later)\n\n1. Nothing here.\n\n## Steps (ordered)\n\n\
+            1. **One**\n   - `src/a.rs`: add a.\n\
+            2. **Two**\n   - `src/b.rs`: add b.\n\n## Validation\n- `cargo test`\n";
+        let alone = plan.replace("## Next steps (later)\n\n1. Nothing here.\n\n", "");
+        for plan in [alone.as_str(), plan] {
+            let s = steps(plan);
+            assert_eq!(
+                s.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
+                ["One", "Two"],
+                "{plan}"
+            );
+            assert_eq!(s[1].files[0].path, "src/b.rs");
+            assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+        }
+    }
+
+    /// Round 2, P4.4: a numbered `## 3. Steps` is the steps heading, alone
+    /// and after a "## 2. Next steps" note; its number isn't a step's.
+    #[test]
+    fn steps_heading_numbered() {
+        let plan = "# P\n\n## 1. Summary\n\nTwo files.\n\n## 2. Next steps (later)\n\n1. Nothing here.\n\n\
+            ## 3. Steps\n\n1. **One**\n   - `src/a.rs`: add a.\n2. **Two**\n   - `src/b.rs`: add b.\n\n\
+            ## 4. Validation\n- `cargo test`\n";
+        let alone = plan.replace("## 2. Next steps (later)\n\n1. Nothing here.\n\n", "");
+        for plan in [alone.as_str(), plan] {
+            let s = steps(plan);
+            assert_eq!(
+                s.iter().map(|s| s.number).collect::<Vec<_>>(),
+                [1, 2],
+                "{plan}"
+            );
+            assert_eq!(s[0].title, "One");
+            assert_eq!(s[1].files[0].path, "src/b.rs");
+            assert!(plan_problems(plan).is_empty(), "{:?}", plan_problems(plan));
+        }
+    }
+
+    /// Round 2: a numbered heading (`## 5. Decisions`) is its name's
+    /// section, so a step worker's brief keeps the plan's decisions.
+    #[test]
+    fn section_finds_numbered_headings() {
+        let plan = "# P\n\n## 1. Summary\n\nTwo files.\n\n## 3. Steps\n\n\
+            1. **One**\n   - `src/a.rs`: add a.\n2. **Two**\n   - `src/b.rs`: add b.\n\n\
+            ## 4) Validation\n- `cargo test`\n\n## 5. Decisions\n\n- Keep the old API.\n";
+        assert_eq!(
+            section(plan, "Decisions").as_deref(),
+            Some("- Keep the old API.")
+        );
+        assert_eq!(
+            section(plan, "validation").as_deref(),
+            Some("- `cargo test`")
+        );
+        assert_eq!(section(plan, "Summary").as_deref(), Some("Two files."));
+        assert_eq!(section("## 2024 roadmap\n\nx\n", "roadmap"), None);
+        assert_eq!(
+            section("## 2024 roadmap\n\nx\n", "2024").as_deref(),
+            Some("x")
+        );
+    }
+
+    /// Round 2, P4.4: the form check names a step as `steps` numbers it:
+    /// in `2. 4. 7.` the step without a file is step 4, not "step 2"; in
+    /// `1. 2. 2. 3.` the last is step 4, numbered 3. in the plan.
+    #[test]
+    fn gapped_numbers_in_form_check_messages() {
+        let plan = "# P\n\n## Steps\n\n2. **B**\n   - `src/b.rs`: add b.\n\
+            4. **D**\n   - Add the d helper next to b, with its own tests.\n\
+            7. **G**\n   - `src/g.rs`: add g.\n\n## Validation\n- `cargo test`\n";
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 4 names no file"), "{p:?}");
+        let plan = "# P\n\n## Steps\n\n1. **A**\n   - `src/a.rs`: add a.\n\
+            2. **B**\n   - `src/b.rs`: add b.\n2. **C**\n   - `src/c.rs`: add c.\n\
+            3. **D**\n   - `src/d.rs`.\n\n## Validation\n- `cargo test`\n";
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(
+            p[0].starts_with("Step 4 (numbered 3. in the plan) is too vague"),
+            "{p:?}"
+        );
+    }
+
+    /// Round 2, P4.4: a code block that's never closed runs to the end of
+    /// the plan (no guess at where it was meant to end), so the steps after
+    /// it are its step's body; the form check asks for it to be closed.
+    #[test]
+    fn unclosed_fence_swallows_rest() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **One**\n   - `src/a.rs`: add `a` to the module.\n\
+            2. **Two**\n   - `src/b.rs`: add `b` with this signature:\n\n     ```rust\n     pub fn b() -> u8\n\
+            3. **Three**\n   - `src/c.rs`: call `b` from `c`.\n\n## Validation\n- `cargo test`\n";
+        let s = steps(plan);
+        assert_eq!(s.len(), 2, "{s:#?}");
+        assert_eq!(
+            s[1].files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/b.rs"]
+        );
+        assert!(
+            s[1].body.contains("3. **Three**") && s[1].body.contains("## Validation"),
+            "{}",
+            s[1].body
+        );
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Close the code block"), "{p:?}");
+        let closed = plan.replace("pub fn b() -> u8\n", "pub fn b() -> u8\n     ```\n");
+        assert_eq!(steps(&closed).len(), 3);
+        assert!(
+            plan_problems(&closed).is_empty(),
+            "{:?}",
+            plan_problems(&closed)
+        );
+    }
+
+    /// Round 2, P4.9: a Windows root, with or without its last separator,
+    /// and a `/`-written root a path was joined onto; the shown path keeps
+    /// the OS's separators. A sibling with the same start isn't under it.
+    #[test]
+    fn relative_plan_path_windows_root() {
+        let file = r"C:\p\.rovik\plans\a.md";
+        assert_eq!(
+            relative_plan_path(file, Some(r"C:\p")),
+            r".rovik\plans\a.md"
+        );
+        assert_eq!(
+            relative_plan_path(file, Some(r"C:\p\")),
+            r".rovik\plans\a.md"
+        );
+        assert_eq!(
+            relative_plan_path(r"C:/p\.rovik\plans\a.md", Some("C:/p")),
+            r".rovik\plans\a.md"
+        );
+        assert_eq!(
+            relative_plan_path(r"C:\pq\a.md", Some(r"C:\p")),
+            r"C:\pq\a.md"
+        );
+        assert_eq!(relative_plan_path(r"C:\a.md", Some(r"C:\")), "a.md");
+    }
+
+    /// Round 2, P4.9: the root itself is shown whole, never as an empty
+    /// path; without a root the path is shown as it is.
+    #[test]
+    fn relative_plan_path_root_equals_path() {
+        assert_eq!(relative_plan_path("/p", Some("/p")), "/p");
+        assert_eq!(relative_plan_path("/p", Some("/p/")), "/p");
+        assert_eq!(relative_plan_path("/p/", Some("/p")), "/p/");
+        assert_eq!(relative_plan_path("/", Some("/")), "/");
+        assert_eq!(relative_plan_path(r"C:\p", Some(r"C:\p\")), r"C:\p");
+        assert_eq!(relative_plan_path("/p/a.md", None), "/p/a.md");
+    }
+
+    /// Round 2, P4.9 (documented): `src/..` is the project root, not a
+    /// path out of it. Like `./` it's no step's file and isn't reported as
+    /// outside the project; a step that names nothing else names no file.
+    #[test]
+    fn trailing_dotdot_is_dropped_silently() {
+        assert!(as_path("src/..").is_none());
+        let tree = Tree::new(&["src/a.rs"]);
+        let plan = "# P\n\nx\n\n## Steps\n\n\
+            1. **Root**\n   - `src/..`: update the list of what is in it.\n\
+            2. **Use**\n   - `src/a.rs`: use the list in the loader.\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert!(
+            steps(plan)[0].files.is_empty(),
+            "{:?}",
+            steps(plan)[0].files
+        );
+        let p = project_problems(plan, &tree.0);
+        assert!(p.is_empty(), "{p:?}");
+        let p = plan_problems(plan);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].starts_with("Step 1 names no file"), "{p:?}");
+    }
+
+    /// Round 2, P4.9: a `..` that stays in the project (`src/../x.rs`) isn't
+    /// "outside the project": the check says how to write it; one that
+    /// leaves it is still outside, and `src/../` (the root) is no file.
+    #[test]
+    fn dotdot_inside_the_project_is_named_as_it_resolves() {
+        let tree = Tree::new(&["src/a.rs", "x.rs"]);
+        let plan = "# P\n\nx\n\n## Steps\n\n\
+            1. **One**\n   - `src/../x.rs`: use it.\n   - `src/api/../lib/`: the helpers.\n\
+               - `src/../../k.rs`: read it.\n   - `src/../`: format it.\n   - `src/a.rs`: use it.\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert_eq!(
+            project_problems(plan, &tree.0),
+            [
+                "Step 1 names `src/../x.rs`: write it as `x.rs`, without `..`.",
+                "Step 1 names `src/api/../lib/`: write it as `src/lib/`, without `..`.",
+                "Step 1 names `src/../../k.rs`, which is outside the project: use a path inside it.",
+            ]
+        );
+        assert_eq!(without_dots("a/b/../../c"), Some("c".into()));
+        assert_eq!(without_dots("a/../.."), None);
+        assert_eq!(without_dots("./a/./b/"), Some("a/b/".into()));
+    }
+
+    /// Round 2, P4.4: a period or a note after a group's name isn't part of
+    /// it, so these steps are the group the lead asks for ("backend").
+    #[test]
+    fn group_name_followed_by_a_note_or_period() {
+        let plan = "# P\n\n## Steps\n\n\
+            1. **A**\n   - `src/a.rs`: add a.\n   - Group: `backend`.\n\
+            2. **B**\n   - `src/b.rs`: add b.\n   - Group: `Backend` (runs alongside step 1)\n\
+            3. **C**\n   - `src/c.rs`: add c.\n   - Group: backend.\n\
+            4. **D**\n   - `src/d.rs`: add d.\n   - **Group:** backend (with step 1)\n\
+            5. **E**\n   - `src/e.rs`: add e.\n   - Group: `none`.\n\n\
+            ## Validation\n- `cargo test`\n";
+        assert_eq!(
+            steps(plan)
+                .iter()
+                .map(|s| s.group.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                Some("backend"),
+                None
+            ]
+        );
     }
 }

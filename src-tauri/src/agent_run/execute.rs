@@ -122,15 +122,6 @@ fn is_context_path(path: Option<&str>, real_dir: Option<&str>) -> bool {
     p == dir || p.starts_with(&format!("{dir}/"))
 }
 
-fn line(v: Option<&Value>) -> Option<usize> {
-    let n = match v? {
-        Value::String(s) if !s.trim().is_empty() => s.trim().parse::<f64>().ok()?,
-        Value::Number(n) => n.as_f64()?,
-        _ => return None,
-    };
-    (n.is_finite() && n >= 0.0).then(|| n.floor() as usize)
-}
-
 /// Tells the model which of its changes were not applied.
 fn describe_rejected_hunks(path: &str, rejected: &[Hunk], total: usize) -> String {
     let preview = |lines: &[String]| {
@@ -173,6 +164,9 @@ fn describe_rejected_hunks(path: &str, rejected: &[Hunk], total: usize) -> Strin
     out.join("\n")
 }
 
+/// Paths extend_scope grants a step worker at most (P2.3).
+const MAX_GRANTS: usize = 8;
+
 impl<R: Runtime> Run<R> {
     pub(super) async fn execute_tool_calls(
         &mut self,
@@ -191,6 +185,32 @@ impl<R: Runtime> Run<R> {
 
         let mut rest = calls;
         while !rest.is_empty() {
+            // P2.2: a subagent's time runs out within a reply too: what's
+            // left of it isn't run.
+            if self.wall_left() == Some(std::time::Duration::ZERO) {
+                let wall = self.sub().map_or(0, |s| s.budget.wall.as_secs());
+                for tc in rest {
+                    let content = format!(
+                        "Error: not run: it's past your time budget of about {wall} seconds. Write your report now with what you have."
+                    );
+                    self.answer_unrun(tc, content, true, None).await?;
+                }
+                break;
+            }
+            // The lead's subagents: a run of `task` calls starts together
+            // (subagent_run.rs), at most the settings' number at once.
+            let tasks = if self.sub().is_none() {
+                rest.iter().take_while(|tc| tc.name == "task").count()
+            } else {
+                0
+            };
+            if tasks > 0 {
+                self.execute_tasks(&rest[..tasks], resume_note.is_some())
+                    .await?;
+                rest = &rest[tasks..];
+                continue;
+            }
+            self.note_sub_progress(&rest[0].name);
             // Decided when it's this call's turn: an approval before it may
             // have taken a while, and Stop may have come.
             let n = parallel::batch_len(rest, |tc| {
@@ -220,6 +240,7 @@ impl<R: Runtime> Run<R> {
         if resume_note.is_some()
             || self.stopped()
             || !parallel::PARALLEL_TOOLS.contains(&tc.name.as_str())
+            || self.sub().is_some_and(|s| !s.allows(&tc.name))
         {
             return false;
         }
@@ -297,6 +318,38 @@ impl<R: Runtime> Run<R> {
         Ok(())
     }
 
+    /// A call answered without running it (a subagent's refusal, a scope
+    /// grant): it counts for the budget and the loop checks like any other
+    /// (P2.1), so refusals can't go on for ever.
+    async fn answer_unrun(
+        &mut self,
+        tc: &ToolCall,
+        mut content: String,
+        refused: bool,
+        meta: Option<Value>,
+    ) -> Result<(), String> {
+        self.note_finished(tc, &mut content, refused);
+        self.add_tool_result(&tc.id, content, meta, Vec::new())
+            .await
+    }
+
+    /// A call that didn't run a tool (or ran one here, without a write) is
+    /// still a finished call for the loop guard, whose note joins its
+    /// result.
+    fn note_finished(&mut self, tc: &ToolCall, content: &mut String, rejected: bool) {
+        let verdict = self.guard.record(FinishedCall {
+            name: &tc.name,
+            args_json: &tc.arguments,
+            result: content,
+            write: None,
+            rejected,
+        });
+        self.log_guard(&tc.name, &verdict);
+        if let Some(note) = verdict.note() {
+            content.push_str(note);
+        }
+    }
+
     /// One call: authorized (asking if the settings say so), run, recorded.
     async fn execute_one(
         &mut self,
@@ -308,8 +361,93 @@ impl<R: Runtime> Run<R> {
         if self.stopped() {
             return self.stopped_result(tc).await;
         }
+        // A subagent may call its kind's tools only, whatever it was sent.
+        if let Some(sub) = self.sub() {
+            let spec = sub.kind.spec();
+            if !sub.allows(&tc.name) {
+                let content = format!(
+                    "Error: {} isn't available to a {} subagent. Its tools: {}. If you can't do the task with them, say so under \"## Blocked\" in your report.",
+                    tc.name,
+                    spec.label.to_lowercase(),
+                    spec.tools.join(", ")
+                );
+                return self.answer_unrun(tc, content, true, None).await;
+            }
+        }
         let args = permissions::parse_args(&tc.arguments);
         let path_arg = args.get("path").and_then(|p| p.as_str());
+
+        // A writing subagent: more scope on request (D07), and no write
+        // outside it (D7).
+        if tc.name == "extend_scope" && self.sub().is_some_and(|s| s.scope.is_some()) {
+            let (content, granted) = self.extend_scope(&args);
+            let refused = granted.is_empty();
+            // Kept with the result: a continued worker keeps its grants.
+            let meta = (!refused).then(|| json!({ "granted": granted }));
+            return self.answer_unrun(tc, content, refused, meta).await;
+        }
+        // The test writer writes test files only (E02).
+        if let (true, Some(path), Some(root)) = (
+            tc.name == "write" && self.sub().is_some_and(|s| s.tests_only),
+            path_arg,
+            self.root.as_deref(),
+        ) {
+            let key = super::repair::rel_key(root, path);
+            if !super::project::is_test_path(&key) {
+                let content = super::test_writer::not_a_test_file(&key);
+                return self.answer_unrun(tc, content, true, None).await;
+            }
+        }
+        // A writing subagent changes files only with write, where its scope
+        // is checked; the test writer doesn't read the code with bash either.
+        if tc.name == "bash" {
+            if let Some(sub) = self.sub().filter(|s| s.scope.is_some() || s.tests_only) {
+                let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                if let Some(content) = super::worker::writer_command_problem(
+                    command,
+                    sub.tests_only,
+                    self.root.as_deref().map(std::path::Path::new),
+                ) {
+                    return self.answer_unrun(tc, content, true, None).await;
+                }
+            }
+        }
+        // Light commands only: builds and test runs are the lead's (E02, F05).
+        // Only what's known to be light runs: a command that can't be told
+        // (a wrapper, a script, a subshell) is refused too.
+        if tc.name == "bash" && self.sub().is_some_and(|s| s.light_bash) {
+            let command = args.get("command").and_then(|c| c.as_str()).unwrap_or("");
+            let class = crate::workload::classify::classify(
+                command,
+                self.root.as_deref().map(std::path::Path::new),
+            );
+            if class != crate::workload::classify::Class::Light {
+                let what = match class {
+                    crate::workload::classify::Class::Unknown => {
+                        "a command that can't be told to be light"
+                    }
+                    _ => "a heavy command (a build, a test run or a server)",
+                };
+                let content = format!(
+                    "Error: `{command}` is {what}. The lead runs those after merging your work; use diagnostics, or a light check on one file, run directly."
+                );
+                return self.answer_unrun(tc, content, true, None).await;
+            }
+        }
+        if tc.name == "write" {
+            if let (Some(scope), Some(path), Some(root)) = (
+                self.sub().and_then(|s| s.scope.as_ref()),
+                path_arg,
+                self.root.as_deref(),
+            ) {
+                let key = super::repair::rel_key(root, path);
+                let exists = std::path::Path::new(&tools::to_absolute_path(&key, root)).exists();
+                if !scope.allows(&key, exists) {
+                    let content = super::worker::outside_scope(&key, scope);
+                    return self.answer_unrun(tc, content, true, None).await;
+                }
+            }
+        }
 
         // The agent's own context: no approval, no editor review, not a
         // project change. It applies to the next request.
@@ -333,17 +471,7 @@ impl<R: Runtime> Run<R> {
             {
                 self.context_edited = true;
             }
-            let verdict = self.guard.record(FinishedCall {
-                name: &tc.name,
-                args_json: &tc.arguments,
-                result: &content,
-                write: None,
-                rejected: false,
-            });
-            self.log_guard(&tc.name, &verdict);
-            if let Some(note) = verdict.note() {
-                content.push_str(note);
-            }
+            self.note_finished(tc, &mut content, false);
             let meta = tools::result_meta(&tc.name, &content).map(Value::Object);
             return self
                 .add_tool_result(&tc.id, content, meta, Vec::new())
@@ -492,6 +620,7 @@ impl<R: Runtime> Run<R> {
         // exempt (context management, not project work), as are fixes after
         // the checks failed (continuing started work, not new scope).
         if !self.plan_mode
+            && self.sub().is_none()
             && !self.checklist_gate_refused
             && resume_note.is_none()
             && !self.last_verify_failed
@@ -525,11 +654,17 @@ impl<R: Runtime> Run<R> {
         if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
             return self.stopped_result(tc).await;
         }
-        let args_json = auth
+        let mut args_json = auth
             .args_override
             .clone()
             .unwrap_or_else(|| tc.arguments.clone());
         let tool_name = tc.name.clone();
+        // P2.2: a subagent's command can't run past its time budget.
+        if tool_name == "bash" {
+            if let Some(clamped) = clamp_timeout(&args_json, self.wall_left()) {
+                args_json = clamped;
+            }
+        }
         let writes = auth.refusal.is_none() && permissions::modifies_files(&tool_name);
         let write_path = if writes {
             permissions::str_arg(&args_json, "path")
@@ -540,6 +675,11 @@ impl<R: Runtime> Run<R> {
             (Some(p), Some(root)) => Some(tools::to_absolute_path(p, root)),
             _ => None,
         };
+        // What the file was, for the fix round's checkpoint and the run's
+        // test-integrity baseline (repair.rs).
+        if let Some(path) = &write_path {
+            self.note_before_write(path);
+        }
         // The file before a write, so the guard can tell an edit undoing earlier ones.
         let before = abs_write_path
             .as_ref()
@@ -566,8 +706,8 @@ impl<R: Runtime> Run<R> {
         // An isolated chat's changes are saved as they happen (overlay/fs.rs).
         // Then compared with the other open chats on the project, so a clash
         // on the same lines is told with this result.
-        if crate::overlay::chats::get(&self.dialog_id).is_some() {
-            let id = self.dialog_id.clone();
+        if crate::overlay::chats::get(&self.overlay_owner()).is_some() {
+            let id = self.overlay_owner();
             let _ = tauri::async_runtime::spawn_blocking(move || {
                 if let Some(o) = crate::overlay::chats::get(&id) {
                     o.fs.flush();
@@ -700,6 +840,7 @@ impl<R: Runtime> Run<R> {
                     self.changed_files.push(path.clone());
                 }
                 self.writes_since_verify = true;
+                self.writes_since_review = true;
                 self.map_writes_since_refresh += 1;
             }
             // The parse caches key on mtime+size: a fast same-size rewrite
@@ -715,6 +856,20 @@ impl<R: Runtime> Run<R> {
         // formatters): mtime/size catches it on the next collect, so only
         // the refresh flag is needed — unlike the write tool, no same-tick
         // cache race is possible across processes.
+        // P3.5: outside an isolated chat, what a command changed can't be
+        // rolled back; the round's rollback says which ran.
+        if tool_name == "bash" && auth.refusal.is_none() {
+            let command = permissions::str_arg(&args_json, "command").unwrap_or_default();
+            if permissions::command_modifies_files(&command) {
+                // Round 2, P3.6: a fix made with a command (`sed -i`) is a
+                // change the checks run on again before "verified".
+                self.writes_since_verify = true;
+                if self.checkpoint.is_some() && !self.isolated() {
+                    self.round_commands
+                        .push(crate::chat_db::store::char_prefix(&command, 120).to_string());
+                }
+            }
+        }
         if tool_name == "bash" && !failed {
             self.map_writes_since_refresh += 1;
             // A command on the context file's real path (sed, python3, …)
@@ -749,6 +904,7 @@ impl<R: Runtime> Run<R> {
                         before,
                         content: after.clone(),
                         reviewed,
+                        deleted: false,
                     },
                 );
             }
@@ -795,8 +951,8 @@ impl<R: Runtime> Run<R> {
                     &vfs,
                     &self.dialog_id,
                     path,
-                    line(args.get("start_line")),
-                    line(args.get("end_line")),
+                    tools::line_arg(args.get("start_line")),
+                    tools::line_arg(args.get("end_line")),
                 )
                 .await
             }
@@ -810,8 +966,8 @@ impl<R: Runtime> Run<R> {
                         path,
                         old,
                         new,
-                        line(args.get("start_line")),
-                        line(args.get("end_line")),
+                        tools::line_arg(args.get("start_line")),
+                        tools::line_arg(args.get("end_line")),
                     ),
                 }
             }
@@ -1010,11 +1166,19 @@ impl<R: Runtime> Run<R> {
             command,
             note: (!note.is_empty()).then_some(note),
             edit: proposal,
+            // A subagent's approvals show in its parent's chat (D8).
+            parent_dialog_id: self.sub().map(|s| s.parent_dialog_id.clone()),
+            parent_call_id: self.sub().map(|s| s.parent_call_id.clone()),
         };
+        let waiting = std::time::Instant::now();
         let decision = self
             .state
             .wait_for_approval(&self.app, request, &self.stop)
             .await;
+        // Waiting for the user isn't the subagent's time (K07).
+        if let Some(sub) = self.sub() {
+            sub.add_waited(waiting.elapsed());
+        }
 
         match decision {
             ApprovalDecision::Allow => Authorized {
@@ -1212,6 +1376,20 @@ impl<R: Runtime> Run<R> {
         })
     }
 
+    /// The chat whose overlay this run's calls work in, and whose commands
+    /// they are: its own when it has one (a group worker's child overlay),
+    /// else, for a subagent, its lead's (a sequential worker, a test writer
+    /// or a scout works in the lead's view, under the lead's isolation and
+    /// its hold on the project's commands).
+    pub(super) fn overlay_owner(&self) -> String {
+        match self.sub() {
+            Some(sub) if crate::overlay::chats::get(&self.dialog_id).is_none() => {
+                sub.parent_dialog_id.clone()
+            }
+            _ => self.dialog_id.clone(),
+        }
+    }
+
     /// What a call runs with: the run's record of files it has seen, and
     /// its note on the tool block (a wait for a CPU slot shows there).
     fn call_context(&self, tool_call_id: &str) -> tools::CallContext {
@@ -1222,7 +1400,11 @@ impl<R: Runtime> Run<R> {
         );
         tools::CallContext {
             seen: self.seen.clone(),
-            owner: self.dialog_id.clone(),
+            owner: self.overlay_owner(),
+            checks_owner: self
+                .sub()
+                .map_or_else(|| self.dialog_id.clone(), |s| s.parent_dialog_id.clone()),
+            hidden: self.sub().map(|s| s.hidden.clone()).unwrap_or_default(),
             note: std::sync::Arc::new(move |note| {
                 emit(
                     &app,
@@ -1315,12 +1497,104 @@ impl<R: Runtime> Run<R> {
             .await
     }
 
+    /// D07: a writing subagent asks for more paths. A sequential worker is
+    /// granted them at once; every grant is listed in its result.
+    /// D07: more scope for a writing subagent, within limits (P2.3): files,
+    /// or a folder inside one of its step's own; at most
+    /// `MAX_GRANTS`; nothing another step owns. Returns the result and
+    /// what was granted (kept with the result, for a continued worker).
+    fn extend_scope(&mut self, args: &Map<String, Value>) -> (String, Vec<String>) {
+        let paths = match super::worker::extend_scope_paths(args) {
+            Ok(p) => p,
+            Err(e) => return (e, Vec::new()),
+        };
+        // A group worker: not what another worker or the contract owns.
+        if let Some(refused) = self
+            .sub()
+            .and_then(|s| s.group.as_ref())
+            .and_then(|g| super::group::refusal(g, &paths))
+        {
+            return (refused, Vec::new());
+        }
+        let Some(sub) = self.sub() else {
+            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
+        };
+        let Some(scope) = sub.scope.as_ref() else {
+            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
+        };
+        // A folder only inside the step's own folders: a whole `src/` or
+        // `.github/` isn't a step's to take.
+        let own: Vec<&String> = scope.folders.iter().chain(&scope.new_in).collect();
+        if let Some(folder) = paths.iter().find(|p| {
+            p.ends_with('/') && !own.iter().any(|d| !d.is_empty() && super::paths::under(d, p))
+        }) {
+            return (
+                format!("Error: not granted: `{folder}` is a folder outside your step's own. Name the files the step needs."),
+                Vec::new(),
+            );
+        }
+        // Another step's files, in every mode; a folder, when another
+        // step's file or folder is in it (round 2).
+        if let Some((n, p)) = paths.iter().find_map(|p| {
+            if scope.allows(p.trim_end_matches('/'), true) {
+                return None;
+            }
+            sub.other_steps
+                .iter()
+                .find(|(_, s)| {
+                    s.allows(p.trim_end_matches('/'), true)
+                        || p.ends_with('/')
+                            && s.files
+                                .iter()
+                                .chain(&s.folders)
+                                .any(|f| super::paths::under(p, f))
+                })
+                .map(|(n, _)| (*n, p))
+        }) {
+            return (
+                format!("Error: not granted: `{p}` is step {n}'s to change. Leave it, and list it under \"## Open questions\"."),
+                Vec::new(),
+            );
+        }
+        let new: Vec<&String> = paths.iter().filter(|p| !scope.grants.contains(p)).collect();
+        if scope.grants.len() + new.len() > MAX_GRANTS {
+            return (
+                format!("Error: not granted: a step worker gets at most {MAX_GRANTS} paths beyond its step, and this would be {}. Finish what's in your scope and list the rest under \"## Open questions\".", scope.grants.len() + new.len()),
+                Vec::new(),
+            );
+        }
+        let Some(scope) = self.sub_mut().and_then(|s| s.scope.as_mut()) else {
+            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
+        };
+        for p in &paths {
+            if !scope.grants.contains(p) {
+                scope.grants.push(p.clone());
+            }
+        }
+        if let Some(g) = self.sub().and_then(|s| s.group.as_ref()) {
+            g.granted.record(&paths, &g.label);
+        }
+        (
+            format!(
+                "Granted: you may now write {}. The lead will see this in your result.",
+                paths.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ")
+            ),
+            paths,
+        )
+    }
+
     /// submit_plan: the plan is checked and, if it holds up, saved to the
     /// chat's plan file (a revision replaces it). Problems go back to the
     /// model to fix. Only this changes the file: a reply never does.
-    async fn submit_plan(&self, tc: &ToolCall, args: &Map<String, Value>) -> Result<(), String> {
+    async fn submit_plan(
+        &mut self,
+        tc: &ToolCall,
+        args: &Map<String, Value>,
+    ) -> Result<(), String> {
         let plan_text = args.get("plan").and_then(|p| p.as_str()).unwrap_or("");
-        let problems = plan::plan_problems(plan_text);
+        // B07: against the project too, as this chat sees it.
+        let problems =
+            plan::plan_problems_in(plan_text, self.root.as_deref().map(std::path::Path::new));
         if !problems.is_empty() {
             let content = format!(
                 "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- {}",
@@ -1349,18 +1623,40 @@ impl<R: Runtime> Run<R> {
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "plan".into());
         let existing = chat_plan_file(&recent);
+        // B09: the plan reviewer, when it's on, before the plan is saved.
+        let review = self
+            .review_plan(&tc.id, plan_text, existing.as_deref())
+            .await?;
+        let record = review.record;
+        let (plan_text, note) = match review.decision {
+            super::plan_review::Decision::Hold { result } => {
+                return self
+                    .add_tool_result(
+                        &tc.id,
+                        format!("Error: {result}"),
+                        Some(json!({ "review": record })),
+                        Vec::new(),
+                    )
+                    .await;
+            }
+            super::plan_review::Decision::Save { plan, note } => (plan, note),
+        };
         match plan::save_plan_file(
             &root,
             &request,
-            plan_text,
+            &plan_text,
             existing.as_deref(),
             &self.local_date,
         ) {
             Ok(path) => {
-                let content = format!(
+                let mut content = format!(
                     "Saved the plan to {}.",
                     plan::relative_plan_path(&path, Some(&root))
                 );
+                if let Some(note) = note {
+                    content.push(' ');
+                    content.push_str(&note);
+                }
                 // Open tabs of the plan show the new version.
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     emit(
@@ -1370,16 +1666,16 @@ impl<R: Runtime> Run<R> {
                             before: None,
                             content: text,
                             reviewed: true,
+                        deleted: false,
                         },
                     );
                 }
-                self.add_tool_result(
-                    &tc.id,
-                    content,
-                    Some(json!({ "planFile": path })),
-                    Vec::new(),
-                )
-                .await
+                let mut meta = json!({ "planFile": path });
+                if let Some(record) = record {
+                    meta["review"] = record;
+                }
+                self.add_tool_result(&tc.id, content, Some(meta), Vec::new())
+                    .await
             }
             Err(e) => {
                 self.add_tool_result(
@@ -1394,9 +1690,74 @@ impl<R: Runtime> Run<R> {
     }
 }
 
+/// A command's arguments with its timeout cut to the time `left` of a
+/// subagent's budget (at least a second); None when it's within it, or for
+/// the lead, which has no time budget.
+fn clamp_timeout(args_json: &str, left: Option<std::time::Duration>) -> Option<String> {
+    let left = left?;
+    let mut args = permissions::parse_args(args_json);
+    let asked = args
+        .get("timeout_seconds")
+        .and_then(|t| t.as_f64())
+        .filter(|t| *t > 0.0)
+        .unwrap_or(120.0);
+    let allowed = asked.min(left.as_secs_f64().max(1.0));
+    (allowed < asked).then(|| {
+        args.insert("timeout_seconds".into(), json!(allowed));
+        Value::Object(args).to_string()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 2 (section 4.2): a subagent's command timeout is cut to the
+    /// time it has left (at least a second, and later ones no longer than
+    /// earlier ones); the lead's never is.
+    #[test]
+    fn bash_timeout_is_clamped_to_the_time_left() {
+        use std::time::Duration;
+        let timeout = |json: &str| -> f64 {
+            serde_json::from_str::<Value>(json).unwrap()["timeout_seconds"]
+                .as_f64()
+                .unwrap()
+        };
+        let asked = r#"{"command":"npm test","timeout_seconds":600}"#;
+        let first = timeout(&clamp_timeout(asked, Some(Duration::from_secs(90))).unwrap());
+        let second = timeout(&clamp_timeout(asked, Some(Duration::from_secs(30))).unwrap());
+        assert!(
+            second <= first && first <= 90.0 && second >= 1.0,
+            "{first} {second}"
+        );
+        // No timeout given: the default 120 s, cut too.
+        assert_eq!(
+            timeout(&clamp_timeout(r#"{"command":"x"}"#, Some(Duration::from_secs(10))).unwrap()),
+            10.0
+        );
+        // No time left: a second, not zero.
+        assert_eq!(
+            timeout(&clamp_timeout(asked, Some(Duration::ZERO)).unwrap()),
+            1.0
+        );
+        // Within the budget: as asked.
+        assert_eq!(
+            clamp_timeout(
+                r#"{"command":"x","timeout_seconds":5}"#,
+                Some(Duration::from_secs(60))
+            ),
+            None
+        );
+    }
+
+    /// Round 2 (section 4.2): the lead has no time budget.
+    #[test]
+    fn the_lead_has_no_wall() {
+        assert_eq!(
+            clamp_timeout(r#"{"command":"x","timeout_seconds":600}"#, None),
+            None
+        );
+    }
 
     #[test]
     fn context_paths() {

@@ -1387,6 +1387,54 @@ impl OverlayFs {
         Ok(())
     }
 
+    /// Drops the chat's own version of a file the project has, at the
+    /// same path: the project's file shows again, with nothing of it to
+    /// land. False when it isn't that (a file the chat created, moved or
+    /// deleted, a folder, or no project file there).
+    pub fn revert_file(&self, rel: &str) -> VfsResult<bool> {
+        let ino = match Backend::resolve(self, rel) {
+            Ok(ino) => ino,
+            Err(VfsError::NotFound) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if !fs::metadata(self.abs(rel)).is_ok_and(|m| m.is_file()) {
+            return Ok(false);
+        }
+        {
+            let mut inner = self.lock();
+            let Some(node) = inner.nodes.get_mut(&ino) else {
+                return Ok(false);
+            };
+            if node.kind != Kind::File || node.origin.as_deref() != Some(rel) {
+                return Ok(false);
+            }
+            let by_product = node.by_product;
+            let old = std::mem::replace(&mut node.data, Data::Base);
+            node.perm_changed = false;
+            let t = now();
+            node.meta.mtime = t;
+            node.meta.ctime = t;
+            if let Data::Upper {
+                file,
+                size,
+                base_copy,
+            } = old
+            {
+                inner.trash.push(file);
+                inner.trash.extend(base_copy);
+                if !by_product {
+                    inner.used = inner.used.saturating_sub(size);
+                }
+            }
+            inner.deleted.remove(rel);
+            inner.dirty = true;
+        }
+        self.bump();
+        self.notify(&[Change::Data(ino)]);
+        self.save();
+        Ok(true)
+    }
+
     // -----------------------------------------------------------------
     // Changes, for landing and for saving
     // -----------------------------------------------------------------

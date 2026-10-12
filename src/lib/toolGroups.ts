@@ -6,9 +6,18 @@
 // main.tsx"). Only the tool's name decides; the arguments only name the line.
 import type { ChatToolCall } from '../types';
 import { isLiveContextPath } from './contextDoc';
-import { dirName, parseArgsLenient, type Args } from './toolArgs';
-import { parseTodo, progressLabel } from './todo';
+import {
+  dirName,
+  isPartialWrite,
+  lineArg,
+  parseArgsLenient,
+  planTitle,
+  str,
+  todoSummary,
+  type Args,
+} from './toolArgs';
 import { diffRows, snippetLines } from './lineDiff';
+import { kindLabel } from './subagents';
 
 /** Consecutive calls to one tool; a single call is a run of one. */
 export interface ToolRun {
@@ -19,12 +28,13 @@ export interface ToolRun {
 }
 
 /**
- * Calls that keep a line of their own: each question, checklist update and
- * plan is its own event, and a change to the agent's context file says
- * "its context", not a file name.
+ * Calls that keep a line of their own: each question, checklist update,
+ * plan and subagent (`task`: its approvals show on its own block) is its
+ * own event, and a change to the agent's context file says "its context",
+ * not a file name.
  */
 function standsAlone(call: ChatToolCall): boolean {
-  if (['ask_user', 'todo', 'submit_plan'].includes(call.name)) return true;
+  if (['ask_user', 'todo', 'submit_plan', 'task'].includes(call.name)) return true;
   return call.name === 'write' && isLiveContextPath(str(parseArgsLenient(call.arguments).path));
 }
 
@@ -64,13 +74,6 @@ export interface GroupLabel {
 }
 
 const MAX_ITEMS = 4;
-
-const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
-
-function lineArg(v: unknown): number | undefined {
-  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : typeof v === 'number' ? v : NaN;
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined;
-}
 
 function short(text: string, max = 40): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -187,13 +190,12 @@ export function describeGroup(
     case 'read':
       return label(verb('Reading', 'Read'), argsList.map(file));
     case 'write': {
-      const partial = (a: Args) => a.old_text !== undefined && a.old_text !== null;
+      const edits = argsList.some((a) => isPartialWrite(name, a));
       if (argsList.length && argsList.every((a) => isLiveContextPath(str(a.path)))) {
-        return argsList.some(partial)
+        return edits
           ? label(verb('Editing its context', 'Edited its context'), [])
           : label(verb('Rewriting its context', 'Rewrote its context'), []);
       }
-      const edits = argsList.some((a) => a.old_text !== undefined && a.old_text !== null);
       return label(
         edits ? verb('Editing', 'Edited') : verb('Writing', 'Wrote'),
         argsList.map(file)
@@ -256,22 +258,16 @@ export function describeGroup(
         argsList.map((a) => quoted(a.symbol))
       );
     case 'todo': {
-      const items = parseTodo(argsList[argsList.length - 1] ?? {});
-      const current = items.find((i) => i.status === 'in_progress');
-      return label(
-        verb('Updating the checklist', 'Updated the checklist'),
-        items.length
-          ? [{ text: `${progressLabel(items)}${current ? ` · ${short(current.title, 60)}` : ''}` }]
-          : []
-      );
+      const text = todoSummary(argsList[argsList.length - 1] ?? {}, (t) => short(t, 60));
+      return label(verb('Updating the checklist', 'Updated the checklist'), [
+        text ? { text } : undefined,
+      ]);
     }
     case 'submit_plan':
       return label(
         verb('Saving the plan', 'Saved the plan'),
         argsList.map((a) => {
-          const title = str(a.plan)
-            ?.match(/^#\s+(.+)$/m)?.[1]
-            ?.trim();
+          const title = planTitle(str(a.plan))?.trim();
           return title ? { text: short(title, 60), title } : undefined;
         })
       );
@@ -285,6 +281,13 @@ export function describeGroup(
           })
         )
       );
+    case 'task': {
+      // "Scout: where is the parser?" (a follow-up says so).
+      const a = argsList[0] ?? {};
+      const goal = str(a.goal)?.trim();
+      const kind = str(a.continue) ? 'Follow-up' : kindLabel(str(a.kind));
+      return label(kind, [goal ? { text: short(goal, 60), title: goal } : undefined]);
+    }
     case 'restore_context':
       return label(verb('Restoring its context', 'Restored its context'), []);
     default:

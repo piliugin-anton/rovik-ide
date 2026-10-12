@@ -187,6 +187,18 @@ CREATE TABLE composer_drafts (
 ) STRICT;
 "#;
 
+/// Subagent chats (agent_run/subagent.rs): a child chat belongs to the chat
+/// whose run started it (`parent_id`), answers one of its tool calls
+/// (`parent_call_id`), and is of one subagent kind ("scout", …). Deleting the
+/// parent deletes its children. Children are stored with `archived = 2`, so
+/// older app versions, which list `archived = 0`, don't show them either.
+const SCHEMA_V8: &str = r#"
+ALTER TABLE dialogs ADD COLUMN parent_id TEXT REFERENCES dialogs (id) ON DELETE CASCADE;
+ALTER TABLE dialogs ADD COLUMN parent_call_id TEXT;
+ALTER TABLE dialogs ADD COLUMN kind TEXT;
+CREATE INDEX dialogs_by_parent ON dialogs (parent_id) WHERE parent_id IS NOT NULL;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -244,6 +256,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", 7)?;
         tx.commit()?;
     }
+    if version < 8 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V8)?;
+        tx.pragma_update(None, "user_version", 8)?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -271,7 +289,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         let project: Option<String> = conn
             .query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| {
                 r.get(0)
@@ -289,5 +307,53 @@ mod tests {
         assert!(plan.contains("dialogs_recent"), "{plan}");
         // And it runs only once.
         migrate(&mut conn).unwrap();
+    }
+
+    /// A version 7 database gets the subagent columns; its chats are no
+    /// one's children, and a v7-style list query never sees a child chat.
+    #[test]
+    fn upgrades_a_version_7_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure(&conn, true).unwrap();
+        for step in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+        ] {
+            conn.execute_batch(step).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 7).unwrap();
+        conn.execute(
+            "INSERT INTO dialogs (id, title, created_at, updated_at) VALUES ('old', 'Old chat', 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let parent: Option<String> = conn
+            .query_row("SELECT parent_id FROM dialogs WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(parent, None);
+        crate::chat_db::store::create_child_dialog(
+            &mut conn,
+            &crate::chat_db::store::NewChildDialog {
+                id: "kid".into(),
+                parent_id: "old".into(),
+                parent_call_id: "c1".into(),
+                kind: "scout".into(),
+                title: "Scout".into(),
+                created_at: 2,
+            },
+        )
+        .unwrap();
+        let listed: Vec<String> = conn
+            .prepare("SELECT id FROM dialogs WHERE archived = 0")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(listed, ["old"], "an older app's list leaves the child out");
     }
 }

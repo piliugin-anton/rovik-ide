@@ -8,6 +8,16 @@ edition = "2021"
 name = "rovik_ide_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# The headless runner (src/headless.rs, `rovik-headless`): the agent on
+# tauri's mock runtime, without a window. Not part of the app's build.
+headless = ["tauri/test"]
+
+[[bin]]
+name = "rovik-headless"
+path = "src/bin/rovik-headless.rs"
+required-features = ["headless"]
+
 [dev-dependencies]
 # A mock app for the agent's end-to-end tests (agent_run/e2e_tests.rs).
 tauri = { version = "2.12", features = ["test"] }
