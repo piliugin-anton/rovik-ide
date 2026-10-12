@@ -8,7 +8,8 @@
 import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
 import { describeGroup, editCounts } from '../lib/toolGroups';
-import { isErrorResult, parseArgsLenient } from '../lib/toolArgs';
+import { callStatus, parseArgsLenient } from '../lib/toolArgs';
+import LineCounts from './LineCounts';
 import { pendingApproval, pendingApprovalsOfTask } from '../lib/approvals';
 import { childOf } from '../lib/subagents';
 import { pendingQuestions } from '../lib/questions';
@@ -30,11 +31,7 @@ export default function ToolCallGroup(props: {
   const [userOpen, setUserOpen] = createSignal(false);
 
   const states = createMemo(() =>
-    props.calls.map((call) => {
-      const result = props.result(call);
-      if (!result) return props.running ? 'running' : 'idle';
-      return isErrorResult(result.content) ? 'error' : 'done';
-    })
+    props.calls.map((call) => callStatus(props.result(call), props.running))
   );
   const active = () => states().includes('running');
   const failed = () => states().filter((s) => s === 'error').length;
@@ -144,17 +141,7 @@ export default function ToolCallGroup(props: {
             <span class="tool-group-item"> and {label().more} more</span>
           </Show>
         </span>
-        <Show when={counts()}>
-          {(c) => (
-            <span
-              class="tool-call-counts"
-              title={`${c().added} lines added, ${c().removed} removed`}
-            >
-              <span class="added">+{c().added}</span>
-              <span class="removed">−{c().removed}</span>
-            </span>
-          )}
-        </Show>
+        <Show when={counts()}>{(c) => <LineCounts counts={c()} />}</Show>
         <Show when={meta()}>
           <span class="tool-group-meta" classList={{ error: failed() > 0 }}>
             {meta()}

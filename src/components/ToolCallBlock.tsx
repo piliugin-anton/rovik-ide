@@ -18,10 +18,9 @@ import EditDiffBlock from './EditDiffBlock';
 import ContextEditView from './ContextEditView';
 import QuestionCard from './QuestionCard';
 import { StatusIcon } from './TodoPanel';
-import { parseTodo, progressLabel } from '../lib/todo';
+import { parseTodo } from '../lib/todo';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { extensionOf } from '../lib/language';
-import { diffRows, snippetLines } from '../lib/lineDiff';
 import { describeToolCall } from '../lib/permissions';
 import {
   contextEdit,
@@ -33,7 +32,22 @@ import {
 } from '../lib/contextDoc';
 import { APPROVE_AT, REJECT_AT, reviewChecks } from '../lib/aiApproval';
 import { requestOpenFile } from '../lib/editorBridge';
-import { dirName, isErrorResult, parseArgsLenient, type Args } from '../lib/toolArgs';
+import {
+  callStatus,
+  dirName,
+  isErrorResult,
+  isPartialWrite,
+  lineArg,
+  num,
+  parseArgsLenient,
+  planTitle,
+  str,
+  todoSummary,
+  type Args,
+  type CallStatus,
+} from '../lib/toolArgs';
+import { editCounts } from '../lib/toolGroups';
+import LineCounts from './LineCounts';
 import {
   allow,
   decideRemaining,
@@ -106,17 +120,6 @@ async function loadBody(messageId: string): Promise<string> {
     size -= value.length;
   }
   return body;
-}
-
-type Status = 'running' | 'done' | 'error' | 'idle';
-
-const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
-const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
-
-/** A line-number argument; models sometimes send it as a string ("12"). */
-function lineArg(v: unknown): number | undefined {
-  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : num(v);
-  return n !== undefined && Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined;
 }
 
 function countLines(text: string): number {
@@ -195,11 +198,6 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
   }
 }
 
-/** A write that replaces one quoted piece of a file (old_text) rather than all of it. */
-function isPartialWrite(name: string, args: Args): boolean {
-  return name === 'write' && args.old_text !== undefined && args.old_text !== null;
-}
-
 /** write on the agent's context file (CLM mode), block by block. */
 function contextChange(name: string, args: Args): ContextEdit | undefined {
   if (name !== 'write' || !isLiveContextPath(str(args.path))) return undefined;
@@ -212,7 +210,7 @@ function contextChange(name: string, args: Args): ContextEdit | undefined {
   return contextWrite(content);
 }
 
-function describeContextChange(name: string, args: Args, status: Status): Summary {
+function describeContextChange(name: string, args: Args, status: CallStatus): Summary {
   const active = status === 'running';
   const whole = !isPartialWrite(name, args);
   const title = whole
@@ -231,7 +229,7 @@ function describeContextChange(name: string, args: Args, status: Status): Summar
   return { title, meta: [describeChanges(change.changes), size].filter(Boolean).join(' · ') };
 }
 
-function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Summary {
+function describe(name: string, args: Args, status: CallStatus, meta?: ToolMeta): Summary {
   const active = status === 'running';
   const failed = status === 'error';
   const path = str(args.path);
@@ -263,23 +261,15 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
 
     case 'submit_plan': {
       const plan = str(args.plan);
-      const title = plan?.match(/^#\s+(.+)$/m)?.[1];
+      const title = planTitle(plan);
       return {
         title: active ? 'Saving the plan' : 'Saved the plan',
         meta: title ?? (plan ? plural(countLines(plan), 'line') : undefined),
       };
     }
 
-    case 'todo': {
-      const items = parseTodo(args);
-      const current = items.find((i) => i.status === 'in_progress');
-      return {
-        title: 'Checklist',
-        meta: items.length
-          ? `${progressLabel(items)}${current ? ` · ${current.title}` : ''}`
-          : undefined,
-      };
-    }
+    case 'todo':
+      return { title: 'Checklist', meta: todoSummary(args) };
 
     case 'write': {
       const content = str(args.content);
@@ -298,18 +288,9 @@ function describe(name: string, args: Args, status: Status, meta?: ToolMeta): Su
       const start = lineArg(args.start_line);
       const end = lineArg(args.end_line) ?? start;
       const range = start !== undefined ? `only lines ${start}–${end}` : undefined;
-      const oldText = str(args.old_text);
-      const newText = content;
       // The same line diff as the expanded view (EditDiffBlock), once the
       // arguments are complete: an edited line counts as one removed and one added.
-      let counts: Summary['counts'];
-      if (!active && oldText !== undefined && newText !== undefined) {
-        const rows = diffRows(snippetLines(oldText), snippetLines(newText));
-        counts = {
-          added: rows.filter((r) => r.kind === 'added').length,
-          removed: rows.filter((r) => r.kind === 'removed').length,
-        };
-      }
+      const counts = active ? undefined : editCounts([{ args }]);
       return { title, meta: range, counts };
     }
 
@@ -866,13 +847,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
 
   const args = createMemo(() => parseArgsLenient(props.toolCall.arguments));
 
-  const status = createMemo<Status>(() => {
-    if (props.result === undefined)
-      // A superseded snapshot never spins: its "in progress" step is history,
-      // not work happening now — even while a later run goes.
-      return props.superseded ? 'idle' : props.running ? 'running' : 'idle';
-    return isErrorResult(props.result.content) ? 'error' : 'done';
-  });
+  const status = createMemo(() => callStatus(props.result, props.running, props.superseded));
 
   // Stored counts; computed from the text only for results that predate them.
   const resultMeta = createMemo(() => {
@@ -1011,15 +986,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
           <span class="tool-call-meta">{meta()}</span>
         </Show>
         <Show when={!request() && status() !== 'error' && summary().counts}>
-          {(counts) => (
-            <span
-              class="tool-call-counts"
-              title={`${counts().added} lines added, ${counts().removed} removed`}
-            >
-              <span class="added">+{counts().added}</span>
-              <span class="removed">−{counts().removed}</span>
-            </span>
-          )}
+          {(counts) => <LineCounts counts={counts()} />}
         </Show>
         <Show when={status() === 'running' && !request() && !props.superseded}>
           <span class="tool-call-spinner" aria-label="Running" />
