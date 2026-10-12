@@ -39,7 +39,7 @@ Not every message asks for a plan. When the user asks a question or wants someth
    - a one-paragraph summary of the approach;
    - "## Steps": a numbered list, in order, one reviewable change per step. Each step has:
      - a short title;
-     - the files it touches, each as its full path from the project root in backticks (`src/db/users.rs`), never the file name alone (`users.rs`) or a path from a folder inside the project, even when the name is unique. Name only paths you have seen in the repository; mark files the step creates as "(new)". Only files and folders count as the step's files: CSS classes and selectors (`.btn-primary`), identifiers, labels and commands in backticks don't name one, so a step that changes styles names the stylesheet (`src/styles/app.css`) and then the classes in it;
+     - the files it touches, each as its full path from the project root in backticks (`src/db/users.rs`), never the file name alone (`users.rs`) or a path from a folder inside the project, even when the name is unique. A path never starts with `../`: the plan is saved in `.rovik/plans/`, but its paths are from the project root, not from that folder (`src/db/users.rs`, not `../../src/db/users.rs`). Name only paths you have seen in the repository; mark files the step creates as "(new)". Only files and folders count as the step's files: CSS classes and selectors (`.btn-primary`), identifiers, labels and commands in backticks don't name one, so a step that changes styles names the stylesheet (`src/styles/app.css`) and then the classes in it;
      - what to add, change or remove in them, by name: the functions, methods, types, components, fields or settings, and how they behave. A one-line signature (e.g. `fn load_users(db: &Db) -> Result<Vec<User>>`) or a config line is welcome; leave out function bodies and longer code;
      - anything that calls or depends on the change and must be updated with it.
      Use as many steps as the task needs (usually 3 to 12);
@@ -1107,10 +1107,27 @@ pub fn project_problems(markdown: &str, root: &Path) -> Vec<String> {
                 missing.push(t.clone());
                 // `src/../x.rs` is `x.rs`: inside, but not read as a file.
                 match without_dots(&t) {
-                    None => problems.push(format!(
-                        "Step {} names `{t}`, which is outside the project: use a path inside it.",
-                        step.named()
-                    )),
+                    None => {
+                        // `../../src/x.rs`: written from the plan's folder
+                        // (`.rovik/plans/`) or another, not the root. When
+                        // the rest is in the project, that's the path.
+                        let rest = t.trim_start_matches("../").trim_start_matches("./");
+                        let inside = super::paths::norm_rel(rest)
+                            .filter(|p| !p.is_empty() && exists(p))
+                            .map(|p| if rest.ends_with('/') { format!("{p}/") } else { p });
+                        problems.push(match inside {
+                            Some(inside) => format!(
+                                "Step {} names `{t}`: paths start at the project root, never with `../` (the plan is saved \
+                                 in `.rovik/plans/`, but its paths aren't from that folder). Write it as `{inside}`.",
+                                step.named()
+                            ),
+                            None => format!(
+                                "Step {} names `{t}`, which is outside the project: paths start at the project root, never \
+                                 with `../`; use a path inside the project.",
+                                step.named()
+                            ),
+                        });
+                    }
                     Some(inside) if !inside.is_empty() => problems.push(format!(
                         "Step {} names `{t}`: write it as `{inside}`, without `..`.",
                         step.named()
@@ -2452,9 +2469,30 @@ mod tests {
         let p = project_problems(plan, &tree.0);
         assert_eq!(p.len(), 1, "{p:?}");
         assert!(
-            p[0].contains("`../secrets/key.rs`, which is outside the project"),
+            p[0].contains("`../secrets/key.rs`, which is outside the project")
+                && p[0].contains("never with `../`"),
             "{p:?}"
         );
+        // Written from the plan's folder: the path from the root is given.
+        for (written, inside) in [
+            ("../../src/a.rs", "src/a.rs"),
+            ("../src/a.rs", "src/a.rs"),
+            ("../../src/", "src/"),
+            ("..\\..\\src\\a.rs", "src/a.rs"),
+        ] {
+            let p = project_problems(&plan.replace("../secrets/key.rs", written), &tree.0);
+            assert_eq!(p.len(), 1, "{written}: {p:?}");
+            assert!(
+                p[0].starts_with(&format!("Step 1 names `{}`: paths start at the project root", written.replace('\\', "/")))
+                    && p[0].ends_with(&format!("Write it as `{inside}`.")),
+                "{written}: {p:?}"
+            );
+        }
+        // The step's only path: "names no file" comes with it from the form check.
+        let only = "# P\n\nx\n\n## Steps\n\n1. **One**\n   - `../../src/a.rs`: read it.\n2. **Two**\n   - `src/a.rs`: use it.\n\n## Validation\n- `cargo test`\n";
+        let p = plan_problems_in(only, Some(&tree.0));
+        assert_eq!(p.len(), 2, "{p:?}");
+        assert!(p[0].starts_with("Step 1 names no file") && p[1].contains("Write it as `src/a.rs`."), "{p:?}");
     }
 
     /// CSS classes and selectors in backticks aren't a step's files: a
@@ -3490,7 +3528,7 @@ mod tests {
             [
                 "Step 1 names `src/../x.rs`: write it as `x.rs`, without `..`.",
                 "Step 1 names `src/api/../lib/`: write it as `src/lib/`, without `..`.",
-                "Step 1 names `src/../../k.rs`, which is outside the project: use a path inside it.",
+                "Step 1 names `src/../../k.rs`, which is outside the project: paths start at the project root, never with `../`; use a path inside the project.",
             ]
         );
         assert_eq!(without_dots("a/b/../../c"), Some("c".into()));
