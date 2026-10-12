@@ -7,7 +7,8 @@
 //   Plan   investigates without changing anything, asks the user about
 //          what really affects the design (ask_user, lib/questions.ts),
 //          and ends with a written plan, decisions included. "Implement
-//          this plan" then hands it to Agent mode.
+//          this plan" then hands it to Agent mode. A question asked in
+//          Plan mode is answered in the reply; no plan is written for it.
 //
 // A run keeps the mode of the message that started it, so switching the
 // selector mid-run (or before a Continue) doesn't change a run under way.
