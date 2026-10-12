@@ -9,7 +9,7 @@ import type {
   MirrorModel,
   WorkerContext,
 } from 'monaco-editor/language/typescript/ts.worker.js';
-import { LINKS_LIB } from './paths';
+import { LINKS_LIB, PROJECT_LIB } from './paths';
 import { ProjectTypeScriptWorker } from './projectWorker';
 
 // Keys as the app builds them (uris.ts): the folder encoded like a model's
@@ -43,7 +43,7 @@ const APP_TEXT = [
   'console.log(process.pid, x, y, u, import.meta.env.MODE);',
 ].join('\n');
 
-// What the app gives the worker (defaults.ts BASE_OPTIONS, typesScope.ts).
+// What the app gives the worker (defaults.ts BASE_OPTIONS, activeConfig.ts).
 const OPTIONS = {
   target: 99,
   module: 99,
@@ -202,6 +202,45 @@ describe('ProjectTypeScriptWorker', () => {
       w.realpath(`${NM}/%40mui/material/OverridableComponent.d.ts`),
       `${NM}/@mui/material/OverridableComponent.d.ts`
     );
+    // One name for the file: the raw one, as a root and in the program.
+    assert.deepEqual(w.getScriptFileNames(), [
+      `${NM}/@mui/material/FormHelperText/FormHelperText.d.ts`,
+    ]);
+    assert.ok(!programFiles(w).some((f) => f.includes('%40')));
+  });
+
+  it("the program is the active config's files; others get empty answers", async () => {
+    const PROJECT_DIR = '/home/u/my proj';
+    const appConfig = {
+      path: `${PROJECT_DIR}/apps/app/tsconfig.json`,
+      include: [`${PROJECT_DIR}/apps/app/**/*`],
+      files: [],
+      exclude: [],
+    };
+    const appFile = `${ROOT}/apps/app/src/a.ts`;
+    const otherFile = `${ROOT}/apps/other/src/b.ts`;
+    const libs: Record<string, ExtraLib> = {
+      [`${ROOT}/apps/app/src/util.ts`]: { content: 'export const u = 1;', version: 1 },
+      [`${ROOT}/apps/other/src/util.ts`]: { content: 'export const v = 1;', version: 1 },
+      [PROJECT_LIB]: { content: JSON.stringify(appConfig), version: 1 },
+    };
+    const bad = 'export const n: string = 1;';
+    const w = worker([model(appFile, bad), model(otherFile, bad)], { ...OPTIONS, types: [] }, libs);
+    assert.deepEqual(w.getScriptFileNames().sort(), [appFile, `${ROOT}/apps/app/src/util.ts`]);
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(appFile)), [2322]);
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(otherFile)), [], 'outside: no answer');
+    assert.equal(await w.getQuickInfoAtPosition(otherFile, 14), undefined);
+    assert.deepEqual(await w.getRenameInfo(otherFile, 14, {}), {
+      canRename: false,
+      localizedErrorMessage: 'Not in the program.',
+    });
+    // Without a config, every source is in.
+    const all = worker(
+      [model(otherFile, bad)],
+      { ...OPTIONS, types: [] },
+      { ...libs, [PROJECT_LIB]: { content: 'null', version: 2 } }
+    );
+    assert.equal(all.getScriptFileNames().length, 3);
   });
 
   it('programInfo: files, packages held twice, and where imports resolve', async () => {

@@ -24,36 +24,75 @@
 //
 // Keys. A dependency lib is keyed with the part after `node_modules` raw
 // (uris.ts); a dependency file opened as a tab is a model whose URI has
-// that part percent-encoded (`%40mui`), and TypeScript builds the paths
-// of its relative imports from that. Those are decoded back to the raw
-// form, so the opened file's imports resolve to the libs.
+// that part percent-encoded (`%40mui`). Every name is taken in the raw
+// form: as the model's root name, in what Monaco asks about the model,
+// and in what TypeScript resolves. One name, so one file: an opened
+// @types/react would otherwise be a second copy of it in the program,
+// declaring the global JSX namespace again.
+//
+// Which files. The program is the active config's (PROJECT_LIB, from
+// activeConfig.ts): of the sources and models, those the config takes in,
+// as tsserver's program for that file. With no config, every source. A
+// model outside the program gets empty answers, not errors.
 import {
   libFileMap,
   ts,
   TypeScriptWorker,
   type MirrorModel,
 } from 'monaco-editor/language/typescript/ts.worker.js';
-import { isProjectSource, LINKS_LIB } from './paths';
+import { projectCovers, type TsProject } from '../tsconfig';
+import { isProjectSource, LINKS_LIB, PROJECT_LIB } from './paths';
 
 /** Links to links: pnpm's store is one hop, a linked member's own links two. */
 const MAX_LINK_HOPS = 8;
 
 export class ProjectTypeScriptWorker extends TypeScriptWorker {
   private linksCache: { version: number; links: ReadonlyMap<string, string> } | undefined;
+  private projectCache:
+    { version: number; project: TsProject | null; covered: Map<string, boolean> } | undefined;
 
   override getScriptFileNames(): string[] {
     const models = this._ctx
       .getMirrorModels()
       .map((model) => model.uri)
       .filter((uri) => !isDefaultLib(uri))
-      .map((uri) => uri.toString());
+      .map((uri) => libKeyOf(uri.toString()))
+      .filter((key) => this.inProject(key));
     const open = new Set(models);
     // Libs that aren't sources (typings, package.json, the links) are only
     // read when something resolves to them.
     const sources = Object.keys(this.getExtraLibs()).filter(
-      (uri) => !open.has(uri) && isProjectSource(uri)
+      (uri) => !open.has(uri) && isProjectSource(uri) && this.inProject(uri)
     );
     return models.concat(sources);
+  }
+
+  /** Whether the active config takes the file in (every file without one). */
+  private inProject(key: string): boolean {
+    const lib = this.getExtraLibs()[PROJECT_LIB];
+    if (!lib) return true;
+    if (this.projectCache?.version !== lib.version) {
+      let project: TsProject | null = null;
+      try {
+        project = JSON.parse(lib.content) as TsProject | null;
+      } catch {
+        // a bad payload means every file, not a dead worker
+      }
+      this.projectCache = { version: lib.version, project, covered: new Map() };
+    }
+    const { project, covered } = this.projectCache;
+    if (!project) return true;
+    let answer = covered.get(key);
+    if (answer === undefined) {
+      answer = projectCovers(project, pathOfUri(key));
+      covered.set(key, answer);
+    }
+    return answer;
+  }
+
+  /** Whether TypeScript's program holds the file (a root, or reached from one). */
+  inProgram(key: string): boolean {
+    return this.getLanguageService().getProgram()?.getSourceFile(key) !== undefined;
   }
 
   /**
@@ -138,6 +177,51 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
   }
 }
 
+/**
+ * Monaco's language features, by name, with what to answer for a file
+ * outside the program (the adapters expect these shapes, and a rejection
+ * from the worker is an unhandled one). Each takes the file's name first.
+ */
+const FEATURES: Record<string, () => unknown> = {
+  getScriptText: () => undefined,
+  getSyntacticDiagnostics: () => [],
+  getSemanticDiagnostics: () => [],
+  getSuggestionDiagnostics: () => [],
+  getCompilerOptionsDiagnostics: () => [],
+  getCompletionsAtPosition: () => undefined,
+  getCompletionEntryDetails: () => undefined,
+  getSignatureHelpItems: () => undefined,
+  getQuickInfoAtPosition: () => undefined,
+  getDocumentHighlights: () => [],
+  getDefinitionAtPosition: () => [],
+  getReferencesAtPosition: () => [],
+  getNavigationTree: () => undefined,
+  getFormattingEditsForDocument: () => [],
+  getFormattingEditsForRange: () => [],
+  getFormattingEditsAfterKeystroke: () => [],
+  findRenameLocations: () => [],
+  getRenameInfo: () => ({ canRename: false, localizedErrorMessage: 'Not in the program.' }),
+  getEmitOutput: () => ({ outputFiles: [], emitSkipped: true }),
+  getCodeFixesAtPosition: () => [],
+  provideInlayHints: () => [],
+};
+
+type Feature = (this: ProjectTypeScriptWorker, fileName: string, ...rest: unknown[]) => unknown;
+
+// Every feature takes the file's name in the raw form, and answers
+// nothing for a file outside the program. On the prototype, where Monaco
+// finds the methods it exposes to the main thread.
+for (const [name, empty] of Object.entries(FEATURES)) {
+  const base = (TypeScriptWorker.prototype as unknown as Record<string, Feature | undefined>)[name];
+  if (typeof base !== 'function') continue;
+  const wrapped: Feature = async function (fileName, ...rest) {
+    const key = libKeyOf(fileName);
+    if (!isDefaultLibName(key) && !this.inProgram(key)) return empty();
+    return base.call(this, key, ...rest);
+  };
+  (ProjectTypeScriptWorker.prototype as unknown as Record<string, Feature>)[name] = wrapped;
+}
+
 export interface ProgramInfo {
   /** Files in the program, Monaco's libs included. */
   files: number;
@@ -180,4 +264,22 @@ function throughLinks(path: string, links: ReadonlyMap<string, string>): string 
 /** Monaco's own lib.*.d.ts, which it may open as models (peek definition). */
 function isDefaultLib(uri: MirrorModel['uri']): boolean {
   return uri.path.startsWith('/lib.') && uri.path.slice(1) in libFileMap;
+}
+
+/** The same, by name, as Monaco's worker checks it. */
+function isDefaultLibName(fileName: string): boolean {
+  return fileName.startsWith('file:///') && fileName.slice('file:///'.length) in libFileMap;
+}
+
+/** A file URI as an absolute path, as the configs' patterns are (lib/tsconfig.ts). */
+function pathOfUri(uri: string): string {
+  if (!uri.startsWith('file://')) return uri;
+  let path: string;
+  try {
+    path = decodeURIComponent(uri.slice('file://'.length));
+  } catch {
+    path = uri.slice('file://'.length);
+  }
+  // Windows: `/c:/x` is `c:/x`.
+  return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path;
 }

@@ -17,7 +17,8 @@
 //   - compiler options follow the project's tsconfig/jsconfig (baseUrl,
 //     paths, jsx), with extends and references followed (lib/tsconfig.ts),
 //     and JavaScript is understood too (allowJs); the global @types follow
-//     the config owning the active file, as tsc (typesScope.ts);
+//     the config owning the active file, whose files are the program's,
+//     as tsserver (activeConfig.ts);
 //   - go-to-definition into another file opens it in a tab at that line
 //     (opener.ts).
 //

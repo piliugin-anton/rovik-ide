@@ -3,7 +3,7 @@
 // Compiler options from the project's tsconfig.json / jsconfig.json, with
 // `extends` and `references` followed (lib/tsconfig.ts), and the configs
 // themselves as projects: which one owns a file decides its global @types
-// (typesScope.ts).
+// (activeConfig.ts).
 import * as monaco from 'monaco-editor';
 import { readDirEntries, readFileContent } from '../commands';
 import {

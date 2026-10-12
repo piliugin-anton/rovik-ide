@@ -28,6 +28,7 @@ declare module 'monaco-editor/language/typescript/ts.worker.js' {
   /** A program of TypeScript's language service: what the worker built. */
   export interface Program {
     getSourceFiles(): readonly { fileName: string }[];
+    getSourceFile(fileName: string): object | undefined;
   }
 
   export class TypeScriptWorker {
@@ -49,6 +50,8 @@ declare module 'monaco-editor/language/typescript/ts.worker.js' {
       fileName: string,
       position: number
     ): Promise<readonly { fileName: string }[] | undefined>;
+    getQuickInfoAtPosition(fileName: string, position: number): Promise<unknown>;
+    getRenameInfo(fileName: string, position: number, options: object): Promise<unknown>;
   }
 
   export function initialize(

@@ -81,9 +81,9 @@ async function push(uriStr: string): Promise<void> {
   if (uri.scheme !== 'file') return;
   const abs = fsPathOf(uri);
   if (!underRoot(abs)) return;
-  // Computed under another config's global @types (a file of that config is
-  // active): not this file's real errors. Its markers are recomputed, and
-  // reported, once one of its own config's files is active again.
+  // Outside the worker's program (a file of another config is active, and
+  // the program is that config's): its markers are stale. They are
+  // recomputed, and reported, once one of its own config's files is active.
   if (!typesScopeCovers(abs)) return;
   const markers = markersOf(uri);
   const key = `${root}\n${JSON.stringify(markers)}`;
