@@ -73,6 +73,24 @@ const gb = (bytes: number) => `${(bytes / (1 << 30)).toFixed(1)} GB`;
 export default function IsolationBar(props: Props) {
   const [open, setOpen] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
+  /**
+   * Runs `body` with the bar busy, then reads the status again. An error
+   * is a notification titled `errorTitle` (and undefined), or, without
+   * one, the caller's.
+   */
+  async function withBusy<T>(body: () => Promise<T>, errorTitle?: string): Promise<T | undefined> {
+    setBusy(true);
+    try {
+      return await body();
+    } catch (e) {
+      if (errorTitle === undefined) throw e;
+      notify({ kind: 'error', title: errorTitle, message: String(e) });
+      return undefined;
+    } finally {
+      setBusy(false);
+      void refetch();
+    }
+  }
   const [status, { refetch }] = createResource(
     () => ({ id: props.dialogId, revision: props.revision }),
     ({ id }) => overlayStatus(id).catch((): OverlayStatus | undefined => undefined)
@@ -151,13 +169,9 @@ export default function IsolationBar(props: Props) {
       confirmLabel: 'Redo sequentially',
     });
     if (!ok) return;
-    setBusy(true);
-    try {
-      await redoGroup(id, group, { redo: overlayRedoGroup, askChat: props.onAskChat, notify });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    await withBusy(() =>
+      redoGroup(id, group, { redo: overlayRedoGroup, askChat: props.onAskChat, notify })
+    );
   }
 
   async function askChat() {
@@ -171,8 +185,7 @@ export default function IsolationBar(props: Props) {
       });
       return;
     }
-    setBusy(true);
-    try {
+    await withBusy(async () => {
       const handed = await overlayConflictsToChat(id);
       if (!handed.request) {
         notify({
@@ -185,12 +198,7 @@ export default function IsolationBar(props: Props) {
         // merged before them).
         await overlayUnmark(id, handed.files).catch(() => {});
       }
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t hand the conflicts over', message: String(e) });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    }, 'Couldn’t hand the conflicts over');
   }
 
   async function compare(file: ChangedFile) {
@@ -228,8 +236,7 @@ export default function IsolationBar(props: Props) {
         return false;
       }
     }
-    setBusy(true);
-    try {
+    const landed = await withBusy(async () => {
       const result = await overlayLand(props.dialogId, keepChat);
       if (result.landed) {
         notify({
@@ -249,18 +256,12 @@ export default function IsolationBar(props: Props) {
         notify({ kind: 'error', title: 'Didn’t land', message: result.error });
       }
       return false;
-    } catch (e) {
-      notify({ kind: 'error', title: 'Didn’t land', message: String(e) });
-      return false;
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    }, 'Didn’t land');
+    return landed ?? false;
   }
 
   async function undo(id: string) {
-    setBusy(true);
-    try {
+    await withBusy(async () => {
       const kept = await overlayUndo(props.dialogId, id);
       notify({
         kind: kept.length ? 'warning' : 'success',
@@ -269,12 +270,7 @@ export default function IsolationBar(props: Props) {
           ? `${plural(kept.length, 'file')} changed since and stayed as they are: ${listPaths(kept.map((k) => k.path))}.`
           : 'The project is back to how it was before.',
       });
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t undo', message: String(e) });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    }, 'Couldn’t undo');
   }
 
   async function discard() {
@@ -291,22 +287,13 @@ export default function IsolationBar(props: Props) {
       notify({ kind: 'warning', title: 'Didn’t discard', message: 'Stop the run first.' });
       return;
     }
-    setBusy(true);
-    try {
-      await overlayDiscard(props.dialogId);
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t discard', message: String(e) });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    await withBusy(() => overlayDiscard(props.dialogId), 'Couldn’t discard');
   }
 
   const disabled = () => props.running || busy();
 
   async function undoMerge() {
-    setBusy(true);
-    try {
+    await withBusy(async () => {
       const { restored, changedSince } = await overlayUndoMerge(props.dialogId);
       notify({
         kind: changedSince.length ? 'warning' : 'success',
@@ -317,12 +304,7 @@ export default function IsolationBar(props: Props) {
             ? ` The chat changed ${plural(changedSince.length, 'file')} since, kept as they are: ${listPaths(changedSince)}.`
             : ''),
       });
-    } catch (e) {
-      notify({ kind: 'error', title: 'Couldn’t take the merge back', message: String(e) });
-    } finally {
-      setBusy(false);
-      void refetch();
-    }
+    }, 'Couldn’t take the merge back');
   }
 
   return (

@@ -4,7 +4,7 @@
 // permissions & approval, …). Sub-pages keep a Back bar pinned under the
 // header, outside the scrolling body. AI changes are kept here and handed
 // to the chat on close; editor changes apply live (lib/editorSettings.ts).
-import { createSignal, Match, onCleanup, onMount, Show, Switch } from 'solid-js';
+import { createSignal, Match, onCleanup, onMount, Show, Switch, type JSX } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import type { AgentPermissions, ApprovalRule } from '../lib/permissions';
 import ModelProvidersSettings, { type ProvidersSettingsController } from './ModelProvidersSettings';
@@ -52,6 +52,18 @@ const PAGE_TITLE: Record<AiSettingsPage, string> = {
 
 export default function AiSettingsModal(props: AiSettingsModalProps) {
   const [page, setPage] = createSignal<AiSettingsPage>(props.initialPage ?? 'menu');
+  /** One line of the menu: opens its page. */
+  const MenuItem = (item: { page: AiSettingsPage; label: string; sub: JSX.Element }) => (
+    <button class="settings-menu-item" onClick={() => setPage(item.page)}>
+      <span class="settings-menu-text">
+        <span class="settings-menu-label">{item.label}</span>
+        <span class="settings-menu-sub">{item.sub}</span>
+      </span>
+      <span class="settings-menu-chevron" aria-hidden="true">
+        ›
+      </span>
+    </button>
+  );
   const [providers, setProviders] = createSignal<Provider[]>(props.providers);
   const [permissions, setPermissions] = createSignal<AgentPermissions>(props.permissions);
   const [subagents, setSubagents] = createSignal<SubagentChoices>(props.subagents);
@@ -136,10 +148,11 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
           <Switch>
             <Match when={page() === 'menu'}>
               <div class="settings-menu">
-                <button class="settings-menu-item" onClick={() => setPage('editor')}>
-                  <span class="settings-menu-text">
-                    <span class="settings-menu-label">Editor</span>
-                    <span class="settings-menu-sub">
+                <MenuItem
+                  page="editor"
+                  label="Editor"
+                  sub={
+                    <>
                       Theme:{' '}
                       {EDITOR_THEMES.find((t) => t.id === editorSettings().theme)?.label ??
                         editorSettings().theme}{' '}
@@ -147,76 +160,37 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                       {editorSettings().insertSpaces
                         ? `Spaces (${editorSettings().tabSize})`
                         : 'Tabs'}
-                    </span>
-                  </span>
-                  <span class="settings-menu-chevron" aria-hidden="true">
-                    ›
-                  </span>
-                </button>
-                <button class="settings-menu-item" onClick={() => setPage('providers')}>
-                  <span class="settings-menu-text">
-                    <span class="settings-menu-label">Model providers</span>
-                    <span class="settings-menu-sub">{providersSummary()}</span>
-                  </span>
-                  <span class="settings-menu-chevron" aria-hidden="true">
-                    ›
-                  </span>
-                </button>
+                    </>
+                  }
+                />
+                <MenuItem page="providers" label="Model providers" sub={providersSummary()} />
                 <Show when={props.rootPath}>
-                  <button class="settings-menu-item" onClick={() => setPage('project')}>
-                    <span class="settings-menu-text">
-                      <span class="settings-menu-label">Project checks</span>
-                      <span class="settings-menu-sub">
-                        {permissions().verifyChanges
-                          ? 'Changes are checked when the agent finishes'
-                          : 'Checking changes is off'}
-                      </span>
-                    </span>
-                    <span class="settings-menu-chevron" aria-hidden="true">
-                      ›
-                    </span>
-                  </button>
+                  <MenuItem
+                    page="project"
+                    label="Project checks"
+                    sub={
+                      permissions().verifyChanges
+                        ? 'Changes are checked when the agent finishes'
+                        : 'Checking changes is off'
+                    }
+                  />
                 </Show>
-                <button class="settings-menu-item" onClick={() => setPage('permissions')}>
-                  <span class="settings-menu-text">
-                    <span class="settings-menu-label">Permissions &amp; Approval</span>
-                    <span class="settings-menu-sub">{permissionsSummary()}</span>
-                  </span>
-                  <span class="settings-menu-chevron" aria-hidden="true">
-                    ›
-                  </span>
-                </button>
-                <button class="settings-menu-item" onClick={() => setPage('subagents')}>
-                  <span class="settings-menu-text">
-                    <span class="settings-menu-label">Subagents</span>
-                    <span class="settings-menu-sub">{subagentSummary(subagents())}</span>
-                  </span>
-                  <span class="settings-menu-chevron" aria-hidden="true">
-                    ›
-                  </span>
-                </button>
-                <button class="settings-menu-item" onClick={() => setPage('builds')}>
-                  <span class="settings-menu-text">
-                    <span class="settings-menu-label">Builds &amp; checks</span>
-                    <span class="settings-menu-sub">
-                      How many builds and tests run at once, across chats
-                    </span>
-                  </span>
-                  <span class="settings-menu-chevron" aria-hidden="true">
-                    ›
-                  </span>
-                </button>
-                <button class="settings-menu-item" onClick={() => setPage('vfs')}>
-                  <span class="settings-menu-text">
-                    <span class="settings-menu-label">Virtual files</span>
-                    <span class="settings-menu-sub">
-                      In-memory files commands can use, via FUSE / macFUSE / WinFsp
-                    </span>
-                  </span>
-                  <span class="settings-menu-chevron" aria-hidden="true">
-                    ›
-                  </span>
-                </button>
+                <MenuItem
+                  page="permissions"
+                  label="Permissions & Approval"
+                  sub={permissionsSummary()}
+                />
+                <MenuItem page="subagents" label="Subagents" sub={subagentSummary(subagents())} />
+                <MenuItem
+                  page="builds"
+                  label="Builds & checks"
+                  sub="How many builds and tests run at once, across chats"
+                />
+                <MenuItem
+                  page="vfs"
+                  label="Virtual files"
+                  sub="In-memory files commands can use, via FUSE / macFUSE / WinFsp"
+                />
               </div>
             </Match>
             <Match when={page() === 'editor'}>
