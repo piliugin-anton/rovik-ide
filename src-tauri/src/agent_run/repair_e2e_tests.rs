@@ -1188,3 +1188,50 @@ async fn first_write_is_a_test_file_keeps_a_reference() {
     assert_eq!(rounds[1]["testsRun"], 1, "{rounds:#?}");
     assert_eq!(end, "verify-flagged");
 }
+
+/// Round 2 (§4.2): a test file in a language the IDE can't read the tests
+/// of (a Ruby spec), changed by the run: the checks pass, the agent is
+/// asked once, and keeping the change leaves the run flagged, not verified.
+#[tokio::test]
+async fn integrity_e2e_unsupported_language() {
+    if !has_node() {
+        return;
+    }
+    let h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/ok.test.js", "test('ok', () => assert(true));\n"),
+        (
+            "spec/a_spec.rb",
+            "it 'adds' do\n  expect(add(1, 2)).to eq(3)\nend\n",
+        ),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        write("w1", "spec/a_spec.rb", "it 'adds' do\nend\n"),
+        Reply::Text("Done."),
+        // Asked about it, it keeps it.
+        Reply::Text("The spec had to change."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Tidy the spec"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verify-flagged");
+    let messages = h.messages().await;
+    let asked = harness_texts(&messages, "integrity");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(
+        asked[0].contains("spec/a_spec.rb: a test file the IDE can't check was changed"),
+        "{}",
+        asked[0]
+    );
+    let rounds = records(&messages);
+    let last = rounds.last().unwrap();
+    assert_eq!(last["status"], "flagged", "{last}");
+    assert!(
+        last["integrity"].as_array().is_some_and(|flags| flags
+            .iter()
+            .any(|f| f.as_str().is_some_and(|f| f.starts_with("spec/a_spec.rb:")))),
+        "{last}"
+    );
+}

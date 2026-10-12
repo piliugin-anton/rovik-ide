@@ -1820,4 +1820,29 @@ mod tests {
         assert_eq!(rel_key("/p", "src//a.ts"), "src/a.ts");
         assert_eq!(rel_key("/p", "/px/a.ts"), "/px/a.ts");
     }
+
+    /// Round 2 (§4.2): the reference for "fewer tests" is the most an
+    /// earlier round ran, not the first or the last round's count; the
+    /// run's own tests, first written in round 2, aside: [5, 7, 6] → 7.
+    #[test]
+    fn reference_is_the_max_before_first_test_write() {
+        let r = |ran: u32, own: u32| RoundFailures {
+            tests_ran: Some(ran),
+            own_tests: Some(own),
+            ..Default::default()
+        };
+        // Others: 5, then 9 less its own 2, then 8 less its own 2.
+        let history = [r(5, 0), r(9, 2), r(8, 2)];
+        assert_eq!(
+            fewer_tests_flag(&history, &r(8, 2)),
+            Some(
+                "fewer tests ran than before, not counting the run's own test files (7 → 6)".into()
+            )
+        );
+        assert_eq!(
+            fewer_tests_flag(&history, &r(9, 2)),
+            None,
+            "as many as the most"
+        );
+    }
 }

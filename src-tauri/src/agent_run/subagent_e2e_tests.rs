@@ -9971,3 +9971,113 @@ async fn deleting_a_lead_removes_its_subagents_checks_landings_and_carry() {
         .unwrap();
     assert_eq!(rows, 0);
 }
+
+/// Round 2 (§4.2): diagnostics with no path (the editor's summary for the
+/// whole project) leaves out the lines of the files the change touches,
+/// says how many went, and keeps the rest.
+#[tokio::test]
+async fn diagnostics_without_a_path_hides_the_files() {
+    let h = harness(&[
+        (
+            "src/greet.ts",
+            "export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n",
+        ),
+        ("src/main.ts", "console.log('hi');\n"),
+        ("src/other.ts", "export const other = 1;\n"),
+        (".rovik/plans/greeter.md", TEST_PLAN),
+    ])
+    .await;
+    // What the editor reported: an error in a hidden file and in another.
+    let root = h.project.to_string_lossy().into_owned();
+    for path in ["src/greet.ts", "src/other.ts"] {
+        let markers: Vec<crate::agent_tools::EditorMarker> = serde_json::from_value(json!([{
+            "startLine": 1, "startCol": 1, "endLine": 1, "endCol": 2,
+            "severity": "error", "message": "something is off",
+        }]))
+        .unwrap();
+        crate::agent_tools::report_editor_diagnostics(root.clone(), path.into(), markers).unwrap();
+    }
+    let (url, _) = model_routed(
+        vec![(
+            "# Write tests for this change",
+            vec![
+                Reply::Call {
+                    id: "d1",
+                    name: "diagnostics",
+                    args: json!({}),
+                },
+                Reply::Text(TEST_REPORT),
+            ],
+        )],
+        vec![test_task("tw"), Reply::Text("Tests are written.")],
+    )
+    .await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+    };
+    let mut request = h.request(
+        &url,
+        StartKind::Send { message },
+        Permissions {
+            allow_any_command: true,
+            ..quiet_permissions()
+        },
+    );
+    request.config.as_mut().unwrap().subagents = test_writer_on();
+    h.start(request).await;
+    h.run_end().await;
+    let d1 = h.child_results("tw").await["d1"].clone();
+    assert!(!d1.contains("src/greet.ts"), "{d1}");
+    assert!(d1.contains("- src/other.ts: 1 error"), "{d1}");
+    assert!(
+        d1.contains("[1 line in the files the change touches left out"),
+        "{d1}"
+    );
+}
+
+/// Round 2 (§4.2): two members of a group can't both change one path: a
+/// plan that gives `src/shared.rs` to both is refused at the group's start
+/// (F03), before any worker. The other half, one member's side effect on
+/// a path another changes, is left out at landing with no conflict
+/// (`a_side_effect_outside_a_workers_scope_doesnt_land`).
+#[tokio::test]
+async fn two_members_landing_the_same_path_without_a_line_conflict() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let plan: &'static str = Box::leak(
+        GROUP_PLAN
+            .replace(
+                "`src/users.rs`: implement",
+                "`src/shared.rs`: add the users helper.\n   - `src/users.rs`: implement",
+            )
+            .replace(
+                "`src/posts.rs`: implement",
+                "`src/shared.rs`: add the posts helper.\n   - `src/posts.rs`: implement",
+            )
+            .into_boxed_str(),
+    );
+    let h = group_harness_with_side_effect(plan, "true", &[("src/shared.rs", "// shared\n")]).await;
+    let (url, _) = model(vec![all_done(), group_task("g1"), Reply::Text("Done.")]).await;
+    h.start(h.implement_isolated(&url, false)).await;
+    let result = h.result_when_ready("g1").await;
+    assert!(
+        result
+            .content
+            .starts_with("Error: the group can't run in parallel as planned"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .contains("Steps 2 and 3 are both in group \"pages\" but both name `src/shared.rs`"),
+        "{}",
+        result.content
+    );
+    assert!(h.events_of("subagentStarted").is_empty());
+    h.run_end().await;
+    assert_eq!(h.file("src/shared.rs").as_deref(), Some("// shared\n"));
+}
