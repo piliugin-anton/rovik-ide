@@ -373,14 +373,23 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
     })
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitBranch {
+    pub name: String,
+    /// `origin/main` style remote-tracking branch (can't be deleted here,
+    /// checking it out creates a local tracking branch).
+    pub is_remote: bool,
+}
+
 #[tauri::command]
-pub async fn git_branches(path: String) -> Result<Vec<String>, String> {
+pub async fn git_branches(path: String) -> Result<Vec<GitBranch>, String> {
     off_main_thread(move || git_branches_blocking(path)).await
 }
 
-pub fn git_branches_blocking(path: String) -> Result<Vec<String>, String> {
+pub fn git_branches_blocking(path: String) -> Result<Vec<GitBranch>, String> {
     let repo = open_repo(&path)?;
-    let mut names = Vec::new();
+    let mut local: Vec<GitBranch> = Vec::new();
+    let mut remote: Vec<GitBranch> = Vec::new();
 
     let branches = repo
         .branches(Some(BranchType::Local))
@@ -389,12 +398,35 @@ pub fn git_branches_blocking(path: String) -> Result<Vec<String>, String> {
     for item in branches {
         let (branch, _) = item.map_err(|e| e.to_string())?;
         if let Some(name) = branch.name().map_err(|e| e.to_string())? {
-            names.push(name.to_string());
+            local.push(GitBranch {
+                name: name.to_string(),
+                is_remote: false,
+            });
         }
     }
 
-    names.sort();
-    Ok(names)
+    let branches = repo
+        .branches(Some(BranchType::Remote))
+        .map_err(|e| e.to_string())?;
+
+    for item in branches {
+        let (branch, _) = item.map_err(|e| e.to_string())?;
+        if let Some(name) = branch.name().map_err(|e| e.to_string())? {
+            // Skip the `origin/HEAD` symref; it's not a branch to switch to.
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            remote.push(GitBranch {
+                name: name.to_string(),
+                is_remote: true,
+            });
+        }
+    }
+
+    local.sort_by(|a, b| a.name.cmp(&b.name));
+    remote.sort_by(|a, b| a.name.cmp(&b.name));
+    local.extend(remote);
+    Ok(local)
 }
 
 #[tauri::command]
@@ -407,6 +439,51 @@ pub async fn git_checkout(path: String, branch: String) -> Result<(), String> {
 pub fn git_checkout_blocking(path: String, branch: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
 
+    // A local branch: switch to it directly.
+    if repo.find_branch(&branch, BranchType::Local).is_ok() {
+        let refname = format!("refs/heads/{branch}");
+        let object = repo
+            .revparse_single(&refname)
+            .map_err(|e| format!("Checkout failed: {e}"))?;
+        repo.checkout_tree(&object, None)
+            .map_err(|e| format!("Checkout failed: {e}"))?;
+        repo.set_head(&refname).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // A remote-tracking branch (`origin/foo`): create a local tracking
+    // branch (`foo`, or `feature/foo` for `origin/feature/foo`) and switch
+    // to it, like `git switch` does. If that local branch already exists
+    // (created since the list was loaded), just switch to it.
+    if let Ok(remote) = repo.find_branch(&branch, BranchType::Remote) {
+        let short = branch
+            .split_once('/')
+            .map(|(_, rest)| rest)
+            .unwrap_or(branch.as_str());
+        if short.is_empty() || short == "HEAD" {
+            return Err(format!("Can't check out '{branch}'"));
+        }
+        let commit = remote
+            .get()
+            .peel_to_commit()
+            .map_err(|e| format!("Checkout failed: {e}"))?;
+        if repo.find_branch(short, BranchType::Local).is_err() {
+            let mut local = repo
+                .branch(short, &commit, false)
+                .map_err(|e| format!("Couldn't create tracking branch '{short}': {e}"))?;
+            // Point `branch.<short>.remote/.merge` at the remote branch so
+            // pull/push and the ahead/behind badges work.
+            let _ = local.set_upstream(Some(branch.as_str()));
+        }
+        let object = commit.into_object();
+        repo.checkout_tree(&object, None)
+            .map_err(|e| format!("Checkout failed: {e}"))?;
+        repo.set_head(&format!("refs/heads/{short}"))
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Fallback: a commit hash, tag, or anything else `git checkout` accepts.
     let (object, reference) = repo
         .revparse_ext(&branch)
         .map_err(|e| format!("Branch '{branch}' not found: {e}"))?;

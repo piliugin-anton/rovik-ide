@@ -355,7 +355,11 @@ export function GitPanel(props: GitPanelProps) {
 
   const [commitMessage, setCommitMessage] = createSignal('');
   const [branchOpen, setBranchOpen] = createSignal(false);
-  const [branches, setBranches] = createSignal<string[]>([]);
+  interface GitBranch {
+    name: string;
+    is_remote: boolean;
+  }
+  const [branches, setBranches] = createSignal<GitBranch[]>([]);
   const [branchesLoading, setBranchesLoading] = createSignal(false);
 
   const filesCount = createMemo(() => status()?.files.length ?? 0);
@@ -654,7 +658,7 @@ export function GitPanel(props: GitPanelProps) {
   const loadBranches = async () => {
     setBranchesLoading(true);
     try {
-      const list = await invoke<string[]>('git_branches', { path: props.projectPath });
+      const list = await invoke<GitBranch[]>('git_branches', { path: props.projectPath });
       setBranches(list);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
@@ -1279,20 +1283,44 @@ export function GitPanel(props: GitPanelProps) {
                   <IconSpinner /> <span>Loading branches...</span>
                 </div>
               </Show>
-              <ul class="context-menu-list">
-                <For each={branches()}>
-                  {(b) => (
-                    <li
-                      class="context-menu-item"
-                      classList={{ 'git-branch-item-active': b === status()?.branch }}
-                      onClick={() => switchBranch(b)}
-                    >
-                      <IconBranch />
-                      <span>{b}</span>
-                    </li>
-                  )}
-                </For>
-              </ul>
+              <Show
+                when={branches().filter((b) => !b.is_remote).length > 0}
+              >
+                <div class="git-menu-section-label">Local</div>
+                <ul class="context-menu-list">
+                  <For each={branches().filter((b) => !b.is_remote)}>
+                    {(b) => (
+                      <li
+                        class="context-menu-item"
+                        classList={{ 'git-branch-item-active': b.name === status()?.branch }}
+                        onClick={() => switchBranch(b.name)}
+                      >
+                        <IconBranch />
+                        <span>{b.name}</span>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+              <Show
+                when={branches().filter((b) => b.is_remote).length > 0}
+              >
+                <div class="git-menu-section-label">Remote</div>
+                <ul class="context-menu-list">
+                  <For each={branches().filter((b) => b.is_remote)}>
+                    {(b) => (
+                      <li
+                        class="context-menu-item"
+                        title={`Check out as a local tracking branch`}
+                        onClick={() => switchBranch(b.name)}
+                      >
+                        <IconBranch />
+                        <span>{b.name}</span>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
             </div>
           </Show>
 
@@ -1438,26 +1466,31 @@ export function GitPanel(props: GitPanelProps) {
                 <Show
                   when={
                     !branchesLoading() &&
-                    branches().filter((b) => b !== status()?.branch).length === 0
+                    branches().filter((b) => !b.is_remote && b.name !== status()?.branch)
+                      .length === 0
                   }
                 >
                   <div class="git-more-note">No other branches to delete.</div>
                 </Show>
                 <ul class="context-menu-list">
-                  <For each={branches().filter((b) => b !== status()?.branch)}>
+                  <For
+                    each={branches().filter(
+                      (b) => !b.is_remote && b.name !== status()?.branch,
+                    )}
+                  >
                     {(b) => (
                       <li class="context-menu-item git-more-row">
                         <IconBranch />
-                        <span class="git-more-row-label">{b}</span>
+                        <span class="git-more-row-label">{b.name}</span>
                         <button
                           type="button"
                           class="git-more-row-button"
-                          title={`Delete branch ${b}`}
-                          aria-label={`Delete branch ${b}`}
+                          title={`Delete branch ${b.name}`}
+                          aria-label={`Delete branch ${b.name}`}
                           disabled={busy()}
                           onClick={(e) => {
                             e.stopPropagation();
-                            void deleteBranch(b);
+                            void deleteBranch(b.name);
                           }}
                         >
                           <IconTrash />
