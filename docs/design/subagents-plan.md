@@ -2025,3 +2025,107 @@ Tests by phase:
   Ctrl+C were added in phase 6, and match the code.
 
 The review-fixes plan (`subagents-review-fixes.md`) is done: phases 0–8.
+
+### Review-fixes round 2
+
+The second review (`subagents-review-round2.md`) checked phases 0–8,
+named what to fix before merge (§3), one test per issue it found (§4.1)
+and a coverage matrix of every flow (§4.2). All of it is done: 239 Rust
+tests and 63 frontend and evaluation tests were added, and each test that
+found a bug fails without its fix. Commits are one fix, or one batch of
+tests, each.
+
+**Must fix (§3).** P4.3: a plain (unbackticked) word is a step's file
+only with an extension or a closing `/`, so prose ("the add/remove
+buttons", "bump Node.js") no longer stops `submit_plan`, and root files
+with unknown extensions (`.env.local`, `Dockerfile.dev`) count again.
+P0.3: a subagent's original goes into the round's checkpoint as it was.
+P0.2: `env -S` is opaque; the denied list unwraps what every matcher
+does. P1.2 and P1.3: a fixer's landing retries and keeps its copy and
+journal; a group rerun finishes an interrupted landing first; a kept copy
+is reopened after a restart and never lands over the lead's merge. P3.2,
+P3.3, P3.6, P3.8: slips matched by path tail, only a timeout makes a check
+incomparable, a bash-only fix is checked, "can't check" only for test
+sources. P4.5: "None of…" before findings isn't none. P2.3, P2.5: folder
+grants over another step's file are refused; the test writer's filters
+are read-only. P5.4, P5.7, P5.9: a transcript's rows and patches during
+its load are kept, settings that couldn't be read are never saved over,
+and a transcript two blocks show stays until both let go.
+
+**Low (§3).** `a:b.txt` isn't a drive; a group's folder refusal sees
+every spelling; a subagent that can't start gives its place back; a kept
+copy without its plan step lands nothing and says why; "## Blocked" with
+None isn't a block; `descendants` ends on looping parent links; the
+headless runner closes its database before removing its folder; whole
+float token counts count; `protect()` makes only files read-only; snapshot
+blobs of paths that didn't land are removed; a step keeps the number the
+plan shows; and/or, I/O and URLs aren't triage paths; CRLF plans are
+saved, annotated and compared by their lines.
+
+**Found by the tests.**
+
+- Checks and repair: a compiler error next to failing tests is kept; a
+  lost spilled baseline file leaves the integrity check incomplete; fewer
+  tests are counted apart from the run's own test files; superseding
+  keeps a record's own round limit; a carry's spill folder goes with it;
+  a round's commands carry over while its checks wait for approval; a
+  restart keeps the record's bonus round.
+- Subagents and overlays: a resumed subagent's calls are all counted;
+  `src/x.ts.bak` isn't the hidden `src/x.ts`; a conflict's saved file
+  names are plain; a scratch overlay a crash left is swept; a subagent
+  whose brief can't be stored leaves no chat.
+- Plans: a bolded `(new)`/`(read)` mark is its path's; a version
+  (`docs/v1.2`, HTTP/1.1) isn't a file; `## Steps (ordered)` and
+  `## 3. Steps` come before a "## Next steps" note; a numbered heading is
+  its name's section (a worker's brief keeps "## 5. Decisions"); the form
+  check names steps by the plan's numbers; a code block left open is a
+  plan problem (it silently merged the steps after it); a `..` that stays
+  in the project is named as it resolves, not "outside the project"; a
+  gapped plan's step marks its own checklist item; a note or period after
+  a group's name isn't the name.
+- Reviews: a finding after a good one with a bad header (a bullet, no
+  severity) is a format error rather than merged into the one above; a
+  held plan sent again unchanged, with nothing said, keeps its finding.
+  This narrows B04 for plan reviews: a repeat is dropped when an answer
+  may have settled it, and with no answer it stands (at round 2 the plan
+  is saved with it open).
+- Check output: a conflict's saved versions outlive the run's checks (the
+  earlier runs' output now goes before the run's first save of any kind);
+  a missing file's message says output lasts until the chat's next run
+  runs its checks.
+- Triage: a Windows path, with a drive and a line, finds its file
+  (`paths::without_line`).
+- Frontend: a subagent's transcript matches results to calls by identity
+  (P5.8: providers reuse call ids); Redo for a group is `redoGroup` in
+  `lib/overlay.ts`, tested; `npm test` typechecks the tests first
+  (`tsconfig.test.json`).
+- Evaluation harness: signal handlers are in place before a run or helper
+  is spawned (P6.1); runs kept from an earlier pass don't trip the stop
+  rules again on resume, and `knownSpend` counts known costs only (P6.6).
+- Usage: a request asked again counts the usage it reported (a cancelled
+  request now sends `Finished` with it; a cut-off reply's size isn't
+  learned); a subagent's whole float counts count (`log::token_count`,
+  shared with the runner); a headless report without its run line gives
+  an unknown cost, not a free run.
+
+**Decided where the review asked.** A report's sections take only
+backtick fences (`~~~` isn't one there); the same finding twice in one
+report is kept twice (merging by `same_finding` would also merge two bugs
+a few lines apart); `src/..` is the root and no step's file, like `./`; a
+plain path with `\` isn't read (the form check asks for backticks); a
+code block never closed runs to the end, and the form check says so.
+
+**Test hooks** (test builds only): `FAIL_BRIEF` (a brief that can't be
+stored), `CHECK_TIMEOUTS` (a check's timeout), `age_carry` (a carry past
+its time), `headless::TEST_RUN` (the running headless app, to change the
+effort mid-request), `project_profile::agent_log_dir`, and the e2e
+harness's `Reply::UsageAs` (a usage object as given, also before a reply
+that hangs). `headless::of_run` was extracted and the agent log's writer
+lock made a module static, so both can be tested.
+
+Not done, noted by the tests' authors and left as they are: a plain
+`src/my dir/a.rs` reads as `dir/a.rs`; a plain `src\Dockerfile` names the
+root `Dockerfile`; a folder named before the step that creates a file in
+it isn't reported as out of order; tab indents count as one column when
+steps are found; subagents are never asked again with another effort (the
+effort applies to lead runs).
