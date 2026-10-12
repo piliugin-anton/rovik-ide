@@ -40,6 +40,8 @@ export class IntelliSenseProject {
   private readonly sources: SourceChangeQueue;
   private readonly typingsRefresh: QuietRunner;
   private readonly configReload: QuietRunner;
+  /** tsconfig/jsconfig files found in the project (members' included). */
+  private configPaths = new Set<string>();
 
   constructor(
     readonly root: string,
@@ -86,7 +88,10 @@ export class IntelliSenseProject {
     // The initial load reads node_modules and the configs itself.
     if (!this.owns(path) || !this.ready) return;
     if (isTypingsManifest(path)) this.typingsRefresh.trigger();
-    if (isTsConfig(path)) this.configReload.trigger();
+    if (isTsConfig(path)) {
+      this.configPaths.add(path);
+      this.configReload.trigger();
+    }
   }
 
   private owns(path: string): boolean {
@@ -97,11 +102,19 @@ export class IntelliSenseProject {
     // A new project has no libs yet: no semantic errors until it is loaded.
     setSemanticValidationEnabled(false);
     try {
-      const [typings, sources, config] = await Promise.all([
+      const [typings, sources] = await Promise.all([
         loadProjectTypings(this.root).catch(() => NOTHING),
         loadProjectSources(this.root).catch(() => NOTHING),
-        readProjectConfig(this.root),
       ]);
+      if (this.disposed) return;
+      // The configs are among the sources: no second trip to disk for them.
+      this.noteConfigs(sources);
+      const loaded = new Map(sources.files.map((f) => [f.path, f.content]));
+      const config = await readProjectConfig(
+        this.root,
+        [...this.configPaths],
+        async (path) => loaded.get(path) ?? readFileContent(path)
+      );
       if (this.disposed) return;
       this.warnIfTruncated('typings', typings);
       this.warnIfTruncated('sources', sources);
@@ -147,6 +160,7 @@ export class IntelliSenseProject {
     const sources = await loadProjectSources(this.root).catch(() => null);
     if (this.disposed || !sources) return;
     this.warnIfTruncated('sources', sources);
+    this.noteConfigs(sources);
     workerLibs.replace(this.sourceLibs(sources), (uri) => !isTypingsLib(uri));
   }
 
@@ -161,7 +175,7 @@ export class IntelliSenseProject {
   }
 
   private async reloadConfig(): Promise<void> {
-    const config = await readProjectConfig(this.root);
+    const config = await readProjectConfig(this.root, [...this.configPaths]);
     if (this.disposed) return;
     this.types.configure(config);
     this.types.apply();
@@ -178,6 +192,11 @@ export class IntelliSenseProject {
     ];
   }
 
+  private noteConfigs(sources: LoadedFiles): void {
+    this.configPaths = new Set(sources.files.map((f) => f.path).filter(isTsConfig));
+  }
+
+  /** The sources, with the package.json files the worker reads for node16 resolution. */
   private sourceLibs(sources: LoadedFiles): LibEntry[] {
     return sources.files.map((f) => ({
       filePath: modelUriFor(f.path).toString(),

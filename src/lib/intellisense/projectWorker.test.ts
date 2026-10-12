@@ -22,6 +22,8 @@ const UTIL = `${ROOT}/src/util.ts`;
 const LIBS: Record<string, ExtraLib> = {};
 const lib = (key: string, content: string) => (LIBS[key] = { content, version: 1 });
 lib(UTIL, 'export const u = 1;');
+lib(`${ROOT}/package.json`, '{"name":"my-proj"}');
+lib(`${ROOT}/tsconfig.json`, '{}');
 lib(`${NM}/@scope/pkg/package.json`, '{"name":"@scope/pkg","types":"dist/index.d.ts"}');
 lib(`${NM}/@scope/pkg/dist/index.d.ts`, 'export declare const x: number;');
 lib(`${NM}/plain/package.json`, '{"name":"plain","main":"index.js"}');
@@ -146,6 +148,42 @@ describe('ProjectTypeScriptWorker', () => {
     assert.deepEqual(files, [`${STORE}/index.d.ts`]);
     assert.equal(w.realpath(`${MEMBER}/node_modules/foo/index.d.ts`), `${STORE}/index.d.ts`);
     assert.equal(w.realpath(`${ROOT}/src/app.ts`), `${ROOT}/src/app.ts`);
+  });
+
+  it('a workspace member in an @scope folder: through paths, or through exports', async () => {
+    // The folder part of a key is encoded like a model's URI (`@` → %40),
+    // the part after node_modules raw (uris.ts).
+    const PKG = `${ROOT}/%40something/central-client-api`;
+    const libs: Record<string, ExtraLib> = {
+      [`${PKG}/package.json`]: {
+        content:
+          '{"name":"@something/central-client-api","exports":{"./data":{"types":"./src/data.ts"}}}',
+        version: 1,
+      },
+      [`${PKG}/src/data.ts`]: { content: 'export const data = 1;', version: 1 },
+      [LINKS_LIB]: {
+        content: JSON.stringify({ [`${NM}/@something/central-client-api`]: PKG }),
+        version: 1,
+      },
+    };
+    const app = `${ROOT}/apps/x/src/a.ts`;
+    const text =
+      "import { data } from '@something/central-client-api/data'; export const n: string = data;";
+    const paths = { '@something/central-client-api/*': [`${PKG}/src/*`] };
+    const viaPaths = worker([model(app, text)], { ...OPTIONS, types: [], paths }, libs);
+    assert.deepEqual(codes(await viaPaths.getSemanticDiagnostics(app)), [2322]);
+    const viaExports = worker(
+      [model(app, text)],
+      { ...OPTIONS, types: [], moduleResolution: 100 as typescript.ModuleResolutionKind },
+      libs
+    );
+    assert.deepEqual(codes(await viaExports.getSemanticDiagnostics(app)), [2322]);
+    const node10 = worker([model(app, text)], { ...OPTIONS, types: [] }, libs);
+    assert.deepEqual(
+      codes(await node10.getSemanticDiagnostics(app)),
+      [2307],
+      'as tsc: no exports under node10'
+    );
   });
 
   it('a changed lib is parsed again, the others are kept', async () => {

@@ -36,6 +36,10 @@ export interface ResolvedTsOptions {
   paths?: Record<string, string[]>;
   jsx?: string;
   jsxImportSource?: string;
+  /** Lower-case, as written (`esnext`, `nodenext`...). */
+  module?: string;
+  /** Lower-case, as written (`node`, `node16`, `bundler`...). */
+  moduleResolution?: string;
 }
 
 /** One config file with its `extends` chain applied. */
@@ -74,11 +78,17 @@ export async function resolveTsOptions(
   return (await resolveTsProjects(root, readFile, listDir)).options;
 }
 
-/** The merged options, and every config found as a project, in priority order. */
+/**
+ * The merged options, and every config found as a project, in priority
+ * order. `configPaths` are configs found anywhere in the project (workspace
+ * members' tsconfig.json): they own their files and add their `paths`, but
+ * the root's configs come first for the options both set.
+ */
 export async function resolveTsProjects(
   root: string,
   readFile: ReadFile,
-  listDir?: ListDir
+  listDir?: ListDir,
+  configPaths: readonly string[] = []
 ): Promise<{ options: ResolvedTsOptions; projects: TsProject[] }> {
   const rootDir = normalize(root);
   const configs: LoadedConfig[] = [];
@@ -128,17 +138,27 @@ export async function resolveTsProjects(
   }
   if (!found) configs.push(...siblings.splice(0));
 
+  // Configs elsewhere in the project (members), after the root's.
+  const members: LoadedConfig[] = [];
+  for (const path of [...configPaths].map(normalize).sort()) {
+    const before = configs.length;
+    await visit(path, 0);
+    members.push(...configs.splice(before));
+  }
+
   const merged: ResolvedTsOptions = {};
-  for (const { options } of configs) {
+  for (const { options } of [...configs, ...members]) {
     merged.baseUrl ??= options.baseUrl;
     merged.jsx ??= options.jsx;
     merged.jsxImportSource ??= options.jsxImportSource;
+    merged.module ??= options.module;
+    merged.moduleResolution ??= options.moduleResolution;
     if (options.paths) {
       merged.paths ??= {};
       for (const [key, subs] of Object.entries(options.paths)) merged.paths[key] ??= subs;
     }
   }
-  return { options: merged, projects: [...configs, ...siblings].map(toProject) };
+  return { options: merged, projects: [...configs, ...siblings, ...members].map(toProject) };
 }
 
 function toProject(config: LoadedConfig): TsProject {
@@ -153,18 +173,61 @@ function toProject(config: LoadedConfig): TsProject {
 }
 
 /**
- * The first project whose files include `filePath` (absolute), like
- * tsserver picking the configured project for an open file; undefined when
- * none does (tsserver then infers a project with the default types).
+ * The project whose files include `filePath` (absolute), like tsserver
+ * picking the configured project for an open file: the nearest one (a
+ * workspace member's config before a root config covering everything),
+ * the first listed among those in one folder; undefined when none does
+ * (tsserver then infers a project with the default types).
  */
 export function projectFor(projects: TsProject[], filePath: string): TsProject | undefined {
   const file = normalize(filePath);
-  return projects.find(
-    (p) =>
+  let nearest: TsProject | undefined;
+  for (const p of projects) {
+    const covers =
       p.files.some((f) => samePath(f, file)) ||
       (p.include.some((pattern) => matchesPattern(pattern, file)) &&
-        !p.exclude.some((pattern) => matchesPattern(pattern, file)))
-  );
+        !p.exclude.some((pattern) => matchesPattern(pattern, file)));
+    if (covers && (!nearest || dirname(p.path).length > dirname(nearest.path).length)) nearest = p;
+  }
+  return nearest;
+}
+
+/** TypeScript's numeric values for `module` / `moduleResolution`. */
+const MODULE_KIND: Record<string, number> = {
+  node16: 100,
+  node18: 101,
+  node20: 102,
+  nodenext: 199,
+};
+const MODULE_RESOLUTION: Record<string, number> = {
+  classic: 1,
+  node: 2,
+  node10: 2,
+  node16: 3,
+  nodenext: 99,
+  bundler: 100,
+};
+
+/**
+ * `moduleResolution` as the project resolves modules, with the `module`
+ * it requires: a `node16`/`nodenext` resolution (package.json `exports`
+ * and `type`, as Node) needs the matching `module`, which also implies it
+ * when `moduleResolution` is unset; `bundler` (exports, no extensions) and
+ * `node` (node10: `main`/`types`, no exports) keep the editor's `module`.
+ * Unset, or unknown, leaves both as the editor has them.
+ */
+export function moduleSettings(options: ResolvedTsOptions): {
+  module?: number;
+  moduleResolution?: number;
+} {
+  const resolution =
+    options.moduleResolution ?? (MODULE_KIND[options.module ?? ''] && options.module);
+  if (!resolution || MODULE_RESOLUTION[resolution] === undefined) return {};
+  const out: { module?: number; moduleResolution?: number } = {
+    moduleResolution: MODULE_RESOLUTION[resolution],
+  };
+  if (MODULE_KIND[resolution] !== undefined) out.module = MODULE_KIND[resolution];
+  return out;
 }
 
 /**
@@ -290,6 +353,9 @@ async function loadConfig(
     result.options.paths = paths;
   }
   if (typeof co.jsx === 'string') result.options.jsx = co.jsx.toLowerCase();
+  if (typeof co.module === 'string') result.options.module = co.module.toLowerCase();
+  if (typeof co.moduleResolution === 'string')
+    result.options.moduleResolution = co.moduleResolution.toLowerCase();
   if (typeof co.jsxImportSource === 'string') result.options.jsxImportSource = co.jsxImportSource;
 
   if (Array.isArray(co.types)) {

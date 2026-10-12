@@ -6,7 +6,13 @@
 // (typesScope.ts).
 import * as monaco from 'monaco-editor';
 import { readDirEntries, readFileContent } from '../commands';
-import { resolveTsProjects, type ResolvedTsOptions, type TsProject } from '../tsconfig';
+import {
+  moduleSettings,
+  resolveTsProjects,
+  type ReadFile,
+  type ResolvedTsOptions,
+  type TsProject,
+} from '../tsconfig';
 import { BASE_OPTIONS } from './defaults';
 import { modelUriFor, pathPatternUriFor } from './uris';
 
@@ -29,15 +35,28 @@ const JSX: Record<string, monaco.typescript.JsxEmit> = {
   'react-jsxdev': monaco.typescript.JsxEmit.ReactJSXDev,
 };
 
-/** The project's configs, read from disk. Falls back to the base options. */
-export async function readProjectConfig(root: string): Promise<ProjectConfig> {
+/**
+ * The project's configs: the root's, and `configPaths` found elsewhere in
+ * it (workspace members'). `readFile` may serve already-loaded text;
+ * anything else (an `extends` target in node_modules) comes from disk.
+ */
+export async function readProjectConfig(
+  root: string,
+  configPaths: readonly string[],
+  readFile: ReadFile = readFileContent
+): Promise<ProjectConfig> {
   const options: CompilerOptions = { ...BASE_OPTIONS };
+  const listDir = async (dir: string) =>
+    (await readDirEntries(root, dir)).filter((e) => !e.is_dir).map((e) => e.name);
   const [{ options: resolved, projects }, typesDefaultAll] = await Promise.all([
-    resolveTsProjects(root, readFileContent, async (dir) =>
-      (await readDirEntries(root, dir)).filter((e) => !e.is_dir).map((e) => e.name)
-    ).catch(() => ({ options: {} as ResolvedTsOptions, projects: [] as TsProject[] })),
+    resolveTsProjects(root, readFile, listDir, configPaths).catch(() => ({
+      options: {} as ResolvedTsOptions,
+      projects: [] as TsProject[],
+    })),
     typesDefaultToAll(root),
   ]);
+  // The project's way of resolving modules (package.json exports...).
+  Object.assign(options, moduleSettings(resolved));
   if (resolved.baseUrl) options.baseUrl = modelUriFor(resolved.baseUrl).toString();
   if (resolved.paths && Object.keys(resolved.paths).length > 0) {
     // Substitutions are absolute, so mappings from configs in different
