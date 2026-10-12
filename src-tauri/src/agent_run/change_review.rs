@@ -17,7 +17,7 @@
 
 use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
-use super::subagent::{self, Budget, Format, Kind, KindSpec, SubStatus};
+use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus};
 use super::{log, plan, tools};
 use regex::Regex;
 use serde::Serialize;
@@ -279,6 +279,23 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
         });
     }
     Ok(out)
+}
+
+/// A review's record when it's skipped, with the reason.
+pub(super) fn skipped(review: &mut Value, reason: String) {
+    review["status"] = json!("skipped");
+    review["reason"] = json!(reason);
+}
+
+/// Why a review (of the change, or of the plan) was skipped.
+pub(super) fn reviewer_skip_reason(skip: &Skip) -> String {
+    match skip {
+        Skip::NotStarted(why) => why.clone(),
+        Skip::NotRun => "the reviewer couldn't run".into(),
+        Skip::ModelFailed(error) => format!("the reviewer's model failed ({error})"),
+        Skip::Blocked(why) => format!("the reviewer couldn't review: {why}"),
+        Skip::Unformatted => "its report didn't follow the format".into(),
+    }
 }
 
 /// Whether two findings are about the same thing: the same file, and the
@@ -663,82 +680,36 @@ impl<R: Runtime> Run<R> {
                 brief,
             )
             .await;
-        let mut not_started = None;
-        let (child_id, result) = match outcome {
-            Ok(r) => r,
-            Err(e) => {
-                not_started = Some(e.trim_start_matches("Error: ").to_string());
-                (String::new(), None)
-            }
-        };
-        review["childDialogId"] = json!((!child_id.is_empty()).then_some(&child_id));
         review["ms"] = json!(started.elapsed().as_millis() as u64);
-        let skipped = |review: &mut Value, reason: String| {
-            review["status"] = json!("skipped");
-            review["reason"] = json!(reason);
-        };
         let mut serious: Vec<Finding> = Vec::new();
-        match result {
-            None => skipped(
-                &mut review,
-                not_started.unwrap_or_else(|| "the reviewer couldn't run".into()),
-            ),
-            Some(r) => {
-                review["model"] = json!(r.model);
-                review["modelsTried"] = json!(r.models_tried);
-                review["toolCalls"] = json!(r.tool_calls);
-                if let Some(usage) = r.usage {
-                    review["usage"] = json!(usage);
-                }
-                match r.status {
-                    SubStatus::Stopped => review["status"] = json!("stopped"),
-                    SubStatus::Failed => skipped(
-                        &mut review,
-                        format!(
-                            "the reviewer's model failed ({})",
-                            r.error.as_deref().unwrap_or("error")
-                        ),
-                    ),
-                    SubStatus::Blocked => skipped(
-                        &mut review,
-                        format!(
-                            "the reviewer couldn't review: {}",
-                            subagent::sections(&r.text)
-                                .get("Blocked")
-                                .unwrap_or("no reason given")
-                        ),
-                    ),
-                    SubStatus::Unformatted => {
-                        skipped(&mut review, "its report didn't follow the format".into())
+        match subagent::outcome_of(&mut review, outcome) {
+            subagent::SubOutcome::Stopped => review["status"] = json!("stopped"),
+            subagent::SubOutcome::Skipped(skip) => skipped(&mut review, reviewer_skip_reason(&skip)),
+            subagent::SubOutcome::Report(r) => match parse_findings(&r.text) {
+                Err(e) => skipped(&mut review, format!("its report couldn't be read: {e}")),
+                Ok(found) => {
+                    let (kept, dropped) = drop_repeats(found, &earlier);
+                    serious = kept
+                        .iter()
+                        .filter(|f| {
+                            if after_green {
+                                f.severity == "high"
+                            } else {
+                                f.serious()
+                            }
+                        })
+                        .cloned()
+                        .collect();
+                    review["status"] = json!(if kept.is_empty() { "clean" } else { "findings" });
+                    review["findings"] = json!(kept);
+                    if !dropped.is_empty() {
+                        review["dropped"] = json!(dropped);
                     }
-                    SubStatus::Done | SubStatus::Partial => match parse_findings(&r.text) {
-                        Err(e) => skipped(&mut review, format!("its report couldn't be read: {e}")),
-                        Ok(found) => {
-                            let (kept, dropped) = drop_repeats(found, &earlier);
-                            serious = kept
-                                .iter()
-                                .filter(|f| {
-                                    if after_green {
-                                        f.severity == "high"
-                                    } else {
-                                        f.serious()
-                                    }
-                                })
-                                .cloned()
-                                .collect();
-                            review["status"] =
-                                json!(if kept.is_empty() { "clean" } else { "findings" });
-                            review["findings"] = json!(kept);
-                            if !dropped.is_empty() {
-                                review["dropped"] = json!(dropped);
-                            }
-                            if r.status == SubStatus::Partial {
-                                review["partial"] = json!(true);
-                            }
-                        }
-                    },
+                    if r.status == SubStatus::Partial {
+                        review["partial"] = json!(true);
+                    }
                 }
-            }
+            },
         }
         self.review_record(&record_id, review.clone()).await?;
         self.review_outcome = Some((

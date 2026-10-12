@@ -14,7 +14,7 @@ use super::command_output::{error_locations, focus_failures, split_by_changed};
 use super::log;
 use super::project::check_label;
 use super::run::Run;
-use super::subagent::{self, Budget, Format, Kind, KindSpec, SubStatus};
+use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip};
 use super::verify::CheckResult;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -457,6 +457,17 @@ pub fn pick(results: &[CheckResult], previous: &[CheckResult]) -> Option<(usize,
     })
 }
 
+/// Why a triage was skipped.
+fn triage_skip_reason(skip: &Skip) -> String {
+    match skip {
+        Skip::NotStarted(why) => why.clone(),
+        Skip::NotRun => "the triage couldn't run".into(),
+        Skip::ModelFailed(error) => format!("its model failed ({error})"),
+        Skip::Blocked(why) => format!("it couldn't triage: {why}"),
+        Skip::Unformatted => "its report didn't follow the format".into(),
+    }
+}
+
 impl<R: Runtime> Run<R> {
     /// C03: before a round's failures go back to the agent. None: no triage
     /// (off, nothing qualifies); otherwise what it found, or why it was
@@ -523,53 +534,17 @@ impl<R: Runtime> Run<R> {
             record["skipped"] = json!(why);
         };
         let mut found = None;
-        match outcome {
-            Err(e) => skip(&mut record, e.trim_start_matches("Error: ").to_string()),
-            Ok((child_id, result)) => {
-                record["childDialogId"] = json!(child_id);
-                match result {
-                    None => skip(&mut record, "the triage couldn't run".into()),
-                    Some(r) => {
-                        record["model"] = json!(r.model);
-                        record["toolCalls"] = json!(r.tool_calls);
-                        if let Some(usage) = r.usage {
-                            record["usage"] = json!(usage);
-                        }
-                        match r.status {
-                            SubStatus::Stopped => record["status"] = json!("stopped"),
-                            SubStatus::Failed => skip(
-                                &mut record,
-                                format!(
-                                    "its model failed ({})",
-                                    r.error.as_deref().unwrap_or("error")
-                                ),
-                            ),
-                            SubStatus::Blocked => skip(
-                                &mut record,
-                                format!(
-                                    "it couldn't triage: {}",
-                                    subagent::sections(&r.text)
-                                        .get("Blocked")
-                                        .unwrap_or("no reason given")
-                                ),
-                            ),
-                            SubStatus::Unformatted => {
-                                skip(&mut record, "its report didn't follow the format".into())
-                            }
-                            SubStatus::Done | SubStatus::Partial => {
-                                match parse_report(&check.kind, &r.text) {
-                                    None => skip(&mut record, "its report couldn't be read".into()),
-                                    Some(t) => {
-                                        record["status"] = json!("done");
-                                        record["result"] = json!(t);
-                                        found = Some(t);
-                                    }
-                                }
-                            }
-                        }
-                    }
+        match subagent::outcome_of(&mut record, outcome) {
+            subagent::SubOutcome::Stopped => record["status"] = json!("stopped"),
+            subagent::SubOutcome::Skipped(why) => skip(&mut record, triage_skip_reason(&why)),
+            subagent::SubOutcome::Report(r) => match parse_report(&check.kind, &r.text) {
+                None => skip(&mut record, "its report couldn't be read".into()),
+                Some(t) => {
+                    record["status"] = json!("done");
+                    record["result"] = json!(t);
+                    found = Some(t);
                 }
-            }
+            },
         }
         self.update_meta(record_id, update(record.clone())).await?;
         log::write(

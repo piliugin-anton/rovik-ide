@@ -12,9 +12,11 @@
 //! its end for the user. A reviewer that fails is recorded as skipped and
 //! the plan is saved with a note (layer 7).
 
-use super::change_review::{drop_repeats, parse_findings, Finding};
+use super::change_review::{
+    drop_repeats, parse_findings, reviewer_skip_reason, skipped, Finding,
+};
 use super::run::Run;
-use super::subagent::{self, Budget, Format, Kind, KindSpec, SubStatus};
+use super::subagent::{self, Budget, Format, Kind, KindSpec};
 use super::{diff, log};
 use crate::chat_db::store::MessageRow;
 use serde_json::{json, Value};
@@ -357,73 +359,28 @@ impl<R: Runtime> Run<R> {
             "maxRounds": MAX_PLAN_REVIEW_ROUNDS,
             "ms": started.elapsed().as_millis() as u64,
         });
-        let skipped = |review: &mut Value, reason: String| {
-            review["status"] = json!("skipped");
-            review["reason"] = json!(reason);
-        };
         let mut serious: Vec<Finding> = Vec::new();
-        match outcome {
-            Err(e) => skipped(&mut review, e.trim_start_matches("Error: ").to_string()),
-            Ok((child_id, result)) => {
-                review["childDialogId"] = json!((!child_id.is_empty()).then_some(child_id));
-                match result {
-                    None => skipped(&mut review, "the reviewer couldn't run".into()),
-                    Some(r) => {
-                        review["model"] = json!(r.model);
-                        review["modelsTried"] = json!(r.models_tried);
-                        review["toolCalls"] = json!(r.tool_calls);
-                        if let Some(usage) = r.usage {
-                            review["usage"] = json!(usage);
-                        }
-                        match r.status {
-                            SubStatus::Stopped => review["status"] = json!("stopped"),
-                            SubStatus::Failed => skipped(
-                                &mut review,
-                                format!(
-                                    "the reviewer's model failed ({})",
-                                    r.error.as_deref().unwrap_or("error")
-                                ),
-                            ),
-                            SubStatus::Blocked => skipped(
-                                &mut review,
-                                format!(
-                                    "the reviewer couldn't review: {}",
-                                    subagent::sections(&r.text)
-                                        .get("Blocked")
-                                        .unwrap_or("no reason given")
-                                ),
-                            ),
-                            SubStatus::Unformatted => {
-                                skipped(&mut review, "its report didn't follow the format".into())
-                            }
-                            SubStatus::Done | SubStatus::Partial => match parse_findings(&r.text) {
-                                Err(e) => skipped(
-                                    &mut review,
-                                    format!("its report couldn't be read: {e}"),
-                                ),
-                                Ok(found) => {
-                                    // B04 drops a repeat an answer may have
-                                    // settled; with nothing said, it stands
-                                    // (an unchanged plan sent again).
-                                    let (kept, dropped) = if silent && unchanged {
-                                        (found, Vec::new())
-                                    } else {
-                                        drop_repeats(found, &earlier)
-                                    };
-                                    serious =
-                                        kept.iter().filter(|f| f.serious()).cloned().collect();
-                                    review["status"] =
-                                        json!(if kept.is_empty() { "clean" } else { "findings" });
-                                    review["findings"] = json!(kept);
-                                    if !dropped.is_empty() {
-                                        review["dropped"] = json!(dropped);
-                                    }
-                                }
-                            },
-                        }
+        match subagent::outcome_of(&mut review, outcome) {
+            subagent::SubOutcome::Stopped => review["status"] = json!("stopped"),
+            subagent::SubOutcome::Skipped(skip) => skipped(&mut review, reviewer_skip_reason(&skip)),
+            subagent::SubOutcome::Report(r) => match parse_findings(&r.text) {
+                Err(e) => skipped(&mut review, format!("its report couldn't be read: {e}")),
+                Ok(found) => {
+                    // B04 drops a repeat an answer may have settled; with
+                    // nothing said, it stands (an unchanged plan sent again).
+                    let (kept, dropped) = if silent && unchanged {
+                        (found, Vec::new())
+                    } else {
+                        drop_repeats(found, &earlier)
+                    };
+                    serious = kept.iter().filter(|f| f.serious()).cloned().collect();
+                    review["status"] = json!(if kept.is_empty() { "clean" } else { "findings" });
+                    review["findings"] = json!(kept);
+                    if !dropped.is_empty() {
+                        review["dropped"] = json!(dropped);
                     }
                 }
-            }
+            },
         }
         log::write(
             &self.app,

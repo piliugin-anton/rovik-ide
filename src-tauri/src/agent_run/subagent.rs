@@ -134,6 +134,71 @@ impl Kind {
     }
 }
 
+/// Why an IDE-started subagent (a reviewer, a triage) gave no report.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Skip {
+    /// It couldn't start: the reason.
+    NotStarted(String),
+    /// Its task ended without a result.
+    NotRun,
+    /// Every model failed: the last error.
+    ModelFailed(String),
+    /// It was blocked: its reason, when it gave one.
+    Blocked(String),
+    /// Its report didn't follow the format.
+    Unformatted,
+}
+
+/// What an IDE-started subagent's outcome gives: its report, or not.
+pub enum SubOutcome {
+    Report(SubResult),
+    /// The user stopped it.
+    Stopped,
+    Skipped(Skip),
+}
+
+/// An IDE-started subagent's outcome (`run_ide_subagent`'s), noted in its
+/// `record`: its chat, and for one that ran its model, the models tried,
+/// its tool calls and its usage.
+pub fn outcome_of(
+    record: &mut Value,
+    outcome: Result<(String, Option<SubResult>), String>,
+) -> SubOutcome {
+    let (child_id, result) = match outcome {
+        Ok(ran) => ran,
+        Err(e) => {
+            let why = e.trim_start_matches("Error: ").to_string();
+            return SubOutcome::Skipped(Skip::NotStarted(why));
+        }
+    };
+    if !child_id.is_empty() {
+        record["childDialogId"] = json!(child_id);
+    }
+    let Some(r) = result else {
+        return SubOutcome::Skipped(Skip::NotRun);
+    };
+    record["model"] = json!(r.model);
+    record["modelsTried"] = json!(r.models_tried);
+    record["toolCalls"] = json!(r.tool_calls);
+    if let Some(usage) = &r.usage {
+        record["usage"] = json!(usage);
+    }
+    match r.status {
+        SubStatus::Stopped => SubOutcome::Stopped,
+        SubStatus::Failed => SubOutcome::Skipped(Skip::ModelFailed(
+            r.error.clone().unwrap_or_else(|| "error".into()),
+        )),
+        SubStatus::Blocked => SubOutcome::Skipped(Skip::Blocked(
+            sections(&r.text)
+                .get("Blocked")
+                .unwrap_or("no reason given")
+                .to_string(),
+        )),
+        SubStatus::Unformatted => SubOutcome::Skipped(Skip::Unformatted),
+        SubStatus::Done | SubStatus::Partial => SubOutcome::Report(r),
+    }
+}
+
 /// How a kind's report is checked.
 pub enum Format {
     /// `## ` sections, the first `required` of them needed.
