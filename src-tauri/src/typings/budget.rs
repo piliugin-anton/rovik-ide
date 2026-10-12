@@ -3,7 +3,7 @@
 //! TypeScript worker, so it must have a ceiling: beyond it the editor loses
 //! some definitions instead of all of its memory.
 
-use super::{LoadedFile, LoadedFiles};
+use super::{Link, LoadedFile, LoadedFiles};
 use std::fs;
 use std::path::Path;
 
@@ -66,8 +66,13 @@ impl Collector {
     }
 
     pub fn finish(self) -> LoadedFiles {
+        self.finish_with_links(Vec::new())
+    }
+
+    pub fn finish_with_links(self, links: Vec<Link>) -> LoadedFiles {
         LoadedFiles {
             files: self.files,
+            links,
             truncated: self.truncated,
         }
     }

@@ -365,6 +365,8 @@ export interface FileWatchPayload {
 /** Files loaded for the editor's IntelliSense (src-tauri/src/typings). */
 export interface LoadedFiles {
   files: { path: string; content: string }[];
+  /** Links to folders: files are under the target, the path resolves to it. */
+  links: { path: string; target: string }[];
   /** A limit was hit: some files weren't loaded. */
   truncated: boolean;
 }

@@ -29,6 +29,7 @@ declare module 'monaco-editor/language/typescript/ts.worker.js' {
     constructor(ctx: WorkerContext, createData: CreateData);
     protected _ctx: WorkerContext;
     protected _getModel(fileName: string): MirrorModel | null;
+    protected _getScriptText(fileName: string): string | undefined;
     getExtraLibs(): Record<string, ExtraLib>;
     getScriptFileNames(): string[];
     getScriptVersion(fileName: string): string;

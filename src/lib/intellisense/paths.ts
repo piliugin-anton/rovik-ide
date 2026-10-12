@@ -23,6 +23,18 @@ export function isDependencyPath(pathOrUri: string): boolean {
   return /[\\/]node_modules[\\/]/.test(pathOrUri);
 }
 
+/**
+ * The lib that carries the dependency folders' links (project.ts to
+ * projectWorker.ts): link URI → target URI, as JSON. Never a file of the
+ * program, and swapped together with the typings.
+ */
+export const LINKS_LIB = 'rovik://links';
+
+/** A lib that comes and goes with the dependencies' typings. */
+export function isTypingsLib(uri: string): boolean {
+  return uri === LINKS_LIB || isDependencyPath(uri);
+}
+
 /** Manifests whose change means node_modules may have changed. */
 const TYPINGS_MANIFESTS = new Set([
   'package.json',
