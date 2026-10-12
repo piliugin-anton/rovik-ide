@@ -169,7 +169,7 @@ export class IntelliSenseProject {
 
   private typingLibs(typings: LoadedFiles): { filePath: string; content: string }[] {
     return typings.files.map((f) => ({
-      filePath: dependencyUriFor(this.root, f.path),
+      filePath: dependencyUriFor(f.path),
       content: f.content,
     }));
   }

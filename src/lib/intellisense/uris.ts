@@ -15,27 +15,25 @@ export function modelUriFor(filePath: string): monaco.Uri {
 /**
  * The key of a dependency file. TypeScript's Node resolution walks
  * `node_modules` folders up from the importing model, building each probe
- * from the model's URI string plus the literal import text. So the folder
- * part is encoded exactly like models' URIs (spaces and the like), while
- * the package-relative part stays RAW: `Uri.toString()` would encode `@`
- * as `%40`, and the worker's exact-string lookup then never matches a
+ * from the model's URI string plus the literal import text. So the part up
+ * to the first `node_modules` is encoded exactly like models' URIs (spaces
+ * and the like), while the rest stays RAW: `Uri.toString()` would encode
+ * `@` as `%40`, and the worker's exact-string lookup then never matches a
  * scoped package (`@types/*`, `@tauri-apps/*`): TS2307 on every import.
  * A file outside `node_modules` is keyed as a model would be.
  */
-export function dependencyUriFor(root: string, filePath: string): string {
-  const nodeModules = `${nodeModulesDirOf(root)}/`;
+export function dependencyUriFor(filePath: string): string {
   const file = forwardSlashes(filePath);
-  if (!file.startsWith(nodeModules)) return modelUriFor(file).toString();
-  return `${nodeModulesUriFor(root)}/${file.slice(nodeModules.length)}`;
+  const inside = file.indexOf('/node_modules/');
+  if (inside < 0) return modelUriFor(file).toString();
+  const folder = inside + '/node_modules'.length;
+  return modelUriFor(file.slice(0, folder)).toString() + file.slice(folder);
 }
 
-/** The project's node_modules folder as dependency keys start (no trailing slash). */
-export function nodeModulesUriFor(root: string): string {
-  return modelUriFor(nodeModulesDirOf(root)).toString();
-}
-
-function nodeModulesDirOf(root: string): string {
-  return `${forwardSlashes(root).replace(/\/+$/, '')}/node_modules`;
+/** The URI of a file's folder, encoded like a model's. */
+export function folderUriFor(filePath: string): string {
+  const file = forwardSlashes(filePath);
+  return modelUriFor(file.slice(0, Math.max(file.lastIndexOf('/'), 0))).toString();
 }
 
 /**

@@ -6,7 +6,7 @@
 /** JavaScript/TypeScript source files. */
 export const SOURCE_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
 
-/** Folders the backend never loads sources from (typings/sources.rs). */
+/** Folders the backend never looks into (typings/mod.rs). */
 const SKIPPED_DIR =
   /[\\/](node_modules|\.git|dist|build|out|target|\.next|\.svelte-kit|coverage)[\\/]/;
 
