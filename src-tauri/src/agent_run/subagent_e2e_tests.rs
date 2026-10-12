@@ -7503,6 +7503,9 @@ async fn a_worker_cant_write_through_a_wrapper() {
     h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
         .await;
     h.run_end().await;
+    let lead = h.messages().await;
+    let step = result_of(&lead, "s2");
+    assert!(!step.content.starts_with("Error"), "{}", step.content);
     let child = h.child_of("s2").await;
     let work = h.messages_of(&child.id).await;
     for id in ["c1", "c2", "c3", "c4"] {
