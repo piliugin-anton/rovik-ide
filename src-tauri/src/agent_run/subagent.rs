@@ -234,6 +234,33 @@ impl KindSpec {
             .replace("{tool_calls}", &budget.tool_calls.to_string())
             .replace("{minutes}", &budget.minutes_label())
     }
+
+    /// What the budget note asks of the report it cuts a subagent short
+    /// for: where what it didn't get to goes. A reviewer has no section
+    /// for it (its report is only its findings), and a scout's or worker's
+    /// is "## Open questions".
+    pub fn partial_report_note(&self) -> String {
+        match self.format {
+            Format::Findings => String::from(
+                "Report under \"## Findings\" only what you could substantiate; with nothing to report, reply \"## Findings\" and then \"None.\".",
+            ),
+            Format::Sections => {
+                let open = if self.sections.contains(&"Open questions") {
+                    "under \"## Open questions\""
+                } else {
+                    "in it"
+                };
+                format!(
+                    "Write it with the headings {}, and say {open} what you didn't get to.",
+                    self.sections
+                        .iter()
+                        .map(|s| format!("\"## {s}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        }
+    }
 }
 
 /// A subagent's budget (D10, D17): tool calls and wall time. Time waiting
@@ -1334,6 +1361,25 @@ mod tests {
 
     /// Round 2: a report whose only section is "## Blocked\nNone." is out of
     /// format (no answer), while a real block needs nothing else.
+    /// The budget note asks for the kind's own report: a reviewer has no
+    /// "## Open questions" to put what it didn't get to under.
+    #[test]
+    fn the_budget_note_asks_for_each_kinds_own_report() {
+        let scout = Kind::Scout.spec().partial_report_note();
+        assert!(scout.contains("\"## Answer\"") && scout.contains("under \"## Open questions\""));
+        let worker = Kind::Worker.spec().partial_report_note();
+        assert!(worker.contains("under \"## Open questions\""));
+        let triage = Kind::Triage.spec().partial_report_note();
+        assert!(triage.contains("\"## Root cause\"") && triage.contains("say in it"));
+        assert!(!triage.contains("Open questions"));
+        for kind in [Kind::Reviewer, Kind::PlanReviewer] {
+            let note = kind.spec().partial_report_note();
+            assert!(note.contains("\"## Findings\""), "{note}");
+            assert!(note.contains("\"None.\""), "{note}");
+            assert!(!note.contains("Open questions"), "{note}");
+        }
+    }
+
     #[test]
     fn format_problem_rejects_blocked_none() {
         let scout = Kind::Scout.spec();

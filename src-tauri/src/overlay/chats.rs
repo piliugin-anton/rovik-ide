@@ -3467,7 +3467,7 @@ mod conflict_tests {
     #[test]
     fn a_resolution_made_against_an_older_project_version_is_merged_with_the_newer_one() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("stale");
+        let (root, project, id, data) = conflicted("stale");
         let file = conflict_file(&id, "a.txt").unwrap();
         assert_eq!(file.ours.as_deref(), Some("PROJECT\n2\n3\n4\n5\n"));
         std::fs::write(project.join("a.txt"), "PROJECT\n2\n3\n4\nFIVE\n").unwrap();
@@ -3481,8 +3481,10 @@ mod conflict_tests {
         land_now(&id, false).unwrap().unwrap();
         assert_eq!(read(&project, "a.txt"), "PROJECT CHAT\n2\n3\n4\nFIVE\n");
 
-        // Taking the chat's side: the same, with its version.
-        let (root2, project, id) = conflicted("stale-theirs");
+        // Taking the chat's side: the same, with its version (the data
+        // folder's lock is taken again, so the first hold goes first).
+        drop(data);
+        let (root2, project, id, _data) = conflicted("stale-theirs");
         conflict_file(&id, "a.txt").unwrap();
         std::fs::write(project.join("a.txt"), "PROJECT\n2\n3\n4\nFIVE\n").unwrap();
         resolve_conflict(&id, "a.txt", None, Some("theirs")).unwrap();
@@ -3499,7 +3501,7 @@ mod conflict_tests {
     fn a_resolution_made_against_an_older_project_version_conflicts_with_a_newer_change_to_the_same_lines(
     ) {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("stale-conflict");
+        let (root, project, id, _data) = conflicted("stale-conflict");
         conflict_file(&id, "a.txt").unwrap();
         std::fs::write(project.join("a.txt"), "PROJECT AGAIN\n2\n3\n4\n5\n").unwrap();
         assert!(resolve_conflict(
@@ -3531,7 +3533,7 @@ mod conflict_tests {
     #[test]
     fn land_anyway_takes_over_only_the_conflicts_the_user_saw() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let (root, project, id) = conflicted("anyway");
+        let (root, project, id, _data) = conflicted("anyway");
         std::fs::write(project.join("b.txt"), "b1\nb2\n").unwrap();
         with_fs(&id, |fs| {
             let ino = fs.resolve("b.txt").unwrap();
