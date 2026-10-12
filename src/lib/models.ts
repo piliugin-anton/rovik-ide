@@ -9,11 +9,10 @@
 // A model is idle when no editor shows it and no tab holds it. Beyond
 // MAX_IDLE_MODELS idle models, the least recently used are disposed.
 // Tabs with unsaved changes can't be closed, so an idle model matches its
-// file on disk; a TS/JS project source is handed back to the TypeScript
-// worker first (the model was its only copy there). Reopening a file
-// creates a fresh model, as for any file opened the first time.
+// file on disk, whose copy the TypeScript worker keeps (lib/intellisense).
+// Reopening a file creates a fresh model, as for any file opened the first
+// time.
 import * as monaco from 'monaco-editor';
-import { restoreProjectSourceLibs } from './intellisense';
 
 /** Idle models kept, at most (recently used first). */
 export const MAX_IDLE_MODELS = 30;
@@ -66,7 +65,6 @@ export function pruneIdleModels(): number {
     .sort((a, b) => (lastUsed.get(b.uri.toString()) ?? 0) - (lastUsed.get(a.uri.toString()) ?? 0));
   const extra = idle.slice(MAX_IDLE_MODELS);
   if (extra.length === 0) return 0;
-  restoreProjectSourceLibs(extra);
   for (const model of extra) model.dispose();
   return extra.length;
 }

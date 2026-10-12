@@ -73,8 +73,7 @@ import { diffLines, splitLines } from './lib/lineDiff';
 import {
   isProjectSource,
   modelUriFor,
-  notifyTsConfigMaybeChanged,
-  notifyTypingsMaybeStale,
+  notifyProjectFileWritten,
   updateProjectSource,
 } from './lib/intellisense';
 import { scheduleModelPrune, trackModels } from './lib/models';
@@ -1596,12 +1595,11 @@ export default function App() {
         if (operation === 'remove') updateProjectSource(path, null);
         else if (operation === 'create' || operation === 'modify') updateProjectSource(path);
       }
-      // A root manifest write (package.json, lockfiles) means node_modules
-      // may have changed: debounced typings-only refresh there (no overlay,
-      // sources untouched). node_modules itself is watcher-ignored.
-      if (!is_dir) notifyTypingsMaybeStale(path);
-      // A tsconfig change can move files between configs or change `types`.
-      if (!is_dir) notifyTsConfigMaybeChanged(path);
+      // A manifest write (package.json, lockfiles) means node_modules may
+      // have changed (node_modules itself is watcher-ignored); a tsconfig
+      // change can move files between configs or change `types`. Both are
+      // followed up there once writes settle.
+      if (!is_dir) notifyProjectFileWritten(path);
     });
   });
 

@@ -20,7 +20,7 @@
 //
 // Each config is also kept as a project (its file patterns and `types`),
 // so the editor can tell which config owns a file and give that file only
-// the global @types its config allows (see projectFor / visibleTypes).
+// the global @types its config allows (see projectFor).
 //
 // Pure (file access is injected) so it can be unit-tested without Tauri.
 
@@ -168,70 +168,19 @@ export function projectFor(projects: TsProject[], filePath: string): TsProject |
 }
 
 /**
- * The @types packages (folder names under node_modules/@types) a program
- * with these `types` sees as globals, or 'all'. Unset `types` means every
- * @types package before TypeScript 6 and none from 6 on. A visible package's
- * own `/// <reference types="..." />` pulls that one in too, as in tsc.
+ * The `types` a config gives its program, as tsc: the packages it names,
+ * or every installed @types package (`installed`: the folder names under
+ * node_modules/@types) when unset before TypeScript 6, none from 6 on.
+ * `*` (not a tsc value, but seen in the wild) means all of them.
  */
-export function visibleTypes(
-  types: string[] | undefined,
+export function typesFor(
+  types: readonly string[] | undefined,
   defaultsToAll: boolean,
-  referencesOf: (typesPackage: string) => string[]
-): Set<string> | 'all' {
-  if (types === undefined && defaultsToAll) return 'all';
-  if (types?.includes('*')) return 'all';
-  const visible = new Set<string>();
-  const queue = (types ?? []).map(typesPackageName);
-  while (queue.length > 0) {
-    const name = queue.pop()!;
-    if (visible.has(name)) continue;
-    visible.add(name);
-    queue.push(...referencesOf(name).map(typesPackageName));
-  }
-  return visible;
-}
-
-/** `node` → `node`, `@scope/pkg` → `scope__pkg`, `jest/globals` → `jest`. */
-export function typesPackageName(reference: string): string {
-  const parts = reference.replace(/^@types\//, '').split('/');
-  return parts[0].startsWith('@') && parts.length > 1
-    ? `${parts[0].slice(1)}__${parts[1]}`
-    : parts[0];
-}
-
-/** `/// <reference types="x" />` directives in a declaration file. */
-export function typeReferences(text: string): string[] {
-  return [...text.matchAll(/^\s*\/\/\/\s*<reference\s+types\s*=\s*["']([^"']+)["']/gm)].map(
-    (m) => m[1]
-  );
-}
-
-/**
- * Whether a declaration file adds globals just by being in the program: a
- * script (no top-level import/export, e.g. most of @types/node) or one with
- * `declare global`. A module file only matters once something imports it.
- * Top level means column 0, as declaration files are written.
- */
-export function declaresGlobals(text: string): boolean {
-  return /^\s*declare\s+global\b/m.test(text) || !/^(?:import|export)\b/m.test(text);
-}
-
-/**
- * The @types package names a source file pulls in by import, require,
- * dynamic import, export-from or `/// <reference types>`: `lodash` →
- * `lodash`, `@scope/pkg/sub` → `scope__pkg`. Relative paths and `node:`
- * built-ins (typed by @types/node's ambient modules, not by import) aren't.
- */
-export function importedTypesPackages(text: string): string[] {
-  const out = new Set<string>(typeReferences(text).map(typesPackageName));
-  const specifiers = text.matchAll(
-    /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["']([^"'\n]+)["']/gm
-  );
-  for (const [, spec] of specifiers) {
-    if (/^(\.|\/|[A-Za-z]:|node:|[a-z][a-z0-9+.-]*:\/\/)/.test(spec)) continue;
-    out.add(typesPackageName(spec));
-  }
-  return [...out];
+  installed: readonly string[]
+): string[] {
+  if (types === undefined) return defaultsToAll ? [...installed] : [];
+  if (types.includes('*')) return [...installed];
+  return [...types];
 }
 
 /**
