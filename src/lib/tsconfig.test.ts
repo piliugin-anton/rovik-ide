@@ -3,16 +3,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  declaresGlobals,
-  importedTypesPackages,
   jsonc,
   normalize,
   projectFor,
   resolveTsOptions,
   resolveTsProjects,
-  typeReferences,
-  typesPackageName,
-  visibleTypes,
+  typesFor,
 } from './tsconfig';
 
 function fsOf(files: Record<string, string>) {
@@ -199,57 +195,13 @@ describe('projects', () => {
     assert.equal(projectFor(projects, '/p/node_modules/x/i.ts'), undefined);
   });
 
-  it('visibleTypes follows types, the default and references', () => {
-    const refs = { react: ['prop-types'], 'prop-types': [] };
-    const of = (pkg) => refs[pkg] ?? [];
-    assert.equal(visibleTypes(undefined, true, of), 'all');
-    assert.deepEqual([...visibleTypes(undefined, false, of)], []);
-    assert.deepEqual([...visibleTypes(['vite/client'], true, of)], ['vite']);
-    assert.deepEqual([...visibleTypes(['react'], false, of)].sort(), ['prop-types', 'react']);
-    assert.equal(visibleTypes(['*'], false, of), 'all');
-  });
-
-  it('typesPackageName and typeReferences', () => {
-    assert.equal(typesPackageName('node'), 'node');
-    assert.equal(typesPackageName('@babel/core'), 'babel__core');
-    assert.equal(typesPackageName('jest/globals'), 'jest');
-    assert.deepEqual(
-      typeReferences('/// <reference types="node" />\n// x\n///<reference types=\'react\'/>'),
-      ['node', 'react']
-    );
-  });
-});
-
-describe('global and imported typings', () => {
-  it('declaresGlobals: scripts and declare global, not plain modules', () => {
-    assert.equal(declaresGlobals('declare var process: any;\ninterface X {}'), true);
-    assert.equal(declaresGlobals('declare module "fs" {\n  export function a(): void;\n}'), true);
-    assert.equal(declaresGlobals('export = _;\ndeclare const _: any;'), false);
-    assert.equal(declaresGlobals('import * as R from "react";\nexport function f(): void;'), false);
-    assert.equal(declaresGlobals('export = React;\ndeclare global {\n  namespace JSX {}\n}'), true);
-  });
-
-  it('importedTypesPackages', () => {
-    const src = [
-      "import _ from 'lodash';",
-      "import type { X } from '@tanstack/solid-virtual/core';",
-      "export * from 'zod';",
-      "import 'reflect-metadata';",
-      "const m = await import('dayjs');",
-      'const r = require("express");',
-      "import fs from 'node:fs';",
-      "import a from './a';",
-      '/// <reference types="jest" />',
-    ].join('\n');
-    assert.deepEqual(importedTypesPackages(src).sort(), [
-      'dayjs',
-      'express',
-      'jest',
-      'lodash',
-      'reflect-metadata',
-      'tanstack__solid-virtual',
-      'zod',
-    ]);
+  it("typesFor: the config's types, or every installed package before TS 6", () => {
+    const installed = ['node', 'react'];
+    assert.deepEqual(typesFor(undefined, true, installed), ['node', 'react']);
+    assert.deepEqual(typesFor(undefined, false, installed), []);
+    assert.deepEqual(typesFor(['vite/client', 'node'], false, installed), ['vite/client', 'node']);
+    assert.deepEqual(typesFor([], true, installed), []);
+    assert.deepEqual(typesFor(['*'], false, installed), ['node', 'react']);
   });
 });
 

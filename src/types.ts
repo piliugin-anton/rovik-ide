@@ -362,9 +362,11 @@ export interface FileWatchPayload {
   is_dir: boolean;
 }
 
-export interface MonacoLibEntry {
-  name: string;
-  content: string;
+/** Files loaded for the editor's IntelliSense (src-tauri/src/typings). */
+export interface LoadedFiles {
+  files: { path: string; content: string }[];
+  /** A limit was hit: some files weren't loaded. */
+  truncated: boolean;
 }
 
 export type FileSuggestion = {
