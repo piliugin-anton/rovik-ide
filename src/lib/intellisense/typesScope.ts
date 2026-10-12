@@ -48,9 +48,9 @@ export class TypesScope {
     this.owners.clear();
   }
 
-  /** The @types packages installed, from the dependency libs' URIs. */
-  setInstalled(libUris: Iterable<string>): void {
-    this.typesByFolder = typesPackagesByFolder(libUris);
+  /** The @types packages installed, from the dependencies' file and link URIs. */
+  setInstalled(fileUris: Iterable<string>, linkUris: Iterable<string>): void {
+    this.typesByFolder = typesPackagesByFolder(fileUris, linkUris);
   }
 
   /** The file shown in the editor: its config's @types become the worker's. */

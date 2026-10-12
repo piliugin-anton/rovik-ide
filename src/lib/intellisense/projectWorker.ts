@@ -21,6 +21,12 @@
 // node_modules.rs). A path through a link is read as its target, and
 // `realpath` tells TypeScript the real one, so it keeps one source file
 // for a package however many paths reach it, as tsc does.
+//
+// Keys. A dependency lib is keyed with the part after `node_modules` raw
+// (uris.ts); a dependency file opened as a tab is a model whose URI has
+// that part percent-encoded (`%40mui`), and TypeScript builds the paths
+// of its relative imports from that. Those are decoded back to the raw
+// form, so the opened file's imports resolve to the libs.
 import {
   libFileMap,
   TypeScriptWorker,
@@ -64,11 +70,19 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
     return super._getScriptText(this.realpath(fileName));
   }
 
+  /** The model for a name in either form: as Monaco keys it, or as the libs do. */
+  protected override _getModel(fileName: string): MirrorModel | null {
+    const direct = super._getModel(fileName);
+    if (direct) return direct;
+    const key = libKeyOf(fileName);
+    return this._ctx.getMirrorModels().find((m) => libKeyOf(m.uri.toString()) === key) ?? null;
+  }
+
   /** The path a link resolves to; TypeScript keys a resolved module by it. */
   realpath(path: string): string {
     const links = this.links();
-    if (links.size === 0) return path;
-    let current = path;
+    let current = libKeyOf(path);
+    if (links.size === 0) return current;
     for (let hop = 0; hop < MAX_LINK_HOPS; hop++) {
       const next = throughLinks(current, links);
       if (next === current) break;
@@ -90,6 +104,17 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
       this.linksCache = { version: lib.version, links: new Map(Object.entries(parsed)) };
     }
     return this.linksCache.links;
+  }
+}
+
+/** A path as the libs are keyed: raw after the first `node_modules`. */
+function libKeyOf(path: string): string {
+  const at = path.indexOf('/node_modules/');
+  if (at < 0 || !path.includes('%', at)) return path;
+  try {
+    return path.slice(0, at) + decodeURIComponent(path.slice(at));
+  } catch {
+    return path;
   }
 }
 
