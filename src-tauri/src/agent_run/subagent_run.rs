@@ -105,6 +105,44 @@ pub(super) struct SubCtx {
 }
 
 impl SubCtx {
+    /// A context before it has a parent, a run or anything counted: the
+    /// first of `models` is the one to try.
+    pub fn blank(kind: Kind, budget: Budget, models: Vec<ModelProfile>) -> SubCtx {
+        SubCtx {
+            kind,
+            parent_dialog_id: String::new(),
+            parent_call_id: String::new(),
+            parent_request: String::new(),
+            run_id: String::new(),
+            budget,
+            models_tried: models.iter().take(1).map(|m| m.label.clone()).collect(),
+            models,
+            model_index: 0,
+            options: None,
+            kind_options: None,
+            chat_profile_id: String::new(),
+            chat_options: None,
+            waited: Mutex::new(Duration::ZERO),
+            trimmed: false,
+            failures: Vec::new(),
+            extra_tools: Vec::new(),
+            tokens_in: 0,
+            tokens_out: 0,
+            usage_seen: false,
+            cost: None,
+            scope: None,
+            step: None,
+            group: None,
+            tests_only: false,
+            hidden: Vec::new(),
+            light_bash: false,
+            resumed_writes: Vec::new(),
+            registered: None,
+            kept_copy: false,
+            other_steps: Vec::new(),
+        }
+    }
+
     /// Whether it may call `tool`: its kind's tools only.
     pub fn allows(&self, tool: &str) -> bool {
         self.kind.spec().allows(tool) || self.extra_tools.iter().any(|t| t == tool)
@@ -651,37 +689,13 @@ impl<R: Runtime> Run<R> {
         }
         let kind_options = config.kinds.get(kind.id()).and_then(|k| k.options.clone());
         let mut sub = SubCtx {
-            kind,
             parent_dialog_id: self.dialog_id.clone(),
             parent_call_id: call_id.to_string(),
             parent_request: self.latest_user_request().await,
-            run_id: String::new(),
-            budget,
-            models_tried: vec![models[0].label.clone()],
-            models,
-            model_index: 0,
-            options: None,
             kind_options,
             chat_profile_id: self.profile.id.clone(),
             chat_options: self.options.clone(),
-            waited: Mutex::new(Duration::ZERO),
-            trimmed: false,
-            failures: Vec::new(),
-            extra_tools: Vec::new(),
-            tokens_in: 0,
-            tokens_out: 0,
-            usage_seen: false,
-            cost: None,
-            scope: None,
-            step: None,
-            group: None,
-            tests_only: false,
-            hidden: Vec::new(),
-            light_bash: false,
-            resumed_writes: Vec::new(),
-            registered: None,
-            kept_copy: false,
-            other_steps: Vec::new(),
+            ..SubCtx::blank(kind, budget, models)
         };
         #[cfg(test)]
         if let Some(k) = config.kinds.get(kind.id()) {
@@ -2116,37 +2130,12 @@ mod tests {
         }))
         .unwrap();
         SubCtx {
-            kind: Kind::Scout,
             parent_dialog_id: "lead".into(),
             parent_call_id: "c1".into(),
             parent_request: "Fix it".into(),
             run_id: "r".into(),
-            budget: Kind::Scout.spec().default_budget,
-            models: vec![profile],
-            model_index: 0,
-            models_tried: vec!["Test/m".into()],
-            options: None,
-            kind_options: None,
             chat_profile_id: "p::m".into(),
-            chat_options: None,
-            waited: Mutex::new(Duration::ZERO),
-            trimmed: false,
-            failures: Vec::new(),
-            extra_tools: Vec::new(),
-            tokens_in: 0,
-            tokens_out: 0,
-            usage_seen: false,
-            cost: None,
-            scope: None,
-            step: None,
-            group: None,
-            tests_only: false,
-            hidden: Vec::new(),
-            light_bash: false,
-            resumed_writes: Vec::new(),
-            registered: None,
-            kept_copy: false,
-            other_steps: Vec::new(),
+            ..SubCtx::blank(Kind::Scout, Kind::Scout.spec().default_budget, vec![profile])
         }
     }
 

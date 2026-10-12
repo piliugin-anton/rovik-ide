@@ -44,6 +44,17 @@ pub struct GroupRecord {
     pub contract: Vec<String>,
 }
 
+impl GroupRecord {
+    /// The chat of the worker that carried out `step` as `label` (a retry's
+    /// label has a prime, which the owner's doesn't).
+    pub fn worker_chat(&self, label: &str, step: usize) -> Option<String> {
+        self.children
+            .iter()
+            .find(|(l, n, _)| l.trim_end_matches('\'') == label && *n == step)
+            .map(|(_, _, c)| c.clone())
+    }
+}
+
 /// What the runner did with a failed round.
 pub(super) enum Repair {
     /// Nothing: no group, the setting is off: the lead gets the usual report.
@@ -467,10 +478,7 @@ impl<R: Runtime> Run<R> {
             return Err("not a worker's cause".into());
         };
         let child = group
-            .children
-            .iter()
-            .find(|(l, n, _)| l.trim_end_matches('\'') == label && n == step)
-            .map(|(_, _, c)| c.clone())
+            .worker_chat(label, *step)
             .ok_or_else(|| format!("worker {label}'s chat isn't known"))?;
         if self.state.is_running(&child) {
             return Err(format!("worker {label} is still working"));
@@ -727,11 +735,7 @@ impl<R: Runtime> Run<R> {
             let cause = &found[i];
             // The worker's chat id is its overlay's too (F04).
             let child = match &cause.owner {
-                Owner::Worker { label, step } => group
-                    .children
-                    .iter()
-                    .find(|(l, n, _)| l.trim_end_matches('\'') == label && n == step)
-                    .map(|(_, _, c)| c.clone()),
+                Owner::Worker { label, step } => group.worker_chat(label, *step),
                 _ => None,
             };
             let fresh = child.as_deref().is_none_or(|c| chats::get(c).is_none());
