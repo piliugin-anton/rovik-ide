@@ -3,9 +3,9 @@
 // One round of the verification gate in the chat (lib/verification.ts):
 // what it concluded, each check with its result, and the output of failed
 // checks on demand. Updates live while the checks run.
-import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from 'solid-js';
+import { For, Match, Show, Switch } from 'solid-js';
 import { CHECK_LABEL } from '../lib/projectProfile';
-import { forgetLive, liveSubagent, transcriptHold, workLabel } from '../lib/subagents';
+import { liveLabel, liveSubagent } from '../lib/subagents';
 import {
   causeLine,
   describeFailure,
@@ -18,6 +18,7 @@ import {
   type VerificationMeta,
 } from '../lib/verification';
 import { SubagentTranscript } from './ToolCallBlock';
+import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 
 function headline(meta: VerificationMeta, interrupted: boolean): string {
   if (interrupted) return 'Checks didn’t finish: the run ended while they were running.';
@@ -127,38 +128,26 @@ function TriageBlock(props: {
   const progress = () => liveSubagent(props.dialogId, callId());
   const childId = () => props.triage.childDialogId ?? progress()?.childDialogId ?? null;
   const interrupted = () => props.triage.status === 'running' && !props.live;
-  const [showWork, setShowWork] = createSignal(false);
   // P5.9: neither a finished triage's live entry nor an unshown transcript stays.
-  createEffect(() => {
-    const id = props.triage.childDialogId;
-    if (props.triage.status !== 'running' && id) forgetLive(props.dialogId, callId(), id);
+  const work = createSubagentWork({
+    dialogId: () => props.dialogId,
+    toolCallId: callId,
+    childId,
+    finishedChildId: () => {
+      const id = props.triage.childDialogId;
+      return props.triage.status !== 'running' ? id : null;
+    },
   });
-  const hold = transcriptHold();
-  onCleanup(hold.release);
-  const toggleWork = () => {
-    const id = childId();
-    if (!id) return;
-    if (!showWork() && props.dialogId) void hold.open(id, props.dialogId, callId());
-    setShowWork(!showWork());
-  };
   return (
     <div class={`chat-verify-triage ${interrupted() ? 'stopped' : props.triage.status}`}>
       <div class="chat-verify-progress">
         {triageHeadline(props.triage, CHECK_LABEL[props.triage.check] ?? 'check', interrupted())}
         <Show when={props.triage.status === 'running' && !interrupted() && progress()}>
-          {(p) => (
-            <>
-              {' '}
-              {workLabel(p().toolCalls)}
-              {p().currentTool ? ` · ${p().currentTool}` : ''}
-            </>
-          )}
+          {(p) => <> {liveLabel(p(), false)}</>}
         </Show>
         <Show when={childId() && props.triage.status !== 'running'}>
           {' '}
-          <button type="button" class="link-button" aria-expanded={showWork()} onClick={toggleWork}>
-            {showWork() ? 'Hide its work' : 'Show its work'}
-          </button>
+          <ShowWorkButton work={work} />
         </Show>
       </div>
       <Show when={props.triage.result}>
@@ -184,7 +173,7 @@ function TriageBlock(props: {
           </div>
         )}
       </Show>
-      <Show when={showWork() && childId()}>
+      <Show when={work.shown() && childId()}>
         <SubagentTranscript
           childDialogId={childId()!}
           running={props.triage.status === 'running'}

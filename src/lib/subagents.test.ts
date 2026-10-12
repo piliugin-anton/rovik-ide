@@ -15,6 +15,7 @@ import {
   runUsage,
   usageLabel,
   kindLabel,
+  liveLabel,
   liveSubagent,
   noteSubagentEnded,
   noteSubagentProgress,
@@ -72,6 +73,10 @@ test('the block’s words', () => {
   assert.equal(workLabel(1), '1 tool call');
   assert.equal(workLabel(12, 41_000), '12 tool calls · 41 s');
   assert.equal(workLabel(2, 95_000), '2 tool calls · 1 min 35 s');
+  const live = { toolCalls: 3, currentTool: 'bash', model: 'm' };
+  assert.equal(liveLabel(live), '3 tool calls · bash · m');
+  assert.equal(liveLabel({ ...live, currentTool: null }), '3 tool calls · m');
+  assert.equal(liveLabel(live, false), '3 tool calls · bash');
   assert.equal(
     reportBody('Report from a scout subagent. …\nStatus: done (1 tool call)\n\n## Answer\nHere.'),
     '## Answer\nHere.'

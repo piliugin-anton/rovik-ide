@@ -437,6 +437,15 @@ export function workLabel(toolCalls: number, ms?: number): string {
   return `${calls} · ${time}`;
 }
 
+/** "12 tool calls · bash · gpt-5": a subagent's progress while it runs. */
+export function liveLabel(
+  p: Pick<LiveSubagent, 'toolCalls' | 'currentTool' | 'model'>,
+  withModel = true
+): string {
+  const doing = p.currentTool ? ` · ${p.currentTool}` : '';
+  return `${workLabel(p.toolCalls)}${doing}${withModel ? ` · ${p.model}` : ''}`;
+}
+
 /** "12.3k tokens · $0.012" */
 export function usageLabel(u: SubagentUsage | null | undefined): string | null {
   if (!u) return null;

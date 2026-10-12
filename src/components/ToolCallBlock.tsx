@@ -3,15 +3,7 @@
 // One collapsible row per tool invocation. The header is a single readable
 // sentence ("Read src/App.tsx", "Searched for "foo" · 12 matches"); expanding
 // it shows the call arguments and the result together.
-import {
-  createEffect,
-  createMemo,
-  createResource,
-  createSignal,
-  For,
-  onCleanup,
-  Show,
-} from 'solid-js';
+import { createMemo, createResource, createSignal, For, Show } from 'solid-js';
 import type { ChatMessage, ChatToolCall, ReviewCheck, ToolApproval, ToolMeta } from '../types';
 import StaticCodeBlock from './StaticCodeBlock';
 import EditDiffBlock from './EditDiffBlock';
@@ -61,19 +53,19 @@ import {
 import {
   kindLabel,
   childOf,
+  liveLabel,
   liveSubagent,
   liveWorkersOf,
-  forgetLive,
   forgetLiveWorkers,
   reportBody,
   statusLabel,
   transcript,
-  transcriptHold,
   usageLabel,
   workLabel,
 } from '../lib/subagents';
 import { indexToolResults } from '../lib/toolResults';
 import { stopRun } from '../lib/agentRuns';
+import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 
 export interface ToolCallBlockProps {
   toolCall: ChatToolCall;
@@ -636,7 +628,6 @@ function TaskBlock(props: ToolCallBlockProps) {
       ? []
       : pendingApprovalsOfTask(props.dialogId, props.toolCall.id, childId());
   const [expanded, setExpanded] = createSignal(!!props.initiallyExpanded);
-  const [showWork, setShowWork] = createSignal(false);
 
   const meta = () => {
     const g = group();
@@ -658,10 +649,7 @@ function TaskBlock(props: ToolCallBlockProps) {
     }
     if (refused()) return 'not started';
     const l = live();
-    if (l && working()) {
-      const doing = l.currentTool ? ` · ${l.currentTool}` : '';
-      return `${workLabel(l.toolCalls)}${doing} · ${l.model}`;
-    }
+    if (l && working()) return liveLabel(l);
     const ws = workers();
     if (ws.length > 0 && working()) {
       const calls = ws.reduce((n, w) => n + w.live.toolCalls, 0);
@@ -676,20 +664,15 @@ function TaskBlock(props: ToolCallBlockProps) {
   // P5.9: the store keeps neither a finished subagent's live entry (a
   // group's: each worker's, under "<call>#<label>") nor a transcript once
   // no block shows it.
-  createEffect(() => {
-    const id = done()?.childDialogId;
-    if (id) forgetLive(props.dialogId, props.toolCall.id, id);
-    if (group()) forgetLiveWorkers(props.dialogId, props.toolCall.id);
+  const work = createSubagentWork({
+    dialogId: () => props.dialogId,
+    toolCallId: () => props.toolCall.id,
+    childId,
+    finishedChildId: () => done()?.childDialogId,
+    alsoForget: () => {
+      if (group()) forgetLiveWorkers(props.dialogId, props.toolCall.id);
+    },
   });
-  const hold = transcriptHold();
-  onCleanup(hold.release);
-
-  function toggleWork() {
-    const id = childId();
-    if (!id) return;
-    if (!showWork() && props.dialogId) void hold.open(id, props.dialogId, props.toolCall.id);
-    setShowWork(!showWork());
-  }
 
   const paths = () =>
     Array.isArray(args().paths)
@@ -812,10 +795,8 @@ function TaskBlock(props: ToolCallBlockProps) {
           </section>
           <Show when={childId()}>
             <section class="tool-call-section">
-              <button class="link-button" aria-expanded={showWork()} onClick={toggleWork}>
-                {showWork() ? 'Hide its work' : 'Show its work'}
-              </button>
-              <Show when={showWork()}>
+              <ShowWorkButton work={work} />
+              <Show when={work.shown()}>
                 <SubagentTranscript childDialogId={childId()!} running={working()} />
               </Show>
             </section>

@@ -3,17 +3,18 @@
 // One change review in the chat (lib/changeReview.ts): what the reviewer
 // concluded, each finding with where it is (a click opens the file there),
 // and its work on demand. Updates live while the reviewer reads the change.
-import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js';
+import { For, Show } from 'solid-js';
 import {
   reviewDetails,
   reviewHeadline,
   type ReviewFinding,
   type ReviewMeta,
 } from '../lib/changeReview';
-import { forgetLive, liveSubagent, transcriptHold, workLabel } from '../lib/subagents';
+import { liveLabel, liveSubagent } from '../lib/subagents';
 import { requestOpenFile } from '../lib/editorBridge';
 import { stopRun } from '../lib/agentRuns';
 import { SubagentTranscript } from './ToolCallBlock';
+import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 
 function FindingItem(props: { finding: ReviewFinding; dropped?: boolean }) {
   const f = () => props.finding;
@@ -61,20 +62,16 @@ export default function ReviewRecord(props: {
   const interrupted = () => props.meta.status === 'running' && !props.live;
   const progress = () => liveSubagent(props.dialogId, props.recordId);
   const childId = () => props.meta.childDialogId ?? progress()?.childDialogId ?? null;
-  const [showWork, setShowWork] = createSignal(false);
   // P5.9: neither a finished review's live entry nor an unshown transcript stays.
-  createEffect(() => {
-    const id = props.meta.childDialogId;
-    if (props.meta.status !== 'running' && id) forgetLive(props.dialogId, props.recordId, id);
+  const work = createSubagentWork({
+    dialogId: () => props.dialogId,
+    toolCallId: () => props.recordId,
+    childId,
+    finishedChildId: () => {
+      const id = props.meta.childDialogId;
+      return props.meta.status !== 'running' ? id : null;
+    },
   });
-  const hold = transcriptHold();
-  onCleanup(hold.release);
-  const toggleWork = () => {
-    const id = childId();
-    if (!id) return;
-    if (!showWork() && props.dialogId) void hold.open(id, props.dialogId, props.recordId);
-    setShowWork(!showWork());
-  };
   return (
     <div
       class={`chat-verify chat-review ${interrupted() ? 'stopped' : props.meta.status}`}
@@ -94,12 +91,7 @@ export default function ReviewRecord(props: {
         </Show>
       </div>
       <Show when={props.meta.status === 'running' && !interrupted() && progress()}>
-        {(p) => (
-          <div class="chat-verify-progress">
-            {workLabel(p().toolCalls)}
-            {p().currentTool ? ` · ${p().currentTool}` : ''} · {p().model}
-          </div>
-        )}
+        {(p) => <div class="chat-verify-progress">{liveLabel(p())}</div>}
       </Show>
       <Show when={props.meta.findings?.length}>
         <ul class="review-findings">
@@ -121,18 +113,11 @@ export default function ReviewRecord(props: {
           {reviewDetails(props.meta)}
           <Show when={childId()}>
             {' · '}
-            <button
-              type="button"
-              class="link-button"
-              aria-expanded={showWork()}
-              onClick={toggleWork}
-            >
-              {showWork() ? 'Hide its work' : 'Show its work'}
-            </button>
+            <ShowWorkButton work={work} />
           </Show>
         </div>
       </Show>
-      <Show when={showWork() && childId()}>
+      <Show when={work.shown() && childId()}>
         <SubagentTranscript childDialogId={childId()!} running={props.meta.status === 'running'} />
       </Show>
     </div>
