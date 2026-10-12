@@ -232,20 +232,33 @@ fn shorten_arg(args: &mut Value, key: &str, what: &str) -> bool {
 /// messages changed. Results of the newest tool calls are left alone; the
 /// rest become replaceable in batches (see OUTDATED_BATCH).
 fn replace_outdated(messages: &mut [Msg]) -> usize {
-    // Each call's name and arguments, by id.
+    // Each result's call (name and arguments): the one with its id in the
+    // reply it follows. Ids aren't unique across a chat (Gemini numbers
+    // them per reply: "function-call-1"), so they are only looked up
+    // within the reply, never across the whole chat.
     let mut calls: std::collections::HashMap<String, (String, Value)> = Default::default();
+    let mut resolved: Vec<Option<(String, Value)>> = Vec::with_capacity(messages.len());
     for m in messages.iter() {
-        for c in m.tool_calls.iter().flatten() {
-            let args = serde_json::from_str(&c.arguments).unwrap_or(Value::Null);
-            calls.insert(c.id.clone(), (c.name.clone(), args));
+        if m.role == "assistant" && m.tool_calls.as_ref().is_some_and(|t| !t.is_empty()) {
+            calls.clear();
+            for c in m.tool_calls.iter().flatten() {
+                let args = serde_json::from_str(&c.arguments).unwrap_or(Value::Null);
+                calls.insert(c.id.clone(), (c.name.clone(), args));
+            }
+        } else if starts_request(m) {
+            calls.clear();
         }
+        resolved.push(match (m.role.as_str(), &m.tool_call_id) {
+            ("tool", Some(id)) => calls.get(id).cloned(),
+            _ => None,
+        });
     }
     let events: Vec<Event> = messages
         .iter()
         .enumerate()
         .filter(|(_, m)| m.role == "tool")
         .filter_map(|(at, m)| {
-            let (name, args) = calls.get(m.tool_call_id.as_ref()?)?;
+            let (name, args) = resolved[at].as_ref()?;
             let start = line_arg(args, "start_line");
             let end = line_arg(args, "end_line");
             // A read by symbol holds the lines its result names: not the
@@ -779,6 +792,16 @@ pub fn load_messages(
             break;
         }
     }
+    // The cap can fall between a reply and its results: a result whose
+    // call was left behind can't start the history (providers reject a
+    // `tool` message with no call before it).
+    if rows.len() >= MAX_HISTORY_ROWS {
+        let first_call = rows
+            .iter()
+            .position(|m| m.role != "tool")
+            .unwrap_or(rows.len());
+        rows.drain(..first_call);
+    }
 
     // Backfill provider data (Gemini thought signatures) saved by the
     // backend at parse time, matched by message and call id. Only calls
@@ -1165,6 +1188,48 @@ mod tests {
         assert_eq!(ids, ["u:", "a:", "t:c1", "t:c2", "u:", "a:", "t:c3"]);
         assert!(pairing_ok(&out));
         assert_eq!(out[3].text, UNANSWERED_NOTE);
+    }
+
+    /// Gemini numbers calls per reply ("function-call-1" in every one):
+    /// a result must be read against its own reply's call, not another
+    /// reply's call with the same id.
+    #[test]
+    fn repeated_call_ids_across_replies_stay_apart() {
+        let named = |id: &str, name: &str, args: &str| {
+            let mut m = msg("assistant", "");
+            m.tool_calls = Some(vec![ToolCall {
+                id: id.into(),
+                name: name.into(),
+                arguments: args.into(),
+                extra_content: None,
+            }]);
+            m
+        };
+        let mut history = vec![msg("user", "go")];
+        for i in 0..20 {
+            // Each a distinct file read or a distinct command: nothing is
+            // out of date, so nothing may be replaced.
+            if i % 2 == 0 {
+                history.push(named(
+                    "function-call-1",
+                    "read",
+                    &format!(r#"{{"path":"f{i}.rs"}}"#),
+                ));
+            } else {
+                history.push(named(
+                    "function-call-1",
+                    "bash",
+                    &format!(r#"{{"command":"echo {i}"}}"#),
+                ));
+            }
+            let mut result = tool("function-call-1", 400);
+            result.text = format!("result {i}\n{}", "x".repeat(400));
+            history.push(result);
+        }
+        let before: Vec<String> = history.iter().map(|m| m.text.clone()).collect();
+        assert_eq!(replace_outdated(&mut history), 0);
+        let after: Vec<String> = history.iter().map(|m| m.text.clone()).collect();
+        assert_eq!(before, after);
     }
 
     fn todo(items: &str) -> Msg {
