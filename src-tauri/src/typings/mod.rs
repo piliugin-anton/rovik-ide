@@ -13,8 +13,39 @@ pub mod budget;
 pub mod node_modules;
 pub mod sources;
 
+use ignore::WalkBuilder;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+
+/// Folders never worth looking into, even when not gitignored.
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "out",
+    "target",
+    ".next",
+    ".svelte-kit",
+    "coverage",
+];
+
+/// A walk of the project as git sees it (.gitignore respected, hidden
+/// files skipped), with dependencies and build output pruned.
+pub(crate) fn project_walk(root: &Path) -> ignore::Walk {
+    WalkBuilder::new(root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(false)
+        .require_git(false)
+        .filter_entry(|e| {
+            !(e.file_type().is_some_and(|t| t.is_dir())
+                && e.file_name()
+                    .to_str()
+                    .is_some_and(|n| SKIP_DIRS.contains(&n)))
+        })
+        .build()
+}
 
 #[derive(Serialize)]
 pub struct LoadedFile {

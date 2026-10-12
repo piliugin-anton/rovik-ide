@@ -22,7 +22,8 @@ import { projectFor, typesFor, type TsProject } from '../tsconfig';
 import { SOURCE_FILE } from './paths';
 import { sanitizeCompilerOptions, type ProjectConfig } from './compilerOptions';
 import { applyCompilerOptions, BASE_OPTIONS } from './defaults';
-import { modelUriFor, nodeModulesUriFor } from './uris';
+import { installedTypesFor, typesPackagesByFolder } from './typeRoots';
+import { folderUriFor, modelUriFor } from './uris';
 
 function sameSet(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((x) => b.includes(x));
@@ -32,7 +33,8 @@ export class TypesScope {
   private projects: TsProject[] = [];
   private typesDefaultAll = true;
   private options: monaco.typescript.CompilerOptions = BASE_OPTIONS;
-  private installed: string[] = [];
+  /** @types package names by node_modules folder URI (typeRoots.ts). */
+  private typesByFolder: ReadonlyMap<string, readonly string[]> = new Map();
   private activeFile: string | null = null;
   /** Owning config of a path (undefined: none), until the configs change. */
   private readonly owners = new Map<string, TsProject | undefined>();
@@ -48,14 +50,7 @@ export class TypesScope {
 
   /** The @types packages installed, from the dependency libs' URIs. */
   setInstalled(libUris: Iterable<string>): void {
-    const prefix = `${nodeModulesUriFor(this.root)}/@types/`;
-    const names = new Set<string>();
-    for (const uri of libUris) {
-      if (!uri.startsWith(prefix)) continue;
-      const slash = uri.indexOf('/', prefix.length);
-      if (slash > prefix.length) names.add(uri.slice(prefix.length, slash));
-    }
-    this.installed = [...names].sort();
+    this.typesByFolder = typesPackagesByFolder(libUris);
   }
 
   /** The file shown in the editor: its config's @types become the worker's. */
@@ -74,7 +69,7 @@ export class TypesScope {
     return sanitizeCompilerOptions({
       ...this.options,
       types: this.typesOf(owner),
-      configFilePath: modelUriFor(owner?.path ?? `${this.root}/tsconfig.json`).toString(),
+      configFilePath: modelUriFor(this.configPathOf(owner)).toString(),
     });
   }
 
@@ -91,7 +86,13 @@ export class TypesScope {
   }
 
   private typesOf(owner: TsProject | undefined): string[] {
-    return typesFor(owner?.types, this.typesDefaultAll, this.installed);
+    const installed = installedTypesFor(folderUriFor(this.configPathOf(owner)), this.typesByFolder);
+    return typesFor(owner?.types, this.typesDefaultAll, installed);
+  }
+
+  /** A file's config, or a nominal one in the root: TypeScript resolves `types` from its folder. */
+  private configPathOf(owner: TsProject | undefined): string {
+    return owner?.path ?? `${this.root.replace(/[\\/]+$/, '')}/tsconfig.json`;
   }
 
   private ownerOf(path: string): TsProject | undefined {

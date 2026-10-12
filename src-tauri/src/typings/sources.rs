@@ -5,22 +5,9 @@
 
 use super::budget::{Collector, Limits, Walk};
 use super::LoadedFiles;
-use ignore::WalkBuilder;
 use std::path::Path;
 
 const EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
-/// Folders never worth loading even when not gitignored.
-const SKIP_DIRS: &[&str] = &[
-    "node_modules",
-    ".git",
-    "dist",
-    "build",
-    "out",
-    "target",
-    ".next",
-    ".svelte-kit",
-    "coverage",
-];
 const LIMITS: Limits = Limits {
     max_files: 5_000,
     max_file_bytes: 512 * 1024,
@@ -35,19 +22,7 @@ fn is_source_file(path: &Path) -> bool {
 
 pub fn collect(root: &Path) -> LoadedFiles {
     let mut collector = Collector::new(LIMITS);
-    let walker = WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(false)
-        .require_git(false)
-        .filter_entry(|e| {
-            !(e.file_type().is_some_and(|t| t.is_dir())
-                && e.file_name()
-                    .to_str()
-                    .is_some_and(|n| SKIP_DIRS.contains(&n)))
-        })
-        .build();
-    for entry in walker.flatten() {
+    for entry in super::project_walk(root).flatten() {
         let path = entry.path();
         if !entry.file_type().is_some_and(|t| t.is_file()) || !is_source_file(path) {
             continue;

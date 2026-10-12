@@ -8,7 +8,8 @@
 //   - the project's own JS/TS sources are loaded once per project
 //     (src-tauri/src/typings/sources.rs) and kept current from the file
 //     watcher, in batches (sourceChanges.ts);
-//   - its dependencies' typings are loaded with them
+//   - its dependencies' typings are loaded with them, from every
+//     node_modules folder in the project, workspace members' included
 //     (src-tauri/src/typings/node_modules.rs), as files the worker may
 //     read but not files of its program (worker.ts): only what the code
 //     imports is parsed, so a large node_modules costs its text, not
