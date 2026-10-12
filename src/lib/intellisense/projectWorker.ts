@@ -1,28 +1,39 @@
 // projectWorker.ts
 //
 // The TypeScript worker (Monaco's, spawned by lib/monacoSetup.ts through
-// worker.ts), with one change: which files make up the program.
+// worker.ts), with two changes.
 //
-// Monaco's worker lists every extra lib as a root file of the program, so
-// each typing file under node_modules was parsed and bound whether or not
-// anything imported it. For a project with a few thousand dependencies
-// that was gigabytes of syntax trees, built again on every change, until
-// the webview process was killed for its memory. Here the program is the
-// open models and the project's own sources; a dependency file is only
-// read when an import, a `/// <reference>` or a `types` entry resolves to
-// it, as node_modules is for tsc. The base class already reads libs on
-// demand (readFile / fileExists), so nothing else changes.
+// Which files make up the program. Monaco's worker lists every extra lib
+// as a root file, so each typing file under node_modules was parsed and
+// bound whether or not anything imported it. For a project with a few
+// thousand dependencies that was gigabytes of syntax trees, built again
+// on every change, until the webview process was killed for its memory.
+// Here the program is the open models and the project's own sources; a
+// dependency file is only read when an import, a `/// <reference>` or a
+// `types` entry resolves to it, as node_modules is for tsc. The base class
+// already reads libs on demand (readFile / fileExists). A file that is
+// both a model (an open tab) and a lib is listed once: the model, which
+// the base class reads first.
 //
-// A file that is both a model (an open tab) and a lib is listed once: the
-// model, which the base class reads first.
+// Links. node_modules is full of links to folders (pnpm links every
+// dependency into its store, workspaces link members into the root), and
+// a linked package is loaded once, under its real path (typings/
+// node_modules.rs). A path through a link is read as its target, and
+// `realpath` tells TypeScript the real one, so it keeps one source file
+// for a package however many paths reach it, as tsc does.
 import {
   libFileMap,
   TypeScriptWorker,
   type MirrorModel,
 } from 'monaco-editor/language/typescript/ts.worker.js';
-import { isDependencyPath } from './paths';
+import { isTypingsLib, LINKS_LIB } from './paths';
+
+/** Links to links: pnpm's store is one hop, a linked member's own links two. */
+const MAX_LINK_HOPS = 8;
 
 export class ProjectTypeScriptWorker extends TypeScriptWorker {
+  private linksCache: { version: number; links: ReadonlyMap<string, string> } | undefined;
+
   override getScriptFileNames(): string[] {
     const models = this._ctx
       .getMirrorModels()
@@ -31,7 +42,7 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
       .map((uri) => uri.toString());
     const open = new Set(models);
     const sources = Object.keys(this.getExtraLibs()).filter(
-      (uri) => !open.has(uri) && !isDependencyPath(uri)
+      (uri) => !open.has(uri) && !isTypingsLib(uri)
     );
     return models.concat(sources);
   }
@@ -42,9 +53,53 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
    * number would make TypeScript keep the model's text.
    */
   override getScriptVersion(fileName: string): string {
-    const version = super.getScriptVersion(fileName);
+    const version = super.getScriptVersion(this.realpath(fileName));
     return this._getModel(fileName) ? `model:${version}` : version;
   }
+
+  /** What readFile, fileExists and getScriptSnapshot read: through the links. */
+  protected override _getScriptText(fileName: string): string | undefined {
+    return super._getScriptText(this.realpath(fileName));
+  }
+
+  /** The path a link resolves to; TypeScript keys a resolved module by it. */
+  realpath(path: string): string {
+    const links = this.links();
+    if (links.size === 0) return path;
+    let current = path;
+    for (let hop = 0; hop < MAX_LINK_HOPS; hop++) {
+      const next = throughLinks(current, links);
+      if (next === current) break;
+      current = next;
+    }
+    return current;
+  }
+
+  private links(): ReadonlyMap<string, string> {
+    const lib = this.getExtraLibs()[LINKS_LIB];
+    if (!lib) return new Map();
+    if (this.linksCache?.version !== lib.version) {
+      let parsed: Record<string, string> = {};
+      try {
+        parsed = JSON.parse(lib.content) as Record<string, string>;
+      } catch {
+        // a bad payload means no links, not a dead worker
+      }
+      this.linksCache = { version: lib.version, links: new Map(Object.entries(parsed)) };
+    }
+    return this.linksCache.links;
+  }
+}
+
+/** `path` with its longest leading link (a folder) replaced by that link's target. */
+function throughLinks(path: string, links: ReadonlyMap<string, string>): string {
+  let end = path.length;
+  while (end > 0) {
+    const target = links.get(path.slice(0, end));
+    if (target !== undefined) return target + path.slice(end);
+    end = path.lastIndexOf('/', end - 1);
+  }
+  return path;
 }
 
 /** Monaco's own lib.*.d.ts, which it may open as models (peek definition). */

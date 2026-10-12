@@ -9,7 +9,7 @@ import type { LoadedFiles } from '../../types';
 import { readProjectConfig } from './compilerOptions';
 import { clearTypeScriptMarkers, setSemanticValidationEnabled } from './defaults';
 import { workerLibs, type LibEntry } from './libs';
-import { isDependencyPath, isProjectSource, isTsConfig, isTypingsManifest } from './paths';
+import { isProjectSource, isTsConfig, isTypingsLib, isTypingsManifest, LINKS_LIB } from './paths';
 import { QuietRunner } from './quietRunner';
 import { SourceChangeQueue, type SourceChangeSink } from './sourceChanges';
 import { TypesScope } from './typesScope';
@@ -28,7 +28,7 @@ const TYPINGS_QUIET_MS = 2_500;
 /** A tsconfig write: the configs are read again once writes settle. */
 const CONFIG_QUIET_MS = 500;
 
-const NOTHING: LoadedFiles = { files: [], truncated: false };
+const NOTHING: LoadedFiles = { files: [], links: [], truncated: false };
 
 export class IntelliSenseProject {
   /** Resolves when the first load is done (success or not). */
@@ -147,7 +147,7 @@ export class IntelliSenseProject {
     const sources = await loadProjectSources(this.root).catch(() => null);
     if (this.disposed || !sources) return;
     this.warnIfTruncated('sources', sources);
-    workerLibs.replace(this.sourceLibs(sources), (uri) => !isDependencyPath(uri));
+    workerLibs.replace(this.sourceLibs(sources), (uri) => !isTypingsLib(uri));
   }
 
   private async refreshTypings(): Promise<void> {
@@ -155,7 +155,7 @@ export class IntelliSenseProject {
     if (this.disposed || !typings) return; // keep the old libs
     this.warnIfTruncated('typings', typings);
     const typingLibs = this.typingLibs(typings);
-    workerLibs.replace(typingLibs, isDependencyPath);
+    workerLibs.replace(typingLibs, isTypingsLib);
     this.types.setInstalled(typingLibs.map((lib) => lib.filePath));
     this.types.apply();
   }
@@ -167,11 +167,15 @@ export class IntelliSenseProject {
     this.types.apply();
   }
 
+  /** The typings, and the links the worker resolves paths through. */
   private typingLibs(typings: LoadedFiles): { filePath: string; content: string }[] {
-    return typings.files.map((f) => ({
-      filePath: dependencyUriFor(f.path),
-      content: f.content,
-    }));
+    const links: Record<string, string> = {};
+    for (const link of typings.links)
+      links[dependencyUriFor(link.path)] = dependencyUriFor(link.target);
+    return [
+      ...typings.files.map((f) => ({ filePath: dependencyUriFor(f.path), content: f.content })),
+      { filePath: LINKS_LIB, content: JSON.stringify(links) },
+    ];
   }
 
   private sourceLibs(sources: LoadedFiles): LibEntry[] {

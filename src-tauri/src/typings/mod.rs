@@ -54,10 +54,20 @@ pub struct LoadedFile {
     pub content: String,
 }
 
+/// A symbolic link to a folder, as `node_modules` is full of them (pnpm,
+/// workspaces, `npm link`). Files are loaded under their real path only;
+/// the editor resolves a path through the links, as Node does.
+#[derive(Serialize)]
+pub struct Link {
+    pub path: String,
+    pub target: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadedFiles {
     pub files: Vec<LoadedFile>,
+    pub links: Vec<Link>,
     /// A limit was hit: some files weren't loaded.
     pub truncated: bool,
 }

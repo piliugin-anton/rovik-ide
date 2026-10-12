@@ -9,6 +9,7 @@ import type {
   MirrorModel,
   WorkerContext,
 } from 'monaco-editor/language/typescript/ts.worker.js';
+import { LINKS_LIB } from './paths';
 import { ProjectTypeScriptWorker } from './projectWorker';
 
 // Keys as the app builds them (uris.ts): the folder encoded like a model's
@@ -119,6 +120,32 @@ describe('ProjectTypeScriptWorker', () => {
     assert.equal(w.getScriptVersion(UTIL), 'model:4');
     assert.equal(w.getScriptVersion(`${NM}/big/index.d.ts`), '1');
     assert.ok(w.readFile(UTIL)?.includes('"model"'));
+  });
+
+  it('a linked package is one source file, reached through any link', async () => {
+    const STORE = `${NM}/.pnpm/foo@1/node_modules/foo`;
+    const MEMBER = `${ROOT}/packages/app`;
+    const libs: Record<string, ExtraLib> = {
+      [`${STORE}/package.json`]: { content: '{"name":"foo","types":"index.d.ts"}', version: 1 },
+      [`${STORE}/index.d.ts`]: { content: 'export declare const foo: number;', version: 1 },
+      [LINKS_LIB]: {
+        content: JSON.stringify({
+          [`${NM}/foo`]: STORE,
+          [`${MEMBER}/node_modules/foo`]: STORE,
+        }),
+        version: 1,
+      },
+    };
+    const text = "import { foo } from 'foo'; export const n: string = foo;";
+    const memberFile = `${MEMBER}/src/a.ts`;
+    const w = worker([model(APP, text), model(memberFile, text)], { ...OPTIONS, types: [] }, libs);
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [2322]);
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(memberFile)), [2322]);
+    assert.deepEqual(w.getScriptFileNames().sort(), [APP, memberFile].sort());
+    const files = programFiles(w).filter((f) => f.includes('foo'));
+    assert.deepEqual(files, [`${STORE}/index.d.ts`]);
+    assert.equal(w.realpath(`${MEMBER}/node_modules/foo/index.d.ts`), `${STORE}/index.d.ts`);
+    assert.equal(w.realpath(`${ROOT}/src/app.ts`), `${ROOT}/src/app.ts`);
   });
 
   it('a changed lib is parsed again, the others are kept', async () => {
