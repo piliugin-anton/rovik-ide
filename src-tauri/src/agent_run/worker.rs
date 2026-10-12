@@ -447,12 +447,12 @@ pub fn mismatch_note(reported: &[String], actual: &[String]) -> Option<String> {
 }
 
 /// D04: the checklist with the worker's step marked done: the item named
-/// like the step (or, when the list has one item per step, the step's
-/// place). None when no item matches or it's settled already.
+/// like the step (or, when the list has one item per step of `steps`, the
+/// step's place). None when no item matches or it's settled already.
 pub fn mark_step_done(
     items: &[TodoItem],
     step: &PlanStep,
-    plan_steps: usize,
+    steps: &[PlanStep],
 ) -> Option<Vec<TodoItem>> {
     let simple = |s: &str| {
         s.to_lowercase()
@@ -506,8 +506,9 @@ pub fn mark_step_done(
         .or_else(|| only(&|t: &str| !title.is_empty() && bare(t) == title))
         .or_else(|| only(&has_words))
         .or_else(|| {
-            (items.len() == plan_steps)
-                .then(|| step.number.checked_sub(1))
+            // Its place, not its number (`2. 4. 7.` keeps its numbers).
+            (items.len() == steps.len())
+                .then(|| steps.iter().position(|s| s.number == step.number))
                 .flatten()
                 .filter(|i| open.contains(i))
         })?;
@@ -841,7 +842,7 @@ mod tests {
         let by_title = mark_step_done(
             &[item("Users table", "done"), item("Add the API", "pending")],
             &steps[1],
-            3,
+            &steps,
         )
         .unwrap();
         assert_eq!(by_title[1].status, "done");
@@ -852,7 +853,7 @@ mod tests {
                 item("Step 3", "pending"),
             ],
             &steps[1],
-            3,
+            &steps,
         )
         .unwrap();
         assert_eq!(by_number[1].status, "done");
@@ -863,13 +864,13 @@ mod tests {
                 item("c", "pending"),
             ],
             &steps[1],
-            3,
+            &steps,
         )
         .unwrap();
         assert_eq!(by_place[1].status, "done");
-        assert!(mark_step_done(&[item("unrelated", "pending")], &steps[1], 3).is_none());
+        assert!(mark_step_done(&[item("unrelated", "pending")], &steps[1], &steps).is_none());
         assert!(
-            mark_step_done(&[item("API", "done")], &steps[1], 3).is_none(),
+            mark_step_done(&[item("API", "done")], &steps[1], &steps).is_none(),
             "settled already"
         );
         // Whole words, the step's number first, and never a settled item.
@@ -882,7 +883,7 @@ mod tests {
                 item("Step 2: Types", "pending"),
             ],
             &types,
-            2,
+            &steps,
         )
         .unwrap();
         assert_eq!(
@@ -896,7 +897,7 @@ mod tests {
                 item("x", "pending"),
             ],
             &types,
-            3,
+            &steps,
         )
         .unwrap();
         assert_eq!(marked[1].status, "done", "the exact title, not a substring");
@@ -906,7 +907,7 @@ mod tests {
         let marked = mark_step_done(
             &[item("Write API tests", "done"), item("Add API", "pending")],
             &api,
-            9,
+            &steps,
         )
         .unwrap();
         assert_eq!(marked[1].status, "done", "the open one");
@@ -914,7 +915,7 @@ mod tests {
             mark_step_done(
                 &[item("API one", "pending"), item("API two", "pending")],
                 &api,
-                9
+                &steps
             )
             .is_none(),
             "two match as well: neither"
@@ -1200,5 +1201,32 @@ mod tests {
         assert_eq!(tw("cargo test 2>&1 | tail -50"), None);
         assert_eq!(tw("cargo test 2>&1 | grep 'a*b'"), None, "quoted: not expanded");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round 2, P4.4: with no title to go by and one item per step, the
+    /// step's place in the plan picks its item, not its number (`2. 4. 7.`).
+    #[test]
+    fn a_gapped_plans_step_is_marked_by_its_place() {
+        let plan = PLAN
+            .replace("1. **Table**", "2. **Table**")
+            .replace("2. **API**", "4. **API**")
+            .replace("3. **Pages**", "7. **Pages**");
+        let steps = plan::steps(&plan);
+        assert_eq!(
+            steps.iter().map(|s| s.number).collect::<Vec<_>>(),
+            [2, 4, 7]
+        );
+        let items: Vec<TodoItem> = ["a", "b", "c"]
+            .iter()
+            .map(|t| TodoItem {
+                title: (*t).into(),
+                status: "pending".into(),
+            })
+            .collect();
+        for (i, step) in steps.iter().enumerate() {
+            let marked = mark_step_done(&items, step, &steps).unwrap();
+            let done: Vec<usize> = (0..3).filter(|&k| marked[k].status == "done").collect();
+            assert_eq!(done, [i], "step {}", step.number);
+        }
     }
 }

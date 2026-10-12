@@ -1851,7 +1851,7 @@ impl<R: Runtime> Run<R> {
                 super::plan::current_checklist(&recent)?.items
             }
         };
-        let items = worker::mark_step_done(&current, step, steps.len())?;
+        let items = worker::mark_step_done(&current, step, &steps)?;
         emit(
             &self.app,
             AgentEvent::Checklist {
