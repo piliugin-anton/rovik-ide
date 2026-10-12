@@ -710,28 +710,54 @@ fn validate_branch_name(name: &str) -> Result<String, String> {
     Ok(name)
 }
 
-/// Creates a local branch at the current HEAD; with `checkout`, switches to
-/// it straight away (the panel's usual "new branch" flow).
+/// Creates a local branch at `from` (a local branch, remote-tracking
+/// branch, tag or commit; defaults to the current HEAD when empty);
+/// with `checkout`, switches to it straight away (the panel's usual
+/// "new branch" flow). Starting from a remote-tracking branch sets it
+/// as upstream, so pull/push and the ahead/behind badges work.
 #[tauri::command]
-pub async fn git_create_branch(path: String, name: String, checkout: bool) -> Result<(), String> {
-    off_main_thread(move || git_create_branch_blocking(path, name, checkout)).await
+pub async fn git_create_branch(
+    path: String,
+    name: String,
+    checkout: bool,
+    from: Option<String>,
+) -> Result<(), String> {
+    off_main_thread(move || git_create_branch_blocking(path, name, checkout, from)).await
 }
 
 pub fn git_create_branch_blocking(
     path: String,
     name: String,
     checkout: bool,
+    from: Option<String>,
 ) -> Result<(), String> {
     let name = validate_branch_name(&name)?;
+    let from = from.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let repo = open_repo(&path)?;
-    let head = repo
-        .head()
-        .ok()
-        .and_then(|h| h.peel_to_commit().ok())
-        .ok_or_else(|| "Can't create a branch yet: there are no commits".to_string())?;
-    repo.branch(&name, &head, false)
+    let target = match &from {
+        Some(start) => repo
+            .revparse_single(start)
+            .map_err(|_| format!("Couldn't find starting point '{start}'"))?
+            .peel_to_commit()
+            .map_err(|e| format!("Couldn't use '{start}' as a starting point: {e}"))?,
+        None => repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .ok_or_else(|| "Can't create a branch yet: there are no commits".to_string())?,
+    };
+    let mut branch = repo
+        .branch(&name, &target, false)
         .map_err(|e| format!("Couldn't create branch '{name}': {e}"))?;
-    drop(head);
+    // `git branch foo origin/foo` tracks the remote: do the same so the
+    // new branch pulls/pushes against where it started.
+    if let Some(start) = &from {
+        if repo.find_branch(start, BranchType::Remote).is_ok() {
+            let _ = branch.set_upstream(Some(start));
+        }
+    }
+    drop(target);
+    drop(branch);
     if checkout {
         git_checkout_blocking(path, name)?;
     }

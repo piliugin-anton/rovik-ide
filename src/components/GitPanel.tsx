@@ -680,6 +680,10 @@ export function GitPanel(props: GitPanelProps) {
   const [moreOpen, setMoreOpen] = createSignal(false);
   const [moreView, setMoreView] = createSignal<MoreView>('menu');
   const [newBranchName, setNewBranchName] = createSignal('');
+  // Which branch a new branch starts from. Defaults to the current branch
+  // when the view opens; only a name that's actually in the branch list is
+  // sent (anything else — detached HEAD, still loading — means HEAD).
+  const [newBranchFrom, setNewBranchFrom] = createSignal('');
   const [stashMessage, setStashMessage] = createSignal('');
   const [stashes, setStashes] = createSignal<GitStashEntry[]>([]);
   const [stashesLoading, setStashesLoading] = createSignal(false);
@@ -760,6 +764,10 @@ export function GitPanel(props: GitPanelProps) {
 
   const openMoreView = (view: MoreView) => {
     setMoreView(view);
+    if (view === 'new-branch') {
+      setNewBranchFrom(status()?.branch ?? '');
+      void loadBranches();
+    }
     if (view === 'delete-branch') void loadBranches();
     if (view === 'stash-list') void loadStashes();
     if (view === 'history') {
@@ -969,7 +977,11 @@ export function GitPanel(props: GitPanelProps) {
     withBusy(async () => {
       const name = newBranchName().trim();
       if (!name || branchNameProblem(name)) return;
-      await invoke('git_create_branch', { path: props.projectPath, name, checkout });
+      // Only a branch that's actually in the list is sent as the starting
+      // point; anything else (detached HEAD, list still loading) means HEAD.
+      const picked = newBranchFrom();
+      const from = picked && branches().some((b) => b.name === picked) ? picked : null;
+      await invoke('git_create_branch', { path: props.projectPath, name, checkout, from });
       setNewBranchName('');
       closeMore();
       await refreshStatus();
@@ -1283,9 +1295,7 @@ export function GitPanel(props: GitPanelProps) {
                   <IconSpinner /> <span>Loading branches...</span>
                 </div>
               </Show>
-              <Show
-                when={branches().filter((b) => !b.is_remote).length > 0}
-              >
+              <Show when={branches().filter((b) => !b.is_remote).length > 0}>
                 <div class="git-menu-section-label">Local</div>
                 <ul class="context-menu-list">
                   <For each={branches().filter((b) => !b.is_remote)}>
@@ -1302,9 +1312,7 @@ export function GitPanel(props: GitPanelProps) {
                   </For>
                 </ul>
               </Show>
-              <Show
-                when={branches().filter((b) => b.is_remote).length > 0}
-              >
+              <Show when={branches().filter((b) => b.is_remote).length > 0}>
                 <div class="git-menu-section-label">Remote</div>
                 <ul class="context-menu-list">
                   <For each={branches().filter((b) => b.is_remote)}>
@@ -1426,12 +1434,35 @@ export function GitPanel(props: GitPanelProps) {
                     }}
                     disabled={busy()}
                   />
+                  <div class="git-base-field">
+                    <div class="git-more-note">Create from</div>
+                    <select
+                      class="git-more-input git-base-select"
+                      value={newBranchFrom() || status()?.branch || ''}
+                      onChange={(e) => setNewBranchFrom(e.currentTarget.value)}
+                      disabled={busy() || branchesLoading() || branches().length === 0}
+                      title="The branch the new branch starts from"
+                    >
+                      <optgroup label="Local">
+                        <For each={branches().filter((b) => !b.is_remote)}>
+                          {(b) => <option value={b.name}>{b.name}</option>}
+                        </For>
+                      </optgroup>
+                      <Show when={branches().some((b) => b.is_remote)}>
+                        <optgroup label="Remote">
+                          <For each={branches().filter((b) => b.is_remote)}>
+                            {(b) => <option value={b.name}>{b.name}</option>}
+                          </For>
+                        </optgroup>
+                      </Show>
+                    </select>
+                  </div>
                   <Show when={branchNameProblem(newBranchName())}>
                     <div class="git-more-note error">{branchNameProblem(newBranchName())}</div>
                   </Show>
                   <div class="git-more-actions">
                     <button
-                      class="icon-button"
+                      class="chat-action-button"
                       disabled={
                         busy() || !newBranchName().trim() || !!branchNameProblem(newBranchName())
                       }
@@ -1440,7 +1471,7 @@ export function GitPanel(props: GitPanelProps) {
                       Create
                     </button>
                     <button
-                      class="icon-button primary"
+                      class="chat-action-button primary"
                       disabled={
                         busy() || !newBranchName().trim() || !!branchNameProblem(newBranchName())
                       }
@@ -1466,18 +1497,14 @@ export function GitPanel(props: GitPanelProps) {
                 <Show
                   when={
                     !branchesLoading() &&
-                    branches().filter((b) => !b.is_remote && b.name !== status()?.branch)
-                      .length === 0
+                    branches().filter((b) => !b.is_remote && b.name !== status()?.branch).length ===
+                      0
                   }
                 >
                   <div class="git-more-note">No other branches to delete.</div>
                 </Show>
                 <ul class="context-menu-list">
-                  <For
-                    each={branches().filter(
-                      (b) => !b.is_remote && b.name !== status()?.branch,
-                    )}
-                  >
+                  <For each={branches().filter((b) => !b.is_remote && b.name !== status()?.branch)}>
                     {(b) => (
                       <li class="context-menu-item git-more-row">
                         <IconBranch />
@@ -1712,212 +1739,215 @@ export function GitPanel(props: GitPanelProps) {
                     </span>
                   </div>
                 </Show>
-                <Show
-                  when={!commitsLoading() && commits().length === 0 && resultsQuery() === ''}
-                >
+                <Show when={!commitsLoading() && commits().length === 0 && resultsQuery() === ''}>
                   <div class="git-more-note">No commits yet.</div>
                 </Show>
-                <Show
-                  when={!commitsLoading() && commits().length === 0 && resultsQuery() !== ''}
-                >
+                <Show when={!commitsLoading() && commits().length === 0 && resultsQuery() !== ''}>
                   <div class="git-more-note">
-                    No matching commits for “{resultsQuery()}”. Try a file name, symbol, or
-                    word from the message.
+                    No matching commits for “{resultsQuery()}”. Try a file name, symbol, or word
+                    from the message.
                   </div>
                 </Show>
                 <Show when={!commitsLoading()}>
                   <ul class="context-menu-list">
                     <For each={commits()}>
-                    {(c) => {
-                      const q = () => resultsQuery();
-                      const searching = () => q() !== '';
-                      const filesKey = () => `${c.oid}::${q()}`;
-                      const allFiles = () => commitFiles()[filesKey()] ?? [];
-                      const matchedCount = () =>
-                        allFiles().filter((f) => f.matched !== false).length;
-                      const showingAll = () => !!showAllFiles()[c.oid];
-                      const visibleFiles = () => {
-                        const all = allFiles();
-                        if (!searching() || showingAll()) return all;
-                        const matched = all.filter((f) => f.matched !== false);
-                        // Message-only match (nothing flagged): show all,
-                        // the header below explains why.
-                        return matched.length > 0 ? matched : all;
-                      };
-                      const matchLabel = (kind?: string | null) =>
-                        kind === 'both'
-                          ? 'file + content'
-                          : kind === 'filename'
-                            ? 'filename'
-                            : kind === 'content'
-                              ? 'content'
-                              : '';
-                      return (
-                        <li class="git-commit-entry">
-                          <div
-                            class="git-commit-row"
-                            title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}\nClick to see the files this commit changed`}
-                            onClick={() => void toggleCommitExpanded(c.oid)}
-                          >
-                            <span class="tree-row-chevron">
-                              <ChevronIcon open={expandedCommit() === c.oid} />
-                            </span>
-                            <button
-                              type="button"
-                              class="git-commit-hash"
-                              title={`${c.oid}\nClick to copy the full hash`}
-                              aria-label={`Copy commit hash ${c.oid}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void copyHash(c.oid);
-                              }}
+                      {(c) => {
+                        const q = () => resultsQuery();
+                        const searching = () => q() !== '';
+                        const filesKey = () => `${c.oid}::${q()}`;
+                        const allFiles = () => commitFiles()[filesKey()] ?? [];
+                        const matchedCount = () =>
+                          allFiles().filter((f) => f.matched !== false).length;
+                        const showingAll = () => !!showAllFiles()[c.oid];
+                        const visibleFiles = () => {
+                          const all = allFiles();
+                          if (!searching() || showingAll()) return all;
+                          const matched = all.filter((f) => f.matched !== false);
+                          // Message-only match (nothing flagged): show all,
+                          // the header below explains why.
+                          return matched.length > 0 ? matched : all;
+                        };
+                        const matchLabel = (kind?: string | null) =>
+                          kind === 'both'
+                            ? 'file + content'
+                            : kind === 'filename'
+                              ? 'filename'
+                              : kind === 'content'
+                                ? 'content'
+                                : '';
+                        return (
+                          <li class="git-commit-entry">
+                            <div
+                              class="git-commit-row"
+                              title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}\nClick to see the files this commit changed`}
+                              onClick={() => void toggleCommitExpanded(c.oid)}
                             >
-                              {copiedHash() === c.oid ? 'Copied' : c.short}
-                            </button>
-                            <span class="git-commit-summary">{c.summary}</span>
-                            <Show
-                              when={
-                                searching() &&
-                                c.matched_file_count != null &&
-                                (c.file_count ?? 0) > 0
-                              }
-                            >
-                              <span
-                                class="git-commit-match-badge"
-                                title={
-                                  (c.matched_file_count ?? 0) > 0
-                                    ? `${c.matched_file_count} of ${c.file_count} files contain “${q()}”`
-                                    : `Matched via message/author — no changed filename contains “${q()}”`
-                                }
-                              >
-                                {(c.matched_file_count ?? 0) > 0
-                                  ? `${c.matched_file_count}/${c.file_count} files`
-                                  : 'message'}
+                              <span class="tree-row-chevron">
+                                <ChevronIcon open={expandedCommit() === c.oid} />
                               </span>
-                            </Show>
-                          </div>
-                          <Show when={expandedCommit() === c.oid}>
-                            <div class="git-stash-files">
-                              <Show when={commitFilesLoading() === c.oid}>
-                                <div class="context-menu-item context-menu-loading">
-                                  <IconSpinner /> <span>Loading commit contents...</span>
-                                </div>
-                              </Show>
-                              <Show
-                                when={commitFilesLoading() !== c.oid && allFiles().length === 0}
+                              <button
+                                type="button"
+                                class="git-commit-hash"
+                                title={`${c.oid}\nClick to copy the full hash`}
+                                aria-label={`Copy commit hash ${c.oid}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void copyHash(c.oid);
+                                }}
                               >
-                                <div class="git-more-note">Empty commit.</div>
-                              </Show>
+                                {copiedHash() === c.oid ? 'Copied' : c.short}
+                              </button>
+                              <span class="git-commit-summary">{c.summary}</span>
                               <Show
                                 when={
-                                  commitFilesLoading() !== c.oid &&
                                   searching() &&
-                                  allFiles().length > 0
+                                  c.matched_file_count != null &&
+                                  (c.file_count ?? 0) > 0
                                 }
                               >
-                                <div class="git-match-summary-row">
-                                  <Show
-                                    when={matchedCount() > 0 && matchedCount() < allFiles().length}
-                                  >
-                                    <span class="git-more-note">
-                                      {matchedCount()} of {allFiles().length} files match “{q()}”
-                                      {showingAll() ? ' — showing all' : ''}.
-                                    </span>
-                                    <button
-                                      type="button"
-                                      class="link-button git-match-toggle"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setShowAllFiles((prev) => ({
-                                          ...prev,
-                                          [c.oid]: !prev[c.oid],
-                                        }));
-                                      }}
-                                    >
-                                      {showingAll() ? 'Show matches only' : 'Show all'}
-                                    </button>
-                                  </Show>
-                                  <Show when={matchedCount() === allFiles().length}>
-                                    <span class="git-more-note">
-                                      All {allFiles().length} files match “{q()}”.
-                                    </span>
-                                  </Show>
-                                  <Show when={matchedCount() === 0}>
-                                    <span class="git-more-note">
-                                      Matched via message — no changed file contains “{q()}”.
-                                      Showing all {allFiles().length} files.
-                                    </span>
-                                  </Show>
-                                </div>
+                                <span
+                                  class="git-commit-match-badge"
+                                  title={
+                                    (c.matched_file_count ?? 0) > 0
+                                      ? `${c.matched_file_count} of ${c.file_count} files contain “${q()}”`
+                                      : `Matched via message/author — no changed filename contains “${q()}”`
+                                  }
+                                >
+                                  {(c.matched_file_count ?? 0) > 0
+                                    ? `${c.matched_file_count}/${c.file_count} files`
+                                    : 'message'}
+                                </span>
                               </Show>
-                              <For each={visibleFiles()}>
-                                {(f) => {
-                                  const meta = () => statusMeta(f.status);
-                                  const name = () => f.path.split('/').pop() ?? f.path;
-                                  const deleted = () => f.status === 'D';
-                                  const isMatch = () => f.matched !== false;
-                                  return (
-                                    <div
-                                      class="context-menu-item git-stash-file-row"
-                                      classList={{
-                                        clickable: !deleted(),
-                                        'git-file-unmatched':
-                                          searching() && !isMatch() && showingAll(),
-                                        'git-file-matched': searching() && isMatch(),
-                                      }}
-                                      title={
-                                        deleted()
-                                          ? `${f.path} (deleted in this commit)`
-                                          : searching() && isMatch() && f.match_kind
-                                            ? `${f.path} (matches via ${matchLabel(f.match_kind)}): click to open the version at this commit`
-                                            : `${f.path}: click to open the version at this commit`
-                                      }
-                                      onClick={() => {
-                                        // A deleted file has no content to open.
-                                        if (!deleted())
-                                          props.onOpenCommitFile?.(
-                                            absPathOf(f.path),
-                                            f.path,
-                                            c.oid,
-                                            c.summary
-                                          );
-                                      }}
-                                    >
-                                      <span class="tree-row-icon">
-                                        <FileIcon />
-                                      </span>
-                                      <span
-                                        class="tree-row-name"
-                                        classList={{ 'git-file-deleted': deleted() }}
-                                        title={f.path}
-                                      >
-                                        {name()}
-                                      </span>
-                                      <Show when={searching() && isMatch() && f.match_kind}>
-                                        <span
-                                          class="git-match-kind"
-                                          title={`Matches via ${matchLabel(f.match_kind)}`}
-                                        >
-                                          {f.match_kind === 'both' ? 'file+content' : f.match_kind}
-                                        </span>
-                                      </Show>
-                                      <DiffStats additions={f.additions} deletions={f.deletions} />
-                                      <span
-                                        class={`tree-row-badge git-file-badge ${meta().className}`}
-                                        title={meta().title}
-                                      >
-                                        {meta().label}
-                                      </span>
-                                    </div>
-                                  );
-                                }}
-                              </For>
                             </div>
-                          </Show>
-                        </li>
-                      );
-                    }}
-                  </For>
+                            <Show when={expandedCommit() === c.oid}>
+                              <div class="git-stash-files">
+                                <Show when={commitFilesLoading() === c.oid}>
+                                  <div class="context-menu-item context-menu-loading">
+                                    <IconSpinner /> <span>Loading commit contents...</span>
+                                  </div>
+                                </Show>
+                                <Show
+                                  when={commitFilesLoading() !== c.oid && allFiles().length === 0}
+                                >
+                                  <div class="git-more-note">Empty commit.</div>
+                                </Show>
+                                <Show
+                                  when={
+                                    commitFilesLoading() !== c.oid &&
+                                    searching() &&
+                                    allFiles().length > 0
+                                  }
+                                >
+                                  <div class="git-match-summary-row">
+                                    <Show
+                                      when={
+                                        matchedCount() > 0 && matchedCount() < allFiles().length
+                                      }
+                                    >
+                                      <span class="git-more-note">
+                                        {matchedCount()} of {allFiles().length} files match “{q()}”
+                                        {showingAll() ? ' — showing all' : ''}.
+                                      </span>
+                                      <button
+                                        type="button"
+                                        class="link-button git-match-toggle"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setShowAllFiles((prev) => ({
+                                            ...prev,
+                                            [c.oid]: !prev[c.oid],
+                                          }));
+                                        }}
+                                      >
+                                        {showingAll() ? 'Show matches only' : 'Show all'}
+                                      </button>
+                                    </Show>
+                                    <Show when={matchedCount() === allFiles().length}>
+                                      <span class="git-more-note">
+                                        All {allFiles().length} files match “{q()}”.
+                                      </span>
+                                    </Show>
+                                    <Show when={matchedCount() === 0}>
+                                      <span class="git-more-note">
+                                        Matched via message — no changed file contains “{q()}”.
+                                        Showing all {allFiles().length} files.
+                                      </span>
+                                    </Show>
+                                  </div>
+                                </Show>
+                                <For each={visibleFiles()}>
+                                  {(f) => {
+                                    const meta = () => statusMeta(f.status);
+                                    const name = () => f.path.split('/').pop() ?? f.path;
+                                    const deleted = () => f.status === 'D';
+                                    const isMatch = () => f.matched !== false;
+                                    return (
+                                      <div
+                                        class="context-menu-item git-stash-file-row"
+                                        classList={{
+                                          clickable: !deleted(),
+                                          'git-file-unmatched':
+                                            searching() && !isMatch() && showingAll(),
+                                          'git-file-matched': searching() && isMatch(),
+                                        }}
+                                        title={
+                                          deleted()
+                                            ? `${f.path} (deleted in this commit)`
+                                            : searching() && isMatch() && f.match_kind
+                                              ? `${f.path} (matches via ${matchLabel(f.match_kind)}): click to open the version at this commit`
+                                              : `${f.path}: click to open the version at this commit`
+                                        }
+                                        onClick={() => {
+                                          // A deleted file has no content to open.
+                                          if (!deleted())
+                                            props.onOpenCommitFile?.(
+                                              absPathOf(f.path),
+                                              f.path,
+                                              c.oid,
+                                              c.summary
+                                            );
+                                        }}
+                                      >
+                                        <span class="tree-row-icon">
+                                          <FileIcon />
+                                        </span>
+                                        <span
+                                          class="tree-row-name"
+                                          classList={{ 'git-file-deleted': deleted() }}
+                                          title={f.path}
+                                        >
+                                          {name()}
+                                        </span>
+                                        <Show when={searching() && isMatch() && f.match_kind}>
+                                          <span
+                                            class="git-match-kind"
+                                            title={`Matches via ${matchLabel(f.match_kind)}`}
+                                          >
+                                            {f.match_kind === 'both'
+                                              ? 'file+content'
+                                              : f.match_kind}
+                                          </span>
+                                        </Show>
+                                        <DiffStats
+                                          additions={f.additions}
+                                          deletions={f.deletions}
+                                        />
+                                        <span
+                                          class={`tree-row-badge git-file-badge ${meta().className}`}
+                                          title={meta().title}
+                                        >
+                                          {meta().label}
+                                        </span>
+                                      </div>
+                                    );
+                                  }}
+                                </For>
+                              </div>
+                            </Show>
+                          </li>
+                        );
+                      }}
+                    </For>
                   </ul>
                 </Show>
                 {/* Pagination: the backend scans at most ~400 commits per
