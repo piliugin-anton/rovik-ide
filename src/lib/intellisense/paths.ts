@@ -42,6 +42,16 @@ export function isTypingsLib(uri: string): boolean {
   return uri === LINKS_LIB || isDependencyPath(uri);
 }
 
+/** A lib loaded from the project (a source, a typing, the links): not PROJECT_LIB. */
+export function isLoadedLib(uri: string): boolean {
+  return uri !== PROJECT_LIB;
+}
+
+/** A lib that comes and goes with the project's sources. */
+export function isSourceLib(uri: string): boolean {
+  return isLoadedLib(uri) && !isTypingsLib(uri);
+}
+
 /** Manifests whose change means node_modules may have changed. */
 const TYPINGS_MANIFESTS = new Set([
   'package.json',
