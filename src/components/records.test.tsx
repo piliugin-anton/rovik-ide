@@ -96,6 +96,43 @@ test('a review saved as running with no run going reads as interrupted', () => {
   assert.match(goneRoot.textContent ?? '', /didn’t finish/);
 });
 
+test('a review card has a Details expander with the record’s facts and a kept report', () => {
+  const meta: ReviewMeta = {
+    kind: 'plan',
+    status: 'skipped',
+    round: 1,
+    maxRounds: 2,
+    reason: 'its report didn’t follow the format: it has no "## Findings" section',
+    report: 'Looks fine to me.',
+    model: 'Test/m',
+    toolCalls: 7,
+    ms: 4200,
+  };
+  const root = container();
+  render(() => <ReviewRecord meta={meta} dialogId="d" recordId="m3" live={false} />, root);
+  const details = root.querySelector('details.review-details')!;
+  assert.ok(details, 'a Details expander');
+  assert.equal(details.querySelector('summary')?.textContent, 'Details');
+  const facts = [...details.querySelectorAll('dt')].map((dt) => dt.textContent);
+  assert.deepEqual(facts, ['What', 'Status', 'Reason', 'Round', 'Model', 'Tool calls', 'Time']);
+  assert.match(details.textContent ?? '', /no "## Findings" section/);
+  assert.equal(details.querySelector('pre.review-report')?.textContent, 'Looks fine to me.');
+  // A running review has no details yet.
+  const running = container();
+  render(
+    () => (
+      <ReviewRecord
+        meta={{ kind: 'plan', status: 'running', round: 1, maxRounds: 2 }}
+        dialogId="d"
+        recordId="m4"
+        live={true}
+      />
+    ),
+    running
+  );
+  assert.equal(running.querySelector('details.review-details'), null);
+});
+
 test('checks saved as running with no run going read as interrupted', () => {
   const meta = {
     status: 'running' as const,

@@ -7912,14 +7912,40 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   cursor: pointer;
 }
 
-/* A skipped review's report as the reviewer wrote it. */
+/* The card's "Details" expander: the record's facts, and a skipped
+   review's report as the reviewer wrote it. */
+.review-details {
+  margin: 2px 12px 6px;
+  font-size: 11px;
+}
+
+.review-details summary {
+  cursor: pointer;
+  color: var(--fg-dim);
+}
+
+.review-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 4px 0 0;
+}
+
+.review-facts dt {
+  color: var(--fg-dim);
+}
+
+.review-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .review-report {
-  margin: 4px 0 0 12px;
+  margin: 4px 0 0;
   max-height: 240px;
   overflow: auto;
   white-space: pre-wrap;
   font-size: 11px;
-  color: var(--fg-dim);
 }
 
 .subagent-run-usage {
