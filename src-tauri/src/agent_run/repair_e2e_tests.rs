@@ -212,7 +212,10 @@ async fn a_fix_that_breaks_a_passing_test_is_rolled_back() {
     );
     assert!(reports[1].contains("b.txt, c.txt, d.txt are as before that fix"));
     // P3.5: the commands of the fix weren't undone, and it says so.
-    assert_eq!(rb["commands"], json!(["printf 'good, by hand\\n' > a.txt", "rm d.txt"]));
+    assert_eq!(
+        rb["commands"],
+        json!(["printf 'good, by hand\\n' > a.txt", "rm d.txt"])
+    );
     assert!(
         reports[1].contains("Commands ran in that fix (`printf 'good, by hand\\n' > a.txt`, `rm d.txt`); what they changed wasn't undone"),
         "{}",
@@ -734,7 +737,11 @@ async fn after_a_restart_lost_state_is_never_verified() {
     ])
     .await;
     let skipped: &'static str = Box::leak(tests.replace("test(", "test.skip(").into_boxed_str());
-    let (url, _) = model(vec![write("w1", "tests/add.test.js", skipped), Reply::Text("Done.")]).await;
+    let (url, _) = model(vec![
+        write("w1", "tests/add.test.js", skipped),
+        Reply::Text("Done."),
+    ])
+    .await;
     let permissions = Permissions {
         command_approval: permissions::ApprovalRule {
             required: true,

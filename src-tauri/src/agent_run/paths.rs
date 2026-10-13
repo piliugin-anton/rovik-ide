@@ -18,10 +18,8 @@ pub fn norm_rel(path: &str) -> Option<String> {
     let b = p.as_bytes();
     // By shape, never by case (round 3): `C:`, `c:/x`; `a:b.txt`, `C:x`
     // are names with a colon.
-    let drive = b.len() > 1
-        && b[1] == b':'
-        && b[0].is_ascii_alphabetic()
-        && (b.len() == 2 || b[2] == b'/');
+    let drive =
+        b.len() > 1 && b[1] == b':' && b[0].is_ascii_alphabetic() && (b.len() == 2 || b[2] == b'/');
     if p.starts_with('/') || drive {
         return None;
     }

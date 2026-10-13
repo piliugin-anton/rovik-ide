@@ -757,10 +757,7 @@ impl<R: Runtime> Run<R> {
                 }
             };
             let view = overlay.view.to_string_lossy().into_owned();
-            match self
-                .start_fixer(fix, cause, Some(view))
-                .await
-            {
+            match self.start_fixer(fix, cause, Some(view)).await {
                 Ok((child, run)) => {
                     started.push(Ok((child, fresh)));
                     futures.push(Box::pin(run_child(run)));

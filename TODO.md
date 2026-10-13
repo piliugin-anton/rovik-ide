@@ -1,4 +1,1 @@
-Separate backend into modules:
-  - Gateway: sends requests, provider agnostic
- - Parser: parses API responses
- - Hooks: execute actions
+1. Full backend refactoring and separate agent code from Tauri, prepare for cloud deploy/running

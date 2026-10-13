@@ -1517,16 +1517,25 @@ impl<R: Runtime> Run<R> {
             return (refused, Vec::new());
         }
         let Some(sub) = self.sub() else {
-            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
+            return (
+                "Error: extend_scope is for writing subagents.".into(),
+                Vec::new(),
+            );
         };
         let Some(scope) = sub.scope.as_ref() else {
-            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
+            return (
+                "Error: extend_scope is for writing subagents.".into(),
+                Vec::new(),
+            );
         };
         // A folder only inside the step's own folders: a whole `src/` or
         // `.github/` isn't a step's to take.
         let own: Vec<&String> = scope.folders.iter().chain(&scope.new_in).collect();
         if let Some(folder) = paths.iter().find(|p| {
-            p.ends_with('/') && !own.iter().any(|d| !d.is_empty() && super::paths::under(d, p))
+            p.ends_with('/')
+                && !own
+                    .iter()
+                    .any(|d| !d.is_empty() && super::paths::under(d, p))
         }) {
             return (
                 format!("Error: not granted: `{folder}` is a folder outside your step's own. Name the files the step needs."),
@@ -1564,7 +1573,10 @@ impl<R: Runtime> Run<R> {
             );
         }
         let Some(scope) = self.sub_mut().and_then(|s| s.scope.as_mut()) else {
-            return ("Error: extend_scope is for writing subagents.".into(), Vec::new());
+            return (
+                "Error: extend_scope is for writing subagents.".into(),
+                Vec::new(),
+            );
         };
         for p in &paths {
             if !scope.grants.contains(p) {
@@ -1577,7 +1589,11 @@ impl<R: Runtime> Run<R> {
         (
             format!(
                 "Granted: you may now write {}. The lead will see this in your result.",
-                paths.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ")
+                paths
+                    .iter()
+                    .map(|p| format!("`{p}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             paths,
         )
@@ -1666,7 +1682,7 @@ impl<R: Runtime> Run<R> {
                             before: None,
                             content: text,
                             reviewed: true,
-                        deleted: false,
+                            deleted: false,
                         },
                     );
                 }

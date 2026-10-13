@@ -2194,7 +2194,9 @@ impl<R: Runtime> Run<R> {
             let Some(mut meta) = m.meta.clone() else {
                 continue;
             };
-            let waiting = meta.pointer("/verification/status").and_then(|s| s.as_str())
+            let waiting = meta
+                .pointer("/verification/status")
+                .and_then(|s| s.as_str())
                 == Some("needs-approval");
             if waiting {
                 meta["verification"]["status"] = json!("superseded");
@@ -2853,7 +2855,10 @@ fn plan_check_at_start(
             if p.is_absolute() {
                 rel
             } else {
-                std::path::Path::new(base).join(p).to_string_lossy().into_owned()
+                std::path::Path::new(base)
+                    .join(p)
+                    .to_string_lossy()
+                    .into_owned()
             }
         }
         None => chat_plan_file(recent)?,

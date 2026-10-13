@@ -167,8 +167,8 @@ impl DbState {
     /// headless runner's; the app keeps its database open until it exits.
     #[cfg_attr(not(any(test, feature = "headless")), allow(dead_code))]
     pub fn close(self) -> Result<(), String> {
-        let inner = Arc::try_unwrap(self.0)
-            .map_err(|_| "the chat database is still in use".to_string())?;
+        let inner =
+            Arc::try_unwrap(self.0).map_err(|_| "the chat database is still in use".to_string())?;
         let Inner {
             writer,
             writer_thread,

@@ -325,7 +325,10 @@ impl Judgement {
 /// (`path: …`): its file, or a test whose name has the file's stem
 /// (`posts > edits` for `posts.test.ts`, `tests/test_x.py::t`).
 fn named_in(key: &str, flags: &[String]) -> bool {
-    let detail = key.split_once('|').map_or(key, |(_, rest)| rest).to_lowercase();
+    let detail = key
+        .split_once('|')
+        .map_or(key, |(_, rest)| rest)
+        .to_lowercase();
     flags.iter().any(|f| {
         let path = f.split(": ").next().unwrap_or(f).to_lowercase();
         let name = path.rsplit('/').next().unwrap_or(&path);
@@ -530,20 +533,26 @@ static JS: LazyLock<Patterns> = LazyLock::new(|| Patterns {
 static RUST: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"#\[(?:tokio::)?test\b"),
     // P3.8: a test module behind a feature, and a test that returns first.
-    skips: re(r"#\[ignore\b|#\[cfg\([^\]]*\bfeature\s*=[^\]]*\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w*test|#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+\w+\s*\(\s*\)\s*\{\s*(?:return\b|if\s+false\b)"),
+    skips: re(
+        r"#\[ignore\b|#\[cfg\([^\]]*\bfeature\s*=[^\]]*\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w*test|#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+\w+\s*\(\s*\)\s*\{\s*(?:return\b|if\s+false\b)",
+    ),
     only: None,
     assertions: re(r"\b(?:assert|assert_eq|assert_ne|debug_assert)!\s*\("),
 });
 static PYTHON: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"(?m)^\s*(?:async\s+)?def\s+test_"),
     // P3.8: a module-wide `pytestmark`, and a test that returns first.
-    skips: re(r"@pytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.skip|\bpytest\.skip\s*\(|\bpytestmark\s*=.*\bpytest\.mark\.(?:skip|skipif|xfail)\b|(?m)^\s*(?:async\s+)?def\s+test_\w*\([^)]*\)\s*(?:->\s*\w+\s*)?:\s*\n\s*(?:return\b|if\s+False\s*:)"),
+    skips: re(
+        r"@pytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.skip|\bpytest\.skip\s*\(|\bpytestmark\s*=.*\bpytest\.mark\.(?:skip|skipif|xfail)\b|(?m)^\s*(?:async\s+)?def\s+test_\w*\([^)]*\)\s*(?:->\s*\w+\s*)?:\s*\n\s*(?:return\b|if\s+False\s*:)",
+    ),
     only: None,
     assertions: re(r"(?m)^\s*assert\b|\bself\.assert\w+\s*\(|\bpytest\.raises\s*\("),
 });
 static GO: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     tests: re(r"(?m)^func\s+Test\w*\s*\("),
-    skips: re(r"\bt\.Skip(?:f|Now)?\s*\(|(?m)^func\s+Test\w*\s*\([^)]*\)\s*\{\s*(?:return\b|if\s+false\b)"),
+    skips: re(
+        r"\bt\.Skip(?:f|Now)?\s*\(|(?m)^func\s+Test\w*\s*\([^)]*\)\s*\{\s*(?:return\b|if\s+false\b)",
+    ),
     only: None,
     assertions: re(
         r"\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\s*\(|\b(?:assert|require)\.\w+\s*\(",
@@ -657,7 +666,11 @@ pub fn integrity_flags(path: &str, before: Option<&str>, after: Option<&str>) ->
     {
         flags.push(format!(
             "{path}: a test file the IDE can't check was {}",
-            if after.is_none() { "deleted" } else { "changed" }
+            if after.is_none() {
+                "deleted"
+            } else {
+                "changed"
+            }
         ));
         return flags;
     }
@@ -844,7 +857,9 @@ impl<R: Runtime> Run<R> {
                     read(&Path::new(project).join(&key)).ok().flatten(),
                     Source::ProjectCopy,
                 ),
-                _ if self.sub().is_some() => Original::new(before.clone(), Source::ViewAtRoundStart),
+                _ if self.sub().is_some() => {
+                    Original::new(before.clone(), Source::ViewAtRoundStart)
+                }
                 _ => Original::new(before.clone(), Source::ViewAtRunStart),
             };
             self.baseline.insert(key.clone(), original);
@@ -1164,8 +1179,14 @@ mod tests {
     fn a_slip_in_the_fixed_file_isnt_a_regression() {
         let ran = ["test", "lint"];
         let r1 = round(&["test|test|t::one"], &ran);
-        let r2 = round(&["lint|src/a.ts|no-unused-vars|'x' is defined but never used."], &ran);
-        assert_eq!(judge(std::slice::from_ref(&r1), &r2).verdict, Verdict::Regression);
+        let r2 = round(
+            &["lint|src/a.ts|no-unused-vars|'x' is defined but never used."],
+            &ran,
+        );
+        assert_eq!(
+            judge(std::slice::from_ref(&r1), &r2).verdict,
+            Verdict::Regression
+        );
         let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["./src/a.ts".into()], &[]);
         assert_eq!(j.verdict, Verdict::Progress);
         assert!(j.broke.is_empty() && j.new.len() == 1);
@@ -1204,7 +1225,8 @@ mod tests {
             assert_eq!(j.verdict, Verdict::Progress, "{key}: {j:?}");
             assert!(j.broke.is_empty(), "{key}");
             // Another file of the same name elsewhere isn't the one written.
-            let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["lib/b.ts".into()], &[]);
+            let j =
+                judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["lib/b.ts".into()], &[]);
             assert_eq!(j.verdict, Verdict::Regression, "{key}");
         }
     }
@@ -1222,15 +1244,18 @@ mod tests {
         assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
         assert_eq!(j.broke, ["build|crates/x/src/lib.rs|E0308|m"]);
         let r2 = round(&["lint|/p/packages/ui/src/a.ts|rule|m"], &ran);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["/p"]);
+        let j =
+            judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["/p"]);
         assert_eq!(j.verdict, Verdict::Regression, "{j:?}");
         // The written file under the root is the slip it was.
         let r2 = round(&["lint|/p/src/a.ts|rule|m"], &ran);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["/p"]);
+        let j =
+            judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["/p"]);
         assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
         // A Windows view root, printed with backslashes.
         let r2 = round(&["lint|C:\\v\\src\\a.ts|rule|m"], &ran);
-        let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&["src/a.ts".into()], &["C:\\v"]);
+        let j = judge(std::slice::from_ref(&r1), &r2)
+            .keeping_slips_in(&["src/a.ts".into()], &["C:\\v"]);
         assert_eq!(j.verdict, Verdict::Progress, "{j:?}");
     }
 
@@ -1271,7 +1296,8 @@ mod tests {
                 (format!("lint|{other}|rule|m"), true),
             ] {
                 let r2 = round(&[key.as_str()], &ran);
-                let j = judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()], &[]);
+                let j =
+                    judge(std::slice::from_ref(&r1), &r2).keeping_slips_in(&[written.into()], &[]);
                 assert_eq!(j.broke.contains(&key), broken, "{written} / {key}: {j:?}");
             }
         }
@@ -1446,32 +1472,77 @@ mod tests {
             f
         };
         // pytest's conftest and ini.
-        flagged("tests/conftest.py", "import pytest\n", "import pytest\ncollect_ignore = ['test_a.py']\n");
-        flagged("pytest.ini", "[pytest]\n", "[pytest]\naddopts = -k 'not slow'\n");
+        flagged(
+            "tests/conftest.py",
+            "import pytest\n",
+            "import pytest\ncollect_ignore = ['test_a.py']\n",
+        );
+        flagged(
+            "pytest.ini",
+            "[pytest]\n",
+            "[pytest]\naddopts = -k 'not slow'\n",
+        );
         // Cargo: the tests folder turned off.
         let cargo = "[package]\nname = \"a\"\nversion = \"0.1.0\"\n";
         flagged("Cargo.toml", cargo, &format!("{cargo}autotests = false\n"));
         assert!(
-            integrity_flags("Cargo.toml", Some(cargo), Some(&cargo.replace("0.1.0", "0.2.0"))).is_empty(),
+            integrity_flags(
+                "Cargo.toml",
+                Some(cargo),
+                Some(&cargo.replace("0.1.0", "0.2.0"))
+            )
+            .is_empty(),
             "a version bump isn't"
         );
         // A module-wide pytest skip.
         let py = "def test_a():\n    assert f() == 1\n";
-        flagged("tests/test_a.py", py, &format!("import pytest\npytestmark = pytest.mark.skip\n{py}"));
+        flagged(
+            "tests/test_a.py",
+            py,
+            &format!("import pytest\npytestmark = pytest.mark.skip\n{py}"),
+        );
         // A test that returns first.
-        flagged("tests/test_a.py", py, "def test_a():\n    return\n    assert f() == 1\n");
+        flagged(
+            "tests/test_a.py",
+            py,
+            "def test_a():\n    return\n    assert f() == 1\n",
+        );
         let js = "test('adds', () => {\n  expect(add(1, 2)).toBe(3);\n});\n";
-        flagged("src/add.test.ts", js, &js.replace("=> {\n", "=> {\n  if (false) "));
-        flagged("src/add.test.ts", js, &js.replace("=> {\n", "=> {\n  return;\n"));
-        let go = "func TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n";
-        flagged("add_test.go", go, &go.replace("{\n\tif Add", "{\n\treturn\n\tif Add"));
+        flagged(
+            "src/add.test.ts",
+            js,
+            &js.replace("=> {\n", "=> {\n  if (false) "),
+        );
+        flagged(
+            "src/add.test.ts",
+            js,
+            &js.replace("=> {\n", "=> {\n  return;\n"),
+        );
+        let go =
+            "func TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n";
+        flagged(
+            "add_test.go",
+            go,
+            &go.replace("{\n\tif Add", "{\n\treturn\n\tif Add"),
+        );
         // A Rust test module behind a feature, and a test that returns.
         let rs = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {\n        assert_eq!(add(1, 2), 3);\n    }\n}\n";
-        flagged("src/lib.rs", rs, &rs.replace("#[cfg(test)]", "#[cfg(feature = \"never\")]"));
-        flagged("src/lib.rs", rs, &rs.replace("fn adds() {\n", "fn adds() {\n        return;\n"));
+        flagged(
+            "src/lib.rs",
+            rs,
+            &rs.replace("#[cfg(test)]", "#[cfg(feature = \"never\")]"),
+        );
+        flagged(
+            "src/lib.rs",
+            rs,
+            &rs.replace("fn adds() {\n", "fn adds() {\n        return;\n"),
+        );
         // A test file in a language it can't count.
         let f = flagged("spec/add_spec.rb", "it 'adds' do\nend\n", "");
-        assert!(f[0].contains("a test file the IDE can't check was changed"), "{f:?}");
+        assert!(
+            f[0].contains("a test file the IDE can't check was changed"),
+            "{f:?}"
+        );
     }
 
     /// Round 2, P3.8: ordinary test work isn't flagged: a snapshot, a

@@ -224,7 +224,9 @@ fn severity_of(written: &str) -> String {
 /// A line without its bullet, emphasis and leading punctuation.
 fn plain_lead(line: &str) -> String {
     line.trim()
-        .trim_start_matches(|c: char| matches!(c, '-' | '*' | '_' | '•' | '>' | '✅' | '✓') || c.is_whitespace())
+        .trim_start_matches(|c: char| {
+            matches!(c, '-' | '*' | '_' | '•' | '>' | '✅' | '✓') || c.is_whitespace()
+        })
         .trim_matches(|c: char| matches!(c, '*' | '_' | '`'))
         .to_string()
 }
@@ -402,7 +404,8 @@ pub(super) fn reviewer_skip_reason(skip: &Skip) -> String {
 /// same lines (near enough, edits move them) or the same title.
 fn same_finding(a: &Finding, b: &Finding) -> bool {
     let near = matches!((a.line, b.line), (Some(x), Some(y)) if x.abs_diff(y) <= 8);
-    let same_title = !a.title.is_empty() && super::plan::simple_words(&a.title) == super::plan::simple_words(&b.title);
+    let same_title = !a.title.is_empty()
+        && super::plan::simple_words(&a.title) == super::plan::simple_words(&b.title);
     // P4.5: without lines to compare, or for one plan step, only the same
     // title is the same finding (another problem in the step is new).
     match (&a.path, &b.path) {
@@ -786,7 +789,9 @@ impl<R: Runtime> Run<R> {
         let mut serious: Vec<Finding> = Vec::new();
         match subagent::outcome_of(&mut review, outcome) {
             subagent::SubOutcome::Stopped => review["status"] = json!("stopped"),
-            subagent::SubOutcome::Skipped(skip) => skipped(&mut review, reviewer_skip_reason(&skip)),
+            subagent::SubOutcome::Skipped(skip) => {
+                skipped(&mut review, reviewer_skip_reason(&skip))
+            }
             subagent::SubOutcome::Report(r) => match parse_findings(&r.text) {
                 Err(e) => skipped(&mut review, format!("its report couldn't be read: {e}")),
                 Ok(found) => {
@@ -1330,14 +1335,21 @@ mod tests {
         assert_eq!(f[0].title, "The draft restore isn't awaited");
         assert_eq!(f[0].scenario, "the chip lands in the old composer.");
         assert_eq!(f[0].fix, "await `restoreComposerDraft`.");
-        assert!(f[0].new_evidence.as_deref().unwrap().contains("ChatPanel.tsx:412"));
+        assert!(f[0]
+            .new_evidence
+            .as_deref()
+            .unwrap()
+            .contains("ChatPanel.tsx:412"));
         assert_eq!((f[1].severity.as_str(), f[1].step), ("high", Some(2)));
         assert_eq!(f[1].title, "Two consumers of the queue");
         assert!(subagent::format_problem(Kind::Reviewer.spec(), unbulleted).is_none());
         // The brief shows earlier findings in the report's own format.
         let shown = describe(&f[1], 1);
         assert!(shown.starts_with("1. [high] Steps 2 and 4 — Two consumers of the queue\n   - Scenario: s\n   - Fix: f\n   - Confidence: plausible"), "{shown}");
-        assert_eq!(parse_findings(&format!("## Findings\n{shown}")).unwrap()[0].title, f[1].title);
+        assert_eq!(
+            parse_findings(&format!("## Findings\n{shown}")).unwrap()[0].title,
+            f[1].title
+        );
     }
 
     /// A first report in shapes a reviewer gives it: the heading at

@@ -771,7 +771,12 @@ fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Resul
             }
             // P1.3: put back whole, it failed; half put back, it's still
             // applying: recovery finishes it, and Land waits for that.
-            journal.state = if left.is_empty() { "failed" } else { "applying" }.into();
+            journal.state = if left.is_empty() {
+                "failed"
+            } else {
+                "applying"
+            }
+            .into();
             let _ = save_journal(&dir, &journal);
             return Err(if left.is_empty() {
                 format!("{err} (nothing landed)")

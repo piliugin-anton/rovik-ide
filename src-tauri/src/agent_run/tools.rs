@@ -768,7 +768,11 @@ async fn run<R: Runtime>(
             .await
             .map_err(|e| e.to_string())?;
             let outcome = outcome?;
-            return Ok(ToolResult { content: outcome.summary, written: Some((edit.path, outcome.content)), ..Default::default() });
+            return Ok(ToolResult {
+                content: outcome.summary,
+                written: Some((edit.path, outcome.content)),
+                ..Default::default()
+            });
         }
         "read" => {
             let Some(path) = text(args, "path").filter(|p| !p.is_empty()) else {
@@ -852,7 +856,12 @@ async fn run<R: Runtime>(
         }
         "list_dir" => {
             let path = text(args, "path").map(str::to_string);
-            let entries = crate::agent_tools::tool_list_dir(root_owned.clone(), path.clone(), uint(args, "max_depth")).await?;
+            let entries = crate::agent_tools::tool_list_dir(
+                root_owned.clone(),
+                path.clone(),
+                uint(args, "max_depth"),
+            )
+            .await?;
             let content = if entries.is_empty() {
                 "(empty, or everything under this path is ignored)".to_string()
             } else {
@@ -864,12 +873,18 @@ async fn run<R: Runtime>(
             };
             // The folder it listed, as the chat names it: relative to the
             // project, "" for the root, however the model wrote the path.
-            let meta = crate::agent_tools::project_relative(&root_owned, path.as_deref().unwrap_or("")).map(|dir| {
-                let mut meta = Map::new();
-                meta.insert("dir".into(), json!(dir));
-                meta
+            let meta =
+                crate::agent_tools::project_relative(&root_owned, path.as_deref().unwrap_or(""))
+                    .map(|dir| {
+                        let mut meta = Map::new();
+                        meta.insert("dir".into(), json!(dir));
+                        meta
+                    });
+            return Ok(ToolResult {
+                content,
+                meta,
+                ..Default::default()
             });
-            return Ok(ToolResult { content, meta, ..Default::default() });
         }
         "search_code" => {
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
@@ -973,11 +988,12 @@ async fn run<R: Runtime>(
         _ => format!("Error: unknown tool \"{name}\"."),
     };
     // P2.4: what these show of other files leaves out the hidden ones.
-    let content = if !ctx.hidden.is_empty() && matches!(name, "callers" | "neighbours" | "diagnostics") {
-        super::test_writer::without_hidden_lines(&content, &ctx.hidden)
-    } else {
-        content
-    };
+    let content =
+        if !ctx.hidden.is_empty() && matches!(name, "callers" | "neighbours" | "diagnostics") {
+            super::test_writer::without_hidden_lines(&content, &ctx.hidden)
+        } else {
+            content
+        };
     Ok(ToolResult::text(content))
 }
 
@@ -1201,7 +1217,8 @@ fn count_lines(text: &str) -> usize {
 static MATCH_COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) match").unwrap());
 static NUMBERED_HIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\. ").unwrap());
 static EXIT_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^exit code (-?\d+)").unwrap());
-static WRITE_CHANGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\+(\d+) -(\d+) lines\)$").unwrap());
+static WRITE_CHANGES: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(\+(\d+) -(\d+) lines\)$").unwrap());
 static PAGE_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 
 /// Small summary of a tool's result, for the chat's tool block header.
@@ -1302,9 +1319,16 @@ mod tests {
     #[test]
     fn whole_writes_report_lines_added_and_removed() {
         let meta = result_meta("write", "wrote 9 bytes to a.ts (+3 -1 lines)").unwrap();
-        assert_eq!((meta["added"].clone(), meta["removed"].clone()), (json!(3), json!(1)));
+        assert_eq!(
+            (meta["added"].clone(), meta["removed"].clone()),
+            (json!(3), json!(1))
+        );
         assert!(result_meta("write", "wrote 9 bytes to a.bin").is_none());
-        assert!(result_meta("write", "Edited a.ts: replaced lines 3-4 (2 → 2 lines), now 9.").is_none());
+        assert!(result_meta(
+            "write",
+            "Edited a.ts: replaced lines 3-4 (2 → 2 lines), now 9."
+        )
+        .is_none());
     }
 
     #[test]

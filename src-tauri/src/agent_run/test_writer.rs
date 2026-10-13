@@ -133,7 +133,8 @@ pub fn without_hidden_lines(text: &str, hidden: &[String]) -> String {
                         Some('.') => after.next().is_some_and(|c| c.is_alphanumeric()),
                         _ => false,
                     };
-                    before.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '-'))
+                    before
+                        .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '-'))
                         && !longer
                 })
             });
@@ -423,7 +424,10 @@ mod tests {
             &hidden,
         );
         assert!(!shown.contains("src/x.ts:4"), "{shown}");
-        assert!(shown.contains("src/y.ts:9") && shown.contains("src/x.tsx:1"), "{shown}");
+        assert!(
+            shown.contains("src/y.ts:9") && shown.contains("src/x.tsx:1"),
+            "{shown}"
+        );
         assert!(shown.ends_with("[1 line in the files the change touches left out: you write tests from the specification. Use outline on those files.]"));
         // Where any case names the same file, any case is hidden.
         assert!(is_hidden_as(&hidden, "SRC/X.ts", true));

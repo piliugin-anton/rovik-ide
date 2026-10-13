@@ -363,7 +363,12 @@ fn rollback_note(rb: &repair::Rollback) -> String {
     note.push('.');
     // P3.5: what commands changed isn't known, so it isn't undone.
     if !rb.commands.is_empty() {
-        let shown: Vec<String> = rb.commands.iter().take(5).map(|c| format!("`{c}`")).collect();
+        let shown: Vec<String> = rb
+            .commands
+            .iter()
+            .take(5)
+            .map(|c| format!("`{c}`"))
+            .collect();
         note.push_str(&format!(
             " Commands ran in that fix ({}{}); what they changed wasn't undone, and the checks run again when you finish.",
             shown.join(", "),
@@ -650,7 +655,9 @@ impl<R: Runtime> Run<R> {
                 Some(want) => {
                     let copies = [
                         project.as_ref().map(|p| std::path::Path::new(p).join(path)),
-                        Some(std::path::PathBuf::from(super::tools::to_absolute_path(path, &root))),
+                        Some(std::path::PathBuf::from(super::tools::to_absolute_path(
+                            path, &root,
+                        ))),
                     ];
                     copies
                         .into_iter()
@@ -738,8 +745,14 @@ impl<R: Runtime> Run<R> {
             // agent answered a review after green without a fix): verified.
             let passed = self.verify_rounds > 0
                 && !self.last_verify_results.is_empty()
-                && self.last_verify_results.iter().all(|r| r.status != "failed")
-                && self.last_verify_results.iter().any(|r| r.status == "passed");
+                && self
+                    .last_verify_results
+                    .iter()
+                    .all(|r| r.status != "failed")
+                && self
+                    .last_verify_results
+                    .iter()
+                    .any(|r| r.status == "passed");
             return Ok(match (passed, self.integrity_unchecked) {
                 (true, true) => "verify-unchecked",
                 (true, false) => "verified",
@@ -774,7 +787,13 @@ impl<R: Runtime> Run<R> {
                 .collect();
             let record_id = self
                 .add_record(with(
-                    record("needs-approval", self.verify_rounds, &pending, &changed, None),
+                    record(
+                        "needs-approval",
+                        self.verify_rounds,
+                        &pending,
+                        &changed,
+                        None,
+                    ),
                     json!({ "baselineHashes": hashes }),
                 ))
                 .await?;
@@ -807,7 +826,15 @@ impl<R: Runtime> Run<R> {
 
         self.clean_earlier_output();
         let results = self
-            .run_checks(&root, &checks, &p, &changed, &record_id, round, &format!("round-{round}"))
+            .run_checks(
+                &root,
+                &checks,
+                &p,
+                &changed,
+                &record_id,
+                round,
+                &format!("round-{round}"),
+            )
             .await?;
 
         let failed = results.iter().any(|r| r.status == "failed");
@@ -1200,7 +1227,10 @@ impl<R: Runtime> Run<R> {
             .ok()?;
         // Its own name: the round's checks, saved under `round-N`, still
         // stand (their paths are in the round's record and triage).
-        let saved_as = format!("round-{round}-midrun-{}", &record_id[..8.min(record_id.len())]);
+        let saved_as = format!(
+            "round-{round}-midrun-{}",
+            &record_id[..8.min(record_id.len())]
+        );
         self.clean_earlier_output();
         let results = self
             .run_checks(&root, &checks, &p, &changed, &record_id, round, &saved_as)
@@ -1474,9 +1504,18 @@ mod tests {
         let chat = format!("spill-{}", uuid::Uuid::new_v4());
         let big = vec![0xffu8; CARRY_MEMORY_BYTES];
         let mut baseline = std::collections::HashMap::new();
-        baseline.insert("big.bin".to_string(), Original::new(Some(big.clone()), Source::ViewAtRunStart));
-        baseline.insert("small.txt".to_string(), Original::new(Some(b"x".to_vec()), Source::ProjectCopy));
-        baseline.insert("new.txt".to_string(), Original::new(None, Source::ViewAtRunStart));
+        baseline.insert(
+            "big.bin".to_string(),
+            Original::new(Some(big.clone()), Source::ViewAtRunStart),
+        );
+        baseline.insert(
+            "small.txt".to_string(),
+            Original::new(Some(b"x".to_vec()), Source::ProjectCopy),
+        );
+        baseline.insert(
+            "new.txt".to_string(),
+            Original::new(None, Source::ViewAtRunStart),
+        );
         let spilled = spill(&chat, &mut baseline);
         assert_eq!(spilled.0.len(), 1);
         assert!(!baseline.contains_key("big.bin") && baseline.contains_key("small.txt"));

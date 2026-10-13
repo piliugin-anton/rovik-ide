@@ -387,8 +387,19 @@ fn wrapper_words(name: &str, rest: &[String]) -> Option<usize> {
         "nice" => &["-n", "--adjustment"],
         "sudo" | "doas" => &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"],
         "xargs" => &[
-            "-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "--max-args", "--max-procs",
-            "--delimiter", "--arg-file", "--max-lines",
+            "-I",
+            "-n",
+            "-P",
+            "-L",
+            "-d",
+            "-E",
+            "-s",
+            "-a",
+            "--max-args",
+            "--max-procs",
+            "--delimiter",
+            "--arg-file",
+            "--max-lines",
         ],
         // Round 3: the other wrappers that only run the rest.
         "stdbuf" => &["-i", "-o", "-e", "--input", "--output", "--error"],
@@ -527,9 +538,10 @@ fn segment_denied(segment: &[String], denied: &[Vec<String>], depth: usize) -> b
         let shell = matches!(program.as_str(), "bash" | "sh" | "zsh" | "dash" | "fish");
         if shell && depth < 3 {
             // `-c`, `-lc`, `-ec`, `-euc` (round 3): the script is the next word.
-            if let Some(at) = args.iter().position(|a| {
-                short_cluster(a).is_some_and(|letters| letters.contains(&'c'))
-            }) {
+            if let Some(at) = args
+                .iter()
+                .position(|a| short_cluster(a).is_some_and(|letters| letters.contains(&'c')))
+            {
                 if let Some(script) = args.get(at + 1) {
                     if command_denied(script, denied, depth + 1) {
                         return true;
@@ -1207,7 +1219,10 @@ mod tests {
         ] {
             assert_eq!(classify(wrapped, None), classify(bare, None), "{wrapped}");
         }
-        assert_eq!(unwrap_wrappers(&split_words("env -i A=1 -u B time nice -5 x y")), ["x", "y"]);
+        assert_eq!(
+            unwrap_wrappers(&split_words("env -i A=1 -u B time nice -5 x y")),
+            ["x", "y"]
+        );
     }
 
     /// The cases the frontend's hints are tested with too

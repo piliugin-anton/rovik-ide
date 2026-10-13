@@ -12,9 +12,7 @@
 //! its end for the user. A reviewer that fails is recorded as skipped and
 //! the plan is saved with a note (layer 7).
 
-use super::change_review::{
-    drop_repeats, parse_findings, reviewer_skip_reason, skipped, Finding,
-};
+use super::change_review::{drop_repeats, parse_findings, reviewer_skip_reason, skipped, Finding};
 use super::run::Run;
 use super::subagent::{self, Budget, Format, Kind, KindSpec};
 use super::{diff, log};
@@ -99,7 +97,6 @@ pub struct BriefParts<'a> {
     /// A later round: the earlier findings and the agent's replies since.
     pub earlier: Option<(&'a [Finding], &'a str)>,
 }
-
 
 /// B08: the reviewer's brief. The harness writes it; nothing from the
 /// agent's conversation but its plan (and, in a later round, its replies
@@ -347,7 +344,9 @@ impl<R: Runtime> Run<R> {
         let mut serious: Vec<Finding> = Vec::new();
         match subagent::outcome_of(&mut review, outcome) {
             subagent::SubOutcome::Stopped => review["status"] = json!("stopped"),
-            subagent::SubOutcome::Skipped(skip) => skipped(&mut review, reviewer_skip_reason(&skip)),
+            subagent::SubOutcome::Skipped(skip) => {
+                skipped(&mut review, reviewer_skip_reason(&skip))
+            }
             subagent::SubOutcome::Report(r) => match parse_findings(&r.text) {
                 Err(e) => skipped(&mut review, format!("its report couldn't be read: {e}")),
                 Ok(found) => {
