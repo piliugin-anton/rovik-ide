@@ -100,21 +100,6 @@ pub struct BriefParts<'a> {
     pub earlier: Option<(&'a [Finding], &'a str)>,
 }
 
-fn describe(f: &Finding, n: usize) -> String {
-    format!(
-        "{n}. [{}] {}{}\n   Scenario: {}\n   Suggested fix: {}\n   Confidence: {}",
-        f.severity,
-        f.location,
-        if f.title.is_empty() {
-            String::new()
-        } else {
-            format!(" — {}", f.title)
-        },
-        f.scenario.replace('\n', "\n   "),
-        f.fix.replace('\n', "\n   "),
-        f.confidence
-    )
-}
 
 /// B08: the reviewer's brief. The harness writes it; nothing from the
 /// agent's conversation but its plan (and, in a later round, its replies
@@ -139,7 +124,7 @@ pub fn brief(p: &BriefParts) -> String {
         let list = findings
             .iter()
             .enumerate()
-            .map(|(i, f)| describe(f, i + 1))
+            .map(|(i, f)| super::change_review::describe(f, i + 1))
             .collect::<Vec<_>>()
             .join("\n\n");
         out.push_str(&format!(
@@ -161,7 +146,7 @@ pub fn findings_result(findings: &[Finding], round: u32) -> String {
     let list = findings
         .iter()
         .enumerate()
-        .map(|(i, f)| describe(f, i + 1))
+        .map(|(i, f)| super::change_review::describe(f, i + 1))
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(

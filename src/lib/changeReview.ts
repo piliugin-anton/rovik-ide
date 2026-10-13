@@ -49,6 +49,8 @@ export interface ReviewMeta {
   dropped?: ReviewFinding[];
   /** skipped: why. */
   reason?: string;
+  /** skipped for its format: the report as the reviewer wrote it. */
+  report?: string;
   childDialogId?: string | null;
   model?: string | null;
   modelsTried?: string[];

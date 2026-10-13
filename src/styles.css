@@ -7918,6 +7918,16 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   cursor: pointer;
 }
 
+/* A skipped review's report as the reviewer wrote it. */
+.review-report {
+  margin: 4px 0 0 12px;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
 .subagent-run-usage {
   padding: 0 12px 4px;
   font-size: 11px;

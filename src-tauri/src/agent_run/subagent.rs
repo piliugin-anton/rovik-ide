@@ -194,7 +194,11 @@ pub fn outcome_of(
                 .unwrap_or("no reason given")
                 .to_string(),
         )),
-        SubStatus::Unformatted => SubOutcome::Skipped(Skip::Unformatted),
+        SubStatus::Unformatted => {
+            // Kept so the record shows what the reviewer wrote.
+            record["report"] = json!(r.text.chars().take(6_000).collect::<String>());
+            SubOutcome::Skipped(Skip::Unformatted)
+        }
         SubStatus::Done | SubStatus::Partial => SubOutcome::Report(r),
     }
 }
