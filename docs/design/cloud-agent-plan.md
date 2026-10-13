@@ -31,10 +31,55 @@ Facts that shape the design (paths under `src-tauri/src/`):
   - looking up shared state: `app.state::<AgentState>()` (29×),
     `DbState` (25×), `VfsState` (11×), `BrowserState` (a few);
   - `app.path().app_data_dir()` and `tauri::async_runtime::spawn_blocking`.
-- **Global state outside `AppHandle`:** `overlay::chats` (`DATA_DIR`,
-  `OPEN`, `GATES`, `CHILDREN`, `NOTES` statics) and `workload::init(dir)`.
-  These assume one process = one user's data directory, which is fine on
-  a dedicated server but has to be passed in explicitly, not set once.
+- **Global state outside `AppHandle`:** `overlay::chats` has about
+  fifteen statics (`DATA_DIR`, `OPEN`, `GATES`, `CHILDREN`, `NOTES`,
+  `RUNNING`, `DIRECT`, `BUSY`, `PEERS`, `STATE_LOCKS`, `SHOWN`…),
+  `workload` has four (`SETTINGS_FILE`, `HISTORY`, `SHARED`, `STARTED`),
+  plus `confine::available` and `vfs::macfuse::LIBRARY`. All but two are
+  per-process caches keyed by chat id or path; only `DATA_DIR` and
+  `workload::init(dir)` are set-once configuration. One daemon serves one
+  user and one data directory, which is exactly what they assume, so
+  they can stay statics (§2.2).
+- **Settings and API keys already travel with every call.** The frontend
+  owns `ai-settings.json` (`load_ai_settings`/`save_ai_settings` are
+  opaque strings to the backend) and sends `ModelProfile` (with
+  `api_key`) in every `StartRequest`, and `AgentConfig` (permissions,
+  reviewer and subagent profiles, keys included) through
+  `agent_configure` at startup and on every change. A run never reads
+  the file. A daemon therefore needs nothing on disk to run a chat; it
+  needs those same two calls from a connected client.
+- **Streaming commands use `tauri::ipc::Channel`:** `send_chat_message`
+  (agent.rs), `spawn_terminal`, the `vfs_*` subscriptions and `lsp_*`.
+  Agent runs don't; they use app events. Of these only
+  `send_chat_message` could need to go remote, so the protocol needs one
+  streaming shape (§2.3), not a general one.
+- **Other Tauri-managed state:** `ChatRequests` (cancel for
+  `send_chat_message`), `WatcherState`, `LspState`, `TerminalState`. The
+  last three stay local.
+- **The web tools need Chrome** (`browser_tools.rs`: `eoka::find_chrome`,
+  launched headless). On a server either Chromium is installed (setup
+  script) or `browse_url`/`web_search` fail with a clear message; the
+  connection test should say which (§7).
+- **Command confinement needs unprivileged user namespaces**
+  (`overlay/confine.rs`); Docker and most LXC images turn them off.
+  Without them, commands that name the project's path are refused. With
+  the `/dev/fuse` point below, a typical server has neither, so the
+  server design shouldn't depend on either (§3.1).
+- **Paths in stored data are absolute and local:** `projects.path`,
+  `project_decisions.path`, the overlay store's `project.txt` (its base
+  folder), the mount path (`$XDG_RUNTIME_DIR/rovik-ide/chats/<id>`) in
+  tool results the model has seen, `abs_path` in `FileWritten` events. A
+  moved chat needs them remapped at import, and the client needs the
+  reverse map for events (§5).
+- **A project's identity is a file in the project:** `.rovik/project.json`
+  (`chat_db/projects.rs`). The server's copy has to carry the same file
+  (or the daemon writes it from the exported `projects` row) so the chat
+  finds its project there under the same id.
+- **The e2e tests build a mock Tauri app** (`mock_builder().manage(...)`,
+  about 20k lines across `e2e_tests.rs`, `subagent_e2e_tests.rs` and
+  `repair_e2e_tests.rs`) and call the commands with `app.state()`. The
+  harness changes with §2.2; the tests' bodies mostly don't. The eval
+  scripts (`scripts/eval`) drive `rovik-headless`, so its CLI must stay.
 - **Chat state is split in three places:**
   1. SQLite `<app data>/chats.db`: `dialogs`, `messages`,
      `message_bodies`, `attachments` + `attachments/` blobs,
@@ -93,8 +138,8 @@ pub struct Core {
     pub agents: AgentState,
     pub vfs: VfsState,
     pub browser: BrowserState,
-    pub overlays: Overlays,        // was the statics in overlay::chats
-    pub workload: Workload,        // was workload::init
+    // Later, for a multi-tenant daemon: `overlays` and `workload` as
+    // fields. Today they stay the statics they are (below).
     pub events: Arc<dyn EventSink>,
 }
 
@@ -114,6 +159,20 @@ pub trait EventSink: Send + Sync {
   `tokio::task::spawn_blocking`. The server owns a multi-thread runtime
   (tokio needs `rt-multi-thread` in the server crate).
 - `app.path().app_data_dir()` becomes `core.data_dir`.
+- The statics in `overlay::chats` and `workload` **stay statics in
+  phase 1**. A daemon is one process for one user and one data
+  directory, which is what they assume. Only the set-once ones
+  (`DATA_DIR`, `workload::init`, `set_chat_resolves`) become part of
+  `Core::new(data_dir)`. Moving fifteen caches into `Core` is a week of
+  plumbing that buys nothing until a multi-tenant daemon exists.
+- A cheaper route to the same place: make the context a **trait first**
+  (`trait Host { fn db(&self) -> &DbState; fn agents(&self) ->
+  &AgentState; … fn emit(&self, e: AgentEvent); }`), implement it for
+  `AppHandle<R>` with `state::<X>()`, change the ~65 call sites to
+  `host.db()`, and only then add the plain `Core` struct and swap the
+  test harness over. Each step compiles on its own and the e2e tests run
+  at every step, instead of one big-bang commit that moves the harness,
+  the states and the call sites together.
 
 ### 2.3 Make the command surface a protocol, not 145 Tauri commands
 
@@ -128,12 +187,34 @@ Not every command needs to go remote. Group them:
 | Editor/FS/git/LSP/terminal | `read_file_content`, `git_*`, `lsp_*`, `spawn_terminal` | **No, at first.** The editor stays on the local copy. A remote terminal is a later nice-to-have |
 
 Define these as one `Request` enum + `Response` + `Event` in
-`rovik-protocol` (JSON, `serde(tag = "method")`), with an `id` per call.
+`rovik-protocol` (JSON, `serde(tag = "method")`), with an `id` per call,
+and make the protocol **one bidirectional message stream**: requests,
+responses and notifications (events, and chunks for the one streaming
+call) on a single ordered channel, JSON-RPC style. The same stream then
+runs over a WebSocket (T2/T3), over an SSH exec channel's stdio (T1),
+over a Unix socket for a local daemon in tests, and in-process in the
+Tauri app. HTTP stays for what a stream is bad at: blob upload/download
+(attachments) and `/health`. T3's "two layers to debug" becomes one
+protocol plus a dumb byte pipe, and T1 is a free mode of it.
+
 The Tauri commands and the server's handlers call the same core
-functions. On the frontend, introduce a `backend` module that
-`chatApi.ts`, `agentRuns.ts` and the overlay code use instead of calling
-`invoke`/`listen` directly. It goes to the local Tauri backend or to the
-remote connection depending on where the chat lives.
+functions; the remote-capable commands are generated from the enum (a
+macro, or one `dispatch(Request) -> Response` the Tauri side wraps), so
+there is one list to maintain, not two. On the frontend, introduce a
+`backend` module that `chatApi.ts`, `agentRuns.ts` and the overlay code
+use instead of calling `invoke`/`listen` directly. It picks the local
+Tauri backend or a remote connection by the chat's `location` (§5) and
+feeds remote events into the same `agent-event` handler, so the stores
+and panels don't know where a chat runs.
+
+Two things this costs, worth knowing up front:
+
+- the chat list and search (`chat_list_dialogs`, `chat_search`, FTS) are
+  local-database queries. A remote chat's new messages aren't in it
+  unless mirrored; §5's mirror makes that a non-issue;
+- `agent_configure` is global on each backend. The frontend has to send
+  it to every connected backend, on connect and on every change, and a
+  daemon that restarted has nothing until a client reconnects (§6).
 
 ---
 
@@ -142,28 +223,80 @@ remote connection depending on where the chat lives.
 The agent needs the project's files and its toolchain on the server, and
 its changes have to come back to the local editor.
 
-### Option P1: Git snapshot up, overlay diff down (recommended)
+### 3.1 Where the chat works on the server
 
-- **Up:** `git bundle` of the commits the server doesn't have yet (or a
-  full clone on first use), plus a tarball of the uncommitted and
-  untracked, not-ignored files. Sent over the connection; the server
-  keeps one checkout per project (`~/.rovik/projects/<project id>`),
-  matched by `projects.git_root_commit`, which already exists.
-- The remote chat works in an overlay over that checkout, as it does
-  locally.
-- **Down:** when a remote chat lands, the server sends the overlay's
-  change set (the same data `overlay_status`/`overlay_file` already
-  expose). The client applies it to the local project through the
-  existing landing code (conflicts and undo already handled). Optionally
-  the server can also push a branch to the user's git remote.
-- Pros: reuses overlay/landing (conflicts, undo, "a chat never overwrites
-  you"); bandwidth proportional to changes; works when the laptop is
-  offline (changes wait on the server); no new sync engine.
-- Cons: non-git projects need a full tarball upload (fine for small
-  projects, slow for big ones); files the user edits locally after the
-  move aren't seen by the remote chat until a re-sync ("sync now" or
-  automatic before each user message); large untracked assets are
-  uploaded once.
+Locally a chat works in a FUSE overlay and its commands are confined
+with user namespaces. A server often has neither (`/dev/fuse` and
+unprivileged user namespaces are both off in most containers), and the
+existing fallback, "work in the project directly", is fine on a server
+**as long as the checkout is the chat's own**. So:
+
+- The daemon keeps one bare repository per project
+  (`~/.rovik/projects/<project id>.git`) and gives each remote chat a
+  **git worktree of its own** (`~/.rovik/work/<chat id>/`, checked out
+  from the chat's snapshot commit, §3.2). The worktree is the chat's
+  private copy: no overlay, no mount, no confinement needed, and
+  `git diff <snapshot>` is the chat's change list. Worktrees share
+  objects, so they're cheap in disk; build caches aren't shared, so a
+  chat's first build on the server is cold. Keeping a project's last
+  worktree and reusing it for the next chat on that project softens
+  that.
+- Where the driver is present, the overlay can later run over the
+  worktree for the finer features (`overlay_undo_group`, redo, unmark,
+  conflicts-to-chat). Not in v1: it doubles the server-side paths.
+- Landing back (§3.2, down) needs the same three inputs either way: the
+  base (snapshot commit), the chat's version (worktree, or overlay
+  upper) and the project's file now (local). One `changes()` shape
+  serves the local overlay and the server worktree.
+- Pros: works in any container or VM with only `git` installed; the
+  server's state is plain git, inspectable with git tools; crash
+  recovery is `git status`.
+- Cons: no fine-grained undo groups on the server in v1; disk per
+  worktree for build output; a chat's `.gitignore`d by-products stay in
+  the worktree (that's what tiers.rs skips at landing anyway).
+
+### 3.2 Option P1: git carries the project both ways (recommended)
+
+The desktop already links libgit2 with its SSH transport (`git2` with
+the `ssh` feature; libssh2 is in Cargo.lock). Git is the transfer
+format, with libgit2's negotiation: only objects the other side lacks
+travel, in both directions.
+
+- **Up:** the client makes a **snapshot commit** of the working tree
+  (index plus untracked, not-ignored files, through a temporary index;
+  parent `HEAD`; the user's branches and index are never touched) and
+  pushes it with libgit2 over SSH to the project's bare repository on
+  the server, as `refs/rovik/chats/<chat id>/snapshot`. The first push
+  carries the history (a clone's worth, once); later ones only the new
+  blobs. The daemon checks the snapshot out into the chat's worktree.
+  "Sync now", and the automatic sync before each user message, is
+  another snapshot push: seconds.
+- **Down:** when the chat lands (the user asks, or the run finished and
+  auto-landing applies, `agent_run/landing.rs`), the daemon commits the
+  worktree as `refs/rovik/chats/<chat id>/result` (parent: the
+  snapshot). The client fetches it over SSH and lands it through the
+  existing landing code with base = snapshot tree, chat = result tree,
+  project = the local file now: the same three-way merge, journal,
+  conflicts and undo as today. Optionally the daemon also pushes a branch
+  to the user's remote.
+- **Non-git projects:** the client keeps a **shadow repository** in app
+  data (`<app data>/shadow/<project id>.git` with `core.worktree` set to
+  the project folder) and snapshots into it. The user never sees it;
+  cloud chats just work, and the project's `.gitignore` files are still
+  honoured by the snapshot.
+- Pros: no bundle format, no tarball, no new sync engine, no server-side
+  credentials (the client pushes; the server only receives); incremental
+  by construction; the snapshot id doubles as the merge base and as a
+  record of exactly what the chat saw; move-back (§5) is "fetch the
+  result ref"; the server works while the laptop is offline (the result
+  waits as a ref).
+- Cons: needs SSH for git as well as for the tunnel (same credentials,
+  but a second SSH stack on the client, libssh2 next to russh, with its
+  own host-key check to keep consistent); the first push of a large
+  history is as slow as a clone; large untracked binaries become git
+  objects in the shadow or bare repository (ignore rules keep build
+  output and dependencies out); files the user edits locally after the
+  move aren't seen until the next sync.
 
 ### Option P2: Continuous two-way file sync (rsync-like / Mutagen-style)
 
@@ -186,9 +319,11 @@ its changes have to come back to the local editor.
   offline for that project; a much larger first step. Moving "the current
   session at any moment" means moving the project too.
 
-**Recommendation:** P1 now. Design the protocol so P3 can be added later
-by putting the FS/git/terminal groups behind the same `backend`
-abstraction.
+**Recommendation:** P1 with the worktree-per-chat server mode (§3.1).
+Design the protocol so P3 can be added later by putting the
+FS/git/terminal groups behind the same `backend` abstraction. Require git
+for cloud chats only in the sense that the shadow repository provides it
+where the project has none.
 
 **Toolchain on the server:** the agent's checks (`cargo`, `npm`,
 `pytest`…) must be installed there. Offer a "server setup script" field
@@ -269,6 +404,10 @@ Pros:
   deploy time and delivered over SSH.
 - Same Axum code as T2. Exposing it publicly later is a config switch
   (`--listen 0.0.0.0:443 --tls auto`), not a rewrite.
+- With the protocol as one message stream (§2.3), a `rovik-agentd
+  attach --stdio` mode that bridges the stream to the daemon's Unix
+  socket is a hundred lines, so T1 comes for free for hosts where port
+  forwarding is disabled (`AllowTcpForwarding no`).
 - One credential set (SSH), which the settings page already collects.
 
 Cons:
@@ -309,12 +448,12 @@ What "automatic HTTP and SSL" means in each case:
 | The chat and its subagent chats | `dialogs`, `messages`, `message_bodies`, `tool_call_extras` (children via `overlay::chats::CHILDREN` / dialog parent links) | Export rows |
 | Context-management state | `clm_state`, `clm_revisions` | Export rows |
 | Screenshots | `attachments` + `attachments/<sha256>` | Upload blobs the server doesn't have (content-addressed, dedups) |
-| Project identity | `projects`, `project_paths`, `project_decisions` | Export the row; the server maps it to its own checkout path |
+| Project identity | `projects`, `project_paths` | Export the row; the server maps it to the chat's worktree (`project_decisions` stay local) |
 | Model, mode, context mode | `dialogs` columns, `chat_set_model` | Part of the dialog row |
-| Private changes | `overlays/<chat id>/` | Tarball of the overlay store, applied over the server checkout (§3) |
+| Private changes | `overlays/<chat id>/` | Simplest: land locally first, then move a clean chat. Otherwise the overlay's `upper/` files are part of the snapshot commit (§3.2) and `base/` is the parent tree, so the worktree starts with the chat's changes |
 | Agent settings | `AgentConfig` (permissions, approval profiles, subagents), project settings | Sent with the move; the daemon's `agent_configure` per chat |
-| Model profiles + API keys | `ai-settings.json` | See §6. Only the profiles the chat (and its subagents/reviewers) uses |
-| Fix-round state waiting on approval | `AgentState.carries` (memory) | Serialize `VerifyCarry` or don't move while one is pending (below) |
+| Model profiles + API keys | Frontend memory (`ai-settings.json` is the frontend's file) | Already in `StartRequest` and `AgentConfig`; sent to the daemon the same way (§6) |
+| Fix-round state waiting on approval | `AgentState.carries` (memory) | Not moved: the stop drops it and the checks run again on the other side (below) |
 | Pending approvals/questions | `AgentState` (memory) | Not moved: they're re-asked after `Resume` |
 
 ### Option M1: Ownership transfer at a turn boundary (recommended)
@@ -326,16 +465,37 @@ What "automatic HTTP and SSL" means in each case:
 2. The client exports a **chat bundle** (dialog + children rows as JSON,
    attachments, overlay store, settings subset), uploads the project
    delta (§3), and the server imports it in one transaction.
-3. The local chat is marked `location = remote:<host id>` (new column)
-   and becomes read-only locally. The UI reads it through the remote
-   backend from then on.
+3. The local chat is marked `location = remote:<host id>` (new column).
+   The local rows stay and become a **mirror**: every `AgentEvent` the
+   client receives for the chat (`MessageStored`, patches, subagent
+   messages, checklist) is also written to the local database, keyed by
+   the message's `seq`, so a replay after a reconnect is idempotent. The
+   server is the chat's only writer; the mirror only follows. The chat
+   list, search, "open around a hit" and reading history offline keep
+   working from the local database with no change to `chatStore`; the
+   remote backend is asked only for what needs the owner (start, stop,
+   approvals, questions, landing, CLM) and for a `since seq` catch-up on
+   connect.
 4. The server starts the chat with `StartKind::Resume` or `ContinueRun`,
    whichever applies; both already exist.
-5. "Move back" is the same in reverse; the overlay's changes land
-   locally (or move back as an overlay).
+5. "Move back": stop at the safe point, catch the mirror up to the
+   server's last `seq`, fetch the result ref (§3.2) and land it (or keep
+   it as a local overlay), flip `location` back. With the mirror this is
+   a small transfer, not a second bundle.
+
+At import the daemon rewrites what is local to the laptop:
+`projects.path` becomes the worktree path; `project_decisions` don't move
+(they're about the laptop's folders); `.rovik/project.json` is written
+into the worktree from the `projects` row; an overlay store, if one moves
+rather than lands, gets a new `project.txt`. The model's history keeps
+the old mount paths in old tool results; that's harmless (the system
+prompt and every new tool result name the new root), but `abs_path` in
+events needs the reverse map on the client.
 
 Pros: one owner per chat at any time, so no sync conflicts; reuses
-resume logic; the bundle format doubles as chat export/import and backup.
+resume logic; the bundle format doubles as chat export/import and
+backup; the mirror keeps the local UI code and offline reading as they
+are.
 Cons: "at any moment" means "within one tool call" (seconds, or as long
 as a running build takes). A truly mid-request move would lose the
 in-flight model response anyway.
@@ -374,6 +534,25 @@ export/import in `chat_db` (useful by itself), and a graceful
 - Edit approvals already carry `current` and `proposed` content in the
   event, so the local diff view works unchanged.
 
+### Approvals while the laptop is closed
+
+"Keeps running while the laptop sleeps" holds only for runs that don't
+wait on the user. A remote run that needs an approval waits (it must
+never auto-approve because nobody is there), so:
+
+- when moving a chat, show what its permissions will ask the user for
+  and offer the cloud choice: the AI reviewer approves what the user
+  would otherwise be asked (`approval_profiles` already exist), or "ask
+  me and wait";
+- a run waiting on an approval or a question is a visible state in the
+  chat list (a badge, from `agent_status`), so the user finds it on
+  return; a push or email notification from the daemon is a later
+  option;
+- `VerifyCarry` holds an `Instant` and an `Arc<Seen>`; it isn't
+  serializable and needn't be: the move waits for the safe point, and a
+  pending carry is dropped with the stop, with the chat told that the
+  waiting checks will be run again on the other side.
+
 ---
 
 ## 6. Secrets
@@ -397,10 +576,14 @@ export/import in `chat_db` (useful by itself), and a graceful
 ### On the server
 
 - API keys for the model providers: two choices.
-  - **Sent per session, kept in memory** (recommended default): the
-    client sends the keys a chat needs when it moves or reconnects. A
-    daemon restart (reboot, upgrade) pauses remote runs until a client
-    reconnects. Nothing usable is left on disk.
+  - **Sent per session, kept in memory** (recommended default, and how
+    the desktop already works: keys arrive in `StartRequest` and
+    `AgentConfig`, never from a file). The client sends `agent_configure`
+    and the chat's profile when it moves a chat or reconnects. A daemon
+    restart (reboot, upgrade) pauses remote runs until a client
+    reconnects; the daemon reports "waiting for a client" as the run's
+    status so it isn't mistaken for a hang. Nothing usable is left on
+    disk.
   - **Stored on the server**, encrypted at rest (key from a passphrase,
     or the plain 0600 file the desktop uses today), so runs survive
     reboots without a client. Opt-in, with a clear warning.
@@ -416,10 +599,16 @@ export/import in `chat_db` (useful by itself), and a graceful
   ssh-agent, port forwarding and exec channels; no C dependency; good
   fit with tokio. Recommended.
 - Alternatives: `ssh2` (libssh2 bindings; mature, blocking, C build
-  dependency) or shelling out to the system `ssh` (inherits
-  `~/.ssh/config`, ProxyJump, hardware keys; but output parsing is
-  fragile and Windows has to have OpenSSH installed). A reasonable mix:
-  russh by default, plus a "use my system ssh config" option later.
+  dependency, and already linked through `git2`) or shelling out to the
+  system `ssh` (inherits `~/.ssh/config`, ProxyJump, hardware and FIDO
+  keys, certificates; but password auth needs a pty, and output parsing
+  is fragile). A reasonable mix: russh by default, plus a "use my system
+  ssh" option (`ssh -W`/`-L` under our control, no output parsing needed
+  for a tunnel) in the same phase, because the first users with jump
+  hosts or hardware keys will hit russh's limits at once.
+- Two SSH stacks on the client (russh for the tunnel and exec, libssh2
+  for git) is the price of using git as transport; both verify the host
+  against the one pinned key from the settings.
 
 ---
 
@@ -440,9 +629,14 @@ script, "keep API keys on server" toggle.
    on first connect (TOFU), then pin it; a later mismatch is a hard error.
 3. Authenticate.
 4. Detect platform: `uname -sm` (x86_64/aarch64 Linux supported first),
-   free disk in `$HOME`, `git --version`, `/dev/fuse` and `fusermount3`
-   (isolation available or not), systemd user session and `loginctl
-   enable-linger` (otherwise a fallback such as `nohup`/`setsid`).
+   free disk in `$HOME`, `git --version` (worktrees need 2.5+; receiving
+   a push into a bare repository needs nothing special), Chromium for
+   the web tools, unprivileged user namespaces and `/dev/fuse` +
+   `fusermount3` (reported as "isolation extras", not required, §3.1),
+   systemd user session and `loginctl enable-linger` (otherwise a
+   fallback such as `nohup`/`setsid`), and that the provider's API host
+   is reachable from the server (some providers geo-block or need a
+   proxy; a run that fails only on the server is confusing).
 5. If T2/public mode: TCP connect to `host:port` from the client
    (firewall check), and, if a domain is given, that it resolves to this
    host.
@@ -455,7 +649,9 @@ script, "keep API keys on server" toggle.
    `~/.rovik/bin/`, over SFTP or an exec channel.
 2. Write `~/.rovik/config.toml` (listen address, data dir, token hash,
    TLS mode) and install a systemd **user** unit
-   `rovik-agentd.service`; enable linger so it runs after logout.
+   `rovik-agentd.service`; enable linger so it runs after logout. Create
+   `~/.rovik/projects/` (bare repositories) and `~/.rovik/work/`
+   (worktrees); the push in §3.2 targets a path under the first.
 3. Start it; check `/health`; protocol version handshake. On a version
    mismatch the client offers to upgrade (the daemon finishes its runs
    first: drain, then restart).
@@ -465,7 +661,14 @@ Build: add `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`
 targets for `rovik-agentd` in CI (`cargo zigbuild` or `cross`). The core
 already bundles SQLite and vendors libgit2, which helps static builds;
 `fuser` doesn't link libfuse. Tree-sitter grammars are C, so a musl C
-toolchain is needed; zigbuild handles that.
+toolchain is needed; zigbuild handles that. Two things don't build
+static as they are: `git2`'s `https` feature links the system OpenSSL
+(`openssl-sys` is in Cargo.lock, `openssl-src` isn't), so the server
+crate enables `git2/vendored-openssl` or drops `https`/`ssh` (the server
+only receives pushes; it needs neither unless it pushes to the user's
+remote); and `eoka` wants a Chrome on the host at run time, not at build
+time, which is fine. `trash`, `portable-pty`, `tauri-plugin-*` and the
+LSP downloader stay out of the server crate.
 
 ---
 
@@ -479,13 +682,13 @@ toolchain is needed; zigbuild handles that.
 
 | | Effort | Offline-friendly | Reuses existing code | Verdict |
 |---|---|---|---|---|
-| **P1** git snapshot up / overlay diff down | Medium | Yes | Overlay + landing | **Recommended** |
+| **P1** git push of a snapshot up / result ref down, worktree per chat on the server | Medium | Yes | libgit2 + landing | **Recommended** |
 | **P2** continuous two-way sync | High | Yes | Little | No |
 | **P3** remote-first project | Very high | No | Little | Long-term option |
 
 | | Effort | Conflicts | Verdict |
 |---|---|---|---|
-| **M1** move ownership at a turn boundary | Medium | None (one owner) | **Recommended** |
+| **M1** move ownership at a turn boundary, local mirror follows | Medium | None (one owner) | **Recommended** |
 | **M2** server owns all chats | High | None | No (breaks offline) |
 | **M3** replicate the database | Very high | Many | No |
 
@@ -493,23 +696,91 @@ toolchain is needed; zigbuild handles that.
 
 ## 9. Suggested phases
 
-1. **Core extraction (no user-visible change).** Workspace split;
-   `Core` + `EventSink` instead of `AppHandle<R>`; overlay/workload
-   statics into `Core`; `rovik-headless` on top of `rovik-core` without
-   the mock runtime. The existing e2e tests keep passing; they're the
-   safety net for this step.
-2. **Protocol + local daemon.** `rovik-protocol` enum; `rovik-agentd
-   serve` (Axum on a Unix socket/localhost); a frontend `backend`
-   abstraction over `invoke`/`listen`. Test by running the daemon
-   locally and pointing a chat at it.
-3. **Chat bundle export/import** + `dialogs.location` + "stop after
-   this tool call". Testable locally (move to the local daemon).
+1. **Core extraction (no user-visible change).** `Host` trait over
+   `AppHandle<R>` first, then the plain `Core` + `EventSink`; the
+   set-once statics into `Core::new`; workspace split last, once nothing
+   in the core names `tauri`; `rovik-headless` on top of `rovik-core`
+   without the mock runtime, same CLI. The existing e2e tests keep
+   passing at every step; they're the safety net.
+2. **Protocol + local daemon.** `rovik-protocol` enum as one message
+   stream; `rovik-agentd serve` (Axum on a Unix socket/localhost) and
+   `attach --stdio`; a frontend `backend` abstraction over
+   `invoke`/`listen` that routes by chat location. Test by running the
+   daemon locally and pointing a chat at it over the Unix socket.
+3. **Chat bundle export/import** + `dialogs.location` + the mirror +
+   "stop after this tool call". Testable locally (move to the local
+   daemon, then back).
 4. **SSH layer:** host settings page, keychain storage, connection test,
-   deploy/upgrade, tunnel (russh). Move API keys to the keychain.
-5. **Project sync (P1):** git bundle + working-tree snapshot up; remote
-   landing applied locally; "sync now" before user messages.
+   deploy/upgrade, tunnel (russh, with the system-ssh option). Move API
+   keys to the keychain.
+5. **Project transport (P1):** snapshot commit + libgit2 push to the
+   server's bare repository; worktree per chat; result ref fetched and
+   landed locally; "sync now" before user messages; shadow repository
+   for non-git projects.
 6. **Optional:** public HTTPS mode (pinned self-signed cert or ACME),
-   remote terminal, then remote-first projects (P3).
+   remote terminal, overlay over the worktree where FUSE exists, then
+   remote-first projects (P3).
+
+## 10. Challenges to expect
+
+Things that will bite, in rough order of how early:
+
+1. **The test harness rewrite is the real cost of phase 1.** Three e2e
+   files of ~20k lines construct a mock Tauri app and read states from
+   it. Do the `Host` trait step first so the harness changes once, at
+   the end, not with every call-site change.
+2. **Event routing on the frontend.** `agentRuns.ts` listens once to
+   `agent-event` and assumes one backend. With two backends, an event's
+   `dialog_id` must be enough to tell where it came from (it is, with
+   `location`), and events from a remote chat must never be treated as
+   local-file changes (`FileWritten` → `notifyFileWritten` refreshes
+   editor tabs by `abs_path`; map or drop them).
+3. **A chat that moved while a subagent was running.** Subagents are
+   runs in `AgentState` with their own child dialogs; the safe point
+   must wait for the whole group (`task` calls in flight) or move the
+   children too. The export must include children (`parent_id`) and
+   their overlay/worktree state, which for v1 means: don't move during a
+   `task` call; stop after it.
+4. **Two writers by accident.** After a failed move (upload succeeded,
+   the local `location` flip didn't, or the reverse) both sides think
+   they own the chat. Make the flip the last step, idempotent, and
+   record the move in the bundle (a `move_id`) so the daemon rejects a
+   second import and the client can ask "who owns this?" on start.
+5. **Daemon restarts lose keys and approvals.** A reboot, an upgrade or
+   an OOM kill drops in-memory keys and pending approvals; runs resume
+   only when a client connects. The status "waiting for a client" and a
+   `Resume` on reconnect cover it, but the user must see it.
+6. **Version skew.** The desktop updates on its own schedule; the
+   daemon updates when the desktop deploys it. The handshake carries a
+   protocol version, the daemon drains (finishes current tool calls)
+   before upgrading, and the client refuses to move chats to an older
+   daemon.
+7. **Approvals that nobody answers.** See §5: a run waiting hours for an
+   approval looks like "the cloud doesn't work". The move dialog must
+   say what will wait.
+8. **Clock and locale.** `local_date` comes from the client (good);
+   `created_at` and `seq` are the owner's; a server with a skewed clock
+   produces out-of-order `created_at` in the mirror. Order by `seq`,
+   never by time.
+9. **Disk growth on the server.** Worktrees with build output, bare
+   repositories with every snapshot, attachments. A `gc` on chat delete
+   and a "server storage" line in the host settings (du of `~/.rovik`)
+   from day one.
+10. **Windows clients.** No `$XDG_RUNTIME_DIR`, paths with drive
+    letters in `projects.path`, line endings in snapshot commits
+    (`core.autocrlf` must be off for the shadow repository), ssh-agent
+    is a named pipe. Test early with one Windows laptop.
+11. **The server's egress.** The provider's API, GitHub for toolchains,
+    npm/crates registries: a locked-down VPS fails in the middle of a
+    run, not at the connection test, unless the test checks the
+    provider host (§7).
+12. **Trust.** Moving a chat sends the provider API keys to a machine
+    the user administers; the settings page should say so plainly, and
+    "keep API keys on server" stays off by default.
+13. **Head-of-line blocking on one tunnel.** The first push of a big
+    history shares the SSH connection with the event stream only if
+    both go through one SSH session; open a second session (or a second
+    channel) for git, so the UI stays live.
 
 Open questions for you:
 
@@ -518,5 +789,9 @@ Open questions for you:
 - Should the server run the agent's commands inside a container (Docker
   or podman) per project for isolation and reproducible toolchains?
   Recommended if the server is shared or long-lived.
-- Non-git projects: support them with full uploads, or require git for
-  cloud chats at first?
+- Non-git projects: the shadow repository (§3.2) makes them work without
+  the user noticing; is it acceptable that a cloud chat on a non-git
+  project costs a private git repository's worth of disk in app data?
+- How much undo does a remote chat need in v1? The worktree mode (§3.1)
+  gives landing, conflicts and undo-of-landing locally, but not the
+  per-group undo an overlay has while the chat is going.
