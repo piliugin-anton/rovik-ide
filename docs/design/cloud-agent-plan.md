@@ -165,14 +165,21 @@ pub trait EventSink: Send + Sync {
   (`DATA_DIR`, `workload::init`, `set_chat_resolves`) become part of
   `Core::new(data_dir)`. Moving fifteen caches into `Core` is a week of
   plumbing that buys nothing until a multi-tenant daemon exists.
-- A cheaper route to the same place: make the context a **trait first**
-  (`trait Host { fn db(&self) -> &DbState; fn agents(&self) ->
-  &AgentState; … fn emit(&self, e: AgentEvent); }`), implement it for
-  `AppHandle<R>` with `state::<X>()`, change the ~65 call sites to
-  `host.db()`, and only then add the plain `Core` struct and swap the
-  test harness over. Each step compiles on its own and the e2e tests run
-  at every step, instead of one big-bang commit that moves the harness,
-  the states and the call sites together.
+- Do it directly, in one change: add `Core`, replace every
+  `app: AppHandle<R>` parameter in core code with `core: &Core`, change
+  the `state::<X>()` calls to `core.x`, make the `#[tauri::command]`
+  functions thin wrappers that take `State<'_, Core>` and call the core
+  function, and rewrite the e2e harness to build a `Core` (real database
+  in a temp dir, a channel as the `EventSink`) instead of a mock Tauri
+  app. The compiler lists what's left at every step; it is a large diff
+  but a mechanical one, and nothing in it is a judgment call. No
+  intermediate adapter over `AppHandle`: an adapter would only keep the
+  mock runtime alive for longer, and the point is to remove it.
+- After this change nothing under `agent_run`, `agent`, `chat_request`,
+  `chat_db`, `clm`, `overlay`, `vfs` or `workload` names `tauri`, and
+  the e2e tests and `rovik-headless` compile without the `tauri` crate
+  at all (faster builds, and the `headless` feature and the `tauri/test`
+  dev-dependency go away).
 
 ### 2.3 Make the command surface a protocol, not 145 Tauri commands
 
@@ -696,12 +703,13 @@ LSP downloader stay out of the server crate.
 
 ## 9. Suggested phases
 
-1. **Core extraction (no user-visible change).** `Host` trait over
-   `AppHandle<R>` first, then the plain `Core` + `EventSink`; the
-   set-once statics into `Core::new`; workspace split last, once nothing
-   in the core names `tauri`; `rovik-headless` on top of `rovik-core`
-   without the mock runtime, same CLI. The existing e2e tests keep
-   passing at every step; they're the safety net.
+1. **Core extraction (no user-visible change).** `Core` + `EventSink`
+   instead of `AppHandle<R>`, the commands as thin wrappers, the e2e
+   harness building a `Core`; the set-once statics into `Core::new`;
+   workspace split once nothing in the core names `tauri`;
+   `rovik-headless` on top of `rovik-core` with the same CLI and no mock
+   runtime. The existing e2e tests, run before and after, are the safety
+   net: the same scripted-provider scenarios must pass against `Core`.
 2. **Protocol + local daemon.** `rovik-protocol` enum as one message
    stream; `rovik-agentd serve` (Axum on a Unix socket/localhost) and
    `attach --stdio`; a frontend `backend` abstraction over
@@ -727,8 +735,10 @@ Things that will bite, in rough order of how early:
 
 1. **The test harness rewrite is the real cost of phase 1.** Three e2e
    files of ~20k lines construct a mock Tauri app and read states from
-   it. Do the `Host` trait step first so the harness changes once, at
-   the end, not with every call-site change.
+   it. The harness setup is shared code at the top of each file, so the
+   change is concentrated there; the test bodies that call core
+   functions change only in how they get the `Core`. Budget a few days
+   for it and don't start phase 2 until the suite is green on `Core`.
 2. **Event routing on the frontend.** `agentRuns.ts` listens once to
    `agent-event` and assumes one backend. With two backends, an event's
    `dialog_id` must be enough to tell where it came from (it is, with
