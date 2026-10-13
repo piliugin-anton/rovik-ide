@@ -316,7 +316,48 @@ export default function ChatPanel(props: ChatProps) {
     saveEfforts(next);
     // Runs with this model follow it; this chat's, if stuck, right away.
     setRunEffort(profile.id, reasoningOptions(profile), activeDialogId());
+    saveChatModel(activeDialogId());
   }
+
+  /*
+   * The model and effort are kept with each chat (`dialogs` table), so
+   * reopening an old chat continues with what it used. Saved when either
+   * is changed in a chat and when a run starts; a chat that never saved
+   * one (older chats) keeps the current choice.
+   */
+  let chatModelRequest = 0;
+  function saveChatModel(dialogId: string | null | undefined) {
+    const sel = selection();
+    if (!dialogId || !sel) return;
+    // A choice made while the chat's saved one loads wins over it.
+    chatModelRequest++;
+    const profile = resolveProfile(providers(), sel);
+    const effort = profile ? effortFor(profile.id) : null;
+    void chatApi
+      .setModel(dialogId, { providerId: sel.providerId, modelId: sel.modelId, effort })
+      .catch((err) => console.error('Chat model not saved:', err));
+  }
+  createEffect(
+    on([activeDialogId, () => providers().length > 0] as const, ([dialogId, loaded]) => {
+      if (!dialogId || !loaded) return;
+      const request = ++chatModelRequest;
+      void chatApi
+        .getModel(dialogId)
+        .then((saved) => {
+          if (!saved || request !== chatModelRequest || activeDialogId() !== dialogId) return;
+          const sel = { providerId: saved.providerId, modelId: saved.modelId };
+          // Only a model that still exists and is enabled.
+          if (!sameModel(reconcileSelection(providers(), sel), sel)) return;
+          if (!sameModel(selection(), sel)) setSelection(sel);
+          const profile = resolveProfile(providers(), sel);
+          if (profile && saved.effort && efforts()[profile.id] !== saved.effort) {
+            setEfforts({ ...efforts(), [profile.id]: saved.effort });
+          }
+        })
+        .catch((err) => console.error('Chat model not loaded:', err));
+    })
+  );
+
   /** The effort selector shows unless the model is known not to take one. */
   const showEffort = createMemo(() => {
     const p = activeProfile();
@@ -1942,6 +1983,7 @@ export default function ChatPanel(props: ChatProps) {
   function handleModelChange(next: ModelSelection) {
     setSelection(next);
     persistAiSettings(providers(), next);
+    saveChatModel(activeDialogId());
   }
 
   /*
@@ -2060,6 +2102,7 @@ export default function ChatPanel(props: ChatProps) {
     listController?.followLatest();
     try {
       await store.flush();
+      saveChatModel(dialogId);
       await startRun({
         dialogId,
         start,
