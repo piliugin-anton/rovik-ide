@@ -120,6 +120,8 @@ pub fn run() {
             chat_db::commands::chat_messages_answered,
             chat_db::commands::chat_save_composer_draft,
             chat_db::commands::chat_get_composer_draft,
+            chat_db::commands::chat_set_model,
+            chat_db::commands::chat_get_model,
             filesystem::load_last_project,
             filesystem::save_last_project,
             filesystem::get_path_id,

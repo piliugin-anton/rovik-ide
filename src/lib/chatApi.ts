@@ -2,6 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { ChatMessage, ChatToolCall, DialogCursor, DialogSummary, ToolMeta } from '../types';
 import type { Highlighted } from './chatSearch';
+import type { Effort } from './reasoning';
 
 /** A message as the database returns it (chat_db/store.rs). */
 export interface MessageRow {
@@ -159,7 +160,21 @@ export const chatApi = {
   /** The chat's unsent input (JSON-encoded segments, null when none saved). */
   getComposerDraft: (dialogId: string) =>
     invoke<string | null>('chat_get_composer_draft', { dialogId }),
+
+  /** Saves the model and effort a chat uses, so reopening it continues with them. */
+  setModel: (dialogId: string, model: ChatModel) =>
+    invoke<void>('chat_set_model', { dialogId, model }),
+
+  /** The chat's saved model and effort (null: never saved). */
+  getModel: (dialogId: string) => invoke<ChatModel | null>('chat_get_model', { dialogId }),
 };
+
+/** The model a chat last used (`dialogs.model_provider`/`model_id`/`effort`). */
+export interface ChatModel {
+  providerId: string;
+  modelId: string;
+  effort: Effort | null;
+}
 
 /**
  * URL for an attachment served by the `chat-attachment` scheme. WebView2

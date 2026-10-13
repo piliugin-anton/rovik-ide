@@ -313,3 +313,23 @@ pub async fn chat_get_composer_draft(
     db.read(move |c| store::get_composer_draft(c, &dialog_id))
         .await
 }
+
+/// Saves the model and effort a chat uses, so reopening it continues with them.
+#[tauri::command]
+pub async fn chat_set_model(
+    db: State<'_, DbState>,
+    dialog_id: String,
+    model: store::ChatModel,
+) -> Result<(), String> {
+    db.write(move |c| store::set_chat_model(c, &dialog_id, &model))
+        .await
+}
+
+/// The chat's saved model and effort, if any.
+#[tauri::command]
+pub async fn chat_get_model(
+    db: State<'_, DbState>,
+    dialog_id: String,
+) -> Result<Option<store::ChatModel>, String> {
+    db.read(move |c| store::chat_model(c, &dialog_id)).await
+}

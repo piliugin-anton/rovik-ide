@@ -1034,6 +1034,57 @@ pub fn tool_call_extras(
 
 /*
  * ---------------------------------------------------------------------------
+ * The chat's model and reasoning effort
+ * ---------------------------------------------------------------------------
+ */
+
+/// The model a chat last used, and its effort (lib/reasoning.ts).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatModel {
+    pub provider_id: String,
+    pub model_id: String,
+    pub effort: Option<String>,
+}
+
+/// Saves the chat's model and effort. Missing chats are ignored.
+pub fn set_chat_model(conn: &Connection, dialog_id: &str, model: &ChatModel) -> DbResult<()> {
+    conn.execute(
+        "UPDATE dialogs SET model_provider = ?2, model_id = ?3, effort = ?4 WHERE id = ?1",
+        params![dialog_id, model.provider_id, model.model_id, model.effort],
+    )
+    .map_err(err)?;
+    Ok(())
+}
+
+/// The chat's saved model and effort; none if it never saved one.
+pub fn chat_model(conn: &Connection, dialog_id: &str) -> DbResult<Option<ChatModel>> {
+    let row = conn
+        .query_row(
+            "SELECT model_provider, model_id, effort FROM dialogs WHERE id = ?1",
+            params![dialog_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(err)?;
+    Ok(match row {
+        Some((Some(provider_id), Some(model_id), effort)) => Some(ChatModel {
+            provider_id,
+            model_id,
+            effort,
+        }),
+        _ => None,
+    })
+}
+
+/*
+ * ---------------------------------------------------------------------------
  * Composer drafts (unsent chat input, one row per chat)
  * ---------------------------------------------------------------------------
  */

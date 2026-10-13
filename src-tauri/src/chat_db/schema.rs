@@ -199,6 +199,15 @@ ALTER TABLE dialogs ADD COLUMN kind TEXT;
 CREATE INDEX dialogs_by_parent ON dialogs (parent_id) WHERE parent_id IS NOT NULL;
 "#;
 
+/// The model a chat uses (provider and model id, as in the settings) and
+/// its reasoning effort ("default", "low", …), so reopening an old chat
+/// continues with them. NULL until the chat's first run or model change.
+const SCHEMA_V9: &str = r#"
+ALTER TABLE dialogs ADD COLUMN model_provider TEXT;
+ALTER TABLE dialogs ADD COLUMN model_id TEXT;
+ALTER TABLE dialogs ADD COLUMN effort TEXT;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -262,6 +271,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", 8)?;
         tx.commit()?;
     }
+    if version < 9 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V9)?;
+        tx.pragma_update(None, "user_version", 9)?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -289,7 +304,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         let project: Option<String> = conn
             .query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| {
                 r.get(0)

@@ -793,3 +793,31 @@ fn a_subagents_message_stays_unindexed_after_its_parent_link_goes() {
     assert_eq!(rows, 0);
     assert!(search(&conn, "blueberry", None, 10).unwrap().is_empty());
 }
+
+#[test]
+fn chat_model_round_trips() {
+    let mut conn = db();
+    dialog(&mut conn, "d", "Model", 0);
+    assert_eq!(chat_model(&conn, "d").unwrap(), None, "none until saved");
+
+    let model = ChatModel {
+        provider_id: "openrouter".into(),
+        model_id: "anthropic/claude-sonnet-4.5".into(),
+        effort: Some("high".into()),
+    };
+    set_chat_model(&conn, "d", &model).unwrap();
+    assert_eq!(chat_model(&conn, "d").unwrap(), Some(model));
+
+    // Replaced, effort may go back to unset.
+    let other = ChatModel {
+        provider_id: "ollama".into(),
+        model_id: "qwen3".into(),
+        effort: None,
+    };
+    set_chat_model(&conn, "d", &other).unwrap();
+    assert_eq!(chat_model(&conn, "d").unwrap(), Some(other.clone()));
+
+    // Missing chats are ignored.
+    set_chat_model(&conn, "ghost", &other).unwrap();
+    assert_eq!(chat_model(&conn, "ghost").unwrap(), None);
+}
