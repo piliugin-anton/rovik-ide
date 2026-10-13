@@ -1177,7 +1177,11 @@ mod tests {
             assert!(tw(bad).is_some(), "{bad}");
         }
         assert_eq!(tw("cargo test 2>&1 | tail -50"), None);
-        assert_eq!(tw("cargo test 2>&1 | grep 'a*b'"), None, "quoted: not expanded");
+        assert_eq!(
+            tw("cargo test 2>&1 | grep 'a*b'"),
+            None,
+            "quoted: not expanded"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -522,9 +522,9 @@ static LANGUAGES: [Lang; 70] = [
     lang!("KDL", tree_sitter_kdl::LANGUAGE, ext: ["kdl"], files: [],
         kinds: ["node"],
         query: "", tags: None),
-/*     lang!("Perl", tree_sitter_perl::LANGUAGE, ext: ["pl", "pm", "t", "psgi"], files: [],
-        kinds: ["function_definition", "package_statement"],
-        query: "", tags: None), */
+    /*     lang!("Perl", tree_sitter_perl::LANGUAGE, ext: ["pl", "pm", "t", "psgi"], files: [],
+    kinds: ["function_definition", "package_statement"],
+    query: "", tags: None), */
     lang!("SPARQL", tree_sitter_sparql::LANGUAGE, ext: ["rq", "sparql"], files: [],
         kinds: ["SelectQuery", "ConstructQuery", "DescribeQuery", "AskQuery", "Update1"],
         query: "", tags: None),

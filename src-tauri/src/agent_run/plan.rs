@@ -521,9 +521,8 @@ static GROUP_LINE: LazyLock<Regex> = LazyLock::new(|| {
 /// A step's `Files:` line: the one place a step names its files. The
 /// label may be bulleted or bold (`- **Files:** ...`), and the items may
 /// go on list lines indented under it instead of after it.
-static FILES_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^[\s>*+-]*\**files\**\s*:\**\s*(.*?)\s*$").unwrap()
-});
+static FILES_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^[\s>*+-]*\**files\**\s*:\**\s*(.*?)\s*$").unwrap());
 
 /// Why an item of a `Files:` line isn't a path of the project.
 #[derive(Debug, Clone, PartialEq)]
@@ -1709,10 +1708,13 @@ mod tests {
             ["src/t.rs"]
         );
         // "none" names nothing, nor does a Files line in a code block.
-        assert!(step_files("1. **A**\n   - Files: none\n   - Run it by hand.")
-            .files
-            .is_empty());
-        let fenced = step_files("1. **A**\n   - Run:\n\n     ```\n     Files: `src/a.rs`\n     ```\n");
+        assert!(
+            step_files("1. **A**\n   - Files: none\n   - Run it by hand.")
+                .files
+                .is_empty()
+        );
+        let fenced =
+            step_files("1. **A**\n   - Run:\n\n     ```\n     Files: `src/a.rs`\n     ```\n");
         assert!(!fenced.line && fenced.files.is_empty(), "{fenced:?}");
         // Folders keep their `/`; accented and CJK names are paths.
         assert_eq!(
@@ -2173,9 +2175,11 @@ mod tests {
             assert_eq!(files.first().map(|f| f.path.as_str()), Some(path), "{step}");
             assert!(files.iter().all(|f| !f.new), "{step}");
         }
-        assert!(step_files("1. **X**\n   - Change the base image in Dockerfile and `src/x.rs`.")
-            .files
-            .is_empty());
+        assert!(
+            step_files("1. **X**\n   - Change the base image in Dockerfile and `src/x.rs`.")
+                .files
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2263,7 +2267,9 @@ mod tests {
             project_problems(&plan("`CHANGELOG.md` (new)", "`Dockerfile` (new)"), &tree.0)
                 .is_empty()
         );
-        assert!(project_problems(&plan("`src/db/new.rs` (new)", "`index.html`"), &tree.0).is_empty());
+        assert!(
+            project_problems(&plan("`src/db/new.rs` (new)", "`index.html`"), &tree.0).is_empty()
+        );
         // The form check alone doesn't know the project: no hint without a root.
         assert!(plan_problems_in(&plan("`mod.rs`", "`Cargo.toml`"), None).is_empty());
     }
@@ -2607,7 +2613,9 @@ mod tests {
 
     /// "n. **title**" with a Files line, a change and an optional group.
     fn step(n: usize, title: &str, files: &str, group: Option<&str>) -> String {
-        let group = group.map(|g| format!("   - Group: {g}\n")).unwrap_or_default();
+        let group = group
+            .map(|g| format!("   - Group: {g}\n"))
+            .unwrap_or_default();
         format!("{n}. **{title}**\n   - Files: {files}\n   - Add {title} to it.\n{group}")
     }
 
@@ -2671,7 +2679,11 @@ mod tests {
         assert_eq!(s.iter().map(|s| s.number).collect::<Vec<_>>(), [2, 4, 7]);
         assert!(s.iter().all(|s| s.written.is_none()), "{s:#?}");
         assert_eq!(s[2].named(), "7");
-        assert!(plan_problems(&plan).is_empty(), "{:?}", plan_problems(&plan));
+        assert!(
+            plan_problems(&plan).is_empty(),
+            "{:?}",
+            plan_problems(&plan)
+        );
         let tree = Tree::new(&["src/b.rs", "src/d.rs"]);
         let p = project_problems(&plan, &tree.0);
         assert_eq!(p.len(), 1, "{p:?}");
@@ -2692,7 +2704,11 @@ mod tests {
             s.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
             ["One", "Two"]
         );
-        assert!(plan_problems(&plan).is_empty(), "{:?}", plan_problems(&plan));
+        assert!(
+            plan_problems(&plan).is_empty(),
+            "{:?}",
+            plan_problems(&plan)
+        );
         let spaced = plan.replace("## Steps:", "## STEPS :");
         assert_eq!(steps(&spaced).len(), 2);
     }
@@ -2785,10 +2801,13 @@ mod tests {
         let plan = format!(
             "# P\n\n## Steps\n\n{}{}{}{}{}{}\n## Validation\n- `cargo test`\n",
             step(1, "A", "`src/a.rs`", Some("`Backend`")),
-            step(2, "B", "`src/b.rs`", None).replace("   - Add B", "   - **Group:** backend\n   - Add B"),
-            step(3, "C", "`src/c.rs`", None).replace("   - Add C", "   - **Group**: **backend**\n   - Add C"),
+            step(2, "B", "`src/b.rs`", None)
+                .replace("   - Add B", "   - **Group:** backend\n   - Add B"),
+            step(3, "C", "`src/c.rs`", None)
+                .replace("   - Add C", "   - **Group**: **backend**\n   - Add C"),
             step(4, "D", "`src/d.rs`", Some("**`backend`**")),
-            step(5, "E", "`src/e.rs`", None).replace("   - Add E", "   - **Group: `BACKEND`**\n   - Add E"),
+            step(5, "E", "`src/e.rs`", None)
+                .replace("   - Add E", "   - **Group: `BACKEND`**\n   - Add E"),
             step(6, "F", "`src/f.rs`", Some("`none`"))
         );
         let s = steps(&plan);
@@ -2994,9 +3013,17 @@ mod tests {
         let plan = format!(
             "# P\n\n## Steps\n\n{}{}{}{}{}\n## Validation\n- `cargo test`\n",
             step(1, "A", "`src/a.rs`", Some("`backend`.")),
-            step(2, "B", "`src/b.rs`", Some("`Backend` (runs alongside step 1)")),
+            step(
+                2,
+                "B",
+                "`src/b.rs`",
+                Some("`Backend` (runs alongside step 1)")
+            ),
             step(3, "C", "`src/c.rs`", Some("backend.")),
-            step(4, "D", "`src/d.rs`", None).replace("   - Add D", "   - **Group:** backend (with step 1)\n   - Add D"),
+            step(4, "D", "`src/d.rs`", None).replace(
+                "   - Add D",
+                "   - **Group:** backend (with step 1)\n   - Add D"
+            ),
             step(5, "E", "`src/e.rs`", Some("`none`."))
         );
         assert_eq!(

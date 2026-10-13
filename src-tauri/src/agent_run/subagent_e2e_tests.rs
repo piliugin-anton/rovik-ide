@@ -312,12 +312,11 @@ async fn a_scout_cant_write_or_run_commands() {
 #[tokio::test]
 async fn refused_calls_use_up_a_subagents_budget() {
     let h = harness(&[("a.txt", "x\n")]).await;
-    let writes: Vec<(&'static str, &'static str, Value)> = [
-        "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9",
-    ]
-    .into_iter()
-    .map(|id| (id, "write", json!({ "path": "a.txt", "content": "no" })))
-    .collect();
+    let writes: Vec<(&'static str, &'static str, Value)> =
+        ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9"]
+            .into_iter()
+            .map(|id| (id, "write", json!({ "path": "a.txt", "content": "no" })))
+            .collect();
     let (url, _) = model_routed(
         vec![(
             "MARK-RB",
@@ -334,8 +333,16 @@ async fn refused_calls_use_up_a_subagents_budget() {
         .await;
     assert_eq!(h.run_end().await, "done");
     let result = h.task_result("t1").await;
-    assert!(result.content.contains("Status: partial"), "{}", result.content);
-    assert!(result.content.contains("ran out of budget"), "{}", result.content);
+    assert!(
+        result.content.contains("Status: partial"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("ran out of budget"),
+        "{}",
+        result.content
+    );
 }
 
 #[tokio::test]
@@ -1606,7 +1613,10 @@ async fn a_follow_up_resumed_after_a_restart_is_asked_once() {
     let first = call("t1", json!({ "kind": "scout", "goal": "MARK-RF: where?" }));
     let mut answered = crate::agent_run::run::new_message("tool", "FIRST-ANSWER");
     answered.tool_call_id = Some("t1".into());
-    let again = call("t2", json!({ "continue": "t1", "goal": "And who calls it?" }));
+    let again = call(
+        "t2",
+        json!({ "continue": "t1", "goal": "And who calls it?" }),
+    );
     let child = uuid::Uuid::new_v4().to_string();
     let brief =
         crate::agent_run::run::new_message("user", "# Task from the lead agent\n\nMARK-RF: where?");
@@ -2417,7 +2427,9 @@ async fn a_plan_reviewer_out_of_budget_still_reports_findings() {
     let messages = h.messages().await;
     let first = result_of(&messages, "p1");
     assert!(
-        first.content.starts_with("Error: The plan wasn't saved yet"),
+        first
+            .content
+            .starts_with("Error: The plan wasn't saved yet"),
         "{}",
         first.content
     );
@@ -2439,18 +2451,31 @@ async fn a_plan_reviewer_out_of_budget_still_reports_findings() {
     let child = h.child_of("p1").await;
     let work = h.messages_of(&child.id).await;
     let note = |harness: &str| {
-        work.iter().find(|m| {
-            m.meta
-                .as_ref()
-                .is_some_and(|m| m["harness"] == harness)
-        })
+        work.iter()
+            .find(|m| m.meta.as_ref().is_some_and(|m| m["harness"] == harness))
     };
     let budget = note("subagentBudget").expect("asked for its report");
-    assert!(budget.content.contains("budget of 1 tool calls"), "{}", budget.content);
-    assert!(budget.content.contains("\"## Findings\""), "{}", budget.content);
-    assert!(!budget.content.contains("Open questions"), "{}", budget.content);
+    assert!(
+        budget.content.contains("budget of 1 tool calls"),
+        "{}",
+        budget.content
+    );
+    assert!(
+        budget.content.contains("\"## Findings\""),
+        "{}",
+        budget.content
+    );
+    assert!(
+        !budget.content.contains("Open questions"),
+        "{}",
+        budget.content
+    );
     let format = note("subagentFormat").expect("got the repair turn");
-    assert!(format.content.contains("no \"## Findings\" section"), "{}", format.content);
+    assert!(
+        format.content.contains("no \"## Findings\" section"),
+        "{}",
+        format.content
+    );
 }
 
 #[tokio::test]
@@ -2785,7 +2810,11 @@ async fn workers_carry_out_the_plan_step_by_step() {
     assert!(!result_of(&messages, "s1").content.contains("don't match"));
     // ...and its step isn't done (P2.9): partial, unticked; the others are.
     assert!(r2.content.contains("Status: partial"), "{}", r2.content);
-    assert!(r2.content.contains("Step 2 isn't marked done"), "{}", r2.content);
+    assert!(
+        r2.content.contains("Step 2 isn't marked done"),
+        "{}",
+        r2.content
+    );
     assert!(r2.meta.as_ref().unwrap().get("checklistUpdate").is_none());
     let recent = h.messages().await;
     let current = plan::current_checklist(&recent).unwrap();
@@ -2804,7 +2833,11 @@ async fn a_worker_that_wrote_nothing_leaves_its_step_open() {
             "# Your step: 1.",
             vec![worker_report("All done.", &["a.txt"])],
         )],
-        vec![checklist_call(), step("s1", 1), Reply::Text("Stopping here.")],
+        vec![
+            checklist_call(),
+            step("s1", 1),
+            Reply::Text("Stopping here."),
+        ],
     )
     .await;
     h.start(h.implement_with(&url, workers_on(json!({})), ChecklistMode::Off))
@@ -2813,7 +2846,8 @@ async fn a_worker_that_wrote_nothing_leaves_its_step_open() {
     let r = result_of(&h.messages().await, "s1").clone();
     assert!(r.content.contains("Status: partial"), "{}", r.content);
     assert!(
-        r.content.contains("it said it was done but changed no files"),
+        r.content
+            .contains("it said it was done but changed no files"),
         "{}",
         r.content
     );
@@ -2969,7 +3003,10 @@ async fn a_rolled_back_round_puts_a_workers_non_utf8_file_back_exactly() {
         if (fs.readFileSync('b.txt', 'utf8').includes('broken')) { console.log('test t::one ... ok'); console.log('test t::two ... FAILED'); process.exit(1); }\n\
         console.log('test t::one ... ok'); console.log('test t::two ... ok');\n";
     let h = harness(&[
-        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
         ("check.js", check),
         ("a.txt", "bad\n"),
         ("b.txt", "fine\n"),
@@ -3151,8 +3188,16 @@ async fn scope_grants_are_bounded_and_kept_when_continued() {
             .map(|m| m.content.clone())
             .unwrap_or_default()
     };
-    assert!(result("e1").starts_with("Error: not granted: `notes/` is a folder"), "{}", result("e1"));
-    assert!(result("e2").contains("is step 3's to change"), "{}", result("e2"));
+    assert!(
+        result("e1").starts_with("Error: not granted: `notes/` is a folder"),
+        "{}",
+        result("e1")
+    );
+    assert!(
+        result("e2").contains("is step 3's to change"),
+        "{}",
+        result("e2")
+    );
     assert!(result("e3").starts_with("Granted"), "{}", result("e3"));
     assert!(!result("w2").starts_with("Error"), "{}", result("w2"));
     assert_eq!(h.file("c.txt").as_deref(), Some("two\n"));
@@ -3231,7 +3276,11 @@ async fn a_worker_continued_by_its_call_runs_alone() {
         vec![
             step("s1", 1),
             Reply::Calls(vec![
-                ("c1", "task", json!({ "continue": "s1", "goal": "anything else?" })),
+                (
+                    "c1",
+                    "task",
+                    json!({ "continue": "s1", "goal": "anything else?" }),
+                ),
                 task_call("q1", "MARK-P8: one"),
                 task_call("q2", "MARK-P8: two"),
             ]),
@@ -3240,10 +3289,12 @@ async fn a_worker_continued_by_its_call_runs_alone() {
     )
     .await;
     let mut config = workers_on(json!({}));
-    config
-        .kinds
-        .insert("scout".into(), serde_json::from_value(json!({ "enabled": true })).unwrap());
-    h.start(h.implement_with(&url, config, ChecklistMode::Off)).await;
+    config.kinds.insert(
+        "scout".into(),
+        serde_json::from_value(json!({ "enabled": true })).unwrap(),
+    );
+    h.start(h.implement_with(&url, config, ChecklistMode::Off))
+        .await;
     h.run_end().await;
     let batches = crate::agent_run::parallel::batches_of(&h.dialog_id);
     assert!(
@@ -3265,7 +3316,10 @@ async fn a_subagents_command_ends_with_its_time_budget() {
     }
     let h = plan_harness(&[
         ("a.txt", "old\n"),
-        ("package.json", r#"{ "name": "t", "scripts": { "test": "sleep 60" } }"#),
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "sleep 60" } }"#,
+        ),
     ])
     .await;
     let (url, _) = model_routed(
@@ -3847,7 +3901,10 @@ async fn a_side_effect_outside_a_workers_scope_doesnt_land() {
         result.content
     );
     assert!(!result.content.contains("conflict"), "{}", result.content);
-    let view = crate::overlay::chats::get(&h.dialog_id).unwrap().view.clone();
+    let view = crate::overlay::chats::get(&h.dialog_id)
+        .unwrap()
+        .view
+        .clone();
     assert_eq!(
         std::fs::read_to_string(view.join("src/posts.rs")).unwrap(),
         "from w2\n",
@@ -3866,7 +3923,10 @@ async fn edit_while_workers_run(h: &Harness, path: &str, theirs: &str, ours: &st
             .filter_map(|c| crate::overlay::chats::get(c))
             .any(|o| std::fs::read_to_string(o.view.join(path)).ok().as_deref() == Some(theirs));
         if written {
-            let view = crate::overlay::chats::get(&h.dialog_id).unwrap().view.clone();
+            let view = crate::overlay::chats::get(&h.dialog_id)
+                .unwrap()
+                .view
+                .clone();
             std::fs::write(view.join(path), ours).unwrap();
             return;
         }
@@ -4446,7 +4506,10 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
                 vec![
                     write_call("w2", "src/posts.rs", "from w2\n"),
                     write_call("w3", "src/extra.rs", "extra from w2\n"),
-                    Reply::Slow(1_500, Box::new(worker_report("Posts.", &["src/posts.rs", "src/extra.rs"]))),
+                    Reply::Slow(
+                        1_500,
+                        Box::new(worker_report("Posts.", &["src/posts.rs", "src/extra.rs"])),
+                    ),
                 ],
             ),
             (
@@ -4475,22 +4538,42 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
     edit_while_workers_run(&h, "src/posts.rs", "from w2\n", "from the user\n").await;
     let result = h.result_when_ready("g1").await;
     let text = result.content.clone();
-    assert!(text.contains("Its other files landed: src/extra.rs."), "{text}");
+    assert!(
+        text.contains("Its other files landed: src/extra.rs."),
+        "{text}"
+    );
     assert!(
         text.contains("@checks/conflict-w2-src-posts-rs-chat.log")
             && text.contains("@checks/conflict-w2-src-posts-rs-worker.log"),
         "{text}"
     );
-    assert!(text.contains("Not landed yet: the join stopped at the conflict below. Its copy is kept"), "{text}");
-    let saved = crate::agent_run::check_output::resolve(&h.dialog_id, "@checks/conflict-w2-src-posts-rs-worker.log").unwrap();
+    assert!(
+        text.contains("Not landed yet: the join stopped at the conflict below. Its copy is kept"),
+        "{text}"
+    );
+    let saved = crate::agent_run::check_output::resolve(
+        &h.dialog_id,
+        "@checks/conflict-w2-src-posts-rs-worker.log",
+    )
+    .unwrap();
     assert_eq!(std::fs::read_to_string(saved).unwrap(), "from w2\n");
     // w2's copy is kept (its posts.rs waits there).
     let w2 = h.child_of("g1#w2").await;
-    assert!(crate::overlay::chats::get(&w2.id).is_some(), "w2's copy is kept");
+    assert!(
+        crate::overlay::chats::get(&w2.id).is_some(),
+        "w2's copy is kept"
+    );
     let continued = h.result_when_ready("c1").await;
-    assert!(continued.content.contains("Its copy landed: src/feed.rs."), "{}", continued.content);
+    assert!(
+        continued.content.contains("Its copy landed: src/feed.rs."),
+        "{}",
+        continued.content
+    );
     // In the chat's view (the run ends with its checklist open, unlanded).
-    let view = crate::overlay::chats::get(&h.dialog_id).unwrap().view.clone();
+    let view = crate::overlay::chats::get(&h.dialog_id)
+        .unwrap()
+        .view
+        .clone();
     let in_view = |p: &str| std::fs::read_to_string(view.join(p)).ok();
     assert_eq!(in_view("src/extra.rs").as_deref(), Some("extra from w2\n"));
     assert_eq!(in_view("src/feed.rs").as_deref(), Some("feed from w3\n"));
@@ -4642,10 +4725,16 @@ async fn a_landing_that_fails_half_way_keeps_the_copy_and_holds_land() {
     let result = h.result_when_ready("g1").await;
     h.run_end().await;
     let text = result.content.clone();
-    assert!(text.contains("### Step 3 (w2): Posts\nIt couldn't land ("), "{text}");
+    assert!(
+        text.contains("### Step 3 (w2): Posts\nIt couldn't land ("),
+        "{text}"
+    );
     assert!(text.contains("Its copy is kept"), "{text}");
     let w2 = h.child_of("g1#w2").await;
-    assert!(crate::overlay::chats::get(&w2.id).is_some(), "the copy is kept");
+    assert!(
+        crate::overlay::chats::get(&w2.id).is_some(),
+        "the copy is kept"
+    );
     // Land waits for the landing to be finished.
     assert!(land_refused_unfinished(&h.dialog_id));
     stop_failing_landings();
@@ -5449,7 +5538,9 @@ async fn three_failing_rounds_give_up_and_redo_runs_the_steps_one_at_a_time() {
     // P1.4: the chat's own version from before the group, not the
     // project's (it had none).
     assert_eq!(
-        std::fs::read_to_string(chat.view.join("src/util.rs")).ok().as_deref(),
+        std::fs::read_to_string(chat.view.join("src/util.rs"))
+            .ok()
+            .as_deref(),
         Some("util from run 1\n")
     );
     assert!(
@@ -5796,7 +5887,10 @@ async fn the_fix_after_a_review_after_green_is_protected() {
             lead.push(Reply::Text("1: not a problem, the spelling is intended."));
         }
         let (url, _) = model_routed(
-            vec![(REVIEW, vec![Reply::Text(NO_FINDINGS), Reply::Text(FINDING_A)])],
+            vec![(
+                REVIEW,
+                vec![Reply::Text(NO_FINDINGS), Reply::Text(FINDING_A)],
+            )],
             lead,
         )
         .await;
@@ -7251,7 +7345,10 @@ async fn plan_checks_see_the_chats_view_in_an_isolated_chat() {
         )
     };
     let (url, _) = model(vec![
-        submit("p1", plan("2. **Gone**\n   - Files: `src/missing.rs`\n   - Use it in the loader.\n")),
+        submit(
+            "p1",
+            plan("2. **Gone**\n   - Files: `src/missing.rs`\n   - Use it in the loader.\n"),
+        ),
         submit(
             "p2",
             plan("2. **Store**\n   - Files: `src/db.rs`\n   - Keep what it returns.\n"),
@@ -8746,10 +8843,7 @@ async fn out_of_scope_folder_with_in_scope_file_lands() {
     }
     let plan: &'static str = Box::leak(
         GROUP_PLAN
-            .replace(
-                "Files: `src/users.rs`,",
-                "Files: `src/api/users.rs` (new),",
-            )
+            .replace("Files: `src/users.rs`,", "Files: `src/api/users.rs` (new),")
             .into_boxed_str(),
     );
     let h = group_harness_with_side_effect(
@@ -9960,11 +10054,19 @@ async fn hold_then_silent_revision_drops_a_repeat() {
     );
     let review = &second.meta.as_ref().unwrap()["review"];
     assert_eq!(review["status"], "clean", "{review}");
-    assert_eq!(review["dropped"].as_array().map(Vec::len), Some(1), "{review}");
+    assert_eq!(
+        review["dropped"].as_array().map(Vec::len),
+        Some(1),
+        "{review}"
+    );
     assert!(review.get("open").is_none(), "{review}");
     let files = h.plan_files();
     assert_eq!(files.len(), 1);
-    assert!(!files[0].contains("## Open review findings"), "{}", files[0]);
+    assert!(
+        !files[0].contains("## Open review findings"),
+        "{}",
+        files[0]
+    );
 }
 
 /// Round 2: a conflict's two versions, saved for the lead during a join,
@@ -10184,8 +10286,14 @@ async fn two_members_landing_the_same_path_without_a_line_conflict() {
     }
     let plan: &'static str = Box::leak(
         GROUP_PLAN
-            .replace("Files: `src/users.rs`,", "Files: `src/shared.rs`, `src/users.rs`,")
-            .replace("Files: `src/posts.rs`,", "Files: `src/shared.rs`, `src/posts.rs`,")
+            .replace(
+                "Files: `src/users.rs`,",
+                "Files: `src/shared.rs`, `src/users.rs`,",
+            )
+            .replace(
+                "Files: `src/posts.rs`,",
+                "Files: `src/shared.rs`, `src/posts.rs`,",
+            )
             .into_boxed_str(),
     );
     let h = group_harness_with_side_effect(plan, "true", &[("src/shared.rs", "// shared\n")]).await;

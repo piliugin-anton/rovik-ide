@@ -201,7 +201,10 @@ pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Sen
 /// never cancels the child halfway (Stop ends it cleanly). None: it
 /// panicked.
 pub(super) async fn run_child<R: Runtime>(run: Run<R>) -> Option<SubResult> {
-    tauri::async_runtime::spawn(go_sub(run)).await.ok().flatten()
+    tauri::async_runtime::spawn(go_sub(run))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// The place of a child that never started.
@@ -1190,7 +1193,10 @@ impl<R: Runtime> Run<R> {
             // A reply that started repeating itself: what came before it is
             // its report (the format check below decides how it's taken).
             let (text, calls) = match turn.repetition_cut {
-                Some(cut) => (text_before_cut(&turn.text, Some(cut)).to_string(), Vec::new()),
+                Some(cut) => (
+                    text_before_cut(&turn.text, Some(cut)).to_string(),
+                    Vec::new(),
+                ),
                 None => (turn.text.clone(), turn.tool_calls.clone()),
             };
             let meta = reasoning_meta(turn.reasoning);
@@ -1464,8 +1470,16 @@ impl<R: Runtime> Run<R> {
         sub.other_steps = other_steps(&steps, n);
         let goal = format!("Step {n}: {}", step.title);
         let message = existing.is_none().then_some(message);
-        self.store_and_launch(&child_id, &tc.id, Kind::Worker, &goal, message, sub, admitted)
-            .await
+        self.store_and_launch(
+            &child_id,
+            &tc.id,
+            Kind::Worker,
+            &goal,
+            message,
+            sub,
+            admitted,
+        )
+        .await
     }
 
     /// The child chat `tc` started before the app closed, when the run is
@@ -1560,10 +1574,7 @@ impl<R: Runtime> Run<R> {
             Err(e) => {
                 if !resumed {
                     let id = child_id.to_string();
-                    let _ = self
-                        .db
-                        .write(move |c| store::delete_dialog(c, &id))
-                        .await;
+                    let _ = self.db.write(move |c| store::delete_dialog(c, &id)).await;
                 }
                 Err(e)
             }
@@ -1619,8 +1630,16 @@ impl<R: Runtime> Run<R> {
         self.limit_test_writer(&mut sub, touched);
         let goal = brief.goal.clone();
         let message = existing.is_none().then_some(message);
-        self.store_and_launch(&child_id, &tc.id, Kind::TestWriter, &goal, message, sub, admitted)
-            .await
+        self.store_and_launch(
+            &child_id,
+            &tc.id,
+            Kind::TestWriter,
+            &goal,
+            message,
+            sub,
+            admitted,
+        )
+        .await
     }
 
     /// A writing subagent resumed after the app closed: the files it wrote
@@ -2148,7 +2167,11 @@ mod tests {
             parent_request: "Fix it".into(),
             run_id: "r".into(),
             chat_profile_id: "p::m".into(),
-            ..SubCtx::blank(Kind::Scout, Kind::Scout.spec().default_budget, vec![profile])
+            ..SubCtx::blank(
+                Kind::Scout,
+                Kind::Scout.spec().default_budget,
+                vec![profile],
+            )
         }
     }
 

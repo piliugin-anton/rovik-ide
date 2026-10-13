@@ -20,8 +20,8 @@
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
 //!   command_output.rs: the rules and text they use
 
-pub mod change_review;
 pub mod causes;
+pub mod change_review;
 pub mod check_output;
 pub mod command_output;
 pub mod diff;
@@ -50,8 +50,8 @@ mod subagent_run;
 pub mod test_writer;
 pub mod tools;
 pub mod triage;
-pub mod worker;
 mod verify;
+pub mod worker;
 
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewMessage};
@@ -457,7 +457,11 @@ impl AgentState {
     fn stop_in<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str, itself: bool) -> bool {
         let mut inner = self.lock();
         let own = if itself {
-            inner.runs.get(dialog_id).map(|run| run.stop.set()).is_some()
+            inner
+                .runs
+                .get(dialog_id)
+                .map(|run| run.stop.set())
+                .is_some()
         } else {
             false
         };

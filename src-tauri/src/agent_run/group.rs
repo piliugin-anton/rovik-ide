@@ -783,7 +783,14 @@ impl<R: Runtime> Run<R> {
         match land_copy(&member.child_id, outside.clone()).await {
             Ok(landed_paths) => {
                 chats::discard_child(&member.child_id);
-                self.take_landed(member, &mut result, &before, &snapshot, &landed_paths, joined);
+                self.take_landed(
+                    member,
+                    &mut result,
+                    &before,
+                    &snapshot,
+                    &landed_paths,
+                    joined,
+                );
                 let so_far = checklist.clone();
                 if let Some(items) = self.after_worker(&mut result, so_far.as_deref()).await {
                     *checklist = Some(items);
@@ -811,7 +818,14 @@ impl<R: Runtime> Run<R> {
                 except.extend(outside.iter().cloned());
                 let rest = land_copy(&member.child_id, except).await;
                 let landed_paths = rest.as_ref().cloned().unwrap_or_default();
-                self.take_landed(member, &mut result, &before, &snapshot, &landed_paths, joined);
+                self.take_landed(
+                    member,
+                    &mut result,
+                    &before,
+                    &snapshot,
+                    &landed_paths,
+                    joined,
+                );
                 let mut text = format!(
                     "## The join stopped: a conflict\n\nWorker {} (step {n}) changed the same lines as the chat's view in {}. {}\n\nBoth versions of each are saved (read them with read):\n{versions}\n\nMerge them into the chat's file yourself (write it), then go on. The worker's copy is kept: call task with continue: \"{handle}\" to have it carry on in its copy; what it changes lands then, merged again.",
                     member.label,

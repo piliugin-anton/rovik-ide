@@ -400,9 +400,10 @@ pub fn unpack(asset: &str, data: &[u8]) -> Result<Vec<u8>, String> {
             .map_err(|e| format!("unpacking: {e}"))?;
         let mut entry = (0..archive.len())
             .find(|&i| {
-                archive
-                    .by_index(i)
-                    .is_ok_and(|f| f.name().is_ok_and(|f| f.rsplit('/').next() == Some("rust-analyzer.exe")))
+                archive.by_index(i).is_ok_and(|f| {
+                    f.name()
+                        .is_ok_and(|f| f.rsplit('/').next() == Some("rust-analyzer.exe"))
+                })
             })
             .ok_or("rust-analyzer.exe isn't in the archive")
             .and_then(|i| archive.by_index(i).map_err(|_| "unreadable archive entry"))?;

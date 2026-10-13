@@ -87,7 +87,13 @@ pub fn project_relative(root: &str, path: &str) -> Option<String> {
     let target = canonicalize_existing(&resolve_within_root(root, path).ok()?).ok()?;
     let root = canonicalize_or_err(Path::new(root)).ok()?;
     let relative = target.strip_prefix(&root).ok()?;
-    Some(relative.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
+    Some(
+        relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 /// Resolves `candidate` (as given by the model, relative to the project
@@ -896,7 +902,9 @@ pub fn write_file(
     // create any directories on disk.
     let target = resolve_within_root(root, path)?;
     // What was there: None for a new file, Some(None) when it isn't text.
-    let before = fs::read(&target).ok().map(|bytes| String::from_utf8(bytes).ok());
+    let before = fs::read(&target)
+        .ok()
+        .map(|bytes| String::from_utf8(bytes).ok());
     if let Some(Some(current)) = &before {
         if let Some(error) = empty_overwrite_error(&path, current, &content) {
             return Err(error);
@@ -923,7 +931,12 @@ pub fn write_file(
         Some(Some(current)) => line_changes(current, content),
         Some(None) => return Ok(format!("wrote {} bytes to {path}", content.len())),
     };
-    Ok(format!("wrote {} bytes to {path} (+{} -{} lines)", content.len(), changes.0, changes.1))
+    Ok(format!(
+        "wrote {} bytes to {path} (+{} -{} lines)",
+        content.len(),
+        changes.0,
+        changes.1
+    ))
 }
 
 /// Lines added and removed turning `before` into `after`, counted as the
@@ -940,7 +953,9 @@ pub fn line_changes(before: &str, after: &str) -> (usize, usize) {
     }
     diff_lines(&lines(before), &lines(after))
         .iter()
-        .fold((0, 0), |(added, removed), h| (added + h.added.len(), removed + h.deleted.len()))
+        .fold((0, 0), |(added, removed), h| {
+            (added + h.added.len(), removed + h.deleted.len())
+        })
 }
 
 /// The model's error for a whole-file write over a change it hasn't seen:
@@ -1020,7 +1035,11 @@ mod tests {
             ("./src/lib/", "src/lib"),
             (nested.as_str(), "src/lib"),
         ] {
-            assert_eq!(project_relative(&root_s, path).as_deref(), Some(dir), "{path:?}");
+            assert_eq!(
+                project_relative(&root_s, path).as_deref(),
+                Some(dir),
+                "{path:?}"
+            );
         }
         assert_eq!(project_relative(&root_s, "/etc"), None);
         let _ = fs::remove_dir_all(base);

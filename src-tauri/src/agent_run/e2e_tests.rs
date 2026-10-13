@@ -502,7 +502,10 @@ async fn a_run_calls_tools_until_the_model_is_done() {
         "every message is finished"
     );
     assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
-    assert_eq!(messages[2].content, "wrote 3 bytes to hello.txt (+1 -0 lines)");
+    assert_eq!(
+        messages[2].content,
+        "wrote 3 bytes to hello.txt (+1 -0 lines)"
+    );
     assert_eq!(messages[3].content, "Wrote hello.txt.");
 
     // The second request carried the tool's result, with the tools and the system prompt.
@@ -2530,7 +2533,10 @@ async fn a_plan_edited_to_name_a_missing_file_is_flagged_at_implementation() {
     let check = &note.meta.as_ref().unwrap()["planCheck"];
     assert_eq!(check["file"], ".rovik/plans/2026-10-06-greet.md");
     assert!(
-        check["problems"][0].as_str().unwrap().starts_with("Step 1 names `src/greet.rs`, which isn't in the project"),
+        check["problems"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("Step 1 names `src/greet.rs`, which isn't in the project"),
         "{check}"
     );
     // And the agent has it on its first turn.
@@ -2540,7 +2546,12 @@ async fn a_plan_edited_to_name_a_missing_file_is_flagged_at_implementation() {
     assert!(text.contains("may have been edited since it was written"));
 
     // A plan that holds up: no note.
-    let h = harness(&[("src/main.rs", "fn main() {}\n"), ("src/greet.rs", "\n"), (".rovik/plans/p.md", plan)]).await;
+    let h = harness(&[
+        ("src/main.rs", "fn main() {}\n"),
+        ("src/greet.rs", "\n"),
+        (".rovik/plans/p.md", plan),
+    ])
+    .await;
     let (url, _) = model(vec![Reply::Text("Done.")]).await;
     let message = UserMessage {
         id: uuid::Uuid::new_v4().to_string(),
@@ -3198,7 +3209,9 @@ async fn edits_that_change_nothing_or_cant_apply_skip_approval() {
         "nothing to approve"
     );
     let messages = h.messages().await;
-    assert!(result_of(&messages, "w1").content.starts_with("wrote 4 bytes to a.txt ("));
+    assert!(result_of(&messages, "w1")
+        .content
+        .starts_with("wrote 4 bytes to a.txt ("));
     assert!(result_of(&messages, "e1").content.starts_with("Error:"));
     assert!(result_of(&messages, "e2").content.contains("no such file"));
     assert_eq!(h.file("a.txt").as_deref(), Some("one\n"));
@@ -3697,7 +3710,10 @@ async fn an_older_waiting_check_is_superseded_and_carries_are_freed() {
         .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
     let messages = h.messages().await;
-    assert_eq!(waiting(&messages, "superseded"), std::slice::from_ref(&first));
+    assert_eq!(
+        waiting(&messages, "superseded"),
+        std::slice::from_ref(&first)
+    );
     let second = waiting(&messages, "needs-approval")[0].clone();
     assert!(state.has_carry(&h.dialog_id));
 
@@ -3730,7 +3746,9 @@ async fn an_older_waiting_check_is_superseded_and_carries_are_freed() {
         .into_iter()
         .find(|m| m.id == second)
         .unwrap();
-    assert!(record.meta.unwrap()["verification"].get("stateRestored").is_none());
+    assert!(record.meta.unwrap()["verification"]
+        .get("stateRestored")
+        .is_none());
     assert!(!state.has_carry(&h.dialog_id));
 
     // A third waits; its state is gone (as after a restart): it says so.
