@@ -6,6 +6,7 @@
 import { For, Show } from 'solid-js';
 import {
   reviewDetails,
+  reviewFacts,
   reviewHeadline,
   type ReviewFinding,
   type ReviewMeta,
@@ -108,12 +109,6 @@ export default function ReviewRecord(props: {
           </ul>
         </details>
       </Show>
-      <Show when={props.meta.status === 'skipped' && props.meta.report}>
-        <details class="review-dropped">
-          <summary>The report as written</summary>
-          <pre class="review-report">{props.meta.report}</pre>
-        </details>
-      </Show>
       <Show when={props.meta.status !== 'running'}>
         <div class="chat-verify-files">
           {reviewDetails(props.meta)}
@@ -122,6 +117,23 @@ export default function ReviewRecord(props: {
             <ShowWorkButton work={work} />
           </Show>
         </div>
+        <details class="review-details">
+          <summary>Details</summary>
+          <dl class="review-facts">
+            <For each={reviewFacts(props.meta)}>
+              {([label, value]) => (
+                <>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </>
+              )}
+            </For>
+          </dl>
+          <Show when={props.meta.report}>
+            <div class="review-label">The report as the reviewer wrote it:</div>
+            <pre class="review-report">{props.meta.report}</pre>
+          </Show>
+        </details>
       </Show>
       <Show when={work.shown() && childId()}>
         <SubagentTranscript childDialogId={childId()!} running={props.meta.status === 'running'} />

@@ -118,6 +118,43 @@ function planHeadline(meta: ReviewMeta): string {
   }
 }
 
+/** The record's facts, for the card's "Details" expander: label and value. */
+export function reviewFacts(meta: ReviewMeta): [string, string][] {
+  const facts: [string, string][] = [
+    [
+      'What',
+      meta.kind === 'plan' ? 'The plan, before it was saved' : 'The change, before the checks',
+    ],
+    ['Status', meta.status + (meta.partial ? ' (out of budget)' : '')],
+  ];
+  if (meta.reason) facts.push(['Reason', meta.reason]);
+  facts.push([
+    'Round',
+    meta.round === undefined
+      ? `none: all ${meta.maxRounds} used`
+      : `${meta.round} of at most ${meta.maxRounds}`,
+  ]);
+  if (meta.model) facts.push(['Model', modelLabel(meta.model, meta.modelsTried)]);
+  if (meta.toolCalls !== undefined) facts.push(['Tool calls', String(meta.toolCalls)]);
+  if (meta.ms !== undefined) facts.push(['Time', `${Math.round(meta.ms / 1000)} s`]);
+  if (meta.usage) {
+    facts.push([
+      'Tokens',
+      `${meta.usage.inputTokens} in, ${meta.usage.outputTokens} out` +
+        (meta.usage.cost !== undefined ? ` ($${meta.usage.cost.toFixed(4)})` : ''),
+    ]);
+  }
+  if (meta.files?.length) facts.push(['Files', meta.files.join(', ')]);
+  if (meta.changedLines !== undefined) facts.push(['Changed lines', String(meta.changedLines)]);
+  if (meta.findings?.length) facts.push(['Findings', String(meta.findings.length)]);
+  if (meta.dropped?.length) facts.push(['Repeated, not sent again', String(meta.dropped.length)]);
+  if (meta.held) facts.push(['Plan', 'held back for the agent to fix']);
+  if (meta.open) facts.push(['Open findings', `${meta.open}, saved at the end of the plan`]);
+  if (meta.afterGreen) facts.push(['When', 'after the checks passed']);
+  if (meta.childDialogId) facts.push(['Reviewer chat', meta.childDialogId]);
+  return facts;
+}
+
 /** "Review 1 of at most 3 · 12 tool calls · 41 s · model" */
 export function reviewDetails(meta: ReviewMeta): string {
   const parts = [

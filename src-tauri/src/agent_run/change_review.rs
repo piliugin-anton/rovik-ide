@@ -127,10 +127,71 @@ impl Finding {
 // parentheses may follow the location; "Steps 2 and 4" is a location.
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^\s*\d+[.)]\s*\**\[\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*\]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*)\d+)*|[^\s`*]+)`?\**:?(?:\s*\([^)\n]*\))?\s*(?:[—–:-]+\s*(.*))?$",
+        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*|\s*[-–]\s*)\d+)*|(?:(?:the|whole|overall|entire|general)\s+)?plan|[^\s`*]+)`?\**:?(?:\s*\([^)\n]*\))?\s*(?:[—–:-]+\s*(.*))?$",
     )
     .unwrap()
 });
+/// "## Findings" at another level, in bold, or as a line of its own.
+static FINDINGS_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(?:#{1,6}\s*)?[*_]*\s*findings(?:\s*\([^)\n]*\))?\s*:?\s*[*_]*\s*$").unwrap()
+});
+static ANY_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*#{1,6}\s").unwrap());
+
+/// The report without a code fence around the whole of it.
+fn unfenced(text: &str) -> &str {
+    let t = text.trim();
+    if let Some(inner) = t.strip_prefix("```") {
+        if let Some(inner) = inner.strip_suffix("```") {
+            if let Some(at) = inner.find('\n') {
+                return &inner[at + 1..];
+            }
+        }
+    }
+    text
+}
+
+/// The text under the findings heading: `## Findings` (a suffix after it
+/// too), or the heading at another level, in bold, or as a line of its
+/// own, up to the next heading.
+fn findings_body(text: &str) -> Option<String> {
+    let text = unfenced(text);
+    let sections = subagent::sections(text);
+    if let Some(body) = sections.get("Findings") {
+        return Some(body.to_string());
+    }
+    if let Some((_, body)) = sections
+        .0
+        .iter()
+        .find(|(n, _)| n.to_lowercase().starts_with("findings"))
+    {
+        return Some(body.clone());
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines.iter().position(|l| FINDINGS_LINE.is_match(l))?;
+    let body: Vec<&str> = lines[at + 1..]
+        .iter()
+        .copied()
+        .take_while(|l| !ANY_HEADING.is_match(l) && !FINDINGS_LINE.is_match(l))
+        .collect();
+    Some(body.join("\n").trim().to_string())
+}
+
+/// The confidence a reviewer wrote as the two the format has.
+fn confidence_of(written: &str) -> Option<String> {
+    let word: String = written
+        .to_lowercase()
+        .chars()
+        .skip_while(|ch| !ch.is_alphabetic())
+        .take_while(|ch| ch.is_alphabetic())
+        .collect();
+    match word.as_str() {
+        "confirmed" | "certain" | "sure" | "verified" | "high" | "definite" => Some("confirmed"),
+        "plausible" | "likely" | "possible" | "probable" | "medium" | "moderate" | "low"
+        | "unsure" | "uncertain" | "unverified" | "suspected" => Some("plausible"),
+        _ => None,
+    }
+    .map(str::to_string)
+}
 // P4.5: `- **Scenario:**` and `- **Scenario**:` too; the bullet may be
 // left out (the earlier findings in a later round's brief were shown
 // without it, and a reviewer copies what it sees).
@@ -181,17 +242,10 @@ const FORMAT_HINT: &str = "each finding is a numbered line \"1. [high] path:line
 /// doesn't follow the format is an error (the repair turn's text), never
 /// "no findings".
 pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
-    let sections = subagent::sections(text);
-    // "## Findings (round 2)" is the findings too.
-    let Some(body) = sections.get("Findings").or_else(|| {
-        sections
-            .0
-            .iter()
-            .find(|(n, _)| n.to_lowercase().starts_with("findings"))
-            .map(|(_, b)| b.as_str())
-    }) else {
+    let Some(body) = findings_body(text) else {
         return Err(format!("it has no \"## Findings\" section ({FORMAT_HINT})"));
     };
+    let body = body.as_str();
     // P4.5: "None." with a reason after it is none too; so is "No new
     // findings." or "All four earlier findings are addressed." with
     // nothing that reads as a finding after it. "None of these break the
@@ -295,16 +349,10 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             .ok_or_else(|| format!("finding {n} has no \"- Scenario:\" line ({FORMAT_HINT})"))?;
         let fix = field("fix")
             .ok_or_else(|| format!("finding {n} has no \"- Fix:\" line ({FORMAT_HINT})"))?;
-        // P4.5: its first word ("Confirmed — I ran it").
+        // P4.5: its first word ("Confirmed — I ran it"); "high", "likely"
+        // and the like read as the nearer of the two.
         let confidence = field("confidence")
-            .map(|c| {
-                c.to_lowercase()
-                    .chars()
-                    .skip_while(|ch| !ch.is_alphabetic())
-                    .take_while(|ch| ch.is_alphabetic())
-                    .collect::<String>()
-            })
-            .filter(|c| c == "confirmed" || c == "plausible")
+            .and_then(|c| confidence_of(&c))
             .ok_or_else(|| {
                 format!("finding {n} has no \"- Confidence:\" line saying confirmed or plausible ({FORMAT_HINT})")
             })?;
@@ -347,7 +395,8 @@ pub(super) fn reviewer_skip_reason(skip: &Skip) -> String {
         Skip::NotRun => "the reviewer couldn't run".into(),
         Skip::ModelFailed(error) => format!("the reviewer's model failed ({error})"),
         Skip::Blocked(why) => format!("the reviewer couldn't review: {why}"),
-        Skip::Unformatted => "its report didn't follow the format".into(),
+        Skip::Unformatted(why) if why.is_empty() => "its report didn't follow the format".into(),
+        Skip::Unformatted(why) => format!("its report didn't follow the format: {why}"),
     }
 }
 
@@ -890,10 +939,15 @@ mod tests {
             .unwrap_err()
             .contains("finding 1 has no \"- Fix:\""));
         let bad_confidence =
-            "## Findings\n1. [medium] a.rs:3 — x\n - Scenario: y\n - Fix: z\n - Confidence: high";
+            "## Findings\n1. [medium] a.rs:3 — x\n - Scenario: y\n - Fix: z\n - Confidence: 42";
         assert!(parse_findings(bad_confidence)
             .unwrap_err()
             .contains("confirmed or plausible"));
+        // Other words for it read as the nearer of the two.
+        for (written, read) in [("high", "confirmed"), ("Likely", "plausible"), ("medium", "plausible")] {
+            let text = bad_confidence.replace("Confidence: 42", &format!("Confidence: {written}"));
+            assert_eq!(parse_findings(&text).unwrap()[0].confidence, read, "{written}");
+        }
         // A severity outside the three is read as the nearest of them.
         let critical = "## Findings\n1. [critical] a.rs:3 — x\n - Scenario: y\n - Fix: z\n - Confidence: confirmed";
         assert_eq!(parse_findings(critical).unwrap()[0].severity, "high");
@@ -1143,8 +1197,11 @@ mod tests {
             let found = parse_findings(&text).unwrap_or_else(|e| panic!("{line}: {e}"));
             assert_eq!(found[0].confidence, want, "{line}");
         }
+        // "likely" says plausible; a number says nothing.
         let likely = "## Findings\n1. [high] a.rs:3 — x\n - Scenario: s\n - Fix: f\n - Confidence: likely plausible";
-        assert!(parse_findings(likely)
+        assert_eq!(parse_findings(likely).unwrap()[0].confidence, "plausible");
+        let number = likely.replace("likely plausible", "80%");
+        assert!(parse_findings(&number)
             .unwrap_err()
             .contains("confirmed or plausible"));
     }
@@ -1176,22 +1233,19 @@ mod tests {
         assert_eq!((kept.len(), dropped.len()), (0, 2));
     }
 
-    /// Round 2 (§4.2), pinned: a report wrapped whole in a backtick code
-    /// fence has no "## Findings" heading (`subagent::sections` skips fenced
-    /// lines), so it's out of format: `format_problem` sends it to the repair
-    /// turn (subagent_run.rs `finish_report`), and a fenced "None." is never
-    /// read as clean.
+    /// A report wrapped whole in a backtick code fence (the brief shows
+    /// the plan in one, and a reviewer answers in kind) reads as the report
+    /// inside it, after a lead-in too; the word in prose is no heading.
     #[test]
     fn report_entirely_in_a_code_fence() {
         let fenced = format!("```markdown\n{GOOD}\n```");
-        assert!(parse_findings(&fenced)
+        assert_eq!(parse_findings(&fenced).unwrap().len(), 2);
+        assert!(subagent::format_problem(Kind::Reviewer.spec(), &fenced).is_none());
+        assert_eq!(parse_findings("```\n## Findings\nNone.\n```").unwrap(), vec![]);
+        assert_eq!(parse_findings(&format!("Here it is:\n```\n{GOOD}\n```")).unwrap().len(), 2);
+        assert!(parse_findings("My findings are below, in prose: the plan is fine.")
             .unwrap_err()
             .contains("no \"## Findings\" section"));
-        let problem = subagent::format_problem(Kind::Reviewer.spec(), &fenced).unwrap();
-        assert!(problem.contains("no \"## Findings\""), "{problem}");
-        assert!(parse_findings("```\n## Findings\nNone.\n```").is_err());
-        // The repair turn's answer, unfenced, reads.
-        assert_eq!(parse_findings(GOOD).unwrap().len(), 2);
     }
 
     /// Round 2 (§4.2), decided: `subagent::sections` takes only backtick
@@ -1298,6 +1352,34 @@ mod tests {
         );
     }
 
+    /// A first report in shapes a reviewer gives it: the heading at
+    /// another level, in bold, or as a plain line; the whole report in a
+    /// code fence; the severity in parentheses; "the plan" or a range of
+    /// steps as the location.
+    #[test]
+    fn first_report_shapes_parse() {
+        let finding = "1. (high) Steps 5–6 — The chip is lost\n - Scenario: s\n - Fix: f\n - Confidence: confirmed\n\
+                       2. [medium] The plan — Misses the request's second half\n - Scenario: s\n - Fix: f\n - Confidence: plausible";
+        for report in [
+            format!("# Findings\n\n{finding}"),
+            format!("### Findings\n\n{finding}\n\n### Notes\n\nnone"),
+            format!("**Findings**\n\n{finding}"),
+            format!("Findings:\n{finding}"),
+            format!("```markdown\n## Findings\n\n{finding}\n```"),
+            format!("## Findings (2)\n\n{finding}"),
+        ] {
+            let f = parse_findings(&report).unwrap_or_else(|e| panic!("{report}: {e}"));
+            assert_eq!(f.len(), 2, "{report}");
+            assert_eq!((f[0].severity.as_str(), f[0].step), ("high", Some(5)), "{report}");
+            assert_eq!(f[0].title, "The chip is lost", "{report}");
+            assert_eq!((f[1].location.as_str(), f[1].step), ("The plan", None), "{report}");
+            assert_eq!(f[1].title, "Misses the request's second half", "{report}");
+            assert!(subagent::format_problem(Kind::Reviewer.spec(), &report).is_none(), "{report}");
+        }
+        assert_eq!(parse_findings("# Findings\n\nNone.").unwrap(), vec![]);
+        assert!(parse_findings("# Review\n\nFindings are listed below.").is_err());
+    }
+
     /// A later round with nothing left: the words reviewers use for it,
     /// alone or followed by what was settled, read as no findings; words
     /// before findings, or findings with their fields, don't.
@@ -1362,7 +1444,7 @@ mod tests {
     #[test]
     fn no_severity_is_an_error() {
         let rest = "\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
-        for header in ["1. a.rs:3 — x", "1. [] a.rs:3 — x", "1. (high) a.rs:3 — x"] {
+        for header in ["1. a.rs:3 — x", "1. [] a.rs:3 — x", "1. high a.rs:3 — x"] {
             let text = format!("## Findings\n{header}{rest}");
             assert!(
                 parse_findings(&text)
