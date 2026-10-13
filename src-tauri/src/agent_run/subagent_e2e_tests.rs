@@ -6119,9 +6119,11 @@ async fn a_review_after_green_that_couldnt_read_the_report_isnt_done() {
         .next_back()
         .unwrap();
     assert_eq!(last["reviewAfterGreen"]["status"], "skipped", "{last}");
-    assert_eq!(
-        last["reviewAfterGreen"]["reason"],
-        "its report didn't follow the format"
+    // The reason says what was wrong.
+    let reason = last["reviewAfterGreen"]["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("its report didn't follow the format: it has no \"## Findings\" section"),
+        "{reason}"
     );
 }
 
