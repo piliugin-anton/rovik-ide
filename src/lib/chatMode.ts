@@ -6,7 +6,8 @@
 //          changes. Decides open questions itself (as before).
 //   Plan   investigates without changing anything, asks the user about
 //          what really affects the design (ask_user, lib/questions.ts),
-//          and ends with a written plan, decisions included. "Implement
+//          and ends with a written plan (steps with a Files line each,
+//          decisions, validation). "Implement
 //          this plan" then hands it to Agent mode. A question asked in
 //          Plan mode is answered in the reply; no plan is written for it.
 //

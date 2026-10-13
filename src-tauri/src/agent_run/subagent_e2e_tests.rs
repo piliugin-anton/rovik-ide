@@ -2154,12 +2154,12 @@ fn plan_reviewer_on(extra: Value) -> subagent::SubagentConfig {
 /// A plan the checker accepts in `plan_project()`; `extra` adds steps.
 fn users_plan(title: &str, extra: usize) -> String {
     let mut steps = String::from(
-        "1. **Table**\n   - `src/db.rs`: add a `users` table with `id` and `email`.\n\
-         2. **API**\n   - `src/api.rs`: add `fn list_users()` returning every user.\n",
+        "1. **Table**\n   - Files: `src/db.rs`\n   - Add a `users` table with `id` and `email`.\n\
+         2. **API**\n   - Files: `src/api.rs`\n   - Add `fn list_users()` returning every user.\n",
     );
     for i in 0..extra {
         steps.push_str(&format!(
-            "{}. **Caller {i}**\n   - `src/cli.rs`: update call site {i} to use `list_users()` and print each user.\n",
+            "{}. **Caller {i}**\n   - Files: `src/cli.rs`\n   - Update call site {i} to use `list_users()` and print each user.\n",
             i + 3
         ));
     }
@@ -2559,9 +2559,9 @@ async fn a_small_revert_after_a_hold_is_still_reviewed() {
  */
 
 const STEP_PLAN: &str = "# Greet\n\nSay hello in two files.\n\n## Steps\n\n\
-    1. **First greeting**\n   - `a.txt`: replace its line with \"hello\".\n\
-    2. **Second greeting**\n   - `a.txt`: add a second line \"hello again\".\n   - `b.txt`: write \"bye\".\n\
-    3. **Notes**\n   - `notes/` (new): add a file with the date.\n\n\
+    1. **First greeting**\n   - Files: `a.txt`\n   - Replace its line with \"hello\".\n\
+    2. **Second greeting**\n   - Files: `a.txt`, `b.txt`\n   - Add a second line \"hello again\" to a.txt; write \"bye\" to b.txt.\n\
+    3. **Notes**\n   - Files: `notes/` (new)\n   - Add a file with the date.\n\n\
     ## Decisions\n- Plain text, one greeting per line.\n\n## Validation\n- read the files\n";
 
 fn workers_on(extra: Value) -> subagent::SubagentConfig {
@@ -2961,8 +2961,8 @@ async fn a_rolled_back_round_puts_a_workers_non_utf8_file_back_exactly() {
         return;
     }
     let plan = "# Data\n\nFix the data.\n\n## Steps\n\n\
-        1. **Greeting**\n   - `a.txt`: say good.\n\
-        2. **Data**\n   - `data.txt`: rewrite it.\n   - `b.txt`: update it.\n\n\
+        1. **Greeting**\n   - Files: `a.txt`\n   - Say good in it.\n\
+        2. **Data**\n   - Files: `data.txt`, `b.txt`\n   - Rewrite data.txt and update b.txt.\n\n\
         ## Validation\n- `npm test`\n";
     let check = "const fs = require('fs');\n\
         if (!fs.readFileSync('a.txt', 'utf8').includes('good')) { console.log('test t::one ... FAILED'); process.exit(1); }\n\
@@ -3035,8 +3035,8 @@ async fn an_isolated_step_workers_new_file_is_removed_by_the_rounds_rollback() {
         return;
     }
     let plan = "# Extra\n\nFix the greeting.\n\n## Steps\n\n\
-        1. **Greeting**\n   - `a.txt`: say good.\n\
-        2. **Extra**\n   - `src/extra.rs` (new): add the helper.\n\n\
+        1. **Greeting**\n   - Files: `a.txt`\n   - Say good in it.\n\
+        2. **Extra**\n   - Files: `src/extra.rs` (new)\n   - Add the helper there.\n\n\
         ## Validation\n- `npm test`\n";
     let check = "const fs = require('fs');\n\
         if (!fs.readFileSync('a.txt', 'utf8').includes('good')) { console.log('test t::one ... FAILED'); process.exit(1); }\n\
@@ -3163,9 +3163,9 @@ async fn scope_grants_are_bounded_and_kept_when_continued() {
 #[tokio::test]
 async fn a_folder_grant_cant_cover_another_steps_file() {
     let plan = "# API\n\nUsers and posts.\n\n## Steps\n\n\
-        1. **Base**\n   - `src/lib.rs`: declare the api module.\n\
-        2. **Users**\n   - `src/api/users.rs` (new): add the users endpoint.\n\
-        3. **Posts**\n   - `src/api/posts.rs`: add the posts endpoint.\n\n\
+        1. **Base**\n   - Files: `src/lib.rs`\n   - Declare the api module.\n\
+        2. **Users**\n   - Files: `src/api/users.rs` (new)\n   - Add the users endpoint.\n\
+        3. **Posts**\n   - Files: `src/api/posts.rs`\n   - Add the posts endpoint.\n\n\
         ## Validation\n- `cargo test`\n";
     let h = harness(&[
         ("src/lib.rs", "// lib\n"),
@@ -3367,8 +3367,8 @@ async fn workers_need_a_plan_and_a_real_step() {
  */
 
 const TEST_PLAN: &str = "# Greeter\n\nAdd a greeter.\n\n## Steps\n\n\
-    1. **Greeter**\n   - `src/greet.ts`: add `export function greet(name: string): string` returning `Hello, <name>!`.\n\
-    2. **Use it**\n   - `src/main.ts`: print `greet(\"you\")`.\n\n## Validation\n- `npm test`\n";
+    1. **Greeter**\n   - Files: `src/greet.ts`\n   - Add `export function greet(name: string): string` returning `Hello, <name>!`.\n\
+    2. **Use it**\n   - Files: `src/main.ts`\n   - Print `greet(\"you\")`.\n\n## Validation\n- `npm test`\n";
 
 fn test_writer_on() -> subagent::SubagentConfig {
     serde_json::from_value(
@@ -3575,9 +3575,9 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
  */
 
 const GROUP_PLAN: &str = "# Two pages\n\nUsers and posts.\n\n## Steps\n\n\
-    1. **Contract**\n   - `src/api.rs`: declare `fn users()` and `fn posts()` with stub bodies.\n\
-    2. **Users**\n   - `src/users.rs`: implement the users page with `fn users()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\
-    3. **Posts**\n   - `src/posts.rs`: implement the posts page with `fn posts()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\n\
+    1. **Contract**\n   - Files: `src/api.rs`\n   - Declare `fn users()` and `fn posts()` with stub bodies.\n\
+    2. **Users**\n   - Files: `src/users.rs`, `src/api.rs` (read)\n   - Implement the users page with `fn users()`.\n   - Group: pages\n\
+    3. **Posts**\n   - Files: `src/posts.rs`, `src/api.rs` (read)\n   - Implement the posts page with `fn posts()`.\n   - Group: pages\n\n\
     ## Validation\n- `npm test`\n";
 
 fn groups_on() -> subagent::SubagentConfig {
@@ -3942,7 +3942,7 @@ async fn retried_workers_count_against_the_limit() {
     let mut files: Vec<(String, String)> = Vec::new();
     for n in 1..=6 {
         steps.push_str(&format!(
-            "{n}. **Part {n}**\n   - `src/part{n}.rs`: implement part {n} with `fn part{n}()`.\n   - Group: all\n"
+            "{n}. **Part {n}**\n   - Files: `src/part{n}.rs`\n   - Implement part {n} with `fn part{n}()`.\n   - Group: all\n"
         ));
         files.push((format!("src/part{n}.rs"), format!("// part {n}\n")));
     }
@@ -3997,10 +3997,10 @@ async fn retried_workers_count_against_the_limit() {
 }
 
 const GROUP3_PLAN: &str = "# Three pages\n\nUsers, posts and a feed.\n\n## Steps\n\n\
-    1. **Contract**\n   - `src/api.rs`: declare `fn users()` and `fn posts()` with stub bodies.\n\
-    2. **Users**\n   - `src/users.rs`: implement the users page with `fn users()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\
-    3. **Posts**\n   - `src/posts.rs`: implement the posts page with `fn posts()`.\n   - `src/extra.rs`: helpers for the posts page.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\
-    4. **Feed**\n   - `src/feed.rs`: implement the feed with `fn posts()`.\n   - `src/api.rs` (read): the signature.\n   - Group: pages\n\n\
+    1. **Contract**\n   - Files: `src/api.rs`\n   - Declare `fn users()` and `fn posts()` with stub bodies.\n\
+    2. **Users**\n   - Files: `src/users.rs`, `src/api.rs` (read)\n   - Implement the users page with `fn users()`.\n   - Group: pages\n\
+    3. **Posts**\n   - Files: `src/posts.rs`, `src/extra.rs`, `src/api.rs` (read)\n   - Implement the posts page with `fn posts()` and its helpers.\n   - Group: pages\n\
+    4. **Feed**\n   - Files: `src/feed.rs`, `src/api.rs` (read)\n   - Implement the feed with `fn posts()`.\n   - Group: pages\n\n\
     ## Validation\n- `npm test`\n";
 
 /// Round 2, P2.3: a group worker can't be granted the file of a step
@@ -4012,7 +4012,7 @@ async fn a_group_worker_cant_be_granted_a_non_member_steps_file() {
     }
     let plan = GROUP3_PLAN.replace(
         "\n## Validation",
-        "5. **Second feed**\n   - `src/feed2.rs`: a second feed.\n\n## Validation",
+        "5. **Second feed**\n   - Files: `src/feed2.rs`\n   - Add a second feed there.\n\n## Validation",
     );
     let plan: &'static str = Box::leak(plan.into_boxed_str());
     let mut h = harness(&[
@@ -4331,8 +4331,8 @@ async fn a_conflict_in_the_only_landing_member_still_saves_the_group() {
         return;
     }
     let plan = GROUP3_PLAN.replace(
-        "   - `src/users.rs`: implement the users page with `fn users()`.\n",
-        "   - `src/users.rs`: implement the users page with `fn users()`.\n   - `src/api_users.rs`: add its route.\n",
+        "   - Files: `src/users.rs`, `src/api.rs` (read)\n",
+        "   - Files: `src/users.rs`, `src/api_users.rs`, `src/api.rs` (read)\n",
     );
     let plan: &'static str = Box::leak(plan.into_boxed_str());
     let mut h = harness(&[
@@ -6428,9 +6428,9 @@ async fn a_worker_cut_for_repeating_itself_keeps_its_work() {
  */
 
 const REDO_PLAN: &str = "# Pages\n\nUsers and posts.\n\n## Steps\n\n\
-    1. **Contract**\n   - `src/api.rs`: declare the pages.\n\
-    2. **Users**\n   - `src/users/` (new): the users page.\n   - Group: pages\n\
-    3. **Posts**\n   - `src/posts.rs`: the posts page.\n   - `assets/x.bin`: its data.\n   - Group: pages\n\n\
+    1. **Contract**\n   - Files: `src/api.rs`\n   - Declare the pages there.\n\
+    2. **Users**\n   - Files: `src/users/` (new)\n   - Add the users page.\n   - Group: pages\n\
+    3. **Posts**\n   - Files: `src/posts.rs`, `assets/x.bin`\n   - Add the posts page and its data.\n   - Group: pages\n\n\
     ## Validation\n- read the files\n";
 
 #[tokio::test]
@@ -7247,14 +7247,14 @@ async fn plan_checks_see_the_chats_view_in_an_isolated_chat() {
 
     let plan = |extra: &str| {
         format!(
-            "# Use it\n\nCall it.\n\n## Steps\n\n1. **Call**\n   - `src/api.rs`: call `here()` from `src/only_here.rs`.\n   - `src/only_here.rs`: export it.\n{extra}\n## Validation\n- `cargo test`\n"
+            "# Use it\n\nCall it.\n\n## Steps\n\n1. **Call**\n   - Files: `src/api.rs`, `src/only_here.rs`\n   - Call `here()` from the api; export it.\n{extra}\n## Validation\n- `cargo test`\n"
         )
     };
     let (url, _) = model(vec![
-        submit("p1", plan("2. **Gone**\n   - `src/missing.rs`: use it.\n")),
+        submit("p1", plan("2. **Gone**\n   - Files: `src/missing.rs`\n   - Use it in the loader.\n")),
         submit(
             "p2",
-            plan("2. **Store**\n   - `src/db.rs`: keep what it returns.\n"),
+            plan("2. **Store**\n   - Files: `src/db.rs`\n   - Keep what it returns.\n"),
         ),
         Reply::Text("Saved."),
     ])
@@ -8747,8 +8747,8 @@ async fn out_of_scope_folder_with_in_scope_file_lands() {
     let plan: &'static str = Box::leak(
         GROUP_PLAN
             .replace(
-                "`src/users.rs`: implement",
-                "`src/api/users.rs` (new): implement",
+                "Files: `src/users.rs`,",
+                "Files: `src/api/users.rs` (new),",
             )
             .into_boxed_str(),
     );
@@ -9177,8 +9177,8 @@ async fn a_conflict_in_one_of_n_files_names_only_that_file() {
     let plan: &'static str = Box::leak(
         GROUP_PLAN
             .replace(
-                "   - `src/posts.rs`: implement the posts page with `fn posts()`.\n",
-                "   - `src/posts.rs`: implement the posts page with `fn posts()`.\n   - `src/extra.rs`: its helpers.\n   - `src/extra2.rs`: more helpers.\n",
+                "Files: `src/posts.rs`, `src/api.rs` (read)\n",
+                "Files: `src/posts.rs`, `src/extra.rs`, `src/extra2.rs`, `src/api.rs` (read)\n",
             )
             .into_boxed_str(),
     );
@@ -9490,8 +9490,8 @@ async fn a_fixer_writing_outside_paths_is_recorded_from_the_chats_own_version() 
     let plan: &'static str = Box::leak(
         GROUP_PLAN
             .replace(
-                "   - `src/posts.rs`: implement the posts page with `fn posts()`.\n",
-                "   - `src/posts.rs`: implement the posts page with `fn posts()`.\n   - `src/extra.rs`: its helpers.\n",
+                "Files: `src/posts.rs`, `src/api.rs` (read)\n",
+                "Files: `src/posts.rs`, `src/extra.rs`, `src/api.rs` (read)\n",
             )
             .into_boxed_str(),
     );
@@ -10184,14 +10184,8 @@ async fn two_members_landing_the_same_path_without_a_line_conflict() {
     }
     let plan: &'static str = Box::leak(
         GROUP_PLAN
-            .replace(
-                "`src/users.rs`: implement",
-                "`src/shared.rs`: add the users helper.\n   - `src/users.rs`: implement",
-            )
-            .replace(
-                "`src/posts.rs`: implement",
-                "`src/shared.rs`: add the posts helper.\n   - `src/posts.rs`: implement",
-            )
+            .replace("Files: `src/users.rs`,", "Files: `src/shared.rs`, `src/users.rs`,")
+            .replace("Files: `src/posts.rs`,", "Files: `src/shared.rs`, `src/posts.rs`,")
             .into_boxed_str(),
     );
     let h = group_harness_with_side_effect(plan, "true", &[("src/shared.rs", "// shared\n")]).await;

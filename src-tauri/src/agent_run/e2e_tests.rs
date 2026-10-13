@@ -1388,8 +1388,8 @@ async fn failing_checks_go_back_to_the_model_until_they_pass() {
 async fn plan_mode_asks_and_saves_the_plan() {
     let h = harness(&[("src/db.rs", ""), ("src/api.rs", "")]).await;
     let plan = "# Users\n\nAdd a table.\n\n## Steps\n\
-        1. Schema: in `src/db.rs`, add a `users` table with `id` and `email`.\n\
-        2. API: in `src/api.rs`, add `fn list_users()` returning every user.\n\n\
+        1. Schema\n   - Files: `src/db.rs`\n   - Add a `users` table with `id` and `email`.\n\
+        2. API\n   - Files: `src/api.rs`\n   - Add `fn list_users()` returning every user.\n\n\
         ## Decisions\n- SQLite\n\n## Validation\n- `cargo test`";
     let (url, _) = model(vec![
         Reply::Call {
@@ -2232,8 +2232,8 @@ async fn a_revised_plan_replaces_the_chats_plan_file() {
     let h = harness(&[("src/a.rs", ""), ("src/b.rs", "")]).await;
     let plan = |title: &str| {
         format!(
-            "# {title}\n\n## Steps\n1. Change `src/a.rs`: add `fn a()` that returns 1.\n\
-             2. Change `src/b.rs`: add `fn b()` that calls `a()`.\n\n## Validation\n- `cargo test`"
+            "# {title}\n\n## Steps\n1. A\n   - Files: `src/a.rs`\n   - Add `fn a()` that returns 1.\n\
+             2. B\n   - Files: `src/b.rs`\n   - Add `fn b()` that calls `a()`.\n\n## Validation\n- `cargo test`"
         )
     };
     let first: &'static str = Box::leak(plan("First").into_boxed_str());
@@ -2496,8 +2496,8 @@ async fn plan_implementation_forces_todo_on_the_first_turn() {
 #[tokio::test]
 async fn a_plan_edited_to_name_a_missing_file_is_flagged_at_implementation() {
     let plan = "# Greet\n\nSay hello.\n\n## Steps\n\
-        1. **Greeting**\n   - `src/greet.rs`: change `fn greet()` to return \"hello\".\n\
-        2. **Use it**\n   - `src/main.rs`: call `greet()` and print the result.\n\n\
+        1. **Greeting**\n   - Files: `src/greet.rs`\n   - Change `fn greet()` to return \"hello\".\n\
+        2. **Use it**\n   - Files: `src/main.rs`\n   - Call `greet()` and print the result.\n\n\
         ## Validation\n- `cargo test`\n";
     let h = harness(&[
         ("src/main.rs", "fn main() {}\n"),
