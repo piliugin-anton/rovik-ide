@@ -123,18 +123,50 @@ impl Finding {
     }
 }
 
+// The severity and the location may be in bold or backticks; a note in
+// parentheses may follow the location; "Steps 2 and 4" is a location.
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(`?step\s+\d+`?:?|\S+)\s*(?:[—–:-]+\s*(.*))?$",
+        r"(?i)^\s*\d+[.)]\s*\**\[\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*\]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*)\d+)*|[^\s`*]+)`?\**:?(?:\s*\([^)\n]*\))?\s*(?:[—–:-]+\s*(.*))?$",
     )
     .unwrap()
 });
-// P4.5: `- **Scenario:**` and `- **Scenario**:` too.
+// P4.5: `- **Scenario:**` and `- **Scenario**:` too; the bullet may be
+// left out (the earlier findings in a later round's brief were shown
+// without it, and a reviewer copies what it sees).
 static FIELD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\s*[-*]\s*\**\s*(scenario|fix|suggested fix|confidence|new evidence)\s*\**\s*:\s*\**\s*(.*)$")
+    Regex::new(r"(?i)^\s*(?:[-*]\s*)?\**\s*(scenario|fix|suggested fix|confidence|new evidence)\s*\**\s*:\s*\**\s*(.*)$")
         .unwrap()
 });
-static STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^step\s+(\d+)$").unwrap());
+static STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^steps?\s+(\d+)").unwrap());
+/// A lead line that says there's nothing to report, in the words
+/// reviewers use ("None.", "No new findings.", "Nothing further.", "All
+/// four earlier findings are addressed."), bullets and emphasis aside.
+static NOTHING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(none\b|no\s+(?:new|further|remaining|additional|open|outstanding|more|other)?\s*(?:findings?|issues?|problems?|concerns?)\b|nothing\b|n/?a\b|lgtm\b|looks\s+good\b|clean\b|(?:all|both|every|each|the)\b.{0,120}\b(?:fixed|addressed|resolved|settled|done|handled)\b)",
+    )
+    .unwrap()
+});
+
+/// The severity a reviewer wrote as the three the format has.
+fn severity_of(written: &str) -> String {
+    match written.to_lowercase().as_str() {
+        "critical" | "blocker" | "severe" => "high",
+        "major" => "medium",
+        "minor" | "trivial" | "nit" | "info" => "low",
+        s => return s.to_string(),
+    }
+    .to_string()
+}
+
+/// A line without its bullet, emphasis and leading punctuation.
+fn plain_lead(line: &str) -> String {
+    line.trim()
+        .trim_start_matches(|c: char| matches!(c, '-' | '*' | '_' | '•' | '>' | '✅' | '✓') || c.is_whitespace())
+        .trim_matches(|c: char| matches!(c, '*' | '_' | '`'))
+        .to_string()
+}
 static AT_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(.+?):(\d+)(?:[:-]\d+)?$").unwrap());
 
@@ -148,16 +180,27 @@ const FORMAT_HINT: &str = "each finding is a numbered line \"1. [high] path:line
 /// "no findings".
 pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
     let sections = subagent::sections(text);
-    let Some(body) = sections.get("Findings") else {
+    // "## Findings (round 2)" is the findings too.
+    let Some(body) = sections.get("Findings").or_else(|| {
+        sections
+            .0
+            .iter()
+            .find(|(n, _)| n.to_lowercase().starts_with("findings"))
+            .map(|(_, b)| b.as_str())
+    }) else {
         return Err(format!("it has no \"## Findings\" section ({FORMAT_HINT})"));
     };
-    let plain = body.trim().trim_end_matches('.').trim().to_lowercase();
-    // P4.5: "None." with a reason after it is none too.
-    let first_word: String = plain.chars().take_while(|c| c.is_alphabetic()).collect();
-    // Round 2: "None of these break the build, but:" before findings isn't.
-    if (first_word == "none" || plain.starts_with("no findings"))
-        && !body.lines().any(|l| HEADER.is_match(l))
-    {
+    // P4.5: "None." with a reason after it is none too; so is "No new
+    // findings." or "All four earlier findings are addressed." with
+    // nothing that reads as a finding after it. "None of these break the
+    // build, but:" before findings isn't (round 2).
+    let says_nothing = body
+        .lines()
+        .map(plain_lead)
+        .find(|l| !l.is_empty())
+        .is_some_and(|l| NOTHING.is_match(&l));
+    let has_header = body.lines().any(|l| HEADER.is_match(l));
+    if says_nothing && !has_header && !body.lines().any(|l| FIELD.is_match(l)) {
         return Ok(Vec::new());
     }
     #[derive(Default)]
@@ -168,12 +211,11 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
     let mut drafts: Vec<Draft> = Vec::new();
     // A line of prose before the first finding ("None of these break the
     // build, but:") is the reviewer's lead-in, not a finding.
-    let has_header = body.lines().any(|l| HEADER.is_match(l));
     for line in body.lines() {
         if let Some(c) = HEADER.captures(line) {
             drafts.push(Draft {
                 header: (
-                    c[1].to_lowercase(),
+                    severity_of(&c[1]),
                     // P4.5: `src/a.ts:42`, in backticks, with a colon after.
                     c[2].trim_end_matches([',', ';', ':'])
                         .trim_matches('`')
@@ -227,6 +269,15 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
         return Err(format!(
             "its findings don't follow the format ({FORMAT_HINT})"
         ));
+    }
+    // "None." and then the earlier findings listed as settled, with no
+    // scenario or fix: nothing to report (a later round).
+    if says_nothing
+        && drafts
+            .iter()
+            .all(|d| !d.fields.iter().any(|(k, _)| k == "scenario" || k == "fix"))
+    {
+        return Ok(Vec::new());
     }
     let mut out = Vec::new();
     for (i, d) in drafts.into_iter().enumerate() {
@@ -328,9 +379,11 @@ pub fn drop_repeats(findings: Vec<Finding>, earlier: &[Finding]) -> (Vec<Finding
         .partition(|f| f.new_evidence.is_some() || !earlier.iter().any(|e| same_finding(f, e)))
 }
 
-fn describe(f: &Finding, n: usize) -> String {
+/// A finding as the brief shows it: in the report format, so a reviewer
+/// that copies the shape of what it sees writes a report that parses.
+pub(super) fn describe(f: &Finding, n: usize) -> String {
     let mut out = format!(
-        "{n}. [{}] {}{}\n   Scenario: {}\n   Suggested fix: {}\n   Confidence: {}",
+        "{n}. [{}] {}{}\n   - Scenario: {}\n   - Fix: {}\n   - Confidence: {}",
         f.severity,
         f.location,
         if f.title.is_empty() {
@@ -338,12 +391,12 @@ fn describe(f: &Finding, n: usize) -> String {
         } else {
             format!(" — {}", f.title)
         },
-        f.scenario.replace('\n', "\n   "),
-        f.fix.replace('\n', "\n   "),
+        f.scenario.replace('\n', "\n     "),
+        f.fix.replace('\n', "\n     "),
         f.confidence
     );
     if let Some(e) = &f.new_evidence {
-        out.push_str(&format!("\n   New evidence: {e}"));
+        out.push_str(&format!("\n   - New evidence: {e}"));
     }
     out
 }
@@ -836,7 +889,10 @@ mod tests {
         assert!(parse_findings(bad_confidence)
             .unwrap_err()
             .contains("confirmed or plausible"));
-        let bad_severity = "## Findings\n1. [critical] a.rs:3 — x\n - Scenario: y\n - Fix: z\n - Confidence: confirmed";
+        // A severity outside the three is read as the nearest of them.
+        let critical = "## Findings\n1. [critical] a.rs:3 — x\n - Scenario: y\n - Fix: z\n - Confidence: confirmed";
+        assert_eq!(parse_findings(critical).unwrap()[0].severity, "high");
+        let bad_severity = "## Findings\n1. [urgent] a.rs:3 — x\n - Scenario: y\n - Fix: z\n - Confidence: confirmed";
         assert!(parse_findings(bad_severity).is_err());
         // The kind's format check is the same parser.
         assert!(subagent::format_problem(Kind::Reviewer.spec(), "nothing").is_some());
@@ -1002,7 +1058,7 @@ mod tests {
         let note = findings_note(&f[..1], 1);
         assert!(note.starts_with(IDE_NOTE));
         assert!(note.contains("review 1 of at most 3"));
-        assert!(note.contains("1. [high] src/a.ts:42 — Off by one in the loop\n   Scenario:"));
+        assert!(note.contains("1. [high] src/a.ts:42 — Off by one in the loop\n   - Scenario:"));
         assert!(note.contains("not a bug, because"));
     }
 
@@ -1197,6 +1253,69 @@ mod tests {
         );
         let untitled = finding("src/b.ts", "");
         assert!(!repeat(&untitled, "src/b.ts", ""), "nothing ties them");
+    }
+
+    /// A later round's report in the shapes a reviewer writes it after
+    /// seeing the earlier findings in its brief: fields without bullets
+    /// (as the brief once showed them), the severity and location in bold,
+    /// a note after the location, two steps in one finding, a heading
+    /// with a suffix.
+    #[test]
+    fn later_round_report_shapes_parse() {
+        let unbulleted = "## Findings (round 2)\n\n\
+            1. **[high]** **Step 4** (still open) — The draft restore isn't awaited\n   \
+            Scenario: the chip lands in the old composer.\n   \
+            Suggested fix: await `restoreComposerDraft`.\n   \
+            Confidence: confirmed\n   \
+            New evidence: `ChatPanel.tsx:412` defers it.\n\n\
+            2. [Critical] `Steps 2 and 4`: Two consumers of the queue\n   \
+            - Scenario: s\n   - Fix: f\n   - Confidence: plausible";
+        let f = parse_findings(unbulleted).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(f.len(), 2, "{f:?}");
+        assert_eq!((f[0].severity.as_str(), f[0].step), ("high", Some(4)));
+        assert_eq!(f[0].title, "The draft restore isn't awaited");
+        assert_eq!(f[0].scenario, "the chip lands in the old composer.");
+        assert_eq!(f[0].fix, "await `restoreComposerDraft`.");
+        assert!(f[0].new_evidence.as_deref().unwrap().contains("ChatPanel.tsx:412"));
+        assert_eq!((f[1].severity.as_str(), f[1].step), ("high", Some(2)));
+        assert_eq!(f[1].title, "Two consumers of the queue");
+        assert!(subagent::format_problem(Kind::Reviewer.spec(), unbulleted).is_none());
+        // The brief shows earlier findings in the report's own format.
+        let shown = describe(&f[1], 1);
+        assert!(shown.starts_with("1. [high] Steps 2 and 4 — Two consumers of the queue\n   - Scenario: s\n   - Fix: f\n   - Confidence: plausible"), "{shown}");
+        assert_eq!(parse_findings(&format!("## Findings\n{shown}")).unwrap()[0].title, f[1].title);
+    }
+
+    /// A later round with nothing left: the words reviewers use for it,
+    /// alone or followed by what was settled, read as no findings; words
+    /// before findings, or findings with their fields, don't.
+    #[test]
+    fn nothing_to_report_in_the_words_reviewers_use() {
+        for text in [
+            "## Findings\n\nNone.",
+            "## Findings\n\n**None.**",
+            "## Findings\n\n- None",
+            "## Findings\n\nNo new findings.",
+            "## Findings\n\nNo further issues: both earlier findings are fixed in the plan.",
+            "## Findings\n\nNothing to report.",
+            "## Findings\n\nAll four earlier findings are addressed:\n- (1) App no longer consumes the queue.\n- (2) The insert is sequential.",
+            "## Findings\n\nThe earlier findings are resolved; nothing new.",
+            "## Findings\n\nNone. The earlier findings, for the record:\n1. [high] Step 1 — App consumed the queue: fixed in step 1.\n2. [medium] Step 4 — Draft restore race: fixed in step 4.",
+            "## Findings\n\nN/A",
+        ] {
+            assert_eq!(parse_findings(text).unwrap_or_else(|e| panic!("{text}: {e}")), vec![], "{text}");
+        }
+        // Not none: findings follow, or the words aren't these.
+        let after = "## Findings\n\nNone of the earlier ones remain, but:\n\n1. [high] Step 2 — X\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        assert_eq!(parse_findings(after).unwrap().len(), 1);
+        for text in [
+            "## Findings\n\nThe plan is mostly fine.",
+            "## Findings\n\nOne concern remains about the queue.",
+            "## Findings\n\nNone.\n1. [high] Step 2 — X\n - Scenario: s\n - Fix: f\n - Confidence: confirmed",
+        ] {
+            assert!(parse_findings(text).map_or(true, |f| !f.is_empty()), "{text}");
+        }
+        assert_eq!(parse_findings("## Findings\n\nNone.\n1. [high] Step 2 — X\n - Scenario: s\n - Fix: f\n - Confidence: confirmed").unwrap().len(), 1);
     }
 
     /// Round 2 (§4.2): a finding under a `-` or `*` bullet in place of its

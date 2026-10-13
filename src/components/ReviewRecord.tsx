@@ -108,6 +108,12 @@ export default function ReviewRecord(props: {
           </ul>
         </details>
       </Show>
+      <Show when={props.meta.status === 'skipped' && props.meta.report}>
+        <details class="review-dropped">
+          <summary>The report as written</summary>
+          <pre class="review-report">{props.meta.report}</pre>
+        </details>
+      </Show>
       <Show when={props.meta.status !== 'running'}>
         <div class="chat-verify-files">
           {reviewDetails(props.meta)}
