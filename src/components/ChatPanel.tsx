@@ -322,13 +322,14 @@ export default function ChatPanel(props: ChatProps) {
   /*
    * The model and effort are kept with each chat (`dialogs` table), so
    * reopening an old chat continues with what it used. Saved when either
-   * is changed in a chat and when a run starts; a chat that never saved
-   * one (older chats) keeps the current choice.
+   * is changed in a chat that has messages and when a run starts (an empty
+   * chat gets it with its first message); a chat that never saved one
+   * (older chats) keeps the current choice.
    */
   let chatModelRequest = 0;
   function saveChatModel(dialogId: string | null | undefined) {
     const sel = selection();
-    if (!dialogId || !sel) return;
+    if (!dialogId || !sel || isEmptyChat(dialogId)) return;
     // A choice made while the chat's saved one loads wins over it.
     chatModelRequest++;
     const profile = resolveProfile(providers(), sel);
