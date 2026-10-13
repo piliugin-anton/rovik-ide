@@ -309,11 +309,11 @@ fn submit_plan_schema() -> Value {
         "type": "function",
         "function": {
             "name": "submit_plan",
-            "description": "Save your plan, when the user asked for a change or a plan (a question is answered in the reply, without a plan). Pass the complete plan as Markdown: a \"# \" title, a short summary, \"## Steps\" as a numbered list (each step: the full paths from the project root of the files it touches in backticks (`src/db/users.rs`, never `users.rs`), new ones marked \"(new)\", and what to add, change or remove there by name: functions, types, components, settings; one-line signatures are fine, function bodies are not), \"## Decisions\", \"## Validation\" (commands, tests to add or update, manual checks), and \"## Risks\". It is checked and saved to the project, where the user can edit and implement it. When the plan changes, call it again with the complete revised plan (not just the changes). Keep your chat reply short: the plan itself goes here, not in the reply.",
+            "description": "Save the plan, when the user asked for a change or a plan (a question is answered in the reply, without one). Pass the complete plan as Markdown in the format your instructions give: a \"# \" title and summary, \"## Steps\" with a \"Files:\" line per step, \"## Decisions\", \"## Validation\", \"## Risks\". It is checked and saved to the project, where the user edits and implements it; a revision passes the complete revised plan. The plan goes here, not in your reply.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "plan": { "type": "string", "description": "The complete plan in Markdown. Rejected if it lacks a title, numbered steps that each name a file (by its full path from the project root) and what changes there, or a validation section." }
+                    "plan": { "type": "string", "description": "The complete plan in Markdown; rejected, with what to fix, when it doesn't follow the format." }
                 },
                 "required": ["plan"]
             }

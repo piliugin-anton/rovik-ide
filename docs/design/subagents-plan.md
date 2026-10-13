@@ -669,11 +669,12 @@ switch; the reviewer's own model and fallback), unit tests in
 ### D01, B07–B10: plan structure, plan checks and the plan reviewer
 
 - **D01.** `plan::steps` returns each step's number, title, files and body,
-  plus its `Group:` (for F03). A file is a backticked token that looks like
-  a path or a known file name, so signatures, `state.config` and `a::b`
-  aren't taken for files. `path:line` counts as its file, and "(new)" on
-  the step's line marks it as created. `plan::section` returns the text of
-  a `## <name>` section.
+  plus its `Group:` (for F03). A step's files are the items of its
+  `Files:` line (comma-separated paths in backticks, each with its own
+  "(new)" or "(read)" mark; `path:line` counts as its file); paths in the
+  step's text are prose. Earlier, every path-looking token in the step
+  counted, which took CSS classes, library names and `../` paths for
+  files. `plan::section` returns the text of a `## <name>` section.
   - **Deviation:** there are no plans in `.rovik/plans/` to test on, so the
     tests use a plan written the way Plan mode writes them, and the
     checker's own fixtures.

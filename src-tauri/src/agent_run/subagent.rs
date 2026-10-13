@@ -1048,7 +1048,7 @@ pub const GROUP_RULE: &str = "### Parallel groups\n\n\
 pub const PLAN_GROUP_RULES: &str = "## Parallel groups\n\n\
      Steps that are independent, each large (more than about 100 changed lines), and touch different files can be built at the same time: give each a line \"Group: <name>\" with the same name. In a group:\n\
      - no two steps change the same file;\n\
-     - files the group's steps all build on (shared types, signatures, settings, command lists) are named in each of them marked \"(read)\", and a \"contract\" step before the group changes them first: it adds the shared types and signatures with stub bodies, so every step of the group works against the same interface;\n\
+     - files the group's steps all build on (shared types, signatures, settings, command lists) are on each one's Files line marked \"(read)\", and a \"contract\" step before the group changes them first: it adds the shared types and signatures with stub bodies, so every step of the group works against the same interface;\n\
      - registration points several steps would edit (a command list in lib.rs, a mod.rs, routes) go in the contract step too.\n\
      Leave small or connected steps out of groups.";
 

@@ -1126,8 +1126,8 @@ mod tests {
     #[test]
     fn a_shared_folder_for_new_files_is_neither_members() {
         let plan = "# G\n\n## Steps\n\n\
-            1. **List**\n   - `src/api/users.rs` (new): list.\n   - Group: api\n\
-            2. **Add**\n   - `src/api/add.rs` (new): add.\n   - Group: api\n\n## Validation\n- `cargo test`\n";
+            1. **List**\n   - Files: `src/api/users.rs` (new)\n   - Add the list.\n   - Group: api\n\
+            2. **Add**\n   - Files: `src/api/add.rs` (new)\n   - Add the add.\n   - Group: api\n\n## Validation\n- `cargo test`\n";
         let steps = super::super::plan::steps(plan);
         let scopes = group_scopes(&steps);
         assert!(scopes[0].allows("src/api/users.rs", false));
@@ -1316,11 +1316,25 @@ mod tests {
         assert_eq!(group_call(r#"{"kind":"worker","step":1}"#), None);
     }
 
+    /// The Files line for a step written as "`path` (mark): what changes".
+    fn files_line(text: &str) -> String {
+        let re = regex::Regex::new(r"`([^`]+)`\s*(\((?:new|read|read-only)\))?").unwrap();
+        re.captures_iter(text)
+            .map(|c| match c.get(2) {
+                Some(mark) => format!("`{}` {}", &c[1], mark.as_str()),
+                None => format!("`{}`", &c[1]),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// A plan whose steps 1 and 2, naming `a` and `b`, are group "g".
     fn group_plan(a: &str, b: &str) -> String {
         format!(
-            "# G\n\n## Steps\n\n1. **A**\n   - {a}\n   - Group: g\n\
-             2. **B**\n   - {b}\n   - Group: g\n\n## Validation\n- `cargo test`\n"
+            "# G\n\n## Steps\n\n1. **A**\n   - Files: {}\n   - {a}\n   - Group: g\n\
+             2. **B**\n   - Files: {}\n   - {b}\n   - Group: g\n\n## Validation\n- `cargo test`\n",
+            files_line(a),
+            files_line(b)
         )
     }
 
@@ -1413,8 +1427,8 @@ mod tests {
     #[test]
     fn group_one_member_is_fine() {
         let plan = "# G\n\n## Steps\n\n\
-            1. **List**\n   - `src/api/users.rs` (new): list them.\n   - `src/api/mod.rs` (read): the signature.\n   - Group: solo\n\
-            2. **Page**\n   - `src/pages/Users.tsx`: render the list.\n\n## Validation\n- `cargo test`\n";
+            1. **List**\n   - Files: `src/api/users.rs` (new), `src/api/mod.rs` (read)\n   - Add the list against the signature.\n   - Group: solo\n\
+            2. **Page**\n   - Files: `src/pages/Users.tsx`\n   - Render the list there.\n\n## Validation\n- `cargo test`\n";
         let steps = super::super::plan::steps(plan);
         assert_eq!(steps[0].group.as_deref(), Some("solo"));
         assert_eq!(group_problems(plan, "solo"), Vec::<String>::new());
@@ -1443,8 +1457,8 @@ mod tests {
     #[test]
     fn group_names_differ_only_in_case_merge() {
         let plan = "# G\n\n## Steps\n\n\
-            1. **List**\n   - `src/api/mod.rs`: register the list route.\n   - Group: API\n\
-            2. **Add**\n   - `src/api/mod.rs`: register the add route.\n   - Group: api\n\n\
+            1. **List**\n   - Files: `src/api/mod.rs`\n   - Register the list route.\n   - Group: API\n\
+            2. **Add**\n   - Files: `src/api/mod.rs`\n   - Register the add route.\n   - Group: api\n\n\
             ## Validation\n- `cargo test`\n";
         let steps = super::super::plan::steps(plan);
         assert_eq!(
@@ -1508,8 +1522,8 @@ mod tests {
     #[test]
     fn group_shared_new_in_with_existing_file() {
         let plan = "# G\n\n## Steps\n\n\
-            1. **Register**\n   - `src/api/mod.rs`: register the add route.\n   - Group: api\n\
-            2. **Add**\n   - `src/api/add.rs` (new): add a user.\n   - Group: api\n\n\
+            1. **Register**\n   - Files: `src/api/mod.rs`\n   - Register the add route.\n   - Group: api\n\
+            2. **Add**\n   - Files: `src/api/add.rs` (new)\n   - Add a user there.\n   - Group: api\n\n\
             ## Validation\n- `cargo test`\n";
         let steps = super::super::plan::steps(plan);
         assert!(

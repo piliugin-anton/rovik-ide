@@ -714,9 +714,9 @@ mod tests {
     use super::*;
 
     const PLAN: &str = "# Add users\n\nServe users from the API.\n\n## Steps\n\n\
-        1. **Table**\n   - `src/db.rs`: add a `users` table.\n\
-        2. **API**\n   - `src/api/users.rs` (new): add `fn list_users()`.\n   - `src/api/mod.rs`: register it.\n\
-        3. **Pages**\n   - `src/pages/`: add a users page.\n\n\
+        1. **Table**\n   - Files: `src/db.rs`\n   - Add a `users` table.\n\
+        2. **API**\n   - Files: `src/api/users.rs` (new), `src/api/mod.rs`\n   - Add `fn list_users()` and register it.\n\
+        3. **Pages**\n   - Files: `src/pages/`\n   - Add a users page.\n\n\
         ## Decisions\n- SQLite.\n\n## Validation\n- `cargo test`\n";
 
     #[test]
