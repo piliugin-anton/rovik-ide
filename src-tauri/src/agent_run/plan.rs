@@ -36,11 +36,15 @@ A question (why something happens, how the code works, what an error means) gets
 2. Ask only what the code can't tell you and what really changes the design, behavior or scope: with the ask_user tool, early, all questions in one call, as concrete options with a short reason. Don't ask about names, formatting or anything the repository decides: decide it and say so in the plan. Never ask in plain text and stop.
 3. Save the plan with the submit_plan tool, as Markdown that stands on its own (the user may edit it before implementing it):
    - a "# " title and a one-paragraph summary of the approach;
-   - "## Steps": a numbered list, in order, one reviewable change per step (usually 3 to 12). Each step has:
+   - "## Steps": a numbered list (`1.`, `2.`; not headings), in order, one reviewable change per step (usually 3 to 12). Each step has:
      - a short title;
      - a line "Files:" with every file it touches, in backticks, comma-separated, each by its full path from the project root (`src/db/users.rs`: never `users.rs`, nor `../src/db/users.rs` from the plan's folder); mark files it creates "(new)" and files it only reads "(read)". Name only paths you've seen in the repository. This line alone names the step's files; elsewhere, mention classes, identifiers or commands freely;
      - what to add, change or remove in them, by name (functions, types, components, settings) and how it behaves; a one-line signature or config line is fine, function bodies aren't;
-     - the callers and dependents that must change with it;
+     - the callers and dependents that must change with it.
+     For example:
+     2. **List users in the API**
+        - Files: `src/api/users.rs` (new), `src/api/mod.rs`, `src/db/users.rs` (read)
+        - Add `fn list_users(db: &Db) -> Result<Vec<User>>` to the new file, paging by `Config::page_size`; register the route in `mod.rs`.
    - "## Decisions": the user's answers and what you decided yourself, with why;
    - "## Validation": the commands to run (build, typecheck, tests, lint), the tests to add or update, what to try by hand;
    - "## Risks": open points, if any.
@@ -77,6 +81,12 @@ static VALIDATION_HEADING: LazyLock<Regex> = LazyLock::new(|| {
 });
 static NEXT_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^##\s").unwrap());
 static NUMBERED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\d+[.)]\s+\S").unwrap());
+/// A step written as a heading or a bold line instead of a list item:
+/// `### Step 1: Title`, `### 1. Title`, `**Step 1: Title**` (some models
+/// write steps so).
+static HEADING_STEP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^\s*(?:#{2,6}\s+|\*\*)\s*(?:step\s*)?(\d+)[.):]?\s*\S").unwrap()
+});
 static TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#\s+\S").unwrap());
 static CODE_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```.*?```").unwrap());
 /// Words that say what a step does to its files.
@@ -128,17 +138,26 @@ fn section_after(text: &str, heading_end: usize) -> &str {
 /// least indented numbered lines outside code blocks (a numbered list
 /// nested in a step is part of that step).
 fn split_steps(section: &str) -> Vec<&str> {
-    let numbered: Vec<(usize, usize)> = lines_with_fences(section)
-        .into_iter()
+    let lines = lines_with_fences(section);
+    let numbered: Vec<(usize, usize)> = lines
+        .iter()
         .filter(|(_, line, fenced)| !fenced && NUMBERED.is_match(line) && !line.trim().is_empty())
-        .map(|(at, line, _)| (at, line.len() - line.trim_start().len()))
+        .map(|(at, line, _)| (*at, line.len() - line.trim_start().len()))
         .collect();
     let indent = numbered.iter().map(|(_, i)| *i).min().unwrap_or(0);
-    let starts: Vec<usize> = numbered
+    let mut starts: Vec<usize> = numbered
         .into_iter()
         .filter(|(_, i)| *i == indent)
         .map(|(at, _)| at)
         .collect();
+    // No list: steps written as headings or bold lines.
+    if starts.is_empty() {
+        starts = lines
+            .iter()
+            .filter(|(_, line, fenced)| !fenced && HEADING_STEP.is_match(line))
+            .map(|(at, _, _)| *at)
+            .collect();
+    }
     starts
         .iter()
         .enumerate()
@@ -492,8 +511,11 @@ impl PlanStep {
     }
 }
 
-static STEP_NUMBER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*(\d+)[.)]\s+(.*)$").unwrap());
+/// A step's number and the rest of its first line: `1. Title`,
+/// `### Step 1: Title`, `**Step 1: Title**`.
+static STEP_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(?:#{1,6}\s+)?\**(?:step\s*)?(\d+)[.):]?\**\s*(?:[—–-]\s+)?(.*)$").unwrap()
+});
 static NEW_MARK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\((?:new|new file|created?)\)").unwrap());
 static READ_MARK: LazyLock<Regex> =
@@ -519,10 +541,12 @@ static GROUP_LINE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// A step's `Files:` line: the one place a step names its files. The
-/// label may be bulleted or bold (`- **Files:** ...`), and the items may
-/// go on list lines indented under it instead of after it.
-static FILES_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^[\s>*+-]*\**files\**\s*:\**\s*(.*?)\s*$").unwrap());
+/// label may be bulleted or bold (`- **Files:** ...`), singular (`File:`)
+/// or `Paths:`, and the items may go on list lines indented under it
+/// instead of after it.
+static FILES_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[\s>*+-]*\**(?:files?|paths?|file paths?)\**\s*:\**\s*(.*?)\s*$").unwrap()
+});
 
 /// Why an item of a `Files:` line isn't a path of the project.
 #[derive(Debug, Clone, PartialEq)]
@@ -1924,6 +1948,51 @@ mod tests {
             ["src/api/users.rs", "src/api/mod.rs"]
         );
         assert!(steps("# No steps\n\nJust text.").is_empty());
+    }
+
+    /// Steps written as `### Step N:` or `### N.` headings, or as bold
+    /// `**Step N:**` lines, with the Files line as `**Files:**` under the
+    /// heading, are the steps; a list of steps keeps winning over headings
+    /// inside them.
+    #[test]
+    fn steps_as_headings() {
+        let tree = Tree::new(&["src/a.rs", "src/b.rs"]);
+        for (one, two) in [
+            ("### Step 1: One", "### Step 2: Two"),
+            ("### 1. One", "### 2. Two"),
+            ("#### Step 1 — One", "#### Step 2 — Two"),
+            ("**Step 1: One**", "**Step 2: Two**"),
+        ] {
+            let plan = format!(
+                "# P\n\nx\n\n## Steps\n\n{one}\n**Files:** `src/a.rs`\n\n- Add the loader to it.\n\n\
+                 {two}\n- Files: `src/b.rs` (read), `src/c.rs` (new)\n- Add the saver, reading the loader.\n\n\
+                 ## Validation\n- `cargo test`\n"
+            );
+            let s = steps(&plan);
+            assert_eq!(s.iter().map(|s| (s.number, s.title.as_str())).collect::<Vec<_>>(), [(1, "One"), (2, "Two")], "{one}: {s:#?}");
+            assert_eq!(s[0].files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["src/a.rs"], "{one}");
+            assert_eq!(s[1].files.len(), 2, "{one}");
+            assert!(s[1].files[1].new, "{one}");
+            assert_eq!(plan_problems_in(&plan, Some(&tree.0)), Vec::<String>::new(), "{one}");
+        }
+        // Headings inside a listed step don't split it.
+        let listed = "# P\n\n## Steps\n\n1. **One**\n   - Files: `src/a.rs`\n   ### Step 1a: detail\n   - Add the loader to it.\n\
+            2. **Two**\n   - Files: `src/b.rs`\n   - Add the saver to it.\n\n## Validation\n- `cargo test`\n";
+        assert_eq!(steps(listed).len(), 2);
+        assert!(plan_problems(listed).is_empty(), "{:?}", plan_problems(listed));
+    }
+
+    /// The Files label in its other spellings: `File:` for one file,
+    /// `Paths:`, `File paths:`.
+    #[test]
+    fn files_label_variants() {
+        for label in ["File", "file", "Paths", "Path", "File paths", "**File**"] {
+            let step = format!("1. **A**\n   - {label}: `src/a.rs` (new), `src/b.rs`\n   - Add a to it.");
+            let files = step_files(&step).files;
+            assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["src/a.rs", "src/b.rs"], "{label}");
+            assert!(files[0].new, "{label}");
+        }
+        assert!(step_files("1. **A**\n   - Profile: `src/a.rs`\n   - Add a.").files.is_empty());
     }
 
     /// P4.4: CRLF, `1. 1. 1.` numbering, `Group: none`, a "Next steps"
