@@ -667,9 +667,11 @@ export default function ChatPanel(props: ChatProps) {
 
   /*
    * Every file in the project, for "@": the backend lists them all
-   * (.gitignore respected). The file tree only knows folders it has loaded,
-   * so in a newly opened project it offered just the root's files. Fetched
-   * when "@" opens, at most every few seconds, merged with the tree's.
+   * (.gitignore respected, but .rovik/plans/ always: a plan is there to be
+   * referenced, even when the project ignores .rovik/). The file tree only
+   * knows folders it has loaded, so in a newly opened project it offered
+   * just the root's files. Fetched when "@" opens, at most every few
+   * seconds, merged with the tree's.
    */
   const [projectFiles, setProjectFiles] = createSignal<{
     root: string;
