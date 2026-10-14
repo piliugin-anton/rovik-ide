@@ -16,9 +16,12 @@
 //!   raises the hit rate and is required for the newest models' matching.
 //! - OpenRouter caches on its own for most providers, but Anthropic models
 //!   need `cache_control` breakpoints on content parts: one on the system
-//!   prompt (the fixed zone, with the tools before it) and one on the last
-//!   message, from which the provider looks back for the previous step's
-//!   cached prefix. Four at most; providers without breakpoints ignore them.
+//!   prompt (the fixed zone, with the tools before it) and one on the
+//!   latest message the next step sends unchanged, from which the provider
+//!   looks back (about 20 blocks) for the previous step's breakpoint. Not
+//!   on the last message: it carries the tail, which the next step sends
+//!   without, so a prefix cached there is never read again. Four at most;
+//!   providers without breakpoints ignore them.
 //! - Anthropic's own OpenAI-compatible endpoint doesn't cache at all;
 //!   Gemini, DeepSeek and most others cache on their own, with no hints.
 //!
@@ -74,34 +77,57 @@ pub fn apply(body: &mut Value, base_url: &str, cache_key: Option<&str>) {
     }
 }
 
-/// A breakpoint on the system prompt and one on the last message.
+/// A breakpoint on the system prompt, and one on the latest message before
+/// the latest assistant reply: everything up to there is sent the same way
+/// on the next step. The messages after it don't qualify: the tail and the
+/// notes (context notes, the focus note) ride on the last one, or on a tool
+/// result followed by its screenshot, and the next step sends them without.
 fn mark_breakpoints(body: &mut Value) {
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
-    if let Some(first) = messages.first_mut().filter(|m| m["role"] == "system") {
-        mark(first);
+    let system = messages.first().is_some_and(|m| m["role"] == "system");
+    if system {
+        mark(&mut messages[0]);
     }
-    if let Some(last) = messages.last_mut().filter(|m| m["role"] != "system") {
-        mark(last);
+    let Some(reply) = messages.iter().rposition(|m| m["role"] == "assistant") else {
+        return;
+    };
+    let from = usize::from(system);
+    if let Some(stable) = messages.get_mut(from..reply) {
+        // An empty text can't carry one (providers reject empty blocks).
+        for message in stable.iter_mut().rev() {
+            if mark(message) {
+                break;
+            }
+        }
     }
 }
 
-/// Puts a breakpoint on the message's last text part. A string content
-/// becomes a one-part array: breakpoints go on parts.
-fn mark(message: &mut Value) {
+/// Puts a breakpoint on the message's last text part, if it has a
+/// non-empty one; says whether it did. A string content becomes a one-part
+/// array: breakpoints go on parts.
+fn mark(message: &mut Value) -> bool {
     let breakpoint = json!({ "type": "ephemeral" });
     let content = &mut message["content"];
     match content {
-        Value::String(text) => {
+        Value::String(text) if !text.trim().is_empty() => {
             *content = json!([{ "type": "text", "text": text, "cache_control": breakpoint }]);
+            true
         }
         Value::Array(parts) => {
-            if let Some(part) = parts.iter_mut().rev().find(|p| p["type"] == "text") {
-                part["cache_control"] = breakpoint;
+            let text = parts.iter_mut().rev().find(|p| {
+                p["type"] == "text" && p["text"].as_str().is_some_and(|t| !t.trim().is_empty())
+            });
+            match text {
+                Some(part) => {
+                    part["cache_control"] = breakpoint;
+                    true
+                }
+                None => false,
             }
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -171,8 +197,15 @@ mod tests {
         assert!(none.get("prompt_cache_key").is_none());
     }
 
+    fn marked(message: &Value) -> bool {
+        message["content"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|p| p.get("cache_control").is_some()))
+    }
+
     #[test]
-    fn openrouter_gets_breakpoints_on_the_system_prompt_and_the_last_message() {
+    fn openrouter_gets_breakpoints_on_the_system_prompt_and_the_last_message_the_next_step_repeats()
+    {
         let mut b = body();
         apply(&mut b, "https://openrouter.ai/api/v1", Some("chat-1"));
         assert!(b.get("prompt_cache_key").is_none());
@@ -181,13 +214,50 @@ mod tests {
             messages[0]["content"],
             json!([{ "type": "text", "text": "Be useful.", "cache_control": { "type": "ephemeral" } }])
         );
-        assert_eq!(messages[1]["content"], "Hi", "the middle is untouched");
-        assert_eq!(messages[2]["content"], "");
+        // The user's message is the latest one before the reply: the next
+        // step sends it as it is.
         assert_eq!(
-            messages[3]["content"],
-            json!([{ "type": "text", "text": "file text", "cache_control": { "type": "ephemeral" } }])
+            messages[1]["content"],
+            json!([{ "type": "text", "text": "Hi", "cache_control": { "type": "ephemeral" } }])
         );
+        assert_eq!(messages[2]["content"], "", "an empty text gets none");
+        // The last message carries what changes between steps (the
+        // repository map, notes): the next step sends it without them.
+        assert_eq!(messages[3]["content"], "file text");
         assert_eq!(messages[3]["tool_call_id"], "c1", "other fields stay");
+    }
+
+    #[test]
+    fn the_breakpoint_follows_the_run_and_skips_empty_texts() {
+        let mut b = json!({ "messages": [
+            { "role": "system", "content": "Be useful." },
+            { "role": "user", "content": "Fix it" },
+            { "role": "assistant", "content": "", "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "bash", "arguments": "{}" } }] },
+            { "role": "tool", "tool_call_id": "c1", "content": "  " },
+            { "role": "assistant", "content": "", "tool_calls": [{ "id": "c2", "type": "function", "function": { "name": "read", "arguments": "{}" } }] },
+            { "role": "tool", "tool_call_id": "c2", "content": "text\n\n## Repository map\n…" }
+        ]});
+        apply(&mut b, "https://openrouter.ai/api/v1", None);
+        let messages = b["messages"].as_array().unwrap();
+        let marks: Vec<bool> = messages.iter().map(marked).collect();
+        // The empty result and the call before it can't carry one: the
+        // user's message, the latest text before them, does.
+        assert_eq!(marks, [true, true, false, false, false, false]);
+        assert_eq!(messages[3]["content"], "  ");
+
+        // The first request of a chat has nothing to look back to yet.
+        let mut first = json!({ "messages": [
+            { "role": "system", "content": "Be useful." },
+            { "role": "user", "content": "Hi" }
+        ]});
+        apply(&mut first, "https://openrouter.ai/api/v1", None);
+        let marks: Vec<bool> = first["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(marked)
+            .collect();
+        assert_eq!(marks, [true, false]);
     }
 
     #[test]
@@ -197,14 +267,40 @@ mod tests {
                 { "type": "text", "text": "see" },
                 { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } },
                 { "type": "text", "text": "tail" }
-            ] }
+            ] },
+            { "role": "assistant", "content": "A cat." },
+            { "role": "user", "content": "And now?" }
         ]});
         apply(&mut b, "https://openrouter.ai/api/v1", None);
-        let parts = b["messages"][0]["content"].as_array().unwrap();
+        let messages = b["messages"].as_array().unwrap();
+        let parts = messages[0]["content"].as_array().unwrap();
         assert!(parts[0].get("cache_control").is_none());
         assert!(parts[1].get("cache_control").is_none());
         assert_eq!(parts[2]["cache_control"], json!({ "type": "ephemeral" }));
-        // A lone message that isn't a system prompt: one breakpoint, not two.
+        assert_eq!(parts.len(), 3);
+        assert!(!marked(&messages[1]) && !marked(&messages[2]));
+
+        // An image-only message before the reply: the text before it.
+        let mut b = json!({ "messages": [
+            { "role": "user", "content": [
+                { "type": "text", "text": "see" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } },
+                { "type": "text", "text": "tail" }
+            ] },
+            { "role": "user", "content": [
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } }
+            ] },
+            { "role": "assistant", "content": "Two cats." },
+            { "role": "user", "content": "And now?" }
+        ]});
+        apply(&mut b, "https://openrouter.ai/api/v1", None);
+        let messages = b["messages"].as_array().unwrap();
+        assert!(!marked(&messages[2]), "the reply isn't before itself");
+        assert!(!marked(&messages[1]), "no text part to carry one");
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert!(parts[0].get("cache_control").is_none());
+        assert!(parts[1].get("cache_control").is_none());
+        assert_eq!(parts[2]["cache_control"], json!({ "type": "ephemeral" }));
         assert_eq!(parts.len(), 3);
     }
 

@@ -106,6 +106,7 @@ impl Chat {
             COST,
             None,
             None,
+            String::new(),
         )
         .await
         .unwrap()
@@ -251,6 +252,7 @@ fn the_current_request_carries_the_editor_context() {
             COST,
             Some("fix it\n\n[App.tsx:3-5 selected]".into()),
             None,
+            String::new(),
         )
         .await
         .unwrap();
@@ -317,9 +319,18 @@ fn chats_have_separate_files() {
         let b_vfs_shared = &a.vfs;
         b.add(vec![message("v1", "user", "chat B")]).await;
         a.prepare(ROOMY).await;
-        prepare(&b.db, b_vfs_shared, "other".into(), ROOMY, COST, None, None)
-            .await
-            .unwrap();
+        prepare(
+            &b.db,
+            b_vfs_shared,
+            "other".into(),
+            ROOMY,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert_ne!(context_file("chat"), context_file("other"));
         let b_file = String::from_utf8(a.vfs.read_file(&context_file("other")).unwrap()).unwrap();
         assert!(a.file().contains("chat A") && !a.file().contains("chat B"));
@@ -327,9 +338,18 @@ fn chats_have_separate_files() {
         // An edit to one doesn't touch the other.
         a.write(&with_block(&a.file(), 1, "chat A, edited"));
         b.add(vec![message("v2", "user", "more")]).await;
-        let p = prepare(&b.db, b_vfs_shared, "other".into(), ROOMY, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &b.db,
+            b_vfs_shared,
+            "other".into(),
+            ROOMY,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert!(!notes(&p).contains("edit applied"));
         std::mem::forget(b); // shares a's database directory
     });
@@ -734,6 +754,119 @@ fn reminders_fire_once_per_tier_and_rearm_after_an_edit() {
                 notes(&p)
             );
         }
+    });
+}
+
+/// Two steps of ~400-token outputs after the task: ~830 tokens of context.
+fn two_reads() -> Vec<NewMessage> {
+    [
+        vec![message("u1", "user", "task")],
+        tool_pair(1, "read", r#"{"path":"a"}"#, &"y".repeat(1_200)),
+        tool_pair(2, "read", r#"{"path":"b"}"#, &"y".repeat(1_200)),
+    ]
+    .concat()
+}
+
+#[test]
+fn the_task_card_and_the_checklist_come_out_of_the_budget() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(two_reads()).await;
+        let p = chat.prepare(1_000).await;
+        assert!(!notes(&p).contains("withheld"), "{}", notes(&p));
+        assert!(notes(&p).contains("/1000 tokens"), "{}", notes(&p));
+
+        // The card and the checklist go with every request, outside the
+        // file: the file gets what they leave, so an output is withheld.
+        let card = format!("Goal: {}\nNEXT: go", "g".repeat(900));
+        tool_write(&chat.vfs, "chat", "@context/TASK.md", &card).unwrap();
+        let checklist = "[checklist]\n- [in_progress] Read a\n- [pending] Read b".to_string();
+        let p = prepare(
+            &chat.db,
+            &chat.vfs,
+            "chat".into(),
+            1_000,
+            COST,
+            None,
+            Some(checklist.clone()),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let room = prompt::card_note(&card).chars().count() + 1 + checklist.chars().count() + 1;
+        let budget = 1_000 - COST.tokens(room);
+        assert!(
+            notes(&p).contains(&format!("/{budget} tokens")),
+            "{}",
+            notes(&p)
+        );
+        assert!(
+            notes(&p).contains("1 older tool output(s)"),
+            "{}",
+            notes(&p)
+        );
+        assert!(total(&p.messages, COST) + COST.tokens(room) <= 1_000);
+        assert_eq!(chat.state().await.budget, budget);
+    });
+}
+
+#[test]
+fn the_reasoning_sent_back_comes_out_of_the_budget() {
+    run(async {
+        let chat = Chat::new().await;
+        // The first step's reasoning (~500 tokens), sent back with it.
+        let thought = "t".repeat(1_500);
+        let mut messages = two_reads();
+        messages[1].meta =
+            Some(serde_json::json!({ "reasoning": { "model": "m", "text": thought } }));
+        chat.add(messages).await;
+
+        // Another model gets none of it, and the context fits as it is.
+        let other = prepare(
+            &chat.db,
+            &chat.vfs,
+            "chat".into(),
+            1_000,
+            COST,
+            None,
+            None,
+            "other".into(),
+        )
+        .await
+        .unwrap();
+        assert!(other.messages.iter().all(|m| m.reasoning.is_none()));
+        assert!(notes(&other).contains("/1000 tokens"), "{}", notes(&other));
+
+        let p = prepare(
+            &chat.db,
+            &chat.vfs,
+            "chat".into(),
+            1_000,
+            COST,
+            None,
+            None,
+            "m".into(),
+        )
+        .await
+        .unwrap();
+        let step = p.messages.iter().find(|m| m.id == "a1").unwrap();
+        assert_eq!(step.reasoning, Some(serde_json::json!({ "text": thought })));
+        // It isn't in the file but it's sent: the file gets what it leaves.
+        let reasoning = COST.tokens(step.reasoning.as_ref().unwrap().to_string().chars().count());
+        assert!(
+            notes(&p).contains(&format!("/{} tokens", 1_000 - reasoning)),
+            "{}",
+            notes(&p)
+        );
+        assert!(
+            notes(&p).contains("1 older tool output(s)"),
+            "{}",
+            notes(&p)
+        );
+        assert!(!chat.file().contains(&thought));
+        // The context and the reasoning fit the budget together.
+        assert!(total(&p.messages, COST) <= 1_000);
+        assert_eq!(p.info.estimated_tokens, total(&p.messages, COST));
     });
 }
 
@@ -1698,6 +1831,7 @@ fn a_missing_task_card_reads_as_guidance_not_an_error() {
             COST,
             None,
             Some("- [ ] step".into()),
+            String::new(),
         )
         .await
         .unwrap();
@@ -1766,8 +1900,10 @@ fn the_system_section_is_the_same_on_every_request() {
             .await;
         let p = chat.prepare(5_000).await;
         // Size, budget, revision and the card change; the prompt doesn't.
+        // (The card goes with every request: its room comes out of the budget.)
+        let budget = 5_000 - COST.tokens(prompt::card_note("Goal").chars().count() + 1);
         assert!(
-            notes(&p).contains("/5000 tokens") && notes(&p).contains("revision 2"),
+            notes(&p).contains(&format!("/{budget} tokens")) && notes(&p).contains("revision 2"),
             "{}",
             notes(&p)
         );

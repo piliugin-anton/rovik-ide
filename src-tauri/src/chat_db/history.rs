@@ -9,6 +9,10 @@
 //!  3. As a last resort, earlier tool results in the current request are
 //!     cut, keeping the latest one whole.
 //!
+//! Once over the budget, 2 and 3 go down to TRIM_TO of it, and the chat's
+//! next requests keep that cut while they fit the budget (`Cut`): the start
+//! of the request, which providers cache, moves once in several steps.
+//!
 //! Before any of that, once the history passes OUTDATED_AT of the budget,
 //! content that later events made out of date is replaced with a short
 //! note (`replace_outdated`): a
@@ -33,7 +37,9 @@ use super::store::{
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{LazyLock, Mutex};
 
 /// How far back a request can reach at most, before any budget applies.
 const MAX_HISTORY_ROWS: usize = 2000;
@@ -46,10 +52,11 @@ const MAX_IMAGES: usize = 2;
 const OMITTED_NOTE: &str =
     "[Earlier messages in this chat were omitted to fit the context window.]";
 /// Once over budget, trimming goes down to this share of it, not just
-/// under: the next steps then fit without moving the cut. Trimming to just
-/// under the budget would drop one more turn (or cut one more result) on
-/// every step, and the start of the request, which providers cache, would
-/// change every time.
+/// under, and the next requests keep that cut while they fit the budget
+/// (`Cut`): the steps in between fit in the room left. Trimming to just
+/// under the budget, or afresh for every request, would drop one more turn
+/// (or cut one more result) every step or two, and the start of the
+/// request, which providers cache, would change every time.
 const TRIM_TO: f64 = 0.85;
 /// Google's documented placeholder for function calls that have no real
 /// thought signature (made before signatures were stored, or by another
@@ -159,6 +166,41 @@ pub struct FitInfo {
     pub outdated: usize,
     /// The request ends with the focus note (`focus_note`).
     pub focus_note: bool,
+    /// Where the history was cut, for the chat's next request.
+    pub cut: Cut,
+}
+
+/// Where a request's history was cut (`fit_keeping`), so the chat's next
+/// request can be cut at the same place while that still fits: the start
+/// of the request, which providers cache, then stays the same.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Cut {
+    /// The first message kept once the oldest turns were dropped; None
+    /// when none were.
+    first_kept: Option<String>,
+    /// The latest of the current request's results cut short (they're cut
+    /// oldest first); None when none were.
+    shortened_through: Option<String>,
+}
+
+/// Each chat's latest cut, for its next request. In memory only: after a
+/// restart, the first request cuts afresh.
+static CUTS: LazyLock<Mutex<HashMap<String, Cut>>> = LazyLock::new(Default::default);
+
+/// The cut the chat's last request was sent with, if it was cut.
+pub fn last_cut(dialog_id: &str) -> Option<Cut> {
+    CUTS.lock().ok()?.get(dialog_id).cloned()
+}
+
+/// Keeps the cut a request of the chat was sent with, for its next one.
+pub fn keep_cut(dialog_id: &str, cut: Cut) {
+    if let Ok(mut cuts) = CUTS.lock() {
+        if cut == Cut::default() {
+            cuts.remove(dialog_id);
+        } else {
+            cuts.insert(dialog_id.to_string(), cut);
+        }
+    }
 }
 
 /*
@@ -588,8 +630,36 @@ pub fn fit(messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, FitInf
     )
 }
 
-/// The budget rules on resolved-or-estimated messages (pure, unit-tested).
-pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>, FitInfo) {
+/// The budget rules on resolved-or-estimated messages (pure, unit-tested),
+/// cutting afresh.
+pub fn fit_with(messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>, FitInfo) {
+    fit_keeping(messages, budget, cost, None)
+}
+
+/// The history's size from message `k` on, as sent once the ones before it
+/// are dropped: the first kept message then says so (OMITTED_NOTE).
+fn size_from(messages: &[Msg], k: usize, cost: Cost) -> usize {
+    let size = total(&messages[k..], cost);
+    match messages.get(k) {
+        Some(first) if k > 0 && first.role == "user" => {
+            let note = OMITTED_NOTE.chars().count() + 2;
+            size + cost.tokens(first.full_chars + note) - cost.tokens(first.full_chars)
+        }
+        _ => size,
+    }
+}
+
+/// The budget rules, keeping the cut the chat's last request was sent with
+/// (`kept`) while the history still fits the budget with it. Once it
+/// doesn't, it's cut afresh, down to TRIM_TO of the budget: the steps after
+/// that fit in the room left, at the same cut, so the start of the request
+/// moves once in several steps, not every step or two.
+pub fn fit_keeping(
+    mut messages: Vec<Msg>,
+    budget: usize,
+    cost: Cost,
+    kept: Option<&Cut>,
+) -> (Vec<Msg>, FitInfo) {
     let full_tokens = total(&messages, cost);
     let mut sum = full_tokens;
     let mut outdated = 0;
@@ -601,16 +671,17 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
             sum = total(&messages, cost);
         }
     }
-    let info = |trimmed: bool, dropped_turns: usize, estimated_tokens: usize| FitInfo {
+    let info = |trimmed: bool, dropped_turns: usize, estimated_tokens: usize, cut: Cut| FitInfo {
         focus_note: false,
         trimmed,
         dropped_turns,
         estimated_tokens,
         full_tokens,
         outdated,
+        cut,
     };
     if sum <= budget {
-        return (messages, info(false, 0, sum));
+        return (messages, info(false, 0, sum, Cut::default()));
     }
     // Over budget: trimmed to the target, with room for the next steps.
     let target = (budget as f64 * TRIM_TO) as usize;
@@ -625,24 +696,36 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
     }
     sum = total(&messages, cost);
     if sum <= budget {
-        return (messages, info(true, 0, sum));
+        return (messages, info(true, 0, sum, Cut::default()));
     }
 
-    // 2. Drop the oldest whole turns.
+    // 2. Drop the oldest whole turns: those the last request dropped while
+    //    the rest fits, else as many as it takes to get down to the target.
     let turn_starts: Vec<usize> = (0..current_start)
         .filter(|&i| i == 0 || starts_request(&messages[i]))
         .collect();
-    let mut cut = 0;
-    let mut dropped = 0;
-    for (t, &start) in turn_starts.iter().enumerate() {
-        if sum <= target {
-            break;
+    let kept_from = kept
+        .and_then(|c| c.first_kept.as_deref())
+        .and_then(|id| messages[..=current_start].iter().position(|m| m.id == id))
+        .filter(|k| *k == current_start || turn_starts.contains(k))
+        .filter(|&k| size_from(&messages, k, cost) <= budget);
+    let (cut, dropped) = match kept_from {
+        Some(k) => (k, turn_starts.iter().filter(|&&s| s < k).count()),
+        None => {
+            let (mut cut, mut dropped) = (0, 0);
+            for (t, &start) in turn_starts.iter().enumerate() {
+                if sum <= target {
+                    break;
+                }
+                let next = turn_starts.get(t + 1).copied().unwrap_or(current_start);
+                sum -= total(&messages[start..next], cost);
+                cut = next;
+                dropped += 1;
+            }
+            (cut, dropped)
         }
-        let next = turn_starts.get(t + 1).copied().unwrap_or(current_start);
-        sum -= total(&messages[start..next], cost);
-        cut = next;
-        dropped += 1;
-    }
+    };
+    let first_kept = (cut > 0).then(|| messages[cut].id.clone());
     if cut > 0 {
         messages.drain(..cut);
         current_start -= cut;
@@ -655,29 +738,55 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
         sum = total(&messages, cost);
     }
     if sum <= budget {
-        return (messages, info(true, dropped, sum));
+        let cut = Cut {
+            first_kept,
+            shortened_through: None,
+        };
+        return (messages, info(true, dropped, sum, cut));
     }
 
     // 3. Last resort: earlier tool results of the current request, oldest
-    //    first, sparing the most recent one.
+    //    first, sparing the most recent one: those the last request cut
+    //    while the rest fits, else as many as it takes to get down to the
+    //    target.
     let tool_indexes: Vec<usize> = (current_start..messages.len())
         .filter(|&i| messages[i].role == "tool")
         .collect();
+    let mut shortened_through = None;
     if let Some((_, earlier)) = tool_indexes.split_last() {
-        for &i in earlier {
-            if sum <= target {
-                break;
+        let mut through = kept
+            .and_then(|c| c.shortened_through.as_deref())
+            .and_then(|id| earlier.iter().position(|&i| messages[i].id == id));
+        if let Some(p) = through {
+            for &i in &earlier[..=p] {
+                truncate_tool_result(&mut messages[i]);
             }
-            truncate_tool_result(&mut messages[i]);
             sum = total(&messages, cost);
         }
+        if through.is_none() || sum > budget {
+            let from = through.map_or(0, |p| p + 1);
+            for (p, &i) in earlier.iter().enumerate().skip(from) {
+                if sum <= target {
+                    break;
+                }
+                truncate_tool_result(&mut messages[i]);
+                sum = total(&messages, cost);
+                through = Some(p);
+            }
+        }
+        shortened_through = through.map(|p| messages[earlier[p]].id.clone());
     }
     // Still over: send anyway; trimming the user's words or the latest tool
     // result would change the task.
-    (messages, info(true, dropped, sum))
+    let cut = Cut {
+        first_kept,
+        shortened_through,
+    };
+    (messages, info(true, dropped, sum, cut))
 }
 
-/// Loads, fits and converts a chat's history to Chat Completions messages.
+/// Loads, fits and converts a chat's history to Chat Completions messages,
+/// keeping the cut its last request was sent with (`kept`) while it fits.
 #[allow(clippy::too_many_arguments)]
 pub fn build_wire(
     conn: &Connection,
@@ -689,6 +798,7 @@ pub fn build_wire(
     current_user_content: Option<&str>,
     gemini: bool,
     chars_per_token: f64,
+    kept: Option<&Cut>,
 ) -> DbResult<(Vec<Value>, FitInfo)> {
     let mut messages = load_messages(conn, dialog_id, None)?;
     attach_reasoning(conn, &mut messages, model)?;
@@ -707,7 +817,12 @@ pub fn build_wire(
     let note_tokens = focus
         .as_ref()
         .map_or(0, |n| cost.tokens(n.chars().count() + 2));
-    let (mut fitted, mut info) = fit_with(messages, token_budget.saturating_sub(note_tokens), cost);
+    let (mut fitted, mut info) = fit_keeping(
+        messages,
+        token_budget.saturating_sub(note_tokens),
+        cost,
+        kept,
+    );
     load_bodies(conn, &mut fitted)?;
     if let Some(note) = focus {
         add_focus_note(&mut fitted, &note);
@@ -1566,6 +1681,178 @@ mod tests {
             "the earlier results are cut exactly as before"
         );
         assert!(pairing_ok(&again));
+    }
+
+    /// A message with an id of its own (the helpers' ids repeat), as stored
+    /// messages have: a kept cut is found by id.
+    fn named(mut m: Msg, id: &str) -> Msg {
+        m.id = id.into();
+        m
+    }
+
+    const COST: Cost = Cost {
+        vision: false,
+        chars_per_token: DEFAULT_CHARS_PER_TOKEN,
+    };
+
+    /// The most a cut afresh goes past the target: the note on the first
+    /// message kept, which the count it stops at doesn't include.
+    fn past_target() -> usize {
+        COST.tokens(OMITTED_NOTE.chars().count() + 2) + 1
+    }
+
+    /// Thirty earlier turns of ~420 tokens, then the current request.
+    fn long_chat() -> Vec<Msg> {
+        let mut history = Vec::new();
+        for i in 1..=30 {
+            let question = format!("question {i} {}", "y".repeat(600));
+            let answer = format!("answer {i} {}", "z".repeat(600));
+            history.push(named(msg("user", &question), &format!("u{i}")));
+            history.push(named(msg("assistant", &answer), &format!("a{i}")));
+        }
+        history.push(named(msg("user", "current question"), "now"));
+        history
+    }
+
+    /// One more step of the run: a call and its result of `tokens`.
+    fn step(history: &mut Vec<Msg>, n: usize, tokens: usize) {
+        let id = format!("c{n}");
+        history.push(call(&[&id]));
+        history.push(named(result_of_tokens(&id, tokens), &format!("r{n}")));
+    }
+
+    #[test]
+    fn a_kept_cut_stays_while_it_fits_then_goes_down_to_the_target() {
+        const BUDGET: usize = 10_000;
+        let mut history = long_chat();
+        let (mut kept, mut kept_from): (Option<Cut>, Option<String>) = (None, None);
+        let mut fresh_from: Option<String> = None;
+        let (mut kept_moves, mut fresh_moves) = (0, 0);
+        for n in 0..24 {
+            if n > 0 {
+                step(&mut history, n, 150);
+            }
+            let (out, info) = fit_keeping(history.clone(), BUDGET, COST, kept.as_ref());
+            assert!(info.dropped_turns > 0, "step {n}: {info:?}");
+            let from = out[0].id.clone();
+            if let Some(before) = &kept_from {
+                if *before == from {
+                    // Kept: the history fits with it.
+                    assert!(info.estimated_tokens <= BUDGET, "step {n}: {info:?}");
+                } else {
+                    // Moved: with the old cut it didn't fit; now there's room
+                    // for the next steps.
+                    let k = history.iter().position(|m| m.id == *before).unwrap();
+                    assert!(size_from(&history, k, COST) > BUDGET, "step {n}");
+                    assert!(
+                        info.estimated_tokens <= target(BUDGET) + past_target(),
+                        "step {n}: {info:?}"
+                    );
+                    kept_moves += 1;
+                }
+            }
+            assert_eq!(info.cut.first_kept.as_deref(), Some(from.as_str()));
+            kept = Some(info.cut);
+            kept_from = Some(from);
+
+            // Cut afresh for every request, as before the cut was kept.
+            let (fresh, _) = fit_with(history.clone(), BUDGET, COST);
+            if fresh_from.as_ref().is_some_and(|f| *f != fresh[0].id) {
+                fresh_moves += 1;
+            }
+            fresh_from = Some(fresh[0].id.clone());
+        }
+        assert!(kept_moves > 0, "the run outgrew the room left");
+        assert!(
+            kept_moves * 2 <= fresh_moves,
+            "kept: moved {kept_moves} times; afresh: {fresh_moves}"
+        );
+    }
+
+    #[test]
+    fn the_runs_results_stay_cut_while_they_fit_then_down_to_the_target() {
+        const BUDGET: usize = 22_400;
+        // A run alone, of results of ~1 500 tokens: cut ones keep ~440.
+        let mut history = vec![named(msg("user", "q"), "now")];
+        let shortened = |ms: &[Msg]| -> Vec<String> {
+            ms.iter()
+                .filter(|m| m.text.contains("[Truncated"))
+                .map(|m| m.id.clone())
+                .collect()
+        };
+        let mut kept: Option<Cut> = None;
+        let (mut kept_cut, mut fresh_cut) = (Vec::new(), Vec::new());
+        let (mut kept_changes, mut fresh_changes) = (0, 0);
+        for n in 1..=30 {
+            step(&mut history, n, 1_500);
+            let (out, info) = fit_keeping(history.clone(), BUDGET, COST, kept.as_ref());
+            assert!(pairing_ok(&out));
+            let cut = shortened(&out);
+            assert_eq!(info.cut.shortened_through.as_ref(), cut.last(), "step {n}");
+            if cut == kept_cut {
+                assert!(info.estimated_tokens <= BUDGET, "step {n}: {info:?}");
+            } else {
+                // The same results cut short no longer fit: more are, down
+                // to the target, oldest first, the latest whole.
+                assert!(cut.starts_with(&kept_cut), "step {n}: {cut:?}");
+                assert!(
+                    info.estimated_tokens <= target(BUDGET),
+                    "step {n}: {info:?}"
+                );
+                kept_changes += 1;
+            }
+            assert!(
+                !cut.contains(&format!("r{n}")),
+                "the latest result is whole"
+            );
+            kept = Some(info.cut);
+            kept_cut = cut;
+
+            let (fresh, _) = fit_with(history.clone(), BUDGET, COST);
+            let cut = shortened(&fresh);
+            if cut != fresh_cut {
+                fresh_changes += 1;
+            }
+            fresh_cut = cut;
+        }
+        assert!(kept_changes > 0, "the run outgrew the room left");
+        assert!(
+            kept_changes * 2 <= fresh_changes,
+            "kept: changed {kept_changes} times; afresh: {fresh_changes}"
+        );
+    }
+
+    #[test]
+    fn a_kept_cut_that_no_longer_holds_is_cut_afresh() {
+        const BUDGET: usize = 3_000;
+        let history = long_chat();
+        let (afresh, info) = fit_with(history.clone(), BUDGET, COST);
+        let fresh_from = afresh[0].id.clone();
+        let cut = |first_kept: &str| Cut {
+            first_kept: Some(first_kept.into()),
+            shortened_through: None,
+        };
+        // Its message gone (retried, deleted), or not starting a turn: afresh.
+        for gone in ["u0", "a7", "c3"] {
+            let (out, _) = fit_keeping(history.clone(), BUDGET, COST, Some(&cut(gone)));
+            assert_eq!(out[0].id, fresh_from, "{gone}");
+        }
+        // Dropping too few turns to fit: afresh, down to the target.
+        let (out, again) = fit_keeping(history.clone(), BUDGET, COST, Some(&cut("u2")));
+        assert_eq!(out[0].id, fresh_from);
+        assert_eq!(again, info);
+        // Dropping more than needed still fits: kept (the start stays put).
+        assert_ne!(fresh_from, "u28");
+        let (out, more) = fit_keeping(history.clone(), BUDGET, COST, Some(&cut("u28")));
+        assert_eq!(out[0].id, "u28");
+        assert_eq!(more.cut, cut("u28"));
+        assert!(out[0].text.starts_with(OMITTED_NOTE));
+
+        // What a chat keeps for its next request; a request not cut keeps nothing.
+        keep_cut("chat-with-a-cut", cut("u28"));
+        assert_eq!(last_cut("chat-with-a-cut"), Some(cut("u28")));
+        keep_cut("chat-with-a-cut", Cut::default());
+        assert_eq!(last_cut("chat-with-a-cut"), None);
     }
 
     #[test]

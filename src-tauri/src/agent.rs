@@ -951,13 +951,17 @@ pub async fn run_chat(
     let clm_budget = clm_prompt.as_ref().map(|p| {
         history_budget(
             window,
-            fixed_chars - system_prompt.chars().count() + p.chars().count(),
+            fixed_chars - system_prompt.chars().count() + p.chars().count() + CLM_NOTES_CHARS,
             chars_per_token,
             reserve,
         )
     });
     // Set when the history below was built by CLM.
     let mut clm_used = false;
+    let continuing = continue_reply.unwrap_or(false);
+    // CLM's notes for the request to continue an interrupted reply: they go
+    // on that request, after the reply (see below).
+    let mut later_notes: Option<String> = None;
 
     let mut messages: Vec<WireChatMessage> = match (messages, dialog_id) {
         (Some(explicit), _) => explicit,
@@ -974,6 +978,8 @@ pub async fn run_chat(
                 let Some(clm_budget) = clm_budget else {
                     return Err(String::new());
                 };
+                // With the reasoning the model sent with this request's steps
+                // (reasoning_echo.rs), counted in the budget.
                 let prepared = crate::clm::prepare(
                     db,
                     vfs,
@@ -982,32 +988,30 @@ pub async fn run_chat(
                     cost,
                     current_user_content.clone(),
                     checklist_note.clone(),
+                    model.clone(),
                 )
                 .await?;
-                // The reasoning the model sent with this request's steps (reasoning_echo.rs).
-                let echo_model = model.clone();
-                let mut messages = db
-                    .read(move |conn| {
-                        let mut messages = prepared.messages;
-                        crate::chat_db::history::attach_reasoning(
-                            conn,
-                            &mut messages,
-                            &echo_model,
-                        )?;
-                        Ok(messages)
-                    })
-                    .await?;
+                let mut messages = prepared.messages;
                 let fresh = prepared.notes;
                 let notes = with_carried_notes(&carried_notes, &fresh);
-                // Notes for the model ride on the request's last message (not stored).
-                if let (Some(last), false) = (messages.last_mut(), notes.is_empty()) {
-                    last.text = format!("{}\n\n{}", last.text.trim_end(), notes.join("\n"));
-                    last.full_chars = last.text.chars().count();
+                // Notes for the model ride on the request's last message (not
+                // stored). Continuing an interrupted reply, that's the reply:
+                // the model would read notes there as words of its own, so
+                // they go on the request to continue it instead.
+                let mut later = None;
+                match messages.last_mut() {
+                    _ if notes.is_empty() => {}
+                    Some(last) if !continuing => {
+                        last.text = format!("{}\n\n{}", last.text.trim_end(), notes.join("\n"));
+                        last.full_chars = last.text.chars().count();
+                    }
+                    _ => later = Some(notes.join("\n")),
                 }
                 Ok((
                     crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini),
                     prepared.info,
                     fresh,
+                    later,
                 ))
             };
             let clm_built = tokio::select! {
@@ -1020,8 +1024,9 @@ pub async fn run_chat(
                 built = build => built,
             };
             let clm_built = match clm_built {
-                Ok((wire, info, notes)) => {
+                Ok((wire, info, notes, later)) => {
                     clm_used = true;
+                    later_notes = later;
                     if !notes.is_empty() {
                         on_event(ChatStreamEvent::ContextNotes { notes });
                     }
@@ -1039,6 +1044,9 @@ pub async fn run_chat(
             };
             let data_dir = db.data_dir().to_path_buf();
             let wire_model = model.clone();
+            // Cut where the chat's last request was cut, while that fits.
+            let kept = crate::chat_db::history::last_cut(&dialog_id);
+            let chat = dialog_id.clone();
             let build = db.read(move |conn| {
                 crate::chat_db::history::build_wire(
                     conn,
@@ -1050,19 +1058,24 @@ pub async fn run_chat(
                     current_user_content.as_deref(),
                     gemini,
                     chars_per_token,
+                    kept.as_ref(),
                 )
             });
             let (wire, info) = match clm_built {
                 Some(built) => built,
-                None => tokio::select! {
-                    _ = crate::chat_request::cancelled(cancel) => {
-                        on_event(ChatStreamEvent::Error {
-                            error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
-                        });
-                        return Ok(());
-                    }
-                    built = build => built?,
-                },
+                None => {
+                    let (wire, info) = tokio::select! {
+                        _ = crate::chat_request::cancelled(cancel) => {
+                            on_event(ChatStreamEvent::Error {
+                                error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                            });
+                            return Ok(());
+                        }
+                        built = build => built?,
+                    };
+                    crate::chat_db::history::keep_cut(&chat, info.cut.clone());
+                    (wire, info)
+                }
             };
             if info.focus_note {
                 on_event(ChatStreamEvent::FocusNote);
@@ -1085,7 +1098,7 @@ pub async fn run_chat(
         (None, None) => return Err("send_chat_message needs messages or a dialogId".into()),
     };
 
-    if continue_reply.unwrap_or(false) {
+    if continuing {
         messages.push(WireChatMessage {
             role: "user".to_string(),
             content: serde_json::Value::String(
@@ -1097,6 +1110,9 @@ pub async fn run_chat(
             tool_call_id: None,
             other: Default::default(),
         });
+    }
+    if let (Some(notes), Some(last)) = (&later_notes, messages.last_mut()) {
+        last.append_text(notes);
     }
 
     // Zone 2 of the request: what changes between steps rides on the last
@@ -1457,6 +1473,10 @@ pub mod calibration {
 /// Used when neither the server nor the user gave a context window.
 pub const DEFAULT_CONTEXT_TOKENS: usize = 32_000;
 const MIN_HISTORY_TOKENS: usize = 2_000;
+/// Room a CLM request keeps for its short notes on the last message (the
+/// size readout, a reminder, an edit's receipt). The long ones, the task
+/// card and the checklist, `clm::prepare` measures.
+const CLM_NOTES_CHARS: usize = 2_000;
 
 /// What's left of the window for the history: the window minus the system
 /// prompt and tool schemas (`fixed_chars`) and the room kept for the reply.
@@ -1831,13 +1851,15 @@ pub async fn chat_context_estimate(
         Some(clm_tool_chars) => crate::clm::system_section(&vfs, &dialog_id).map(|section| {
             history_budget(
                 window,
-                prompt_chars + 2 + section.chars().count() + clm_tool_chars,
+                prompt_chars + 2 + section.chars().count() + clm_tool_chars + CLM_NOTES_CHARS,
                 chars_per_token,
                 reply,
             )
         }),
         None => None,
     };
+    // At the cut the next request would keep; only a request moves it.
+    let kept = crate::chat_db::history::last_cut(&dialog_id);
     let (_, info) = db
         .read(move |conn| {
             crate::chat_db::history::build_wire(
@@ -1850,6 +1872,7 @@ pub async fn chat_context_estimate(
                 None,
                 gemini,
                 chars_per_token,
+                kept.as_ref(),
             )
         })
         .await?;

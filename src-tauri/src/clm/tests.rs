@@ -77,9 +77,18 @@ fn edits_become_the_context_and_survive_a_restart() {
 
         // First request: the file is written with the chat as stored.
         let vfs = VfsState::default();
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(p.messages.len(), 3);
         assert!(
             p.notes.join("\n").contains("not written yet"),
@@ -117,9 +126,18 @@ fn edits_become_the_context_and_survive_a_restart() {
             ],
         )
         .await;
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert!(
             p.notes[0].contains("edit applied as revision 2"),
             "{:?}",
@@ -174,9 +192,18 @@ fn edits_become_the_context_and_survive_a_restart() {
 
         // An app restart: a new, empty volume. The file and its history come back.
         let vfs = VfsState::default();
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert!(p
             .messages
             .iter()
@@ -194,9 +221,18 @@ fn edits_become_the_context_and_survive_a_restart() {
         let doc = String::from_utf8(vfs.read_file(&path).unwrap()).unwrap();
         vfs.write_unmounted(&path, format!("{doc}\n{}", "y".repeat(9000)).as_bytes())
             .unwrap();
-        let p = prepare(&db, &vfs, "chat".into(), 2_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            2_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert!(p.notes[0].contains("REJECTED"), "{:?}", p.notes);
         assert!(p.messages.iter().all(|m| !m.text.contains("yyyy")));
 
@@ -301,9 +337,18 @@ fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
             ],
         )
         .await;
-        prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
 
         add(
             &db,
@@ -317,18 +362,36 @@ fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
             .read(|conn| store::load_state(conn, "chat"))
             .await
             .unwrap();
-        prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         // That request's state never reached the database.
         db.write(move |conn| store::save_state(conn, "chat", &saved))
             .await
             .unwrap();
 
         add(&db, vec![message("u3", "user", "third")]).await;
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         let ids: Vec<&str> = p.messages.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -365,9 +428,18 @@ fn missing_task_card_reads_as_guidance() {
         // No card yet: the notes say so, and any spelling of the card path
         // is guidance as a normal result (not an error, so it doesn't count
         // as a failed call in the loop checks).
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert!(
             p.notes.join("\n").contains("not written yet"),
             "{:?}",
@@ -390,9 +462,18 @@ fn missing_task_card_reads_as_guidance() {
             .await
             .unwrap();
         assert!(text.contains("Goal"), "{text}");
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert!(
             !p.notes.join("\n").contains("not written yet"),
             "{:?}",
@@ -413,13 +494,31 @@ fn missing_task_card_reads_as_guidance() {
         // Deleting the card after it existed reports the deletion once
         // (card_gone), then points out the missing card again.
         vfs.remove(&task_file("chat")).unwrap();
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert!(p.notes.join("\n").contains("was deleted"), "{:?}", p.notes);
-        let p = prepare(&db, &vfs, "chat".into(), 100_000, COST, None, None)
-            .await
-            .unwrap();
+        let p = prepare(
+            &db,
+            &vfs,
+            "chat".into(),
+            100_000,
+            COST,
+            None,
+            None,
+            String::new(),
+        )
+        .await
+        .unwrap();
         assert!(!p.notes.join("\n").contains("was deleted"), "{:?}", p.notes);
         assert!(
             p.notes.join("\n").contains("not written yet"),
