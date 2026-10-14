@@ -1,6 +1,8 @@
-use crate::{browser_tools::BrowserState, filesystem::WatcherState, terminal::TerminalState};
-use std::{collections::HashMap, sync::Mutex};
-use tauri::Manager;
+use crate::agent_run::events::{AgentEvent, EVENT};
+use crate::core::{Core, EventSink, Paths};
+use crate::{filesystem::WatcherState, terminal::TerminalState};
+use std::{collections::HashMap, sync::Arc, sync::Mutex};
+use tauri::{Emitter, Manager};
 
 mod agent;
 mod agent_run;
@@ -13,6 +15,7 @@ mod chat_request;
 mod clm;
 mod code_search;
 mod command_tool;
+pub mod core;
 mod edit_file;
 mod file_guard;
 mod filesystem;
@@ -54,10 +57,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(TerminalState::default())
         .manage(lsp::LspState::default())
-        .manage(BrowserState::default())
         .manage(chat_request::ChatRequests::default())
-        .manage(agent_run::AgentState::default())
-        .manage(vfs::VfsState::default())
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
             gitignore: Mutex::new(None),
@@ -73,11 +73,14 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
-            let db = chat_db::DbState::open(&dir).map_err(|e| format!("Chat database: {e}"))?;
-            workload::init(&dir);
-            overlay::chats::init(&dir);
-            app.manage(db);
+            let paths = Paths::new(app.path().app_data_dir()?, app.path().app_config_dir()?);
+            let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
+            // The commands that take one of its parts get the core's.
+            app.manage(core.db.clone());
+            app.manage(core.agents.clone());
+            app.manage(core.vfs.clone());
+            app.manage(core.browser.clone());
+            app.manage(core);
             // The main window, as tauri.conf.json describes it (`create`
             // is off there): built here to let its page read the clipboard,
             // which a config can't. Pasting an image into the chat input
@@ -260,17 +263,21 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Don't leave a headless Chrome running after the IDE closes.
             if let tauri::RunEvent::Exit = event {
-                let browser = app.state::<BrowserState>().inner().clone();
-                rt::block_on(browser.shutdown());
-                // Unmount the virtual files, or the folder stays a dead mount.
-                let _ = app.state::<vfs::VfsState>().unmount();
-                overlay::chats::close_all();
-                workload::shutdown();
-                if let Some(db) = app.try_state::<chat_db::DbState>() {
-                    db.mark_clean_exit();
+                if let Some(core) = app.try_state::<Core>() {
+                    rt::block_on(core.shutdown());
                 }
             }
         });
+}
+
+/// The core's events, to every window (src/lib/agentRuns.ts listens).
+struct WindowEvents(tauri::AppHandle);
+
+impl EventSink for WindowEvents {
+    fn agent(&self, event: &AgentEvent) {
+        if let Err(e) = self.0.emit(EVENT, event) {
+            eprintln!("agent: could not send an event: {e}");
+        }
+    }
 }

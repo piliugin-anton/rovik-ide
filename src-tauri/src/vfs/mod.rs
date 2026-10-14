@@ -166,7 +166,19 @@ struct Mounted {
     mount: Mount,
 }
 
-pub struct VfsState {
+/// The virtual volume and its mount. Cheap to clone: the clones share it.
+#[derive(Clone, Default)]
+pub struct VfsState(Arc<Volume>);
+
+impl std::ops::Deref for VfsState {
+    type Target = Volume;
+
+    fn deref(&self) -> &Volume {
+        &self.0
+    }
+}
+
+pub struct Volume {
     fs: Arc<VirtualFs>,
     mounted: Mutex<Option<Mounted>>,
     /// Held while a mount is in progress.
@@ -180,13 +192,13 @@ pub struct VfsState {
     pretend: Mutex<Option<PathBuf>>,
 }
 
-impl Default for VfsState {
+impl Default for Volume {
     fn default() -> Self {
         #[cfg(unix)]
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
         #[cfg(not(unix))]
         let (uid, gid) = (0, 0);
-        VfsState {
+        Volume {
             fs: VirtualFs::new(Options {
                 capacity: CAPACITY,
                 uid,

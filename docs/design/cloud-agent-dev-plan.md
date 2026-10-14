@@ -1365,3 +1365,11 @@ Tasks add notes here when reality differs from the plan.
   that way. The app takes that runtime from `rt::handle()`, after
   `adopt_login_shell_path`, and hands it to Tauri, so there is one runtime
   and no `rt::init`.
+- **C03, two ways to build a `Core`.** `Core::new` sets up what the
+  process keeps once for its data folder (`workload::init`,
+  `overlay::chats::init`), so a process builds one. `Core::open` opens the
+  database and builds the parts without them: the e2e harness and the
+  headless runner build cores with it, since one test process holds many
+  (K18). The agent log's folder is a third path, `Paths::log_dir`: the data
+  folder, except for the headless runner, which keeps the log with its
+  report.
