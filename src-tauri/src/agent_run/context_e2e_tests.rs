@@ -346,6 +346,118 @@ async fn three_turns_on_a_small_window_are_trimmed_to_fit() {
         .all(|m| !text_of(m).contains("[Truncated"))));
 }
 
+/// A message as the chat stored it before the run.
+fn stored(role: &str, content: String) -> store::NewMessage {
+    store::NewMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        role: role.into(),
+        content,
+        tool_calls: None,
+        tool_call_id: None,
+        meta: None,
+        error: None,
+        failed: false,
+        attachments: vec![],
+        created_at: 0,
+        finalized: true,
+    }
+}
+
+/// The earlier turn a request's history starts with ("question N"), once
+/// the ones before it were dropped.
+fn first_turn(request: &Value) -> usize {
+    let first = text_of(&messages_of(request)[1]);
+    first
+        .split("question ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn a_long_run_over_a_long_chat_keeps_its_cut_until_the_budget() {
+    let notes: Vec<(String, String)> = (1..=12)
+        .map(|i| {
+            (
+                format!("notes/{i}.txt"),
+                format!("{}\n", format!("note {i} ").repeat(15)).repeat(10),
+            )
+        })
+        .collect();
+    let files: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let h = harness(&files).await;
+    // Thirty earlier turns of ~600 tokens: more than the history's budget.
+    let earlier: Vec<store::NewMessage> = (1..=30)
+        .flat_map(|i| {
+            [
+                stored("user", format!("question {i} {}", "q".repeat(900))),
+                stored("assistant", format!("answer {i} {}", "a".repeat(900))),
+            ]
+        })
+        .collect();
+    let (db, id) = (
+        h.app.state::<DbState>().inner().clone(),
+        h.dialog_id.clone(),
+    );
+    db.write(move |c| store::append_messages(c, &id, &earlier).map(|_| ()))
+        .await
+        .unwrap();
+    // A run of twelve reads of ~360 tokens each.
+    let mut replies: Vec<Reply> = (1..=12)
+        .map(|i| Reply::Call {
+            id: Box::leak(format!("r{i}").into_boxed_str()),
+            name: "read",
+            args: json!({ "path": format!("notes/{i}.txt") }),
+        })
+        .collect();
+    replies.push(Reply::Text("Read them all."));
+    let (url, seen) = model(replies).await;
+    // The system prompt and the tools take ~5 500 tokens and the reply
+    // 8 000: ~10 500 for the history, which the earlier turns outgrow.
+    let window = 24_000;
+    run_turns(
+        &h,
+        &url,
+        "trimming",
+        window,
+        "m",
+        vec![turn("Read the twelve notes", None)],
+    )
+    .await;
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 13);
+    assert_fits(&requests, window);
+
+    // The earlier turn each request starts with. Once over the budget, the
+    // history is cut down to 85% of it and keeps that cut while it fits:
+    // the twelve reads (~4 500 tokens) outgrow that room (~1 500) at most
+    // three times. Cutting afresh for every request moved it on every
+    // step or two: each time the slack the last dropped turn left was used.
+    let turns: Vec<usize> = requests.iter().map(first_turn).collect();
+    assert!(
+        turns.iter().all(|&t| t > 1),
+        "earlier turns dropped: {turns:?}"
+    );
+    let moves = turns.windows(2).filter(|w| w[0] != w[1]).count();
+    assert!(moves <= 3, "the cut moved {moves} times: {turns:?}");
+    // While it stays, each request repeats the one before it, all of it but
+    // at most its last message (where the focus note rides).
+    for (i, pair) in requests.windows(2).enumerate() {
+        if turns[i] == turns[i + 1] {
+            let n = messages_of(&pair[0]).len();
+            assert!(
+                shared_messages(&pair[0], &pair[1]) >= n - 1,
+                "requests {i}-{}",
+                i + 1
+            );
+        }
+    }
+}
+
 /*
  * CLM
  */

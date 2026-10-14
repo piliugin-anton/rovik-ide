@@ -600,6 +600,7 @@ pub async fn prepare(
                 estimated_tokens: tokens + reasoning_tokens,
                 full_tokens,
                 outdated: 0,
+                cut: Default::default(),
             },
         )
     };

@@ -1044,6 +1044,9 @@ pub async fn run_chat(
             };
             let data_dir = db.data_dir().to_path_buf();
             let wire_model = model.clone();
+            // Cut where the chat's last request was cut, while that fits.
+            let kept = crate::chat_db::history::last_cut(&dialog_id);
+            let chat = dialog_id.clone();
             let build = db.read(move |conn| {
                 crate::chat_db::history::build_wire(
                     conn,
@@ -1055,19 +1058,24 @@ pub async fn run_chat(
                     current_user_content.as_deref(),
                     gemini,
                     chars_per_token,
+                    kept.as_ref(),
                 )
             });
             let (wire, info) = match clm_built {
                 Some(built) => built,
-                None => tokio::select! {
-                    _ = crate::chat_request::cancelled(cancel) => {
-                        on_event(ChatStreamEvent::Error {
-                            error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
-                        });
-                        return Ok(());
-                    }
-                    built = build => built?,
-                },
+                None => {
+                    let (wire, info) = tokio::select! {
+                        _ = crate::chat_request::cancelled(cancel) => {
+                            on_event(ChatStreamEvent::Error {
+                                error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                            });
+                            return Ok(());
+                        }
+                        built = build => built?,
+                    };
+                    crate::chat_db::history::keep_cut(&chat, info.cut.clone());
+                    (wire, info)
+                }
             };
             if info.focus_note {
                 on_event(ChatStreamEvent::FocusNote);
@@ -1850,6 +1858,8 @@ pub async fn chat_context_estimate(
         }),
         None => None,
     };
+    // At the cut the next request would keep; only a request moves it.
+    let kept = crate::chat_db::history::last_cut(&dialog_id);
     let (_, info) = db
         .read(move |conn| {
             crate::chat_db::history::build_wire(
@@ -1862,6 +1872,7 @@ pub async fn chat_context_estimate(
                 None,
                 gemini,
                 chars_per_token,
+                kept.as_ref(),
             )
         })
         .await?;
