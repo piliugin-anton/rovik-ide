@@ -626,82 +626,93 @@ function mountAddToChat(
   };
 }
 
+/** Removed lines shown in full up to this many per place; the rest are counted. */
+const MAX_REMOVED_LINES_SHOWN = 200;
+
 /**
  * Marks for differences from the git base: added lines tinted green and
- * changed lines blue (with a bar in the gutter), removed lines a red line
- * where they were. Tinted, not just gutter bars: the bars alone were easy
- * to miss.
+ * changed lines yellow, each with a bar in the gutter, and the lines git
+ * has that the file no longer does shown in red where they were (a view
+ * zone with the old text), so an edit reads as what it replaced over what
+ * it became. Tinted, not just gutter bars: the bars alone were easy to miss.
  */
 export function createGitMarks(
   editor: monaco.editor.IStandaloneCodeEditor,
   base: () => string | undefined
 ): monaco.IDisposable {
   const marks = editor.createDecorationsCollection();
+  let zoneIds: string[] = [];
   let timer: number | undefined;
+  let disposed = false;
   const update = () => {
+    if (disposed) return;
     const model = editor.getModel();
     const original = base();
-    if (!model || original === undefined) {
-      marks.clear();
-      return;
-    }
-    const hunks = diffLines(splitLines(original).lines, splitLines(model.getValue()).lines);
-    const lineCount = model.getLineCount();
     const decorations: monaco.editor.IModelDeltaDecoration[] = [];
-    let shift = 0;
-    for (const hunk of hunks) {
-      const start = hunk.origStart + shift;
-      // A new file diffs as "one empty line replaced": all added.
-      const removed =
-        hunk.deleted.join('') === '' && hunk.deleted.length === 1 && original === ''
-          ? 0
-          : hunk.deleted.length;
-      if (hunk.added.length > 0) {
-        const kind = removed > 0 ? 'modified' : 'added';
-        decorations.push({
-          range: new monaco.Range(
-            Math.min(start, lineCount),
-            1,
-            Math.min(start + hunk.added.length - 1, lineCount),
-            1
-          ),
-          options: {
-            isWholeLine: true,
-            className: `git-line-${kind}`,
-            linesDecorationsClassName: `git-mark git-mark-${kind}`,
-            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-            hoverMessage: {
-              value:
-                kind === 'added'
-                  ? 'Added since the version in git'
-                  : `Changed since the version in git (was ${removed} line${removed === 1 ? '' : 's'})`,
+    const zones: monaco.editor.IViewZone[] = [];
+    if (model && original !== undefined) {
+      const hunks = diffLines(splitLines(original).lines, splitLines(model.getValue()).lines);
+      const lineCount = model.getLineCount();
+      // Hunks count lines of the base; `shift` maps them onto the file as it is.
+      let shift = 0;
+      for (const hunk of hunks) {
+        const start = hunk.origStart + shift;
+        // A new file diffs as "one empty line replaced": all added.
+        const removed =
+          hunk.deleted.join('') === '' && hunk.deleted.length === 1 && original === ''
+            ? 0
+            : hunk.deleted.length;
+        if (removed > 0) {
+          // The old lines, above the ones that replaced them (or where they were).
+          const after = Math.max(0, Math.min(start - 1, lineCount));
+          zones.push(removedLinesZone(editor, model, hunk.deleted, after));
+        }
+        if (hunk.added.length > 0) {
+          const kind = removed > 0 ? 'modified' : 'added';
+          decorations.push({
+            range: new monaco.Range(
+              Math.min(start, lineCount),
+              1,
+              Math.min(start + hunk.added.length - 1, lineCount),
+              1
+            ),
+            options: {
+              isWholeLine: true,
+              className: `git-line-${kind}`,
+              linesDecorationsClassName: `git-mark git-mark-${kind}`,
+              stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+              hoverMessage: {
+                value:
+                  kind === 'added'
+                    ? 'Added since the version in git'
+                    : `Changed since the version in git: the ${plural(removed, 'line')} it replaced ${removed === 1 ? 'is' : 'are'} shown above in red`,
+              },
+              overviewRuler: {
+                color: kind === 'added' ? '#587c0c' : '#dcb26a',
+                position: monaco.editor.OverviewRulerLane.Left,
+              },
             },
-            overviewRuler: {
-              color: kind === 'added' ? '#587c0c' : '#1b81a8',
-              position: monaco.editor.OverviewRulerLane.Left,
+          });
+        } else if (removed > 0) {
+          // Only in the overview ruler: the zone shows the lines themselves.
+          const line = Math.max(1, Math.min(start, lineCount));
+          decorations.push({
+            range: new monaco.Range(line, 1, line, 1),
+            options: {
+              isWholeLine: true,
+              stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+              overviewRuler: { color: '#94151b', position: monaco.editor.OverviewRulerLane.Left },
             },
-          },
-        });
-      } else if (removed > 0) {
-        const below = start > lineCount;
-        const line = Math.max(1, Math.min(start, lineCount));
-        decorations.push({
-          range: new monaco.Range(line, 1, line, 1),
-          options: {
-            isWholeLine: true,
-            className: below ? 'git-line-removed-below' : 'git-line-removed-above',
-            linesDecorationsClassName: `git-mark git-mark-removed${below ? ' below' : ''}`,
-            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-            hoverMessage: {
-              value: `${removed} line${removed === 1 ? '' : 's'} removed since the version in git`,
-            },
-            overviewRuler: { color: '#94151b', position: monaco.editor.OverviewRulerLane.Left },
-          },
-        });
+          });
+        }
+        shift += hunk.added.length - hunk.deleted.length;
       }
-      shift += hunk.added.length - hunk.deleted.length;
     }
     marks.set(decorations);
+    editor.changeViewZones((accessor) => {
+      zoneIds.forEach((id) => accessor.removeZone(id));
+      zoneIds = zones.map((zone) => accessor.addZone(zone));
+    });
   };
   const sub = editor.onDidChangeModelContent(() => {
     window.clearTimeout(timer);
@@ -717,11 +728,74 @@ export function createGitMarks(
   });
   return {
     dispose() {
+      disposed = true;
       window.clearTimeout(timer);
       sub.dispose();
       stop();
       marks.clear();
+      editor.changeViewZones((accessor) => zoneIds.forEach((id) => accessor.removeZone(id)));
+      zoneIds = [];
     },
+  };
+}
+
+/**
+ * Lines the file had in git and no longer has, in red below `afterLineNumber`
+ * (0: at the top), syntax highlighted like the editor's own lines, with a
+ * red bar in the gutter where the changed lines have theirs.
+ */
+function removedLinesZone(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  model: monaco.editor.ITextModel,
+  lines: string[],
+  afterLineNumber: number
+): monaco.editor.IViewZone {
+  const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
+  const fontInfo = editor.getOption(monaco.editor.EditorOption.fontInfo);
+  const shown = lines.slice(0, MAX_REMOVED_LINES_SHOWN);
+  const hidden = lines.length - shown.length;
+
+  const dom = document.createElement('div');
+  dom.className = 'git-removed-zone';
+  dom.style.fontFamily = fontInfo.fontFamily;
+  dom.style.fontSize = `${fontInfo.fontSize}px`;
+  dom.style.lineHeight = `${lineHeight}px`;
+  dom.title = `${plural(lines.length, 'line')} removed since the version in git`;
+  // Plain text first, highlighted once colorize finishes.
+  const rows = shown.map((line) => {
+    const row = document.createElement('div');
+    row.className = 'git-removed-line';
+    row.textContent = line || ' ';
+    return row;
+  });
+  dom.append(...rows);
+  if (hidden > 0) {
+    const more = document.createElement('div');
+    more.className = 'git-removed-more';
+    more.textContent = `… ${plural(hidden, 'more removed line')}`;
+    dom.append(more);
+  }
+  void monaco.editor
+    .colorize(shown.join('\n'), model.getLanguageId(), { tabSize: model.getOptions().tabSize })
+    .then((html) => {
+      const parts = html.split(/<br\s*\/?>/);
+      rows.forEach((row, i) => {
+        if (parts[i]) row.innerHTML = parts[i];
+      });
+    });
+
+  const margin = document.createElement('div');
+  margin.className = 'git-removed-margin';
+  const bar = document.createElement('div');
+  bar.className = 'git-mark git-mark-removed';
+  bar.style.left = `${editor.getLayoutInfo().decorationsLeft}px`;
+  margin.append(bar);
+
+  return {
+    afterLineNumber,
+    heightInPx: (shown.length + (hidden > 0 ? 1 : 0)) * lineHeight,
+    domNode: dom,
+    marginDomNode: margin,
   };
 }
 
