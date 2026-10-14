@@ -2681,6 +2681,7 @@ impl Harness {
             id: uuid::Uuid::new_v4().to_string(),
             content: "Implement the plan in `.rovik/plans/greet.md`.".into(),
             meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+            attachments: Vec::new(),
         };
         let mut request = self.request(
             url,
@@ -3533,6 +3534,7 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     let mut request = h.request(
         &url,
@@ -6344,6 +6346,7 @@ async fn a_test_writer_continued_keeps_its_limits() {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     let permissions = Permissions {
         allow_any_command: true,
@@ -7759,6 +7762,7 @@ async fn test_writer_run(script: Vec<Reply>, task: Value) -> Harness {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     let mut request = h.request(
         &url,
@@ -8376,6 +8380,7 @@ async fn continue_by_call_id_of_a_test_writer_runs_alone() {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     let mut request = h.request(
         &url,
@@ -10289,6 +10294,7 @@ async fn diagnostics_without_a_path_hides_the_files() {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan in `.rovik/plans/greeter.md`.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     let mut request = h.request(
         &url,

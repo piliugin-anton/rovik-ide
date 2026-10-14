@@ -150,6 +150,12 @@ export const chatApi = {
     invoke<string[]>('chat_messages_answered', { messageIds }),
 
   /**
+   * Stores an image pasted into the chat input (PNG, JPEG, WebP or GIF
+   * bytes, sent as the raw body); returns its attachment id.
+   */
+  storeImage: (bytes: Uint8Array) => invoke<string>('chat_store_image', bytes),
+
+  /**
    * Debounced save of the chat input's unsent input (one row per chat,
    * `composer_drafts` table). `content` is the JSON-encoded `DraftSegment[]`
    * (lib/composerDraft.ts); empty text deletes the row.

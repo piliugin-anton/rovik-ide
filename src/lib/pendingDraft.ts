@@ -8,12 +8,15 @@
 // starts. Tauri persists it in the app's data directory.
 
 import type { FileSuggestion } from '../types';
+import type { ComposerImage } from './composerImages';
 
 export type DraftSegment =
   | { type: 'text'; text: string }
   | { type: 'file'; file: FileSuggestion }
   /** A long paste, kept as a chip (ChatPanel). */
-  | { type: 'pasted'; text: string };
+  | { type: 'pasted'; text: string }
+  /** A pasted image, stored as an attachment (lib/composerImages.ts). */
+  | { type: 'image'; image: ComposerImage };
 
 export interface PendingDraft {
   dialogId: string;

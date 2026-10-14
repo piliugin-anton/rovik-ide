@@ -293,6 +293,28 @@ pub async fn chat_messages_answered(
         .await
 }
 
+/// An image pasted into the chat input, stored until the message that sends
+/// it references it (or cleanup removes it). The bytes are the request's raw
+/// body; returns the image's id.
+#[tauri::command]
+pub async fn chat_store_image(
+    db: State<'_, DbState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<String, String> {
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        // Where the webview blocks the IPC's custom protocol, Tauri falls
+        // back to postMessage, which sends the bytes as a JSON array.
+        tauri::ipc::InvokeBody::Json(serde_json::Value::Array(values)) => values
+            .iter()
+            .map(|v| v.as_u64().and_then(|b| u8::try_from(b).ok()))
+            .collect::<Option<Vec<u8>>>()
+            .ok_or("The image's bytes are malformed.")?,
+        _ => return Err("The image's bytes are missing.".into()),
+    };
+    attachments::store_image(&db, bytes).await
+}
+
 /// Debounced save of the chat input's unsent text (one row per chat).
 #[tauri::command]
 pub async fn chat_save_composer_draft(

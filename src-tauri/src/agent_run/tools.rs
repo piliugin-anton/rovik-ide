@@ -185,7 +185,7 @@ fn web_tool_schemas() -> Vec<Value> {
 }
 
 /// Only offered to models marked as accepting images.
-fn screenshot_tool_schema() -> Value {
+fn browser_screenshot_tool_schema() -> Value {
     json!({
         "type": "function",
         "function": {
@@ -425,7 +425,7 @@ pub fn tools_for(
     }
     all.extend(web_tool_schemas());
     if vision {
-        all.push(screenshot_tool_schema());
+        all.push(browser_screenshot_tool_schema());
     }
     if !plan_mode {
         // Agent mode: the checklist on top of the project tools.

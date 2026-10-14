@@ -47,7 +47,9 @@ const PAGE: usize = 500;
 const MESSAGE_OVERHEAD: usize = 4;
 const IMAGE_TOKENS: usize = 1000;
 const TOOL_KEEP_CHARS: usize = 1200;
-/// Screenshots re-sent on later turns; older ones become a note.
+/// Messages whose images are re-sent on later turns (browser_screenshot
+/// results, earlier requests' images); older ones become a note. The
+/// current request's own images are always sent.
 const MAX_IMAGES: usize = 2;
 const OMITTED_NOTE: &str =
     "[Earlier messages in this chat were omitted to fit the context window.]";
@@ -117,21 +119,45 @@ fn estimate(m: &Msg, cost: Cost) -> usize {
     tokens
 }
 
-/// Images count only for the messages to_wire actually attaches them to
-/// (the last MAX_IMAGES): older screenshots are sent as a note.
-pub fn total(messages: &[Msg], cost: Cost) -> usize {
-    let text: usize = messages.iter().map(|m| estimate(m, cost)).sum();
-    if !cost.vision {
-        return text;
+/// Which messages' images go with a request, by index (`to_wire` attaches
+/// exactly these): the current request's (the images the user sent with
+/// it, needed for the whole run), and those of the last MAX_IMAGES other
+/// messages that have any. None for a model that doesn't take images.
+fn attached_images(messages: &[Msg], vision: bool) -> Vec<bool> {
+    let mut attached = vec![false; messages.len()];
+    if !vision {
+        return attached;
     }
-    let images: usize = messages
-        .iter()
+    let request = messages.iter().rposition(starts_request);
+    if let Some(i) = request {
+        attached[i] = !messages[i].attachments.is_empty();
+    }
+    let others = (0..messages.len())
         .rev()
-        .filter(|m| !m.attachments.is_empty())
-        .take(MAX_IMAGES)
-        .map(|m| m.attachments.len())
-        .sum();
-    text + images * IMAGE_TOKENS
+        .filter(|&i| Some(i) != request && !messages[i].attachments.is_empty())
+        .take(MAX_IMAGES);
+    for i in others {
+        attached[i] = true;
+    }
+    attached
+}
+
+/// Images count only for the messages to_wire actually attaches them to
+/// (`attached_images`): the others are sent as a note.
+pub fn total(messages: &[Msg], cost: Cost) -> usize {
+    let attached = attached_images(messages, cost.vision);
+    messages
+        .iter()
+        .zip(attached)
+        .map(|(m, a)| {
+            estimate(m, cost)
+                + if a {
+                    m.attachments.len() * IMAGE_TOKENS
+                } else {
+                    0
+                }
+        })
+        .sum()
 }
 
 pub fn truncate_tool_result(m: &mut Msg) {
@@ -153,6 +179,55 @@ pub fn truncate_tool_result(m: &mut Msg) {
     m.full_chars = m.text.chars().count();
     m.needs_body = false;
     m.attachments.clear();
+}
+
+/// "An image" or "3 images", to start a note about a message's images.
+fn images_phrase(n: usize) -> String {
+    if n == 1 {
+        "An image".into()
+    } else {
+        format!("{n} images")
+    }
+}
+
+/// The text with a note after it (alone when there's no text).
+fn with_note(text: &str, note: &str) -> String {
+    if text.trim().is_empty() {
+        note.to_string()
+    } else {
+        format!("{text}\n{note}")
+    }
+}
+
+/// An earlier request's images, left out to fit the context window; a note
+/// says they were there.
+fn drop_user_images(m: &mut Msg) {
+    let n = m.attachments.len();
+    if n == 0 {
+        return;
+    }
+    let were = if n == 1 { "was" } else { "were" };
+    let note = format!(
+        "[{} the user attached here {were} left out to fit the context window.]",
+        images_phrase(n)
+    );
+    m.text = with_note(&m.text, &note);
+    m.full_chars = m.text.chars().count();
+    m.attachments.clear();
+}
+
+/// What a user message says in place of images that aren't sent with it.
+fn user_images_note(n: usize, vision: bool) -> String {
+    let phrase = images_phrase(n);
+    if vision {
+        let are = if n == 1 { "is" } else { "are" };
+        format!("[{phrase} the user attached here {are} no longer shown.]")
+    } else {
+        let were = if n == 1 { "wasn't" } else { "weren't" };
+        format!(
+            "[{phrase} the user attached here {were} sent: this model isn't set up to accept images.]"
+        )
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -555,6 +630,15 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
             note.push_str(&format!("\n> {line}"));
         }
     }
+    let images = messages[start].attachments.len();
+    if images > 0 {
+        let images = if images == 1 {
+            "an image".to_string()
+        } else {
+            format!("{images} images")
+        };
+        note.push_str(&format!("\nThe user attached {images} to the request."));
+    }
     if text.chars().count() < SHORT_REQUEST_CHARS {
         if let Some(prev) = messages[..start].iter().rposition(starts_request) {
             let prev_text = messages[prev].text.trim();
@@ -688,10 +772,12 @@ pub fn fit_keeping(
 
     let mut current_start = messages.iter().rposition(starts_request).unwrap_or(0);
 
-    // 1. Shrink old tool results.
+    // 1. Shrink old tool results; earlier requests' images go too.
     for m in messages.iter_mut().take(current_start) {
         if m.role == "tool" {
             truncate_tool_result(m);
+        } else if m.role == "user" {
+            drop_user_images(m);
         }
     }
     sum = total(&messages, cost);
@@ -718,6 +804,7 @@ pub fn fit_keeping(
                     break;
                 }
                 let next = turn_starts.get(t + 1).copied().unwrap_or(current_start);
+                // No images left before the request (step 1).
                 sum -= total(&messages[start..next], cost);
                 cut = next;
                 dropped += 1;
@@ -1117,19 +1204,10 @@ fn wire_arguments(arguments: &str) -> String {
 
 /// Chat Completions only allows text in role:"tool" messages, so images go
 /// in a user message after the whole run of tool results (all results for
-/// one assistant turn must directly follow it).
+/// one assistant turn must directly follow it). A user message's own images
+/// go in it, after its text.
 pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) -> Vec<Value> {
-    let with_images: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| !m.attachments.is_empty())
-        .map(|(i, _)| i)
-        .collect();
-    let attach: Vec<usize> = if vision {
-        with_images.iter().rev().take(MAX_IMAGES).copied().collect()
-    } else {
-        Vec::new()
-    };
+    let attach = attached_images(messages, vision);
 
     let mut out = Vec::with_capacity(messages.len() + 2);
     let mut pending: Vec<(Option<String>, Vec<String>)> = Vec::new();
@@ -1152,8 +1230,10 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
             flush(&mut out, &mut pending);
         }
         let mut content = m.text.clone();
+        // The user's images, sent in their own message.
+        let mut images = Vec::new();
         if !m.attachments.is_empty() {
-            let urls: Vec<String> = if attach.contains(&i) {
+            let urls: Vec<String> = if attach[i] {
                 m.attachments
                     .iter()
                     .filter_map(|id| attachments::data_url(data_dir, id))
@@ -1161,7 +1241,13 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
             } else {
                 Vec::new()
             };
-            if urls.is_empty() {
+            if m.role == "user" {
+                if urls.is_empty() {
+                    content = with_note(&content, &user_images_note(m.attachments.len(), vision));
+                } else {
+                    images = urls;
+                }
+            } else if urls.is_empty() {
                 content.push_str("\n[The screenshot is no longer attached.]");
             } else {
                 pending.push((m.tool_call_id.clone(), urls));
@@ -1175,7 +1261,22 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
         if let Some((tag, text)) = inline {
             content = format!("<{tag}>{text}</{tag}>{content}");
         }
-        let mut msg = json!({ "role": m.role, "content": content });
+        let mut msg = if images.is_empty() {
+            json!({ "role": m.role, "content": content })
+        } else {
+            // No empty text part for a message of images only: some
+            // providers reject one.
+            let mut parts = Vec::with_capacity(images.len() + 1);
+            if !content.trim().is_empty() {
+                parts.push(json!({ "type": "text", "text": content }));
+            }
+            parts.extend(
+                images
+                    .into_iter()
+                    .map(|url| json!({ "type": "image_url", "image_url": { "url": url } })),
+            );
+            json!({ "role": m.role, "content": parts })
+        };
         match m
             .reasoning
             .as_ref()
@@ -1419,6 +1520,17 @@ mod tests {
             "{short_note}"
         );
         assert!(short_note.contains("> an earlier request"), "{short_note}");
+        assert!(!short_note.contains("attached"), "{short_note}");
+
+        // The request's images are mentioned (they're with the request).
+        let mut with_images = long_run("make it look like these");
+        let at = with_images.len() - 1 - 2 * FOCUS_AFTER_TOOL_RESULTS;
+        with_images[at].attachments = vec!["a".into(), "b".into()];
+        let images_note = focus_note(&with_images).unwrap();
+        assert!(
+            images_note.contains("The user attached 2 images to the request."),
+            "{images_note}"
+        );
 
         // The latest checklist wins; once every step is settled the agent
         // is wrapping up, and no note pushes it back into the task.
@@ -1908,6 +2020,136 @@ mod tests {
             .unwrap()
             .contains("no longer attached"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A folder with one stored image per id, as `attachments` keeps them.
+    fn images_dir(tag: &str, ids: &[(&str, &str)]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("history-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(attachments::DIR)).unwrap();
+        for (id, ext) in ids {
+            std::fs::write(dir.join(attachments::DIR).join(format!("{id}.{ext}")), b"x").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_users_images_go_in_their_own_message() {
+        let id = "b".repeat(64);
+        let dir = images_dir("user-images", &[(&id, "png")]);
+
+        let mut asked = msg("user", "Why is this button blue?");
+        asked.attachments = vec![id.clone()];
+        let wire = to_wire(&[asked.clone()], &dir, true, false);
+        assert_eq!(wire.len(), 1, "no separate message for the user's images");
+        assert_eq!(wire[0]["content"][0]["type"], "text");
+        assert_eq!(wire[0]["content"][0]["text"], "Why is this button blue?");
+        assert_eq!(wire[0]["content"][1]["type"], "image_url");
+        assert!(wire[0]["content"][1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        // Images only: no empty text part (some providers reject one).
+        let mut shown = msg("user", "");
+        shown.attachments = vec![id.clone()];
+        let wire = to_wire(&[shown.clone()], &dir, true, false);
+        let parts = wire[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+
+        // A model that doesn't take images is told they were there.
+        let note = "[An image the user attached here wasn't sent: this model isn't set up to accept images.]";
+        let wire = to_wire(&[asked, shown], &dir, false, false);
+        assert_eq!(
+            wire[0]["content"],
+            format!("Why is this button blue?\n{note}")
+        );
+        assert_eq!(wire[1]["content"], note);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_requests_images_stay_while_screenshots_come_and_go() {
+        let (pasted, shot) = ("b".repeat(64), "a".repeat(64));
+        let dir = images_dir("request-images", &[(&pasted, "png"), (&shot, "jpg")]);
+        let mut request = msg("user", "Make the page look like this");
+        request.attachments = vec![pasted.clone()];
+        let mut ms = vec![request];
+        for i in 0..3 {
+            let id = format!("s{i}");
+            ms.push(call(&[&id]));
+            let mut t = tool(&id, 10);
+            t.attachments = vec![shot.clone()];
+            ms.push(t);
+        }
+
+        let wire = to_wire(&ms, &dir, true, false);
+        assert_eq!(
+            wire[0]["content"][1]["type"], "image_url",
+            "still the request's"
+        );
+        let screenshots = wire
+            .iter()
+            .filter(|m| {
+                m["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("Screenshot from tool call"))
+            })
+            .count();
+        assert_eq!(screenshots, MAX_IMAGES, "only the latest screenshots");
+        assert!(wire[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("no longer attached"));
+
+        // The estimate counts exactly the images that are sent.
+        let with = total(&ms, generous(true));
+        let without = total(&ms, generous(false));
+        assert_eq!(with - without, (1 + MAX_IMAGES) * IMAGE_TOKENS);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn earlier_requests_images_go_first_when_over_budget() {
+        let mut earlier = msg("user", "Here's the mockup");
+        earlier.attachments = vec!["mockup".into()];
+        let mut current = msg("user", "Now match this one");
+        current.attachments = vec!["target".into()];
+        let ms = vec![earlier, msg("assistant", &"x".repeat(3000)), current];
+
+        let (fitted, info) = fit(ms.clone(), total(&ms, generous(true)) - 500, true);
+        assert!(info.trimmed);
+        assert_eq!(info.dropped_turns, 0, "the image went, not the turn");
+        assert!(fitted[0].attachments.is_empty());
+        assert_eq!(
+            fitted[0].text,
+            "Here's the mockup\n[An image the user attached here was left out to fit the context window.]"
+        );
+        assert_eq!(
+            fitted[2].attachments,
+            ["target"],
+            "the request keeps its own"
+        );
+    }
+
+    #[test]
+    fn dropping_turns_with_images_keeps_the_estimate_true() {
+        // Three earlier requests with an image each, then the current one:
+        // more images than are sent, in turns that get dropped.
+        let mut ms = Vec::new();
+        for i in 0..3 {
+            let mut m = msg("user", &format!("request {i} {}", "y".repeat(600)));
+            m.id = format!("u{i}");
+            m.attachments = vec![format!("img{i}")];
+            ms.push(m);
+            ms.push(msg("assistant", &"x".repeat(600)));
+        }
+        ms.push(msg("user", "the current request"));
+        let budget = total(&ms, generous(false)) / 2;
+        let (fitted, info) = fit(ms, budget, true);
+        assert!(info.dropped_turns > 0);
+        assert_eq!(info.estimated_tokens, total(&fitted, generous(true)));
+        assert!(fitted.iter().all(|m| m.attachments.is_empty()));
     }
 
     #[test]

@@ -57,7 +57,16 @@ export interface AgentConfig {
 }
 
 export type StartKind =
-  | { kind: 'send'; message: { id: string; content: string; meta?: ChatMessage['meta'] } }
+  | {
+      kind: 'send';
+      message: {
+        id: string;
+        content: string;
+        meta?: ChatMessage['meta'];
+        /** Pasted images' attachment ids (lib/composerImages.ts). */
+        attachments?: string[];
+      };
+    }
   | { kind: 'retry' }
   | { kind: 'continueReply' }
   | { kind: 'continueRun' }

@@ -504,6 +504,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                 meta: Some(
                     json!({ "mode": settings.mode.clone().unwrap_or_else(|| "agent".into()) }),
                 ),
+                attachments: Vec::new(),
             },
         },
         profile: settings.profile.clone(),

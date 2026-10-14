@@ -651,7 +651,7 @@ pub(crate) async fn browse_url_inner(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Screenshot {
+pub struct BrowserScreenshot {
     pub(crate) url: String,
     pub(crate) title: String,
     /// Stored in the chat database's attachments; shown by URL, and only
@@ -668,7 +668,7 @@ pub async fn browser_screenshot(
     state: State<'_, BrowserState>,
     db: State<'_, crate::chat_db::DbState>,
     url: Option<String>,
-) -> Result<Screenshot, String> {
+) -> Result<BrowserScreenshot, String> {
     browser_screenshot_inner(&state, &db, url, None).await
 }
 
@@ -678,7 +678,7 @@ pub(crate) async fn browser_screenshot_inner(
     db: &crate::chat_db::DbState,
     url: Option<String>,
     stop: Option<&StopSignal>,
-) -> Result<Screenshot, String> {
+) -> Result<BrowserScreenshot, String> {
     let url = url
         .filter(|u| !u.trim().is_empty())
         .map(|u| validate_url(&u))
@@ -708,7 +708,7 @@ pub(crate) async fn browser_screenshot_inner(
         .await?;
 
     let attachment_id = crate::chat_db::attachments::store(&db, bytes, "image/jpeg").await?;
-    Ok(Screenshot {
+    Ok(BrowserScreenshot {
         url: current,
         title,
         attachment_id,

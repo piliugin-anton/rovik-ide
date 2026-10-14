@@ -105,6 +105,7 @@ fn turn(text: &str, sent: Option<&str>) -> (StartKind, Option<String>) {
         id: uuid::Uuid::new_v4().to_string(),
         content: text.into(),
         meta,
+        attachments: Vec::new(),
     };
     (StartKind::Send { message }, sent.map(str::to_string))
 }

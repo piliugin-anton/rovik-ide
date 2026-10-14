@@ -656,7 +656,13 @@ pub struct UserMessage {
     pub content: String,
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
+    /// Images pasted into the message (chat_store_image ids), in order.
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
+
+/// Images one message can carry at most.
+const MAX_MESSAGE_IMAGES: usize = 20;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -723,6 +729,30 @@ pub async fn agent_start<R: Runtime>(
             );
         }
     }
+    // A message's images, once each, and only ones that are stored.
+    let mut request = request;
+    if let StartKind::Send { message } = &mut request.start {
+        let mut seen = std::collections::HashSet::new();
+        message.attachments.retain(|id| seen.insert(id.clone()));
+        if message.attachments.len() > MAX_MESSAGE_IMAGES {
+            return Err(format!(
+                "A message can have {MAX_MESSAGE_IMAGES} images at most; this one has {}.",
+                message.attachments.len()
+            ));
+        }
+        if !message.attachments.is_empty() {
+            let ids = message.attachments.clone();
+            let missing = db
+                .read(move |c| crate::chat_db::attachments::missing(c, &ids))
+                .await?;
+            if !missing.is_empty() {
+                return Err(
+                    "An image in the message is no longer available. Remove it and paste it again."
+                        .into(),
+                );
+            }
+        }
+    }
     let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone())
     else {
         return Err("The agent is already working in this chat.".into());
@@ -743,7 +773,7 @@ pub async fn agent_start<R: Runtime>(
             meta: message.meta.clone(),
             error: None,
             failed: false,
-            attachments: Vec::new(),
+            attachments: message.attachments.clone(),
             created_at: store::now_ms(),
             finalized: true,
         };
