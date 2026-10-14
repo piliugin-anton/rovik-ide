@@ -858,6 +858,16 @@ key on the server, and offers "Remove keys from this server".
    first: drain, then restart).
 4. Run the user's setup script, if any.
 
+> **Changed (2026-10-14).** Rovik is installed once per server, by its
+> first user, who becomes its administrator. That takes `sudo`: one
+> root-owned copy of the binary in `/opt/rovik/bin`, its signature
+> checked; the limits in `/etc/rovik/agentd.toml`; and a system unit,
+> `rovik-agentd@.service`, that runs each person's daemon as that person,
+> so no lingering is needed. Without sudo, the deploy shows the command
+> for someone with root to run. Later users start their own daemon, and
+> only the administrator upgrades Rovik, for everyone. See
+> [`cloud-agent-dev-plan.md`](cloud-agent-dev-plan.md), D17 and 5.3.
+
 Build: add `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`
 targets for `rovik-agentd` in CI (`cargo zigbuild` or `cross`). The core
 already bundles SQLite and vendors libgit2, which helps static builds;
