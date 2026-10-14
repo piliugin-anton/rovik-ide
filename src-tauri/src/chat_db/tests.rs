@@ -1017,16 +1017,41 @@ fn attachments_are_stored_from_either_ipc_body() {
         .map(|r| r.deserialize::<serde_json::Value>().unwrap())
     };
 
-    let png = b"\x89PNG\r\n\x1a\nnot much of an image".to_vec();
-    let raw = store(InvokeBody::Raw(png.clone())).unwrap();
-    let json = store(InvokeBody::Json(serde_json::json!(png))).unwrap();
+    // A photo as a JPEG: stored as a PNG fitted into 768×768.
+    let mut jpeg = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::from(image::RgbImage::from_pixel(
+        1200,
+        900,
+        image::Rgb([40, 120, 200]),
+    ))
+    .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+    .unwrap();
+    let jpeg = jpeg.into_inner();
+    let raw = store(InvokeBody::Raw(jpeg.clone())).unwrap();
+    let json = store(InvokeBody::Json(serde_json::json!(jpeg))).unwrap();
     assert_eq!(raw, json, "the same image, stored once");
     assert_eq!(
         raw,
-        serde_json::json!({ "id": raw["id"], "mime": "image/png", "pages": null })
+        serde_json::json!({
+            "id": raw["id"],
+            "mime": "image/png",
+            "pages": null,
+            "width": 768,
+            "height": 576,
+        })
     );
     let file = super::attachments::file_for(&dir, raw["id"].as_str().unwrap()).unwrap();
-    assert_eq!(std::fs::read(file).unwrap(), png);
+    assert_eq!(file.extension().unwrap(), "png");
+    let stored = image::open(file).unwrap();
+    assert_eq!((stored.width(), stored.height()), (768, 576));
+
+    let damaged = store(InvokeBody::Raw(
+        b"\x89PNG\r\n\x1a\nnot much of an image".to_vec(),
+    ));
+    assert!(damaged
+        .unwrap_err()
+        .to_string()
+        .contains("couldn't be read"));
 
     let pdf = store(InvokeBody::Raw(
         b"%PDF-1.4 << /Type /Page >> %%EOF".to_vec(),
@@ -1034,6 +1059,7 @@ fn attachments_are_stored_from_either_ipc_body() {
     .unwrap();
     assert_eq!(pdf["mime"], "application/pdf");
     assert_eq!(pdf["pages"], 1);
+    assert_eq!(pdf["width"], serde_json::Value::Null);
     let file = super::attachments::file_for(&dir, pdf["id"].as_str().unwrap()).unwrap();
     assert_eq!(file.extension().unwrap(), "pdf");
 

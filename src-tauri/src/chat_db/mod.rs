@@ -11,6 +11,7 @@
 pub mod attachments;
 pub mod commands;
 pub mod history;
+pub mod images;
 pub mod projects;
 mod schema;
 pub mod search;

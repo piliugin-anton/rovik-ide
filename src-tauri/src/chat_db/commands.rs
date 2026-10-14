@@ -295,7 +295,9 @@ pub async fn chat_messages_answered(
 
 /// An image or a PDF attached in the chat input, stored until the message
 /// that sends it references it (or cleanup removes it). The bytes are the
-/// request's raw body; returns its id, its type and a PDF's pages.
+/// request's raw body, the file as it is: an image is made a PNG at most
+/// 768 pixels a side here. Returns its id, its type, a PDF's pages and an
+/// image's size.
 #[tauri::command]
 pub async fn chat_store_attachment(
     db: State<'_, DbState>,

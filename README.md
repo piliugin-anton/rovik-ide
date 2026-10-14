@@ -89,8 +89,8 @@ Electron-based editors.
   paperclip button. Only formats models can read are taken (see
   [Attachments](#attachments)), and only those the chosen model is set up
   for: images need Vision, PDFs need PDF, in Settings → Model providers.
-  Big images are scaled down first. A message copied from the chat or the
-  message box pastes back with its attachments.
+  Images are sent as PNGs at most 768 pixels a side. A message copied from
+  the chat or the message box pastes back with its attachments.
 - Chats are saved and searchable, and they keep running in the background
   when you switch to another chat.
 
@@ -399,16 +399,21 @@ the cache hit rate, so the effect of a change to the prompt can be seen.
 What can be attached is what models take through the OpenAI-compatible APIs
 the app talks to (`src/lib/attachmentFormats.ts`):
 
-| Kind   | Formats                                          | Sent as                                                | Models        |
-| ------ | ------------------------------------------------ | ------------------------------------------------------ | ------------- |
-| Images | PNG, JPEG, WebP, GIF (its first frame, as a PNG) | `image_url` parts                                      | marked Vision |
-| PDF    | PDF                                              | `file` parts (`input_file` on the Responses API)       | marked PDF    |
-| Text   | UTF-8 text: code, Markdown, CSV, JSON, logs, …   | in the message, in an `<attached_file name="…">` block | all           |
+| Kind   | Formats                                        | Sent as                                                | Models        |
+| ------ | ---------------------------------------------- | ------------------------------------------------------ | ------------- |
+| Images | PNG, JPEG, WebP, GIF                           | `image_url` parts, as PNGs (below)                     | marked Vision |
+| PDF    | PDF                                            | `file` parts (`input_file` on the Responses API)       | marked PDF    |
+| Text   | UTF-8 text: code, Markdown, CSV, JSON, logs, … | in the message, in an `<attached_file name="…">` block | all           |
 
 - OpenAI's models (GPT-4o and later) take PDFs, and OpenRouter takes them
   for every model, reading out the text where a model can't. Anthropic's
   and Gemini's OpenAI-compatible endpoints leave PDFs out, so PDF is off
   until it's turned on for a model, as Vision is.
+- An attached image (up to 50 MB) is stored as a PNG at most 768×768
+  pixels, its shape kept and never enlarged (`src-tauri/src/chat_db/images.rs`):
+  read with the `image` crate, scaled with `fast_image_resize` (Lanczos3
+  convolution, transparency premultiplied), turned by its EXIF orientation.
+  An animation keeps its first frame (Gemini takes no GIF).
 - Word, Excel, PowerPoint, archives, audio and video aren't attached:
   Chat Completions takes no such files. A Word document can be saved as PDF.
 - A model not set up for a kind of file doesn't get it attached, and isn't

@@ -4,9 +4,10 @@
 // get it. The formats are the ones models take through the OpenAI-compatible
 // APIs this app talks to:
 // - Images: PNG, JPEG, WebP and GIF, as `image_url` parts (OpenAI,
-//   Anthropic, Gemini, OpenRouter, local vision models). Gemini takes no
-//   GIF, so a GIF goes as a PNG of its first frame: the only frame models
-//   look at anyway (composerImages.ts). Sent to models marked Vision.
+//   Anthropic, Gemini, OpenRouter, local vision models). Each is stored as
+//   a PNG at most 768 pixels a side (chat_db/images.rs): Gemini takes no
+//   GIF, and an animation keeps its first frame, the only one models look
+//   at anyway. Sent to models marked Vision.
 // - PDF, as a `file` part. OpenAI's Chat Completions take PDFs, and of
 //   documents only PDFs (Word, Excel and the like only on its Responses
 //   API); OpenRouter takes them for every model, reading out the text where
@@ -31,6 +32,8 @@ export interface ModelInputs {
 export const MAX_MESSAGE_ATTACHMENTS = 10;
 /** One PDF at most: under the 32 MB a request OpenAI and Anthropic take. */
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
+/** One image file at most, as attached: it's stored scaled down (chat_db/images.rs). */
+export const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 /**
  * One text file at most: about 300,000 tokens, more than most models'
  * whole context. Bigger files belong in the project, read by the agent.

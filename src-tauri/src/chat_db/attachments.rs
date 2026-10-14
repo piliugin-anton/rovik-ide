@@ -2,6 +2,7 @@
 //! attached in the chat input) stored as files named by SHA-256. Identical
 //! files are stored once; unreferenced ones are removed later.
 
+use super::images;
 use super::store::{err, now_ms, DbResult};
 use super::DbState;
 use regex::bytes::Regex;
@@ -16,11 +17,15 @@ pub const DIR: &str = "attachments";
 /// An attachment must stay unreferenced this long before cleanup removes
 /// it: a file is stored before the message that references it.
 const GRACE_MS: i64 = 60 * 60 * 1000;
-/// An attached image or PDF at most. The chat input scales big images down
-/// and keeps PDFs under its own limit; this only refuses what no provider
-/// would take.
-pub const MAX_BYTES: usize = 20 * 1024 * 1024;
+/// An attached PDF at most: it's sent as it is, under the 32 MB a request
+/// OpenAI and Anthropic take.
+pub const MAX_PDF_BYTES: usize = 20 * 1024 * 1024;
+/// An attached image file at most, before it's scaled down (images.rs).
+pub const MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 pub const PDF: &str = "application/pdf";
+/// Images read at once: a big photo takes hundreds of MB while it's read,
+/// and the chat input attaches up to ten files together.
+static PREPARING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Stored types and their files' extensions.
 const TYPES: [(&str, &str); 5] = [
@@ -158,27 +163,58 @@ pub fn pdf_pages(bytes: &[u8]) -> usize {
 #[serde(rename_all = "camelCase")]
 pub struct Stored {
     pub id: String,
-    /// Its type, read from its bytes.
+    /// Its type: a PDF, or an image made a PNG.
     pub mime: &'static str,
     /// A PDF's pages (`pdf_pages`).
     pub pages: Option<usize>,
+    /// An image's size as stored.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 /// Stores an image or a PDF attached in the chat input; its type is read
-/// from the bytes, never taken on trust.
+/// from the bytes, never taken on trust. A PDF is stored as it is, an image
+/// as a PNG at most `images::MAX_SIDE` pixels a side.
 pub async fn store_attached(db: &DbState, bytes: Vec<u8>) -> DbResult<Stored> {
-    if bytes.len() > MAX_BYTES {
+    let mime = attachment_mime(&bytes)
+        .ok_or("Only PNG, JPEG, WebP and GIF images and PDFs can be attached.")?;
+    let max = if mime == PDF {
+        MAX_PDF_BYTES
+    } else {
+        MAX_IMAGE_BYTES
+    };
+    if bytes.len() > max {
         return Err(format!(
             "The file is too large ({} MB; {} MB at most).",
             bytes.len().div_ceil(1024 * 1024),
-            MAX_BYTES / (1024 * 1024)
+            max / (1024 * 1024)
         ));
     }
-    let mime = attachment_mime(&bytes)
-        .ok_or("Only PNG, JPEG, WebP and GIF images and PDFs can be attached.")?;
-    let pages = (mime == PDF).then(|| pdf_pages(&bytes));
-    let id = store(db, bytes, mime).await?;
-    Ok(Stored { id, mime, pages })
+    if mime == PDF {
+        let pages = pdf_pages(&bytes);
+        let id = store(db, bytes, PDF).await?;
+        return Ok(Stored {
+            id,
+            mime: PDF,
+            pages: Some(pages),
+            width: None,
+            height: None,
+        });
+    }
+    let image = {
+        let _turn = PREPARING.acquire().await.map_err(err)?;
+        tauri::async_runtime::spawn_blocking(move || images::prepare(&bytes))
+            .await
+            .map_err(err)??
+    };
+    let id = store(db, image.png, images::MIME).await?;
+    Ok(Stored {
+        id,
+        mime: images::MIME,
+        pages: None,
+        width: Some(image.width),
+        height: Some(image.height),
+    })
 }
 
 /// The ids that have no stored attachment (malformed ones included).

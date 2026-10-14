@@ -2,8 +2,8 @@
 // attached files become segments of the chat input.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chatApi } from './chatApi';
-import { MAX_PDF_BYTES, MAX_TEXT_FILE_BYTES } from './attachmentFormats';
+import { chatApi, type StoredAttachment } from './chatApi';
+import { MAX_IMAGE_BYTES, MAX_PDF_BYTES, MAX_TEXT_FILE_BYTES } from './attachmentFormats';
 import {
   attachmentSegment,
   parseComposerPdf,
@@ -84,7 +84,7 @@ test('a PDF is stored, and named and counted as the backend says', async () => {
   let mime = 'application/pdf';
   api.storeAttachment = async (bytes) => {
     stored.push(bytes);
-    return { id: 'd'.repeat(64), mime, pages: 4 };
+    return { id: 'd'.repeat(64), mime, pages: 4, width: null, height: null };
   };
   try {
     const file = new File(['%PDF-1.7 …'], 'report.pdf', { type: 'application/pdf' });
@@ -101,6 +101,43 @@ test('a PDF is stored, and named and counted as the backend says', async () => {
     const huge = new File([new Uint8Array(MAX_PDF_BYTES + 1)], 'big.pdf');
     await assert.rejects(attachmentSegment(huge, 'pdf'), /20 MB at most/);
     assert.equal(stored.length, 2, 'a PDF over the limit is never sent to be stored');
+  } finally {
+    api.storeAttachment = original;
+  }
+});
+
+test('an image is sent as it is, and sized as the backend stored it', async () => {
+  const api = chatApi as { storeAttachment: typeof chatApi.storeAttachment };
+  const original = api.storeAttachment;
+  const stored: Uint8Array[] = [];
+  let reply: StoredAttachment = {
+    id: 'e'.repeat(64),
+    mime: 'image/png',
+    pages: null,
+    width: 768,
+    height: 432,
+  };
+  api.storeAttachment = async (bytes) => {
+    stored.push(bytes);
+    return reply;
+  };
+  try {
+    const file = new File([new Uint8Array([0xff, 0xd8, 0xff, 1, 2])], 'photo.jpg', {
+      type: 'image/jpeg',
+    });
+    assert.deepEqual(await attachmentSegment(file, 'image'), {
+      type: 'image',
+      image: { id: 'e'.repeat(64), width: 768, height: 432 },
+    });
+    assert.deepEqual([...stored[0]], [0xff, 0xd8, 0xff, 1, 2], 'the file, not a copy made here');
+
+    // Named .jpg, but the backend found a PDF in it.
+    reply = { id: 'f'.repeat(64), mime: 'application/pdf', pages: 1, width: null, height: null };
+    await assert.rejects(attachmentSegment(file, 'image'), /isn't an image/);
+
+    const huge = new File([new Uint8Array(MAX_IMAGE_BYTES + 1)], 'huge.png');
+    await assert.rejects(attachmentSegment(huge, 'image'), /50 MB at most/);
+    assert.equal(stored.length, 2, 'an image over the limit is never sent to be stored');
   } finally {
     api.storeAttachment = original;
   }
