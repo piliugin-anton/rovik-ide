@@ -2504,17 +2504,24 @@ async fn plan_implementation_forces_todo_on_the_first_turn() {
 }
 
 /// An image pasted into the chat input: stored with the message, and sent
-/// in it to a model that takes images.
+/// in it, as the PNG it was made, to a model that takes images.
 #[tokio::test]
 async fn a_pasted_image_is_stored_with_the_message_and_sent_in_it() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![Reply::Text("The theme makes it blue.")]).await;
     let db = h.app.state::<DbState>().inner().clone();
-    let image =
-        crate::chat_db::attachments::store_attached(&db, b"\x89PNG\r\n\x1a\npixels".to_vec())
-            .await
-            .unwrap()
-            .id;
+    let mut webp = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::from(image::RgbImage::from_pixel(
+        2000,
+        1000,
+        image::Rgb([30, 90, 220]),
+    ))
+    .write_to(&mut webp, image::ImageFormat::WebP)
+    .unwrap();
+    let image = crate::chat_db::attachments::store_attached(&db, webp.into_inner())
+        .await
+        .unwrap()
+        .id;
     let message = UserMessage {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Why is this button blue?".into(),
@@ -2556,7 +2563,12 @@ async fn a_pasted_image_is_stored_with_the_message_and_sent_in_it() {
         .map(|p| p["image_url"]["url"].as_str().unwrap())
         .collect();
     assert_eq!(images.len(), 1, "{sent}");
-    assert!(images[0].starts_with("data:image/png;base64,"));
+    use base64::Engine;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(images[0].strip_prefix("data:image/png;base64,").unwrap())
+        .unwrap();
+    let sent_image = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap();
+    assert_eq!((sent_image.width(), sent_image.height()), (768, 384));
 }
 
 /// A PDF attached in the chat input: stored with the message, named by its

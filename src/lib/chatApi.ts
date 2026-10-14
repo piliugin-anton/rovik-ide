@@ -150,9 +150,10 @@ export const chatApi = {
     invoke<string[]>('chat_messages_answered', { messageIds }),
 
   /**
-   * Stores an image or a PDF attached in the chat input (its bytes, sent as
-   * the raw body). Its type is read from the bytes: PNG, JPEG, WebP, GIF or
-   * PDF, anything else is refused.
+   * Stores an image or a PDF attached in the chat input (the file's bytes,
+   * sent as the raw body). Its type is read from the bytes: a PDF is stored
+   * as it is, a PNG, JPEG, WebP or GIF image as a PNG at most 768 pixels a
+   * side; anything else is refused.
    */
   storeAttachment: (bytes: Uint8Array) => invoke<StoredAttachment>('chat_store_attachment', bytes),
 
@@ -178,12 +179,15 @@ export const chatApi = {
 
 /** An attachment as stored (chat_db/attachments.rs). */
 export interface StoredAttachment {
-  /** SHA-256 of its bytes. */
+  /** SHA-256 of the stored bytes. */
   id: string;
-  /** Its type, read from its bytes. */
+  /** Its type: `application/pdf`, or `image/png` for any image. */
   mime: string;
   /** A PDF's pages, as far as they can be counted. */
   pages: number | null;
+  /** An image's size as stored. */
+  width: number | null;
+  height: number | null;
 }
 
 /** The model a chat last used (`dialogs.model_provider`/`model_id`/`effort`). */

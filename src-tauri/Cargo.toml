@@ -61,6 +61,10 @@ trash = "5"
 # rust-analyzer downloads: .gz (Linux, macOS) and .zip (Windows) releases.
 flate2 = "1"
 zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
+# Images attached in the chat input (chat_db/images.rs): read (PNG, JPEG,
+# WebP, GIF), scaled down with SIMD, written as PNG.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+fast_image_resize = { version = "6.1.0", features = ["image"] }
 
 # Outlines of source files (src/outline): tree-sitter and its grammars.
 tree-sitter = "0.27"
