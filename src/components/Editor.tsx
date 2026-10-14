@@ -6,6 +6,7 @@ import {
   createRoot,
   createSignal,
   createMemo,
+  on,
   Show,
 } from 'solid-js';
 import type { Accessor } from 'solid-js';
@@ -45,6 +46,22 @@ import {
   renderReviewUnavailable,
   reviewMatchesModel,
 } from './editorReview';
+import MarkdownPreview from './MarkdownPreview';
+import { headingLine } from '../lib/markdownPreview';
+import { addMarkdownEditing } from '../lib/markdownEditing';
+import {
+  clearHeadingRequest,
+  headingRequest,
+  isMarkdownLanguage,
+  markdownSplit,
+  markdownView,
+  setMarkdownSplit,
+  setMarkdownView,
+  settleMarkdownView,
+  togglePreview,
+  toggleSplit,
+  type MarkdownView,
+} from '../lib/markdownView';
 
 interface EditorProps {
   projectDir: Accessor<string | null>;
@@ -80,9 +97,27 @@ function replaceKeepingUndo(model: monaco.editor.ITextModel, text: string) {
 
 export default function Editor(props: EditorProps) {
   let containerRef!: HTMLDivElement;
+  let shellRef!: HTMLDivElement;
+  let previewRef: HTMLDivElement | undefined;
 
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
   let disposed = false;
+  /** The editor for the Markdown preview, once created. */
+  const [instance, setInstance] = createSignal<monaco.editor.IStandaloneCodeEditor>();
+  /** Ctrl+S, also from the Markdown preview (set once the editor exists). */
+  let saveFile = () => {};
+
+  /*
+   * A Markdown file shows its source, the rendered preview beside it, or
+   * only the preview (lib/markdownView.ts). An agent's edit waiting for
+   * review is reviewed in the source, so a preview-only tab shows the
+   * source beside the preview meanwhile.
+   */
+  const view = createMemo<MarkdownView>(() => {
+    if (!isMarkdownLanguage(props.language())) return 'edit';
+    const chosen = markdownView(props.currentFilePath);
+    return chosen === 'preview' && pendingEditFor(props.currentFilePath)?.edit ? 'split' : chosen;
+  });
 
   // While the TS worker has no project libs, every import looks like an
   // error (TS2307). Cover the editor with a centered "loading" note until
@@ -158,6 +193,7 @@ export default function Editor(props: EditorProps) {
       readOnly: props.readOnly?.() ?? false,
       readOnlyMessage: { value: props.readOnlyMessage ?? 'This preview is read-only.' },
     });
+    setInstance(editor);
 
     // Read-only preview tabs (e.g. stashed content): lock the editor.
     // The component remounts per tab (keyed), so the creation flag above
@@ -254,7 +290,7 @@ export default function Editor(props: EditorProps) {
     });
 
     let saving = false;
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, async () => {
+    const save = async () => {
       // A second Ctrl+S while the formatter runs would save the text twice.
       if (saving || !editor) return;
       saving = true;
@@ -264,7 +300,9 @@ export default function Editor(props: EditorProps) {
         saving = false;
       }
       if (!disposed) props.onSave();
-    });
+    };
+    saveFile = () => void save();
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveFile);
 
     const reportCursor = (sel: monaco.Selection) => {
       props.onCursorChange?.({
@@ -303,23 +341,35 @@ export default function Editor(props: EditorProps) {
     createEffect(() => {
       const request = props.reveal?.();
       if (!request || !editor || request.path !== props.currentFilePath) return;
-      const model = editor.getModel();
+      const ed = editor;
+      const model = ed.getModel();
       if (!model) return;
-      const end = request.column + Math.max(0, request.length);
-      // Clamped to the file: a line from an older read may be past its end now.
-      const range = model.validateRange(
-        new monaco.Range(request.line, request.column, request.line, end)
-      );
-      const selection = new monaco.Selection(
-        range.startLineNumber,
-        range.startColumn,
-        range.endLineNumber,
-        range.endColumn
-      );
-      editor.setSelection(selection);
-      editor.revealRangeInCenter(selection, monaco.editor.ScrollType.Smooth);
-      editor.focus();
-      props.onRevealed?.();
+      const show = () => {
+        const end = request.column + Math.max(0, request.length);
+        // Clamped to the file: a line from an older read may be past its end now.
+        const range = model.validateRange(
+          new monaco.Range(request.line, request.column, request.line, end)
+        );
+        const selection = new monaco.Selection(
+          range.startLineNumber,
+          range.startColumn,
+          range.endLineNumber,
+          range.endColumn
+        );
+        ed.setSelection(selection);
+        ed.revealRangeInCenter(selection, monaco.editor.ScrollType.Smooth);
+        ed.focus();
+        props.onRevealed?.();
+      };
+      // A Markdown file showing only its preview: the match is in the
+      // source, so show the source beside it, once it has its size.
+      if (untrack(view) !== 'preview') return show();
+      setMarkdownView(props.currentFilePath, 'split', false);
+      requestAnimationFrame(() => {
+        if (disposed) return;
+        ed.layout();
+        show();
+      });
     });
 
     /*
@@ -466,7 +516,79 @@ export default function Editor(props: EditorProps) {
       ];
       onCleanup(() => rustActions.forEach((a) => a.dispose()));
     }
+
+    // Markdown: the preview's shortcuts (as in VS Code), and typing help.
+    if (isMarkdownLanguage(props.language())) {
+      settleMarkdownView(props.currentFilePath);
+      const markdownActions = [
+        editor.addAction({
+          id: 'rovik.markdown.togglePreview',
+          label: 'Markdown: Toggle Preview',
+          keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyV],
+          run: () => togglePreview(props.currentFilePath),
+        }),
+        editor.addAction({
+          id: 'rovik.markdown.toggleSplit',
+          label: 'Markdown: Open Preview to the Side',
+          keybindings: [
+            monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyCode.KeyV),
+          ],
+          run: () => toggleSplit(props.currentFilePath),
+        }),
+        addMarkdownEditing(editor),
+      ];
+      onCleanup(() => markdownActions.forEach((a) => a.dispose()));
+
+      // A view picked with the switch or a shortcut: what's shown takes the
+      // keys (the source was hidden, or the preview went away).
+      const chosenView = createMemo(() => markdownView(props.currentFilePath));
+      createEffect(
+        on(
+          chosenView,
+          (chosen) =>
+            requestAnimationFrame(() => {
+              if (disposed) return;
+              if (chosen === 'preview') previewRef?.focus({ preventScroll: true });
+              else editor?.focus();
+            }),
+          { defer: true }
+        )
+      );
+
+      // A link to a heading of this file, while only the source shows: the
+      // preview, when shown, scrolls to it itself.
+      createEffect(() => {
+        const anchor = headingRequest(props.currentFilePath);
+        if (anchor === undefined || view() !== 'edit' || !editor) return;
+        clearHeadingRequest(props.currentFilePath);
+        const line = headingLine(untrack(props.content), anchor);
+        if (line === null) return;
+        editor.setPosition({ lineNumber: line + 1, column: 1 });
+        editor.revealLineNearTop(line + 1);
+      });
+    }
   });
+
+  /** Dragging the line between the source and the preview. */
+  function resizeSplit(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget as HTMLElement;
+    const box = shellRef.getBoundingClientRect();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add('is-resizing');
+    const move = (ev: PointerEvent) => setMarkdownSplit((ev.clientX - box.left) / box.width, false);
+    const end = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
+      document.body.classList.remove('is-resizing');
+      setMarkdownSplit(markdownSplit(), true);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  }
 
   // ------------------------------------------
   // External content -> Monaco
@@ -485,6 +607,7 @@ export default function Editor(props: EditorProps) {
 
   return (
     <div
+      ref={shellRef}
       style={{
         position: 'relative',
         height: '100%',
@@ -494,7 +617,39 @@ export default function Editor(props: EditorProps) {
         display: 'flex',
       }}
     >
-      <div ref={containerRef} class="editor" style={{ height: '100%', width: '100%' }} />
+      <div
+        ref={containerRef}
+        class="editor"
+        style={{
+          height: '100%',
+          width: '100%',
+          // Hidden, not removed: the source keeps its undo, review and marks.
+          display: view() === 'preview' ? 'none' : undefined,
+          flex: view() === 'split' ? `0 0 ${markdownSplit() * 100}%` : undefined,
+        }}
+      />
+      <Show when={view() !== 'edit'}>
+        <Show when={view() === 'split'}>
+          <div
+            class="md-split-divider"
+            role="separator"
+            aria-orientation="vertical"
+            title="Drag to resize; double-click to split evenly"
+            onPointerDown={resizeSplit}
+            onDblClick={() => setMarkdownSplit(0.5, true)}
+          />
+        </Show>
+        <MarkdownPreview
+          path={props.currentFilePath}
+          root={props.projectDir}
+          content={props.content}
+          editor={instance}
+          beside={() => view() === 'split'}
+          readOnly={() => props.readOnly?.() ?? false}
+          onSave={() => saveFile()}
+          ref={(el) => (previewRef = el)}
+        />
+      </Show>
       <Show when={defsLoading()}>
         <div class="editor-loading-overlay">
           <span>Loading definitions…</span>

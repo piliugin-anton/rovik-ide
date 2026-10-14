@@ -21,6 +21,12 @@ Electron-based editors.
 
 - Monaco editor (the editor used in VS Code) with syntax highlighting,
   themes and tabs.
+- Markdown files have a rendered preview, as GitHub shows them: beside the
+  source (Ctrl+K V), instead of it (Ctrl+Shift+V), or switched with the
+  buttons at the end of the tab strip. It scrolls with the editor, opens
+  links (project files in a tab), shows the project's images, colors code
+  like the editor, and its task boxes can be ticked. While typing, lists
+  continue on Enter, and Ctrl+B / Ctrl+I make text bold or italic.
 - IntelliSense for JavaScript/TypeScript that understands the whole
   project, not only open files. Ctrl+click jumps to a definition in another
   file. Rust gets help from rust-analyzer when it's installed.

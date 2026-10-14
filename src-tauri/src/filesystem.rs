@@ -744,6 +744,47 @@ pub fn read_file_content(path: String) -> Result<String, String> {
     fs::read_to_string(p).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Largest image the Markdown preview shows.
+const MAX_PREVIEW_IMAGE: u64 = 20 << 20;
+
+/// What the Markdown preview shows as images (IMAGE_TYPES in
+/// src/lib/markdownPreview.ts).
+const PREVIEW_IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bmp", "ico",
+];
+
+/// An image in a Markdown file, for its preview: the bytes as they are (an
+/// ArrayBuffer in the webview; JSON would send each byte as a number).
+#[tauri::command]
+pub fn read_image_file(path: String) -> Result<tauri::ipc::Response, String> {
+    read_preview_image(Path::new(&path)).map(tauri::ipc::Response::new)
+}
+
+/// Only image files: the preview asks for whatever a document's image
+/// links name.
+fn read_preview_image(p: &Path) -> Result<Vec<u8>, String> {
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !PREVIEW_IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(format!("{}: not an image", p.display()));
+    }
+    let meta = fs::metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{}: not a file", p.display()));
+    }
+    if meta.len() > MAX_PREVIEW_IMAGE {
+        return Err(format!(
+            "{}: larger than {} MB",
+            p.display(),
+            MAX_PREVIEW_IMAGE >> 20
+        ));
+    }
+    fs::read(p).map_err(|e| format!("{}: {e}", p.display()))
+}
+
 /// Starts the error of a save refused because the file changed on disk;
 /// the rest is who changed it. The editor offers Overwrite / Compare.
 pub const CHANGED_ON_DISK: &str = "changed-on-disk:";
@@ -2020,6 +2061,29 @@ mod save_tests {
             fs::read_link(dir.join("dest/to-sub")).unwrap(),
             Path::new("sub")
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod preview_image_tests {
+    use super::*;
+
+    #[test]
+    fn only_image_files_are_read() {
+        let dir = std::env::temp_dir().join(format!("preview-images-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("folder.png")).unwrap();
+        let png = [0x89, b'P', b'N', b'G', 0, 1, 2];
+        fs::write(dir.join("shot.PNG"), png).unwrap();
+        fs::write(dir.join("notes.txt"), "not for the preview").unwrap();
+
+        assert_eq!(read_preview_image(&dir.join("shot.PNG")).unwrap(), png);
+        let err = read_preview_image(&dir.join("notes.txt")).unwrap_err();
+        assert!(err.ends_with("not an image"), "{err}");
+        let err = read_preview_image(&dir.join("folder.png")).unwrap_err();
+        assert!(err.ends_with("not a file"), "{err}");
+        assert!(read_preview_image(&dir.join("missing.svg")).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 }

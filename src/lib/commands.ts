@@ -27,6 +27,11 @@ export async function readFileContent(path: string): Promise<string> {
   return invoke<string>('read_file_content', { path });
 }
 
+/** An image's bytes, for the Markdown preview (image files only). */
+export async function readImageFile(path: string): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>('read_image_file', { path });
+}
+
 /** The project's JS/TS sources, for IntelliSense (within limits). */
 export async function loadProjectSources(root: string): Promise<LoadedFiles> {
   return invoke<LoadedFiles>('load_project_sources', { root });
