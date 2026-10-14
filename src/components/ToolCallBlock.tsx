@@ -912,7 +912,10 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   };
   const openInEditor = () => {
     const path = str(args().path);
-    if (path) requestOpenFile({ path, ...openTarget() });
+    if (!path) return;
+    // A file the agent wrote opens with its changes marked against git.
+    const changes = (isWrite() || isEdit()) && !isContextFile();
+    requestOpenFile({ path, ...openTarget(), changes });
   };
 
   // Code arguments are shown highlighted below, not as escaped JSON strings.

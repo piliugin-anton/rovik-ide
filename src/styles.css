@@ -5544,8 +5544,11 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   line-height: 1.4;
 }
 
-/* Git change marks in the editor (lib/gitMarks.ts): changed lines tinted
-   green (added) or blue (changed), with a bar in the gutter; the agent's
+/* Git change marks in the editor (lib/gitMarks.ts, Editor.tsx): added
+   lines tinted green, changed lines yellow (the warning color), each with
+   a bar in the gutter; the lines git has that the file no longer does are
+   shown in red where they were (a view zone with the old text), so an
+   edit reads as what it replaced over what it became. The agent's
    highlights are a stronger green with their own bar. */
 
 .monaco-editor .git-mark {
@@ -5559,15 +5562,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .monaco-editor .git-line-modified {
-  background: rgba(27, 129, 168, 0.2);
-}
-
-.monaco-editor .git-line-removed-above {
-  box-shadow: inset 0 2px 0 #e06c75;
-}
-
-.monaco-editor .git-line-removed-below {
-  box-shadow: inset 0 -2px 0 #e06c75;
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
 }
 
 .monaco-editor .git-mark-added {
@@ -5575,27 +5570,36 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .monaco-editor .git-mark-modified {
-  background: #1b81a8;
+  background: var(--warning);
 }
 
-/* Removed lines: a small red wedge at the top (or bottom) edge of the line. */
-.monaco-editor .git-mark-removed {
-  background: none;
+/* The removed lines, as they were in git. */
+.monaco-editor .git-removed-zone {
+  white-space: pre;
+  background: var(--diff-deleted-bg);
+  color: var(--fg);
 }
 
-.monaco-editor .git-mark-removed::before {
-  content: '';
+.monaco-editor .git-removed-line {
+  opacity: 0.85;
+}
+
+.monaco-editor .git-removed-more {
+  padding-left: 6px;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+.monaco-editor .git-removed-margin {
+  position: relative;
+  height: 100%;
+}
+
+.monaco-editor .git-removed-margin .git-mark-removed {
   position: absolute;
-  top: -4px;
-  left: 0;
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-  border-left: 5px solid #e06c75;
-}
-
-.monaco-editor .git-mark-removed.below::before {
-  top: auto;
-  bottom: -4px;
+  top: 0;
+  bottom: 0;
+  background: var(--diff-deleted-strong);
 }
 
 /* Git tab rows: open on click, revert on hover (GitPanel.tsx) */

@@ -1,11 +1,12 @@
 // gitMarks.ts
 //
-// Change marks against git, in the editor's gutter: a green bar on added
-// lines, a blue one on changed lines, a red marker where lines were
-// removed. For files opened from the Git tab (GitPanel), compared with the
-// version a revert would restore (src-tauri/src/git.rs, git_base_content).
-// They follow the text as it's edited, and the Git tab refreshes the base
-// after commits, reverts and branch switches.
+// Change marks against git in the editor (Editor.tsx, createGitMarks):
+// added lines green, changed lines yellow, and the lines git has that the
+// file no longer does shown in red where they were. For files opened from
+// the Git tab (GitPanel) or a chat link to a file the agent wrote, compared
+// with the version a revert would restore (src-tauri/src/git.rs,
+// git_base_content). They follow the text as it's edited, and the Git tab
+// refreshes the base after commits, reverts and branch switches.
 //
 // Distinct from the agent's highlights (lib/agentChanges.ts), which tint
 // whole lines until saved: these are git's view and stay as long as the

@@ -22,6 +22,12 @@ export interface OpenFileRequest {
    * reply, an edit not applied yet): the line is where it's found.
    */
   snippet?: string;
+  /**
+   * The agent wrote this file: open it with its changes marked against
+   * git, as the Git tab does, and centered on the first one when no line
+   * or snippet says where to go.
+   */
+  changes?: boolean;
 }
 
 const listeners = new Set<(request: OpenFileRequest) => void>();
