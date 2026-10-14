@@ -958,6 +958,10 @@ pub async fn run_chat(
     });
     // Set when the history below was built by CLM.
     let mut clm_used = false;
+    let continuing = continue_reply.unwrap_or(false);
+    // CLM's notes for the request to continue an interrupted reply: they go
+    // on that request, after the reply (see below).
+    let mut later_notes: Option<String> = None;
 
     let mut messages: Vec<WireChatMessage> = match (messages, dialog_id) {
         (Some(explicit), _) => explicit,
@@ -990,15 +994,24 @@ pub async fn run_chat(
                 let mut messages = prepared.messages;
                 let fresh = prepared.notes;
                 let notes = with_carried_notes(&carried_notes, &fresh);
-                // Notes for the model ride on the request's last message (not stored).
-                if let (Some(last), false) = (messages.last_mut(), notes.is_empty()) {
-                    last.text = format!("{}\n\n{}", last.text.trim_end(), notes.join("\n"));
-                    last.full_chars = last.text.chars().count();
+                // Notes for the model ride on the request's last message (not
+                // stored). Continuing an interrupted reply, that's the reply:
+                // the model would read notes there as words of its own, so
+                // they go on the request to continue it instead.
+                let mut later = None;
+                match messages.last_mut() {
+                    _ if notes.is_empty() => {}
+                    Some(last) if !continuing => {
+                        last.text = format!("{}\n\n{}", last.text.trim_end(), notes.join("\n"));
+                        last.full_chars = last.text.chars().count();
+                    }
+                    _ => later = Some(notes.join("\n")),
                 }
                 Ok((
                     crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini),
                     prepared.info,
                     fresh,
+                    later,
                 ))
             };
             let clm_built = tokio::select! {
@@ -1011,8 +1024,9 @@ pub async fn run_chat(
                 built = build => built,
             };
             let clm_built = match clm_built {
-                Ok((wire, info, notes)) => {
+                Ok((wire, info, notes, later)) => {
                     clm_used = true;
+                    later_notes = later;
                     if !notes.is_empty() {
                         on_event(ChatStreamEvent::ContextNotes { notes });
                     }
@@ -1076,7 +1090,7 @@ pub async fn run_chat(
         (None, None) => return Err("send_chat_message needs messages or a dialogId".into()),
     };
 
-    if continue_reply.unwrap_or(false) {
+    if continuing {
         messages.push(WireChatMessage {
             role: "user".to_string(),
             content: serde_json::Value::String(
@@ -1088,6 +1102,9 @@ pub async fn run_chat(
             tool_call_id: None,
             other: Default::default(),
         });
+    }
+    if let (Some(notes), Some(last)) = (&later_notes, messages.last_mut()) {
+        last.append_text(notes);
     }
 
     // Zone 2 of the request: what changes between steps rides on the last
