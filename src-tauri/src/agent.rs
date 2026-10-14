@@ -1176,6 +1176,9 @@ pub async fn run_chat(
         };
     }
 
+    // The provider's own cache hints, keyed by the chat (prompt_cache.rs).
+    crate::prompt_cache::apply(&mut body, &base_url, chat_id.as_deref());
+
     let mut limits = crate::chat_request::Limits::default();
     if let Some(ms) = first_byte_timeout_ms.filter(|ms| *ms >= 5_000) {
         limits.first_byte = std::time::Duration::from_millis(ms);
