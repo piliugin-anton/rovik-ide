@@ -77,7 +77,9 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
     case 'running':
       return `Reviewing the change (${what})…`;
     case 'clean':
-      return 'The reviewer found nothing to fix.';
+      return meta.reason
+        ? `The reviewer reported nothing to fix: ${meta.reason}.`
+        : 'The reviewer found nothing to fix.';
     case 'findings': {
       const all = meta.findings ?? [];
       // P5.5: after green, only high findings go back to the agent.
@@ -101,7 +103,9 @@ function planHeadline(meta: ReviewMeta): string {
     case 'running':
       return 'Reviewing the plan against the code…';
     case 'clean':
-      return 'The plan reviewer found nothing to fix.';
+      return meta.reason
+        ? `The plan reviewer reported nothing to fix: ${meta.reason}.`
+        : 'The plan reviewer found nothing to fix.';
     case 'findings': {
       const all = meta.findings ?? [];
       const count = plural(all.length, 'finding');

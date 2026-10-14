@@ -2391,6 +2391,38 @@ async fn a_failing_plan_reviewer_saves_the_plan_with_a_note() {
     assert_eq!(h.plan_files().len(), 1);
 }
 
+/// A plan reviewer that answers with the plan it was given, twice (no
+/// Findings section, nothing finding-shaped), counts as no findings: the
+/// plan is saved, and the record says what was read as none.
+#[tokio::test]
+async fn a_plan_reviewer_sending_the_plan_back_counts_as_no_findings() {
+    let h = plan_project().await;
+    let plan: &'static str = Box::leak(users_plan("Users", 0).into_boxed_str());
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(plan), Reply::Text(plan)])],
+        vec![submit("p1", plan.to_string()), Reply::Text("Saved.")],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let r = result_of(&messages, "p1");
+    assert!(r.content.starts_with("Saved the plan to"), "{}", r.content);
+    assert!(!r.content.contains("Review skipped"), "{}", r.content);
+    let review = &r.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["status"], "clean", "{review}");
+    assert!(
+        review["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no Findings section"),
+        "{review}"
+    );
+    assert!(review["report"].as_str().unwrap().contains("## Steps"), "{review}");
+    assert_eq!(h.plan_files().len(), 1);
+}
+
 /// A plan reviewer cut short by its budget writes its report like any
 /// other: checked against the findings format, with the repair turn. Before,
 /// the budget's report went to the parser unchecked, and a reviewer that
