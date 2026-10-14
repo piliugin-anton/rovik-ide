@@ -128,7 +128,15 @@ export default function ToolCallGroup(props: {
                       type="button"
                       class="tool-group-file"
                       title={`${item.title ?? path()}: open in the editor`}
-                      onClick={() => requestOpenFile({ path: path(), line: item.line ?? 1 })}
+                      onClick={() =>
+                        requestOpenFile(
+                          // A written file: marked against git, centered on
+                          // the first change unless the call named a line.
+                          item.written
+                            ? { path: path(), line: item.line, changes: true }
+                            : { path: path(), line: item.line ?? 1 }
+                        )
+                      }
                     >
                       {item.text}
                     </button>

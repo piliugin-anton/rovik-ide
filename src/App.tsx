@@ -78,7 +78,7 @@ import {
 } from './lib/intellisense';
 import { scheduleModelPrune, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
-import { toAbsolutePath } from './lib/fileTools';
+import { toAbsolutePath, toRelativePath } from './lib/fileTools';
 import { contextRealPath, isContextPath } from './lib/contextMode';
 import { chatStore } from './lib/chatStore';
 import { notify } from './lib/notifications';
@@ -561,8 +561,10 @@ export default function App() {
 
   // "Open in editor" anywhere in the chat (lib/editorBridge.ts): open the
   // file, then center its start position: the line given, or where the
-  // given code is found. Without either, the file just opens.
-  const stopOpenRequests = onOpenFileRequest(({ path, line, snippet }) => {
+  // given code is found. Without either, the file just opens. A file the
+  // agent wrote opens with its changes marked against git, like the Git
+  // tab opens it, and centered on the first one.
+  const stopOpenRequests = onOpenFileRequest(({ path, line, snippet, changes }) => {
     const root = rootPath();
     if (!root && !isContextPath(path)) return;
     void (async () => {
@@ -578,6 +580,8 @@ export default function App() {
         });
         return;
       }
+      // The context folder isn't in the project's repository.
+      const base = changes && !isContextPath(path) ? await loadGitBase(abs) : undefined;
       let target = line;
       if (target === undefined && snippet) {
         // An open tab's text, unsaved edits included; else the file on disk.
@@ -586,6 +590,7 @@ export default function App() {
           (await readFileContent(abs).catch(() => null));
         target = text !== null ? (findSnippetLine(text, snippet) ?? undefined) : undefined;
       }
+      if (target === undefined && base !== undefined) target = await firstChangeLine(abs, base);
       if (target === undefined) await openPath(abs);
       else await openPathAtLine(abs, target);
     })();
@@ -830,25 +835,42 @@ export default function App() {
     );
   }
 
+  /**
+   * Loads the version of a project file that a revert would restore and
+   * marks the file's changes against it (lib/gitMarks.ts). Null for a file
+   * git doesn't have (everything is a change); undefined, with no marks,
+   * for a file outside the project, a binary, or git trouble.
+   */
+  async function loadGitBase(
+    abs: string,
+    file: string = toRelativePath(abs, rootPath())
+  ): Promise<string | null | undefined> {
+    const root = rootPath();
+    if (!root || file === abs) return undefined;
+    const base = await invoke<string | null>('git_base_content', { path: root, file }).catch(
+      () => undefined
+    );
+    if (base !== undefined) setGitBase(abs, file, base);
+    return base;
+  }
+
+  /** The line of the first change from `base` in the file (an open tab's text, else the disk's). */
+  async function firstChangeLine(abs: string, base: string | null): Promise<number | undefined> {
+    const current =
+      openFiles().find((f) => f.path === abs)?.content ??
+      (await readFileContent(abs).catch(() => null));
+    if (current === null) return undefined;
+    return diffLines(splitLines(base ?? '').lines, splitLines(current).lines)[0]?.origStart;
+  }
+
   /*
    * From the Git tab: open a changed file with its changes marked against
    * git (lib/gitMarks.ts), centered on the first change.
    */
   async function openFromGit(abs: string, file: string) {
-    const root = rootPath();
-    if (!root) return;
-    const base = await invoke<string | null>('git_base_content', { path: root, file }).catch(
-      () => undefined // binary, or git trouble: open without marks
-    );
-    if (base !== undefined) setGitBase(abs, file, base);
-    const current =
-      openFiles().find((f) => f.path === abs)?.content ??
-      (await readFileContent(abs).catch(() => null));
-    const first =
-      base !== undefined && current !== null
-        ? diffLines(splitLines(base ?? '').lines, splitLines(current).lines)[0]
-        : undefined;
-    if (first) await openPathAtLine(abs, first.origStart);
+    const base = await loadGitBase(abs, file);
+    const first = base !== undefined ? await firstChangeLine(abs, base) : undefined;
+    if (first !== undefined) await openPathAtLine(abs, first);
     else await openPath(abs);
   }
 

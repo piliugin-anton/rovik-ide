@@ -63,6 +63,8 @@ export interface GroupItem {
   line?: number;
   /** The whole value, for a tooltip when `text` is shortened. */
   title?: string;
+  /** The agent wrote it: it opens with its changes marked against git. */
+  written?: boolean;
 }
 
 export interface GroupLabel {
@@ -134,6 +136,12 @@ function file(args: Args): GroupItem | undefined {
   return { text: fileName(path), path, line: lineArg(args.start_line), title: path };
 }
 
+/** A file the agent wrote: opens with its changes marked. */
+function writtenFile(args: Args): GroupItem | undefined {
+  const item = file(args);
+  return item && { ...item, written: true };
+}
+
 function quoted(value: unknown): GroupItem | undefined {
   const text = str(value)?.trim();
   return text ? { text: `"${short(text)}"`, title: text } : undefined;
@@ -198,7 +206,7 @@ export function describeGroup(
       }
       return label(
         edits ? verb('Editing', 'Edited') : verb('Writing', 'Wrote'),
-        argsList.map(file)
+        argsList.map(writtenFile)
       );
     }
     case 'outline':
