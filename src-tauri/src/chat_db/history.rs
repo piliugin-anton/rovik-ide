@@ -837,31 +837,34 @@ pub fn load_messages(
                 && m.content.trim().is_empty()
                 && m.tool_calls.as_ref().map_or(true, |t| t.is_empty()))
         })
-        .map(|m| Msg {
-            // Added by the IDE (the frontend's verification gate): user-role,
-            // but never the user's request.
-            harness: m
-                .meta
-                .as_ref()
-                .is_some_and(|meta| meta.get("harness").is_some()),
-            checklist_closed: m.meta.as_ref().is_some_and(|meta| {
-                meta.get("checklistClosed")
-                    .or_else(|| meta.get("checklist_closed"))
-                    .is_some_and(|v| *v == serde_json::Value::Bool(true))
-            }),
-            full_chars: if m.body_external {
-                m.body_bytes as usize
-            } else {
-                m.content.chars().count()
-            },
-            needs_body: m.body_external,
-            id: m.id,
-            role: m.role,
-            text: m.content,
-            tool_calls: m.tool_calls,
-            tool_call_id: m.tool_call_id,
-            attachments: m.attachments,
-            reasoning: None,
+        .map(|m| {
+            let (text, full_chars, needs_body) = match sent_content(&m) {
+                Some(sent) => (sent.to_string(), sent.chars().count(), false),
+                None if m.body_external => (m.content.clone(), m.body_bytes as usize, true),
+                None => (m.content.clone(), m.content.chars().count(), false),
+            };
+            Msg {
+                // Added by the IDE (the frontend's verification gate): user-role,
+                // but never the user's request.
+                harness: m
+                    .meta
+                    .as_ref()
+                    .is_some_and(|meta| meta.get("harness").is_some()),
+                checklist_closed: m.meta.as_ref().is_some_and(|meta| {
+                    meta.get("checklistClosed")
+                        .or_else(|| meta.get("checklist_closed"))
+                        .is_some_and(|v| *v == serde_json::Value::Bool(true))
+                }),
+                full_chars,
+                needs_body,
+                id: m.id,
+                role: m.role,
+                text,
+                tool_calls: m.tool_calls,
+                tool_call_id: m.tool_call_id,
+                attachments: m.attachments,
+                reasoning: None,
+            }
         })
         .collect();
 
@@ -871,6 +874,18 @@ pub fn load_messages(
     let mut messages = answer_unanswered_calls(messages);
     use_sent_content(&mut messages, current_user_content);
     Ok(messages)
+}
+
+/// A user message as it was sent to the model the first time (the editor
+/// context and file references the frontend put before the text, kept in
+/// `meta.sentContent`). Every later request sends it the same way, so the
+/// start of the history doesn't change from one turn to the next and the
+/// provider's prompt cache keeps serving it.
+fn sent_content(m: &super::store::MessageRow) -> Option<&str> {
+    if m.role != "user" {
+        return None;
+    }
+    m.meta.as_ref()?.get("sentContent")?.as_str()
 }
 
 /// The current request's user message is sent with the editor context
