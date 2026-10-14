@@ -572,6 +572,13 @@ and SSL" means in each case:
 | Fix-round state waiting on approval | `AgentState.carries` (memory) | Not moved: the stop drops it and the checks run again on the other side (below) |
 | Pending approvals/questions | `AgentState` (memory) | Not moved: they're re-asked after `Resume` |
 
+> **Changed (2026-10-14).** Screenshots are no longer the only
+> attachments: the chat input attaches images and PDFs, stored on the
+> computer before the message is sent. They travel with each message that
+> carries them, not only with a move. Before a remote start, the client
+> uploads the ones the host doesn't have. See
+> [`cloud-agent-dev-plan.md`](cloud-agent-dev-plan.md), 6.11.
+
 **Decided: M1, ownership moves at a turn boundary (below).**
 
 ### Option M1: Ownership transfer at a turn boundary — decided
