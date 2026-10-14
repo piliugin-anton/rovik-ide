@@ -1573,6 +1573,7 @@ impl<R: Runtime> Run<R> {
                     "dialogId": self.dialog_id,
                     "model": self.profile.model,
                     "error": "asked-again",
+                    "cachedTokens": usage.as_ref().and_then(crate::prompt_cache::cached_tokens),
                     "usage": usage,
                     "ms": started.elapsed().as_millis() as u64,
                 });
@@ -1635,6 +1636,9 @@ impl<R: Runtime> Run<R> {
                 "finishReason": finish_reason,
                 "toolCalls": if output.failure.is_some() { 0 } else { output.tool_calls.len() },
                 "textChars": output.text.chars().count(),
+                // Prompt tokens the provider served from its cache: the
+                // number to watch when changing how requests are built.
+                "cachedTokens": usage.as_ref().and_then(crate::prompt_cache::cached_tokens),
                 "usage": usage,
                 "focusNote": focus_note,
                 "clmReminder": clm_reminder,

@@ -1207,6 +1207,17 @@ pub async fn run_chat(
         {
             reported_prompt_tokens = calibration::prompt_tokens(usage);
             reported_output_tokens = reply_reserve::output_tokens(usage);
+            // Diagnostics: how much of the prompt the provider's cache served
+            // (prompt_cache.rs), when it says.
+            if let (Some(prompt), Some(cached)) = (
+                reported_prompt_tokens.filter(|p| *p > 0),
+                crate::prompt_cache::cached_tokens(usage),
+            ) {
+                eprintln!(
+                    "prompt cache: {cached} of {prompt} prompt tokens served from the cache ({}%)",
+                    cached * 100 / prompt
+                );
+            }
         }
         // Diagnostics: Gemini 3 must sign its tool calls; show whether it did.
         if log_signatures {
