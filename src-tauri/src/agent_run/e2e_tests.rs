@@ -427,6 +427,7 @@ impl Harness {
                 id: uuid::Uuid::new_v4().to_string(),
                 content: text.into(),
                 meta: None,
+                attachments: Vec::new(),
             },
         }
     }
@@ -1415,6 +1416,7 @@ async fn plan_mode_asks_and_saves_the_plan() {
                 id: "u1".into(),
                 content: "Add users".into(),
                 meta: Some(json!({ "mode": "plan" })),
+                attachments: Vec::new(),
             },
         },
         quiet_permissions(),
@@ -1862,6 +1864,7 @@ fn plan_send(text: &str) -> StartKind {
             id: uuid::Uuid::new_v4().to_string(),
             content: text.into(),
             meta: Some(json!({ "mode": "plan" })),
+            attachments: Vec::new(),
         },
     }
 }
@@ -2484,6 +2487,7 @@ async fn plan_implementation_forces_todo_on_the_first_turn() {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan above.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
         .await;
@@ -2496,6 +2500,92 @@ async fn plan_implementation_forces_todo_on_the_first_turn() {
         requests[0]["tool_choice"]
     );
     assert_eq!(requests[1]["tool_choice"], json!("auto"));
+}
+
+/// An image pasted into the chat input: stored with the message, and sent
+/// in it to a model that takes images.
+#[tokio::test]
+async fn a_pasted_image_is_stored_with_the_message_and_sent_in_it() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("The theme makes it blue.")]).await;
+    let db = h.app.state::<DbState>().inner().clone();
+    let image = crate::chat_db::attachments::store_image(&db, b"\x89PNG\r\n\x1a\npixels".to_vec())
+        .await
+        .unwrap();
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Why is this button blue?".into(),
+        meta: None,
+        // Pasted twice: sent once.
+        attachments: vec![image.clone(), image.clone()],
+    };
+    let message_id = message.id.clone();
+    let mut request = h.request(&url, StartKind::Send { message }, quiet_permissions());
+    request.profile.vision = true;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+
+    let dialog_id = h.dialog_id.clone();
+    let page = db
+        .read(move |c| store::get_messages(c, &dialog_id, None, 10))
+        .await
+        .unwrap();
+    let stored = page.messages.iter().find(|m| m.id == message_id).unwrap();
+    assert_eq!(stored.attachments, [image]);
+
+    let requests = seen.lock().unwrap().clone();
+    let sent = requests[0]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "user")
+        .unwrap()
+        .clone();
+    let parts = sent["content"].as_array().unwrap();
+    assert!(parts[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Why is this button blue?"));
+    let images: Vec<&str> = parts
+        .iter()
+        .filter(|p| p["type"] == "image_url")
+        .map(|p| p["image_url"]["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(images.len(), 1, "{sent}");
+    assert!(images[0].starts_with("data:image/png;base64,"));
+}
+
+/// An image gone from the store (cleaned up) can't be sent: the message is
+/// refused with a reason, before anything is stored or started.
+#[tokio::test]
+async fn a_message_with_a_missing_image_is_refused() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Text("unused")]).await;
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "Look".into(),
+        meta: None,
+        attachments: vec!["f".repeat(64)],
+    };
+    let app = h.app.handle().clone();
+    let err = agent_start(
+        app.clone(),
+        app.state::<AgentState>(),
+        app.state::<DbState>(),
+        h.request(&url, StartKind::Send { message }, quiet_permissions()),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("no longer available"), "{err}");
+    assert!(!app.state::<AgentState>().is_running(&h.dialog_id));
+    let dialog_id = h.dialog_id.clone();
+    let page = app
+        .state::<DbState>()
+        .read(move |c| store::get_messages(c, &dialog_id, None, 10))
+        .await
+        .unwrap();
+    assert!(page.messages.is_empty());
+    assert!(seen.lock().unwrap().is_empty());
 }
 
 /// B07b: a plan edited by hand after it was checked: the agent hears what's
@@ -2524,6 +2614,7 @@ async fn a_plan_edited_to_name_a_missing_file_is_flagged_at_implementation() {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan in `.rovik/plans/2026-10-06-greet.md`.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
         .await;
@@ -2561,6 +2652,7 @@ async fn a_plan_edited_to_name_a_missing_file_is_flagged_at_implementation() {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan in `.rovik/plans/p.md`.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
         .await;
@@ -2689,6 +2781,7 @@ async fn named_tool_choice_falls_back_to_auto_when_rejected() {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Implement the plan above.".into(),
         meta: Some(json!({ "mode": "agent", "implementsPlan": true })),
+        attachments: Vec::new(),
     };
     h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
         .await;
@@ -3507,6 +3600,7 @@ async fn continue_and_retry_reuse_the_requests_wire_text() {
         id: "u1".into(),
         content: "Fix it".into(),
         meta: Some(json!({ "mode": "agent", "sentContent": "Editor context\n\nFix it" })),
+        attachments: Vec::new(),
     };
     h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
         .await;

@@ -144,7 +144,7 @@ impl WireChatMessage {
     }
 
     /// Adds text at the end of the message: after a string content, or as
-    /// one more text part of a content array (a message with screenshots).
+    /// one more text part of a content array (a message with images).
     pub fn append_text(&mut self, text: &str) {
         match &mut self.content {
             serde_json::Value::String(s) => {

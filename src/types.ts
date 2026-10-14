@@ -46,7 +46,10 @@ export interface ModelProfile {
   baseUrl: string; // e.g. "https://api.openai.com/v1"
   apiKey: string;
   stream: boolean;
-  /** Model accepts image input; enables the screenshot tool. */
+  /**
+   * Model accepts image input: images pasted into the chat are sent to it,
+   * and the agent gets the browser_screenshot tool.
+   */
   vision: boolean;
   /** Context window in tokens: the user's override, else the reported value. */
   contextTokens?: number;
@@ -159,7 +162,10 @@ export interface ChatMessage {
   error?: string;
   /** User message whose request never got an answer; kept for the record, not sent again. */
   failed?: boolean;
-  /** Attachment ids (SHA-256) on a tool result, e.g. browser screenshots. */
+  /**
+   * Attachment ids (SHA-256): browser_screenshot results' screenshots, or
+   * the images pasted into a user message.
+   */
   attachments?: string[];
   /** Position in the chat, assigned by the database. */
   seq?: number;

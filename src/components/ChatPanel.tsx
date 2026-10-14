@@ -40,7 +40,7 @@ import {
   resolveProfile,
 } from '../lib/aiSettings';
 import { chatStore } from '../lib/chatStore';
-import { chatApi } from '../lib/chatApi';
+import { attachmentUrl, chatApi } from '../lib/chatApi';
 import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
 import { estimateContext } from '../lib/aiChat';
@@ -119,6 +119,16 @@ import {
   type SubagentSettings,
 } from '../lib/subagentSettings';
 import { readFileContent } from '../lib/commands';
+import {
+  imageFiles,
+  MAX_MESSAGE_IMAGES,
+  parseComposerImage,
+  pasteTakes,
+  readClipboard,
+  storePastedImage,
+  type ComposerImage,
+} from '../lib/composerImages';
+import ChatInputContextMenu from './ChatInputContextMenu';
 
 const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
 
@@ -126,6 +136,9 @@ const NEW_CHAT_TITLE = 'New Chat';
 
 /** Chats whose interrupted tool calls were offered again this session: once each. */
 const resumed = new Set<string>();
+
+/** Models told this session that they get no pasted images: once each. */
+const warnedNoVision = new Set<string>();
 
 /*
  * The context bar above the input (and the CLM budget in the context row)
@@ -167,6 +180,8 @@ export default function ChatPanel(props: ChatProps) {
   const activeDialogId = () => store.state.activeId;
 
   const [input, setInput] = createSignal('');
+  /** Images in the input (stored ones; those still being added aren't counted). */
+  const [imageCount, setImageCount] = createSignal(0);
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const [historyQuery, setHistoryQuery] = createSignal('');
   /** Lags historyQuery slightly so fast typing doesn't search on every key. */
@@ -1093,7 +1108,7 @@ export default function ChatPanel(props: ChatProps) {
       e.stopPropagation();
       removeReferencedFile(referenceKey(suggestion));
       chip.remove();
-      setInput(readComposerText());
+      syncInput();
       recordComposerHistory('other');
     });
 
@@ -1162,7 +1177,7 @@ export default function ChatPanel(props: ChatProps) {
     selection.removeAllRanges();
     selection.addRange(caretRange);
 
-    setInput(readComposerText());
+    syncInput();
 
     const key = referenceKey(suggestion);
     setReferencedFiles((current) =>
@@ -1233,7 +1248,7 @@ export default function ChatPanel(props: ChatProps) {
       setReferencedFiles((current) =>
         current.some((f) => referenceKey(f) === key) ? current : [...current, reference]
       );
-      setInput(readComposerText());
+      syncInput();
     }
 
     setFileSuggestionsOpen(false);
@@ -1267,6 +1282,7 @@ export default function ChatPanel(props: ChatProps) {
 
   function clearChatInput(focus = true) {
     setInput('');
+    setImageCount(0);
     setReferencedFiles([]);
 
     if (inputTextareaRef) {
@@ -1464,6 +1480,13 @@ export default function ChatPanel(props: ChatProps) {
     el.innerHTML = snap.html;
     // Chips come back with their remove buttons (markup alone loses them).
     for (const old of [...el.querySelectorAll<HTMLElement>('.chat-file-reference')]) {
+      if (old.classList.contains('chat-image-chip')) {
+        // One that was still being added then has nothing to come back as.
+        const image = parseComposerImage(old.dataset.image);
+        if (image) old.replaceWith(createImageChip(image));
+        else old.remove();
+        continue;
+      }
       if (old.dataset.pasteId) {
         const text = knownPastes.get(old.dataset.pasteId);
         if (text !== undefined) old.replaceWith(createPastedChip(text, old.dataset.pasteId));
@@ -1500,7 +1523,7 @@ export default function ChatPanel(props: ChatProps) {
       sel.addRange(range);
     }
     setFileSuggestionsOpen(false);
-    setInput(readComposerText());
+    syncInput();
     setReferencedFiles(composerReferences());
     lastStepKind = 'other';
   }
@@ -1526,7 +1549,7 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
-  /** Reads the composer as ordered text + file-chip segments. */
+  /** Reads the composer as ordered text + chip segments. */
   function serializeComposer(): DraftSegment[] {
     const segments: DraftSegment[] = [];
     const pushText = (text: string) => {
@@ -1544,6 +1567,12 @@ export default function ChatPanel(props: ChatProps) {
         }
         if (!(child instanceof HTMLElement)) return;
 
+        if (child.classList.contains('chat-image-chip')) {
+          // One still being added has no image yet: nothing to keep.
+          const image = parseComposerImage(child.dataset.image);
+          if (image) segments.push({ type: 'image', image });
+          return;
+        }
         if (child.classList.contains('chat-pasted-chip')) {
           const text = knownPastes.get(child.dataset.pasteId ?? '');
           if (text !== undefined) segments.push({ type: 'pasted', text });
@@ -1594,18 +1623,34 @@ export default function ChatPanel(props: ChatProps) {
 
   /**
    * The composer's text with real line breaks (textContent drops the ones
-   * WebKit makes out of <div>/<br>) and file chips as their names.
+   * WebKit makes out of <div>/<br>) and file chips as their names. Images
+   * aren't text: they go with the message as attachments.
    */
-  function readComposerText(): string {
-    return serializeComposer()
+  function composerText(segments: DraftSegment[]): string {
+    return segments
       .map((segment) =>
         segment.type === 'text'
           ? segment.text
           : segment.type === 'pasted'
             ? `\n<pasted_text lines="${segment.text.split('\n').length}">\n${segment.text}\n</pasted_text>\n`
-            : referenceLabel(segment.file)
+            : segment.type === 'image'
+              ? ''
+              : referenceLabel(segment.file)
       )
       .join('');
+  }
+
+  /** The images in the composer, in order, once each: what the message sends. */
+  function composerImageIds(segments = serializeComposer()): string[] {
+    const ids = segments.flatMap((s) => (s.type === 'image' ? [s.image.id] : []));
+    return [...new Set(ids)];
+  }
+
+  /** `input` and `imageCount` from the composer as it is now. */
+  function syncInput() {
+    const segments = serializeComposer();
+    setInput(composerText(segments));
+    setImageCount(composerImageIds(segments).length);
   }
 
   function handleComposerInput(target: HTMLElement, inputType?: string, data?: string | null) {
@@ -1618,7 +1663,7 @@ export default function ChatPanel(props: ChatProps) {
       target.innerHTML = '';
     }
 
-    setInput(readComposerText());
+    syncInput();
     scheduleComposerDraftSave();
     recordComposerHistory(
       pastingText
@@ -1682,11 +1727,24 @@ export default function ChatPanel(props: ChatProps) {
     handleComposerInput(container);
   }
 
-  /** Clipboard text only: code copied from Monaco carries colored HTML. */
+  /**
+   * Clipboard text as plain text (code copied from Monaco carries colored
+   * HTML), or the clipboard's images as image chips.
+   */
   function handleComposerPaste(e: ClipboardEvent) {
-    const text = e.clipboardData?.getData('text/plain');
     e.preventDefault();
-    if (!text) return;
+    const data = e.clipboardData;
+    const text = data?.getData('text/plain') ?? '';
+    const images = imageFiles(data);
+    const take = pasteTakes(text, images.length);
+    if (take === 'text') pasteText(text);
+    else if (take === 'images') void pasteImages(images);
+    // Nothing in the event: WebKitGTK leaves an image out of it entirely (no
+    // types, no files), but the clipboard API has it.
+    else void pasteFromClipboard(true);
+  }
+
+  function pasteText(text: string) {
     const clean = text.replace(/\r\n?/g, '\n');
     // Long text as a chip: inserting thousands of lines into the editable
     // input was slow, and every keystroke after it slower still.
@@ -1697,9 +1755,289 @@ export default function ChatPanel(props: ChatProps) {
     }
   }
 
+  /** The selection, when it's in the input. */
+  function composerRange(): Range | null {
+    const container = inputTextareaRef;
+    const selection = window.getSelection();
+    if (!container || !selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    return container.contains(range.commonAncestorContainer) ? range : null;
+  }
+
+  /** Focuses the input with this selection: WebKit's focus() can put the caret at the start. */
+  function focusComposerAt(range: Range | null) {
+    const container = inputTextareaRef;
+    if (!container) return;
+    container.focus();
+    if (!range || !container.contains(range.commonAncestorContainer)) return;
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  /**
+   * Pastes what the async clipboard API reads, as Ctrl+V would: for the
+   * input's menu where the webview doesn't paste by itself (WebView2), and
+   * for an image a paste event left out (`imagesOnly`).
+   */
+  async function pasteFromClipboard(imagesOnly = false) {
+    const container = inputTextareaRef;
+    if (!container) return;
+    const at = composerRange()?.cloneRange() ?? null;
+    let content;
+    try {
+      content = await readClipboard();
+    } catch {
+      if (!imagesOnly) {
+        notify({
+          kind: 'warning',
+          title: "The clipboard couldn't be read",
+          message: `Paste with ${IS_MAC ? '⌘V' : 'Ctrl+V'} instead.`,
+          timeout: 6000,
+        });
+      }
+      return;
+    }
+    if (!container.isConnected) return;
+    // Back where the paste was asked for: reading can take the focus (a
+    // permission prompt).
+    focusComposerAt(at);
+    const take = pasteTakes(imagesOnly ? '' : content.text, content.images.length);
+    if (take === 'text') pasteText(content.text);
+    else if (take === 'images') await pasteImages(content.images);
+  }
+
+  /*
+   * Pasted images: a chip each, with a thumbnail. The image is in the chip's
+   * `data-image` (lib/composerImages.ts), so serializing, undo and drafts
+   * read it back from the DOM; the message sends their ids. A chip made
+   * without one is still being added (made ready and stored).
+   */
+  function createImageChip(image: ComposerImage | null): HTMLSpanElement {
+    const chip = document.createElement('span');
+    chip.className = 'chat-file-reference chat-image-chip';
+    chip.contentEditable = 'false';
+    // Its label, size and × are drawn by CSS (styles.css): none of it is
+    // text, so copying a selection with the chip in it copies none of it.
+    chip.innerHTML = `<img class="chat-image-chip-thumb" alt="" draggable="false"><span class="chat-file-reference-name"></span><span class="chat-file-reference-lines"></span><button type="button" class="chat-file-reference-remove" aria-label="Remove image" title="Remove image"></button>`;
+    const remove = chip.querySelector('button');
+    remove?.addEventListener('mousedown', (e) => e.preventDefault());
+    remove?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      chip.remove();
+      syncInput();
+      scheduleComposerDraftSave();
+      recordComposerHistory('other');
+    });
+    if (image) {
+      fillImageChip(chip, image);
+    } else {
+      chip.classList.add('loading');
+      chip.title = 'Adding the image…';
+    }
+    return chip;
+  }
+
+  function fillImageChip(chip: HTMLElement, image: ComposerImage) {
+    chip.classList.remove('loading');
+    chip.dataset.image = JSON.stringify(image);
+    chip.title = `Image, ${image.width}×${image.height}`;
+    const thumb = chip.querySelector<HTMLImageElement>('.chat-image-chip-thumb');
+    if (thumb) thumb.src = attachmentUrl(image.id);
+    const size = chip.querySelector<HTMLElement>('.chat-file-reference-lines');
+    if (size) size.dataset.size = `${image.width}×${image.height}`;
+  }
+
+  /**
+   * Pasted images: a chip for each at the caret right away, filled in as
+   * each is made ready and stored. One that fails goes away again and says
+   * why.
+   */
+  async function pasteImages(blobs: Blob[]) {
+    const container = inputTextareaRef;
+    if (!container) return;
+    const room = MAX_MESSAGE_IMAGES - container.querySelectorAll('.chat-image-chip').length;
+    const taken = blobs.slice(0, Math.max(0, room));
+    if (taken.length < blobs.length) {
+      notify({
+        kind: 'warning',
+        title: `A message can have ${MAX_MESSAGE_IMAGES} images at most`,
+        message:
+          taken.length > 0
+            ? `${plural(taken.length, 'image')} added, the rest left out.`
+            : 'Remove one to add another.',
+        timeout: 6000,
+      });
+    }
+    if (taken.length === 0) return;
+    const chips = taken.map(() => createImageChip(null));
+    insertAtCaret(chips);
+    warnIfImagesNotSent();
+    let added = 0;
+    await Promise.all(
+      taken.map(async (blob, i) => {
+        try {
+          const image = await storePastedImage(blob);
+          // Removed meanwhile, or another chat opened: nothing to fill.
+          if (!chips[i].isConnected) return;
+          fillImageChip(chips[i], image);
+          added++;
+        } catch (err) {
+          chips[i].remove();
+          notify({
+            kind: 'error',
+            title: "The image couldn't be added",
+            message: err instanceof Error ? err.message : String(err),
+            timeout: 8000,
+          });
+        }
+      })
+    );
+    if (!container.isConnected) return;
+    syncInput();
+    scheduleComposerDraftSave();
+    if (added > 0) recordComposerHistory('other');
+  }
+
+  /**
+   * Images pasted for a model not marked as taking them: say so, once per
+   * model. It gets a note that an image was attached instead.
+   */
+  function warnIfImagesNotSent() {
+    const profile = activeProfile();
+    if (!profile || profile.vision || warnedNoVision.has(profile.id)) return;
+    warnedNoVision.add(profile.id);
+    notify({
+      kind: 'warning',
+      title: `${profile.model} isn't set to accept images`,
+      message:
+        'It gets a note that an image was attached, not the image. If the model does take images, turn on Vision for it in Settings → Model providers.',
+      actions: [{ label: 'Open settings', run: () => openAppSettings('providers') }],
+      timeout: 12_000,
+    });
+  }
+
+  /*
+   * -----------------------------------------------------------------------
+   * The input's right-click menu (ChatInputContextMenu)
+   * -----------------------------------------------------------------------
+   *
+   * App takes every right-click to keep the webview's own menu away; the
+   * input stops the event before it gets there and opens this one instead.
+   */
+  const [inputMenu, setInputMenu] = createSignal<{
+    x: number;
+    y: number;
+    hasSelection: boolean;
+    hasContent: boolean;
+  } | null>(null);
+  let inputMenuEl: HTMLDivElement | undefined;
+  const closeInputMenu = () => setInputMenu(null);
+
+  function handleComposerContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const container = inputTextareaRef;
+    if (!container) return;
+    const range = composerRange();
+    setInputMenu({
+      x: e.clientX,
+      y: e.clientY,
+      hasSelection: !!range && !range.collapsed,
+      hasContent: isMeaningful(container),
+    });
+  }
+
+  /** Kept inside the window, once it's on screen and its size is known. */
+  function setInputMenuEl(el: HTMLDivElement) {
+    inputMenuEl = el;
+    requestAnimationFrame(() => {
+      const menu = inputMenu();
+      if (!menu || inputMenuEl !== el) return;
+      const x = Math.max(0, Math.min(menu.x, window.innerWidth - el.offsetWidth - 10));
+      const y = Math.max(0, Math.min(menu.y, window.innerHeight - el.offsetHeight - 10));
+      if (x !== menu.x || y !== menu.y) setInputMenu({ ...menu, x, y });
+    });
+  }
+
+  // Closed by a press or right-click elsewhere, scrolling, any key, or the
+  // window losing focus or size: the same as the app's other menus.
+  createEffect(() => {
+    if (!inputMenu()) return;
+    const outside = (e: Event) => {
+      if (!inputMenuEl?.contains(e.target as Node)) closeInputMenu();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') e.preventDefault();
+      closeInputMenu();
+    };
+    window.addEventListener('pointerdown', outside, true);
+    window.addEventListener('contextmenu', outside, true);
+    window.addEventListener('scroll', outside, true);
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('blur', closeInputMenu);
+    window.addEventListener('resize', closeInputMenu);
+    onCleanup(() => {
+      window.removeEventListener('pointerdown', outside, true);
+      window.removeEventListener('contextmenu', outside, true);
+      window.removeEventListener('scroll', outside, true);
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('blur', closeInputMenu);
+      window.removeEventListener('resize', closeInputMenu);
+    });
+  });
+
+  /** Cut or Copy: the webview's own, as Ctrl+X / Ctrl+C do it. */
+  function copyFromComposer(cut: boolean) {
+    closeInputMenu();
+    const range = composerRange();
+    if (!range || range.collapsed) return;
+    inputTextareaRef?.focus();
+    if (document.execCommand(cut ? 'cut' : 'copy')) return;
+    // Not allowed here: the selection's text through the clipboard API.
+    navigator.clipboard?.writeText(range.toString()).then(
+      () => {
+        if (cut) document.execCommand('delete');
+      },
+      () =>
+        notify({
+          kind: 'warning',
+          title: "The clipboard couldn't be written",
+          message: `Use ${IS_MAC ? '⌘' : 'Ctrl+'}${cut ? 'X' : 'C'} instead.`,
+          timeout: 6000,
+        })
+    );
+  }
+
+  /**
+   * Paste: where the webview lets the page paste by itself (WebKitGTK with
+   * the window's clipboard access, macOS once its own Paste button is
+   * pressed), a real paste, taken as Ctrl+V's is (handleComposerPaste),
+   * images included. Elsewhere (WebView2) the clipboard API reads it.
+   */
+  async function pasteFromMenu() {
+    closeInputMenu();
+    focusComposerAt(composerRange());
+    if (document.queryCommandSupported('paste') && document.execCommand('paste')) return;
+    await pasteFromClipboard();
+  }
+
+  function selectAllInComposer() {
+    closeInputMenu();
+    const container = inputTextareaRef;
+    if (!container) return;
+    container.focus();
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
   /*
    * Long pastes: a "Pasted text" chip in the input, the text itself in
-   * memory (knownPastes). Sent wrapped in <pasted_text> (readComposerText),
+   * memory (knownPastes). Sent wrapped in <pasted_text> (composerText),
    * shown collapsed in the chat (MessageContent).
    */
   const PASTE_CHIP_CHARS = 2000;
@@ -1720,40 +2058,45 @@ export default function ChatPanel(props: ChatProps) {
       e.preventDefault();
       e.stopPropagation();
       chip.remove();
-      setInput(readComposerText());
+      syncInput();
       recordComposerHistory('other');
     });
     return chip;
   }
 
   function insertPastedChip(text: string) {
+    insertAtCaret([createPastedChip(text)]);
+    syncInput();
+    scheduleComposerDraftSave();
+    recordComposerHistory('other');
+  }
+
+  /**
+   * Puts chips at the caret, in place of what's selected (at the end when
+   * the caret isn't in the input), each followed by a space; the caret
+   * goes after them.
+   */
+  function insertAtCaret(chips: HTMLElement[]) {
     const container = inputTextareaRef;
     if (!container) return;
     container.focus();
-    const selection = window.getSelection();
-    let range: Range;
-    if (
-      selection &&
-      selection.rangeCount > 0 &&
-      container.contains(selection.getRangeAt(0).commonAncestorContainer)
-    ) {
-      range = selection.getRangeAt(0);
+    let range = composerRange();
+    if (range) {
       range.deleteContents();
     } else {
       range = document.createRange();
       range.selectNodeContents(container);
       range.collapse(false);
     }
-    const chip = createPastedChip(text);
-    const space = document.createTextNode(' ');
-    range.insertNode(space);
-    range.insertNode(chip);
-    range.setStartAfter(space);
+    const fragment = document.createDocumentFragment();
+    for (const chip of chips) fragment.append(chip, document.createTextNode(' '));
+    const last = fragment.lastChild;
+    range.insertNode(fragment);
+    if (last) range.setStartAfter(last);
     range.collapse(true);
+    const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
-    setInput(readComposerText());
-    recordComposerHistory('other');
   }
 
   /** Same for drag-and-drop of selected text. */
@@ -1797,6 +2140,8 @@ export default function ChatPanel(props: ChatProps) {
         });
       } else if (segment.type === 'pasted') {
         fragment.append(createPastedChip(segment.text), document.createTextNode(' '));
+      } else if (segment.type === 'image') {
+        fragment.append(createImageChip(segment.image), document.createTextNode(' '));
       } else {
         fragment.append(createFileChip(segment.file));
         // Chips are followed by a space when inserted; keep exactly one.
@@ -1810,13 +2155,13 @@ export default function ChatPanel(props: ChatProps) {
 
     container.append(fragment);
 
-    // Signal first: readComposerText()/serializeComposer run synchronously
+    // Signal first: syncInput()/serializeComposer run synchronously
     // below, and any debounced save they schedule must see the files.
     setReferencedFiles((current) => [
       ...current,
       ...files.filter((f) => !current.some((c) => referenceKey(c) === referenceKey(f))),
     ]);
-    setInput(readComposerText());
+    syncInput();
     // The restored draft is where undo starts.
     resetComposerHistory();
 
@@ -2134,7 +2479,7 @@ export default function ChatPanel(props: ChatProps) {
   /** Sends a user message (shown at once; the run stores it first thing). */
   async function sendMessage(
     dialogId: string,
-    message: { id: string; content: string; meta: ChatMessage['meta'] },
+    message: { id: string; content: string; meta: ChatMessage['meta']; attachments?: string[] },
     wireContent: string | undefined
   ): Promise<boolean> {
     store.addLocal(dialogId, { ...message, role: 'user', finalized: true });
@@ -2443,12 +2788,29 @@ export default function ChatPanel(props: ChatProps) {
     // A question is waiting: what's typed is the answer, not a new request.
     const waiting = activeDialogId() ? pendingQuestionsIn(activeDialogId()!) : undefined;
     if (waiting) {
-      const reply = readComposerText().trim();
+      const segments = serializeComposer();
+      const reply = composerText(segments).trim();
       if (!reply) return;
       const dialogId = activeDialogId();
       clearChatInput();
       if (dialogId) clearComposerDraft(dialogId);
       answerQuestions(waiting.dialogId, waiting.toolCallId, { reply });
+      // An answer is text only: the images stay for the next message.
+      const images = segments.filter((s) => s.type === 'image');
+      if (dialogId && images.length > 0) {
+        restoreDraftToComposer({
+          dialogId,
+          messageId: '',
+          segments: images,
+          createdAt: new Date().toISOString(),
+        });
+        scheduleComposerDraftSave();
+        notify({
+          title: 'The images stay in the input',
+          message: "An answer to the agent's question is text only. Send them with a message.",
+          timeout: 6000,
+        });
+      }
       return;
     }
     const text = input().trim();
@@ -2458,8 +2820,10 @@ export default function ChatPanel(props: ChatProps) {
     // stays in referencedFiles() and would still be sent.
     const selectedFiles = composerReferences();
 
+    const images = composerImageIds();
+
     /*
-     * A message containing only referenced files is valid.
+     * A message containing only referenced files (or images) is valid.
      *
      * For example:
      *
@@ -2467,7 +2831,21 @@ export default function ChatPanel(props: ChatProps) {
      *
      * can be sent without requiring additional text.
      */
-    if (!profile || !dialog || sending() || (!text && selectedFiles.length === 0)) {
+    if (
+      !profile ||
+      !dialog ||
+      sending() ||
+      (!text && selectedFiles.length === 0 && images.length === 0)
+    ) {
+      return;
+    }
+    // Sent without an image the user sees in the input: wait for it.
+    if (inputTextareaRef?.querySelector('.chat-image-chip.loading')) {
+      notify({
+        title: 'An image is still being added',
+        message: 'Send again in a moment.',
+        timeout: 4000,
+      });
       return;
     }
 
@@ -2475,7 +2853,7 @@ export default function ChatPanel(props: ChatProps) {
      * The displayed/persisted text stays clean. The wire copy, with the
      * active editor context and file references, is what the model gets; it
      * is stored in the message's meta so a retry or "continue" later sends
-     * the same thing instead of the bare text.
+     * the same thing instead of the bare text. Images go as attachments.
      */
     const wireContent = buildWireContent(text, selectedFiles);
     const message = {
@@ -2485,6 +2863,7 @@ export default function ChatPanel(props: ChatProps) {
         mode: chatMode(),
         ...(wireContent && wireContent !== text ? { sentContent: wireContent } : {}),
       },
+      ...(images.length > 0 ? { attachments: images } : {}),
     };
 
     /*
@@ -2903,7 +3282,7 @@ export default function ChatPanel(props: ChatProps) {
     }
 
     // No `input` event fires (the key was prevented), so sync manually.
-    setInput(readComposerText());
+    syncInput();
     scheduleComposerDraftSave();
     recordComposerHistory('other');
     const raw = container.textContent ?? '';
@@ -3152,6 +3531,7 @@ export default function ChatPanel(props: ChatProps) {
             onPaste={handleComposerPaste}
             onDrop={handleComposerDrop}
             onKeyDown={handleKeyDown}
+            onContextMenu={handleComposerContextMenu}
             data-placeholder={
               !activeProfile()
                 ? 'Add a model in settings first'
@@ -3162,6 +3542,22 @@ export default function ChatPanel(props: ChatProps) {
                     : 'Message the model...'
             }
           />
+
+          <Show when={inputMenu()}>
+            {(menu) => (
+              <ChatInputContextMenu
+                ref={setInputMenuEl}
+                x={menu().x}
+                y={menu().y}
+                hasSelection={menu().hasSelection}
+                hasContent={menu().hasContent}
+                onCut={() => copyFromComposer(true)}
+                onCopy={() => copyFromComposer(false)}
+                onPaste={() => void pasteFromMenu()}
+                onSelectAll={selectAllInComposer}
+              />
+            )}
+          </Show>
 
           <Show when={fileSuggestionsOpen() && fileSuggestions().length > 0}>
             <div class="file-suggestions" role="listbox">
@@ -3207,7 +3603,7 @@ export default function ChatPanel(props: ChatProps) {
                   disabled={
                     !activeProfile() ||
                     !activeDialog() ||
-                    (!input().trim() && referencedFiles().length === 0)
+                    (!input().trim() && referencedFiles().length === 0 && imageCount() === 0)
                   }
                   class="chat-send-button"
                   title={waitingQuestion() ? 'Send as the answer' : 'Send'}

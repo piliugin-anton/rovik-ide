@@ -74,6 +74,18 @@ pub fn run() {
             workload::init(&dir);
             overlay::chats::init(&dir);
             app.manage(db);
+            // The main window, as tauri.conf.json describes it (`create`
+            // is off there): built here to let its page read the clipboard,
+            // which a config can't. Pasting an image into the chat input
+            // needs that: WebKitGTK's paste event leaves images out (even
+            // for Ctrl+V), so they're read through the clipboard API, which
+            // it refuses without this; WebView2 asks for permission. The
+            // input's own menu reads text that way too. macOS allows it.
+            if let Some(main) = app.config().app.windows.iter().find(|w| w.label == "main") {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), main)?
+                    .enable_clipboard_access()
+                    .build()?;
+            }
             Ok(())
         })
         // Screenshots: chat-attachment://localhost/<sha256> (Windows:
@@ -120,6 +132,7 @@ pub fn run() {
             chat_db::commands::chat_delete_dialog,
             chat_db::commands::chat_search,
             chat_db::commands::chat_messages_answered,
+            chat_db::commands::chat_store_image,
             chat_db::commands::chat_save_composer_draft,
             chat_db::commands::chat_get_composer_draft,
             chat_db::commands::chat_set_model,

@@ -449,7 +449,7 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                   </span>
                   <span
                     role="columnheader"
-                    title="The model accepts images (enables screenshots for the agent)"
+                    title="The model accepts images: images pasted into the chat are sent to it, and the agent gets the browser_screenshot tool"
                   >
                     Vision
                   </span>

@@ -28,6 +28,7 @@ import {
   type MessageWindow,
 } from '../lib/messageWindow';
 import { isBlank } from '../lib/textUtils';
+import { attachmentUrl } from '../lib/chatApi';
 import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
 import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
@@ -1154,7 +1155,11 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
-                <Show when={!m.error && !isBlank(m.content) && !m.meta?.harness}>
+                <Show
+                  when={
+                    !m.error && (!isBlank(m.content) || !!userImages(m).length) && !m.meta?.harness
+                  }
+                >
                   <div class="chat-message-wrap" classList={{ user: m.role === 'user' }}>
                     <div
                       class="chat-message"
@@ -1167,10 +1172,33 @@ export default function MessageList(props: {
                         m.failed ? 'Not delivered: text was put back into the input' : undefined
                       }
                     >
-                      <MessageContent content={m.content} streaming={!!m.pending} />
+                      <Show when={!isBlank(m.content)}>
+                        <MessageContent content={m.content} streaming={!!m.pending} />
+                      </Show>
+                      {/* Images pasted into the message: a click shows one whole. */}
+                      <Show when={userImages(m).length}>
+                        <div class="chat-message-images">
+                          <For each={userImages(m)}>
+                            {(id) => (
+                              <img
+                                class="chat-message-image"
+                                src={attachmentUrl(id)}
+                                alt="Pasted image"
+                                title="Click to enlarge"
+                                onClick={(e) => {
+                                  const expanded = e.currentTarget.classList.toggle('expanded');
+                                  e.currentTarget.title = expanded
+                                    ? 'Click to shrink'
+                                    : 'Click to enlarge';
+                                }}
+                              />
+                            )}
+                          </For>
+                        </div>
+                      </Show>
                     </div>
                     {/* Messages only: tool calls and results have none. */}
-                    <Show when={!m.pending}>
+                    <Show when={!m.pending && !isBlank(m.content)}>
                       <CopyMessageButton text={copyableText(m.content)} />
                     </Show>
                   </div>
@@ -1384,6 +1412,11 @@ export default function MessageList(props: {
   );
 }
 
+/** The images pasted into a user message (a tool result's are its screenshots). */
+function userImages(m: ChatMessage): string[] {
+  return m.role === 'user' ? (m.attachments ?? []) : [];
+}
+
 /**
  * What "copy" gives for a message: its text as written (Markdown and code
  * blocks included), with pasted text in full and without the
@@ -1532,7 +1565,10 @@ function estimatedHeight(m: ChatMessage): number {
     text
       .split('\n')
       .reduce((n, line) => n + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE)), 0);
-  if (m.role === 'user') return 32 + LINE * lines(m.content) + 24;
+  if (m.role === 'user') {
+    const images = userImages(m).length ? 168 : 0;
+    return 32 + (isBlank(m.content) ? 0 : LINE * lines(m.content)) + images + 24;
+  }
   let height = 0;
   if (m.content.trim()) {
     const fences = (m.content.match(/```/g) ?? []).length / 2;

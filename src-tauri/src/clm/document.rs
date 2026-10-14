@@ -149,7 +149,13 @@ pub fn body(m: &CtxMsg) -> String {
         parts.push(call_line(call));
     }
     if !m.attachments.is_empty() {
-        parts.push(format!("[{} screenshot(s) attached]", m.attachments.len()));
+        // The user's pasted images, or browser_screenshot results.
+        let what = if m.role == "user" {
+            "image"
+        } else {
+            "screenshot"
+        };
+        parts.push(format!("[{} {what}(s) attached]", m.attachments.len()));
     }
     parts.join("\n")
 }
@@ -1171,6 +1177,19 @@ mod tests {
             &[],
         );
         assert!(back.iter().all(|m| m.attachments.is_empty()));
+    }
+
+    #[test]
+    fn the_users_images_are_named_as_images() {
+        let asked = CtxMsg {
+            attachments: vec!["img1".into(), "img2".into()],
+            ..msg("u1", "user", "Make it look like these")
+        };
+        let m = vec![asked, msg("a1", "assistant", "On it.")];
+        let doc = render(&m, 1);
+        assert!(doc.contains("[2 image(s) attached]"), "{doc}");
+        assert!(!doc.contains("screenshot"), "{doc}");
+        assert_eq!(parse_back(&doc, &m, &[]).0, m);
     }
 
     #[test]

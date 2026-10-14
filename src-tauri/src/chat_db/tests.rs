@@ -425,6 +425,75 @@ fn attachments_are_listed_in_order_and_collected_when_unreferenced() {
 }
 
 #[test]
+fn images_in_unsent_input_are_kept_until_the_draft_lets_go() {
+    let mut conn = db();
+    let dir = std::env::temp_dir().join(format!("chat-db-drafts-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join(super::attachments::DIR)).unwrap();
+    let pasted = "c".repeat(64);
+    std::fs::write(
+        dir.join(super::attachments::DIR)
+            .join(format!("{pasted}.png")),
+        b"x",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO attachments (id, mime, bytes, created_at) VALUES (?1, 'image/png', 1, 0)",
+        [&pasted],
+    )
+    .unwrap();
+    dialog(&mut conn, "d", "Drafts", 0);
+    let draft = format!(
+        r#"[{{"type":"text","text":"look at "}},{{"type":"image","image":{{"id":"{pasted}","mime":"image/png","width":10,"height":10}}}}]"#
+    );
+    save_composer_draft(&mut conn, "d", &draft).unwrap();
+
+    // Past its grace period and in no message, but the input still has it.
+    assert_eq!(super::attachments::collect_garbage(&conn, &dir).unwrap(), 0);
+    assert!(super::attachments::file_for(&dir, &pasted).is_some());
+
+    // Removed from the input: collected.
+    save_composer_draft(&mut conn, "d", r#"[{"type":"text","text":"never mind"}]"#).unwrap();
+    assert_eq!(super::attachments::collect_garbage(&conn, &dir).unwrap(), 1);
+    assert!(super::attachments::file_for(&dir, &pasted).is_none());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn missing_attachments_are_named() {
+    let conn = db();
+    let stored = "d".repeat(64);
+    conn.execute(
+        "INSERT INTO attachments (id, mime, bytes, created_at) VALUES (?1, 'image/png', 1, 0)",
+        [&stored],
+    )
+    .unwrap();
+    let gone = "e".repeat(64);
+    let ids = [stored.clone(), gone.clone(), "../../etc/passwd".to_string()];
+    assert_eq!(
+        super::attachments::missing(&conn, &ids).unwrap(),
+        [gone, "../../etc/passwd".to_string()]
+    );
+}
+
+#[test]
+fn pasted_images_are_typed_by_their_bytes() {
+    use super::attachments::image_mime;
+    assert_eq!(image_mime(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
+    assert_eq!(image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+    assert_eq!(image_mime(b"GIF89a..."), Some("image/gif"));
+    assert_eq!(
+        image_mime(b"RIFF\x10\x00\x00\x00WEBPVP8 "),
+        Some("image/webp")
+    );
+    assert_eq!(image_mime(b"RIFF\x10\x00\x00\x00WAVEfmt "), None);
+    assert_eq!(
+        image_mime(b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
+        None
+    );
+    assert_eq!(image_mime(b""), None);
+}
+
+#[test]
 fn composer_drafts_round_trip_and_clean_up() {
     let mut conn = db();
     assert_eq!(get_composer_draft(&conn, "d").unwrap(), None);
@@ -862,4 +931,60 @@ fn history_sends_a_user_message_as_it_was_first_sent() {
         messages[0].text,
         "[Active editor context — file a.rs]\n\nFix it"
     );
+}
+
+/// A pasted image reaches chat_store_image as the IPC's raw body, or as a
+/// JSON array where the webview blocks the custom protocol (postMessage).
+#[test]
+fn pasted_images_are_stored_from_either_ipc_body() {
+    use tauri::ipc::InvokeBody;
+    let dir = std::env::temp_dir().join(format!("chat-db-ipc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = super::DbState::open(&dir).unwrap();
+    let app = tauri::test::mock_builder()
+        .manage(db)
+        .invoke_handler(tauri::generate_handler![super::commands::chat_store_image])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let store = |body: InvokeBody| {
+        tauri::test::get_ipc_response(
+            &webview,
+            tauri::webview::InvokeRequest {
+                cmd: "chat_store_image".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: if cfg!(windows) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }
+                .parse()
+                .unwrap(),
+                body,
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .map(|r| r.deserialize::<String>().unwrap())
+    };
+
+    let png = b"\x89PNG\r\n\x1a\nnot much of an image".to_vec();
+    let raw = store(InvokeBody::Raw(png.clone())).unwrap();
+    let json = store(InvokeBody::Json(serde_json::json!(png))).unwrap();
+    assert_eq!(raw, json, "the same image, stored once");
+    let file = super::attachments::file_for(&dir, &raw).unwrap();
+    assert_eq!(std::fs::read(file).unwrap(), png);
+
+    let svg = store(InvokeBody::Raw(
+        b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec(),
+    ));
+    assert!(svg.unwrap_err().to_string().contains("PNG, JPEG"));
+    let malformed = store(InvokeBody::Json(serde_json::json!([137, 999])));
+    assert!(malformed.unwrap_err().to_string().contains("malformed"));
+    drop(webview);
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
 }

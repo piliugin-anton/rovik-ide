@@ -84,6 +84,10 @@ Electron-based editors.
   on, and pick their models, in Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
+- Paste screenshots and other images into a message (Ctrl+V, or Paste in
+  the message box's right-click menu). Models marked as accepting images
+  (Vision, in Settings → Model providers) see them; big ones are scaled
+  down first.
 - Chats are saved and searchable, and they keep running in the background
   when you switch to another chat.
 
