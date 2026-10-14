@@ -4,7 +4,7 @@
 //! run log as JSON. For measuring the agent (milestone G) from the command
 //! line and in CI:
 //!
-//!   cargo run --features headless --bin rovik-headless -- \
+//!   cargo run -p rovik-headless -- \
 //!     --project ./repo --settings settings.json [--policy policy.json] \
 //!     --prompt "Fix the failing test" --out report.json [--data ./data] \
 //!     [--timeout 1800] [--max-tokens 1500000]
@@ -39,15 +39,15 @@
 //! database, tools and requests, no webview. The chat isn't isolated (that
 //! needs the virtual-files driver).
 
-use crate::agent::OpenAIChatOptions;
-use crate::agent_run::events::AgentEvent;
-use crate::agent_run::log::usage_counts;
-use crate::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
-use crate::agent_run::{
+use rovik_core::agent::OpenAIChatOptions;
+use rovik_core::agent_run::events::AgentEvent;
+use rovik_core::agent_run::log::usage_counts;
+use rovik_core::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
+use rovik_core::agent_run::{
     self, AgentConfig, ApprovalDecision, ModelProfile, StartKind, StartRequest, UserMessage,
 };
-use crate::chat_db::store::{self, NewDialog};
-use crate::core::{Core, EventSink, Paths};
+use rovik_core::chat_db::store::{self, NewDialog};
+use rovik_core::{Core, EventSink, Paths};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -309,7 +309,7 @@ impl Totals {
             return;
         };
         let (i, o, cost) = usage_of(u);
-        let cached = crate::prompt_cache::cached_tokens(u).unwrap_or(0);
+        let cached = rovik_core::prompt_cache::cached_tokens(u).unwrap_or(0);
         if line["dialogId"] == dialog_id {
             self.lead_in += i;
             self.lead_out += o;
@@ -487,7 +487,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     let dialog_id = uuid::Uuid::new_v4().to_string();
     let dialog = NewDialog {
         id: dialog_id.clone(),
-        title: crate::chat_db::store::char_prefix(&args.prompt, 60).to_string(),
+        title: store::char_prefix(&args.prompt, 60).to_string(),
         created_at: store::now_ms(),
         updated_at: store::now_ms(),
         project_id: None,
@@ -826,7 +826,7 @@ pub fn main_cli() -> i32 {
             return 2;
         }
     };
-    match crate::rt::block_on(run(&args)) {
+    match rovik_core::rt::block_on(run(&args)) {
         Ok(report) => {
             println!(
                 "{}: {} ({} ms). Report: {}",
@@ -843,6 +843,9 @@ pub fn main_cli() -> i32 {
         }
     }
 }
+
+#[cfg(test)]
+mod e2e_tests;
 
 #[cfg(test)]
 mod tests {

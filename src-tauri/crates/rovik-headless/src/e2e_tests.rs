@@ -1,7 +1,11 @@
-//! G00: a scripted task run by the headless runner (src/headless.rs) from
-//! its command line, to its JSON report.
+//! G00: a scripted task run by the headless runner from its command line,
+//! to its JSON report, against rovik-core's scripted model (its `testing`
+//! feature).
 
 use super::*;
+use rovik_core::agent_run::agent_set_effort;
+use rovik_core::chat_db::{store, DbState};
+use rovik_core::testing::{effort, model, model_routed, temp_dir, Reply, TempDir};
 
 #[tokio::test]
 async fn a_scripted_task_runs_headless_and_reports() {
@@ -69,8 +73,8 @@ async fn a_scripted_task_runs_headless_and_reports() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let args = crate::headless::parse_args(&argv).unwrap();
-    crate::headless::run(&args).await.unwrap();
+    let args = crate::parse_args(&argv).unwrap();
+    crate::run(&args).await.unwrap();
 
     let report: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert_eq!(report["outcome"], "done");
@@ -158,9 +162,9 @@ async fn the_token_cap_stops_a_run_and_the_report_counts_its_cost() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let args = crate::headless::parse_args(&argv).unwrap();
+    let args = crate::parse_args(&argv).unwrap();
     let started = std::time::Instant::now();
-    crate::headless::run(&args).await.unwrap();
+    crate::run(&args).await.unwrap();
     assert!(started.elapsed() < std::time::Duration::from_secs(25));
 
     let report: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
@@ -214,8 +218,8 @@ async fn headless(
         argv.extend(["--policy".to_string(), file.to_string_lossy().into_owned()]);
     }
     argv.extend(extra.iter().map(|s| s.to_string()));
-    let args = crate::headless::parse_args(&argv).unwrap();
-    crate::headless::run(&args).await.unwrap();
+    let args = crate::parse_args(&argv).unwrap();
+    crate::run(&args).await.unwrap();
     serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap()
 }
 
@@ -296,7 +300,7 @@ async fn the_policys_denied_commands_are_refused_without_approvals() {
     assert_eq!(report["outcome"], "done", "{report:#}");
     assert_eq!(report["approvals"], json!([]));
     let id = report["dialogId"].as_str().unwrap().to_string();
-    let db = crate::chat_db::DbState::open(&dir.0.join("data")).unwrap();
+    let db = DbState::open(&dir.0.join("data")).unwrap();
     let messages = db
         .read(move |c| store::get_messages(c, &id, None, 100))
         .await
@@ -366,8 +370,8 @@ async fn a_data_folder_it_made_goes_after_the_report() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let args = crate::headless::parse_args(&argv).unwrap();
-    let report = crate::headless::run(&args).await.unwrap();
+    let args = crate::parse_args(&argv).unwrap();
+    let report = crate::run(&args).await.unwrap();
     assert_eq!(report["outcome"], "done");
     assert!(report["runLog"]
         .as_array()
@@ -627,7 +631,7 @@ async fn an_asked_again_request_with_usage_counts_as_a_reply() {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        let running = crate::headless::TEST_RUN.lock().unwrap().clone();
+        let running = crate::TEST_RUN.lock().unwrap().clone();
         let (core, dialog) = running.expect("the run asked the model");
         assert_eq!(
             agent_set_effort(&core, "p::m".into(), effort("low"), Some(dialog)),

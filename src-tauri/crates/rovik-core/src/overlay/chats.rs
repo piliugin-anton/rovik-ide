@@ -257,21 +257,21 @@ static OPEN: LazyLock<Mutex<HashMap<String, Arc<ChatOverlay>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static DATA_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Where overlays are kept: the app's data folder. Landings a crash
-/// interrupted are finished first.
 /// Tests that use the overlays' data folder (the process's) take this, so
 /// they don't set it under each other.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub static TEST_DATA: LazyLock<Arc<tokio::sync::Mutex<()>>> = LazyLock::new(Default::default);
 
 /// A test's data folder, held until the guard goes.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn test_data(data_dir: &Path) -> tokio::sync::OwnedMutexGuard<()> {
     let held = TEST_DATA.clone().blocking_lock_owned();
     init(data_dir);
     held
 }
 
+/// Where overlays are kept: the app's data folder. Landings a crash
+/// interrupted are finished first.
 pub fn init(data_dir: &Path) {
     *DATA_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.to_path_buf());
     sweep_scratch(data_dir);

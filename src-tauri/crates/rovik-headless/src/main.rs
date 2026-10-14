@@ -1,6 +1,6 @@
-//! The agent without a window (rovik-core's headless.rs). Build with
+//! The agent without a window (src/lib.rs). Build with
 //! `cargo run -p rovik-headless -- --help`.
 
 fn main() {
-    std::process::exit(rovik_core::headless::main_cli());
+    std::process::exit(rovik_headless::main_cli());
 }

@@ -109,24 +109,7 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
-    use std::sync::Mutex;
-
-    #[derive(Default)]
-    struct Recorded(Mutex<Vec<Value>>);
-
-    impl EventSink for Recorded {
-        fn agent(&self, event: &AgentEvent) {
-            let json = serde_json::to_value(event).unwrap();
-            self.0.lock().unwrap().push(json);
-        }
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("core-{name}-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::testing::{temp_dir, Recorder, TestCore};
 
     /// `Core::new` and `shutdown` set what the process keeps once, the
     /// overlays' and the workload history's folders, which other tests in
@@ -147,34 +130,28 @@ mod tests {
     #[test]
     #[ignore = "run in a process of its own by new_opens_the_database_and_the_overlays_folder"]
     fn new_in_a_process_of_its_own() {
-        let dir = temp_dir("new");
-        let data = dir.join("data");
-        let paths = Paths::new(data.clone(), dir.join("config"));
-        let core = Core::new(paths, Arc::new(Recorded::default())).unwrap();
+        let dir = temp_dir();
+        let data = dir.0.join("data");
+        let paths = Paths::new(data.clone(), dir.0.join("config"));
+        let core = Core::new(paths, Arc::new(Recorder(Default::default()))).unwrap();
         assert!(data.join("chats.db").is_file());
         assert_eq!(crate::overlay::chats::data_dir(), Some(data.clone()));
         assert_eq!(core.paths.log_dir, data);
         assert!(data.join("chats.db.running").is_file());
         crate::rt::block_on(core.shutdown());
         assert!(!data.join("chats.db.running").exists(), "a clean exit");
-        drop(core);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn events_go_to_the_sink() {
-        let dir = temp_dir("events");
-        let sink = Arc::new(Recorded::default());
-        let core = Core::open(Paths::new(dir.clone(), dir.clone()), sink.clone()).unwrap();
-        core.emit(AgentEvent::RunStarted {
+        let test = TestCore::new();
+        test.core.emit(AgentEvent::RunStarted {
             dialog_id: "d".into(),
             run_id: "r".into(),
         });
-        let events = sink.0.lock().unwrap().clone();
+        let events = test.events.lock().unwrap().clone();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["type"], "runStarted");
         assert_eq!(events[0]["dialogId"], "d");
-        drop(core);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

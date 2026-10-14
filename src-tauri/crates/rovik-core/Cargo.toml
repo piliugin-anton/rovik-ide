@@ -4,6 +4,10 @@ version.workspace = true
 description = "The agent and everything it calls, without Tauri"
 edition.workspace = true
 
+[features]
+# Test support for other crates' tests (src/testing.rs).
+testing = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

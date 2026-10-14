@@ -16,15 +16,13 @@ pub mod command_tool;
 pub mod core;
 mod edit_file;
 pub mod file_guard;
-/// The agent without a window, for measuring it (G00): `rovik-headless`.
-pub mod headless;
 pub mod merge;
 mod opencode;
 pub mod outline;
 pub mod overlay;
 pub mod process;
 pub mod project_profile;
-mod prompt_cache;
+pub mod prompt_cache;
 mod read_file;
 mod read_symbol;
 mod reasoning_echo;
@@ -32,6 +30,10 @@ pub mod release_assets;
 mod repo_map;
 pub mod rt;
 mod system_one;
+/// Test support for this crate's tests and other crates' (the `testing`
+/// feature): a scripted model, temporary folders, a `Core` on one.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod vfs;
 pub mod workload;
 
