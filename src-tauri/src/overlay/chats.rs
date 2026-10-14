@@ -2297,14 +2297,14 @@ fn forget_shown(dialog_id: &str, path: Option<&str>) {
 /// left ("ours", it's where the chat's changes go), the chat's on the right.
 /// The project's version shown is what a resolution of the file is then
 /// merged against ([`resolve_conflict`]).
-pub fn conflict_file(dialog_id: &str, path: &str) -> Result<crate::git_sync::ConflictFile, String> {
+pub fn conflict_file(dialog_id: &str, path: &str) -> Result<crate::merge::ConflictFile, String> {
     let s = sides(dialog_id, path)?;
     note_shown(dialog_id, path, s.project.as_deref());
     Ok(conflict_file_of(path, &s))
 }
 
 /// [`conflict_file`], from the three versions as read.
-fn conflict_file_of(path: &str, s: &Sides) -> crate::git_sync::ConflictFile {
+fn conflict_file_of(path: &str, s: &Sides) -> crate::merge::ConflictFile {
     use crate::merge::{is_binary, merge3_raw, parse_merged, MergeSegment};
     let binary = [&s.base, &s.chat, &s.project]
         .iter()
@@ -2333,7 +2333,7 @@ fn conflict_file_of(path: &str, s: &Sides) -> crate::git_sync::ConflictFile {
             theirs: text(&s.chat).unwrap_or_default(),
         }]
     };
-    crate::git_sync::ConflictFile {
+    crate::merge::ConflictFile {
         path: path.to_string(),
         ours: text(&s.project),
         theirs: text(&s.chat),
@@ -2835,7 +2835,7 @@ pub async fn overlay_unmark(
 pub async fn overlay_conflict_file(
     dialog_id: String,
     path: String,
-) -> Result<crate::git_sync::ConflictFile, String> {
+) -> Result<crate::merge::ConflictFile, String> {
     tauri::async_runtime::spawn_blocking(move || conflict_file(&dialog_id, &path))
         .await
         .map_err(|e| e.to_string())?

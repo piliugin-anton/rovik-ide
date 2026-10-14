@@ -35,6 +35,7 @@ mod project_profile;
 mod read_file;
 mod read_symbol;
 mod reasoning_echo;
+mod release_assets;
 mod repo_map;
 mod system_one;
 mod terminal;

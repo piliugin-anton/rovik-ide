@@ -322,6 +322,13 @@ pub fn write_for_editor(
     Ok(())
 }
 
+/// A file the app writes itself (a saved plan): created with its folders,
+/// in place, under the file's lock, but not as the user's save.
+pub fn write_app_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    let _lock = lock(path);
+    write_file(path, content).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// A chat's changes that landed in the project (overlay/land.rs): written
 /// by that chat, as far as other writers' checks go.
 pub fn note_landing(path: &Path, dialog_id: &str, content: &[u8]) {

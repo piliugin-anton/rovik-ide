@@ -25,6 +25,30 @@ pub enum MergeSegment {
     },
 }
 
+/// One conflicted file, as the conflict resolver (ConflictResolver.tsx)
+/// shows it: the Git panel's (git_sync.rs) and a chat's landing
+/// (overlay/chats.rs) alike.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictFile {
+    pub path: String,
+    /// None: that side deleted the file.
+    pub ours: Option<String>,
+    pub theirs: Option<String>,
+    pub base: Option<String>,
+    /// Not text: only a whole side can be taken.
+    pub binary: bool,
+    pub segments: Vec<MergeSegment>,
+    /// Already resolved (staged); the sides come from the operation's commits.
+    pub resolved: bool,
+    /// The file in the working tree now; None if it isn't there.
+    pub current: Option<String>,
+    /// What "ours" and "theirs" are, in words. A rebase replays your
+    /// commits onto the upstream, so there "ours" is the upstream.
+    pub ours_label: String,
+    pub theirs_label: String,
+}
+
 /// What merging two changed versions of one file gave.
 #[derive(Debug, PartialEq)]
 pub enum Merged {

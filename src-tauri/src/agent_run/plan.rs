@@ -402,7 +402,7 @@ pub fn save_plan_file(
             .collect();
         format!("# Plan: {first}\n\n{body}")
     };
-    crate::filesystem::write_app_file(&path, &format!("{titled}\n"))?;
+    crate::file_guard::write_app_file(Path::new(&path), format!("{titled}\n").as_bytes())?;
     Ok(path)
 }
 

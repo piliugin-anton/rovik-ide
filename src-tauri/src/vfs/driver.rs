@@ -241,8 +241,7 @@ mod download {
             .into_iter()
             .find(|n| matches(n))
             .ok_or_else(|| format!("no installer in release {tag}"))?;
-        let sha256 =
-            crate::lsp::rust_analyzer::parse_assets(&html, &name).map(|(_, digest)| digest);
+        let sha256 = crate::release_assets::parse_assets(&html, &name).map(|(_, digest)| digest);
         Ok(Asset {
             url: format!("https://github.com{prefix}{name}"),
             name,

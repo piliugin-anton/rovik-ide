@@ -821,17 +821,6 @@ pub fn write_file_content(
     }
 }
 
-/// A file the app writes itself (a saved plan): created with its folders,
-/// in place, under the file's lock, but not as the user's save.
-pub fn write_app_file(path: &str, content: &str) -> Result<(), String> {
-    let p = Path::new(path);
-    let _lock = crate::file_guard::lock(p);
-    if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
-        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
-    fs::write(p, content).map_err(|e| format!("{path}: {e}"))
-}
-
 /// How many entries a folder has directly in it (hidden ones and `.git`
 /// included, unlike the tree's listing), counting up to `limit`; None when
 /// the path isn't a folder. For the delete confirmation: an empty folder is
