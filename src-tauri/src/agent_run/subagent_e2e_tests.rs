@@ -1760,11 +1760,12 @@ async fn a_reviewer_gets_a_smaller_map_around_the_change() {
     assert_eq!(h.run_end().await, "unverified");
 
     fn map_of(body: &Value) -> String {
-        let prompt = system_prompt(body);
-        let Some(at) = prompt.find("## Repository map") else {
+        // The map ends the request (after the history), not the system prompt.
+        let tail = tail_text(body);
+        let Some(at) = tail.find("## Repository map") else {
             return String::new();
         };
-        let rest = &prompt[at..];
+        let rest = &tail[at..];
         let end = rest[3..].find("\n## ").map_or(rest.len(), |e| e + 3);
         rest[..end].trim_end().to_string()
     }
@@ -6216,7 +6217,8 @@ async fn a_review_after_green_that_couldnt_read_the_report_isnt_done() {
     // The reason says what was wrong.
     let reason = last["reviewAfterGreen"]["reason"].as_str().unwrap();
     assert!(
-        reason.starts_with("its report didn't follow the format: it has no \"## Findings\" section"),
+        reason
+            .starts_with("its report didn't follow the format: it has no \"## Findings\" section"),
         "{reason}"
     );
 }

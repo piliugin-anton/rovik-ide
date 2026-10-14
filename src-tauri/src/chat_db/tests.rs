@@ -821,3 +821,45 @@ fn chat_model_round_trips() {
     set_chat_model(&conn, "ghost", &other).unwrap();
     assert_eq!(chat_model(&conn, "ghost").unwrap(), None);
 }
+
+#[test]
+fn history_sends_a_user_message_as_it_was_first_sent() {
+    use super::history::{load_messages, use_sent_content};
+    let mut conn = db();
+    dialog(&mut conn, "d", "Sent", 0);
+    let mut first = message("u1", "user", "Fix it");
+    first.meta = Some(serde_json::json!({
+        "mode": "agent",
+        "sentContent": "[Active editor context — file a.rs]\n\nFix it"
+    }));
+    // A reply whose text is stored clean has no sent form; nor has a tool
+    // result, whatever its meta says.
+    let mut reply = message("a1", "assistant", "Done.");
+    reply.meta = Some(serde_json::json!({ "sentContent": "never used" }));
+    let plain = message("u2", "user", "Thanks");
+    add(&mut conn, "d", vec![first, reply, plain]);
+
+    let messages = load_messages(&conn, "d", None).unwrap();
+    let texts: Vec<&str> = messages.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "[Active editor context — file a.rs]\n\nFix it",
+            "Done.",
+            "Thanks"
+        ],
+        "an earlier request keeps its editor context on later turns"
+    );
+    assert_eq!(messages[0].full_chars, messages[0].text.chars().count());
+    assert!(!messages[0].needs_body);
+
+    // The current request is sent as the frontend sends it now, which is
+    // that same stored form on a retry.
+    let mut messages = messages;
+    use_sent_content(&mut messages, Some("[context]\n\nThanks"));
+    assert_eq!(messages[2].text, "[context]\n\nThanks");
+    assert_eq!(
+        messages[0].text,
+        "[Active editor context — file a.rs]\n\nFix it"
+    );
+}

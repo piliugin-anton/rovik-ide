@@ -30,6 +30,7 @@ mod outline;
 mod overlay;
 mod process;
 mod project_files;
+mod prompt_cache;
 mod project_profile;
 mod read_file;
 mod read_symbol;

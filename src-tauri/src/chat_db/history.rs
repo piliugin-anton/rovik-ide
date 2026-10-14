@@ -45,6 +45,12 @@ const TOOL_KEEP_CHARS: usize = 1200;
 const MAX_IMAGES: usize = 2;
 const OMITTED_NOTE: &str =
     "[Earlier messages in this chat were omitted to fit the context window.]";
+/// Once over budget, trimming goes down to this share of it, not just
+/// under: the next steps then fit without moving the cut. Trimming to just
+/// under the budget would drop one more turn (or cut one more result) on
+/// every step, and the start of the request, which providers cache, would
+/// change every time.
+const TRIM_TO: f64 = 0.85;
 /// Google's documented placeholder for function calls that have no real
 /// thought signature (made before signatures were stored, or by another
 /// model). `thought_signature` is a bytes field, base64 on the JSON wire, so
@@ -606,6 +612,8 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
     if sum <= budget {
         return (messages, info(false, 0, sum));
     }
+    // Over budget: trimmed to the target, with room for the next steps.
+    let target = (budget as f64 * TRIM_TO) as usize;
 
     let mut current_start = messages.iter().rposition(starts_request).unwrap_or(0);
 
@@ -627,7 +635,7 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
     let mut cut = 0;
     let mut dropped = 0;
     for (t, &start) in turn_starts.iter().enumerate() {
-        if sum <= budget {
+        if sum <= target {
             break;
         }
         let next = turn_starts.get(t + 1).copied().unwrap_or(current_start);
@@ -657,7 +665,7 @@ pub fn fit_with(mut messages: Vec<Msg>, budget: usize, cost: Cost) -> (Vec<Msg>,
         .collect();
     if let Some((_, earlier)) = tool_indexes.split_last() {
         for &i in earlier {
-            if sum <= budget {
+            if sum <= target {
                 break;
             }
             truncate_tool_result(&mut messages[i]);
@@ -837,31 +845,34 @@ pub fn load_messages(
                 && m.content.trim().is_empty()
                 && m.tool_calls.as_ref().map_or(true, |t| t.is_empty()))
         })
-        .map(|m| Msg {
-            // Added by the IDE (the frontend's verification gate): user-role,
-            // but never the user's request.
-            harness: m
-                .meta
-                .as_ref()
-                .is_some_and(|meta| meta.get("harness").is_some()),
-            checklist_closed: m.meta.as_ref().is_some_and(|meta| {
-                meta.get("checklistClosed")
-                    .or_else(|| meta.get("checklist_closed"))
-                    .is_some_and(|v| *v == serde_json::Value::Bool(true))
-            }),
-            full_chars: if m.body_external {
-                m.body_bytes as usize
-            } else {
-                m.content.chars().count()
-            },
-            needs_body: m.body_external,
-            id: m.id,
-            role: m.role,
-            text: m.content,
-            tool_calls: m.tool_calls,
-            tool_call_id: m.tool_call_id,
-            attachments: m.attachments,
-            reasoning: None,
+        .map(|m| {
+            let (text, full_chars, needs_body) = match sent_content(&m) {
+                Some(sent) => (sent.to_string(), sent.chars().count(), false),
+                None if m.body_external => (m.content.clone(), m.body_bytes as usize, true),
+                None => (m.content.clone(), m.content.chars().count(), false),
+            };
+            Msg {
+                // Added by the IDE (the frontend's verification gate): user-role,
+                // but never the user's request.
+                harness: m
+                    .meta
+                    .as_ref()
+                    .is_some_and(|meta| meta.get("harness").is_some()),
+                checklist_closed: m.meta.as_ref().is_some_and(|meta| {
+                    meta.get("checklistClosed")
+                        .or_else(|| meta.get("checklist_closed"))
+                        .is_some_and(|v| *v == serde_json::Value::Bool(true))
+                }),
+                full_chars,
+                needs_body,
+                id: m.id,
+                role: m.role,
+                text,
+                tool_calls: m.tool_calls,
+                tool_call_id: m.tool_call_id,
+                attachments: m.attachments,
+                reasoning: None,
+            }
         })
         .collect();
 
@@ -871,6 +882,18 @@ pub fn load_messages(
     let mut messages = answer_unanswered_calls(messages);
     use_sent_content(&mut messages, current_user_content);
     Ok(messages)
+}
+
+/// A user message as it was sent to the model the first time (the editor
+/// context and file references the frontend put before the text, kept in
+/// `meta.sentContent`). Every later request sends it the same way, so the
+/// start of the history doesn't change from one turn to the next and the
+/// provider's prompt cache keeps serving it.
+fn sent_content(m: &super::store::MessageRow) -> Option<&str> {
+    if m.role != "user" {
+        return None;
+    }
+    m.meta.as_ref()?.get("sentContent")?.as_str()
 }
 
 /// The current request's user message is sent with the editor context
@@ -1471,6 +1494,78 @@ mod tests {
         assert!(out[0].text.contains("question 11"));
         assert_eq!(out.last().unwrap().text, "current question");
         assert!(info.estimated_tokens <= BUDGET_8K);
+    }
+
+    fn target(budget: usize) -> usize {
+        (budget as f64 * TRIM_TO) as usize
+    }
+
+    /// A tool result of about this many tokens (the estimate's overhead aside).
+    fn result_of_tokens(id: &str, tokens: usize) -> Msg {
+        tool(id, tokens * DEFAULT_CHARS_PER_TOKEN as usize)
+    }
+
+    #[test]
+    fn turns_are_dropped_past_the_budget_so_the_next_steps_keep_the_cut() {
+        let mut history = Vec::new();
+        for i in 1..=12 {
+            history.push(msg("user", &format!("question {i} {}", "y".repeat(3000))));
+            history.push(msg(
+                "assistant",
+                &format!("answer {i} {}", "z".repeat(3000)),
+            ));
+        }
+        history.push(msg("user", "current question"));
+        let (out, info) = fit(history.clone(), BUDGET_8K, true);
+        assert!(info.estimated_tokens <= target(BUDGET_8K), "{info:?}");
+        let first = out[0].text.clone();
+        let slack = target(BUDGET_8K) - info.estimated_tokens;
+
+        // The run goes on with a step that fits in the slack: the same
+        // turns are dropped, so the request starts exactly as before.
+        history.push(call(&["c1"]));
+        history.push(result_of_tokens("c1", slack / 2));
+        let (again, info_again) = fit(history.clone(), BUDGET_8K, true);
+        assert_eq!(info_again.dropped_turns, info.dropped_turns);
+        assert_eq!(again[0].text, first, "the cut didn't move");
+
+        // Only a step that uses up the slack moves it.
+        history.push(call(&["c2"]));
+        history.push(result_of_tokens("c2", slack + 100));
+        let (later, info_later) = fit(history, BUDGET_8K, true);
+        assert!(info_later.dropped_turns > info.dropped_turns);
+        assert_ne!(later[0].text, first);
+        assert!(info_later.estimated_tokens <= target(BUDGET_8K));
+    }
+
+    #[test]
+    fn a_run_over_budget_cuts_results_ahead_so_the_next_steps_cut_nothing_new() {
+        // Five big results: the three oldest have to go for the run to fit.
+        let mut history = vec![msg("user", "q")];
+        for i in 0..5 {
+            let id = format!("x{i}");
+            history.push(call(&[&id]));
+            history.push(tool(&id, BIG));
+        }
+        let (out, info) = fit(history.clone(), BUDGET_32K, true);
+        assert!(info.trimmed);
+        assert!(info.estimated_tokens <= target(BUDGET_32K), "{info:?}");
+        let cut = |ms: &[Msg]| -> Vec<bool> {
+            ms.iter().map(|m| m.text.contains("[Truncated")).collect()
+        };
+        let before = cut(&out);
+        assert!(before.contains(&true) && before.contains(&false));
+        let slack = target(BUDGET_32K) - info.estimated_tokens;
+
+        history.push(call(&["y"]));
+        history.push(result_of_tokens("y", slack / 2));
+        let (again, _) = fit(history, BUDGET_32K, true);
+        assert_eq!(
+            cut(&again[..out.len()]),
+            before,
+            "the earlier results are cut exactly as before"
+        );
+        assert!(pairing_ok(&again));
     }
 
     #[test]

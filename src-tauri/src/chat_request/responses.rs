@@ -324,7 +324,13 @@ pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
     {
         body["max_output_tokens"] = max.clone();
     }
-    for field in ["temperature", "top_p", "parallel_tool_calls"] {
+    // `prompt_cache_key` is the same on both APIs (prompt_cache.rs).
+    for field in [
+        "temperature",
+        "top_p",
+        "parallel_tool_calls",
+        "prompt_cache_key",
+    ] {
         if let Some(value) = chat.get(field) {
             body[field] = value.clone();
         }
@@ -716,6 +722,7 @@ mod tests {
             "reasoning_effort": "high",
             "chat_template_kwargs": { "enable_thinking": true },
             "tool_choice": "auto",
+            "prompt_cache_key": "chat-1",
             "tools": [{ "type": "function", "function": { "name": "read", "description": "d", "parameters": { "type": "object" } } }],
             "messages": [
                 { "role": "system", "content": "Be useful." },
@@ -735,6 +742,10 @@ mod tests {
         assert_eq!(body["max_output_tokens"], 1000);
         assert_eq!(body["reasoning"], json!({ "effort": "high" }));
         assert_eq!(body["store"], false);
+        assert_eq!(
+            body["prompt_cache_key"], "chat-1",
+            "the cache key is the same on both APIs"
+        );
         for gone in [
             "messages",
             "stream_options",

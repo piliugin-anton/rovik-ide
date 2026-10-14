@@ -4856,8 +4856,32 @@ fn system_prompt(request: &Value) -> String {
         .to_string()
 }
 
+/// The text of a request's last message: where what changes between steps
+/// (the repository map) is sent, after the cacheable prefix.
+fn tail_text(request: &Value) -> String {
+    let last = request["messages"].as_array().and_then(|m| m.last());
+    match last.map(|m| &m["content"]) {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// How many leading messages two requests share, byte for byte: what a
+/// provider's prompt cache can serve the second one.
+fn shared_messages(a: &Value, b: &Value) -> usize {
+    match (a["messages"].as_array(), b["messages"].as_array()) {
+        (Some(a), Some(b)) => a.iter().zip(b).take_while(|(x, y)| x == y).count(),
+        _ => 0,
+    }
+}
+
 #[tokio::test]
-async fn the_system_prompt_carries_a_map_centred_on_the_request() {
+async fn the_request_ends_with_a_map_centred_on_the_request() {
     let h = harness(&[
         (
             "src/billing.rs",
@@ -4879,10 +4903,15 @@ async fn the_system_prompt_carries_a_map_centred_on_the_request() {
     ))
     .await;
     assert_eq!(h.run_end().await, "done");
-    let prompt = system_prompt(&seen.lock().unwrap()[0]);
-    let map = &prompt[prompt
+    let request = seen.lock().unwrap()[0].clone();
+    // The map changes mid-run, so it isn't in the system prompt (which
+    // providers cache): it ends the request, after the user's message.
+    assert!(!system_prompt(&request).contains("## Repository map"));
+    let tail = tail_text(&request);
+    assert!(tail.starts_with("Why is src/report.rs slow?"), "{tail}");
+    let map = &tail[tail
         .find("## Repository map")
-        .expect("a map in the system prompt")..];
+        .expect("a map at the end of the request")..];
     let report = map
         .find("src/report.rs:")
         .expect("the file the request names");
@@ -4896,7 +4925,7 @@ async fn the_system_prompt_carries_a_map_centred_on_the_request() {
 }
 
 #[tokio::test]
-async fn the_map_refreshes_mid_run_after_a_write() {
+async fn the_map_refreshes_mid_run_after_a_write_without_moving_the_prefix() {
     let h = harness(&[("src/a.rs", "pub fn alpha_one() {}\n")]).await;
     let (url, seen) = model(vec![
         Reply::Call {
@@ -4910,15 +4939,31 @@ async fn the_map_refreshes_mid_run_after_a_write() {
     h.start(h.request(&url, Harness::send("Add beta"), quiet_permissions()))
         .await;
     assert_eq!(h.run_end().await, "done");
-    assert_eq!(seen.lock().unwrap().len(), 2);
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
     // The first turn's map can't know the new file; the second turn's must.
-    let first = system_prompt(&seen.lock().unwrap()[0]);
+    let first = tail_text(&requests[0]);
+    assert!(first.contains("## Repository map"), "{first}");
     assert!(!first.contains("beta_two_fresh"), "{first}");
-    let second = system_prompt(&seen.lock().unwrap()[1]);
+    let second = tail_text(&requests[1]);
     let map = &second[second
         .find("## Repository map")
         .expect("a refreshed map in the second turn")..];
     assert!(map.contains("beta_two_fresh"), "{map}");
+
+    // The two-zone shape: the refreshed map changed nothing before the
+    // last message. The system prompt, the tools and every message but the
+    // previous request's last one are byte-identical, so a provider's
+    // prompt cache serves them.
+    assert_eq!(system_prompt(&requests[0]), system_prompt(&requests[1]));
+    assert_eq!(requests[0]["tools"], requests[1]["tools"]);
+    let n = requests[0]["messages"].as_array().unwrap().len();
+    assert_eq!(shared_messages(&requests[0], &requests[1]), n - 1);
+    // The user's request is sent the same way on every step: only the map
+    // that rode on it moved to the new last message.
+    let user = &requests[1]["messages"][n - 1];
+    assert_eq!(user["role"], "user");
+    assert_eq!(user["content"], "Add beta");
 }
 
 #[tokio::test]
@@ -4928,7 +4973,9 @@ async fn a_project_without_code_has_no_map() {
     h.start(h.request(&url, Harness::send("Hi"), quiet_permissions()))
         .await;
     assert_eq!(h.run_end().await, "done");
-    assert!(!system_prompt(&seen.lock().unwrap()[0]).contains("## Repository map"));
+    let request = seen.lock().unwrap()[0].clone();
+    assert!(!system_prompt(&request).contains("## Repository map"));
+    assert_eq!(tail_text(&request), "Hi");
 }
 
 /*

@@ -112,7 +112,11 @@ async fn the_token_cap_stops_a_run_and_the_report_counts_its_cost() {
     };
     let (url, _) = model(vec![
         Reply::Usage(400_000, 1_000, Box::new(read("r1"))),
-        Reply::Usage(400_000, 1_000, Box::new(read("r2"))),
+        // The second request's prompt was mostly served from the cache.
+        Reply::UsageAs(
+            json!({ "prompt_tokens": 400_000, "completion_tokens": 1_000, "prompt_tokens_details": { "cached_tokens": 300_000 } }),
+            Box::new(read("r2")),
+        ),
         Reply::Usage(
             400_000,
             1_000,
@@ -164,6 +168,9 @@ async fn the_token_cap_stops_a_run_and_the_report_counts_its_cost() {
     assert_eq!(report["usage"]["leadInputTokens"], 1_200_000);
     assert_eq!(report["usage"]["leadOutputTokens"], 3_000);
     assert_eq!(report["usage"]["peakLeadContext"], 400_000);
+    // Cached tokens are counted and the hit rate shown (300k of 1.2M).
+    assert_eq!(report["usage"]["leadCachedTokens"], 300_000);
+    assert_eq!(report["usage"]["cacheHitPercent"], 25);
     assert_eq!(report["costSource"], "price");
     let cost = report["costUsd"].as_f64().unwrap();
     assert!((cost - (1.2 + 0.03)).abs() < 1e-9, "{cost}");

@@ -272,6 +272,10 @@ pub struct Totals {
     pub sub_out: u64,
     /// The largest request the lead sent (its context at its fullest).
     pub peak_lead_context: u64,
+    /// Of the prompt tokens, those the provider served from its cache
+    /// (prompt_cache.rs); 0 when it doesn't say.
+    pub lead_cached: u64,
+    pub sub_cached: u64,
     /// Reported cost, when every reply with usage reported one.
     pub reported_cost: Option<f64>,
     /// Replies with usage.
@@ -305,13 +309,16 @@ impl Totals {
             return;
         };
         let (i, o, cost) = usage_of(u);
+        let cached = crate::prompt_cache::cached_tokens(u).unwrap_or(0);
         if line["dialogId"] == dialog_id {
             self.lead_in += i;
             self.lead_out += o;
+            self.lead_cached += cached;
             self.peak_lead_context = self.peak_lead_context.max(i);
         } else {
             self.sub_in += i;
             self.sub_out += o;
+            self.sub_cached += cached;
         }
         self.reported_cost = match (self.replies, self.reported_cost, cost) {
             (0, _, c) => c,
@@ -319,6 +326,12 @@ impl Totals {
             _ => None,
         };
         self.replies += 1;
+    }
+
+    /// The share of the lead's prompt tokens served from the provider's
+    /// cache, in percent; None before any prompt tokens were counted.
+    pub fn cache_hit_percent(&self) -> Option<u64> {
+        (self.lead_in > 0).then(|| self.lead_cached * 100 / self.lead_in)
     }
 
     /// Its cost: as reported, else by the settings' price; None: unknown.
@@ -794,6 +807,9 @@ fn report(
             "subagentOutputTokens": totals.sub_out,
             "totalTokens": totals.tokens(),
             "peakLeadContext": totals.peak_lead_context,
+            "leadCachedTokens": totals.lead_cached,
+            "subagentCachedTokens": totals.sub_cached,
+            "cacheHitPercent": totals.cache_hit_percent(),
             "replies": totals.replies,
             "repliesWithoutUsage": totals.missing_usage,
         },
@@ -1020,12 +1036,12 @@ mod tests {
         t.add(
             &reply(
                 "lead",
-                json!({ "prompt_tokens": 3000, "completion_tokens": 50 }),
+                json!({ "prompt_tokens": 3000, "completion_tokens": 50, "prompt_tokens_details": { "cached_tokens": 2500 } }),
             ),
             "lead",
         );
         t.add(
-            &reply("kid", json!({ "input_tokens": 500, "output_tokens": 20 })),
+            &reply("kid", json!({ "input_tokens": 500, "output_tokens": 20, "input_tokens_details": { "cached_tokens": 100 } })),
             "lead",
         );
         t.add(&json!({ "event": "run", "dialogId": "lead" }), "lead");
@@ -1037,6 +1053,10 @@ mod tests {
         assert_eq!(t.tokens(), 4670);
         assert_eq!(t.peak_lead_context, 3000);
         assert_eq!(t.replies, 3);
+        // What the provider served from its cache, by who asked.
+        assert_eq!((t.lead_cached, t.sub_cached), (2500, 100));
+        assert_eq!(t.cache_hit_percent(), Some(62), "2500 of 4000");
+        assert_eq!(Totals::default().cache_hit_percent(), None);
         assert_eq!(t.cost(None), (None, "unknown"));
         let price = Price {
             input_per_million: 2.0,

@@ -784,7 +784,6 @@ impl<R: Runtime> Run<R> {
         if let Some((map, chars)) = map {
             child.repo_map = map;
             child.repo_map_chars = chars;
-            child.rebuild_project_context();
         }
         Ok(child)
     }

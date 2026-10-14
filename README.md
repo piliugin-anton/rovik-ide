@@ -361,3 +361,16 @@ How CLM mode works:
   the request is trimmed as in Trimming mode.
 - The CLM part of the system prompt is identical on every request of a
   chat, so providers can cache it.
+
+Prompt caching (`src-tauri/src/prompt_cache.rs`): providers serve the
+start of a request from their cache when it's byte-identical to an
+earlier request's, so every request is built in two zones. The system
+prompt, the tool schemas and the history only grow from one step to the
+next: trimming replaces and drops in batches and goes well under the
+budget so the cut doesn't move every step, and a user message is sent the
+same way on every turn. What changes between steps (the repository map,
+the focus note, context notes) rides on the last message, after everything
+cacheable. On top of that, OpenAI gets a `prompt_cache_key` per chat and
+OpenRouter gets `cache_control` breakpoints (Anthropic models need them).
+The run log's reply lines carry `cachedTokens`, and the headless report
+the cache hit rate, so the effect of a change to the prompt can be seen.
