@@ -335,6 +335,12 @@ existing fallback, "work in the project directly", is fine on a server
   worktree for build output; a chat's `.gitignore`d by-products stay in
   the worktree (that's what tiers.rs skips at landing anyway).
 
+> **Changed (2026-10-14).** The worktrees and the agent's temporary files
+> live in `~/.local/share/rovik/`. Only the daemon's own files (keys,
+> state, database, bare repositories) stay in `~/.rovik/`. Otherwise the
+> rule that commands naming `~/.rovik` need approval (§6) would ask about
+> almost every command a chat runs. See the development plan, D8.
+
 ### 3.2 Option P1: git carries the project both ways — decided
 
 The desktop already links libgit2 with its SSH transport (`git2` with
@@ -495,8 +501,10 @@ like `ssh -L`), then speaks HTTP + WebSocket to it.
 > other users can't reach it and no two daemons clash over a port. The
 > client opens a `direct-streamlocal@openssh.com` channel to it, or runs
 > `attach --stdio`, a plain byte bridge to the socket. Only the token's
-> hash is kept on the server, so the agent's own commands can't use the
-> daemon. See the development plan, D5.
+> hash is kept on the server, so the agent's own commands can't simply
+> connect and approve their own requests. A command set on tampering
+> with the daemon's files still could, which the development plan's D5,
+> D8 and H05 address.
 
 Pros:
 - Daemon outlives connections (runs continue while the laptop is
