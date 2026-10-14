@@ -13,6 +13,7 @@ import * as monaco from 'monaco-editor';
 import FileTree from './components/FileTree';
 import Tabs from './components/Tabs';
 import Editor from './components/Editor';
+import MarkdownViewSwitch from './components/MarkdownViewSwitch';
 import ChatPanel from './components/ChatPanel';
 import { createFileTreeController } from './lib/fileTree';
 import { languageForFile, isLikelyBinary } from './lib/language';
@@ -68,6 +69,7 @@ import {
 } from './lib/editorBridge';
 import { findSnippetLine } from './lib/codeLocation';
 import { isPlanFile, requestImplementPlan } from './lib/plans';
+import { isMarkdownLanguage } from './lib/markdownView';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
 import { diffLines, splitLines } from './lib/lineDiff';
 import {
@@ -278,6 +280,11 @@ export default function App() {
   });
 
   const activeFile = createMemo(() => openFiles().find((f) => f.path === activePath()) ?? null);
+  /** The active tab's path when it's a Markdown file (it has the preview's views). */
+  const activeMarkdownPath = createMemo(() => {
+    const file = activeFile();
+    return file && isMarkdownLanguage(file.language) ? file.path : null;
+  });
   const activeFileContext = createMemo<ActiveFileContext | null>(() => {
     const file = activeFile();
     const info = cursorInfo();
@@ -1930,12 +1937,18 @@ export default function App() {
       </Resizable>
 
       <div class="app-main">
-        <Tabs
-          files={openFiles}
-          activePath={activePath}
-          onSelect={setActivePath}
-          onClose={closeFile}
-        />
+        <div class="tabs-row">
+          <Tabs
+            files={openFiles}
+            activePath={activePath}
+            onSelect={setActivePath}
+            onClose={closeFile}
+          />
+          {/* A Markdown file: source, source and preview, or preview. */}
+          <Show when={activeMarkdownPath()} keyed>
+            {(path) => <MarkdownViewSwitch path={path} />}
+          </Show>
+        </div>
         <div class="editor-area">
           {/* A plan from .rovik/plans/: edit it here, then implement it. */}
           <Show when={activePath() && isPlanFile(activePath()!)}>

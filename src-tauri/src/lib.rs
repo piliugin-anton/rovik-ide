@@ -93,6 +93,7 @@ pub fn run() {
             filesystem::start_file_watch,
             filesystem::read_dir_entries,
             filesystem::read_file_content,
+            filesystem::read_image_file,
             filesystem::write_file_content,
             filesystem::path_exists,
             filesystem::read_editorconfigs,
