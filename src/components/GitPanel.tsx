@@ -1286,6 +1286,9 @@ export function GitPanel(props: GitPanelProps) {
                   <IconSpinner />
                 </Show>
               </button>
+              <button class="icon-button" onClick={pullGit} title="Pull" disabled={busy()}>
+                <IconArrowDown />
+              </button>
               <button
                 class="icon-button"
                 onClick={toggleHistory}
@@ -1296,9 +1299,6 @@ export function GitPanel(props: GitPanelProps) {
                 disabled={busy()}
               >
                 <IconHistory />
-              </button>
-              <button class="icon-button" onClick={pullGit} title="Pull" disabled={busy()}>
-                <IconArrowDown />
               </button>
             </div>
           </div>
