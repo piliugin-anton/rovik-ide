@@ -275,6 +275,10 @@ mod repair_tests;
 #[path = "headless_e2e_tests.rs"]
 mod headless_tests;
 
+#[cfg(test)]
+#[path = "context_e2e_tests.rs"]
+mod context_tests;
+
 /*
  * The app
  */

@@ -173,6 +173,11 @@ pub struct VfsState {
     mounting: Mutex<()>,
     /// Why the last mount attempt failed, until one succeeds.
     problem: Mutex<Option<MountProblem>>,
+    /// Tests: where `mountpoint` says the volume is, without a mount
+    /// (`pretend_mounted`), for code that only needs to know where its
+    /// files would be (CLM requests read and write them in memory).
+    #[cfg(test)]
+    pretend: Mutex<Option<PathBuf>>,
 }
 
 impl Default for VfsState {
@@ -191,6 +196,8 @@ impl Default for VfsState {
             mounted: Mutex::new(None),
             mounting: Mutex::new(()),
             problem: Mutex::new(None),
+            #[cfg(test)]
+            pretend: Mutex::new(None),
         }
     }
 }
@@ -229,7 +236,22 @@ impl VfsState {
     }
 
     pub fn mountpoint(&self) -> Option<PathBuf> {
+        #[cfg(test)]
+        if let Some(at) = self
+            .pretend
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return Some(at);
+        }
         self.lock().as_ref().map(|m| m.at.clone())
+    }
+
+    /// Tests: `mountpoint` says `at` from now on, though nothing is mounted.
+    #[cfg(test)]
+    pub fn pretend_mounted(&self, at: PathBuf) {
+        *self.pretend.lock().unwrap_or_else(|e| e.into_inner()) = Some(at);
     }
 
     /// Mounts the volume (at the default place unless `at` is given) and
