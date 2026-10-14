@@ -242,8 +242,22 @@ const FORMAT_HINT: &str = "each finding is a numbered line \"1. [high] path:line
 /// doesn't follow the format is an error (the repair turn's text), never
 /// "no findings".
 pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
-    let Some(body) = findings_body(text) else {
-        return Err(format!("it has no \"## Findings\" section ({FORMAT_HINT})"));
+    // No heading, but findings written as the format has them: read them.
+    // No heading and nothing finding-shaped: not a report; a plan sent
+    // back (a reviewer answering with the plan it was given) is told so.
+    let Some(body) = findings_body(text).or_else(|| {
+        let t = unfenced(text);
+        t.lines()
+            .any(|l| HEADER.is_match(l))
+            .then(|| t.trim().to_string())
+    }) else {
+        return Err(if plan::looks_like_plan(text) {
+            format!(
+                "it is the plan sent back, not a report: reply with \"## Findings\" and your findings ({FORMAT_HINT})"
+            )
+        } else {
+            format!("it has no \"## Findings\" section ({FORMAT_HINT})")
+        });
     };
     let body = body.as_str();
     // P4.5: "None." with a reason after it is none too; so is "No new
@@ -382,6 +396,15 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
     Ok(out)
 }
 
+/// Whether a reply has nothing that reads as a finding: no numbered
+/// "[severity]" line and no "- Scenario:"-style field. A reviewer's
+/// reply out of format twice over with nothing finding-shaped in it (the
+/// plan sent back, a sentence) is read as no findings, with a note.
+pub fn findingless(text: &str) -> bool {
+    let t = unfenced(text);
+    !t.lines().any(|l| HEADER.is_match(l) || FIELD.is_match(l))
+}
+
 /// A review's record when it's skipped, with the reason.
 pub(super) fn skipped(review: &mut Value, reason: String) {
     review["status"] = json!("skipped");
@@ -395,8 +418,10 @@ pub(super) fn reviewer_skip_reason(skip: &Skip) -> String {
         Skip::NotRun => "the reviewer couldn't run".into(),
         Skip::ModelFailed(error) => format!("the reviewer's model failed ({error})"),
         Skip::Blocked(why) => format!("the reviewer couldn't review: {why}"),
-        Skip::Unformatted(why) if why.is_empty() => "its report didn't follow the format".into(),
-        Skip::Unformatted(why) => format!("its report didn't follow the format: {why}"),
+        Skip::Unformatted { why, .. } if why.is_empty() => {
+            "its report didn't follow the format".into()
+        }
+        Skip::Unformatted { why, .. } => format!("its report didn't follow the format: {why}"),
     }
 }
 
@@ -1378,6 +1403,23 @@ mod tests {
         }
         assert_eq!(parse_findings("# Findings\n\nNone.").unwrap(), vec![]);
         assert!(parse_findings("# Review\n\nFindings are listed below.").is_err());
+    }
+
+    /// Findings without the "## Findings" heading are still findings; a
+    /// plan sent back in place of a report is told so; a reply with
+    /// nothing finding-shaped is findingless, one with a field isn't.
+    #[test]
+    fn headerless_findings_and_plans_sent_back() {
+        let bare = "1. [high] Step 2 — Misses the CLI caller\n - Scenario: s\n - Fix: f\n - Confidence: confirmed";
+        let f = parse_findings(bare).unwrap();
+        assert_eq!((f.len(), f[0].step), (1, Some(2)));
+        let plan = "# Users\n\n## Steps\n\n1. **Table**\n   - Files: `src/db.rs`\n   - Add the table.\n\n## Validation\n- `cargo test`\n";
+        let e = parse_findings(plan).unwrap_err();
+        assert!(e.starts_with("it is the plan sent back, not a report"), "{e}");
+        assert!(findingless(plan));
+        assert!(findingless("Looks fine to me."));
+        assert!(!findingless(bare));
+        assert!(!findingless("The plan misses the CLI caller.\n- Scenario: the CLI won't build.\n- Fix: add a step."));
     }
 
     /// A later round with nothing left: the words reviewers use for it,

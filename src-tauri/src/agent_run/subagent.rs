@@ -145,8 +145,9 @@ pub enum Skip {
     ModelFailed(String),
     /// It was blocked: its reason, when it gave one.
     Blocked(String),
-    /// Its report didn't follow the format: what was wrong with it.
-    Unformatted(String),
+    /// Its report didn't follow the format: what was wrong with it, and
+    /// the report as written.
+    Unformatted { why: String, text: String },
 }
 
 /// What an IDE-started subagent's outcome gives: its report, or not.
@@ -199,7 +200,10 @@ pub fn outcome_of(
             // it couldn't be read.
             record["report"] = json!(r.text.chars().take(6_000).collect::<String>());
             let why = format_problem(r.kind.spec(), &r.text).unwrap_or_default();
-            SubOutcome::Skipped(Skip::Unformatted(why))
+            SubOutcome::Skipped(Skip::Unformatted {
+                why,
+                text: r.text.clone(),
+            })
         }
         SubStatus::Done | SubStatus::Partial => SubOutcome::Report(r),
     }

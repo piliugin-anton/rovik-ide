@@ -12,7 +12,9 @@
 //! its end for the user. A reviewer that fails is recorded as skipped and
 //! the plan is saved with a note (layer 7).
 
-use super::change_review::{drop_repeats, parse_findings, reviewer_skip_reason, skipped, Finding};
+use super::change_review::{
+    drop_repeats, findingless, parse_findings, reviewer_skip_reason, skipped, Finding,
+};
 use super::run::Run;
 use super::subagent::{self, Budget, Format, Kind, KindSpec};
 use super::{diff, log};
@@ -344,6 +346,17 @@ impl<R: Runtime> Run<R> {
         let mut serious: Vec<Finding> = Vec::new();
         match subagent::outcome_of(&mut review, outcome) {
             subagent::SubOutcome::Stopped => review["status"] = json!("stopped"),
+            // Out of format twice with nothing finding-shaped (the plan
+            // sent back, a sentence): no findings, said so in the record.
+            subagent::SubOutcome::Skipped(subagent::Skip::Unformatted { text, .. })
+                if findingless(&text) =>
+            {
+                review["status"] = json!("clean");
+                review["findings"] = json!([]);
+                review["reason"] = json!(
+                    "its reply had no Findings section and nothing that reads as a finding, so it counts as none"
+                );
+            }
             subagent::SubOutcome::Skipped(skip) => {
                 skipped(&mut review, reviewer_skip_reason(&skip))
             }
