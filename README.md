@@ -359,6 +359,9 @@ How CLM mode works:
 - The agent gets size reminders at 50% and 75% of the budget, and on every
   request from 90%. Past the budget, old tool output is withheld first, then
   the request is trimmed as in Trimming mode.
+- The task card, the checklist and the reasoning sent back with the run's
+  steps go with every request but aren't in the file: their room comes out
+  of the budget, so a context at its budget still leaves the reply its room.
 - The CLM part of the system prompt is identical on every request of a
   chat, so providers can cache it.
 

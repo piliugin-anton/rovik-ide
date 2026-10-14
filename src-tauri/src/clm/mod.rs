@@ -21,6 +21,12 @@
 //! 5. Notes for the model go at the end of the request: the edit's receipt,
 //!    the size readout and budget reminders (prompt.rs).
 //!
+//! The budget is the room the request has for all of it. Two things are
+//! sent with the context but aren't in its file: the task card and the
+//! checklist (with the notes), and the reasoning sent back with the run's
+//! steps (`attach_reasoning`). Their room comes out of the budget first, so
+//! a context at its budget still leaves the reply its room.
+//!
 //! What must outlive every compaction (goal, scope, decisions, NEXT) the
 //! agent keeps in its task card, `TASK.md` next to the context file: shown
 //! with the notes, never part of the file it edits.
@@ -35,11 +41,15 @@ pub mod document;
 pub mod prompt;
 pub mod store;
 
-use crate::chat_db::history::{fit_with, load_bodies, load_messages, total, Cost, FitInfo, Msg};
+use crate::chat_db::history::{
+    attach_reasoning, fit_with, load_bodies, load_messages, total, Cost, FitInfo, Msg,
+};
 use crate::chat_db::DbState;
 use crate::vfs::{Source, VfsState};
 use document::CtxMsg;
 use serde::Serialize;
+use serde_json::Value;
+use std::collections::HashMap;
 use tauri::State;
 
 pub const MODE_TRIMMING: &str = "trimming";
@@ -186,13 +196,16 @@ fn read_text(vfs: &VfsState, path: &str) -> Option<String> {
 
 /// A request's history in CLM mode.
 pub struct Prepared {
+    /// The context, with the reasoning `model` wrote attached to its steps.
     pub messages: Vec<Msg>,
     pub info: FitInfo,
     /// Notes for the model, added to the end of the request.
     pub notes: Vec<String>,
 }
 
-/// Steps 1–5 above. Fails only for database or volume errors.
+/// Steps 1–5 above, for a request to `model`. Fails only for database or
+/// volume errors.
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare(
     db: &DbState,
     vfs: &VfsState,
@@ -201,6 +214,7 @@ pub async fn prepare(
     cost: Cost,
     current_user_content: Option<String>,
     checklist_note: Option<String>,
+    model: String,
 ) -> Result<Prepared, String> {
     let path = context_file(&dialog_id);
     let on_volume = read_text(vfs, &path);
@@ -245,6 +259,24 @@ pub async fn prepare(
         notes.push(prompt::card_gone(&card_text(last)));
     }
     state.task = card;
+
+    // The card (or its last text, once deleted) and the checklist go with
+    // the notes (step 5): sent with every request, up to a few thousand
+    // characters, so the context gets what they leave. The other notes are
+    // a few lines, which the reply's room absorbs.
+    let shown_card = state
+        .task
+        .as_deref()
+        .map(|c| prompt::card_note(&card_text(c)));
+    let notes_chars: usize = notes
+        .iter()
+        .chain(&shown_card)
+        .chain(&checklist_note)
+        .map(|n| n.chars().count() + 1)
+        .sum();
+    let budget = budget
+        .saturating_sub(cost.tokens(notes_chars))
+        .max(budget / 2);
 
     // After a restart the volume is empty: put the file and its history back.
     let on_volume = match (on_volume, &state.rendered) {
@@ -419,6 +451,28 @@ pub async fn prepare(
     effective = repaired;
     let full_tokens = ctx_tokens(&raw, cost);
 
+    // The reasoning sent back with the run's steps (attach_reasoning): not
+    // in the file, and some providers refuse a request without it, so it's
+    // sent whatever its size. The file gets the room it leaves; the last
+    // resort below fits both into `room`.
+    let reasoning: HashMap<String, Value> = {
+        let mut msgs: Vec<Msg> = effective.iter().map(CtxMsg::to_msg).collect();
+        db.read(move |conn| {
+            attach_reasoning(conn, &mut msgs, &model)?;
+            Ok(msgs
+                .into_iter()
+                .filter_map(|m| Some((m.id, m.reasoning?)))
+                .collect())
+        })
+        .await?
+    };
+    let reasoning_tokens: usize = reasoning
+        .values()
+        .map(|r| cost.tokens(r.to_string().chars().count()))
+        .sum();
+    let room = budget;
+    let budget = room.saturating_sub(reasoning_tokens).max(room / 4);
+
     // 3. Over budget: withhold the oldest outputs since the projection.
     let mut tokens = ctx_tokens(&effective, cost);
     let mut withheld = 0;
@@ -518,15 +572,22 @@ pub async fn prepare(
         notes.push(nudge);
     }
 
-    // Last resort: still over, this request is trimmed as in Trimming mode.
-    let msgs: Vec<Msg> = effective.iter().map(CtxMsg::to_msg).collect();
-    let (messages, info) = if tokens > budget {
+    // Last resort: still over, this request is trimmed as in Trimming mode
+    // (which counts the reasoning too).
+    let msgs: Vec<Msg> = effective
+        .iter()
+        .map(|m| Msg {
+            reasoning: reasoning.get(&m.id).cloned(),
+            ..m.to_msg()
+        })
+        .collect();
+    let (messages, info) = if tokens + reasoning_tokens > room {
         notes.push(
             "[context: still over budget after withholding outputs, so older parts were cut from this request. \
              Compact your context file NOW.]"
                 .to_string(),
         );
-        let (fitted, mut info) = fit_with(msgs, budget, cost);
+        let (fitted, mut info) = fit_with(msgs, room, cost);
         info.full_tokens = full_tokens;
         (fitted, info)
     } else {
@@ -536,7 +597,7 @@ pub async fn prepare(
                 focus_note: false,
                 trimmed: withheld > 0,
                 dropped_turns: 0,
-                estimated_tokens: tokens,
+                estimated_tokens: tokens + reasoning_tokens,
                 full_tokens,
                 outdated: 0,
             },

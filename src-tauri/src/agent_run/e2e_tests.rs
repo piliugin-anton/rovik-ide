@@ -2777,9 +2777,18 @@ async fn task_card_guidance_then_write_shows_through_card_note() {
         vision: false,
         chars_per_token: 3.0,
     };
-    let prepared = crate::clm::prepare(&db, &vfs, dialog_id.into(), 100_000, cost, None, None)
-        .await
-        .unwrap();
+    let prepared = crate::clm::prepare(
+        &db,
+        &vfs,
+        dialog_id.into(),
+        100_000,
+        cost,
+        None,
+        None,
+        String::new(),
+    )
+    .await
+    .unwrap();
     assert!(
         prepared.notes.join("\n").contains("Goal: do it"),
         "{:?}",

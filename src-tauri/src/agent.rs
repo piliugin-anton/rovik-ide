@@ -951,7 +951,7 @@ pub async fn run_chat(
     let clm_budget = clm_prompt.as_ref().map(|p| {
         history_budget(
             window,
-            fixed_chars - system_prompt.chars().count() + p.chars().count(),
+            fixed_chars - system_prompt.chars().count() + p.chars().count() + CLM_NOTES_CHARS,
             chars_per_token,
             reserve,
         )
@@ -974,6 +974,8 @@ pub async fn run_chat(
                 let Some(clm_budget) = clm_budget else {
                     return Err(String::new());
                 };
+                // With the reasoning the model sent with this request's steps
+                // (reasoning_echo.rs), counted in the budget.
                 let prepared = crate::clm::prepare(
                     db,
                     vfs,
@@ -982,21 +984,10 @@ pub async fn run_chat(
                     cost,
                     current_user_content.clone(),
                     checklist_note.clone(),
+                    model.clone(),
                 )
                 .await?;
-                // The reasoning the model sent with this request's steps (reasoning_echo.rs).
-                let echo_model = model.clone();
-                let mut messages = db
-                    .read(move |conn| {
-                        let mut messages = prepared.messages;
-                        crate::chat_db::history::attach_reasoning(
-                            conn,
-                            &mut messages,
-                            &echo_model,
-                        )?;
-                        Ok(messages)
-                    })
-                    .await?;
+                let mut messages = prepared.messages;
                 let fresh = prepared.notes;
                 let notes = with_carried_notes(&carried_notes, &fresh);
                 // Notes for the model ride on the request's last message (not stored).
@@ -1457,6 +1448,10 @@ pub mod calibration {
 /// Used when neither the server nor the user gave a context window.
 pub const DEFAULT_CONTEXT_TOKENS: usize = 32_000;
 const MIN_HISTORY_TOKENS: usize = 2_000;
+/// Room a CLM request keeps for its short notes on the last message (the
+/// size readout, a reminder, an edit's receipt). The long ones, the task
+/// card and the checklist, `clm::prepare` measures.
+const CLM_NOTES_CHARS: usize = 2_000;
 
 /// What's left of the window for the history: the window minus the system
 /// prompt and tool schemas (`fixed_chars`) and the room kept for the reply.
@@ -1831,7 +1826,7 @@ pub async fn chat_context_estimate(
         Some(clm_tool_chars) => crate::clm::system_section(&vfs, &dialog_id).map(|section| {
             history_budget(
                 window,
-                prompt_chars + 2 + section.chars().count() + clm_tool_chars,
+                prompt_chars + 2 + section.chars().count() + clm_tool_chars + CLM_NOTES_CHARS,
                 chars_per_token,
                 reply,
             )
