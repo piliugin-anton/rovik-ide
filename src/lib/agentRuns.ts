@@ -63,7 +63,7 @@ export type StartKind =
         id: string;
         content: string;
         meta?: ChatMessage['meta'];
-        /** Pasted images' attachment ids (lib/composerImages.ts). */
+        /** Attached images' and PDFs' ids (lib/composerSegments.ts); `meta.pdfs` names the PDFs. */
         attachments?: string[];
       };
     }

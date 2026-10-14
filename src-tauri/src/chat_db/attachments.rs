@@ -1,40 +1,49 @@
-//! Binary attachments (browser_screenshot results, images pasted into the
-//! chat input) stored as files named by SHA-256. Identical images are
-//! stored once; unreferenced ones are removed later.
+//! Binary attachments (browser_screenshot results, images and PDFs
+//! attached in the chat input) stored as files named by SHA-256. Identical
+//! files are stored once; unreferenced ones are removed later.
 
 use super::store::{err, now_ms, DbResult};
 use super::DbState;
+use regex::bytes::Regex;
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 pub const DIR: &str = "attachments";
 /// An attachment must stay unreferenced this long before cleanup removes
-/// it: an image is stored before the message that references it.
+/// it: a file is stored before the message that references it.
 const GRACE_MS: i64 = 60 * 60 * 1000;
-/// A pasted image at most. The chat input scales big ones down before
-/// storing them; this only refuses what no provider would take.
-pub const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+/// An attached image or PDF at most. The chat input scales big images down
+/// and keeps PDFs under its own limit; this only refuses what no provider
+/// would take.
+pub const MAX_BYTES: usize = 20 * 1024 * 1024;
+pub const PDF: &str = "application/pdf";
+
+/// Stored types and their files' extensions.
+const TYPES: [(&str, &str); 5] = [
+    ("image/jpeg", "jpg"),
+    ("image/png", "png"),
+    ("image/webp", "webp"),
+    ("image/gif", "gif"),
+    (PDF, "pdf"),
+];
 
 fn extension(mime: &str) -> &'static str {
-    match mime {
-        "image/jpeg" => "jpg",
-        "image/png" => "png",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        _ => "bin",
-    }
+    TYPES
+        .iter()
+        .find(|(m, _)| *m == mime)
+        .map_or("bin", |(_, ext)| ext)
 }
 
 fn mime_for(path: &Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("jpg") => "image/jpeg",
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        Some("gif") => "image/gif",
-        _ => "application/octet-stream",
-    }
+    let ext = path.extension().and_then(|e| e.to_str());
+    TYPES
+        .iter()
+        .find(|(_, e)| Some(*e) == ext)
+        .map_or("application/octet-stream", |(mime, _)| mime)
 }
 
 pub fn is_valid_id(id: &str) -> bool {
@@ -49,8 +58,10 @@ pub fn file_for(data_dir: &Path, id: &str) -> Option<PathBuf> {
     if !is_valid_id(id) {
         return None;
     }
-    ["jpg", "png", "webp", "gif", "bin"]
+    TYPES
         .iter()
+        .map(|(_, ext)| *ext)
+        .chain(["bin"])
         .map(|ext| data_dir.join(DIR).join(format!("{id}.{ext}")))
         .find(|p| p.exists())
 }
@@ -92,9 +103,9 @@ pub async fn store(db: &DbState, bytes: Vec<u8>, mime: &str) -> DbResult<String>
     Ok(id)
 }
 
-/// The type of an image the providers take (PNG, JPEG, WebP, GIF), from its
-/// first bytes; None for anything else.
-pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+/// The type of a file the providers take (PNG, JPEG, WebP and GIF images,
+/// PDFs), from its first bytes; None for anything else.
+pub fn attachment_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
@@ -103,23 +114,71 @@ pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
         Some("image/gif")
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
         Some("image/webp")
+    } else if is_pdf(bytes) {
+        Some(PDF)
     } else {
         None
     }
 }
 
-/// Stores an image pasted into the chat input; its type is read from the
-/// bytes, never taken on trust.
-pub async fn store_image(db: &DbState, bytes: Vec<u8>) -> DbResult<String> {
-    if bytes.len() > MAX_IMAGE_BYTES {
+/// A PDF starts with `%PDF-`, which readers look for in its first kilobyte
+/// (some files have a few bytes of junk before it).
+fn is_pdf(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(1024)]
+        .windows(5)
+        .any(|w| w == b"%PDF-")
+}
+
+/// Pages in a PDF, as far as they can be counted without a PDF reader: its
+/// page objects (`/Type /Page`), else its page tree's `/Count`. Files that
+/// compress those (object streams) are counted by size, at a typical 50 KB
+/// a page. It's for estimating what the PDF costs a request.
+pub fn pdf_pages(bytes: &[u8]) -> usize {
+    // ASCII only: a PDF's bytes aren't UTF-8.
+    static PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u)/Type\s*/Page\b").unwrap());
+    static COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u)/Count\s+(\d+)").unwrap());
+    let pages = PAGE.find_iter(bytes).count();
+    if pages > 0 {
+        return pages;
+    }
+    let count = COUNT
+        .captures_iter(bytes)
+        .filter_map(|c| std::str::from_utf8(&c[1]).ok()?.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0);
+    if count > 0 {
+        count
+    } else {
+        bytes.len().div_ceil(50 * 1024).max(1)
+    }
+}
+
+/// An attachment as stored, for the chat input.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Stored {
+    pub id: String,
+    /// Its type, read from its bytes.
+    pub mime: &'static str,
+    /// A PDF's pages (`pdf_pages`).
+    pub pages: Option<usize>,
+}
+
+/// Stores an image or a PDF attached in the chat input; its type is read
+/// from the bytes, never taken on trust.
+pub async fn store_attached(db: &DbState, bytes: Vec<u8>) -> DbResult<Stored> {
+    if bytes.len() > MAX_BYTES {
         return Err(format!(
-            "The image is too large ({} MB; {} MB at most).",
+            "The file is too large ({} MB; {} MB at most).",
             bytes.len().div_ceil(1024 * 1024),
-            MAX_IMAGE_BYTES / (1024 * 1024)
+            MAX_BYTES / (1024 * 1024)
         ));
     }
-    let mime = image_mime(&bytes).ok_or("Only PNG, JPEG, WebP and GIF images can be attached.")?;
-    store(db, bytes, mime).await
+    let mime = attachment_mime(&bytes)
+        .ok_or("Only PNG, JPEG, WebP and GIF images and PDFs can be attached.")?;
+    let pages = (mime == PDF).then(|| pdf_pages(&bytes));
+    let id = store(db, bytes, mime).await?;
+    Ok(Stored { id, mime, pages })
 }
 
 /// The ids that have no stored attachment (malformed ones included).
@@ -136,12 +195,15 @@ pub fn missing(conn: &Connection, ids: &[String]) -> DbResult<Vec<String>> {
     Ok(out)
 }
 
-/// Images that unsent chat input still shows (`composer_drafts`, whose
-/// content is the input's segments as JSON: lib/composerDraft.ts). No
+/// Images and PDFs that unsent chat input still shows (`composer_drafts`,
+/// whose content is the input's segments as JSON: lib/composerDraft.ts). No
 /// message references them yet, but the user may still send them.
 fn in_drafts(conn: &Connection) -> DbResult<HashSet<String>> {
     let mut stmt = conn
-        .prepare("SELECT content FROM composer_drafts WHERE content LIKE '%\"image\"%'")
+        .prepare(
+            "SELECT content FROM composer_drafts
+             WHERE content LIKE '%\"image\"%' OR content LIKE '%\"pdf\"%'",
+        )
         .map_err(err)?;
     let drafts = stmt
         .query_map([], |r| r.get::<_, String>(0))
@@ -155,10 +217,12 @@ fn in_drafts(conn: &Connection) -> DbResult<HashSet<String>> {
             continue;
         };
         for segment in &segments {
-            if segment.get("type").and_then(|t| t.as_str()) != Some("image") {
-                continue;
-            }
-            if let Some(id) = segment.pointer("/image/id").and_then(|id| id.as_str()) {
+            let id = match segment.get("type").and_then(|t| t.as_str()) {
+                Some("image") => segment.pointer("/image/id"),
+                Some("pdf") => segment.pointer("/pdf/id"),
+                _ => None,
+            };
+            if let Some(id) = id.and_then(|id| id.as_str()) {
                 ids.insert(id.to_string());
             }
         }
@@ -166,7 +230,7 @@ fn in_drafts(conn: &Connection) -> DbResult<HashSet<String>> {
     Ok(ids)
 }
 
-/// Reads an attachment as a `data:` URL, for sending to vision models.
+/// Reads an attachment as a `data:` URL, for sending to a model.
 pub fn data_url(data_dir: &Path, id: &str) -> Option<String> {
     use base64::Engine;
     let path = file_for(data_dir, id)?;

@@ -150,10 +150,11 @@ export const chatApi = {
     invoke<string[]>('chat_messages_answered', { messageIds }),
 
   /**
-   * Stores an image pasted into the chat input (PNG, JPEG, WebP or GIF
-   * bytes, sent as the raw body); returns its attachment id.
+   * Stores an image or a PDF attached in the chat input (its bytes, sent as
+   * the raw body). Its type is read from the bytes: PNG, JPEG, WebP, GIF or
+   * PDF, anything else is refused.
    */
-  storeImage: (bytes: Uint8Array) => invoke<string>('chat_store_image', bytes),
+  storeAttachment: (bytes: Uint8Array) => invoke<StoredAttachment>('chat_store_attachment', bytes),
 
   /**
    * Debounced save of the chat input's unsent input (one row per chat,
@@ -174,6 +175,16 @@ export const chatApi = {
   /** The chat's saved model and effort (null: never saved). */
   getModel: (dialogId: string) => invoke<ChatModel | null>('chat_get_model', { dialogId }),
 };
+
+/** An attachment as stored (chat_db/attachments.rs). */
+export interface StoredAttachment {
+  /** SHA-256 of its bytes. */
+  id: string;
+  /** Its type, read from its bytes. */
+  mime: string;
+  /** A PDF's pages, as far as they can be counted. */
+  pages: number | null;
+}
 
 /** The model a chat last used (`dialogs.model_provider`/`model_id`/`effort`). */
 export interface ChatModel {

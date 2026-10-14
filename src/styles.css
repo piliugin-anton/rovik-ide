@@ -2871,11 +2871,38 @@ body.tree-dragging {
   outline: none;
 }
 
-/* The send/stop button's own row, below the text, right-aligned. */
+/* The send/stop button's own row, below the text: attach at its left end,
+   send/stop at its right. */
 .chat-input-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   padding: 2px 4px 4px;
+}
+
+.chat-attach-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.chat-attach-button:hover:not(:disabled) {
+  background: var(--hover-strong);
+  color: var(--fg);
+}
+
+.chat-attach-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .chat-input-contenteditable:empty:before {
@@ -6273,30 +6300,33 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   white-space: nowrap;
 }
 
-/* Long pastes: a chip in the input, a collapsed block in the chat */
+/* Long pastes and attached text files: a chip in the input, a collapsed
+   block in the chat */
 
-.chat-pasted-chip .chat-file-reference-name::before {
+.chat-pasted-chip:not([data-name]) .chat-file-reference-name::before {
   content: '¶ ';
   color: var(--fg-dim);
 }
 
-/* Pasted images: a chip with a thumbnail in the input, the images in the chat */
+/* Attachments: chips in the input for images (with a thumbnail), PDFs and
+   files still being added; the images and PDFs under a sent message */
 
-/* Drawn, not text (ChatPanel's createImageChip): copying leaves them out. */
-.chat-image-chip .chat-file-reference-name::before {
-  content: 'Image';
+/* Drawn, not text (ChatPanel's attachmentChip): the input's text is only
+   what was typed. */
+.chat-attachment-chip .chat-file-reference-name::before {
+  content: attr(data-label);
 }
 
-.chat-image-chip .chat-file-reference-lines[data-size]::before {
+.chat-attachment-chip .chat-file-reference-lines[data-size]::before {
   content: '\00a0· ' attr(data-size);
 }
 
-/* No size yet (still being added): nothing to show. */
-.chat-image-chip .chat-file-reference-lines:not([data-size]) {
+/* No size known: nothing to show. */
+.chat-attachment-chip .chat-file-reference-lines:not([data-size]) {
   display: none;
 }
 
-.chat-image-chip .chat-file-reference-remove::before {
+.chat-attachment-chip .chat-file-reference-remove::before {
   content: '\00d7';
 }
 
@@ -6308,12 +6338,13 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   border-radius: 3px;
 }
 
-/* Being made ready and stored: no thumbnail yet. */
-.chat-image-chip.loading .chat-image-chip-thumb {
-  display: none;
+.chat-attachment-icon {
+  flex-shrink: 0;
+  color: var(--fg-muted);
 }
 
-.chat-image-chip.loading .chat-file-reference-name {
+/* Being made ready and stored. */
+.chat-loading-chip .chat-file-reference-name {
   animation: tool-approval-pulse 1.6s ease-in-out infinite;
 }
 
@@ -6341,8 +6372,43 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   cursor: zoom-out;
 }
 
+/* A sent message's PDFs: a row of their names under its text. */
+.chat-message-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-message-files:not(:first-child) {
+  margin-top: 6px;
+}
+
+.chat-message-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+}
+
+.chat-message-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-message-file-size {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .chat-image-chip.loading .chat-file-reference-name {
+  .chat-loading-chip .chat-file-reference-name {
     animation: none;
   }
 }
@@ -6717,7 +6783,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .provider-models-list {
   display: grid;
   /* The name column: never narrower than the longest name, and takes any spare room. */
-  grid-template-columns: minmax(max-content, 1fr) 112px 52px 44px 68px 60px 22px;
+  grid-template-columns: minmax(max-content, 1fr) 112px 52px 40px 44px 68px 60px 22px;
   align-content: start;
   column-gap: 8px;
   overflow: auto;

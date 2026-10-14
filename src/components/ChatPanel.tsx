@@ -49,7 +49,7 @@ import ContextMeter, { type ContextUsage } from './ContextMeter';
 import { chatMode, implementationRequest, setChatMode, type ChatMode } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
 import { notify } from '../lib/notifications';
-import { plural } from '../lib/textUtils';
+import { formatBytes, plural } from '../lib/textUtils';
 import ModeSelector from './ModeSelector';
 import EffortSelector from './EffortSelector';
 import ContextControls from './ContextControls';
@@ -100,7 +100,6 @@ import {
   listPendingDrafts,
   savePendingDraft,
   takePendingDraft,
-  type DraftSegment,
   type PendingDraft,
 } from '../lib/pendingDraft';
 import {
@@ -119,15 +118,38 @@ import {
   type SubagentSettings,
 } from '../lib/subagentSettings';
 import { readFileContent } from '../lib/commands';
+import { parseComposerImage, type ComposerImage } from '../lib/composerImages';
 import {
-  imageFiles,
-  MAX_MESSAGE_IMAGES,
-  parseComposerImage,
+  ATTACH_ACCEPT,
+  attachmentKind,
+  MAX_MESSAGE_ATTACHMENTS,
+  modelTakes,
+  unsupportedReason,
+  type AttachmentKind,
+} from '../lib/attachmentFormats';
+import {
+  attachmentSegment,
+  fileName,
+  parseComposerPdf,
+  pastedFiles,
   pasteTakes,
   readClipboard,
-  storePastedImage,
-  type ComposerImage,
-} from '../lib/composerImages';
+  type ComposerPdf,
+} from '../lib/composerAttachments';
+import {
+  attachmentIds,
+  messageText,
+  pdfsOf,
+  segmentKind,
+  type ChipSegment,
+  type DraftSegment,
+} from '../lib/composerSegments';
+import {
+  copiedSegments,
+  copySegments,
+  pastedSegments,
+  writeSegments,
+} from '../lib/composerClipboard';
 import ChatInputContextMenu from './ChatInputContextMenu';
 
 const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
@@ -136,9 +158,6 @@ const NEW_CHAT_TITLE = 'New Chat';
 
 /** Chats whose interrupted tool calls were offered again this session: once each. */
 const resumed = new Set<string>();
-
-/** Models told this session that they get no pasted images: once each. */
-const warnedNoVision = new Set<string>();
 
 /*
  * The context bar above the input (and the CLM budget in the context row)
@@ -180,8 +199,8 @@ export default function ChatPanel(props: ChatProps) {
   const activeDialogId = () => store.state.activeId;
 
   const [input, setInput] = createSignal('');
-  /** Images in the input (stored ones; those still being added aren't counted). */
-  const [imageCount, setImageCount] = createSignal(0);
+  /** Images and PDFs in the input (stored ones; those still being added aren't counted). */
+  const [attachmentCount, setAttachmentCount] = createSignal(0);
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const [historyQuery, setHistoryQuery] = createSignal('');
   /** Lags historyQuery slightly so fast typing doesn't search on every key. */
@@ -1060,7 +1079,6 @@ export default function ChatPanel(props: ChatProps) {
 
   /** Builds the non-editable "file reference" chip used in the composer. */
   function createFileChip(suggestion: FileSuggestion): HTMLSpanElement {
-    knownReferences.set(referenceKey(suggestion), suggestion);
     const chip = document.createElement('span');
     chip.className = 'chat-file-reference';
     chip.contentEditable = 'false';
@@ -1103,15 +1121,7 @@ export default function ChatPanel(props: ChatProps) {
       </svg>
     </button>`;
 
-    chip.querySelector('.chat-file-reference-remove')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      removeReferencedFile(referenceKey(suggestion));
-      chip.remove();
-      syncInput();
-      recordComposerHistory('other');
-    });
-
+    wireRemove(chip, () => removeReferencedFile(referenceKey(suggestion)));
     return chip;
   }
 
@@ -1282,7 +1292,7 @@ export default function ChatPanel(props: ChatProps) {
 
   function clearChatInput(focus = true) {
     setInput('');
-    setImageCount(0);
+    setAttachmentCount(0);
     setReferencedFiles([]);
 
     if (inputTextareaRef) {
@@ -1420,8 +1430,6 @@ export default function ChatPanel(props: ChatProps) {
   let lastStepKind: 'typing' | 'deleting' | 'other' = 'other';
   let lastStepTime = 0;
   let pastingText = false;
-  /** Every reference chip ever made, so a restored snapshot can rebuild them. */
-  const knownReferences = new Map<string, FileSuggestion>();
   const HISTORY_STEPS = 200;
   const GROUP_WITHIN_MS = 1000;
 
@@ -1479,37 +1487,14 @@ export default function ChatPanel(props: ChatProps) {
     if (!el) return;
     el.innerHTML = snap.html;
     // Chips come back with their remove buttons (markup alone loses them).
+    // One that was still being added then has nothing to come back as.
     for (const old of [...el.querySelectorAll<HTMLElement>('.chat-file-reference')]) {
-      if (old.classList.contains('chat-image-chip')) {
-        // One that was still being added then has nothing to come back as.
-        const image = parseComposerImage(old.dataset.image);
-        if (image) old.replaceWith(createImageChip(image));
-        else old.remove();
+      if (old.classList.contains('chat-loading-chip')) {
+        old.remove();
         continue;
       }
-      if (old.dataset.pasteId) {
-        const text = knownPastes.get(old.dataset.pasteId);
-        if (text !== undefined) old.replaceWith(createPastedChip(text, old.dataset.pasteId));
-        continue;
-      }
-      const ref = knownReferences.get(old.dataset.ref ?? '');
-      if (ref) {
-        old.replaceWith(createFileChip(ref));
-        continue;
-      }
-      // Map is per-mount (empty after a restart): fall back to the payload
-      // embedded in the chip itself so undo still keeps file chips as chips.
-      if (old.dataset.file) {
-        try {
-          const file = JSON.parse(old.dataset.file) as FileSuggestion;
-          if (file && typeof file.path === 'string') {
-            old.replaceWith(createFileChip(file));
-            continue;
-          }
-        } catch {
-          // Leave the markup as-is.
-        }
-      }
+      const segment = chipSegment(old);
+      if (segment) old.replaceWith(chipFor(segment));
     }
     el.focus();
     const at = findTextOffset(el, snap.caret);
@@ -1551,6 +1536,49 @@ export default function ChatPanel(props: ChatProps) {
 
   /** Reads the composer as ordered text + chip segments. */
   function serializeComposer(): DraftSegment[] {
+    return inputTextareaRef ? serializeNodes(inputTextareaRef) : [];
+  }
+
+  /**
+   * What a chip is, as a segment: its own payload, in its data attributes.
+   * Null for one still being added, or one that can't be read.
+   */
+  function chipSegment(chip: HTMLElement): ChipSegment | null {
+    if (chip.classList.contains('chat-image-chip')) {
+      const image = parseComposerImage(chip.dataset.image);
+      return image && { type: 'image', image };
+    }
+    if (chip.classList.contains('chat-pdf-chip')) {
+      const pdf = parseComposerPdf(chip.dataset.pdf);
+      return pdf && { type: 'pdf', pdf };
+    }
+    if (chip.classList.contains('chat-pasted-chip')) {
+      const text = knownPastes.get(chip.dataset.pasteId ?? '');
+      if (text === undefined) return null;
+      const name = chip.dataset.name;
+      return name === undefined ? { type: 'pasted', text } : { type: 'pasted', text, name };
+    }
+    if (chip.classList.contains('chat-loading-chip')) return null;
+    // A file reference. The chip's own payload first: it survives restarts
+    // and any signal staleness (e.g. a save scheduled mid-restore). The
+    // referencedFiles() lookup is only for chips built before the payload
+    // was embedded.
+    const embedded = chip.dataset.file;
+    if (embedded) {
+      try {
+        const file = JSON.parse(embedded) as FileSuggestion;
+        if (file && typeof file.path === 'string') return { type: 'file', file };
+      } catch {
+        // Fall through to the signal lookup.
+      }
+    }
+    const key = chip.dataset.ref ?? chip.dataset.path ?? '';
+    const file = referencedFiles().find((f) => referenceKey(f) === key);
+    return file ? { type: 'file', file } : null;
+  }
+
+  /** The nodes under `root` (the input, or a copy of its selection) as segments. */
+  function serializeNodes(root: Node): DraftSegment[] {
     const segments: DraftSegment[] = [];
     const pushText = (text: string) => {
       if (!text) return;
@@ -1567,45 +1595,21 @@ export default function ChatPanel(props: ChatProps) {
         }
         if (!(child instanceof HTMLElement)) return;
 
-        if (child.classList.contains('chat-image-chip')) {
-          // One still being added has no image yet: nothing to keep.
-          const image = parseComposerImage(child.dataset.image);
-          if (image) segments.push({ type: 'image', image });
-          return;
-        }
-        if (child.classList.contains('chat-pasted-chip')) {
-          const text = knownPastes.get(child.dataset.pasteId ?? '');
-          if (text !== undefined) segments.push({ type: 'pasted', text });
-          return;
-        }
         if (child.classList.contains('chat-file-reference')) {
-          // The chip's own payload first: it survives restarts and any
-          // signal staleness (e.g. a save scheduled mid-restore). The
-          // referencedFiles() lookup is only for chips built before the
-          // payload was embedded.
-          const embedded = child.dataset.file;
-          if (embedded) {
-            try {
-              const file = JSON.parse(embedded) as FileSuggestion;
-              if (file && typeof file.path === 'string') {
-                segments.push({ type: 'file', file });
-                return;
-              }
-            } catch {
-              // Fall through to the signal lookup.
-            }
+          const segment = chipSegment(child);
+          if (segment) segments.push(segment);
+          // A reference that can't be read keeps its name, as text; an
+          // attachment still being added has nothing to keep yet.
+          else if (!child.matches('.chat-attachment-chip, .chat-pasted-chip')) {
+            pushText(child.textContent ?? '');
           }
-          const key = child.dataset.ref ?? child.dataset.path ?? '';
-          const file = referencedFiles().find((f) => referenceKey(f) === key);
-          if (file) segments.push({ type: 'file', file });
-          else pushText(child.textContent ?? '');
           return;
         }
         if (child.tagName === 'BR') {
           // A <br> that is the only/last thing in a line <div> is WebKit's
           // placeholder for an empty line; the <div> already counts as the break.
           const isLinePlaceholder =
-            child.parentElement !== inputTextareaRef &&
+            child.parentNode !== root &&
             child.parentElement?.tagName === 'DIV' &&
             child.nextSibling === null;
           if (!isLinePlaceholder) pushText('\n');
@@ -1617,40 +1621,19 @@ export default function ChatPanel(props: ChatProps) {
       });
     };
 
-    if (inputTextareaRef) walk(inputTextareaRef);
+    walk(root);
     return segments;
   }
 
   /**
-   * The composer's text with real line breaks (textContent drops the ones
-   * WebKit makes out of <div>/<br>) and file chips as their names. Images
-   * aren't text: they go with the message as attachments.
+   * `input` (the message's text, with real line breaks: textContent drops
+   * the ones WebKit makes out of <div>/<br>) and `attachmentCount` from the
+   * composer as it is now.
    */
-  function composerText(segments: DraftSegment[]): string {
-    return segments
-      .map((segment) =>
-        segment.type === 'text'
-          ? segment.text
-          : segment.type === 'pasted'
-            ? `\n<pasted_text lines="${segment.text.split('\n').length}">\n${segment.text}\n</pasted_text>\n`
-            : segment.type === 'image'
-              ? ''
-              : referenceLabel(segment.file)
-      )
-      .join('');
-  }
-
-  /** The images in the composer, in order, once each: what the message sends. */
-  function composerImageIds(segments = serializeComposer()): string[] {
-    const ids = segments.flatMap((s) => (s.type === 'image' ? [s.image.id] : []));
-    return [...new Set(ids)];
-  }
-
-  /** `input` and `imageCount` from the composer as it is now. */
   function syncInput() {
     const segments = serializeComposer();
-    setInput(composerText(segments));
-    setImageCount(composerImageIds(segments).length);
+    setInput(messageText(segments));
+    setAttachmentCount(attachmentIds(segments).length);
   }
 
   function handleComposerInput(target: HTMLElement, inputType?: string, data?: string | null) {
@@ -1728,20 +1711,41 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /**
-   * Clipboard text as plain text (code copied from Monaco carries colored
-   * HTML), or the clipboard's images as image chips.
+   * A copy of the input or of a message as it was, chips and all; else
+   * clipboard text as plain text (code copied from Monaco carries colored
+   * HTML), or the clipboard's files as attachments.
    */
   function handleComposerPaste(e: ClipboardEvent) {
     e.preventDefault();
     const data = e.clipboardData;
+    const copied = pastedSegments(data);
+    if (copied) {
+      insertSegments(copied);
+      return;
+    }
     const text = data?.getData('text/plain') ?? '';
-    const images = imageFiles(data);
-    const take = pasteTakes(text, images.length);
+    const files = pastedFiles(data);
+    const take = pasteTakes(text, files.length);
     if (take === 'text') pasteText(text);
-    else if (take === 'images') void pasteImages(images);
+    else if (take === 'files') void attachFiles(files);
     // Nothing in the event: WebKitGTK leaves an image out of it entirely (no
     // types, no files), but the clipboard API has it.
     else void pasteFromClipboard(true);
+  }
+
+  /**
+   * Copy and cut in the input: the selection as segments, so its chips
+   * paste back as chips (lib/composerClipboard.ts).
+   */
+  function handleComposerCopy(e: ClipboardEvent) {
+    const range = composerRange();
+    if (!range || range.collapsed || !e.clipboardData) return;
+    e.preventDefault();
+    writeSegments(e.clipboardData, serializeNodes(range.cloneContents()));
+    if (e.type !== 'cut' || !inputTextareaRef) return;
+    range.deleteContents();
+    // As a deletion typed there: no `input` event fires for this one.
+    handleComposerInput(inputTextareaRef);
   }
 
   function pasteText(text: string) {
@@ -1802,92 +1806,229 @@ export default function ChatPanel(props: ChatProps) {
     // Back where the paste was asked for: reading can take the focus (a
     // permission prompt).
     focusComposerAt(at);
+    const copied = imagesOnly ? null : copiedSegments(content.text);
+    if (copied) {
+      insertSegments(copied);
+      return;
+    }
     const take = pasteTakes(imagesOnly ? '' : content.text, content.images.length);
     if (take === 'text') pasteText(content.text);
-    else if (take === 'images') await pasteImages(content.images);
+    else if (take === 'files') await attachFiles(content.images);
   }
 
   /*
-   * Pasted images: a chip each, with a thumbnail. The image is in the chip's
-   * `data-image` (lib/composerImages.ts), so serializing, undo and drafts
-   * read it back from the DOM; the message sends their ids. A chip made
-   * without one is still being added (made ready and stored).
+   * -----------------------------------------------------------------------
+   * Attachments: images, PDFs and text files, pasted or picked with the
+   * attach button
+   * -----------------------------------------------------------------------
+   *
+   * Each is a chip in the input, its payload in the chip's data attributes
+   * (`chipSegment`), so serializing, undo and drafts read it back from the
+   * DOM. Images and PDFs are stored as attachments and the message sends
+   * their ids (PDFs named in its meta); a text file is a named block of
+   * text (`createPastedChip`). Only formats models read can be attached
+   * (lib/attachmentFormats.ts), and only those the model is set to take.
    */
-  function createImageChip(image: ComposerImage | null): HTMLSpanElement {
-    const chip = document.createElement('span');
-    chip.className = 'chat-file-reference chat-image-chip';
-    chip.contentEditable = 'false';
-    // Its label, size and × are drawn by CSS (styles.css): none of it is
-    // text, so copying a selection with the chip in it copies none of it.
-    chip.innerHTML = `<img class="chat-image-chip-thumb" alt="" draggable="false"><span class="chat-file-reference-name"></span><span class="chat-file-reference-lines"></span><button type="button" class="chat-file-reference-remove" aria-label="Remove image" title="Remove image"></button>`;
-    const remove = chip.querySelector('button');
+
+  /** A chip's ×: takes the chip out, as one undo step. */
+  function wireRemove(chip: HTMLElement, onRemove?: () => void) {
+    const remove = chip.querySelector('.chat-file-reference-remove');
     remove?.addEventListener('mousedown', (e) => e.preventDefault());
     remove?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      onRemove?.();
       chip.remove();
       syncInput();
       scheduleComposerDraftSave();
       recordComposerHistory('other');
     });
-    if (image) {
-      fillImageChip(chip, image);
-    } else {
-      chip.classList.add('loading');
-      chip.title = 'Adding the image…';
-    }
+  }
+
+  const DOCUMENT_ICON = `<svg class="chat-attachment-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 1.5h6l3 3v10h-9z"/><path d="M9.5 1.5v3h3"/></svg>`;
+
+  /**
+   * The chip of an image, a PDF, or a file still being added. Its label,
+   * size and × are drawn by CSS from data attributes (styles.css): none of
+   * it is the input's text.
+   */
+  function attachmentChip(
+    kind: string,
+    label: string,
+    size: string | undefined,
+    removeLabel: string
+  ): HTMLSpanElement {
+    const chip = document.createElement('span');
+    chip.className = `chat-file-reference chat-attachment-chip ${kind}`;
+    chip.contentEditable = 'false';
+    chip.innerHTML = `<span class="chat-file-reference-name"></span><span class="chat-file-reference-lines"></span><button type="button" class="chat-file-reference-remove"></button>`;
+    const [name, lines, remove] = Array.from(chip.children) as HTMLElement[];
+    name.dataset.label = label;
+    if (size) lines.dataset.size = size;
+    remove.setAttribute('aria-label', removeLabel);
+    remove.title = removeLabel;
+    wireRemove(chip);
     return chip;
   }
 
-  function fillImageChip(chip: HTMLElement, image: ComposerImage) {
-    chip.classList.remove('loading');
+  function createImageChip(image: ComposerImage): HTMLSpanElement {
+    const size = image.width && image.height ? `${image.width}×${image.height}` : undefined;
+    const chip = attachmentChip('chat-image-chip', 'Image', size, 'Remove image');
     chip.dataset.image = JSON.stringify(image);
-    chip.title = `Image, ${image.width}×${image.height}`;
-    const thumb = chip.querySelector<HTMLImageElement>('.chat-image-chip-thumb');
-    if (thumb) thumb.src = attachmentUrl(image.id);
-    const size = chip.querySelector<HTMLElement>('.chat-file-reference-lines');
-    if (size) size.dataset.size = `${image.width}×${image.height}`;
+    chip.title = size ? `Image, ${size}` : 'Image';
+    const thumb = document.createElement('img');
+    thumb.className = 'chat-image-chip-thumb';
+    thumb.alt = '';
+    thumb.draggable = false;
+    thumb.src = attachmentUrl(image.id);
+    chip.prepend(thumb);
+    return chip;
+  }
+
+  function createPdfChip(pdf: ComposerPdf): HTMLSpanElement {
+    const pages = plural(pdf.pages, 'page');
+    const chip = attachmentChip('chat-pdf-chip', pdf.name, pages, 'Remove PDF');
+    chip.dataset.pdf = JSON.stringify(pdf);
+    chip.title = `${pdf.name}: PDF, ${pages}, ${formatBytes(pdf.size)}`;
+    chip.insertAdjacentHTML('afterbegin', DOCUMENT_ICON);
+    return chip;
+  }
+
+  /** A file being made ready and stored; its chip takes its place once it is. */
+  function createLoadingChip(name: string): HTMLSpanElement {
+    const chip = attachmentChip('chat-loading-chip', name || 'Image', undefined, 'Cancel');
+    chip.title = `Adding ${name || 'the image'}…`;
+    return chip;
+  }
+
+  /** The chip that shows a segment. */
+  function chipFor(segment: ChipSegment): HTMLElement {
+    switch (segment.type) {
+      case 'file':
+        return createFileChip(segment.file);
+      case 'pasted':
+        return createPastedChip(segment.text, undefined, segment.name);
+      case 'image':
+        return createImageChip(segment.image);
+      case 'pdf':
+        return createPdfChip(segment.pdf);
+    }
+  }
+
+  /** Images, PDFs and text files in the input, those being added included. */
+  function attachmentsInComposer(): number {
+    return (
+      inputTextareaRef?.querySelectorAll('.chat-attachment-chip, .chat-pasted-chip[data-name]')
+        .length ?? 0
+    );
+  }
+
+  /** Says that the model isn't set to take these kinds, and what to do about it. */
+  function notifyNotTaken(kinds: Iterable<AttachmentKind>) {
+    const profile = activeProfile();
+    const list = [...new Set(kinds)].filter((kind) => kind !== 'text');
+    if (!profile || list.length === 0) return;
+    const what = list.map((kind) => (kind === 'image' ? 'images' : 'PDFs')).join(' or ');
+    const setting = list.map((kind) => (kind === 'image' ? 'Vision' : 'PDF')).join(' and ');
+    notify({
+      kind: 'warning',
+      title: `${profile.model} isn't set to accept ${what}`,
+      message: `If it does, turn on ${setting} for it in Settings → Model providers, or pick a model that does.`,
+      actions: [{ label: 'Open settings', run: () => openAppSettings('providers') }],
+      timeout: 12_000,
+    });
   }
 
   /**
-   * Pasted images: a chip for each at the caret right away, filled in as
-   * each is made ready and stored. One that fails goes away again and says
-   * why.
+   * The items the input can take: attachments of kinds the model takes, as
+   * many as a message has room for; what isn't an attachment (kind null)
+   * always. Says what was left out, and why.
    */
-  async function pasteImages(blobs: Blob[]) {
-    const container = inputTextareaRef;
-    if (!container) return;
-    const room = MAX_MESSAGE_IMAGES - container.querySelectorAll('.chat-image-chip').length;
-    const taken = blobs.slice(0, Math.max(0, room));
-    if (taken.length < blobs.length) {
+  function admit<T>(items: T[], kindOf: (item: T) => AttachmentKind | null): T[] {
+    const profile = activeProfile();
+    const notTaken = new Set<AttachmentKind>();
+    let room = MAX_MESSAGE_ATTACHMENTS - attachmentsInComposer();
+    let over = 0;
+    let added = 0;
+    const admitted = items.filter((item) => {
+      const kind = kindOf(item);
+      if (!kind) return true;
+      if (profile && !modelTakes(profile, kind)) {
+        notTaken.add(kind);
+        return false;
+      }
+      if (room <= 0) {
+        over++;
+        return false;
+      }
+      room--;
+      added++;
+      return true;
+    });
+    notifyNotTaken(notTaken);
+    if (over > 0) {
       notify({
         kind: 'warning',
-        title: `A message can have ${MAX_MESSAGE_IMAGES} images at most`,
+        title: `A message can have ${MAX_MESSAGE_ATTACHMENTS} attachments at most`,
         message:
-          taken.length > 0
-            ? `${plural(taken.length, 'image')} added, the rest left out.`
+          added > 0
+            ? `${plural(added, 'file')} added, the rest left out.`
             : 'Remove one to add another.',
         timeout: 6000,
       });
     }
+    return admitted;
+  }
+
+  /**
+   * Files pasted or picked: each checked (a format models read, a kind the
+   * model takes, room in the message), then a chip for each at the caret
+   * right away, filled in as each is made ready and stored. One that fails
+   * goes away again and says why.
+   */
+  async function attachFiles(files: Blob[]) {
+    const container = inputTextareaRef;
+    if (!container) return;
+    const unsupported: string[] = [];
+    const known = files.flatMap((file) => {
+      const like = { name: fileName(file), type: file.type };
+      const kind = attachmentKind(like);
+      if (kind) return [{ file, kind }];
+      unsupported.push(unsupportedReason(like));
+      return [];
+    });
+    if (unsupported.length > 0) {
+      notify({
+        kind: 'warning',
+        title:
+          unsupported.length === 1
+            ? "The file can't be attached"
+            : `${unsupported.length} files can't be attached`,
+        message: unsupported.join(' '),
+        timeout: 10_000,
+      });
+    }
+    const taken = admit(known, (item) => item.kind);
     if (taken.length === 0) return;
-    const chips = taken.map(() => createImageChip(null));
-    insertAtCaret(chips);
-    warnIfImagesNotSent();
+    const chips = taken.map(({ file }) => createLoadingChip(fileName(file)));
+    insertAtCaret(chipNodes(chips));
     let added = 0;
     await Promise.all(
-      taken.map(async (blob, i) => {
+      taken.map(async ({ file, kind }, i) => {
         try {
-          const image = await storePastedImage(blob);
+          const segment = await attachmentSegment(file, kind);
           // Removed meanwhile, or another chat opened: nothing to fill.
           if (!chips[i].isConnected) return;
-          fillImageChip(chips[i], image);
+          chips[i].replaceWith(chipFor(segment));
           added++;
         } catch (err) {
+          // With the space it was inserted with (chipNodes).
+          const after = chips[i].nextSibling;
+          if (after instanceof Text && after.data.startsWith(' ')) after.deleteData(0, 1);
           chips[i].remove();
           notify({
             kind: 'error',
-            title: "The image couldn't be added",
+            title: `${fileName(file) || 'The image'} couldn't be added`,
             message: err instanceof Error ? err.message : String(err),
             timeout: 8000,
           });
@@ -1901,21 +2042,35 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /**
-   * Images pasted for a model not marked as taking them: say so, once per
-   * model. It gets a note that an image was attached instead.
+   * A copy of the input or of a message, pasted: its chips come back as
+   * chips, the images and PDFs among them as far as admit() lets them.
    */
-  function warnIfImagesNotSent() {
-    const profile = activeProfile();
-    if (!profile || profile.vision || warnedNoVision.has(profile.id)) return;
-    warnedNoVision.add(profile.id);
-    notify({
-      kind: 'warning',
-      title: `${profile.model} isn't set to accept images`,
-      message:
-        'It gets a note that an image was attached, not the image. If the model does take images, turn on Vision for it in Settings → Model providers.',
-      actions: [{ label: 'Open settings', run: () => openAppSettings('providers') }],
-      timeout: 12_000,
-    });
+  function insertSegments(segments: DraftSegment[]) {
+    const admitted = admit(segments, segmentKind);
+    if (admitted.length === 0) return;
+    addReferencedFiles(admitted);
+    insertAtCaret(segmentNodes(admitted));
+    syncInput();
+    scheduleComposerDraftSave();
+    recordComposerHistory('other');
+  }
+
+  /** The attach button: the file picker, then what's picked is attached at the caret. */
+  let fileInputRef: HTMLInputElement | undefined;
+  let pickerCaret: Range | null = null;
+
+  function pickFiles() {
+    pickerCaret = composerRange()?.cloneRange() ?? null;
+    fileInputRef?.click();
+  }
+
+  function filesPicked(input: HTMLInputElement) {
+    const files = Array.from(input.files ?? []);
+    // Picking the same file again is a change too.
+    input.value = '';
+    if (files.length === 0) return;
+    focusComposerAt(pickerCaret);
+    void attachFiles(files);
   }
 
   /*
@@ -1988,26 +2143,26 @@ export default function ChatPanel(props: ChatProps) {
     });
   });
 
-  /** Cut or Copy: the webview's own, as Ctrl+X / Ctrl+C do it. */
+  /** Cut or Copy: the webview's own, as Ctrl+X / Ctrl+C do it (handleComposerCopy). */
   function copyFromComposer(cut: boolean) {
     closeInputMenu();
     const range = composerRange();
     if (!range || range.collapsed) return;
     inputTextareaRef?.focus();
     if (document.execCommand(cut ? 'cut' : 'copy')) return;
-    // Not allowed here: the selection's text through the clipboard API.
-    navigator.clipboard?.writeText(range.toString()).then(
-      () => {
+    // Not allowed here: through the clipboard API.
+    void copySegments(serializeNodes(range.cloneContents())).then((copied) => {
+      if (copied) {
         if (cut) document.execCommand('delete');
-      },
-      () =>
-        notify({
-          kind: 'warning',
-          title: "The clipboard couldn't be written",
-          message: `Use ${IS_MAC ? '⌘' : 'Ctrl+'}${cut ? 'X' : 'C'} instead.`,
-          timeout: 6000,
-        })
-    );
+        return;
+      }
+      notify({
+        kind: 'warning',
+        title: "The clipboard couldn't be written",
+        message: `Use ${IS_MAC ? '⌘' : 'Ctrl+'}${cut ? 'X' : 'C'} instead.`,
+        timeout: 6000,
+      });
+    });
   }
 
   /**
@@ -2036,47 +2191,47 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   /*
-   * Long pastes: a "Pasted text" chip in the input, the text itself in
-   * memory (knownPastes). Sent wrapped in <pasted_text> (composerText),
-   * shown collapsed in the chat (MessageContent).
+   * Long pastes and attached text files: a chip in the input ("Pasted
+   * text", or the file's name), the text itself in memory (knownPastes).
+   * Sent in the message wrapped in a tag (lib/textBlocks.ts), shown
+   * collapsed in the chat (MessageContent).
    */
   const PASTE_CHIP_CHARS = 2000;
   const PASTE_CHIP_LINES = 30;
   const knownPastes = new Map<string, string>();
 
-  function createPastedChip(text: string, id: string = crypto.randomUUID()): HTMLSpanElement {
+  function createPastedChip(
+    text: string,
+    id: string = crypto.randomUUID(),
+    name?: string
+  ): HTMLSpanElement {
     knownPastes.set(id, text);
     const lines = text.split('\n').length;
+    const preview = text.length > 400 ? `${text.slice(0, 400)}…` : text;
     const chip = document.createElement('span');
     chip.className = 'chat-file-reference chat-pasted-chip';
     chip.contentEditable = 'false';
     chip.dataset.pasteId = id;
-    chip.title = text.length > 400 ? `${text.slice(0, 400)}…` : text;
-    chip.innerHTML = `<span class="chat-file-reference-name">Pasted text</span><span class="chat-file-reference-lines">&nbsp;· ${lines.toLocaleString()} line${lines === 1 ? '' : 's'}</span><button type="button" class="chat-file-reference-remove" aria-label="Remove pasted text">\u00d7</button>`;
-    chip.querySelector('button')?.addEventListener('mousedown', (e) => e.preventDefault());
-    chip.querySelector('button')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      chip.remove();
-      syncInput();
-      recordComposerHistory('other');
-    });
+    if (name !== undefined) chip.dataset.name = name;
+    chip.title = name === undefined ? preview : `${name}\n\n${preview}`;
+    chip.innerHTML = `${name === undefined ? '' : DOCUMENT_ICON}<span class="chat-file-reference-name"></span><span class="chat-file-reference-lines">&nbsp;· ${lines.toLocaleString()} line${lines === 1 ? '' : 's'}</span><button type="button" class="chat-file-reference-remove" aria-label="Remove ${name === undefined ? 'pasted text' : 'file'}">\u00d7</button>`;
+    chip.querySelector('.chat-file-reference-name')!.textContent = name ?? 'Pasted text';
+    wireRemove(chip);
     return chip;
   }
 
   function insertPastedChip(text: string) {
-    insertAtCaret([createPastedChip(text)]);
+    insertAtCaret(chipNodes([createPastedChip(text)]));
     syncInput();
     scheduleComposerDraftSave();
     recordComposerHistory('other');
   }
 
   /**
-   * Puts chips at the caret, in place of what's selected (at the end when
-   * the caret isn't in the input), each followed by a space; the caret
-   * goes after them.
+   * Puts nodes at the caret, in place of what's selected (at the end when
+   * the caret isn't in the input); the caret goes after them.
    */
-  function insertAtCaret(chips: HTMLElement[]) {
+  function insertAtCaret(nodes: DocumentFragment) {
     const container = inputTextareaRef;
     if (!container) return;
     container.focus();
@@ -2088,15 +2243,51 @@ export default function ChatPanel(props: ChatProps) {
       range.selectNodeContents(container);
       range.collapse(false);
     }
-    const fragment = document.createDocumentFragment();
-    for (const chip of chips) fragment.append(chip, document.createTextNode(' '));
-    const last = fragment.lastChild;
-    range.insertNode(fragment);
+    const last = nodes.lastChild;
+    range.insertNode(nodes);
     if (last) range.setStartAfter(last);
     range.collapse(true);
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
+  }
+
+  /** Chips, each followed by a space, as they're inserted. */
+  function chipNodes(chips: HTMLElement[]): DocumentFragment {
+    const fragment = document.createDocumentFragment();
+    for (const chip of chips) fragment.append(chip, document.createTextNode(' '));
+    return fragment;
+  }
+
+  /** Segments as the input's nodes: text with its line breaks, chips. */
+  function segmentNodes(segments: DraftSegment[]): DocumentFragment {
+    const fragment = document.createDocumentFragment();
+    segments.forEach((segment, index) => {
+      if (segment.type === 'text') {
+        segment.text.split('\n').forEach((line, i) => {
+          if (i > 0) fragment.append(document.createElement('br'));
+          if (line) fragment.append(document.createTextNode(line));
+        });
+        return;
+      }
+      fragment.append(chipFor(segment));
+      // Chips are followed by a space when inserted; keep exactly one.
+      const next = segments[index + 1];
+      if (!(next?.type === 'text' && /^\s/.test(next.text))) {
+        fragment.append(document.createTextNode(' '));
+      }
+    });
+    return fragment;
+  }
+
+  /** The file references among segments, added to referencedFiles(). */
+  function addReferencedFiles(segments: DraftSegment[]) {
+    const files = segments.flatMap((s) => (s.type === 'file' ? [s.file] : []));
+    if (files.length === 0) return;
+    setReferencedFiles((current) => [
+      ...current,
+      ...files.filter((f) => !current.some((c) => referenceKey(c) === referenceKey(f))),
+    ]);
   }
 
   /** Same for drag-and-drop of selected text. */
@@ -2126,41 +2317,12 @@ export default function ChatPanel(props: ChatProps) {
     if (!container) return;
 
     const hasContent = (container.textContent ?? '').trim().length > 0;
-    const fragment = document.createDocumentFragment();
-
-    if (hasContent) fragment.append(document.createElement('br'));
-
-    const files: FileSuggestion[] = [];
-    draft.segments.forEach((segment, index) => {
-      if (segment.type === 'text') {
-        const lines = segment.text.split('\n');
-        lines.forEach((line, i) => {
-          if (i > 0) fragment.append(document.createElement('br'));
-          if (line) fragment.append(document.createTextNode(line));
-        });
-      } else if (segment.type === 'pasted') {
-        fragment.append(createPastedChip(segment.text), document.createTextNode(' '));
-      } else if (segment.type === 'image') {
-        fragment.append(createImageChip(segment.image), document.createTextNode(' '));
-      } else {
-        fragment.append(createFileChip(segment.file));
-        // Chips are followed by a space when inserted; keep exactly one.
-        const next = draft.segments[index + 1];
-        if (!(next?.type === 'text' && /^\s/.test(next.text))) {
-          fragment.append(document.createTextNode(' '));
-        }
-        files.push(segment.file);
-      }
-    });
-
-    container.append(fragment);
+    if (hasContent) container.append(document.createElement('br'));
+    container.append(segmentNodes(draft.segments));
 
     // Signal first: syncInput()/serializeComposer run synchronously
     // below, and any debounced save they schedule must see the files.
-    setReferencedFiles((current) => [
-      ...current,
-      ...files.filter((f) => !current.some((c) => referenceKey(c) === referenceKey(f))),
-    ]);
+    addReferencedFiles(draft.segments);
     syncInput();
     // The restored draft is where undo starts.
     resetComposerHistory();
@@ -2789,24 +2951,24 @@ export default function ChatPanel(props: ChatProps) {
     const waiting = activeDialogId() ? pendingQuestionsIn(activeDialogId()!) : undefined;
     if (waiting) {
       const segments = serializeComposer();
-      const reply = composerText(segments).trim();
+      const reply = messageText(segments).trim();
       if (!reply) return;
       const dialogId = activeDialogId();
       clearChatInput();
       if (dialogId) clearComposerDraft(dialogId);
       answerQuestions(waiting.dialogId, waiting.toolCallId, { reply });
-      // An answer is text only: the images stay for the next message.
-      const images = segments.filter((s) => s.type === 'image');
-      if (dialogId && images.length > 0) {
+      // An answer is text only: images and PDFs stay for the next message.
+      const files = segments.filter((s) => s.type === 'image' || s.type === 'pdf');
+      if (dialogId && files.length > 0) {
         restoreDraftToComposer({
           dialogId,
           messageId: '',
-          segments: images,
+          segments: files,
           createdAt: new Date().toISOString(),
         });
         scheduleComposerDraftSave();
         notify({
-          title: 'The images stay in the input',
+          title: 'The attachments stay in the input',
           message: "An answer to the agent's question is text only. Send them with a message.",
           timeout: 6000,
         });
@@ -2820,10 +2982,11 @@ export default function ChatPanel(props: ChatProps) {
     // stays in referencedFiles() and would still be sent.
     const selectedFiles = composerReferences();
 
-    const images = composerImageIds();
+    const segments = serializeComposer();
+    const attachments = attachmentIds(segments);
 
     /*
-     * A message containing only referenced files (or images) is valid.
+     * A message containing only referenced files (or attachments) is valid.
      *
      * For example:
      *
@@ -2835,17 +2998,25 @@ export default function ChatPanel(props: ChatProps) {
       !profile ||
       !dialog ||
       sending() ||
-      (!text && selectedFiles.length === 0 && images.length === 0)
+      (!text && selectedFiles.length === 0 && attachments.length === 0)
     ) {
       return;
     }
-    // Sent without an image the user sees in the input: wait for it.
-    if (inputTextareaRef?.querySelector('.chat-image-chip.loading')) {
+    // Sent without a file the user sees in the input: wait for it.
+    if (inputTextareaRef?.querySelector('.chat-loading-chip')) {
       notify({
-        title: 'An image is still being added',
+        title: 'A file is still being added',
         message: 'Send again in a moment.',
         timeout: 4000,
       });
+      return;
+    }
+    // Attached for another model, or before the model's settings changed.
+    const notTaken = segments
+      .map(segmentKind)
+      .filter((kind): kind is AttachmentKind => !!kind && !modelTakes(profile, kind));
+    if (notTaken.length > 0) {
+      notifyNotTaken(notTaken);
       return;
     }
 
@@ -2853,17 +3024,20 @@ export default function ChatPanel(props: ChatProps) {
      * The displayed/persisted text stays clean. The wire copy, with the
      * active editor context and file references, is what the model gets; it
      * is stored in the message's meta so a retry or "continue" later sends
-     * the same thing instead of the bare text. Images go as attachments.
+     * the same thing instead of the bare text. Images and PDFs go as
+     * attachments, the PDFs named in the meta.
      */
     const wireContent = buildWireContent(text, selectedFiles);
+    const pdfs = pdfsOf(segments);
     const message = {
       id: crypto.randomUUID(),
       content: text,
       meta: {
         mode: chatMode(),
         ...(wireContent && wireContent !== text ? { sentContent: wireContent } : {}),
+        ...(pdfs.length > 0 ? { pdfs } : {}),
       },
-      ...(images.length > 0 ? { attachments: images } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
     };
 
     /*
@@ -2874,7 +3048,7 @@ export default function ChatPanel(props: ChatProps) {
     savePendingDraft({
       dialogId: dialog.id,
       messageId: message.id,
-      segments: serializeComposer(),
+      segments,
       createdAt: new Date().toISOString(),
     });
 
@@ -3529,6 +3703,8 @@ export default function ChatPanel(props: ChatProps) {
               }
             }}
             onPaste={handleComposerPaste}
+            onCopy={handleComposerCopy}
+            onCut={handleComposerCopy}
             onDrop={handleComposerDrop}
             onKeyDown={handleKeyDown}
             onContextMenu={handleComposerContextMenu}
@@ -3593,8 +3769,40 @@ export default function ChatPanel(props: ChatProps) {
 
           {/* Send/stop lives in normal flow in its own row below the text —
               never overlaid — so typed text uses the full width and can
-              never slide underneath the button. */}
+              never slide underneath the button. Attach is at its other end. */}
           <div class="chat-input-actions">
+            <button
+              type="button"
+              class="chat-attach-button"
+              disabled={!activeProfile() || !activeDialog()}
+              title="Attach images, PDFs or text files"
+              aria-label="Attach files"
+              // The input keeps its focus and caret: the files go there.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={pickFiles}
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M13.5 7.5 8 13a3.5 3.5 0 0 1-5-5l6-6a2.3 2.3 0 0 1 3.3 3.3L6.4 11.2a1.2 1.2 0 0 1-1.7-1.7l5.6-5.6" />
+              </svg>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={ATTACH_ACCEPT}
+              hidden
+              onChange={(e) => filesPicked(e.currentTarget)}
+            />
             <Show
               when={sending() && !waitingQuestion()}
               fallback={
@@ -3603,7 +3811,7 @@ export default function ChatPanel(props: ChatProps) {
                   disabled={
                     !activeProfile() ||
                     !activeDialog() ||
-                    (!input().trim() && referencedFiles().length === 0 && imageCount() === 0)
+                    (!input().trim() && referencedFiles().length === 0 && attachmentCount() === 0)
                   }
                   class="chat-send-button"
                   title={waitingQuestion() ? 'Send as the answer' : 'Send'}

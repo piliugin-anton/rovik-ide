@@ -29,7 +29,10 @@ fn call(id: &str, name: &str, args: &str) -> ToolCall {
 }
 
 const COST: Cost = Cost {
-    vision: false,
+    accepts: crate::chat_db::history::Accepts {
+        images: false,
+        pdf: false,
+    },
     chars_per_token: 3.0,
 };
 

@@ -1,10 +1,10 @@
 // composerImages.ts
 //
-// Images pasted into the chat input: taken from the clipboard, made ready
-// for a model (scaled down, in a type the providers take) and stored as
-// chat attachments (chat_db/attachments.rs). The input shows each as a
-// chip; the message sends their ids, and the backend sends the images
-// themselves to models marked as accepting images.
+// Images attached to the chat input (pasted, or picked with the attach
+// button): made ready for a model (scaled down, in a type the providers
+// take) and stored as chat attachments (chat_db/attachments.rs). The input
+// shows each as a chip; the message sends their ids, and the backend sends
+// the images themselves to models marked as accepting images.
 
 import { chatApi } from './chatApi';
 
@@ -12,37 +12,45 @@ import { chatApi } from './chatApi';
 export interface ComposerImage {
   /** The attachment id: SHA-256 of the stored bytes. */
   id: string;
-  width: number;
-  height: number;
+  /** Its size, when known: an image copied from a sent message comes without. */
+  width?: number;
+  height?: number;
 }
 
-/** Images one message can carry (the backend allows a few more). */
-export const MAX_MESSAGE_IMAGES = 10;
 /** Longest side sent: providers scale bigger images down anyway, and charge by size. */
 export const MAX_IMAGE_SIDE = 2048;
 /** One image's bytes at most, under the providers' own limits (Anthropic: 5 MB). */
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-/** Types sent as they are. Others (GIF, which can be animated; BMP, TIFF…) become PNG. */
+/** Types sent as they are. A GIF (it can be animated, and Gemini takes none) becomes a PNG. */
 const SENT_AS_IS = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+const isSize = (n: unknown) => n === undefined || (typeof n === 'number' && n > 0);
+
+/** The value as a ComposerImage, if it is one. */
+export function asImage(value: unknown): ComposerImage | null {
+  const image = value as Partial<ComposerImage> | null;
+  if (
+    !image ||
+    typeof image.id !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(image.id) ||
+    !isSize(image.width) ||
+    !isSize(image.height)
+  ) {
+    return null;
+  }
+  return image.width && image.height
+    ? { id: image.id, width: image.width, height: image.height }
+    : { id: image.id };
+}
 
 /** A chip's image, from its `data-image`; null when it isn't one. */
 export function parseComposerImage(raw: string | undefined): ComposerImage | null {
   if (!raw) return null;
   try {
-    const value = JSON.parse(raw) as Partial<ComposerImage> | null;
-    if (
-      value &&
-      typeof value.id === 'string' &&
-      /^[0-9a-f]{64}$/.test(value.id) &&
-      typeof value.width === 'number' &&
-      typeof value.height === 'number'
-    ) {
-      return { id: value.id, width: value.width, height: value.height };
-    }
+    return asImage(JSON.parse(raw));
   } catch {
-    // Not an image chip's payload.
+    return null;
   }
-  return null;
 }
 
 /** The size to scale to: the longest side at most `max`, the shape kept. */
@@ -58,70 +66,6 @@ export function fittedSize(
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale)),
   };
-}
-
-/** Image files in pasted data (`clipboardData`), in order. */
-export function imageFiles(data: DataTransfer | null): File[] {
-  if (!data) return [];
-  const items = Array.from(data.items ?? [])
-    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => !!file);
-  if (items.length > 0) return items;
-  return Array.from(data.files ?? []).filter((file) => file.type.startsWith('image/'));
-}
-
-/**
- * A copied image file's path or name: a file:// URL, an absolute path
- * ("/…", "~/…", "C:\…"), or a bare name with no spaces ("shot.png").
- */
-const IMAGE_FILE_PATH =
-  /^(file:\/\/.+|[/~].+|[a-z]:\\.+|[^\s/\\]+)\.(png|jpe?g|gif|webp|bmp|tiff?|heic|avif)$/i;
-
-/**
- * What a paste with both inserts. Text wins: copying from a spreadsheet or
- * a document puts a picture of the cells next to their text, and the text
- * is what's meant. Except when the text only names the image, as a file
- * copied in a file manager comes with its path.
- */
-export function pasteTakes(text: string, images: number): 'text' | 'images' | 'nothing' {
-  const line = text.trim();
-  if (images > 0 && (!line || (!line.includes('\n') && IMAGE_FILE_PATH.test(line)))) {
-    return 'images';
-  }
-  if (text) return 'text';
-  return 'nothing';
-}
-
-/** What the clipboard holds, read through the async clipboard API. */
-export interface ClipboardContent {
-  text: string;
-  images: Blob[];
-}
-
-/**
- * Reads the clipboard: its text and images, or only its text where images
- * can't be read. Throws when it can't be read at all.
- */
-export async function readClipboard(): Promise<ClipboardContent> {
-  const clipboard = navigator.clipboard;
-  if (clipboard?.read) {
-    try {
-      const content: ClipboardContent = { text: '', images: [] };
-      for (const item of await clipboard.read()) {
-        if (!content.text && item.types.includes('text/plain')) {
-          content.text = await (await item.getType('text/plain')).text();
-        }
-        const image = item.types.find((t) => t.startsWith('image/'));
-        if (image) content.images.push(await item.getType(image));
-      }
-      return content;
-    } catch (err) {
-      if (!clipboard.readText) throw err;
-    }
-  }
-  if (!clipboard?.readText) throw new Error('The clipboard API is unavailable.');
-  return { text: await clipboard.readText(), images: [] };
 }
 
 function canvasBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
@@ -174,9 +118,9 @@ async function prepare(blob: Blob): Promise<{ bytes: Uint8Array; width: number; 
   }
 }
 
-/** Makes a pasted image ready to send and stores it; what its chip shows. */
-export async function storePastedImage(blob: Blob): Promise<ComposerImage> {
+/** Makes an image ready to send and stores it; what its chip shows. */
+export async function storeImage(blob: Blob): Promise<ComposerImage> {
   const { bytes, width, height } = await prepare(blob);
-  const id = await chatApi.storeImage(bytes);
+  const { id } = await chatApi.storeAttachment(bytes);
   return { id, width, height };
 }

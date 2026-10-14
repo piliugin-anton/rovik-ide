@@ -32,7 +32,7 @@
 //! Pure string work, unit tested below.
 
 use super::prompt::REVISIONS_PATH;
-use crate::chat_db::history::Msg;
+use crate::chat_db::history::{Attachment, Msg};
 use crate::chat_db::store::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -57,7 +57,7 @@ pub struct CtxMsg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attachments: Vec<String>,
+    pub attachments: Vec<Attachment>,
     /// Written by the IDE in the user role (check results), not the user.
     #[serde(default)]
     pub harness: bool,
@@ -148,14 +148,27 @@ pub fn body(m: &CtxMsg) -> String {
     for call in m.tool_calls.iter().flatten() {
         parts.push(call_line(call));
     }
-    if !m.attachments.is_empty() {
-        // The user's pasted images, or browser_screenshot results.
+    let (pdfs, images): (Vec<&Attachment>, Vec<&Attachment>) =
+        m.attachments.iter().partition(|a| a.pdf.is_some());
+    if !images.is_empty() {
+        // The user's images, or browser_screenshot results.
         let what = if m.role == "user" {
             "image"
         } else {
             "screenshot"
         };
-        parts.push(format!("[{} {what}(s) attached]", m.attachments.len()));
+        parts.push(format!("[{} {what}(s) attached]", images.len()));
+    }
+    if !pdfs.is_empty() {
+        let names: Vec<&str> = pdfs
+            .iter()
+            .filter_map(|a| Some(a.pdf.as_ref()?.name.as_str()))
+            .collect();
+        parts.push(format!(
+            "[{} PDF(s) attached: {}]",
+            pdfs.len(),
+            names.join(", ")
+        ));
     }
     parts.join("\n")
 }
@@ -1160,7 +1173,7 @@ mod tests {
     #[test]
     fn screenshots_stay_only_while_untouched() {
         let shot = CtxMsg {
-            attachments: vec!["img1".into()],
+            attachments: vec![Attachment::image("img1")],
             ..result("t1", "c1", "Screenshot taken.")
         };
         let m = vec![
@@ -1182,13 +1195,42 @@ mod tests {
     #[test]
     fn the_users_images_are_named_as_images() {
         let asked = CtxMsg {
-            attachments: vec!["img1".into(), "img2".into()],
+            attachments: vec![Attachment::image("img1"), Attachment::image("img2")],
             ..msg("u1", "user", "Make it look like these")
         };
         let m = vec![asked, msg("a1", "assistant", "On it.")];
         let doc = render(&m, 1);
         assert!(doc.contains("[2 image(s) attached]"), "{doc}");
         assert!(!doc.contains("screenshot"), "{doc}");
+        assert_eq!(parse_back(&doc, &m, &[]).0, m);
+    }
+
+    #[test]
+    fn the_users_pdfs_are_named_by_their_files() {
+        let pdf = |id: &str, name: &str| Attachment {
+            id: id.into(),
+            pdf: Some(crate::chat_db::history::PdfInfo {
+                name: name.into(),
+                pages: 1,
+            }),
+        };
+        let asked = CtxMsg {
+            attachments: vec![
+                pdf("p1", "spec.pdf"),
+                Attachment::image("img1"),
+                pdf("p2", "notes.pdf"),
+            ],
+            ..msg("u1", "user", "Check these")
+        };
+        let m = vec![asked, msg("a1", "assistant", "On it.")];
+        let doc = render(&m, 1);
+        assert!(
+            doc.contains(
+                "Check these\n[1 image(s) attached]\n[2 PDF(s) attached: spec.pdf, notes.pdf]"
+            ),
+            "{doc}"
+        );
+        // Untouched, it's the message with its files.
         assert_eq!(parse_back(&doc, &m, &[]).0, m);
     }
 

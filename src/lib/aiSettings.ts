@@ -234,6 +234,7 @@ export function resolveProfile(
     apiKey: provider.apiKey,
     stream: provider.stream,
     vision: !!model.vision,
+    pdf: !!model.pdf,
     contextTokens: model.contextOverride ?? model.contextLength,
     noTools: !!model.noTools,
     firstByteTimeoutMs: model.firstTokenTimeoutSec ? model.firstTokenTimeoutSec * 1000 : undefined,

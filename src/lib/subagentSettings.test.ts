@@ -49,6 +49,7 @@ const resolve = (ps: Provider[], s: ModelSelection): ModelProfile | null => {
     apiKey: '',
     stream: true,
     vision: false,
+    pdf: false,
     noTools: !!model.noTools,
     reasoning: model.reasoning ?? { choice: 'auto' },
   };

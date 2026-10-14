@@ -84,10 +84,13 @@ Electron-based editors.
   on, and pick their models, in Settings → Subagents.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
-- Paste screenshots and other images into a message (Ctrl+V, or Paste in
-  the message box's right-click menu). Models marked as accepting images
-  (Vision, in Settings → Model providers) see them; big ones are scaled
-  down first.
+- Attach images, PDFs and text files to a message: paste them (Ctrl+V, or
+  Paste in the message box's right-click menu) or pick them with the
+  paperclip button. Only formats models can read are taken (see
+  [Attachments](#attachments)), and only those the chosen model is set up
+  for: images need Vision, PDFs need PDF, in Settings → Model providers.
+  Big images are scaled down first. A message copied from the chat or the
+  message box pastes back with its attachments.
 - Chats are saved and searchable, and they keep running in the background
   when you switch to another chat.
 
@@ -390,3 +393,29 @@ on the system prompt and on the latest message the next step sends
 unchanged, never on the last one, whose tail the next step drops.
 The run log's reply lines carry `cachedTokens`, and the headless report
 the cache hit rate, so the effect of a change to the prompt can be seen.
+
+### Attachments
+
+What can be attached is what models take through the OpenAI-compatible APIs
+the app talks to (`src/lib/attachmentFormats.ts`):
+
+| Kind   | Formats                                          | Sent as                                                | Models        |
+| ------ | ------------------------------------------------ | ------------------------------------------------------ | ------------- |
+| Images | PNG, JPEG, WebP, GIF (its first frame, as a PNG) | `image_url` parts                                      | marked Vision |
+| PDF    | PDF                                              | `file` parts (`input_file` on the Responses API)       | marked PDF    |
+| Text   | UTF-8 text: code, Markdown, CSV, JSON, logs, …   | in the message, in an `<attached_file name="…">` block | all           |
+
+- OpenAI's models (GPT-4o and later) take PDFs, and OpenRouter takes them
+  for every model, reading out the text where a model can't. Anthropic's
+  and Gemini's OpenAI-compatible endpoints leave PDFs out, so PDF is off
+  until it's turned on for a model, as Vision is.
+- Word, Excel, PowerPoint, archives, audio and video aren't attached:
+  Chat Completions takes no such files. A Word document can be saved as PDF.
+- A model not set up for a kind of file doesn't get it attached, and isn't
+  sent one the user attached for another model; earlier messages' files
+  become a note in the history when the model can't see them.
+- Images and PDFs are stored once each (SHA-256) under `attachments/` in
+  the app's data folder, sent before the message's text, and counted in
+  the context estimate (a PDF by its pages). The current request's files go
+  with every step of its run; earlier requests' files are dropped first
+  when the history is over budget.

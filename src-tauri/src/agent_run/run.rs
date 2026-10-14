@@ -1438,6 +1438,7 @@ impl<R: Runtime> Run<R> {
                 dialog_id: Some(self.dialog_id.clone()),
                 context_tokens: self.profile.context_tokens.filter(|t| *t > 0),
                 vision: Some(self.profile.vision),
+                pdf: Some(self.profile.pdf),
                 current_user_content: self.current_user_content.clone(),
                 streaming: self.profile.stream,
                 first_byte_timeout_ms: self.profile.first_byte_timeout_ms,
