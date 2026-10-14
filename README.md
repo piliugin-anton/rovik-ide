@@ -371,6 +371,8 @@ budget so the cut doesn't move every step, and a user message is sent the
 same way on every turn. What changes between steps (the repository map,
 the focus note, context notes) rides on the last message, after everything
 cacheable. On top of that, OpenAI gets a `prompt_cache_key` per chat and
-OpenRouter gets `cache_control` breakpoints (Anthropic models need them).
+OpenRouter gets `cache_control` breakpoints (Anthropic models need them):
+on the system prompt and on the latest message the next step sends
+unchanged, never on the last one, whose tail the next step drops.
 The run log's reply lines carry `cachedTokens`, and the headless report
 the cache hit rate, so the effect of a change to the prompt can be seen.
