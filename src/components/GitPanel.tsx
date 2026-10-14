@@ -669,13 +669,13 @@ export function GitPanel(props: GitPanelProps) {
 
   // -------------------------------------------------------------------------
   // "More actions" menu: the git operations the panel has no dedicated
-  // control for (create/delete branch, stash, discard-all, history).
-  // One dropdown with small inline sub-views, so no new components are
-  // needed. What the panel already does — commit, push, fetch, pull,
-  // switching branches, reverting one file — stays where it is.
+  // control for (create/delete branch, stash, discard-all). One dropdown
+  // with small inline sub-views, so no new components are needed. What the
+  // panel already does — commit, push, fetch, pull, history, switching
+  // branches, reverting one file — stays where it is.
   // -------------------------------------------------------------------------
 
-  type MoreView = 'menu' | 'new-branch' | 'delete-branch' | 'stash-save' | 'stash-list' | 'history';
+  type MoreView = 'menu' | 'new-branch' | 'delete-branch' | 'stash-save' | 'stash-list';
 
   const [moreOpen, setMoreOpen] = createSignal(false);
   const [moreView, setMoreView] = createSignal<MoreView>('menu');
@@ -698,6 +698,9 @@ export function GitPanel(props: GitPanelProps) {
     setExpandedStash(null);
     setStashFiles({});
   };
+  // History ("Recent commits"): a dropdown of its own, opened by the clock
+  // button left of Pull.
+  const [historyOpen, setHistoryOpen] = createSignal(false);
   const [commits, setCommits] = createSignal<GitCommitEntry[]>([]);
   const [commitsLoading, setCommitsLoading] = createSignal(false);
   // Smart history search: query text, a seq guard so stale backend replies
@@ -756,10 +759,28 @@ export function GitPanel(props: GitPanelProps) {
     const next = !moreOpen();
     setMoreOpen(next);
     setBranchOpen(false);
+    setHistoryOpen(false);
     if (next) {
       setMoreView('menu');
       void loadStashes();
     }
+  };
+
+  /** Opens or closes the history; it opens on the newest commits, with no search. */
+  const toggleHistory = () => {
+    const next = !historyOpen();
+    setHistoryOpen(next);
+    setBranchOpen(false);
+    closeMore();
+    if (!next) return;
+    if (historyDebounce) clearTimeout(historyDebounce);
+    historyDebounce = undefined;
+    setHistoryQuery('');
+    setResultsQuery('');
+    setExpandedCommit(null);
+    setHistoryOffset(0);
+    setHasMoreHistory(false);
+    void loadLog('', 'reset');
   };
 
   const openMoreView = (view: MoreView) => {
@@ -770,16 +791,6 @@ export function GitPanel(props: GitPanelProps) {
     }
     if (view === 'delete-branch') void loadBranches();
     if (view === 'stash-list') void loadStashes();
-    if (view === 'history') {
-      if (historyDebounce) clearTimeout(historyDebounce);
-      historyDebounce = undefined;
-      setHistoryQuery('');
-      setResultsQuery('');
-      setExpandedCommit(null);
-      setHistoryOffset(0);
-      setHasMoreHistory(false);
-      void loadLog('', 'reset');
-    }
   };
 
   const loadStashes = async () => {
@@ -921,7 +932,7 @@ export function GitPanel(props: GitPanelProps) {
    * (commit, pull, checkout, branch create/delete) so an open history
    * view never shows stale commits. No-op unless history is open. */
   const refreshHistoryIfOpen = (query?: string) => {
-    if (moreOpen() && moreView() === 'history') {
+    if (historyOpen()) {
       setHistoryOffset(0);
       void loadLog(query ?? historyQuery(), 'reset');
     }
@@ -1070,6 +1081,7 @@ export function GitPanel(props: GitPanelProps) {
     const next = !branchOpen();
     setBranchOpen(next);
     setMoreOpen(false);
+    setHistoryOpen(false);
     if (next) loadBranches();
   };
 
@@ -1077,12 +1089,12 @@ export function GitPanel(props: GitPanelProps) {
   // as the project switcher / effort menu). The triggers and menus all live
   // inside the header, so anything outside it dismisses them — except the
   // stash list and history: opening a file moves focus to the editor, and
-  // the menu must stay open so more files can be opened.
+  // they must stay open so more files can be opened.
   let headerRoot: HTMLDivElement | undefined;
   const onOutsideHeader = (e: PointerEvent) => {
     if (headerRoot && !headerRoot.contains(e.target as Node)) {
       setBranchOpen(false);
-      if (moreView() !== 'stash-list' && moreView() !== 'history') closeMore();
+      if (moreView() !== 'stash-list') closeMore();
     }
   };
   window.addEventListener('pointerdown', onOutsideHeader, true);
@@ -1236,6 +1248,7 @@ export function GitPanel(props: GitPanelProps) {
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               setBranchOpen(false);
+              setHistoryOpen(false);
               closeMore();
             }
           }}
@@ -1272,6 +1285,17 @@ export function GitPanel(props: GitPanelProps) {
                 <Show when={busy()} fallback={<IconRefresh />}>
                   <IconSpinner />
                 </Show>
+              </button>
+              <button
+                class="icon-button"
+                onClick={toggleHistory}
+                title="Recent commits"
+                aria-label="Recent commits"
+                aria-haspopup="dialog"
+                aria-expanded={historyOpen()}
+                disabled={busy()}
+              >
+                <IconHistory />
               </button>
               <button class="icon-button" onClick={pullGit} title="Pull" disabled={busy()}>
                 <IconArrowDown />
@@ -1406,13 +1430,6 @@ export function GitPanel(props: GitPanelProps) {
                   >
                     <IconTrash />
                     <span>Discard all changes…</span>
-                  </li>
-                </ul>
-                <div class="git-menu-section-label">History</div>
-                <ul class="context-menu-list">
-                  <li class="context-menu-item" onClick={() => openMoreView('history')}>
-                    <IconHistory />
-                    <span>Recent commits…</span>
                   </li>
                 </ul>
               </Show>
@@ -1706,302 +1723,298 @@ export function GitPanel(props: GitPanelProps) {
                   </For>
                 </ul>
               </Show>
+            </div>
+          </Show>
 
-              {/* History */}
-              <Show when={moreView() === 'history'}>
-                <button class="icon-button git-more-back" onClick={() => setMoreView('menu')}>
-                  <IconBack />
-                  <span>Recent commits</span>
-                </button>
-                <div class="git-history-search-row">
-                  <div class="git-history-search-wrap">
-                    <input
-                      class="tree-row-input git-more-input git-history-search"
-                      placeholder="Search history: message, file, symbol…"
-                      value={historyQuery()}
-                      spellcheck={false}
-                      autocomplete="off"
-                      aria-label="Search commit history"
-                      onInput={(e) => onHistorySearchInput(e.currentTarget.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') {
-                          e.stopPropagation();
-                          onHistorySearchInput('');
-                        } else if (e.key === 'Enter') {
-                          // Search immediately instead of waiting for debounce.
-                          e.preventDefault();
-                          if (historyDebounce) clearTimeout(historyDebounce);
-                          historyDebounce = undefined;
-                          setHistoryOffset(0);
-                          setHasMoreHistory(false);
-                          void loadLog(e.currentTarget.value, 'reset');
-                        }
-                      }}
-                      disabled={busy()}
-                    />
-                    <Show when={historyQuery().trim() !== ''}>
-                      <button
-                        type="button"
-                        class="git-history-clear"
-                        title="Clear search"
-                        aria-label="Clear history search"
-                        onClick={() => onHistorySearchInput('')}
-                      >
-                        ✕
-                      </button>
-                    </Show>
-                  </div>
+          {/* History: the clock button left of Pull */}
+          <Show when={historyOpen()}>
+            <div
+              class="git-branch-dropdown git-history-dropdown context-menu"
+              role="dialog"
+              aria-label="Recent commits"
+            >
+              <div class="git-menu-section-label">Recent commits</div>
+              <div class="git-history-search-row">
+                <div class="git-history-search-wrap">
+                  <input
+                    class="tree-row-input git-more-input git-history-search"
+                    placeholder="Search history: message, file, symbol…"
+                    value={historyQuery()}
+                    spellcheck={false}
+                    autocomplete="off"
+                    aria-label="Search commit history"
+                    onInput={(e) => onHistorySearchInput(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        e.stopPropagation();
+                        onHistorySearchInput('');
+                      } else if (e.key === 'Enter') {
+                        // Search immediately instead of waiting for debounce.
+                        e.preventDefault();
+                        if (historyDebounce) clearTimeout(historyDebounce);
+                        historyDebounce = undefined;
+                        setHistoryOffset(0);
+                        setHasMoreHistory(false);
+                        void loadLog(e.currentTarget.value, 'reset');
+                      }
+                    }}
+                    disabled={busy()}
+                  />
+                  <Show when={historyQuery().trim() !== ''}>
+                    <button
+                      type="button"
+                      class="git-history-clear"
+                      title="Clear search"
+                      aria-label="Clear history search"
+                      onClick={() => onHistorySearchInput('')}
+                    >
+                      ✕
+                    </button>
+                  </Show>
                 </div>
-                <Show when={commitsLoading()}>
-                  <div class="context-menu-item context-menu-loading">
-                    <IconSpinner />{' '}
-                    <span>
-                      {historyQuery().trim() !== '' ? 'Searching history...' : 'Loading history...'}
-                    </span>
-                  </div>
-                </Show>
-                <Show when={!commitsLoading() && commits().length === 0 && resultsQuery() === ''}>
-                  <div class="git-more-note">No commits yet.</div>
-                </Show>
-                <Show when={!commitsLoading() && commits().length === 0 && resultsQuery() !== ''}>
-                  <div class="git-more-note">
-                    No matching commits for “{resultsQuery()}”. Try a file name, symbol, or word
-                    from the message.
-                  </div>
-                </Show>
-                <Show when={!commitsLoading()}>
-                  <ul class="context-menu-list">
-                    <For each={commits()}>
-                      {(c) => {
-                        const q = () => resultsQuery();
-                        const searching = () => q() !== '';
-                        const filesKey = () => `${c.oid}::${q()}`;
-                        const allFiles = () => commitFiles()[filesKey()] ?? [];
-                        const matchedCount = () =>
-                          allFiles().filter((f) => f.matched !== false).length;
-                        const showingAll = () => !!showAllFiles()[c.oid];
-                        const visibleFiles = () => {
-                          const all = allFiles();
-                          if (!searching() || showingAll()) return all;
-                          const matched = all.filter((f) => f.matched !== false);
-                          // Message-only match (nothing flagged): show all,
-                          // the header below explains why.
-                          return matched.length > 0 ? matched : all;
-                        };
-                        const matchLabel = (kind?: string | null) =>
-                          kind === 'both'
-                            ? 'file + content'
-                            : kind === 'filename'
-                              ? 'filename'
-                              : kind === 'content'
-                                ? 'content'
-                                : '';
-                        return (
-                          <li class="git-commit-entry">
-                            <div
-                              class="git-commit-row"
-                              title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}\nClick to see the files this commit changed`}
-                              onClick={() => void toggleCommitExpanded(c.oid)}
+              </div>
+              <Show when={commitsLoading()}>
+                <div class="context-menu-item context-menu-loading">
+                  <IconSpinner />{' '}
+                  <span>
+                    {historyQuery().trim() !== '' ? 'Searching history...' : 'Loading history...'}
+                  </span>
+                </div>
+              </Show>
+              <Show when={!commitsLoading() && commits().length === 0 && resultsQuery() === ''}>
+                <div class="git-more-note">No commits yet.</div>
+              </Show>
+              <Show when={!commitsLoading() && commits().length === 0 && resultsQuery() !== ''}>
+                <div class="git-more-note">
+                  No matching commits for “{resultsQuery()}”. Try a file name, symbol, or word from
+                  the message.
+                </div>
+              </Show>
+              <Show when={!commitsLoading()}>
+                <ul class="context-menu-list">
+                  <For each={commits()}>
+                    {(c) => {
+                      const q = () => resultsQuery();
+                      const searching = () => q() !== '';
+                      const filesKey = () => `${c.oid}::${q()}`;
+                      const allFiles = () => commitFiles()[filesKey()] ?? [];
+                      const matchedCount = () =>
+                        allFiles().filter((f) => f.matched !== false).length;
+                      const showingAll = () => !!showAllFiles()[c.oid];
+                      const visibleFiles = () => {
+                        const all = allFiles();
+                        if (!searching() || showingAll()) return all;
+                        const matched = all.filter((f) => f.matched !== false);
+                        // Message-only match (nothing flagged): show all,
+                        // the header below explains why.
+                        return matched.length > 0 ? matched : all;
+                      };
+                      const matchLabel = (kind?: string | null) =>
+                        kind === 'both'
+                          ? 'file + content'
+                          : kind === 'filename'
+                            ? 'filename'
+                            : kind === 'content'
+                              ? 'content'
+                              : '';
+                      return (
+                        <li class="git-commit-entry">
+                          <div
+                            class="git-commit-row"
+                            title={`${c.oid}\n${c.author} · ${new Date(c.time * 1000).toLocaleString()}\nClick to see the files this commit changed`}
+                            onClick={() => void toggleCommitExpanded(c.oid)}
+                          >
+                            <span class="tree-row-chevron">
+                              <ChevronIcon open={expandedCommit() === c.oid} />
+                            </span>
+                            <button
+                              type="button"
+                              class="git-commit-hash"
+                              title={`${c.oid}\nClick to copy the full hash`}
+                              aria-label={`Copy commit hash ${c.oid}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void copyHash(c.oid);
+                              }}
                             >
-                              <span class="tree-row-chevron">
-                                <ChevronIcon open={expandedCommit() === c.oid} />
-                              </span>
-                              <button
-                                type="button"
-                                class="git-commit-hash"
-                                title={`${c.oid}\nClick to copy the full hash`}
-                                aria-label={`Copy commit hash ${c.oid}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void copyHash(c.oid);
-                                }}
-                              >
-                                {copiedHash() === c.oid ? 'Copied' : c.short}
-                              </button>
-                              <span class="git-commit-summary">{c.summary}</span>
-                              <Show
-                                when={
-                                  searching() &&
-                                  c.matched_file_count != null &&
-                                  (c.file_count ?? 0) > 0
+                              {copiedHash() === c.oid ? 'Copied' : c.short}
+                            </button>
+                            <span class="git-commit-summary">{c.summary}</span>
+                            <Show
+                              when={
+                                searching() &&
+                                c.matched_file_count != null &&
+                                (c.file_count ?? 0) > 0
+                              }
+                            >
+                              <span
+                                class="git-commit-match-badge"
+                                title={
+                                  (c.matched_file_count ?? 0) > 0
+                                    ? `${c.matched_file_count} of ${c.file_count} files contain “${q()}”`
+                                    : `Matched via message/author — no changed filename contains “${q()}”`
                                 }
                               >
-                                <span
-                                  class="git-commit-match-badge"
-                                  title={
-                                    (c.matched_file_count ?? 0) > 0
-                                      ? `${c.matched_file_count} of ${c.file_count} files contain “${q()}”`
-                                      : `Matched via message/author — no changed filename contains “${q()}”`
-                                  }
-                                >
-                                  {(c.matched_file_count ?? 0) > 0
-                                    ? `${c.matched_file_count}/${c.file_count} files`
-                                    : 'message'}
-                                </span>
-                              </Show>
-                            </div>
-                            <Show when={expandedCommit() === c.oid}>
-                              <div class="git-stash-files">
-                                <Show when={commitFilesLoading() === c.oid}>
-                                  <div class="context-menu-item context-menu-loading">
-                                    <IconSpinner /> <span>Loading commit contents...</span>
-                                  </div>
-                                </Show>
-                                <Show
-                                  when={commitFilesLoading() !== c.oid && allFiles().length === 0}
-                                >
-                                  <div class="git-more-note">Empty commit.</div>
-                                </Show>
-                                <Show
-                                  when={
-                                    commitFilesLoading() !== c.oid &&
-                                    searching() &&
-                                    allFiles().length > 0
-                                  }
-                                >
-                                  <div class="git-match-summary-row">
-                                    <Show
-                                      when={
-                                        matchedCount() > 0 && matchedCount() < allFiles().length
-                                      }
-                                    >
-                                      <span class="git-more-note">
-                                        {matchedCount()} of {allFiles().length} files match “{q()}”
-                                        {showingAll() ? ' — showing all' : ''}.
-                                      </span>
-                                      <button
-                                        type="button"
-                                        class="link-button git-match-toggle"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setShowAllFiles((prev) => ({
-                                            ...prev,
-                                            [c.oid]: !prev[c.oid],
-                                          }));
-                                        }}
-                                      >
-                                        {showingAll() ? 'Show matches only' : 'Show all'}
-                                      </button>
-                                    </Show>
-                                    <Show when={matchedCount() === allFiles().length}>
-                                      <span class="git-more-note">
-                                        All {allFiles().length} files match “{q()}”.
-                                      </span>
-                                    </Show>
-                                    <Show when={matchedCount() === 0}>
-                                      <span class="git-more-note">
-                                        Matched via message — no changed file contains “{q()}”.
-                                        Showing all {allFiles().length} files.
-                                      </span>
-                                    </Show>
-                                  </div>
-                                </Show>
-                                <For each={visibleFiles()}>
-                                  {(f) => {
-                                    const meta = () => statusMeta(f.status);
-                                    const name = () => f.path.split('/').pop() ?? f.path;
-                                    const deleted = () => f.status === 'D';
-                                    const isMatch = () => f.matched !== false;
-                                    return (
-                                      <div
-                                        class="context-menu-item git-stash-file-row"
-                                        classList={{
-                                          clickable: !deleted(),
-                                          'git-file-unmatched':
-                                            searching() && !isMatch() && showingAll(),
-                                          'git-file-matched': searching() && isMatch(),
-                                        }}
-                                        title={
-                                          deleted()
-                                            ? `${f.path} (deleted in this commit)`
-                                            : searching() && isMatch() && f.match_kind
-                                              ? `${f.path} (matches via ${matchLabel(f.match_kind)}): click to open the version at this commit`
-                                              : `${f.path}: click to open the version at this commit`
-                                        }
-                                        onClick={() => {
-                                          // A deleted file has no content to open.
-                                          if (!deleted())
-                                            props.onOpenCommitFile?.(
-                                              absPathOf(f.path),
-                                              f.path,
-                                              c.oid,
-                                              c.summary
-                                            );
-                                        }}
-                                      >
-                                        <span class="tree-row-icon">
-                                          <FileIcon />
-                                        </span>
-                                        <span
-                                          class="tree-row-name"
-                                          classList={{ 'git-file-deleted': deleted() }}
-                                          title={f.path}
-                                        >
-                                          {name()}
-                                        </span>
-                                        <Show when={searching() && isMatch() && f.match_kind}>
-                                          <span
-                                            class="git-match-kind"
-                                            title={`Matches via ${matchLabel(f.match_kind)}`}
-                                          >
-                                            {f.match_kind === 'both'
-                                              ? 'file+content'
-                                              : f.match_kind}
-                                          </span>
-                                        </Show>
-                                        <DiffStats
-                                          additions={f.additions}
-                                          deletions={f.deletions}
-                                        />
-                                        <span
-                                          class={`tree-row-badge git-file-badge ${meta().className}`}
-                                          title={meta().title}
-                                        >
-                                          {meta().label}
-                                        </span>
-                                      </div>
-                                    );
-                                  }}
-                                </For>
-                              </div>
+                                {(c.matched_file_count ?? 0) > 0
+                                  ? `${c.matched_file_count}/${c.file_count} files`
+                                  : 'message'}
+                              </span>
                             </Show>
-                          </li>
-                        );
-                      }}
-                    </For>
-                  </ul>
-                </Show>
-                {/* Pagination: the backend scans at most ~400 commits per
-                    call, so older history needs explicit paging. Without a
-                    query this loads older commits; with a query it keeps
-                    searching further back. */}
-                <Show when={!commitsLoading() && commits().length > 0 && hasMoreHistory()}>
-                  <button
-                    type="button"
-                    class="link-button git-match-toggle"
-                    style={{ margin: '4px 8px 8px' }}
-                    title={
-                      resultsQuery() !== ''
-                        ? 'Keep searching older commits (next ~400)'
-                        : 'Load older commits'
-                    }
-                    disabled={historyLoadingMore()}
-                    onClick={loadMoreHistory}
-                  >
-                    {historyLoadingMore()
-                      ? 'Loading…'
-                      : resultsQuery() !== ''
-                        ? 'Search further back…'
-                        : 'Load more…'}
-                  </button>
-                </Show>
-                <Show when={!commitsLoading() && commits().length > 0 && !hasMoreHistory()}>
-                  <div class="git-more-note">
-                    {resultsQuery() !== ''
-                      ? 'Searched the full history.'
-                      : 'Reached the oldest commit.'}
-                  </div>
-                </Show>
+                          </div>
+                          <Show when={expandedCommit() === c.oid}>
+                            <div class="git-stash-files">
+                              <Show when={commitFilesLoading() === c.oid}>
+                                <div class="context-menu-item context-menu-loading">
+                                  <IconSpinner /> <span>Loading commit contents...</span>
+                                </div>
+                              </Show>
+                              <Show
+                                when={commitFilesLoading() !== c.oid && allFiles().length === 0}
+                              >
+                                <div class="git-more-note">Empty commit.</div>
+                              </Show>
+                              <Show
+                                when={
+                                  commitFilesLoading() !== c.oid &&
+                                  searching() &&
+                                  allFiles().length > 0
+                                }
+                              >
+                                <div class="git-match-summary-row">
+                                  <Show
+                                    when={matchedCount() > 0 && matchedCount() < allFiles().length}
+                                  >
+                                    <span class="git-more-note">
+                                      {matchedCount()} of {allFiles().length} files match “{q()}”
+                                      {showingAll() ? ' — showing all' : ''}.
+                                    </span>
+                                    <button
+                                      type="button"
+                                      class="link-button git-match-toggle"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setShowAllFiles((prev) => ({
+                                          ...prev,
+                                          [c.oid]: !prev[c.oid],
+                                        }));
+                                      }}
+                                    >
+                                      {showingAll() ? 'Show matches only' : 'Show all'}
+                                    </button>
+                                  </Show>
+                                  <Show when={matchedCount() === allFiles().length}>
+                                    <span class="git-more-note">
+                                      All {allFiles().length} files match “{q()}”.
+                                    </span>
+                                  </Show>
+                                  <Show when={matchedCount() === 0}>
+                                    <span class="git-more-note">
+                                      Matched via message — no changed file contains “{q()}”.
+                                      Showing all {allFiles().length} files.
+                                    </span>
+                                  </Show>
+                                </div>
+                              </Show>
+                              <For each={visibleFiles()}>
+                                {(f) => {
+                                  const meta = () => statusMeta(f.status);
+                                  const name = () => f.path.split('/').pop() ?? f.path;
+                                  const deleted = () => f.status === 'D';
+                                  const isMatch = () => f.matched !== false;
+                                  return (
+                                    <div
+                                      class="context-menu-item git-stash-file-row"
+                                      classList={{
+                                        clickable: !deleted(),
+                                        'git-file-unmatched':
+                                          searching() && !isMatch() && showingAll(),
+                                        'git-file-matched': searching() && isMatch(),
+                                      }}
+                                      title={
+                                        deleted()
+                                          ? `${f.path} (deleted in this commit)`
+                                          : searching() && isMatch() && f.match_kind
+                                            ? `${f.path} (matches via ${matchLabel(f.match_kind)}): click to open the version at this commit`
+                                            : `${f.path}: click to open the version at this commit`
+                                      }
+                                      onClick={() => {
+                                        // A deleted file has no content to open.
+                                        if (!deleted())
+                                          props.onOpenCommitFile?.(
+                                            absPathOf(f.path),
+                                            f.path,
+                                            c.oid,
+                                            c.summary
+                                          );
+                                      }}
+                                    >
+                                      <span class="tree-row-icon">
+                                        <FileIcon />
+                                      </span>
+                                      <span
+                                        class="tree-row-name"
+                                        classList={{ 'git-file-deleted': deleted() }}
+                                        title={f.path}
+                                      >
+                                        {name()}
+                                      </span>
+                                      <Show when={searching() && isMatch() && f.match_kind}>
+                                        <span
+                                          class="git-match-kind"
+                                          title={`Matches via ${matchLabel(f.match_kind)}`}
+                                        >
+                                          {f.match_kind === 'both' ? 'file+content' : f.match_kind}
+                                        </span>
+                                      </Show>
+                                      <DiffStats additions={f.additions} deletions={f.deletions} />
+                                      <span
+                                        class={`tree-row-badge git-file-badge ${meta().className}`}
+                                        title={meta().title}
+                                      >
+                                        {meta().label}
+                                      </span>
+                                    </div>
+                                  );
+                                }}
+                              </For>
+                            </div>
+                          </Show>
+                        </li>
+                      );
+                    }}
+                  </For>
+                </ul>
+              </Show>
+              {/* Pagination: the backend scans at most ~400 commits per
+                  call, so older history needs explicit paging. Without a
+                  query this loads older commits; with a query it keeps
+                  searching further back. */}
+              <Show when={!commitsLoading() && commits().length > 0 && hasMoreHistory()}>
+                <button
+                  type="button"
+                  class="link-button git-match-toggle"
+                  style={{ margin: '4px 8px 8px' }}
+                  title={
+                    resultsQuery() !== ''
+                      ? 'Keep searching older commits (next ~400)'
+                      : 'Load older commits'
+                  }
+                  disabled={historyLoadingMore()}
+                  onClick={loadMoreHistory}
+                >
+                  {historyLoadingMore()
+                    ? 'Loading…'
+                    : resultsQuery() !== ''
+                      ? 'Search further back…'
+                      : 'Load more…'}
+                </button>
+              </Show>
+              <Show when={!commitsLoading() && commits().length > 0 && !hasMoreHistory()}>
+                <div class="git-more-note">
+                  {resultsQuery() !== ''
+                    ? 'Searched the full history.'
+                    : 'Reached the oldest commit.'}
+                </div>
               </Show>
             </div>
           </Show>

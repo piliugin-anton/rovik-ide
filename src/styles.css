@@ -4142,6 +4142,15 @@ body.is-resizing * {
   max-height: 340px;
 }
 
+/* History ("Recent commits"): its button sits left of Pull, so the list
+   hangs from the header's left edge like the branch list; sized like the
+   "More actions" menu. */
+.git-history-dropdown {
+  min-width: 240px;
+  max-width: 300px;
+  max-height: 340px;
+}
+
 .git-menu-section-label {
   padding: 6px 8px 2px;
   font-size: 10px;
