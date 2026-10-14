@@ -1742,7 +1742,7 @@ mod tests {
     /// findings list for the reviewers, so the doc can't drift from the code.
     #[test]
     fn the_design_docs_result_table_matches_each_kinds_spec() {
-        let doc = include_str!("../../../docs/design/subagents.md");
+        let doc = include_str!("../../../../../docs/design/subagents.md");
         let start = doc
             .find("| Sections (required first)")
             .expect("the result table in §4");

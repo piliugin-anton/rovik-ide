@@ -1,7 +1,7 @@
 //! Heavy commands' slots (workload): which chat comes first, how many run at
 //! once, and what runs now.
 
-use crate::workload::{self, WorkloadStatus};
+use rovik_core::workload::{self, WorkloadStatus};
 
 #[tauri::command]
 pub fn workload_focus(dialog_id: Option<String>) {

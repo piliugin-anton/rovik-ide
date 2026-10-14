@@ -20,7 +20,7 @@ pub async fn open_url(url: String) -> Result<(), String> {
         return Err(format!("not a web link: {url}"));
     }
     let mut cmd = opener(&url);
-    crate::process::no_window(&mut cmd);
+    rovik_core::process::no_window(&mut cmd);
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())

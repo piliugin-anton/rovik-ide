@@ -546,7 +546,7 @@ pub fn start_file_watch(
                                         .file_name()
                                         .is_some_and(|n| n == "HEAD" || n == "ORIG_HEAD")
                                 {
-                                    crate::overlay::chats::project_busy(&watch_root);
+                                    rovik_core::overlay::chats::project_busy(&watch_root);
                                 }
                                 continue;
                             }
@@ -588,7 +588,7 @@ pub fn start_file_watch(
                 WatchFlush::Nothing => {}
                 WatchFlush::Everything => {
                     // Isolated chats on this project read it afresh.
-                    crate::overlay::chats::project_changed(&watch_root, &[], true);
+                    rovik_core::overlay::chats::project_changed(&watch_root, &[], true);
                     let _ = app_handle.emit(
                         "fs-changes",
                         FileWatchPayload {
@@ -604,10 +604,10 @@ pub fn start_file_watch(
                     // Isolated chats on this project: see it as it is now,
                     // and hear right away when their own change conflicts.
                     for (_chat, path) in
-                        crate::overlay::chats::project_changed(&watch_root, &paths, false)
+                        rovik_core::overlay::chats::project_changed(&watch_root, &paths, false)
                     {
-                        app_handle.state::<crate::core::Core>().emit(
-                            crate::agent_run::events::AgentEvent::Notice {
+                        app_handle.state::<rovik_core::Core>().emit(
+                            rovik_core::agent_run::events::AgentEvent::Notice {
                                 kind: "warning".into(),
                                 title: "A chat's change conflicts with the project".into(),
                                 message: format!(
@@ -805,18 +805,18 @@ pub fn write_file_content(
     expected: Option<String>,
 ) -> Result<(), String> {
     let p = Path::new(&path);
-    let expected = expected.map(|e| crate::file_guard::hash(e.as_bytes()));
-    match crate::file_guard::write_for_editor(p, content.as_bytes(), expected) {
+    let expected = expected.map(|e| rovik_core::file_guard::hash(e.as_bytes()));
+    match rovik_core::file_guard::write_for_editor(p, content.as_bytes(), expected) {
         Ok(()) => Ok(()),
-        Err(crate::file_guard::WriteError::Changed(changed)) => Err(format!(
+        Err(rovik_core::file_guard::WriteError::Changed(changed)) => Err(format!(
             "{CHANGED_ON_DISK}{}",
             match changed.by {
-                Some(crate::file_guard::Writer::Chat(_)) => "by an agent chat",
-                Some(crate::file_guard::Writer::Editor) => "by another save in the editor",
+                Some(rovik_core::file_guard::Writer::Chat(_)) => "by an agent chat",
+                Some(rovik_core::file_guard::Writer::Editor) => "by another save in the editor",
                 None => "outside the editor: by a command or another program",
             }
         )),
-        Err(crate::file_guard::WriteError::Io(e)) => Err(format!("{path}: {e}")),
+        Err(rovik_core::file_guard::WriteError::Io(e)) => Err(format!("{path}: {e}")),
     }
 }
 
@@ -1554,7 +1554,7 @@ pub fn load_ai_settings(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn save_ai_settings(app: AppHandle, json: String) -> Result<(), String> {
     let path = ai_settings_path(&app)?;
-    crate::atomic_file::write_atomic_private(&path, json.as_bytes()).map_err(|e| e.to_string())
+    rovik_core::atomic_file::write_atomic_private(&path, json.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1617,7 +1617,7 @@ pub fn save_last_project(
     };
     let json = serde_json::to_string(&data)
         .map_err(|e| format!("Failed to serialize last project: {e}"))?;
-    crate::atomic_file::write_atomic(&project_path, json.as_bytes())
+    rovik_core::atomic_file::write_atomic(&project_path, json.as_bytes())
         .map_err(|e| format!("Failed to save last project: {e}"))
 }
 

@@ -2,12 +2,12 @@
 //! the project, undoing a landing, and their conflicts. What changes a
 //! chat's files is refused while its run is going.
 
-use crate::core::Core;
-use crate::merge::ConflictFile;
-use crate::overlay::chats::{
+use rovik_core::merge::ConflictFile;
+use rovik_core::overlay::chats::{
     self, FileVersions, HandedOver, LandResult, OverlayStatus, UndoneMerge,
 };
-use crate::overlay::land::Conflict;
+use rovik_core::overlay::land::Conflict;
+use rovik_core::Core;
 use tauri::State;
 
 /// Polled while a run goes: off the UI thread, it reads the overlay.

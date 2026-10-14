@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The agent evaluation (G01 in docs/design/subagents-plan.md): runs the
-// headless runner (src-tauri/src/headless.rs) on the tasks in tasks/ and
-// grades each run with the tasks' hidden tests. See README.md.
+// headless runner (src-tauri/crates/rovik-core/src/headless.rs) on the tasks
+// in tasks/ and grades each run with the tasks' hidden tests. See README.md.
 //
 //   node scripts/eval/eval.mjs validate [--tasks a,b]
 //   node scripts/eval/eval.mjs dry-run [--tasks a,b]
@@ -355,7 +355,7 @@ function runnerPath(flags) {
   const bin = join(ROOT, 'src-tauri', 'target', 'debug', 'rovik-headless');
   if (!flags['no-build']) {
     console.log('Building the headless runner…');
-    sh('cargo', ['build', '--features', 'headless', '--bin', 'rovik-headless'], {
+    sh('cargo', ['build', '-p', 'rovik-headless'], {
       cwd: join(ROOT, 'src-tauri'),
       stdio: ['ignore', 'ignore', 'inherit'],
     });

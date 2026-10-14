@@ -3799,14 +3799,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "rovik-ide"
+name = "rovik-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
  "eoka",
  "fast_image_resize",
- "flate2",
  "fuser",
  "futures-util",
  "git2",
@@ -3817,8 +3816,6 @@ dependencies = [
  "image",
  "libc",
  "log",
- "notify",
- "portable-pty",
  "rand",
  "regex",
  "reqwest",
@@ -3827,13 +3824,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-single-instance",
- "tauri-plugin-window-state",
  "tokio",
- "trash",
  "tree-sitter",
  "tree-sitter-ada",
  "tree-sitter-bash",
@@ -3904,10 +3895,47 @@ dependencies = [
  "tree-sitter-yaml",
  "tree-sitter-zig",
  "uuid",
- "walkdir",
  "windows 0.62.2",
  "winfsp",
  "winfsp-sys",
+]
+
+[[package]]
+name = "rovik-headless"
+version = "0.1.0"
+dependencies = [
+ "rovik-core",
+ "winfsp",
+]
+
+[[package]]
+name = "rovik-ide"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "futures-util",
+ "git2",
+ "ignore",
+ "libc",
+ "notify",
+ "portable-pty",
+ "regex",
+ "reqwest",
+ "rovik-core",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
+ "tokio",
+ "trash",
+ "uuid",
+ "walkdir",
+ "windows 0.62.2",
+ "winfsp",
  "zip",
 ]
 

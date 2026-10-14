@@ -37,7 +37,6 @@ const READERS: usize = 2;
 struct Inner {
     writer: Mutex<mpsc::Sender<Job>>,
     /// Joined by `close`, which only the headless runner calls.
-    #[cfg_attr(not(any(test, feature = "headless")), allow(dead_code))]
     writer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     readers: Vec<Mutex<Connection>>,
     next_reader: AtomicUsize,
@@ -157,7 +156,6 @@ impl DbState {
 
     /// How many handles share this database (one: this is the last). The
     /// headless runner's, before it closes the database.
-    #[cfg_attr(not(any(test, feature = "headless")), allow(dead_code))]
     pub fn handles(&self) -> usize {
         Arc::strong_count(&self.0)
     }
@@ -166,7 +164,6 @@ impl DbState {
     /// Only the last handle can: another one would keep its connections
     /// open (and a folder removed next would still hold open files). The
     /// headless runner's; the app keeps its database open until it exits.
-    #[cfg_attr(not(any(test, feature = "headless")), allow(dead_code))]
     pub fn close(self) -> Result<(), String> {
         let inner =
             Arc::try_unwrap(self.0).map_err(|_| "the chat database is still in use".to_string())?;

@@ -1,11 +1,11 @@
 //! The virtual files (vfs): the volume's driver and mount, its files and
 //! their history, and its events streamed to the frontend.
 
-use crate::core::Core;
-use crate::vfs::driver::InstallOutcome;
-use crate::vfs::history::{HistoryLimits, RevisionInfo};
-use crate::vfs::problem::SettingsPane;
-use crate::vfs::{self, EventBatch, VfsEntry, VfsFile, VfsStatus};
+use rovik_core::vfs::driver::InstallOutcome;
+use rovik_core::vfs::history::{HistoryLimits, RevisionInfo};
+use rovik_core::vfs::problem::SettingsPane;
+use rovik_core::vfs::{self, EventBatch, VfsEntry, VfsFile, VfsStatus};
+use rovik_core::Core;
 use tauri::ipc::Channel;
 use tauri::State;
 

@@ -1,9 +1,9 @@
 //! The agent's file tools as the editor uses them (agent_tools.rs), the
 //! Files tab's search (code_search.rs) and source outlines (outline).
 
-use crate::agent_tools::{self, EditOutcome, EditorMarker, ToolDirEntry};
-use crate::code_search::{self, SearchResult};
-use crate::outline::{self, Symbol};
+use rovik_core::agent_tools::{self, EditOutcome, EditorMarker, ToolDirEntry};
+use rovik_core::code_search::{self, SearchResult};
+use rovik_core::outline::{self, Symbol};
 
 /// Recursively lists a directory, respecting .gitignore and the built-in
 /// denylist.

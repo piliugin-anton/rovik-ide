@@ -73,7 +73,7 @@ fn managed_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// `<binary> --version`, if it runs. rustup's proxy for a component that
 /// isn't installed exists on PATH but fails here, which is what we want.
 fn version_of(path: &Path) -> Option<String> {
-    let mut child = crate::process::no_window(&mut Command::new(path))
+    let mut child = rovik_core::process::no_window(&mut Command::new(path))
         .arg("--version")
         .env("PATH", tool_path())
         .stdout(std::process::Stdio::piped())
@@ -241,7 +241,7 @@ pub async fn ra_latest_release() -> Result<RaRelease, String> {
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    let (href, sha256) = crate::release_assets::parse_assets(&html, &asset)
+    let (href, sha256) = rovik_core::release_assets::parse_assets(&html, &asset)
         .ok_or_else(|| format!("{asset} or its checksum isn't in release {tag}"))?;
     if !href.starts_with("/rust-lang/rust-analyzer/releases/download/") {
         return Err(format!("unexpected download link {href}"));
@@ -355,7 +355,7 @@ pub async fn ra_install(
         fs::rename(&staging, &final_dir).map_err(|e| e.to_string())?;
         let current =
             serde_json::to_string(&Current { tag: tag.clone() }).map_err(|e| e.to_string())?;
-        crate::atomic_file::write_atomic(&dir.join("current.json"), current.as_bytes())
+        rovik_core::atomic_file::write_atomic(&dir.join("current.json"), current.as_bytes())
             .map_err(|e| e.to_string())?;
         let path = final_dir.join(EXE);
         let _ = app2;
@@ -417,7 +417,7 @@ pub struct RustSrcStatus {
 pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let run = |cmd: &str, args: &[&str]| {
-            crate::process::no_window(&mut Command::new(cmd))
+            rovik_core::process::no_window(&mut Command::new(cmd))
                 .args(args)
                 .current_dir(&root)
                 .env("PATH", tool_path())
@@ -443,7 +443,7 @@ pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
 #[tauri::command]
 pub async fn ra_install_rust_src(root: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = crate::process::no_window(&mut Command::new("rustup"))
+        let out = rovik_core::process::no_window(&mut Command::new("rustup"))
             .args(["component", "add", "rust-src"])
             .current_dir(&root)
             .env("PATH", tool_path())

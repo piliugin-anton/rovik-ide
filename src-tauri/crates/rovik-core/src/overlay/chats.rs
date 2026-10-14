@@ -4158,8 +4158,10 @@ mod bench {
     #[test]
     #[ignore]
     fn reading_through_the_mount() {
+        // The repository, three folders up from src-tauri/crates/rovik-core.
         let project = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
+            .ancestors()
+            .nth(3)
             .unwrap()
             .to_path_buf();
         let data = std::env::temp_dir().join(format!("bench-{}", std::process::id()));

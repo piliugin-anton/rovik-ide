@@ -1,8 +1,8 @@
 //! The agent's browser tools (browser_tools.rs), on the shared headless
 //! Chrome.
 
-use crate::browser_tools::{self, BrowsedPage, BrowserScreenshot, SearchHit};
-use crate::core::Core;
+use rovik_core::browser_tools::{self, BrowsedPage, BrowserScreenshot, SearchHit};
+use rovik_core::Core;
 use tauri::State;
 
 /// DuckDuckGo's HTML endpoint: server-rendered, no JavaScript needed.

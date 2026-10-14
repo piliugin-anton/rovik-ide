@@ -5,8 +5,8 @@
 //! The file tree only knows folders it has loaded; this doesn't depend
 //! on that.
 
-use crate::agent_run::plan::PLANS_DIR;
 use ignore::WalkBuilder;
+use rovik_core::agent_run::plan::PLANS_DIR;
 use serde::Serialize;
 use std::path::Path;
 

@@ -1,12 +1,12 @@
 //! Chat data: chats, their messages and projects (chat_db/api.rs), and the
 //! files attached in the chat input.
 
-use crate::chat_db::search::SearchHit;
-use crate::chat_db::store::{
+use rovik_core::chat_db::search::SearchHit;
+use rovik_core::chat_db::store::{
     ChatModel, Cursor, DialogPage, MessagePage, MessagePatch, NewDialog, NewMessage,
 };
-use crate::chat_db::{api, attachments, projects};
-use crate::core::Core;
+use rovik_core::chat_db::{api, attachments, projects};
+use rovik_core::Core;
 use tauri::ipc::InvokeBody;
 use tauri::State;
 

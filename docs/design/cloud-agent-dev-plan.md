@@ -1382,3 +1382,9 @@ Tasks add notes here when reality differs from the plan.
   no such folder left. The core functions behind the commands take the
   part of the `Core` they need (`&DbState`, `&AgentState`), or the `Core`
   when they need more or send events.
+- **C05, the runner's code waits a task.** `rovik-headless` takes the
+  runner's binary, but headless.rs stays in `rovik-core` until C06: its
+  e2e tests need the scripted model server, which only the `testing`
+  feature lets another crate use. C06 moves the runner and those tests to
+  `rovik-headless`. The workspace's shared dependencies are declared once,
+  in `[workspace.dependencies]`.

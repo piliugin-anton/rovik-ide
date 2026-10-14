@@ -2,7 +2,7 @@
 
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
-headless runner ([src-tauri/src/headless.rs](../../src-tauri/src/headless.rs))
+headless runner ([src-tauri/crates/rovik-core/src/headless.rs](../../src-tauri/crates/rovik-core/src/headless.rs))
 runs each task as the app would; the task's hidden tests then grade it.
 
 Linux and macOS only: the workspaces, caches and process handling use

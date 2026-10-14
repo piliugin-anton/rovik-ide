@@ -1,14 +1,14 @@
 //! The agent's runs (agent_run), and the requests the frontend makes itself
 //! (agent.rs).
 
-use crate::agent::{
+use rovik_core::agent::{
     self, ChatParams, ChatStreamEvent, ContextEstimate, OpenAIChatOptions, ReasoningEffort,
     RemoteModel, WireChatMessage,
 };
-use crate::agent_run::plan::{CurrentChecklist, QuestionsOutcome};
-use crate::agent_run::{self, AgentConfig, AgentStatus, ApprovalDecision, StartRequest};
-use crate::chat_request::ChatRequests;
-use crate::core::Core;
+use rovik_core::agent_run::plan::{CurrentChecklist, QuestionsOutcome};
+use rovik_core::agent_run::{self, AgentConfig, AgentStatus, ApprovalDecision, StartRequest};
+use rovik_core::chat_request::ChatRequests;
+use rovik_core::Core;
 use tauri::ipc::Channel;
 use tauri::State;
 

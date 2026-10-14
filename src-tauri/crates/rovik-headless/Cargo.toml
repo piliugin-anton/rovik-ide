@@ -1,0 +1,11 @@
+[package]
+name = "rovik-headless"
+version.workspace = true
+description = "The agent without a window, for measuring it"
+edition.workspace = true
+
+[dependencies]
+rovik-core.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winfsp = { version = "0.13", default-features = false, features = ["delayload"] }

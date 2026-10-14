@@ -98,8 +98,8 @@ fn default_shell() -> (String, Vec<String>) {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        use crate::process::{shell_kind, ShellKind};
-        let shell = crate::process::user_shell().unwrap_or_else(|| "/bin/bash".into());
+        use rovik_core::process::{shell_kind, ShellKind};
+        let shell = rovik_core::process::user_shell().unwrap_or_else(|| "/bin/bash".into());
         // `-l` starts a login shell so PATH/rc files behave like a normal
         // terminal; only for shells known to take it.
         let args = match shell_kind(&shell) {
@@ -233,7 +233,7 @@ pub fn spawn_terminal(
     // here takes a CPU slot (chats wait, with a note naming it), but the
     // terminal itself never waits and is never slowed (src/workload).
     let job = child.process_id().map(|pid| {
-        let job = crate::workload::begin(crate::workload::JobKind::Terminal, "", None);
+        let job = rovik_core::workload::begin(rovik_core::workload::JobKind::Terminal, "", None);
         job.spawned(pid);
         job
     });

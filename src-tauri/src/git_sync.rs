@@ -11,11 +11,11 @@
 // (MERGE_HEAD, rebase-merge/) like git's own, so a terminal sees it too.
 
 use crate::git::{git_fetch_blocking, off_main_thread, open_repo};
-use crate::merge::{is_binary, parse_merged, ConflictFile, MergeSegment};
 use git2::{
     build::CheckoutBuilder, BranchType, ErrorCode, Oid, RebaseOptions, Reference, Repository,
     RepositoryState, ResetType, Status, StatusOptions,
 };
+use rovik_core::merge::{is_binary, parse_merged, ConflictFile, MergeSegment};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 
@@ -240,7 +240,7 @@ pub async fn git_pull(
     remember: Option<bool>,
 ) -> Result<PullOutcome, String> {
     // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_pull_blocking(path, strategy, remember.unwrap_or(false))).await
 }
 
@@ -432,7 +432,7 @@ pub async fn git_operation_continue(
     message: Option<String>,
 ) -> Result<PullOutcome, String> {
     // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_operation_continue_blocking(path, message)).await
 }
 
@@ -478,7 +478,7 @@ pub fn git_operation_continue_blocking(
 #[tauri::command]
 pub async fn git_operation_abort(path: String) -> Result<(), String> {
     // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_operation_abort_blocking(path)).await
 }
 
@@ -705,7 +705,7 @@ pub fn git_conflict_file_blocking(path: String, file: String) -> Result<Conflict
     let segments = if binary {
         Vec::new()
     } else if let (Some(o), Some(t)) = (&ours, &theirs) {
-        let merged = crate::merge::merge3_raw(base.as_deref().unwrap_or(&[]), o, t)?;
+        let merged = rovik_core::merge::merge3_raw(base.as_deref().unwrap_or(&[]), o, t)?;
         parse_merged(&String::from_utf8_lossy(&merged.content))
     } else {
         // One side deleted the file: it's all one conflict.

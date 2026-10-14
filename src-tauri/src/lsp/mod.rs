@@ -155,7 +155,7 @@ pub fn lsp_start(
 ) -> Result<String, String> {
     let path = tool_path();
     let mut cmd = Command::new(find_program(&command, &path));
-    let mut child = crate::process::no_window(&mut cmd)
+    let mut child = rovik_core::process::no_window(&mut cmd)
         .args(&args)
         .current_dir(&cwd)
         .env("PATH", &path)

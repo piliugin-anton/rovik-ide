@@ -1,8 +1,8 @@
 //! A project as the agent sees it (project_profile.rs): its tools and
 //! checks, and the user's saved settings for it.
 
-use crate::core::Core;
-use crate::project_profile::{self, ProjectProfile};
+use rovik_core::project_profile::{self, ProjectProfile};
+use rovik_core::Core;
 use tauri::State;
 
 #[tauri::command]

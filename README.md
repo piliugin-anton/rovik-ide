@@ -234,26 +234,31 @@ src/                     frontend (SolidJS + TypeScript)
     lsp/                 language server client (rust-analyzer)
     commands.ts          typed wrappers around backend commands
 
-src-tauri/src/           backend (Rust)
-  lib.rs                 app setup: plugins and command registration
-  filesystem.rs          directory listing and the file watcher
-  git.rs, git_sync.rs    Git panel: status, commit, pull, push
-  merge.rs               three-way merge (no git program needed)
-  terminal.rs            the terminal panel
-  code_search.rs         project search
-  lsp/                   language servers, bridged to the editor
-  agent_run/             the AI agent: model turns, tool calls, approvals,
+src-tauri/               backend (Rust), a Cargo workspace
+  src/                   the app
+    lib.rs               app setup: plugins and command registration
+    commands/            the commands of the agent and its chats, over the core
+    filesystem.rs        directory listing and the file watcher
+    git.rs, git_sync.rs  Git panel: status, commit, pull, push
+    terminal.rs          the terminal panel
+    lsp/                 language servers, bridged to the editor
+  crates/rovik-core/src/ the agent and what it uses, without Tauri
+    core.rs              what the agent needs from its host (`Core`)
+    agent_run/           the AI agent: model turns, tool calls, approvals,
                          AI reviewer, verification checks
-  chat_request.rs        sending requests to model providers
-  chat_db/               chat storage (SQLite)
-  clm/                   agent-managed context (CLM mode)
-  overlay/               each chat's private view of the project
-  vfs/                   virtual files (FUSE / macFUSE / WinFsp)
-  workload/              queue for heavy commands (builds, tests)
-  file_guard.rs          stops a write from overwriting changes it hasn't seen
-  outline/, repo_map/    tree-sitter outlines and the repo map
-  project_profile.rs     detects the stack, checks and agent instruction files
-  browser_tools.rs       web search / browsing for the agent
+    chat_request.rs      sending requests to model providers
+    chat_db/             chat storage (SQLite)
+    clm/                 agent-managed context (CLM mode)
+    overlay/             each chat's private view of the project
+    vfs/                 virtual files (FUSE / macFUSE / WinFsp)
+    workload/            queue for heavy commands (builds, tests)
+    merge.rs             three-way merge (no git program needed)
+    code_search.rs       project search
+    file_guard.rs        stops a write from overwriting changes it hasn't seen
+    outline/, repo_map/  tree-sitter outlines and the repo map
+    project_profile.rs   detects the stack, checks and agent instruction files
+    browser_tools.rs     web search / browsing for the agent
+  crates/rovik-headless/ the agent without a window, for evaluations
 
 docs/design/             design documents (chat isolation)
 scripts/test.mjs         frontend test runner
@@ -283,7 +288,7 @@ Design and reasoning: [`docs/design/chat-isolation-plan.md`](docs/design/chat-is
 
 ### Virtual files
 
-`src-tauri/src/vfs/` provides files that live in the app's memory but look
+`src-tauri/crates/rovik-core/src/vfs/` provides files that live in the app's memory but look
 like real files to every other program. Commands the agent runs can `cat`,
 `grep`, `sed -i` or execute them, and the app sees what they changed.
 
@@ -342,11 +347,11 @@ agent's context is kept within the model's limit (`src/lib/contextMode.ts`):
 
 - **Trimming** (default): the app shortens older history. Outdated content
   becomes a short note, old tool results are cut, and the oldest turns are
-  dropped (`src-tauri/src/chat_db/history.rs`).
+  dropped (`src-tauri/crates/rovik-core/src/chat_db/history.rs`).
 - **CLMs**
   ([Context Language Models](https://github.com/facebookresearch/context-language-models)):
   the agent manages its own context by editing it as a file
-  (`src-tauri/src/clm/`). Requires the virtual files driver; without it, the
+  (`src-tauri/crates/rovik-core/src/clm/`). Requires the virtual files driver; without it, the
   chat falls back to Trimming.
 
 How CLM mode works:
@@ -378,7 +383,7 @@ How CLM mode works:
 - The CLM part of the system prompt is identical on every request of a
   chat, so providers can cache it.
 
-Prompt caching (`src-tauri/src/prompt_cache.rs`): providers serve the
+Prompt caching (`src-tauri/crates/rovik-core/src/prompt_cache.rs`): providers serve the
 start of a request from their cache when it's byte-identical to an
 earlier request's, so every request is built in two zones. The system
 prompt, the tool schemas and the history only grow from one step to the
@@ -410,7 +415,7 @@ the app talks to (`src/lib/attachmentFormats.ts`):
   and Gemini's OpenAI-compatible endpoints leave PDFs out, so PDF is off
   until it's turned on for a model, as Vision is.
 - An attached image (up to 50 MB) is stored as a PNG at most 768×768
-  pixels, its shape kept and never enlarged (`src-tauri/src/chat_db/images.rs`):
+  pixels, its shape kept and never enlarged (`src-tauri/crates/rovik-core/src/chat_db/images.rs`):
   read with the `image` crate, scaled with `fast_image_resize` (Lanczos3
   convolution, transparency premultiplied), turned by its EXIF orientation.
   An animation keeps its first frame (Gemini takes no GIF).

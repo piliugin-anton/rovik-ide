@@ -1,52 +1,19 @@
-use crate::agent_run::events::{AgentEvent, EVENT};
-use crate::core::{Core, EventSink, Paths};
 use crate::{filesystem::WatcherState, terminal::TerminalState};
+use rovik_core::agent_run::events::{AgentEvent, EVENT};
+use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
 use std::{collections::HashMap, sync::Arc, sync::Mutex};
 use tauri::{Emitter, Manager};
 
-mod agent;
-mod agent_run;
-mod agent_tools;
-mod api_log;
-mod atomic_file;
-mod browser_tools;
-mod chat_db;
-mod chat_request;
-mod clm;
-mod code_search;
-mod command_tool;
 mod commands;
-pub mod core;
-mod edit_file;
-mod file_guard;
 mod filesystem;
 mod formatter;
 mod git;
 mod git_sync;
-/// The agent without a window, for measuring it (G00): `rovik-headless`.
-#[cfg(any(test, feature = "headless"))]
-pub mod headless;
 mod lsp;
-mod merge;
 mod open_url;
-mod opencode;
-mod outline;
-mod overlay;
-mod process;
 mod project_files;
-mod prompt_cache;
-mod project_profile;
-mod read_file;
-mod read_symbol;
-mod reasoning_echo;
-mod release_assets;
-mod repo_map;
-mod rt;
-mod system_one;
 mod terminal;
 mod typings;
-mod vfs;
-mod workload;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

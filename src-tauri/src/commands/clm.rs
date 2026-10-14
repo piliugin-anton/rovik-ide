@@ -1,8 +1,8 @@
 //! Context Language Models (clm): a chat's context as a file the agent
 //! edits, and its revisions.
 
-use crate::clm::{self, store::RevisionRow, ClmStatus};
-use crate::core::Core;
+use rovik_core::clm::{self, store::RevisionRow, ClmStatus};
+use rovik_core::Core;
 use tauri::State;
 
 #[tauri::command]

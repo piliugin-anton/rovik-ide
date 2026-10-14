@@ -1230,7 +1230,7 @@ mod tests {
     #[test]
     fn shared_command_cases_agree_with_the_frontend() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../test-fixtures/command-permissions.json"
+            "../../../../../test-fixtures/command-permissions.json"
         ))
         .unwrap();
         let strings = |v: &serde_json::Value| -> Vec<String> {

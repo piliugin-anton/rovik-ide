@@ -164,7 +164,7 @@ fn drain<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<(Vec<u8>
 /// ends the shell, leaving e.g. a dev server it ran alive and holding the
 /// output pipes.
 #[cfg(unix)]
-pub(crate) fn kill_tree(child: &mut std::process::Child) {
+pub fn kill_tree(child: &mut std::process::Child) {
     // The shell leads its own group (`process_group(0)`); the group outlives
     // it while any member is alive, so this works after it has exited too.
     if let Ok(pid) = libc::pid_t::try_from(child.id()) {
@@ -179,7 +179,7 @@ pub(crate) fn kill_tree(child: &mut std::process::Child) {
 /// would then signal that stranger's group. The unreaped zombie keeps the
 /// pid, and so the group id, ours until `wait`.
 #[cfg(target_os = "linux")]
-pub(crate) fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
+pub fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
     if unsafe { libc::waitid(libc::P_PID, child.id(), &mut info, flags) } == -1 {
@@ -189,12 +189,12 @@ pub(crate) fn shell_exited(child: &mut std::process::Child) -> std::io::Result<b
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
+pub fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
     child.try_wait().map(|s| s.is_some())
 }
 
 #[cfg(windows)]
-pub(crate) fn kill_tree(child: &mut std::process::Child) {
+pub fn kill_tree(child: &mut std::process::Child) {
     let _ = crate::process::no_window(&mut Command::new("taskkill"))
         .args(["/T", "/F", "/PID", &child.id().to_string()])
         .stdin(Stdio::null())

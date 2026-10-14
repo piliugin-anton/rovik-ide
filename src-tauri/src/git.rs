@@ -482,7 +482,7 @@ pub fn git_branches_blocking(path: String) -> Result<Vec<GitBranch>, String> {
 #[tauri::command]
 pub async fn git_checkout(path: String, branch: String) -> Result<(), String> {
     // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_checkout_blocking(path, branch)).await
 }
 
@@ -828,7 +828,8 @@ pub async fn git_create_branch(
     from: Option<String>,
 ) -> Result<(), String> {
     // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = checkout.then(|| crate::overlay::chats::hold_busy(std::path::Path::new(&path)));
+    let _busy =
+        checkout.then(|| rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path)));
     off_main_thread(move || git_create_branch_blocking(path, name, checkout, from)).await
 }
 
@@ -925,7 +926,7 @@ pub struct GitCommitEntry {
 #[tauri::command]
 pub async fn git_stash_push(path: String, message: Option<String>) -> Result<(), String> {
     // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_stash_push_blocking(path, message)).await
 }
 
@@ -979,7 +980,7 @@ pub fn git_stash_list_blocking(path: String) -> Result<Vec<GitStashEntry>, Strin
 #[tauri::command]
 pub async fn git_stash_pop(path: String, index: Option<usize>) -> Result<(), String> {
     // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_stash_pop_blocking(path, index)).await
 }
 
@@ -1213,7 +1214,7 @@ pub fn git_stash_file_preview_blocking(
 #[tauri::command]
 pub async fn git_discard_all(path: String) -> Result<(), String> {
     // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = crate::overlay::chats::hold_busy(std::path::Path::new(&path));
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
     off_main_thread(move || git_discard_all_blocking(path)).await
 }
 
