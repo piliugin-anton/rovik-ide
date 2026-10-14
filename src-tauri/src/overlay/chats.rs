@@ -1739,7 +1739,7 @@ fn summarize(changes: &[OverlayChange]) -> Vec<ChangedFile> {
 /// Polled while a run goes: off the UI thread, it reads the overlay.
 #[tauri::command]
 pub async fn overlay_status(dialog_id: String) -> Result<OverlayStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || status(dialog_id))
+    crate::rt::spawn_blocking(move || status(dialog_id))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1799,7 +1799,7 @@ pub struct FileVersions {
 /// A changed file as the project has it and as the chat has it, for a diff.
 #[tauri::command]
 pub async fn overlay_file(dialog_id: String, path: String) -> Result<FileVersions, String> {
-    tauri::async_runtime::spawn_blocking(move || file_versions(dialog_id, path))
+    crate::rt::spawn_blocking(move || file_versions(dialog_id, path))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1863,7 +1863,7 @@ pub async fn overlay_discard(
 ) -> Result<(), String> {
     not_running(&agent, &dialog_id)?;
     agent.drop_carry(&dialog_id);
-    tauri::async_runtime::spawn_blocking(move || discard(&dialog_id))
+    crate::rt::spawn_blocking(move || discard(&dialog_id))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2061,8 +2061,7 @@ pub async fn overlay_land(
 }
 
 async fn land_command(dialog_id: String, keep_chat: bool) -> LandResult {
-    let result =
-        tauri::async_runtime::spawn_blocking(move || land_now(&dialog_id, keep_chat)).await;
+    let result = crate::rt::spawn_blocking(move || land_now(&dialog_id, keep_chat)).await;
     match result {
         Ok(Ok(landed)) => LandResult {
             landed,
@@ -2096,7 +2095,7 @@ pub async fn overlay_undo(
     id: String,
 ) -> Result<Vec<super::land::Conflict>, String> {
     not_running(&agent, &dialog_id)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         if !valid_id(&dialog_id) {
             return Err("bad chat id".to_string());
         }
@@ -2812,7 +2811,7 @@ pub async fn overlay_undo_merge(
     dialog_id: String,
 ) -> Result<UndoneMerge, String> {
     not_running(&agent, &dialog_id)?;
-    tauri::async_runtime::spawn_blocking(move || undo_merge(&dialog_id, None))
+    crate::rt::spawn_blocking(move || undo_merge(&dialog_id, None))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2826,7 +2825,7 @@ pub async fn overlay_unmark(
     files: Vec<String>,
 ) -> Result<UndoneMerge, String> {
     not_running(&agent, &dialog_id)?;
-    tauri::async_runtime::spawn_blocking(move || undo_merge(&dialog_id, Some(&files)))
+    crate::rt::spawn_blocking(move || undo_merge(&dialog_id, Some(&files)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2836,7 +2835,7 @@ pub async fn overlay_conflict_file(
     dialog_id: String,
     path: String,
 ) -> Result<crate::merge::ConflictFile, String> {
-    tauri::async_runtime::spawn_blocking(move || conflict_file(&dialog_id, &path))
+    crate::rt::spawn_blocking(move || conflict_file(&dialog_id, &path))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2851,7 +2850,7 @@ pub async fn overlay_conflict_resolve(
     side: Option<String>,
 ) -> Result<Vec<super::land::Conflict>, String> {
     not_running(&agent, &dialog_id)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         resolve_conflict(
             &dialog_id,
             &path,
@@ -2879,7 +2878,7 @@ pub async fn overlay_conflicts_to_chat(
     dialog_id: String,
 ) -> Result<HandedOver, String> {
     not_running(&agent, &dialog_id)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         let files = mark_conflicts(&dialog_id)?;
         let request = if files.is_empty() {
             String::new()
@@ -3372,7 +3371,7 @@ pub async fn overlay_redo_group(
     group: String,
 ) -> Result<String, String> {
     not_running(&agent, &dialog_id)?;
-    tauri::async_runtime::spawn_blocking(move || redo_group(&dialog_id, &group))
+    crate::rt::spawn_blocking(move || redo_group(&dialog_id, &group))
         .await
         .map_err(|e| e.to_string())?
 }

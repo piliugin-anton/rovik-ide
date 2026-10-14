@@ -354,7 +354,7 @@ impl<R: Runtime> Run<R> {
         // Round 2, P1.3: discarding a copy removes its landing journal, so
         // a landing of one that stopped half way is finished first.
         let id = self.dialog_id.clone();
-        tauri::async_runtime::spawn_blocking(move || chats::finish_landing_into(&id))
+        crate::rt::spawn_blocking(move || chats::finish_landing_into(&id))
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
             .map_err(|e| {
@@ -365,8 +365,7 @@ impl<R: Runtime> Run<R> {
             if let Some(step) = self.worker_step_of(&child).await {
                 if members.iter().any(|m| m.number == step.number) {
                     let id = child.clone();
-                    let _ = tauri::async_runtime::spawn_blocking(move || chats::discard_child(&id))
-                        .await;
+                    let _ = crate::rt::spawn_blocking(move || chats::discard_child(&id)).await;
                     stale.push(format!(
                         "{} (step {})",
                         subagent::handle(Kind::Worker, &child),
@@ -760,11 +759,10 @@ impl<R: Runtime> Run<R> {
             .cloned()
             .collect();
         let (dialog, keep) = (self.dialog_id.clone(), fresh.clone());
-        let snapshot =
-            tauri::async_runtime::spawn_blocking(move || chats::snapshot(&dialog, &keep))
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r);
+        let snapshot = crate::rt::spawn_blocking(move || chats::snapshot(&dialog, &keep))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
         let child_view = chats::get(&member.child_id).map(|o| o.view.clone());
         let handle = subagent::handle(Kind::Worker, &member.child_id);
         // P2.6: only what's in its scope lands; what else is in its copy
@@ -1096,7 +1094,7 @@ pub(super) async fn land_copy(child: &str, except: Vec<String>) -> Result<Vec<St
     let mut tries = 0;
     loop {
         let (id, ex) = (child.to_string(), except.clone());
-        let r = tauri::async_runtime::spawn_blocking(move || chats::land_child_except(&id, &ex))
+        let r = crate::rt::spawn_blocking(move || chats::land_child_except(&id, &ex))
             .await
             .unwrap_or_else(|e| Err(LandError::Failed(e.to_string())));
         match r {

@@ -41,7 +41,7 @@ pub async fn chat_open_project(
         return Ok(resolved.opened);
     }
     let fp_path = path.clone();
-    let fp = tauri::async_runtime::spawn_blocking(move || projects::fingerprint(&fp_path))
+    let fp = crate::rt::spawn_blocking(move || projects::fingerprint(&fp_path))
         .await
         .map_err(|e| e.to_string())?;
     db.write(move |c| projects::finish_open(c, resolved, fp, &path))
@@ -260,7 +260,7 @@ async fn remove_chat_files<R: tauri::Runtime>(
     }
     agent.drop_carry(dialog_id);
     let id = dialog_id.to_string();
-    let _ = tauri::async_runtime::spawn_blocking(move || crate::overlay::chats::forget(&id)).await;
+    let _ = crate::rt::spawn_blocking(move || crate::overlay::chats::forget(&id)).await;
     // Only an id the context folder's name keeps whole: one it shortens
     // ("a.b" → "ab") could name another chat's folder.
     if !dialog_id.is_empty()

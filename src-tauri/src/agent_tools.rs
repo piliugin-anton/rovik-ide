@@ -158,7 +158,7 @@ pub async fn tool_list_dir(
     max_depth: Option<usize>,
 ) -> Result<Vec<ToolDirEntry>, String> {
     // Walking a large tree must not block the main thread.
-    tauri::async_runtime::spawn_blocking(move || list_dir(root, path, max_depth))
+    crate::rt::spawn_blocking(move || list_dir(root, path, max_depth))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -255,7 +255,7 @@ pub async fn tool_search_code(
         max_results: max_results.unwrap_or(100).clamp(1, 500),
         context_lines: context_lines.unwrap_or(0).min(5),
     };
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         crate::code_search::search(&root_canon, &opts, is_denylisted_name)
     })
     .await
@@ -294,7 +294,7 @@ pub async fn tool_neighbours(root: String, path: String) -> Result<String, Strin
             path.clone()
         }
     };
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         crate::repo_map::neighbours(Path::new(&root), &rel, &crate::repo_map::Options::default())
     })
     .await
@@ -308,7 +308,7 @@ pub async fn tool_callers(root: String, symbol: String) -> Result<String, String
     if symbol.trim().is_empty() {
         return Err("symbol must not be empty".to_string());
     }
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         crate::repo_map::callers(
             Path::new(&root),
             &symbol,

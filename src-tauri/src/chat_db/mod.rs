@@ -137,7 +137,7 @@ impl DbState {
         F: FnOnce(&Connection) -> Result<T, String> + Send + 'static,
     {
         let inner = self.0.clone();
-        tauri::async_runtime::spawn_blocking(move || {
+        crate::rt::spawn_blocking(move || {
             let i = inner.next_reader.fetch_add(1, Ordering::Relaxed) % inner.readers.len();
             let conn = inner.readers[i].lock().map_err(store::err)?;
             f(&conn)

@@ -1355,4 +1355,13 @@ points here from each one.
 
 ## Notes from implementation
 
-None yet. Tasks add notes here when reality differs from the plan.
+Tasks add notes here when reality differs from the plan.
+
+- **C02, the runtime without a host's.** `rt` doesn't fall back to
+  `Handle::current()`: it makes a multi-thread runtime on first use, as
+  `tauri::async_runtime` did. On a `#[tokio::test]`'s single thread a run
+  moves only while the test waits, and an isolated chat's e2e test
+  (`a_running_chat_resolves_its_own_conflict`) failed two runs in three
+  that way. The app takes that runtime from `rt::handle()`, after
+  `adopt_login_shell_path`, and hands it to Tauri, so there is one runtime
+  and no `rt::init`.

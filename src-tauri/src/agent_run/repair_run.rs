@@ -592,7 +592,7 @@ impl<R: Runtime> Run<R> {
         keep.sort();
         keep.dedup();
         let dialog = self.dialog_id.clone();
-        tauri::async_runtime::spawn_blocking(move || chats::snapshot_each(&dialog, &keep))
+        crate::rt::spawn_blocking(move || chats::snapshot_each(&dialog, &keep))
             .await
             .map_err(|e| e.to_string())
             .and_then(|r| r)
@@ -622,10 +622,8 @@ impl<R: Runtime> Run<R> {
             .unwrap_or_default();
         if !unused.is_empty() {
             let dialog = self.dialog_id.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
-                chats::forget_snapshot(&dialog, &unused)
-            })
-            .await;
+            let _ =
+                crate::rt::spawn_blocking(move || chats::forget_snapshot(&dialog, &unused)).await;
         }
         if changed.is_empty() {
             return;
@@ -647,7 +645,7 @@ impl<R: Runtime> Run<R> {
             }
         }
         let (dialog, name) = (self.dialog_id.clone(), group.name.clone());
-        let saved = tauri::async_runtime::spawn_blocking(move || {
+        let saved = crate::rt::spawn_blocking(move || {
             chats::add_group_paths(&dialog, &name, entries)?;
             match unknown {
                 Some(why) => chats::mark_redo_unavailable(&dialog, &name, &why),
@@ -819,8 +817,7 @@ impl<R: Runtime> Run<R> {
             let landed = super::group::land_copy(&child, Vec::new()).await;
             if landed.is_ok() {
                 let id = child.clone();
-                let _ =
-                    tauri::async_runtime::spawn_blocking(move || chats::discard_child(&id)).await;
+                let _ = crate::rt::spawn_blocking(move || chats::discard_child(&id)).await;
             }
             match landed {
                 Ok(paths) => {

@@ -44,7 +44,7 @@ async fn add(db: &DbState, messages: Vec<NewMessage>) {
 
 #[test]
 fn edits_become_the_context_and_survive_a_restart() {
-    tauri::async_runtime::block_on(async {
+    crate::rt::block_on(async {
         let dir = std::env::temp_dir().join(format!("clm-test-{}", uuid::Uuid::new_v4()));
         let db = DbState::open(&dir).unwrap();
         db.write(|conn| {
@@ -314,7 +314,7 @@ fn later_messages_are_added_once() {
 /// not put the messages after the older one in the context twice.
 #[test]
 fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
-    tauri::async_runtime::block_on(async {
+    crate::rt::block_on(async {
         let dir = std::env::temp_dir().join(format!("clm-test-{}", uuid::Uuid::new_v4()));
         let db = DbState::open(&dir).unwrap();
         db.write(|conn| {
@@ -408,7 +408,7 @@ fn a_rendering_whose_state_was_not_saved_doubles_nothing() {
 
 #[test]
 fn missing_task_card_reads_as_guidance() {
-    tauri::async_runtime::block_on(async {
+    crate::rt::block_on(async {
         let dir = std::env::temp_dir().join(format!("clm-test-{}", uuid::Uuid::new_v4()));
         let db = DbState::open(&dir).unwrap();
         db.write(|conn| {

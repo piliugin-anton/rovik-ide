@@ -152,7 +152,7 @@ impl BrowserState {
 
     fn spawn_idle_watcher(&self) {
         let state = self.clone();
-        tauri::async_runtime::spawn(async move {
+        crate::rt::spawn(async move {
             loop {
                 tokio::time::sleep(IDLE_CHECK_EVERY).await;
 

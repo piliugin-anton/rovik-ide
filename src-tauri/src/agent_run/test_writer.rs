@@ -290,7 +290,7 @@ impl<R: tauri::Runtime> super::run::Run<R> {
             uuid::Uuid::new_v4()
         );
         let (scratch_id, base) = (id.clone(), std::path::PathBuf::from(&project));
-        let scratch = tauri::async_runtime::spawn_blocking(move || {
+        let scratch = crate::rt::spawn_blocking(move || {
             crate::overlay::chats::open_scratch(&scratch_id, &base)
         })
         .await
@@ -347,9 +347,7 @@ impl<R: tauri::Runtime> super::run::Run<R> {
                 }
             }
         }
-        let _ =
-            tauri::async_runtime::spawn_blocking(move || crate::overlay::chats::discard_child(&id))
-                .await;
+        let _ = crate::rt::spawn_blocking(move || crate::overlay::chats::discard_child(&id)).await;
         red_note(&passing)
     }
 }

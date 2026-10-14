@@ -631,11 +631,9 @@ impl<R: Runtime> Run<R> {
                 // Settings are kept by the project's folder, not the view's.
                 let settings_root = project_root.clone().unwrap_or_else(|| r.clone());
                 let (app, r, verify) = (app.clone(), r.clone(), config.permissions.verify_changes);
-                tauri::async_runtime::spawn_blocking(move || {
-                    project::load(&app, &r, &settings_root, verify)
-                })
-                .await
-                .unwrap_or_default()
+                crate::rt::spawn_blocking(move || project::load(&app, &r, &settings_root, verify))
+                    .await
+                    .unwrap_or_default()
             }
             None => Default::default(),
         };
@@ -679,7 +677,7 @@ impl<R: Runtime> Run<R> {
                     max_chars: repo_map_chars,
                     ..Default::default()
                 };
-                tauri::async_runtime::spawn_blocking(move || {
+                crate::rt::spawn_blocking(move || {
                     let root = std::path::Path::new(&r);
                     let focus = crate::repo_map::focus_from(root, &request_text, &touched);
                     crate::repo_map::repo_map(root, &focus, &options)
@@ -2031,7 +2029,7 @@ impl<R: Runtime> Run<R> {
         let touched = touched_paths(&recent);
         let request_text = self.current_user_content.clone().unwrap_or_default();
         let max_chars = self.repo_map_chars;
-        let rebuilt = tauri::async_runtime::spawn_blocking(move || {
+        let rebuilt = crate::rt::spawn_blocking(move || {
             let root_path = std::path::Path::new(&root);
             let focus = crate::repo_map::focus_from(root_path, &request_text, &touched);
             let options = crate::repo_map::Options {

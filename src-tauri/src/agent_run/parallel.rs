@@ -124,13 +124,13 @@ impl<T: Send + 'static> InOrder<T> {
 pub(super) async fn spawned<T: Send + 'static>(
     work: impl Future<Output = T> + Send + 'static,
 ) -> Result<T, String> {
-    struct AbortOnDrop<T>(tauri::async_runtime::JoinHandle<T>);
+    struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
     impl<T> Drop for AbortOnDrop<T> {
         fn drop(&mut self) {
             self.0.abort(); // nothing happens if it's done
         }
     }
-    let mut task = AbortOnDrop(tauri::async_runtime::spawn(work));
+    let mut task = AbortOnDrop(crate::rt::spawn(work));
     (&mut task.0)
         .await
         .map_err(|e| format!("the tool failed: {e}"))

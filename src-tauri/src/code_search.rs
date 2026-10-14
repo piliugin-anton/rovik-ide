@@ -445,11 +445,9 @@ pub async fn search_in_files(
         max_results: max_results.unwrap_or(2000).clamp(1, 10_000),
         context_lines: 0,
     };
-    tauri::async_runtime::spawn_blocking(move || {
-        search(&root, &opts, crate::agent_tools::is_denylisted_name)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    crate::rt::spawn_blocking(move || search(&root, &opts, crate::agent_tools::is_denylisted_name))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

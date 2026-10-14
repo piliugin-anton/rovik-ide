@@ -182,7 +182,7 @@ impl Drop for Chat {
 }
 
 fn run<F: std::future::Future<Output = ()>>(f: F) {
-    tauri::async_runtime::block_on(f)
+    crate::rt::block_on(f)
 }
 
 fn ids(p: &Prepared) -> Vec<&str> {

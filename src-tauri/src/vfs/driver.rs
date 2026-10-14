@@ -131,7 +131,7 @@ pub async fn install() -> Result<InstallOutcome, String> {
             command: Some(format!("sudo sh -c '{script}'")),
         });
     };
-    let out = tauri::async_runtime::spawn_blocking(move || command.output())
+    let out = crate::rt::spawn_blocking(move || command.output())
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("starting the installer: {e}"))?;
@@ -345,7 +345,7 @@ pub async fn install() -> Result<InstallOutcome, String> {
     .await?;
     let dir = std::env::temp_dir().join(format!("rovik-macfuse-{}", std::process::id()));
     let dmg = download::fetch(&asset, &dir).await?;
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<InstallOutcome, String> {
+    let result = crate::rt::spawn_blocking(move || -> Result<InstallOutcome, String> {
         let mnt = dir.join("mnt");
         std::fs::create_dir_all(&mnt).map_err(|e| e.to_string())?;
         let (dmg_s, mnt_s) = (dmg.to_string_lossy().into_owned(), mnt.to_string_lossy().into_owned());
@@ -504,7 +504,7 @@ pub async fn install() -> Result<InstallOutcome, String> {
     .await?;
     let dir = std::env::temp_dir().join(format!("rovik-winfsp-{}", std::process::id()));
     let msi = download::fetch(&asset, &dir).await?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         let msi_s = msi.to_string_lossy().into_owned();
         // Only run an installer signed by WinFsp's publisher.
         let script = "$s = Get-AuthenticodeSignature -LiteralPath $args[0]; \

@@ -1007,7 +1007,7 @@ impl<R: Runtime> Run<R> {
         }
         if isolated {
             let id = self.dialog_id.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
+            let _ = crate::rt::spawn_blocking(move || {
                 if let Some(o) = crate::overlay::chats::get(&id) {
                     o.fs.flush();
                 }

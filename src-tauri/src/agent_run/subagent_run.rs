@@ -201,10 +201,7 @@ pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Sen
 /// never cancels the child halfway (Stop ends it cleanly). None: it
 /// panicked.
 pub(super) async fn run_child<R: Runtime>(run: Run<R>) -> Option<SubResult> {
-    tauri::async_runtime::spawn(go_sub(run))
-        .await
-        .ok()
-        .flatten()
+    crate::rt::spawn(go_sub(run)).await.ok().flatten()
 }
 
 /// The place of a child that never started.
@@ -609,7 +606,7 @@ impl<R: Runtime> Run<R> {
         // opened again if the app closed since (round 2).
         let kept_view = if kind == Kind::Worker {
             let (parent, id) = (self.dialog_id.clone(), child.id.clone());
-            tauri::async_runtime::spawn_blocking(move || {
+            crate::rt::spawn_blocking(move || {
                 crate::overlay::chats::reopen_child(&parent, &id).map(|o| o.view.clone())
             })
             .await

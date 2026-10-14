@@ -1829,7 +1829,7 @@ pub async fn chat_context_estimate(
     let project_chars = match root {
         Some(root) => {
             let verify = permissions.verify_changes;
-            tauri::async_runtime::spawn_blocking(move || {
+            crate::rt::spawn_blocking(move || {
                 crate::agent_run::project::cached_context(&app, &root, verify)
             })
             .await

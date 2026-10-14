@@ -365,7 +365,7 @@ pub async fn run_command(
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .clamp(1_000, MAX_TIMEOUT_MS),
     );
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         run_blocking(&root, &command, timeout, &stop, queued.as_ref())
     })
     .await

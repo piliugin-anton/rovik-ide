@@ -489,7 +489,7 @@ pub struct VfsEntry {
 
 #[tauri::command]
 pub async fn vfs_status(state: State<'_, VfsState>) -> Result<VfsStatus, String> {
-    let driver = tauri::async_runtime::spawn_blocking(driver::status)
+    let driver = crate::rt::spawn_blocking(driver::status)
         .await
         .map_err(|e| e.to_string())?;
     let (capacity, used, _) = state.fs.usage();
@@ -497,7 +497,7 @@ pub async fn vfs_status(state: State<'_, VfsState>) -> Result<VfsStatus, String>
     Ok(VfsStatus {
         driver,
         mountpoint: state.mountpoint().map(|p| p.to_string_lossy().into_owned()),
-        default_mountpoint: tauri::async_runtime::spawn_blocking(default_mountpoint)
+        default_mountpoint: crate::rt::spawn_blocking(default_mountpoint)
             .await
             .map_err(|e| e.to_string())?
             .to_string_lossy()
@@ -528,7 +528,7 @@ pub async fn vfs_mount(
         .filter(|m| !m.trim().is_empty())
         .map(PathBuf::from);
     // Can wait on macFUSE for a while; not on the async runtime.
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         app.state::<VfsState>()
             .mount(at)
             .map(|p| p.to_string_lossy().into_owned())

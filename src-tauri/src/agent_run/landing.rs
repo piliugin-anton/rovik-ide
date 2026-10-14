@@ -56,7 +56,7 @@ impl<R: Runtime> Run<R> {
         // Reading and merging files: off the async threads.
         let read = {
             let (o, id) = (overlay.clone(), dialog_id.clone());
-            tauri::async_runtime::spawn_blocking(move || {
+            crate::rt::spawn_blocking(move || {
                 o.fs.flush();
                 (chats::changes(&id), chats::markers_left(&id))
             })
@@ -125,11 +125,7 @@ impl<R: Runtime> Run<R> {
 
         let plan = {
             let project = overlay.project.clone();
-            match tauri::async_runtime::spawn_blocking(move || {
-                land::plan(&project, &changes, false)
-            })
-            .await
-            {
+            match crate::rt::spawn_blocking(move || land::plan(&project, &changes, false)).await {
                 Ok(plan) => plan,
                 Err(e) => {
                     self.notice(
@@ -219,10 +215,9 @@ impl<R: Runtime> Run<R> {
         }
         // With checks, only what they checked lands: a file the project
         // changed again meanwhile waits.
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            chats::land_now_with(&dialog_id, false, !has_checks)
-        })
-        .await;
+        let result =
+            crate::rt::spawn_blocking(move || chats::land_now_with(&dialog_id, false, !has_checks))
+                .await;
         match result {
             Ok(Ok(Some(landed))) => {
                 let n = landed.paths.len();
@@ -298,7 +293,7 @@ impl<R: Runtime> Run<R> {
         // what's checked is what lands.
         let taken = {
             let (id, files) = (self.dialog_id.clone(), plan.clone());
-            tauri::async_runtime::spawn_blocking(move || chats::take_merged(&id, &files))
+            crate::rt::spawn_blocking(move || chats::take_merged(&id, &files))
                 .await
                 .map_err(|e| e.to_string())
         };
@@ -357,7 +352,7 @@ impl<R: Runtime> Run<R> {
         };
         self.wait_while_project_busy().await;
         let (o, id) = (overlay.clone(), self.dialog_id.clone());
-        let files = tauri::async_runtime::spawn_blocking(move || {
+        let files = crate::rt::spawn_blocking(move || {
             o.fs.flush();
             let plan = land::plan(&o.project, &chats::changes(&id), false);
             // Conflicts are the user's (or the chat's, if it's handed them).
@@ -389,7 +384,7 @@ impl<R: Runtime> Run<R> {
             return Ok(false);
         }
         let id = self.dialog_id.clone();
-        let left = tauri::async_runtime::spawn_blocking(move || chats::markers_left(&id))
+        let left = crate::rt::spawn_blocking(move || chats::markers_left(&id))
             .await
             .unwrap_or_default();
         if left.is_empty() {

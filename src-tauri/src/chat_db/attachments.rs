@@ -86,12 +86,10 @@ pub async fn store(db: &DbState, bytes: Vec<u8>, mime: &str) -> DbResult<String>
 
     if !path.exists() {
         let write_path = path.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            crate::atomic_file::write_atomic(&write_path, &bytes)
-        })
-        .await
-        .map_err(err)?
-        .map_err(err)?;
+        crate::rt::spawn_blocking(move || crate::atomic_file::write_atomic(&write_path, &bytes))
+            .await
+            .map_err(err)?
+            .map_err(err)?;
     }
 
     let row_id = id.clone();
@@ -203,7 +201,7 @@ pub async fn store_attached(db: &DbState, bytes: Vec<u8>) -> DbResult<Stored> {
     }
     let image = {
         let _turn = PREPARING.acquire().await.map_err(err)?;
-        tauri::async_runtime::spawn_blocking(move || images::prepare(&bytes))
+        crate::rt::spawn_blocking(move || images::prepare(&bytes))
             .await
             .map_err(err)??
     };

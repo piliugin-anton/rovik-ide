@@ -858,12 +858,12 @@ pub async fn agent_start<R: Runtime>(
         },
     );
     let id = run_id.clone();
-    tauri::async_runtime::spawn(async move {
+    crate::rt::spawn(async move {
         let (mut run, entry) = prepared;
         // The run as a task of its own: should it panic, the chat is still
         // released and told, instead of reading "already working" until
         // the app restarts.
-        let outcome = match tauri::async_runtime::spawn(async move { run.go(entry).await }).await {
+        let outcome = match crate::rt::spawn(async move { run.go(entry).await }).await {
             Ok(outcome) => outcome,
             Err(e) => {
                 eprintln!("agent: run {id} in chat {dialog_id} ended abnormally: {e}");

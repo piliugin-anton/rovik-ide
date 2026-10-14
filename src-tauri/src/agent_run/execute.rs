@@ -708,7 +708,7 @@ impl<R: Runtime> Run<R> {
         // on the same lines is told with this result.
         if crate::overlay::chats::get(&self.overlay_owner()).is_some() {
             let id = self.overlay_owner();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
+            let _ = crate::rt::spawn_blocking(move || {
                 if let Some(o) = crate::overlay::chats::get(&id) {
                     o.fs.flush();
                     crate::overlay::chats::check_peer_conflicts(&id);

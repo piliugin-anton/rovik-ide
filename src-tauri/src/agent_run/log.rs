@@ -16,7 +16,7 @@ pub fn write<R: Runtime>(app: &AppHandle<R>, entry: Value) {
     }
     let text = Value::Object(line).to_string();
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::rt::spawn_blocking(move || {
         let _ = crate::project_profile::append_agent_log(app, text);
     });
 }

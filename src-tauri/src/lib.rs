@@ -37,6 +37,7 @@ mod read_symbol;
 mod reasoning_echo;
 mod release_assets;
 mod repo_map;
+mod rt;
 mod system_one;
 mod terminal;
 mod typings;
@@ -47,6 +48,8 @@ mod workload;
 pub fn run() {
     // First, while the process is still single-threaded.
     process::adopt_login_shell_path();
+    // Then the core's runtime (rt.rs), Tauri's too: one for the process.
+    tauri::async_runtime::set(rt::handle().clone());
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(TerminalState::default())
@@ -260,7 +263,7 @@ pub fn run() {
             // Don't leave a headless Chrome running after the IDE closes.
             if let tauri::RunEvent::Exit = event {
                 let browser = app.state::<BrowserState>().inner().clone();
-                tauri::async_runtime::block_on(browser.shutdown());
+                rt::block_on(browser.shutdown());
                 // Unmount the virtual files, or the folder stays a dead mount.
                 let _ = app.state::<vfs::VfsState>().unmount();
                 overlay::chats::close_all();

@@ -761,7 +761,7 @@ async fn run<R: Runtime>(
             };
             // Off the async threads: a write may wait for a landing's locks.
             let (root_s, seen_arc) = (root.to_string(), ctx.seen.clone());
-            let (edit, outcome) = tauri::async_runtime::spawn_blocking(move || {
+            let (edit, outcome) = crate::rt::spawn_blocking(move || {
                 let outcome = apply_edit(&root_s, &edit, false, Some(&seen_arc));
                 (edit, outcome)
             })
@@ -800,7 +800,7 @@ async fn run<R: Runtime>(
                 content.to_string(),
                 ctx.seen.clone(),
             );
-            tauri::async_runtime::spawn_blocking(move || {
+            crate::rt::spawn_blocking(move || {
                 crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc))
             })
             .await
@@ -936,7 +936,7 @@ async fn run<R: Runtime>(
             }
             // The declaration each line is in: the files' outlines, briefly.
             let root = root_owned;
-            let outlines = tauri::async_runtime::spawn_blocking(move || {
+            let outlines = crate::rt::spawn_blocking(move || {
                 let deadline = std::time::Instant::now() + SEARCH_OUTLINE_TIME;
                 let outlines = search_outlines(&root, &result, deadline);
                 (result, outlines)
