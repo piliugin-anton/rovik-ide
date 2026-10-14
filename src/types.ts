@@ -47,10 +47,12 @@ export interface ModelProfile {
   apiKey: string;
   stream: boolean;
   /**
-   * Model accepts image input: images pasted into the chat are sent to it,
+   * Model accepts image input: images attached in the chat are sent to it,
    * and the agent gets the browser_screenshot tool.
    */
   vision: boolean;
+  /** Model accepts PDF files: PDFs attached in the chat are sent to it. */
+  pdf: boolean;
   /** Context window in tokens: the user's override, else the reported value. */
   contextTokens?: number;
   /** The model doesn't support tool calls: send no tools. */
@@ -75,6 +77,7 @@ export interface ProviderModel {
   ownedBy?: string; // `owned_by` from GET /models, when present
   enabled: boolean; // shown in the chat model picker
   vision?: boolean; // accepts image input (set by the user; /models doesn't say)
+  pdf?: boolean; // accepts PDF files (set by the user, as vision)
   contextLength?: number; // context window in tokens, if GET /models reported it
   contextOverride?: number; // typed in provider settings; wins over contextLength
   noTools?: boolean; // the model can't use tool calls
@@ -164,7 +167,8 @@ export interface ChatMessage {
   failed?: boolean;
   /**
    * Attachment ids (SHA-256): browser_screenshot results' screenshots, or
-   * the images pasted into a user message.
+   * the images and PDFs attached to a user message (its PDFs are named in
+   * `meta.pdfs`).
    */
   attachments?: string[];
   /** Position in the chat, assigned by the database. */
@@ -263,6 +267,11 @@ export interface ToolMeta {
   reasoning?: { text?: string; ms?: number; details?: unknown[]; model?: string };
   /** A user message: the mode it was sent in (lib/chatMode.ts). */
   mode?: import('./lib/chatMode').ChatMode;
+  /**
+   * A user message: the PDFs among its `attachments`, with their names and
+   * pages (the backend sends them under these names).
+   */
+  pdfs?: import('./lib/composerAttachments').ComposerPdf[];
   /** Agent message implementing a saved plan: the first turn forces the `todo` tool. */
   implementsPlan?: boolean;
   /** The change reviewer's record (lib/changeReview.ts). */

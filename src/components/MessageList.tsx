@@ -27,8 +27,11 @@ import {
   shiftUp,
   type MessageWindow,
 } from '../lib/messageWindow';
-import { isBlank } from '../lib/textUtils';
+import { formatBytes, isBlank, plural } from '../lib/textUtils';
 import { attachmentUrl } from '../lib/chatApi';
+import type { ComposerPdf } from '../lib/composerAttachments';
+import { copySegments } from '../lib/composerClipboard';
+import { segmentsOfMessage, type DraftSegment } from '../lib/composerSegments';
 import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
 import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
@@ -1156,9 +1159,7 @@ export default function MessageList(props: {
                 </Show>
 
                 <Show
-                  when={
-                    !m.error && (!isBlank(m.content) || !!userImages(m).length) && !m.meta?.harness
-                  }
+                  when={!m.error && (!isBlank(m.content) || hasAttachments(m)) && !m.meta?.harness}
                 >
                   <div class="chat-message-wrap" classList={{ user: m.role === 'user' }}>
                     <div
@@ -1175,7 +1176,7 @@ export default function MessageList(props: {
                       <Show when={!isBlank(m.content)}>
                         <MessageContent content={m.content} streaming={!!m.pending} />
                       </Show>
-                      {/* Images pasted into the message: a click shows one whole. */}
+                      {/* Images attached to the message: a click shows one whole. */}
                       <Show when={userImages(m).length}>
                         <div class="chat-message-images">
                           <For each={userImages(m)}>
@@ -1183,7 +1184,7 @@ export default function MessageList(props: {
                               <img
                                 class="chat-message-image"
                                 src={attachmentUrl(id)}
-                                alt="Pasted image"
+                                alt="Attached image"
                                 title="Click to enlarge"
                                 onClick={(e) => {
                                   const expanded = e.currentTarget.classList.toggle('expanded');
@@ -1196,10 +1197,41 @@ export default function MessageList(props: {
                           </For>
                         </div>
                       </Show>
+                      <Show when={userPdfs(m).length}>
+                        <div class="chat-message-files">
+                          <For each={userPdfs(m)}>
+                            {(pdf) => (
+                              <span
+                                class="chat-message-file"
+                                title={`${pdf.name}: PDF, ${plural(pdf.pages, 'page')}, ${formatBytes(pdf.size)}`}
+                              >
+                                <svg
+                                  class="chat-attachment-icon"
+                                  width="12"
+                                  height="12"
+                                  viewBox="0 0 16 16"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="1.4"
+                                  stroke-linejoin="round"
+                                  aria-hidden="true"
+                                >
+                                  <path d="M3.5 1.5h6l3 3v10h-9z" />
+                                  <path d="M9.5 1.5v3h3" />
+                                </svg>
+                                <span class="chat-message-file-name">{pdf.name}</span>
+                                <span class="chat-message-file-size">
+                                  {plural(pdf.pages, 'page')}
+                                </span>
+                              </span>
+                            )}
+                          </For>
+                        </div>
+                      </Show>
                     </div>
                     {/* Messages only: tool calls and results have none. */}
-                    <Show when={!m.pending && !isBlank(m.content)}>
-                      <CopyMessageButton text={copyableText(m.content)} />
+                    <Show when={!m.pending && (!isBlank(m.content) || hasAttachments(m))}>
+                      <CopyMessageButton segments={segmentsOfMessage(m)} />
                     </Show>
                   </div>
                 </Show>
@@ -1412,42 +1444,30 @@ export default function MessageList(props: {
   );
 }
 
-/** The images pasted into a user message (a tool result's are its screenshots). */
+/** A user message has images or PDFs attached (a tool result's are its screenshots). */
+function hasAttachments(m: ChatMessage): boolean {
+  return m.role === 'user' && !!m.attachments?.length;
+}
+
+/** The PDFs attached to a user message, named in its meta. */
+function userPdfs(m: ChatMessage): ComposerPdf[] {
+  const ids = new Set(hasAttachments(m) ? m.attachments : []);
+  return (m.meta?.pdfs ?? []).filter((pdf) => ids.has(pdf.id));
+}
+
+/** The images attached to a user message: its attachments that aren't PDFs. */
 function userImages(m: ChatMessage): string[] {
-  return m.role === 'user' ? (m.attachments ?? []) : [];
+  if (!hasAttachments(m)) return [];
+  const pdfs = new Set((m.meta?.pdfs ?? []).map((pdf) => pdf.id));
+  return m.attachments!.filter((id) => !pdfs.has(id));
 }
 
 /**
- * What "copy" gives for a message: its text as written (Markdown and code
- * blocks included), with pasted text in full and without the
- * <pasted_text> markers the model gets.
+ * Under a message, shown on hover: copies the whole message. Other apps
+ * get its text; pasted back into the chat input, its pastes, attached
+ * files, images and PDFs come back as chips (lib/composerClipboard.ts).
  */
-export function copyableText(content: string): string {
-  return content
-    .replace(/<pasted_text(?:\s+lines="\d+")?>\n?([\s\S]*?)\n?<\/pasted_text>/g, '$1')
-    .trim();
-}
-
-async function writeClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // Fallback for webviews without the async clipboard API.
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.append(area);
-    area.select();
-    const ok = document.execCommand('copy');
-    area.remove();
-    return ok;
-  }
-}
-
-/** Under a message, shown on hover: copies the whole message. */
-function CopyMessageButton(props: { text: string }) {
+function CopyMessageButton(props: { segments: DraftSegment[] }) {
   const [copied, setCopied] = createSignal(false);
   let timer: number | undefined;
   onCleanup(() => window.clearTimeout(timer));
@@ -1459,7 +1479,7 @@ function CopyMessageButton(props: { text: string }) {
       title={copied() ? 'Copied' : 'Copy message'}
       aria-label={copied() ? 'Copied' : 'Copy message'}
       onClick={async () => {
-        if (!(await writeClipboard(props.text))) return;
+        if (!(await copySegments(props.segments))) return;
         setCopied(true);
         window.clearTimeout(timer);
         timer = window.setTimeout(() => setCopied(false), 1500);
@@ -1567,7 +1587,8 @@ function estimatedHeight(m: ChatMessage): number {
       .reduce((n, line) => n + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE)), 0);
   if (m.role === 'user') {
     const images = userImages(m).length ? 168 : 0;
-    return 32 + (isBlank(m.content) ? 0 : LINE * lines(m.content)) + images + 24;
+    const pdfs = userPdfs(m).length ? 30 : 0;
+    return 32 + (isBlank(m.content) ? 0 : LINE * lines(m.content)) + images + pdfs + 24;
   }
   let height = 0;
   if (m.content.trim()) {

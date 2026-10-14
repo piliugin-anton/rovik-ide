@@ -191,8 +191,8 @@ fn text_of(content: &Value) -> String {
     }
 }
 
-/// Chat content (a string, or text and image_url parts) as Responses input
-/// content. An assistant's own text is `output_text`.
+/// Chat content (a string, or text, image_url and file parts) as Responses
+/// input content. An assistant's own text is `output_text`.
 fn content_of(content: &Value, assistant: bool) -> Value {
     match content {
         Value::Array(parts) => Value::Array(
@@ -215,6 +215,11 @@ fn content_of(content: &Value, assistant: bool) -> Value {
                             .cloned()
                             .unwrap_or(json!("auto"));
                         json!({ "type": "input_image", "image_url": url, "detail": detail })
+                    }
+                    Some("file") => {
+                        let mut file = part.get("file").cloned().unwrap_or_else(|| json!({}));
+                        file["type"] = json!("input_file");
+                        file
                     }
                     _ => part.clone(),
                 })
@@ -728,7 +733,8 @@ mod tests {
                 { "role": "system", "content": "Be useful." },
                 { "role": "user", "content": [
                     { "type": "text", "text": "Look" },
-                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA" } }
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA" } },
+                    { "type": "file", "file": { "filename": "a.pdf", "file_data": "data:application/pdf;base64,JVBE" } }
                 ] },
                 { "role": "assistant", "content": "", "tool_calls": [
                     { "id": "call_1", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"a\"}" } }
@@ -769,6 +775,10 @@ mod tests {
         assert_eq!(
             input[0]["content"][1]["image_url"],
             "data:image/png;base64,AA"
+        );
+        assert_eq!(
+            input[0]["content"][2],
+            json!({ "type": "input_file", "filename": "a.pdf", "file_data": "data:application/pdf;base64,JVBE" })
         );
         assert_eq!(
             input[1],

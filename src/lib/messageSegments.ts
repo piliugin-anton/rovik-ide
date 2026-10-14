@@ -1,5 +1,6 @@
 import { fenceInfo } from './codeLocation';
 import { languageForFile } from './language';
+import { splitBlocks } from './textBlocks';
 
 /** ```src/main.rs names no language: the file's extension does. */
 function languageOfFile(file?: string): string | undefined {
@@ -15,8 +16,11 @@ export type MessageSegment =
    * `file`: the file the fence names (```rust src/main.rs).
    */
   | { type: 'code'; language?: string; file?: string; content: string; open?: boolean }
-  /** A long paste the user sent as a chip (ChatPanel): shown collapsed. */
-  | { type: 'pasted'; content: string; lines: number };
+  /**
+   * A long paste, or a text file the user attached (`name`), sent as a chip
+   * (ChatPanel): shown collapsed.
+   */
+  | { type: 'pasted'; content: string; lines: number; name?: string };
 
 // Matches a fully-closed ```lang\n...\n``` block. Non-greedy so multiple
 // blocks in one message are split correctly instead of merged into one.
@@ -37,26 +41,24 @@ const OPEN_FENCE_RE = /```([^\s`]*)([ \t][^\n`]*)?\n([\s\S]*)$|```([\w+-]*)\n?([
  * (using whatever content has arrived so far) rather than being left as
  * literal backticks in the text.
  */
-/** `<pasted_text lines="N">…</pasted_text>`, as ChatPanel writes long pastes. */
-const PASTED_RE = /<pasted_text(?:\s+lines="(\d+)")?>\n?([\s\S]*?)\n?<\/pasted_text>/g;
-
 /**
- * Pasted blocks first, so nothing inside them is read as Markdown or code
- * fences; the rest is parsed as before.
+ * Blocks of pasted text and attached files first (textBlocks.ts), so
+ * nothing inside them is read as Markdown or code fences; the rest is
+ * parsed as before.
  */
 export function parseMessageSegments(content: string): MessageSegment[] {
-  if (!content.includes('<pasted_text')) return parseMarkdownSegments(content);
-  const out: MessageSegment[] = [];
-  let last = 0;
-  PASTED_RE.lastIndex = 0;
-  for (let m = PASTED_RE.exec(content); m; m = PASTED_RE.exec(content)) {
-    if (m.index > last) out.push(...parseMarkdownSegments(content.slice(last, m.index)));
-    const text = m[2];
-    out.push({ type: 'pasted', content: text, lines: Number(m[1]) || text.split('\n').length });
-    last = m.index + m[0].length;
-  }
-  if (last < content.length) out.push(...parseMarkdownSegments(content.slice(last)));
-  return out;
+  return splitBlocks(content).flatMap((part): MessageSegment[] =>
+    typeof part === 'string'
+      ? parseMarkdownSegments(part)
+      : [
+          {
+            type: 'pasted',
+            content: part.text,
+            lines: part.lines,
+            ...(part.name !== undefined ? { name: part.name } : {}),
+          },
+        ]
+  );
 }
 
 function parseMarkdownSegments(content: string): MessageSegment[] {

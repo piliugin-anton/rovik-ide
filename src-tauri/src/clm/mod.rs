@@ -1327,7 +1327,7 @@ pub async fn restore_revision(
         kind: "restore".into(),
         created_at: latest.time as i64,
         tokens: Cost {
-            vision: false,
+            accepts: Default::default(),
             chars_per_token: crate::chat_db::history::DEFAULT_CHARS_PER_TOKEN,
         }
         .tokens(text.chars().count()),

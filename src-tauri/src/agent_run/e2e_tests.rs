@@ -389,6 +389,7 @@ impl Harness {
                 api_key: String::new(),
                 stream: true,
                 vision: false,
+                pdf: false,
                 context_tokens: Some(100_000),
                 no_tools: false,
                 first_byte_timeout_ms: None,
@@ -2509,9 +2510,11 @@ async fn a_pasted_image_is_stored_with_the_message_and_sent_in_it() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![Reply::Text("The theme makes it blue.")]).await;
     let db = h.app.state::<DbState>().inner().clone();
-    let image = crate::chat_db::attachments::store_image(&db, b"\x89PNG\r\n\x1a\npixels".to_vec())
-        .await
-        .unwrap();
+    let image =
+        crate::chat_db::attachments::store_attached(&db, b"\x89PNG\r\n\x1a\npixels".to_vec())
+            .await
+            .unwrap()
+            .id;
     let message = UserMessage {
         id: uuid::Uuid::new_v4().to_string(),
         content: "Why is this button blue?".into(),
@@ -2542,8 +2545,9 @@ async fn a_pasted_image_is_stored_with_the_message_and_sent_in_it() {
         .unwrap()
         .clone();
     let parts = sent["content"].as_array().unwrap();
-    assert!(parts[0]["text"]
-        .as_str()
+    assert!(parts
+        .last()
+        .and_then(|p| p["text"].as_str())
         .unwrap()
         .contains("Why is this button blue?"));
     let images: Vec<&str> = parts
@@ -2553,6 +2557,77 @@ async fn a_pasted_image_is_stored_with_the_message_and_sent_in_it() {
         .collect();
     assert_eq!(images.len(), 1, "{sent}");
     assert!(images[0].starts_with("data:image/png;base64,"));
+}
+
+/// A PDF attached in the chat input: stored with the message, named by its
+/// meta, and sent as a file to a model that takes PDFs; another model is
+/// told it was there.
+#[tokio::test]
+async fn an_attached_pdf_is_sent_as_a_file_to_a_model_that_takes_pdfs() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![
+        Reply::Text("It's about parsing."),
+        Reply::Text("Can't see it."),
+    ])
+    .await;
+    let db = h.app.state::<DbState>().inner().clone();
+    let pdf =
+        b"%PDF-1.4\n1 0 obj << /Type /Page >> endobj\n2 0 obj << /Type /Page >> endobj\n%%EOF";
+    let stored = crate::chat_db::attachments::store_attached(&db, pdf.to_vec())
+        .await
+        .unwrap();
+    assert_eq!(stored.mime, "application/pdf");
+    assert_eq!(stored.pages, Some(2));
+
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "What is this about?".into(),
+        meta: Some(json!({
+            "mode": "agent",
+            "pdfs": [{ "id": stored.id, "name": "paper.pdf", "size": pdf.len(), "pages": 2 }],
+        })),
+        attachments: vec![stored.id.clone()],
+    };
+    let mut request = h.request(&url, StartKind::Send { message }, quiet_permissions());
+    request.profile.pdf = true;
+    h.start(request).await;
+    assert_eq!(h.run_end().await, "done");
+
+    let user_message = |request: &serde_json::Value| {
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "user")
+            .unwrap()
+            .clone()
+    };
+    let sent = user_message(&seen.lock().unwrap()[0]);
+    let file = &sent["content"][0];
+    assert_eq!(file["type"], "file", "{sent}");
+    assert_eq!(file["file"]["filename"], "paper.pdf");
+    assert!(file["file"]["file_data"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:application/pdf;base64,"));
+
+    // The same chat with a model not set to take PDFs.
+    h.events.lock().unwrap().clear();
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: "And now?".into(),
+        meta: None,
+        attachments: Vec::new(),
+    };
+    h.start(h.request(&url, StartKind::Send { message }, quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let sent = user_message(&seen.lock().unwrap()[1]);
+    assert_eq!(
+        sent["content"],
+        "What is this about?\n[The PDF paper.pdf the user attached here wasn't sent: \
+         this model isn't set up to accept PDFs.]"
+    );
 }
 
 /// An image gone from the store (cleaned up) can't be sent: the message is
@@ -2871,7 +2946,7 @@ async fn task_card_guidance_then_write_shows_through_card_note() {
     )
     .unwrap();
     let cost = crate::chat_db::history::Cost {
-        vision: false,
+        accepts: Default::default(),
         chars_per_token: 3.0,
     };
     let prepared = crate::clm::prepare(

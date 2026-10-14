@@ -1,5 +1,6 @@
 import type { ChatMessage, ModelProfile } from '../types';
 import { completeOnce, LEAN_THEN_PLAIN, stripThinking } from './oneShot';
+import { withoutBlockMarkup } from './textBlocks';
 
 const MAX_TITLE_CHARS = 60;
 const MAX_MESSAGE_CHARS = 1_500;
@@ -93,11 +94,12 @@ export function cleanTitle(raw: string): string | null {
 }
 
 /**
- * A message as the user wrote it: long pastes are sent wrapped in
- * <pasted_text lines="N"> markers (ChatPanel), which aren't part of it.
+ * A message as the user wrote it: long pastes and attached text files are
+ * sent wrapped in tags (textBlocks.ts), which aren't part of it. A file is
+ * its name: its text would crowd out what the user asked.
  */
 export function withoutPasteMarkers(text: string): string {
-  return text.replace(/<pasted_text(?:\s+lines="\d+")?>\n?([\s\S]*?)\n?<\/pasted_text>/g, '$1');
+  return withoutBlockMarkup(text);
 }
 
 /** The opening words of the user's message, used when the model gives nothing. */

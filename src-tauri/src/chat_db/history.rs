@@ -36,6 +36,7 @@ use super::store::{
     char_prefix, get_message_body, get_messages, tool_call_extras, DbResult, ToolCall,
 };
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -46,10 +47,13 @@ const MAX_HISTORY_ROWS: usize = 2000;
 const PAGE: usize = 500;
 const MESSAGE_OVERHEAD: usize = 4;
 const IMAGE_TOKENS: usize = 1000;
+/// A PDF page goes to the model as its text and an image of it: 1,500 to
+/// 3,000 tokens, Anthropic says, and about as much at OpenAI.
+const PDF_PAGE_TOKENS: usize = 2000;
 const TOOL_KEEP_CHARS: usize = 1200;
-/// Messages whose images are re-sent on later turns (browser_screenshot
-/// results, earlier requests' images); older ones become a note. The
-/// current request's own images are always sent.
+/// Messages whose files are re-sent on later turns (browser_screenshot
+/// results, earlier requests' images and PDFs); older ones become a note.
+/// The current request's own files are always sent.
 const MAX_IMAGES: usize = 2;
 const OMITTED_NOTE: &str =
     "[Earlier messages in this chat were omitted to fit the context window.]";
@@ -78,7 +82,7 @@ pub struct Msg {
     pub needs_body: bool,
     pub tool_calls: Option<Vec<ToolCall>>,
     pub tool_call_id: Option<String>,
-    pub attachments: Vec<String>,
+    pub attachments: Vec<Attachment>,
     /// Written by the IDE in the user role (check failures), not by the user.
     pub harness: bool,
     /// The user dismissed the open checklist with this message
@@ -95,10 +99,115 @@ pub struct Msg {
 /// (agent.rs) and passed in instead.
 pub const DEFAULT_CHARS_PER_TOKEN: f64 = 3.0;
 
+/// What a model takes besides text: the settings' Vision and PDF.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Accepts {
+    pub images: bool,
+    pub pdf: bool,
+}
+
+/// A file a message carries: a screenshot, or an image or a PDF the user
+/// attached.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StoredAttachment")]
+pub struct Attachment {
+    pub id: String,
+    /// A PDF's name and pages, from its message's `meta.pdfs`; None for an image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<PdfInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PdfInfo {
+    pub name: String,
+    pub pages: usize,
+}
+
+/// An attachment as a CLM context keeps it: from before PDFs, an id alone.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredAttachment {
+    Id(String),
+    Full {
+        id: String,
+        #[serde(default)]
+        pdf: Option<PdfInfo>,
+    },
+}
+
+impl From<StoredAttachment> for Attachment {
+    fn from(stored: StoredAttachment) -> Self {
+        match stored {
+            StoredAttachment::Id(id) => Attachment::image(id),
+            StoredAttachment::Full { id, pdf } => Attachment { id, pdf },
+        }
+    }
+}
+
+impl Attachment {
+    pub fn image(id: impl Into<String>) -> Self {
+        Attachment {
+            id: id.into(),
+            pdf: None,
+        }
+    }
+
+    /// Whether a model that takes `accepts` takes this file.
+    pub fn taken_by(&self, accepts: Accepts) -> bool {
+        if self.pdf.is_some() {
+            accepts.pdf
+        } else {
+            accepts.images
+        }
+    }
+
+    fn tokens(&self) -> usize {
+        self.pdf
+            .as_ref()
+            .map_or(IMAGE_TOKENS, |pdf| pdf.pages.max(1) * PDF_PAGE_TOKENS)
+    }
+
+    /// The content part it's sent as, from its `data:` URL.
+    fn wire_part(&self, url: String) -> Value {
+        match &self.pdf {
+            Some(pdf) => {
+                json!({ "type": "file", "file": { "filename": pdf.name, "file_data": url } })
+            }
+            None => json!({ "type": "image_url", "image_url": { "url": url } }),
+        }
+    }
+}
+
+/// A stored message's attachments, its PDFs named as `meta.pdfs` names
+/// them (the chat input writes it: lib/composerSegments.ts).
+fn attachments_of(m: &super::store::MessageRow) -> Vec<Attachment> {
+    let pdfs: HashMap<&str, PdfInfo> = m
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("pdfs")?.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|pdf| {
+            let info = PdfInfo {
+                name: pdf.get("name")?.as_str()?.to_string(),
+                pages: pdf.get("pages")?.as_u64()? as usize,
+            };
+            Some((pdf.get("id")?.as_str()?, info))
+        })
+        .collect();
+    m.attachments
+        .iter()
+        .map(|id| Attachment {
+            id: id.clone(),
+            pdf: pdfs.get(id.as_str()).cloned(),
+        })
+        .collect()
+}
+
 /// How token counts are estimated for one request.
 #[derive(Clone, Copy, Debug)]
 pub struct Cost {
-    pub vision: bool,
+    pub accepts: Accepts,
     pub chars_per_token: f64,
 }
 
@@ -119,22 +228,20 @@ fn estimate(m: &Msg, cost: Cost) -> usize {
     tokens
 }
 
-/// Which messages' images go with a request, by index (`to_wire` attaches
-/// exactly these): the current request's (the images the user sent with
-/// it, needed for the whole run), and those of the last MAX_IMAGES other
-/// messages that have any. None for a model that doesn't take images.
-fn attached_images(messages: &[Msg], vision: bool) -> Vec<bool> {
+/// Which messages' files go with a request, by index (`to_wire` attaches
+/// exactly these, of the kinds the model takes): the current request's
+/// (the files the user sent with it, needed for the whole run), and those
+/// of the last MAX_IMAGES other messages that have any the model takes.
+fn attached_files(messages: &[Msg], accepts: Accepts) -> Vec<bool> {
+    let takes = |m: &Msg| m.attachments.iter().any(|a| a.taken_by(accepts));
     let mut attached = vec![false; messages.len()];
-    if !vision {
-        return attached;
-    }
     let request = messages.iter().rposition(starts_request);
     if let Some(i) = request {
-        attached[i] = !messages[i].attachments.is_empty();
+        attached[i] = takes(&messages[i]);
     }
     let others = (0..messages.len())
         .rev()
-        .filter(|&i| Some(i) != request && !messages[i].attachments.is_empty())
+        .filter(|&i| Some(i) != request && takes(&messages[i]))
         .take(MAX_IMAGES);
     for i in others {
         attached[i] = true;
@@ -142,20 +249,19 @@ fn attached_images(messages: &[Msg], vision: bool) -> Vec<bool> {
     attached
 }
 
-/// Images count only for the messages to_wire actually attaches them to
-/// (`attached_images`): the others are sent as a note.
+/// Files count only where to_wire actually attaches them
+/// (`attached_files`): the others are sent as a note.
 pub fn total(messages: &[Msg], cost: Cost) -> usize {
-    let attached = attached_images(messages, cost.vision);
+    let attached = attached_files(messages, cost.accepts);
     messages
         .iter()
         .zip(attached)
         .map(|(m, a)| {
-            estimate(m, cost)
-                + if a {
-                    m.attachments.len() * IMAGE_TOKENS
-                } else {
-                    0
-                }
+            let files = m
+                .attachments
+                .iter()
+                .filter(|f| a && f.taken_by(cost.accepts));
+            estimate(m, cost) + files.map(Attachment::tokens).sum::<usize>()
         })
         .sum()
 }
@@ -181,12 +287,68 @@ pub fn truncate_tool_result(m: &mut Msg) {
     m.attachments.clear();
 }
 
-/// "An image" or "3 images", to start a note about a message's images.
-fn images_phrase(n: usize) -> String {
-    if n == 1 {
-        "An image".into()
-    } else {
-        format!("{n} images")
+/// How a note names files: "an image", "3 images", "the PDF a.pdf",
+/// "2 PDFs (a.pdf, b.pdf) and an image".
+fn files_phrase(files: &[&Attachment]) -> String {
+    let pdfs: Vec<&str> = files
+        .iter()
+        .filter_map(|f| Some(f.pdf.as_ref()?.name.as_str()))
+        .collect();
+    let mut parts = Vec::new();
+    match pdfs.as_slice() {
+        [] => {}
+        [name] => parts.push(format!("the PDF {name}")),
+        names => parts.push(format!("{} PDFs ({})", names.len(), names.join(", "))),
+    }
+    match files.len() - pdfs.len() {
+        0 => {}
+        1 => parts.push("an image".into()),
+        n => parts.push(format!("{n} images")),
+    }
+    parts.join(" and ")
+}
+
+/// Why a user message's files aren't sent with it.
+enum Unsent {
+    /// Earlier requests' files go first when the history is over budget.
+    LeftOut,
+    /// The model isn't set to take their kind.
+    NotTaken,
+    /// Older than the last few messages with files (`attached_files`).
+    NoLongerShown,
+}
+
+/// What a user message says in place of files that aren't sent with it.
+fn user_files_note(files: &[&Attachment], why: Unsent) -> String {
+    let phrase = files_phrase(files);
+    let mut phrase_chars = phrase.chars();
+    let phrase = phrase_chars
+        .next()
+        .map(|c| c.to_uppercase().chain(phrase_chars).collect::<String>())
+        .unwrap_or_default();
+    let one = files.len() == 1;
+    match why {
+        Unsent::LeftOut => {
+            let were = if one { "was" } else { "were" };
+            format!("[{phrase} the user attached here {were} left out to fit the context window.]")
+        }
+        Unsent::NoLongerShown => {
+            let are = if one { "is" } else { "are" };
+            format!("[{phrase} the user attached here {are} no longer shown.]")
+        }
+        Unsent::NotTaken => {
+            let were = if one { "wasn't" } else { "weren't" };
+            let pdfs = files.iter().any(|f| f.pdf.is_some());
+            let images = files.iter().any(|f| f.pdf.is_none());
+            let what = match (images, pdfs) {
+                (true, true) => "images or PDFs",
+                (false, true) => "PDFs",
+                _ => "images",
+            };
+            format!(
+                "[{phrase} the user attached here {were} sent: this model isn't set up to accept {what}.]"
+            )
+        }
     }
 }
 
@@ -199,35 +361,17 @@ fn with_note(text: &str, note: &str) -> String {
     }
 }
 
-/// An earlier request's images, left out to fit the context window; a note
+/// An earlier request's files, left out to fit the context window; a note
 /// says they were there.
-fn drop_user_images(m: &mut Msg) {
-    let n = m.attachments.len();
-    if n == 0 {
+fn drop_user_files(m: &mut Msg) {
+    if m.attachments.is_empty() {
         return;
     }
-    let were = if n == 1 { "was" } else { "were" };
-    let note = format!(
-        "[{} the user attached here {were} left out to fit the context window.]",
-        images_phrase(n)
-    );
+    let files: Vec<&Attachment> = m.attachments.iter().collect();
+    let note = user_files_note(&files, Unsent::LeftOut);
     m.text = with_note(&m.text, &note);
     m.full_chars = m.text.chars().count();
     m.attachments.clear();
-}
-
-/// What a user message says in place of images that aren't sent with it.
-fn user_images_note(n: usize, vision: bool) -> String {
-    let phrase = images_phrase(n);
-    if vision {
-        let are = if n == 1 { "is" } else { "are" };
-        format!("[{phrase} the user attached here {are} no longer shown.]")
-    } else {
-        let were = if n == 1 { "wasn't" } else { "weren't" };
-        format!(
-            "[{phrase} the user attached here {were} sent: this model isn't set up to accept images.]"
-        )
-    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -630,14 +774,10 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
             note.push_str(&format!("\n> {line}"));
         }
     }
-    let images = messages[start].attachments.len();
-    if images > 0 {
-        let images = if images == 1 {
-            "an image".to_string()
-        } else {
-            format!("{images} images")
-        };
-        note.push_str(&format!("\nThe user attached {images} to the request."));
+    let files: Vec<&Attachment> = messages[start].attachments.iter().collect();
+    if !files.is_empty() {
+        let files = files_phrase(&files);
+        note.push_str(&format!("\nThe user attached {files} to the request."));
     }
     if text.chars().count() < SHORT_REQUEST_CHARS {
         if let Some(prev) = messages[..start].iter().rposition(starts_request) {
@@ -703,12 +843,12 @@ pub fn add_focus_note(messages: &mut [Msg], note: &str) {
 
 /// The budget rules with the default token estimate (tests).
 #[cfg(test)]
-pub fn fit(messages: Vec<Msg>, budget: usize, vision: bool) -> (Vec<Msg>, FitInfo) {
+pub fn fit(messages: Vec<Msg>, budget: usize, accepts: Accepts) -> (Vec<Msg>, FitInfo) {
     fit_with(
         messages,
         budget,
         Cost {
-            vision,
+            accepts,
             chars_per_token: DEFAULT_CHARS_PER_TOKEN,
         },
     )
@@ -772,12 +912,12 @@ pub fn fit_keeping(
 
     let mut current_start = messages.iter().rposition(starts_request).unwrap_or(0);
 
-    // 1. Shrink old tool results; earlier requests' images go too.
+    // 1. Shrink old tool results; earlier requests' files go too.
     for m in messages.iter_mut().take(current_start) {
         if m.role == "tool" {
             truncate_tool_result(m);
         } else if m.role == "user" {
-            drop_user_images(m);
+            drop_user_files(m);
         }
     }
     sum = total(&messages, cost);
@@ -881,7 +1021,7 @@ pub fn build_wire(
     dialog_id: &str,
     model: &str,
     token_budget: usize,
-    vision: bool,
+    accepts: Accepts,
     current_user_content: Option<&str>,
     gemini: bool,
     chars_per_token: f64,
@@ -890,7 +1030,7 @@ pub fn build_wire(
     let mut messages = load_messages(conn, dialog_id, None)?;
     attach_reasoning(conn, &mut messages, model)?;
     let cost = Cost {
-        vision,
+        accepts,
         chars_per_token,
     };
     // The guard's loop warnings end long results too: the latest ones whole.
@@ -916,7 +1056,7 @@ pub fn build_wire(
         info.estimated_tokens += note_tokens;
         info.focus_note = true;
     }
-    Ok((to_wire(&fitted, data_dir, vision, gemini), info))
+    Ok((to_wire(&fitted, data_dir, accepts, gemini), info))
 }
 
 /// The reasoning assistant messages carry back to `model`
@@ -1053,6 +1193,7 @@ pub fn load_messages(
                 None if m.body_external => (m.content.clone(), m.body_bytes as usize, true),
                 None => (m.content.clone(), m.content.chars().count(), false),
             };
+            let attachments = attachments_of(&m);
             Msg {
                 // Added by the IDE (the frontend's verification gate): user-role,
                 // but never the user's request.
@@ -1072,7 +1213,7 @@ pub fn load_messages(
                 text,
                 tool_calls: m.tool_calls,
                 tool_call_id: m.tool_call_id,
-                attachments: m.attachments,
+                attachments,
                 reasoning: None,
             }
         })
@@ -1204,10 +1345,10 @@ fn wire_arguments(arguments: &str) -> String {
 
 /// Chat Completions only allows text in role:"tool" messages, so images go
 /// in a user message after the whole run of tool results (all results for
-/// one assistant turn must directly follow it). A user message's own images
-/// go in it, after its text.
-pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) -> Vec<Value> {
-    let attach = attached_images(messages, vision);
+/// one assistant turn must directly follow it). A user message's own
+/// images and PDFs go in it, before its text.
+pub fn to_wire(messages: &[Msg], data_dir: &Path, accepts: Accepts, gemini: bool) -> Vec<Value> {
+    let attach = attached_files(messages, accepts);
 
     let mut out = Vec::with_capacity(messages.len() + 2);
     let mut pending: Vec<(Option<String>, Vec<String>)> = Vec::new();
@@ -1230,24 +1371,38 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
             flush(&mut out, &mut pending);
         }
         let mut content = m.text.clone();
-        // The user's images, sent in their own message.
-        let mut images = Vec::new();
-        if !m.attachments.is_empty() {
+        // The user's images and PDFs, sent in their own message.
+        let mut files = Vec::new();
+        if m.role == "user" {
+            let (mut not_taken, mut gone) = (Vec::new(), Vec::new());
+            for file in &m.attachments {
+                if !file.taken_by(accepts) {
+                    not_taken.push(file);
+                    continue;
+                }
+                match attach[i]
+                    .then(|| attachments::data_url(data_dir, &file.id))
+                    .flatten()
+                {
+                    Some(url) => files.push(file.wire_part(url)),
+                    None => gone.push(file),
+                }
+            }
+            for (unsent, why) in [(not_taken, Unsent::NotTaken), (gone, Unsent::NoLongerShown)] {
+                if !unsent.is_empty() {
+                    content = with_note(&content, &user_files_note(&unsent, why));
+                }
+            }
+        } else if !m.attachments.is_empty() {
             let urls: Vec<String> = if attach[i] {
                 m.attachments
                     .iter()
-                    .filter_map(|id| attachments::data_url(data_dir, id))
+                    .filter_map(|file| attachments::data_url(data_dir, &file.id))
                     .collect()
             } else {
                 Vec::new()
             };
-            if m.role == "user" {
-                if urls.is_empty() {
-                    content = with_note(&content, &user_images_note(m.attachments.len(), vision));
-                } else {
-                    images = urls;
-                }
-            } else if urls.is_empty() {
+            if urls.is_empty() {
                 content.push_str("\n[The screenshot is no longer attached.]");
             } else {
                 pending.push((m.tool_call_id.clone(), urls));
@@ -1261,20 +1416,17 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
         if let Some((tag, text)) = inline {
             content = format!("<{tag}>{text}</{tag}>{content}");
         }
-        let mut msg = if images.is_empty() {
+        let mut msg = if files.is_empty() {
             json!({ "role": m.role, "content": content })
         } else {
-            // No empty text part for a message of images only: some
-            // providers reject one.
-            let mut parts = Vec::with_capacity(images.len() + 1);
+            // The files, then the text: models read a document or an image
+            // best ahead of what's asked about it, and the prompt cache's
+            // breakpoint on the text (prompt_cache.rs) then covers them. No
+            // empty text part for files alone: some providers reject one.
+            let mut parts = files;
             if !content.trim().is_empty() {
                 parts.push(json!({ "type": "text", "text": content }));
             }
-            parts.extend(
-                images
-                    .into_iter()
-                    .map(|url| json!({ "type": "image_url", "image_url": { "url": url } })),
-            );
             json!({ "role": m.role, "content": parts })
         };
         match m
@@ -1326,6 +1478,16 @@ pub fn to_wire(messages: &[Msg], data_dir: &Path, vision: bool, gemini: bool) ->
 mod tests {
     use super::*;
 
+    /// A model that takes images (Vision), and one that takes text only.
+    const IMAGES: Accepts = Accepts {
+        images: true,
+        pdf: false,
+    };
+    const TEXT_ONLY: Accepts = Accepts {
+        images: false,
+        pdf: false,
+    };
+
     fn msg(role: &str, text: &str) -> Msg {
         Msg {
             id: format!("{role}-{}", text.len()),
@@ -1348,7 +1510,7 @@ mod tests {
         inline.reasoning = Some(json!({ "text": "Plan.", "inline": "think" }));
         let mut field = msg("assistant", "Answer.");
         field.reasoning = Some(json!({ "text": "Plan." }));
-        let wire = to_wire(&[msg("user", "q"), inline, field], &dir, false, false);
+        let wire = to_wire(&[msg("user", "q"), inline, field], &dir, TEXT_ONLY, false);
         // In its tag, as the model wrote it (MiniMax wants it back unchanged).
         assert_eq!(wire[1]["content"], "<think>Plan.</think>\n\nThe answer.");
         assert!(wire[1].get("reasoning_content").is_none());
@@ -1525,7 +1687,7 @@ mod tests {
         // The request's images are mentioned (they're with the request).
         let mut with_images = long_run("make it look like these");
         let at = with_images.len() - 1 - 2 * FOCUS_AFTER_TOOL_RESULTS;
-        with_images[at].attachments = vec!["a".into(), "b".into()];
+        with_images[at].attachments = vec![Attachment::image("a"), Attachment::image("b")];
         let images_note = focus_note(&with_images).unwrap();
         assert!(
             images_note.contains("The user attached 2 images to the request."),
@@ -1668,7 +1830,7 @@ mod tests {
         let (out, info) = fit(
             vec![msg("user", "hi"), msg("assistant", "hello")],
             BUDGET_32K,
-            true,
+            IMAGES,
         );
         assert!(!info.trimmed);
         assert_eq!(shape(&out), "u a");
@@ -1693,7 +1855,7 @@ mod tests {
             call(&["c4"]),
             tool("c4", 6000),
         ];
-        let (out, info) = fit(history, BUDGET_32K, true);
+        let (out, info) = fit(history, BUDGET_32K, IMAGES);
         assert!(info.trimmed);
         assert_eq!(info.dropped_turns, 0);
         assert!(pairing_ok(&out));
@@ -1715,7 +1877,7 @@ mod tests {
             ));
         }
         history.push(msg("user", "current question"));
-        let (out, info) = fit(history, BUDGET_8K, true);
+        let (out, info) = fit(history, BUDGET_8K, IMAGES);
         assert_eq!(info.dropped_turns, 10);
         assert!(out[0].text.starts_with(OMITTED_NOTE));
         assert!(out[0].text.contains("question 11"));
@@ -1743,7 +1905,7 @@ mod tests {
             ));
         }
         history.push(msg("user", "current question"));
-        let (out, info) = fit(history.clone(), BUDGET_8K, true);
+        let (out, info) = fit(history.clone(), BUDGET_8K, IMAGES);
         assert!(info.estimated_tokens <= target(BUDGET_8K), "{info:?}");
         let first = out[0].text.clone();
         let slack = target(BUDGET_8K) - info.estimated_tokens;
@@ -1752,14 +1914,14 @@ mod tests {
         // turns are dropped, so the request starts exactly as before.
         history.push(call(&["c1"]));
         history.push(result_of_tokens("c1", slack / 2));
-        let (again, info_again) = fit(history.clone(), BUDGET_8K, true);
+        let (again, info_again) = fit(history.clone(), BUDGET_8K, IMAGES);
         assert_eq!(info_again.dropped_turns, info.dropped_turns);
         assert_eq!(again[0].text, first, "the cut didn't move");
 
         // Only a step that uses up the slack moves it.
         history.push(call(&["c2"]));
         history.push(result_of_tokens("c2", slack + 100));
-        let (later, info_later) = fit(history, BUDGET_8K, true);
+        let (later, info_later) = fit(history, BUDGET_8K, IMAGES);
         assert!(info_later.dropped_turns > info.dropped_turns);
         assert_ne!(later[0].text, first);
         assert!(info_later.estimated_tokens <= target(BUDGET_8K));
@@ -1774,7 +1936,7 @@ mod tests {
             history.push(call(&[&id]));
             history.push(tool(&id, BIG));
         }
-        let (out, info) = fit(history.clone(), BUDGET_32K, true);
+        let (out, info) = fit(history.clone(), BUDGET_32K, IMAGES);
         assert!(info.trimmed);
         assert!(info.estimated_tokens <= target(BUDGET_32K), "{info:?}");
         let cut = |ms: &[Msg]| -> Vec<bool> {
@@ -1786,7 +1948,7 @@ mod tests {
 
         history.push(call(&["y"]));
         history.push(result_of_tokens("y", slack / 2));
-        let (again, _) = fit(history, BUDGET_32K, true);
+        let (again, _) = fit(history, BUDGET_32K, IMAGES);
         assert_eq!(
             cut(&again[..out.len()]),
             before,
@@ -1803,7 +1965,7 @@ mod tests {
     }
 
     const COST: Cost = Cost {
-        vision: false,
+        accepts: TEXT_ONLY,
         chars_per_token: DEFAULT_CHARS_PER_TOKEN,
     };
 
@@ -1977,7 +2139,7 @@ mod tests {
             call(&["x3"]),
             tool("x3", BIG),
         ];
-        let (out, _) = fit(history, BUDGET_32K, true);
+        let (out, _) = fit(history, BUDGET_32K, IMAGES);
         assert!(pairing_ok(&out));
         assert!(
             out[2].text.contains("[Truncated"),
@@ -1998,7 +2160,7 @@ mod tests {
         std::fs::write(dir.join(attachments::DIR).join(format!("{id}.jpg")), b"jpg").unwrap();
 
         let mut shot = tool("a", 10);
-        shot.attachments = vec![id.clone()];
+        shot.attachments = vec![Attachment::image(id.clone())];
         let ms = vec![msg("user", "check"), call(&["a", "b"]), shot, tool("b", 10)];
 
         let roles = |w: &[Value]| {
@@ -2006,14 +2168,14 @@ mod tests {
                 .map(|m| m["role"].as_str().unwrap().to_string())
                 .collect::<Vec<_>>()
         };
-        let vision = to_wire(&ms, &dir, true, false);
+        let vision = to_wire(&ms, &dir, IMAGES, false);
         assert_eq!(
             roles(&vision),
             ["user", "assistant", "tool", "tool", "user"]
         );
         assert_eq!(vision[4]["content"][1]["type"], "image_url");
 
-        let text_only = to_wire(&ms, &dir, false, false);
+        let text_only = to_wire(&ms, &dir, TEXT_ONLY, false);
         assert_eq!(roles(&text_only), ["user", "assistant", "tool", "tool"]);
         assert!(text_only[2]["content"]
             .as_str()
@@ -2033,33 +2195,33 @@ mod tests {
     }
 
     #[test]
-    fn a_users_images_go_in_their_own_message() {
+    fn a_users_images_go_in_their_own_message_before_its_text() {
         let id = "b".repeat(64);
         let dir = images_dir("user-images", &[(&id, "png")]);
 
         let mut asked = msg("user", "Why is this button blue?");
-        asked.attachments = vec![id.clone()];
-        let wire = to_wire(&[asked.clone()], &dir, true, false);
+        asked.attachments = vec![Attachment::image(id.clone())];
+        let wire = to_wire(&[asked.clone()], &dir, IMAGES, false);
         assert_eq!(wire.len(), 1, "no separate message for the user's images");
-        assert_eq!(wire[0]["content"][0]["type"], "text");
-        assert_eq!(wire[0]["content"][0]["text"], "Why is this button blue?");
-        assert_eq!(wire[0]["content"][1]["type"], "image_url");
-        assert!(wire[0]["content"][1]["image_url"]["url"]
+        assert_eq!(wire[0]["content"][0]["type"], "image_url");
+        assert!(wire[0]["content"][0]["image_url"]["url"]
             .as_str()
             .unwrap()
             .starts_with("data:image/png;base64,"));
+        assert_eq!(wire[0]["content"][1]["type"], "text");
+        assert_eq!(wire[0]["content"][1]["text"], "Why is this button blue?");
 
         // Images only: no empty text part (some providers reject one).
         let mut shown = msg("user", "");
-        shown.attachments = vec![id.clone()];
-        let wire = to_wire(&[shown.clone()], &dir, true, false);
+        shown.attachments = vec![Attachment::image(id.clone())];
+        let wire = to_wire(&[shown.clone()], &dir, IMAGES, false);
         let parts = wire[0]["content"].as_array().unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["type"], "image_url");
 
         // A model that doesn't take images is told they were there.
         let note = "[An image the user attached here wasn't sent: this model isn't set up to accept images.]";
-        let wire = to_wire(&[asked, shown], &dir, false, false);
+        let wire = to_wire(&[asked, shown], &dir, TEXT_ONLY, false);
         assert_eq!(
             wire[0]["content"],
             format!("Why is this button blue?\n{note}")
@@ -2073,19 +2235,19 @@ mod tests {
         let (pasted, shot) = ("b".repeat(64), "a".repeat(64));
         let dir = images_dir("request-images", &[(&pasted, "png"), (&shot, "jpg")]);
         let mut request = msg("user", "Make the page look like this");
-        request.attachments = vec![pasted.clone()];
+        request.attachments = vec![Attachment::image(pasted.clone())];
         let mut ms = vec![request];
         for i in 0..3 {
             let id = format!("s{i}");
             ms.push(call(&[&id]));
             let mut t = tool(&id, 10);
-            t.attachments = vec![shot.clone()];
+            t.attachments = vec![Attachment::image(shot.clone())];
             ms.push(t);
         }
 
-        let wire = to_wire(&ms, &dir, true, false);
+        let wire = to_wire(&ms, &dir, IMAGES, false);
         assert_eq!(
-            wire[0]["content"][1]["type"], "image_url",
+            wire[0]["content"][0]["type"], "image_url",
             "still the request's"
         );
         let screenshots = wire
@@ -2112,12 +2274,12 @@ mod tests {
     #[test]
     fn earlier_requests_images_go_first_when_over_budget() {
         let mut earlier = msg("user", "Here's the mockup");
-        earlier.attachments = vec!["mockup".into()];
+        earlier.attachments = vec![Attachment::image("mockup")];
         let mut current = msg("user", "Now match this one");
-        current.attachments = vec!["target".into()];
+        current.attachments = vec![Attachment::image("target")];
         let ms = vec![earlier, msg("assistant", &"x".repeat(3000)), current];
 
-        let (fitted, info) = fit(ms.clone(), total(&ms, generous(true)) - 500, true);
+        let (fitted, info) = fit(ms.clone(), total(&ms, generous(true)) - 500, IMAGES);
         assert!(info.trimmed);
         assert_eq!(info.dropped_turns, 0, "the image went, not the turn");
         assert!(fitted[0].attachments.is_empty());
@@ -2127,9 +2289,122 @@ mod tests {
         );
         assert_eq!(
             fitted[2].attachments,
-            ["target"],
+            [Attachment::image("target")],
             "the request keeps its own"
         );
+    }
+
+    fn pdf(id: &str, name: &str, pages: usize) -> Attachment {
+        Attachment {
+            id: id.into(),
+            pdf: Some(PdfInfo {
+                name: name.into(),
+                pages,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_users_pdfs_go_as_files_to_models_that_take_them() {
+        let (doc, shot) = ("c".repeat(64), "d".repeat(64));
+        let dir = images_dir("user-pdfs", &[(&doc, "pdf"), (&shot, "png")]);
+        let mut asked = msg("user", "Does the chart match the report?");
+        asked.attachments = vec![pdf(&doc, "report.pdf", 3), Attachment::image(shot.clone())];
+        let everything = Accepts {
+            images: true,
+            pdf: true,
+        };
+
+        let wire = to_wire(&[asked.clone()], &dir, everything, false);
+        let parts = wire[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 3, "{parts:?}");
+        assert_eq!(parts[0]["type"], "file");
+        assert_eq!(parts[0]["file"]["filename"], "report.pdf");
+        assert!(parts[0]["file"]["file_data"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:application/pdf;base64,"));
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[2]["text"], "Does the chart match the report?");
+
+        // Images but no PDFs: the image goes, the PDF is named in a note.
+        let wire = to_wire(&[asked.clone()], &dir, IMAGES, false);
+        let parts = wire[0]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(
+            parts[1]["text"],
+            "Does the chart match the report?\n[The PDF report.pdf the user attached here \
+             wasn't sent: this model isn't set up to accept PDFs.]"
+        );
+
+        // Text only: one note for both.
+        let wire = to_wire(&[asked], &dir, TEXT_ONLY, false);
+        assert_eq!(
+            wire[0]["content"],
+            "Does the chart match the report?\n[The PDF report.pdf and an image the user \
+             attached here weren't sent: this model isn't set up to accept images or PDFs.]"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_pdf_costs_its_pages_and_goes_first_when_over_budget() {
+        let mut earlier = msg("user", "Here's the spec");
+        earlier.attachments = vec![pdf("spec", "spec.pdf", 10), pdf("old", "old.pdf", 1)];
+        let mut current = msg("user", "Implement section 2");
+        current.attachments = vec![pdf("brief", "brief.pdf", 2)];
+        let ms = vec![earlier, msg("assistant", "Read it."), current];
+        let cost = |pdf| Cost {
+            accepts: Accepts { images: true, pdf },
+            chars_per_token: DEFAULT_CHARS_PER_TOKEN,
+        };
+
+        // Only a model that takes PDFs gets them: their pages are counted then.
+        assert_eq!(
+            total(&ms, cost(true)) - total(&ms, cost(false)),
+            (10 + 1 + 2) * PDF_PAGE_TOKENS
+        );
+
+        let accepts = Accepts {
+            images: false,
+            pdf: true,
+        };
+        let budget = total(&ms, cost(true)) - 1000;
+        let (fitted, info) = fit(ms, budget, accepts);
+        assert!(info.trimmed);
+        assert_eq!(
+            fitted[0].text,
+            "Here's the spec\n[2 PDFs (spec.pdf, old.pdf) the user attached here were left out \
+             to fit the context window.]"
+        );
+        assert_eq!(fitted[2].attachments, [pdf("brief", "brief.pdf", 2)]);
+        let note = focus_note(&{
+            let mut long = vec![fitted[2].clone()];
+            for i in 0..FOCUS_AFTER_TOOL_RESULTS + 1 {
+                let id = format!("c{i}");
+                long.push(call(&[&id]));
+                long.push(tool(&id, 10));
+            }
+            long
+        });
+        assert!(
+            note.as_deref()
+                .is_some_and(|n| n.contains("The user attached the PDF brief.pdf to the request.")),
+            "{note:?}"
+        );
+    }
+
+    #[test]
+    fn attachments_kept_with_a_clm_context_read_back_from_before_pdfs() {
+        let old: Vec<Attachment> = serde_json::from_str(r#"["img1"]"#).unwrap();
+        assert_eq!(old, [Attachment::image("img1")]);
+        let now = vec![pdf("p1", "a.pdf", 2), Attachment::image("img2")];
+        let json = serde_json::to_string(&now).unwrap();
+        assert_eq!(
+            json,
+            r#"[{"id":"p1","pdf":{"name":"a.pdf","pages":2}},{"id":"img2"}]"#
+        );
+        assert_eq!(serde_json::from_str::<Vec<Attachment>>(&json).unwrap(), now);
     }
 
     #[test]
@@ -2140,13 +2415,13 @@ mod tests {
         for i in 0..3 {
             let mut m = msg("user", &format!("request {i} {}", "y".repeat(600)));
             m.id = format!("u{i}");
-            m.attachments = vec![format!("img{i}")];
+            m.attachments = vec![Attachment::image(format!("img{i}"))];
             ms.push(m);
             ms.push(msg("assistant", &"x".repeat(600)));
         }
         ms.push(msg("user", "the current request"));
         let budget = total(&ms, generous(false)) / 2;
-        let (fitted, info) = fit(ms, budget, true);
+        let (fitted, info) = fit(ms, budget, IMAGES);
         assert!(info.dropped_turns > 0);
         assert_eq!(info.estimated_tokens, total(&fitted, generous(true)));
         assert!(fitted.iter().all(|m| m.attachments.is_empty()));
@@ -2186,7 +2461,7 @@ mod tests {
             unsigned,
             tool("f", 1),
         ];
-        let w = to_wire(&ms, &dir, false, true);
+        let w = to_wire(&ms, &dir, TEXT_ONLY, true);
         let placeholder = Some(json!(GEMINI_SKIP_SIGNATURE));
         {
             use base64::Engine;
@@ -2224,7 +2499,7 @@ mod tests {
         assert_eq!(sig(&w, 9, 0), placeholder);
 
         // Other providers: real data echoed, never a placeholder.
-        let other = to_wire(&ms, &dir, false, false);
+        let other = to_wire(&ms, &dir, TEXT_ONLY, false);
         assert_eq!(sig(&other, 1, 0), Some(json!("SIG-A")));
         assert_eq!(sig(&other, 9, 0), None);
         assert!(other[9]["tool_calls"][0].get("extra_content").is_none());
@@ -2247,7 +2522,7 @@ mod tests {
             let w = to_wire(
                 &[msg("user", "q"), with_args(args), result("c", "Error: x")],
                 &dir,
-                false,
+                TEXT_ONLY,
                 false,
             );
             w[1]["tool_calls"][0]["function"]["arguments"]
@@ -2306,7 +2581,10 @@ mod tests {
     }
     fn generous(vision: bool) -> Cost {
         Cost {
-            vision,
+            accepts: Accepts {
+                images: vision,
+                pdf: false,
+            },
             chars_per_token: DEFAULT_CHARS_PER_TOKEN,
         }
     }
@@ -2323,7 +2601,7 @@ mod tests {
             tool("a", BIG),
             harness("[Automatic check by the IDE] tsc failed"),
         ];
-        let (out, info) = fit(history, 12_000, false);
+        let (out, info) = fit(history, 12_000, TEXT_ONLY);
         assert!(info.dropped_turns >= 1, "the old turn goes first");
         assert!(
             out.iter().any(|m| m.text.contains("fix the bug")),
@@ -2592,7 +2870,7 @@ mod tests {
             let id = format!("s{i}");
             ms.push(call(&[&id]));
             let mut t = tool(&id, 10);
-            t.attachments = vec!["img".into()];
+            t.attachments = vec![Attachment::image("img")];
             ms.push(t);
         }
         let with = total(&ms, generous(true));

@@ -82,6 +82,9 @@ pub struct ModelProfile {
     pub stream: bool,
     #[serde(default)]
     pub vision: bool,
+    /// The model takes PDF files (the settings' PDF).
+    #[serde(default)]
+    pub pdf: bool,
     pub context_tokens: Option<usize>,
     #[serde(default)]
     pub no_tools: bool,
@@ -656,13 +659,14 @@ pub struct UserMessage {
     pub content: String,
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
-    /// Images pasted into the message (chat_store_image ids), in order.
+    /// Images and PDFs attached to the message (chat_store_attachment ids),
+    /// in order; its meta names the PDFs (`pdfs`).
     #[serde(default)]
     pub attachments: Vec<String>,
 }
 
-/// Images one message can carry at most.
-const MAX_MESSAGE_IMAGES: usize = 20;
+/// Images and PDFs one message can carry at most.
+const MAX_MESSAGE_ATTACHMENTS: usize = 20;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -729,14 +733,14 @@ pub async fn agent_start<R: Runtime>(
             );
         }
     }
-    // A message's images, once each, and only ones that are stored.
+    // A message's files, once each, and only ones that are stored.
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
         let mut seen = std::collections::HashSet::new();
         message.attachments.retain(|id| seen.insert(id.clone()));
-        if message.attachments.len() > MAX_MESSAGE_IMAGES {
+        if message.attachments.len() > MAX_MESSAGE_ATTACHMENTS {
             return Err(format!(
-                "A message can have {MAX_MESSAGE_IMAGES} images at most; this one has {}.",
+                "A message can have {MAX_MESSAGE_ATTACHMENTS} attachments at most; this one has {}.",
                 message.attachments.len()
             ));
         }
@@ -747,7 +751,7 @@ pub async fn agent_start<R: Runtime>(
                 .await?;
             if !missing.is_empty() {
                 return Err(
-                    "An image in the message is no longer available. Remove it and paste it again."
+                    "A file attached to the message is no longer available. Remove it and attach it again."
                         .into(),
                 );
             }

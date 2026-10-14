@@ -132,7 +132,7 @@ pub fn run() {
             chat_db::commands::chat_delete_dialog,
             chat_db::commands::chat_search,
             chat_db::commands::chat_messages_answered,
-            chat_db::commands::chat_store_image,
+            chat_db::commands::chat_store_attachment,
             chat_db::commands::chat_save_composer_draft,
             chat_db::commands::chat_get_composer_draft,
             chat_db::commands::chat_set_model,

@@ -116,8 +116,8 @@ pub struct WireToolCall {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct WireChatMessage {
     role: String,
-    /// A string, or an array of content parts (text + image_url) for
-    /// messages carrying screenshots. Passed through to the API as-is.
+    /// A string, or an array of content parts (text, image_url, file) for
+    /// messages carrying images or PDFs. Passed through to the API as-is.
     #[serde(default)]
     content: serde_json::Value,
     // Present on an assistant message that requested tool calls.
@@ -721,7 +721,10 @@ pub struct ChatParams {
     // The model's context window: the history gets what's left of it after
     // the system prompt, tool schemas and the room kept for the reply.
     pub context_tokens: Option<usize>,
+    // What the model takes besides text (the settings' Vision and PDF):
+    // the history's images and PDFs go to it, or a note in their place.
     pub vision: Option<bool>,
+    pub pdf: Option<bool>,
     // The current user message as sent (with editor context), which differs
     // from what is stored.
     pub current_user_content: Option<String>,
@@ -784,6 +787,7 @@ pub async fn send_chat_message(
     dialog_id: Option<String>,
     context_tokens: Option<usize>,
     vision: Option<bool>,
+    pdf: Option<bool>,
     current_user_content: Option<String>,
     streaming: bool,
     // Lets `cancel_chat_request` stop this request (and its retries).
@@ -813,6 +817,7 @@ pub async fn send_chat_message(
         dialog_id,
         context_tokens,
         vision,
+        pdf,
         current_user_content,
         streaming,
         first_byte_timeout_ms,
@@ -856,6 +861,7 @@ pub async fn run_chat(
         dialog_id,
         context_tokens,
         vision,
+        pdf,
         current_user_content,
         streaming,
         first_byte_timeout_ms,
@@ -969,9 +975,12 @@ pub async fn run_chat(
             let data_dir = db.data_dir().to_path_buf();
             // Gemini 3 needs a thought signature on tool calls it didn't sign.
             let gemini = is_gemini_target(&base_url, &model);
-            let vision = vision.unwrap_or(false);
+            let accepts = crate::chat_db::history::Accepts {
+                images: vision.unwrap_or(false),
+                pdf: pdf.unwrap_or(false),
+            };
             let cost = crate::chat_db::history::Cost {
-                vision,
+                accepts,
                 chars_per_token,
             };
             let build = async {
@@ -1008,7 +1017,7 @@ pub async fn run_chat(
                     _ => later = Some(notes.join("\n")),
                 }
                 Ok((
-                    crate::chat_db::history::to_wire(&messages, &data_dir, vision, gemini),
+                    crate::chat_db::history::to_wire(&messages, &data_dir, accepts, gemini),
                     prepared.info,
                     fresh,
                     later,
@@ -1054,7 +1063,7 @@ pub async fn run_chat(
                     &dialog_id,
                     &wire_model,
                     budget,
-                    vision,
+                    accepts,
                     current_user_content.as_deref(),
                     gemini,
                     chars_per_token,
@@ -1371,7 +1380,7 @@ pub mod calibration {
     }
 
     /// Characters of text in a request body (messages and tool schemas), and
-    /// the number of images in it.
+    /// the number of other parts (images, PDFs) in it.
     pub fn prompt_size(body: &serde_json::Value) -> (usize, usize) {
         let mut chars = 0;
         let mut images = 0;
@@ -1423,7 +1432,7 @@ pub mod calibration {
     pub fn learn(key: &str, chars: usize, images: usize, prompt_tokens: u64) {
         // At least a system prompt and a few messages' framing.
         let messages_overhead = MESSAGE_OVERHEAD * 4;
-        // Images cost a model-specific number of tokens: no clean ratio.
+        // Images and PDFs cost a model-specific number of tokens: no clean ratio.
         if images > 0 || prompt_tokens < 200 || chars < 500 {
             return;
         }
@@ -1769,6 +1778,7 @@ pub async fn chat_context_estimate(
     context_tokens: Option<usize>,
     reasoning_effort: Option<ReasoningEffort>,
     vision: bool,
+    pdf: Option<bool>,
     // What the next request would offer: tools depend on the project, the
     // model and the mode; the project's section of the system prompt.
     no_tools: Option<bool>,
@@ -1868,7 +1878,10 @@ pub async fn chat_context_estimate(
                 &dialog_id,
                 &model,
                 token_budget,
-                vision,
+                crate::chat_db::history::Accepts {
+                    images: vision,
+                    pdf: pdf.unwrap_or(false),
+                },
                 None,
                 gemini,
                 chars_per_token,

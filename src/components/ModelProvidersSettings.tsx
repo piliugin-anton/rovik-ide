@@ -221,10 +221,11 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
     });
   }
 
-  function toggleVision(id: string) {
+  /** Vision or PDF: what the model takes besides text, attached in the chat. */
+  function toggleInput(id: string, input: 'vision' | 'pdf') {
     const d = draft();
     if (!d) return;
-    patch({ models: d.models.map((m) => (m.id === id ? { ...m, vision: !m.vision } : m)) });
+    patch({ models: d.models.map((m) => (m.id === id ? { ...m, [input]: !m[input] } : m)) });
   }
 
   function setAllFiltered(enabled: boolean) {
@@ -449,9 +450,15 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                   </span>
                   <span
                     role="columnheader"
-                    title="The model accepts images: images pasted into the chat are sent to it, and the agent gets the browser_screenshot tool"
+                    title="The model accepts images: images attached in the chat are sent to it, and the agent gets the browser_screenshot tool"
                   >
                     Vision
+                  </span>
+                  <span
+                    role="columnheader"
+                    title="The model accepts PDF files: PDFs attached in the chat are sent to it. OpenAI's models and OpenRouter take them; Anthropic's and Gemini's OpenAI-compatible APIs don't"
+                  >
+                    PDF
                   </span>
                   <span
                     role="columnheader"
@@ -517,9 +524,17 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                       type="checkbox"
                       class="model-flag"
                       checked={!!m.vision}
-                      onChange={() => toggleVision(m.id)}
+                      onChange={() => toggleInput(m.id, 'vision')}
                       aria-label={`${m.id} accepts images`}
-                      title={m.vision ? 'Accepts images' : 'Text only'}
+                      title={m.vision ? 'Accepts images' : 'No images'}
+                    />
+                    <input
+                      type="checkbox"
+                      class="model-flag"
+                      checked={!!m.pdf}
+                      onChange={() => toggleInput(m.id, 'pdf')}
+                      aria-label={`${m.id} accepts PDF files`}
+                      title={m.pdf ? 'Accepts PDF files' : 'No PDF files'}
                     />
                     <input
                       type="checkbox"

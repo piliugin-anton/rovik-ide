@@ -74,7 +74,11 @@ export default function MessageContent(props: { content: string; streaming?: boo
               <FormattedText class="message-text" text={text()} />
             </Match>
             <Match when={type() === 'pasted'}>
-              <PastedBlock text={text()} lines={(segment() as { lines: number }).lines} />
+              <PastedBlock
+                text={text()}
+                lines={(segment() as { lines: number }).lines}
+                name={(segment() as { name?: string }).name}
+              />
             </Match>
           </Switch>
         );
@@ -84,10 +88,11 @@ export default function MessageContent(props: { content: string; streaming?: boo
 }
 
 /**
- * A long paste in a sent message: collapsed to its size, and only rendered
- * when opened (a few thousand lines in the chat were slow).
+ * A long paste, or an attached text file (`name`), in a sent message:
+ * collapsed to its size, and only rendered when opened (a few thousand
+ * lines in the chat were slow).
  */
-function PastedBlock(props: { text: string; lines: number }) {
+function PastedBlock(props: { text: string; lines: number; name?: string }) {
   const [open, setOpen] = createSignal(false);
   return (
     <div class="chat-pasted-block">
@@ -112,8 +117,8 @@ function PastedBlock(props: { text: string; lines: number }) {
         >
           <path d="M6 4l4 4-4 4" />
         </svg>
-        Pasted text · {props.lines.toLocaleString()} line{props.lines === 1 ? '' : 's'},{' '}
-        {props.text.length.toLocaleString()} characters
+        {props.name ?? 'Pasted text'} · {props.lines.toLocaleString()} line
+        {props.lines === 1 ? '' : 's'}, {props.text.length.toLocaleString()} characters
       </button>
       <Show when={open()}>
         <pre class="chat-pasted-text-body">{props.text}</pre>

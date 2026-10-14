@@ -7,14 +7,15 @@
 // a debounced `chat_save_composer_draft` invoke; the active chat's draft is
 // loaded on mount / dialog switch / restart.
 //
-// What is stored is the JSON-encoded `DraftSegment[]` (pendingDraft.ts):
-// text plus file-reference and pasted-text chips. Saving plain text would
-// flatten chips into their labels and they could never come back as chips.
+// What is stored is the JSON-encoded `DraftSegment[]` (composerSegments.ts):
+// text plus its chips (file references, pasted text, attachments). Saving
+// plain text would flatten chips into their labels and they could never come
+// back as chips.
 // Rows written by the previous plain-text version are still readable: they
 // come back as a single text segment.
 
 import { chatApi } from './chatApi';
-import type { DraftSegment } from './pendingDraft';
+import type { DraftSegment } from './composerSegments';
 
 /** Long enough to stay out of the way while typing, short enough to beat a tab switch. */
 export const COMPOSER_DRAFT_DEBOUNCE_MS = 600;

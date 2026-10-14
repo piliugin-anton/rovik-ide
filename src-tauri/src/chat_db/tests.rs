@@ -455,6 +455,24 @@ fn images_in_unsent_input_are_kept_until_the_draft_lets_go() {
     save_composer_draft(&mut conn, "d", r#"[{"type":"text","text":"never mind"}]"#).unwrap();
     assert_eq!(super::attachments::collect_garbage(&conn, &dir).unwrap(), 1);
     assert!(super::attachments::file_for(&dir, &pasted).is_none());
+
+    // A PDF the input holds is kept the same way.
+    let pdf = "f".repeat(64);
+    std::fs::write(
+        dir.join(super::attachments::DIR).join(format!("{pdf}.pdf")),
+        b"%PDF-1.4",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO attachments (id, mime, bytes, created_at) VALUES (?1, 'application/pdf', 8, 0)",
+        [&pdf],
+    )
+    .unwrap();
+    let draft =
+        format!(r#"[{{"type":"pdf","pdf":{{"id":"{pdf}","name":"a.pdf","size":8,"pages":1}}}}]"#);
+    save_composer_draft(&mut conn, "d", &draft).unwrap();
+    assert_eq!(super::attachments::collect_garbage(&conn, &dir).unwrap(), 0);
+    assert!(super::attachments::file_for(&dir, &pdf).is_some());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -476,21 +494,47 @@ fn missing_attachments_are_named() {
 }
 
 #[test]
-fn pasted_images_are_typed_by_their_bytes() {
-    use super::attachments::image_mime;
-    assert_eq!(image_mime(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
-    assert_eq!(image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
-    assert_eq!(image_mime(b"GIF89a..."), Some("image/gif"));
+fn attachments_are_typed_by_their_bytes() {
+    use super::attachments::attachment_mime;
+    assert_eq!(attachment_mime(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
     assert_eq!(
-        image_mime(b"RIFF\x10\x00\x00\x00WEBPVP8 "),
+        attachment_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
+        Some("image/jpeg")
+    );
+    assert_eq!(attachment_mime(b"GIF89a..."), Some("image/gif"));
+    assert_eq!(
+        attachment_mime(b"RIFF\x10\x00\x00\x00WEBPVP8 "),
         Some("image/webp")
     );
-    assert_eq!(image_mime(b"RIFF\x10\x00\x00\x00WAVEfmt "), None);
     assert_eq!(
-        image_mime(b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
+        attachment_mime(b"%PDF-1.7\n%\xe2\xe3"),
+        Some("application/pdf")
+    );
+    // Readers allow a little junk before the header.
+    assert_eq!(
+        attachment_mime(b"\xef\xbb\xbf\r\n%PDF-1.4"),
+        Some("application/pdf")
+    );
+    assert_eq!(attachment_mime(b"RIFF\x10\x00\x00\x00WAVEfmt "), None);
+    assert_eq!(
+        attachment_mime(b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
         None
     );
-    assert_eq!(image_mime(b""), None);
+    assert_eq!(attachment_mime(b"PK\x03\x04 a .docx is a zip"), None);
+    assert_eq!(attachment_mime(b""), None);
+}
+
+#[test]
+fn a_pdfs_pages_are_counted_as_far_as_they_can_be() {
+    use super::attachments::pdf_pages;
+    let pages = b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>\n\
+        << /Type /Page /Parent 2 0 R >>\n<< /Type/Page/Parent 2 0 R >>";
+    assert_eq!(pdf_pages(pages), 2, "page objects, not the tree");
+    // Page objects compressed away: the page tree's count, if it's plain.
+    assert_eq!(pdf_pages(b"%PDF-1.5 << /Type /Pages /Count 12 >>"), 12);
+    // Nothing to count: by size.
+    assert_eq!(pdf_pages(&[b'x'; 120 * 1024]), 3);
+    assert_eq!(pdf_pages(b"%PDF-1.7"), 1);
 }
 
 #[test]
@@ -933,17 +977,19 @@ fn history_sends_a_user_message_as_it_was_first_sent() {
     );
 }
 
-/// A pasted image reaches chat_store_image as the IPC's raw body, or as a
-/// JSON array where the webview blocks the custom protocol (postMessage).
+/// An attached file reaches chat_store_attachment as the IPC's raw body, or
+/// as a JSON array where the webview blocks the custom protocol (postMessage).
 #[test]
-fn pasted_images_are_stored_from_either_ipc_body() {
+fn attachments_are_stored_from_either_ipc_body() {
     use tauri::ipc::InvokeBody;
     let dir = std::env::temp_dir().join(format!("chat-db-ipc-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let db = super::DbState::open(&dir).unwrap();
     let app = tauri::test::mock_builder()
         .manage(db)
-        .invoke_handler(tauri::generate_handler![super::commands::chat_store_image])
+        .invoke_handler(tauri::generate_handler![
+            super::commands::chat_store_attachment
+        ])
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -953,7 +999,7 @@ fn pasted_images_are_stored_from_either_ipc_body() {
         tauri::test::get_ipc_response(
             &webview,
             tauri::webview::InvokeRequest {
-                cmd: "chat_store_image".into(),
+                cmd: "chat_store_attachment".into(),
                 callback: tauri::ipc::CallbackFn(0),
                 error: tauri::ipc::CallbackFn(1),
                 url: if cfg!(windows) {
@@ -968,15 +1014,28 @@ fn pasted_images_are_stored_from_either_ipc_body() {
                 invoke_key: tauri::test::INVOKE_KEY.to_string(),
             },
         )
-        .map(|r| r.deserialize::<String>().unwrap())
+        .map(|r| r.deserialize::<serde_json::Value>().unwrap())
     };
 
     let png = b"\x89PNG\r\n\x1a\nnot much of an image".to_vec();
     let raw = store(InvokeBody::Raw(png.clone())).unwrap();
     let json = store(InvokeBody::Json(serde_json::json!(png))).unwrap();
     assert_eq!(raw, json, "the same image, stored once");
-    let file = super::attachments::file_for(&dir, &raw).unwrap();
+    assert_eq!(
+        raw,
+        serde_json::json!({ "id": raw["id"], "mime": "image/png", "pages": null })
+    );
+    let file = super::attachments::file_for(&dir, raw["id"].as_str().unwrap()).unwrap();
     assert_eq!(std::fs::read(file).unwrap(), png);
+
+    let pdf = store(InvokeBody::Raw(
+        b"%PDF-1.4 << /Type /Page >> %%EOF".to_vec(),
+    ))
+    .unwrap();
+    assert_eq!(pdf["mime"], "application/pdf");
+    assert_eq!(pdf["pages"], 1);
+    let file = super::attachments::file_for(&dir, pdf["id"].as_str().unwrap()).unwrap();
+    assert_eq!(file.extension().unwrap(), "pdf");
 
     let svg = store(InvokeBody::Raw(
         b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec(),

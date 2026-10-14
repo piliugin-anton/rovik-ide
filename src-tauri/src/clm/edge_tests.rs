@@ -8,7 +8,10 @@ use crate::chat_db::store::{
 use std::path::PathBuf;
 
 const COST: Cost = Cost {
-    vision: false,
+    accepts: crate::chat_db::history::Accepts {
+        images: false,
+        pdf: false,
+    },
     chars_per_token: 3.0,
 };
 const ROOMY: usize = 100_000;
