@@ -1,4 +1,4 @@
-# Running the agent in the cloud — options and plan
+# Running the agent in the cloud — plan
 
 Goal: the user configures a remote host in Settings (host/IP, port, SSH
 port, SSH password or key), tests the connection, and the IDE deploys the
@@ -6,9 +6,27 @@ agent there. Any chat can be moved to that host at any moment, with its
 history, context and settings, and keeps running while the laptop sleeps.
 
 This document describes what the backend looks like today, what has to
-change whichever way we go, and the real choices (transport, project
-sync, session migration, secrets), each with pros and cons and a
-recommendation.
+change, and the choices (code layout, project transport, transport,
+session migration, secrets). The choices were made on 2026-10-14 and are
+listed below. Each section keeps the options that weren't taken, marked as
+such, with their pros and cons, so a decision can be revisited with the
+same facts.
+
+## Decisions
+
+| Question | Decision | Where |
+|---|---|---|
+| How the code is laid out | Split `src-tauri` into a Cargo workspace: `rovik-core` (no Tauri), `rovik-protocol`, `rovik-agentd`, and the Tauri app on top | §2.1 |
+| How the project gets to the server and back | **P1**: git carries it both ways. A snapshot commit is pushed up, the chat works in a worktree of its own on the server, and its result comes back as a ref and lands through the existing landing code | §3 |
+| How the desktop reaches the daemon | **T3**: an Axum daemon bound to localhost (or a Unix socket) on the server, reached through an SSH tunnel; `attach --stdio` for hosts without port forwarding | §4 |
+| How a chat moves | **M1**: ownership moves at a turn boundary; the local rows stay as a mirror | §5 |
+| Provider API keys on the server | **Stored on the server** in a 0600 file, and refreshed from the desktop every time a cloud run starts | §6 |
+
+The last one departs from the earlier recommendation (keys in the
+daemon's memory only). What follows from it: the daemon brings its runs
+back after a restart by itself instead of waiting for a client, the keys
+rest on the server's disk between runs, and the host settings say so
+instead of offering a toggle (§6, §7).
 
 ---
 
@@ -26,8 +44,10 @@ Facts that shape the design (paths under `src-tauri/src/`):
   a window, but it's a test harness, not something to ship on a server.
 - **What the agent actually uses `AppHandle` for** is small:
   - sending events: one function, `agent_run::events::emit`, sends the
-    `agent-event` enum (`AgentEvent`). Two more events come from the file
-    watcher (`fs-changes`, `git-changed`);
+    `agent-event` enum (`AgentEvent`). It is the only event the agent
+    sends. The two others, `fs-changes` and `git-changed`, come from the
+    editor's file watcher (`filesystem.rs`), which stays in the app
+    (§2.1);
   - looking up shared state: `app.state::<AgentState>()` (29×),
     `DbState` (25×), `VfsState` (11×), `BrowserState` (a few);
   - `app.path().app_data_dir()` and `tauri::async_runtime::spawn_blocking`.
@@ -45,9 +65,10 @@ Facts that shape the design (paths under `src-tauri/src/`):
   opaque strings to the backend) and sends `ModelProfile` (with
   `api_key`) in every `StartRequest`, and `AgentConfig` (permissions,
   reviewer and subagent profiles, keys included) through
-  `agent_configure` at startup and on every change. A run never reads
-  the file. A daemon therefore needs nothing on disk to run a chat; it
-  needs those same two calls from a connected client.
+  `agent_configure` at startup and on every change, and again in every
+  `StartRequest` (its `config`). A run never reads the file. A daemon
+  therefore gets everything a run needs, keys included, from the start
+  request; it keeps a copy so its runs survive a restart (§6).
 - **Streaming commands use `tauri::ipc::Channel`:** `send_chat_message`
   (agent.rs), `spawn_terminal`, the `vfs_*` subscriptions and `lsp_*`.
   Agent runs don't; they use app events. Of these only
@@ -106,23 +127,51 @@ Facts that shape the design (paths under `src-tauri/src/`):
 
 ## 2. Refactor needed whichever option we choose
 
-### 2.1 Split the crate (Cargo workspace)
+**Decided: split the crate into a Cargo workspace (2.1).** 2.2 and 2.3
+are how it gets there, not alternatives to it: the core can't leave the
+Tauri crate while it takes `AppHandle<R>` (2.2), and the daemon and the
+app need one protocol crate to share (2.3).
+
+Not chosen: one crate, with the daemon as a second binary behind a
+`server` feature. It is less churn up front, but "nothing in the core
+names `tauri`" would be a convention instead of a compile error, and the
+static musl build of the daemon (§7) would depend on every Tauri-only
+dependency being feature-gated by hand.
+
+### 2.1 Split the crate (Cargo workspace) — decided
 
 ```
 src-tauri/                 (workspace)
   crates/
-    rovik-core/            agent_run, agent, chat_request, chat_db, clm,
-                           overlay, vfs, workload, tools, outline,
-                           repo_map, git, code_search, project_profile…
-                           No tauri dependency.
+    rovik-core/            The agent and everything it calls (table
+                           below). No tauri dependency.
     rovik-protocol/        Serializable requests/responses/events
                            (AgentEvent, StartRequest, ApprovalDecision…),
                            the protocol version, shared by both sides.
-    rovik-agentd/          The server binary: core + transport
-                           (stdio and/or axum). Built static (musl).
+    rovik-agentd/          The server binary: core + Axum on localhost or
+                           a Unix socket (`serve`), the `attach --stdio`
+                           bridge (§4), and the daemon's own key and
+                           run-settings store (§6). Built static (musl).
   src/  (rovik-ide)        Tauri app: thin #[tauri::command] wrappers
                            over core, plus the remote client.
 ```
+
+What goes where, from what the modules import today:
+
+| Crate | Modules |
+|---|---|
+| `rovik-core` | `agent_run`, `agent`, `chat_request`, `chat_db`, `clm`, `overlay`, `vfs`, `workload`; the tools they call: `agent_tools`, `read_file`, `read_symbol`, `edit_file`, `code_search`, `outline`, `repo_map`, `command_tool`, `process`, `browser_tools`, `file_guard`, `merge`, `project_profile`, `git_sync`; and `api_log`, `prompt_cache`, `reasoning_echo`, `opencode`, `system_one`, `atomic_file` |
+| `rovik-ide` (the app) | `lib.rs` (setup and the command wrappers), `filesystem` (the editor's file commands and the watcher behind `fs-changes`/`git-changed`), `git` (the editor's git commands), `lsp`, `formatter`, `terminal`, `typings`, `project_files`, `open_url` |
+
+Three imports cross that line today and move into the core first:
+`filesystem::write_app_file` (plan files, `agent_run/plan.rs`), the git
+helpers `git_sync` uses from `git.rs` (`open_repo`, `git_fetch_blocking`,
+`off_main_thread`), and `lsp::rust_analyzer::parse_assets` (the vfs
+driver installer reads GitHub release pages with it; `lsp` then imports
+it from the core). Where a core module also defines
+`#[tauri::command]` functions (`outline`, `code_search`,
+`project_profile`, `browser_tools`, `vfs`…), the function moves and the
+command stays in the app as a wrapper.
 
 `rovik-headless` becomes a small binary on top of `rovik-core`, with no
 mock runtime.
@@ -143,16 +192,17 @@ pub struct Core {
     pub events: Arc<dyn EventSink>,
 }
 
+/// `agent-event` is the only event the core sends; the file watcher's
+/// `fs-changes` and `git-changed` belong to the editor and stay in the app.
 pub trait EventSink: Send + Sync {
     fn agent(&self, e: &AgentEvent);
-    fn fs_changes(&self, e: &FsChanges) {}
-    fn git_changed(&self) {}
 }
 ```
 
 - The Tauri app implements `EventSink` with `app.emit(...)`; the server
   implements it as a broadcast channel that every connected client
-  subscribes to (plus a ring buffer for replay, §4.3).
+  subscribes to (plus a ring buffer for replay, §5 "Live view while
+  remote").
 - `app.state::<X>()` becomes `core.x`. That's ~65 call sites, mostly
   mechanical. `R: Runtime` generics disappear from the core.
 - `tauri::async_runtime::spawn_blocking` becomes
@@ -198,11 +248,12 @@ Define these as one `Request` enum + `Response` + `Event` in
 and make the protocol **one bidirectional message stream**: requests,
 responses and notifications (events, and chunks for the one streaming
 call) on a single ordered channel, JSON-RPC style. The same stream then
-runs over a WebSocket (T2/T3), over an SSH exec channel's stdio (T1),
+runs over a WebSocket through the SSH tunnel (T3, §4), over an SSH exec
+channel's stdio (`attach --stdio`, for hosts without port forwarding),
 over a Unix socket for a local daemon in tests, and in-process in the
 Tauri app. HTTP stays for what a stream is bad at: blob upload/download
 (attachments) and `/health`. T3's "two layers to debug" becomes one
-protocol plus a dumb byte pipe, and T1 is a free mode of it.
+protocol plus a dumb byte pipe, and the stdio mode comes free with it.
 
 The Tauri commands and the server's handlers call the same core
 functions; the remote-capable commands are generated from the enum (a
@@ -220,8 +271,10 @@ Two things this costs, worth knowing up front:
   local-database queries. A remote chat's new messages aren't in it
   unless mirrored; §5's mirror makes that a non-issue;
 - `agent_configure` is global on each backend. The frontend has to send
-  it to every connected backend, on connect and on every change, and a
-  daemon that restarted has nothing until a client reconnects (§6).
+  it to every connected backend, on connect and on every change (to a
+  daemon without its keys, §6). The daemon stores the last one it
+  received, so after a restart it runs with the settings it had, not
+  with none.
 
 ---
 
@@ -229,6 +282,10 @@ Two things this costs, worth knowing up front:
 
 The agent needs the project's files and its toolchain on the server, and
 its changes have to come back to the local editor.
+
+**Decided: P1, git carries the project both ways (§3.2), with a
+worktree per chat on the server (§3.1).** P2 and P3 are kept below as the
+options not taken.
 
 ### 3.1 Where the chat works on the server
 
@@ -262,7 +319,7 @@ existing fallback, "work in the project directly", is fine on a server
   worktree for build output; a chat's `.gitignore`d by-products stay in
   the worktree (that's what tiers.rs skips at landing anyway).
 
-### 3.2 Option P1: git carries the project both ways (recommended)
+### 3.2 Option P1: git carries the project both ways — decided
 
 The desktop already links libgit2 with its SSH transport (`git2` with
 the `ssh` feature; libssh2 is in Cargo.lock). Git is the transfer
@@ -291,8 +348,9 @@ travel, in both directions.
   the project folder) and snapshots into it. The user never sees it;
   cloud chats just work, and the project's `.gitignore` files are still
   honoured by the snapshot.
-- Pros: no bundle format, no tarball, no new sync engine, no server-side
-  credentials (the client pushes; the server only receives); incremental
+- Pros: no bundle format, no tarball, no new sync engine, no git
+  credentials on the server (the client pushes; the server only
+  receives); incremental
   by construction; the snapshot id doubles as the merge base and as a
   record of exactly what the chat saw; move-back (§5) is "fetch the
   result ref"; the server works while the laptop is offline (the result
@@ -305,7 +363,7 @@ travel, in both directions.
   output and dependencies out); files the user edits locally after the
   move aren't seen until the next sync.
 
-### Option P2: Continuous two-way file sync (rsync-like / Mutagen-style)
+### Option P2: Continuous two-way file sync (rsync-like / Mutagen-style) — not chosen
 
 - A watcher on both sides, with a delta sync over the connection.
 - Pros: the remote chat always sees the user's latest edits; works for
@@ -315,7 +373,7 @@ travel, in both directions.
   edits the agent hasn't landed would leak into the user's tree, which
   is exactly what isolation prevents today.
 
-### Option P3: The project lives on the server (remote-first, VS Code Remote-SSH style)
+### Option P3: The project lives on the server (remote-first, VS Code Remote-SSH style) — not now
 
 - The editor, file tree, git, terminal and LSP all work over the
   connection; the server's checkout is the only copy.
@@ -326,11 +384,13 @@ travel, in both directions.
   offline for that project; a much larger first step. Moving "the current
   session at any moment" means moving the project too.
 
-**Recommendation:** P1 with the worktree-per-chat server mode (§3.1).
-Design the protocol so P3 can be added later by putting the
-FS/git/terminal groups behind the same `backend` abstraction. Require git
-for cloud chats only in the sense that the shadow repository provides it
-where the project has none.
+**Decision:** P1, with the worktree-per-chat server mode (§3.1). P2 is
+not built: its sync engine would leak unlanded changes into the user's
+tree, which is what isolation prevents. P3 stays a later option: the
+protocol keeps the FS/git/terminal groups behind the same `backend`
+abstraction, so they can go remote one day. Cloud chats require git only
+in the sense that the shadow repository provides it where the project has
+none.
 
 **Toolchain on the server:** the agent's checks (`cargo`, `npm`,
 `pytest`…) must be installed there. Offer a "server setup script" field
@@ -342,7 +402,12 @@ project's checks.
 
 ## 4. Transport: Axum over HTTPS vs. SSH stdin/stdout
 
-### Option T1: SSH exec + JSON-RPC over stdin/stdout
+**Decided: T3, an Axum daemon on localhost reached through an SSH
+tunnel.** T1 survives as T3's `attach --stdio` mode for hosts that don't
+allow port forwarding; T2 is a later opt-in mode of the same daemon
+(phase 6).
+
+### Option T1: SSH exec + JSON-RPC over stdin/stdout — not chosen on its own (T3's fallback mode)
 
 The client runs `ssh host ~/.rovik/bin/rovik-agentd --stdio`; requests
 and events are newline-delimited JSON (or length-prefixed) over the
@@ -370,7 +435,7 @@ Cons:
 - Reconnect, keepalive and resume are ours to handle (SSH keepalives
   help).
 
-### Option T2: Axum HTTPS + WebSocket, exposed on a port
+### Option T2: Axum HTTPS + WebSocket, exposed on a port — not now (later opt-in mode)
 
 A daemon (systemd user unit) listens on `host:port`; REST for
 request/response, one WebSocket for events.
@@ -395,7 +460,7 @@ Cons:
 - More code: TLS automation, token issuing and revocation, CORS if a
   browser client comes later.
 
-### Option T3: Axum daemon on localhost, reached through an SSH tunnel (recommended)
+### Option T3: Axum daemon on localhost, reached through an SSH tunnel — decided
 
 The daemon (`rovik-agentd serve`) runs as a systemd user service bound
 to `127.0.0.1:<port>` or a Unix socket. The client opens an SSH
@@ -405,6 +470,8 @@ like `ssh -L`), then speaks HTTP + WebSocket to it.
 Pros:
 - Daemon outlives connections (runs continue while the laptop is
   closed); reconnect = new tunnel + resume events from a sequence number.
+  With the keys stored on the server (§6) it also outlives its own
+  restarts: runs come back without a client.
 - **No public port and no certificates needed**: SSH encrypts and
   authenticates. Still token-auth the HTTP layer (defense in depth
   against other local users on the server). The token is generated at
@@ -422,9 +489,11 @@ Cons:
 - Two layers (SSH + HTTP) to debug.
 - A future browser/mobile client needs T2 mode anyway.
 
-### HTTPS/SSL automation (for T2, or T3 with public mode on)
+### HTTPS/SSL automation (only for the later public mode)
 
-What "automatic HTTP and SSL" means in each case:
+Not needed in v1: through the tunnel, SSH encrypts and authenticates.
+This is what the public mode (phase 6) will need. What "automatic HTTP
+and SSL" means in each case:
 
 1. **Domain name given:** the daemon gets a certificate itself with
    `rustls-acme` (TLS-ALPN-01 on 443, no port 80 needed), renews it, and
@@ -436,7 +505,8 @@ What "automatic HTTP and SSL" means in each case:
    fingerprint (stored with the host settings). This is as secure as a
    CA certificate for our purposes, because the fingerprint arrives over
    the SSH channel the user already trusts, and it needs no domain, no
-   port 80 and no renewal. This is the recommended default for T2.
+   port 80 and no renewal. This is the recommended default for the
+   public mode.
 3. **Auth on the HTTP layer:** a random 256-bit token per client device,
    created at deploy over SSH, stored hashed (argon2/sha256) on the
    server and in the OS keychain on the client; sent as
@@ -458,12 +528,14 @@ What "automatic HTTP and SSL" means in each case:
 | Project identity | `projects`, `project_paths` | Export the row; the server maps it to the chat's worktree (`project_decisions` stay local) |
 | Model, mode, context mode | `dialogs` columns, `chat_set_model` | Part of the dialog row |
 | Private changes | `overlays/<chat id>/` | Simplest: land locally first, then move a clean chat. Otherwise the overlay's `upper/` files are part of the snapshot commit (§3.2) and `base/` is the parent tree, so the worktree starts with the chat's changes |
-| Agent settings | `AgentConfig` (permissions, approval profiles, subagents), project settings | Sent with the move; the daemon's `agent_configure` per chat |
-| Model profiles + API keys | Frontend memory (`ai-settings.json` is the frontend's file) | Already in `StartRequest` and `AgentConfig`; sent to the daemon the same way (§6) |
+| Agent settings | `AgentConfig` (permissions, approval profiles, subagents), project settings | Sent with the move, in the start request (`StartRequest.config`); the daemon stores the last one, keys stripped (§6) |
+| Model profiles + API keys | Frontend memory (`ai-settings.json` is the frontend's file) | In the start request, as today; the daemon stores the keys and every later start refreshes them (§6) |
 | Fix-round state waiting on approval | `AgentState.carries` (memory) | Not moved: the stop drops it and the checks run again on the other side (below) |
 | Pending approvals/questions | `AgentState` (memory) | Not moved: they're re-asked after `Resume` |
 
-### Option M1: Ownership transfer at a turn boundary (recommended)
+**Decided: M1, ownership moves at a turn boundary (below).**
+
+### Option M1: Ownership transfer at a turn boundary — decided
 
 1. User clicks "Move to cloud". If a run is going, the client asks it to
    **stop at the next safe point**: after the current tool call
@@ -484,7 +556,9 @@ What "automatic HTTP and SSL" means in each case:
    approvals, questions, landing, CLM) and for a `since seq` catch-up on
    connect.
 4. The server starts the chat with `StartKind::Resume` or `ContinueRun`,
-   whichever applies; both already exist.
+   whichever applies; both already exist. This start request carries the
+   chat's profile and the agent settings with their keys, which is when
+   the daemon stores or refreshes them (§6).
 5. "Move back": stop at the safe point, catch the mirror up to the
    server's last `seq`, fetch the result ref (§3.2) and land it (or keep
    it as a local overlay), flip `location` back. With the mirror this is
@@ -507,7 +581,7 @@ Cons: "at any moment" means "within one tool call" (seconds, or as long
 as a running build takes). A truly mid-request move would lose the
 in-flight model response anyway.
 
-### Option M2: The server becomes the source of truth for all chats
+### Option M2: The server becomes the source of truth for all chats — not chosen
 
 All chats always live on the server; the desktop keeps a cache.
 
@@ -515,7 +589,7 @@ Pros: nothing to move; every device sees every chat.
 Cons: the IDE stops working offline; local-only users pay for a design
 they don't use; a far bigger change to `chat_db`.
 
-### Option M3: Replicate the database (e.g. CRDT/litestream-style)
+### Option M3: Replicate the database (e.g. CRDT/litestream-style) — not chosen
 
 Both sides write, and the changes merge.
 
@@ -523,7 +597,7 @@ Pros: seamless in theory.
 Cons: the chat log has strict ordering (`seq`) and tool-call/result
 pairing; two writers would corrupt runs. Not worth it.
 
-**Recommendation:** M1. Add a `location` column to `dialogs`, a bundle
+**Decision:** M1. Add a `location` column to `dialogs`, a bundle
 export/import in `chat_db` (useful by itself), and a graceful
 "stop after this tool call" mode.
 
@@ -582,23 +656,79 @@ never auto-approve because nobody is there), so:
 
 ### On the server
 
-- API keys for the model providers: two choices.
-  - **Sent per session, kept in memory** (recommended default, and how
-    the desktop already works: keys arrive in `StartRequest` and
-    `AgentConfig`, never from a file). The client sends `agent_configure`
-    and the chat's profile when it moves a chat or reconnects. A daemon
-    restart (reboot, upgrade) pauses remote runs until a client
-    reconnects; the daemon reports "waiting for a client" as the run's
-    status so it isn't mistaken for a hang. Nothing usable is left on
-    disk.
-  - **Stored on the server**, encrypted at rest (key from a passphrase,
-    or the plain 0600 file the desktop uses today), so runs survive
-    reboots without a client. Opt-in, with a clear warning.
+**Decided: the providers' API keys are stored on the server, and the
+desktop refreshes them every time a cloud run starts.**
+
+- **Keys reach the server with a start, and only then.** Every
+  `StartRequest` already carries the chat's `ModelProfile` and the
+  `AgentConfig` (reviewer and subagent profiles), keys included (§1). A
+  start is moving a chat (§5, step 4), a new message, Retry, Continue,
+  Resume, or checks that waited for approval. On each, the daemon writes
+  the keys it received into its store, replacing what it had for those
+  providers, so a key changed or rotated on the desktop is on the server
+  from the next run on. `agent_configure`, which goes to every connected
+  backend on connect and on every change (§2.3), goes to a daemon with
+  the keys left out; the daemon fills them in from its store. A model
+  from a provider the daemon has no key for yet (a reviewer added in the
+  middle of a run) gets its key with the next start. Until then its calls
+  fail, and when no reviewer model answers, the AI reviewer asks the
+  user, as it does today.
+- **Where.** `~/.rovik/keys.json`, mode 0600 inside the 0700 `~/.rovik`,
+  written atomically (`atomic_file::write_atomic_private`, the way the
+  desktop writes `ai-settings.json`). One entry per provider (the
+  provider id is the part of a profile id before `::`) with its base URL
+  and key; the daemon uses a stored key only with the base URL it came
+  with. Everything else the daemon keeps refers to providers by id and
+  holds no key, so keys are in one file: a rotation rewrites one entry,
+  and removing them deletes one file.
+- **What else is stored, so runs come back after a restart.** Per cloud
+  chat, the settings of its last start (profile, reasoning options, mode,
+  context mode; no keys) and whether a run was going; and the last
+  `AgentConfig` (no keys). When the daemon starts (reboot, upgrade, OOM
+  kill), it restarts the chats that were running with the start kind
+  that applies: a run cut during a model request takes its turn again
+  (`ContinueReply` when part of the reply was stored, `Retry` when none
+  was); tool calls that never ran go through `Resume`, which by design
+  asks the user before running an interrupted call again ("an
+  interrupted call is always confirmed by the user",
+  `agent_run/execute.rs`). So a run stopped in a model request goes on by
+  itself, and one stopped in the middle of a command waits for the user
+  instead of repeating it blind.
+  Approvals and questions that were pending die with the process and are
+  asked again after `Resume`, as in §5.
+- **How long they stay.** As long as the host has cloud chats. The host
+  settings list the providers that have a key on the server, with
+  "Remove keys from this server" (deletes `keys.json` and the daemon's
+  copy in memory; a remote run then stops at its next model request, and
+  the next start from the desktop brings the keys back). Removing the
+  host deletes `~/.rovik`, keys included, after asking.
+- **Who can read them.** Anything that runs as the SSH user, the agent's
+  own commands included. That is the desktop's exposure today too:
+  confinement keeps commands out of the project, not out of app data, so
+  a command can read `ai-settings.json`. The server is the same exposure
+  on a machine that may be shared or watched less. For v1: the daemon
+  never puts keys in the environment of the commands it runs, and a
+  command that names `~/.rovik` always needs the user's approval,
+  whatever the permission settings say (a text match: it stops an
+  accidental read, not a determined one). Encrypting the file with a key
+  kept on the same machine adds nothing against that user, and
+  encrypting it with a passphrase would bring back the "wait for a
+  client" this decision removes. Stronger options for later: run the
+  agent's commands as a separate Unix user or in a container (open
+  questions, end of the document), and bind the file to the host with
+  `systemd-creds` where available, so a copied disk image or backup
+  carries no usable keys.
 - The daemon runs as the SSH user, never as root; files under
   `~/.rovik/` are 0700.
 - The agent on the server still obeys the permission rules
   (`agent_run::permissions`, `is_secret_path`), but approvals now arrive
   remotely, so an unattended remote run waits rather than auto-approves.
+
+Not chosen: **keys sent per session and kept only in memory**, the
+earlier recommendation. Nothing usable would rest on the server's disk,
+but every daemon restart would pause all remote runs until a desktop
+reconnected, which works against runs that go on while the laptop
+sleeps.
 
 ### SSH library
 
@@ -624,9 +754,13 @@ never auto-approve because nobody is there), so:
 ### Settings → Cloud hosts
 
 Fields: name, host/IP, SSH port (22), SSH user, auth (key file / ssh-agent
-/ password), agent port (used for T2 public mode; for T3 it's a
-localhost port on the server), optional domain (enables ACME), setup
-script, "keep API keys on server" toggle.
+/ password), agent port (a localhost port on the server, reached through
+the tunnel; the later public mode reuses it), setup script. An optional
+domain (for ACME) appears only with the later public mode.
+
+No "keep API keys on server" toggle: cloud chats always store their keys
+there (§6). The page says so plainly, lists the providers that have a
+key on the server, and offers "Remove keys from this server".
 
 ### "Test connection" does, in order, and reports each step
 
@@ -644,9 +778,9 @@ script, "keep API keys on server" toggle.
    fallback such as `nohup`/`setsid`), and that the provider's API host
    is reachable from the server (some providers geo-block or need a
    proxy; a run that fails only on the server is confusing).
-5. If T2/public mode: TCP connect to `host:port` from the client
-   (firewall check), and, if a domain is given, that it resolves to this
-   host.
+5. Later, with the public mode on (phase 6): TCP connect to `host:port`
+   from the client (firewall check), and, if a domain is given, that it
+   resolves to this host.
 6. If already deployed: daemon version and `/health` through the tunnel.
 
 ### Deploy
@@ -654,11 +788,14 @@ script, "keep API keys on server" toggle.
 1. Upload `rovik-agentd-<version>-<arch>` (static musl binary, shipped
    with the app or downloaded from GitHub releases with a checksum) to
    `~/.rovik/bin/`, over SFTP or an exec channel.
-2. Write `~/.rovik/config.toml` (listen address, data dir, token hash,
-   TLS mode) and install a systemd **user** unit
-   `rovik-agentd.service`; enable linger so it runs after logout. Create
-   `~/.rovik/projects/` (bare repositories) and `~/.rovik/work/`
+2. Write `~/.rovik/config.toml` (listen address, data dir, token hash;
+   a TLS mode only once the public mode exists) and install a systemd
+   **user** unit `rovik-agentd.service`; enable linger so it runs after
+   logout, which is also what lets runs come back after a reboot (§6).
+   Create `~/.rovik/projects/` (bare repositories) and `~/.rovik/work/`
    (worktrees); the push in §3.2 targets a path under the first.
+   `~/.rovik/keys.json` isn't written at deploy: the first cloud start
+   creates it (§6).
 3. Start it; check `/health`; protocol version handshake. On a version
    mismatch the client offers to upgrade (the daemon finishes its runs
    first: drain, then restart).
@@ -679,25 +816,35 @@ LSP downloader stay out of the server crate.
 
 ---
 
-## 8. Summary of options
+## 8. Summary of options and decisions
+
+| | Effort | Code layout enforced by | Verdict |
+|---|---|---|---|
+| **Workspace**: `rovik-core`, `rovik-protocol`, `rovik-agentd`, app | Medium (part of phase 1) | The compiler (crate boundary) | **Chosen** |
+| One crate, daemon behind a `server` feature | Low | Convention and feature gates | Not chosen |
 
 | | Effort | Survives disconnect | Attack surface | Future web/mobile | Verdict |
 |---|---|---|---|---|---|
-| **T1** SSH stdio | Low | Only with a daemon behind it | Minimal (SSH) | No | Fine for a prototype |
-| **T2** Axum public HTTPS | High | Yes | Public port | Yes | Later, as an opt-in mode |
-| **T3** Axum on localhost + SSH tunnel | Medium | Yes | Minimal (SSH) | Switchable to T2 | **Recommended** |
+| **T1** SSH stdio | Low | Only with a daemon behind it | Minimal (SSH) | No | Kept as T3's `attach --stdio` mode |
+| **T2** Axum public HTTPS | High | Yes | Public port | Yes | Later, as an opt-in mode (phase 6) |
+| **T3** Axum on localhost + SSH tunnel | Medium | Yes | Minimal (SSH) | Switchable to T2 | **Chosen** |
 
 | | Effort | Offline-friendly | Reuses existing code | Verdict |
 |---|---|---|---|---|
-| **P1** git push of a snapshot up / result ref down, worktree per chat on the server | Medium | Yes | libgit2 + landing | **Recommended** |
-| **P2** continuous two-way sync | High | Yes | Little | No |
+| **P1** git push of a snapshot up / result ref down, worktree per chat on the server | Medium | Yes | libgit2 + landing | **Chosen** |
+| **P2** continuous two-way sync | High | Yes | Little | Not chosen |
 | **P3** remote-first project | Very high | No | Little | Long-term option |
 
 | | Effort | Conflicts | Verdict |
 |---|---|---|---|
-| **M1** move ownership at a turn boundary, local mirror follows | Medium | None (one owner) | **Recommended** |
-| **M2** server owns all chats | High | None | No (breaks offline) |
-| **M3** replicate the database | Very high | Many | No |
+| **M1** move ownership at a turn boundary, local mirror follows | Medium | None (one owner) | **Chosen** |
+| **M2** server owns all chats | High | None | Not chosen (breaks offline) |
+| **M3** replicate the database | Very high | Many | Not chosen |
+
+| | Runs after a daemon restart | Keys at rest on the server | Verdict |
+|---|---|---|---|
+| **Stored on the server**, refreshed at every cloud start | Come back by themselves | Yes, one 0600 file | **Chosen** |
+| Sent per session, kept in memory | Wait for a client | No | Not chosen |
 
 ---
 
@@ -705,7 +852,8 @@ LSP downloader stay out of the server crate.
 
 1. **Core extraction (no user-visible change).** `Core` + `EventSink`
    instead of `AppHandle<R>`, the commands as thin wrappers, the e2e
-   harness building a `Core`; the set-once statics into `Core::new`;
+   harness building a `Core`; the set-once statics into `Core::new`; the
+   three imports that cross the line moved into the core (§2.1); the
    workspace split once nothing in the core names `tauri`;
    `rovik-headless` on top of `rovik-core` with the same CLI and no mock
    runtime. The existing e2e tests, run before and after, are the safety
@@ -713,14 +861,19 @@ LSP downloader stay out of the server crate.
 2. **Protocol + local daemon.** `rovik-protocol` enum as one message
    stream; `rovik-agentd serve` (Axum on a Unix socket/localhost) and
    `attach --stdio`; a frontend `backend` abstraction over
-   `invoke`/`listen` that routes by chat location. Test by running the
-   daemon locally and pointing a chat at it over the Unix socket.
+   `invoke`/`listen` that routes by chat location. The daemon's store
+   (§6): keys from start requests in `keys.json`, the last start's
+   settings per chat and the last `AgentConfig` without keys, and
+   restarting interrupted runs at start-up. Test by running the daemon
+   locally and pointing a chat at it over the Unix socket, and by killing
+   it in the middle of a run.
 3. **Chat bundle export/import** + `dialogs.location` + the mirror +
    "stop after this tool call". Testable locally (move to the local
    daemon, then back).
-4. **SSH layer:** host settings page, keychain storage, connection test,
-   deploy/upgrade, tunnel (russh, with the system-ssh option). Move API
-   keys to the keychain.
+4. **SSH layer:** host settings page (with the providers that have a key
+   on the server and "Remove keys from this server"), keychain storage,
+   connection test, deploy/upgrade, tunnel (russh, with the system-ssh
+   option). Move the desktop's API keys to the keychain.
 5. **Project transport (P1):** snapshot commit + libgit2 push to the
    server's bare repository; worktree per chat; result ref fetched and
    landed locally; "sync now" before user messages; shadow repository
@@ -756,10 +909,13 @@ Things that will bite, in rough order of how early:
    they own the chat. Make the flip the last step, idempotent, and
    record the move in the bundle (a `move_id`) so the daemon rejects a
    second import and the client can ask "who owns this?" on start.
-5. **Daemon restarts lose keys and approvals.** A reboot, an upgrade or
-   an OOM kill drops in-memory keys and pending approvals; runs resume
-   only when a client connects. The status "waiting for a client" and a
-   `Resume` on reconnect cover it, but the user must see it.
+5. **Daemon restarts lose pending approvals and cut tool calls.** Keys
+   and run settings are on disk (§6), so after a reboot, an upgrade or an
+   OOM kill the daemon restarts its runs by itself. What it can't bring
+   back: approvals and questions that were pending (asked again after
+   `Resume`), and a tool call cut in the middle, which `Resume` asks the
+   user to confirm before running it again. Such a run waits for the
+   user, and the chat list must show it (§5).
 6. **Version skew.** The desktop updates on its own schedule; the
    daemon updates when the desktop deploys it. The handshake carries a
    protocol version, the daemon drains (finishes current tool calls)
@@ -784,9 +940,12 @@ Things that will bite, in rough order of how early:
     npm/crates registries: a locked-down VPS fails in the middle of a
     run, not at the connection test, unless the test checks the
     provider host (§7).
-12. **Trust.** Moving a chat sends the provider API keys to a machine
-    the user administers; the settings page should say so plainly, and
-    "keep API keys on server" stays off by default.
+12. **Trust.** Moving a chat stores the provider API keys on a machine
+    the user administers, readable by anything that runs as the SSH user,
+    the agent's own commands included (§6). The move dialog and the host
+    settings say so plainly, removing them is one click, and only the
+    keys a cloud run may use (its model, the reviewer and subagent
+    models) are ever sent.
 13. **Head-of-line blocking on one tunnel.** The first push of a big
     history shares the SSH connection with the event stream only if
     both go through one SSH session; open a second session (or a second
@@ -797,8 +956,11 @@ Open questions for you:
 - Single-user servers only (one daemon per SSH user), or a shared server
   for a team? Multi-user changes auth, data separation and sandboxing.
 - Should the server run the agent's commands inside a container (Docker
-  or podman) per project for isolation and reproducible toolchains?
-  Recommended if the server is shared or long-lived.
+  or podman) per project, or at least as a separate Unix user, for
+  isolation and reproducible toolchains? Recommended if the server is
+  shared or long-lived. Either would also put the stored API keys (§6)
+  out of the commands' reach; a separate user needs root once, at
+  setup.
 - Non-git projects: the shadow repository (§3.2) makes them work without
   the user noticing; is it acceptable that a cloud chat on a non-git
   project costs a private git repository's worth of disk in app data?
