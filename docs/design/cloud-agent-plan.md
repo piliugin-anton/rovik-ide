@@ -21,8 +21,18 @@ same facts.
 | How the desktop reaches the daemon | **T3**: an Axum daemon bound to localhost (or a Unix socket) on the server, reached through an SSH tunnel; `attach --stdio` for hosts without port forwarding | §4 |
 | How a chat moves | **M1**: ownership moves at a turn boundary; the local rows stay as a mirror | §5 |
 | Provider API keys on the server | **Stored on the server** in a 0600 file, and refreshed from the desktop every time a cloud run starts | §6 |
+| Where a remote chat's calls are routed | **In the Rust command layer**: the commands the frontend already calls forward a remote chat's calls to its host, and its events come back as the same `agent-event`. The webview's CSP allows connections only to IPC | §2.3 |
+| How git objects travel | **Packs through the tunnel**: the client builds them with libgit2 and posts them to the daemon over HTTP. One SSH library on the client (russh) | §3.2 |
+| Where snapshot commits are made | **A shadow repository for every project**, borrowing a git project's objects through alternates. Nothing is written to the project's `.git` | §3.2 |
+| Which servers | **Shared team servers, each person with their own SSH account and their own daemon.** A single-user server is the same case with one account | §10, open questions |
 
-The last one departs from the earlier recommendation (keys in the
+The last four were decided on 2026-10-14, after the plan was checked
+against the code. [`cloud-agent-dev-plan.md`](cloud-agent-dev-plan.md)
+is the development plan. It says how each decision is built, and its
+section 12 lists where it changes the sections below. Each of those
+places has a "Changed" note.
+
+The fifth row departs from the earlier recommendation (keys in the
 daemon's memory only). What follows from it: the daemon brings its runs
 back after a restart by itself instead of waiting for a client, the keys
 rest on the server's disk between runs, and the host settings say so
@@ -265,6 +275,12 @@ Tauri backend or a remote connection by the chat's `location` (§5) and
 feeds remote events into the same `agent-event` handler, so the stores
 and panels don't know where a chat runs.
 
+> **Changed (2026-10-14).** There is no frontend `backend` module.
+> Routing happens in the Rust command layer, because the webview's CSP
+> allows connections only to IPC (development plan, D4 and §6.1). And
+> `send_chat_message` is used only for chat titles, so no streaming call
+> goes remote.
+
 Two things this costs, worth knowing up front:
 
 - the chat list and search (`chat_list_dialogs`, `chat_search`, FTS) are
@@ -319,6 +335,12 @@ existing fallback, "work in the project directly", is fine on a server
   worktree for build output; a chat's `.gitignore`d by-products stay in
   the worktree (that's what tiers.rs skips at landing anyway).
 
+> **Changed (2026-10-14).** The worktrees and the agent's temporary files
+> live in `~/.local/share/rovik/`. Only the daemon's own files (keys,
+> state, database, bare repositories) stay in `~/.rovik/`. Otherwise the
+> rule that commands naming `~/.rovik` need approval (§6) would ask about
+> almost every command a chat runs. See the development plan, D8.
+
 ### 3.2 Option P1: git carries the project both ways — decided
 
 The desktop already links libgit2 with its SSH transport (`git2` with
@@ -362,6 +384,13 @@ travel, in both directions.
   objects in the shadow or bare repository (ignore rules keep build
   output and dependencies out); files the user edits locally after the
   move aren't seen until the next sync.
+
+> **Changed (2026-10-14).** The packs travel through the daemon's tunnel
+> as HTTP requests, so the client has one SSH stack and the server needs
+> no `git-receive-pack`. Every project gets a shadow repository in app
+> data, including git projects, which lend it their objects through
+> alternates, so nothing is written to the project's `.git`. See the
+> development plan, D6, D7 and §6.4–6.7.
 
 ### Option P2: Continuous two-way file sync (rsync-like / Mutagen-style) — not chosen
 
@@ -467,6 +496,16 @@ to `127.0.0.1:<port>` or a Unix socket. The client opens an SSH
 connection and forwards a local port to it (`direct-tcpip` channel,
 like `ssh -L`), then speaks HTTP + WebSocket to it.
 
+> **Changed (2026-10-14).** The daemon listens only on a Unix socket,
+> `~/.rovik/agentd.sock` (0600). It has no TCP port, so on a team server
+> other users can't reach it and no two daemons clash over a port. The
+> client opens a `direct-streamlocal@openssh.com` channel to it, or runs
+> `attach --stdio`, a plain byte bridge to the socket. Only the token's
+> hash is kept on the server, so the agent's own commands can't simply
+> connect and approve their own requests. A command set on tampering
+> with the daemon's files still could, which the development plan's D5,
+> D8 and H05 address.
+
 Pros:
 - Daemon outlives connections (runs continue while the laptop is
   closed); reconnect = new tunnel + resume events from a sequence number.
@@ -555,6 +594,12 @@ and SSL" means in each case:
    remote backend is asked only for what needs the owner (start, stop,
    approvals, questions, landing, CLM) and for a `since seq` catch-up on
    connect.
+
+   > **Changed (2026-10-14).** The mirror follows the owner's stored
+   > rows by a revision counter (`rev`), not replayed events.
+   > `MessagePatched` has no `seq`, the text streamed between checkpoints
+   > is never stored, and a ring buffer can't cover a night's sleep. See
+   > the development plan, D9 and §6.3.
 4. The server starts the chat with `StartKind::Resume` or `ContinueRun`,
    whichever applies; both already exist. This start request carries the
    chat's profile and the agent settings with their keys, which is when
@@ -746,6 +791,8 @@ sleeps.
 - Two SSH stacks on the client (russh for the tunnel and exec, libssh2
   for git) is the price of using git as transport; both verify the host
   against the one pinned key from the settings.
+  **Changed (2026-10-14):** there is one stack. The git packs go through
+  the tunnel (development plan, D6).
 
 ---
 
@@ -757,6 +804,9 @@ Fields: name, host/IP, SSH port (22), SSH user, auth (key file / ssh-agent
 / password), agent port (a localhost port on the server, reached through
 the tunnel; the later public mode reuses it), setup script. An optional
 domain (for ACME) appears only with the later public mode.
+**Changed (2026-10-14):** there is no agent port, because the daemon
+uses a Unix socket. A host also has an approval policy for unattended
+runs (development plan, §6.9 and U01).
 
 No "keep API keys on server" toggle: cloud chats always store their keys
 there (§6). The page says so plainly, lists the providers that have a
@@ -849,6 +899,11 @@ LSP downloader stay out of the server crate.
 ---
 
 ## 9. Suggested phases
+
+> **Changed (2026-10-14).** The development plan builds the project
+> transport (phase 5) and the move (phase 3) before SSH (phase 4). Packs
+> through the tunnel make the whole flow testable against a daemon on the
+> same machine, over a Unix socket. See its §7 and §8.
 
 1. **Core extraction (no user-visible change).** `Core` + `EventSink`
    instead of `AppHandle<R>`, the commands as thin wrappers, the e2e
@@ -951,7 +1006,15 @@ Things that will bite, in rough order of how early:
     both go through one SSH session; open a second session (or a second
     channel) for git, so the UI stays live.
 
-Open questions for you:
+Open questions for you (answered on 2026-10-14):
+
+- Servers: **shared team servers, each person with their own SSH
+  account and their own daemon** (a Unix socket, not a port). Containers
+  or a separate Unix user for the agent's commands come later. The
+  non-git projects' shadow repository is accepted. Undo in v1 is the
+  undo of a landing. See the development plan, D10 and §11.
+
+The questions as they were asked:
 
 - Single-user servers only (one daemon per SSH user), or a shared server
   for a team? Multi-user changes auth, data separation and sandboxing.
