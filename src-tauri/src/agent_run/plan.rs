@@ -47,7 +47,7 @@ A question (why something happens, how the code works, what an error means) gets
         - Add `fn list_users(db: &Db) -> Result<Vec<User>>` to the new file, paging by `Config::page_size`; register the route in `mod.rs`.
    - "## Decisions": the user's answers and what you decided yourself, with why;
    - "## Validation": the commands to run (build, typecheck, tests, lint), the tests to add or update, what to try by hand;
-   - "## Risks": open points, if any.
+   - "## Risks": open points, if any. Nothing else: no "## Findings" (the reviewer writes those).
    submit_plan checks the plan and says what to fix: fix it and submit again. The plan goes in submit_plan, never in your reply; after submitting, reply in a few sentences.
 4. When a plan exists (shown below), the user's message is about it: revise the plan with the new information, keeping what still holds, and submit it complete; don't replace it with a summary of what they said. A question about it is answered without submitting."###;
 
@@ -815,6 +815,38 @@ pub fn section(markdown: &str, name: &str) -> Option<String> {
         at = line_end;
     }
     None
+}
+
+/// A findings heading an agent may put in its plan (`## Findings`,
+/// `## Review findings`), or the IDE's `## Open review findings` from an
+/// earlier save: findings are the reviewer's, never the plan's.
+static FINDINGS_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^##\s+(?:open\s+)?(?:review\s+)?findings\s*:?\s*$").unwrap()
+});
+
+/// The plan without its findings sections (an agent revising a reviewed
+/// plan sometimes ends it with "## Findings" and "None.", or keeps the
+/// open findings the IDE appended), and whether any was taken out.
+pub fn without_findings(markdown: &str) -> (String, bool) {
+    let crlf = markdown.contains("\r\n");
+    let text = markdown.replace("\r\n", "\n");
+    let mut out = String::with_capacity(text.len());
+    let mut skipping = false;
+    let mut dropped = false;
+    for (_, line, fenced) in lines_with_fences(&text) {
+        if !fenced && NEXT_HEADING.is_match(line) {
+            skipping = FINDINGS_HEADING.is_match(line.trim_end());
+            dropped |= skipping;
+        }
+        if !skipping {
+            out.push_str(line);
+        }
+    }
+    if !dropped {
+        return (markdown.to_string(), false);
+    }
+    let out = out.trim_end().to_string() + "\n";
+    (if crlf { out.replace('\n', "\r\n") } else { out }, true)
 }
 
 /// Where a relative path's `..` parts take it, as written (no links
@@ -1948,6 +1980,32 @@ mod tests {
             ["src/api/users.rs", "src/api/mod.rs"]
         );
         assert!(steps("# No steps\n\nJust text.").is_empty());
+    }
+
+    /// A "## Findings" section in a submitted plan (with "None." or with
+    /// findings), or the IDE's "## Open review findings" from an earlier
+    /// save, is left out before the plan is checked, reviewed and saved;
+    /// one inside a code block is code.
+    #[test]
+    fn findings_sections_are_left_out_of_a_plan() {
+        let plan = format!("{GOOD_PLAN}\n\n## Findings\n\nNone.\n");
+        let (stripped, dropped) = without_findings(&plan);
+        assert!(dropped);
+        assert_eq!(stripped, format!("{GOOD_PLAN}\n"));
+        assert!(plan_problems(&stripped).is_empty());
+        let with_content = format!(
+            "{GOOD_PLAN}\n\n## Review findings\n\n1. [high] Step 2 — x\n - Scenario: s\n\n## Risks\n\n- none\n\n## Open review findings\n\n- **[high] Step 1 — y**: z\n"
+        );
+        let (stripped, dropped) = without_findings(&with_content);
+        assert!(dropped);
+        assert_eq!(stripped, format!("{GOOD_PLAN}\n\n## Risks\n\n- none\n"));
+        // CRLF stays CRLF; nothing to drop leaves the plan as it is.
+        let crlf = plan.replace('\n', "\r\n");
+        let (stripped, _) = without_findings(&crlf);
+        assert_eq!(stripped, format!("{GOOD_PLAN}\n").replace('\n', "\r\n"));
+        assert_eq!(without_findings(GOOD_PLAN), (GOOD_PLAN.to_string(), false));
+        let fenced = format!("{GOOD_PLAN}\n\n```\n## Findings\nNone.\n```\n");
+        assert_eq!(without_findings(&fenced), (fenced.clone(), false));
     }
 
     /// Steps written as `### Step N:` or `### N.` headings, or as bold

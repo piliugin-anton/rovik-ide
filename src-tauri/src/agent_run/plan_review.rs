@@ -52,7 +52,7 @@ Wording, formatting and naming are not findings, and neither is a different desi
 
 ## Report
 
-Reply with exactly this, most severe first, and nothing before it:
+Reply with exactly this, most severe first, and nothing before or after it (don't repeat the plan):
 
 ## Findings
 

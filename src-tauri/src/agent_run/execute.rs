@@ -1607,7 +1607,12 @@ impl<R: Runtime> Run<R> {
         tc: &ToolCall,
         args: &Map<String, Value>,
     ) -> Result<(), String> {
-        let plan_text = args.get("plan").and_then(|p| p.as_str()).unwrap_or("");
+        // Findings are the reviewer's: a "## Findings" section the agent
+        // wrote (or the IDE's open findings from an earlier save) is left
+        // out before the plan is checked, reviewed and saved.
+        let (plan_text, findings_dropped) =
+            plan::without_findings(args.get("plan").and_then(|p| p.as_str()).unwrap_or(""));
+        let plan_text = plan_text.as_str();
         // B07: against the project too, as this chat sees it.
         let problems =
             plan::plan_problems_in(plan_text, self.root.as_deref().map(std::path::Path::new));
@@ -1672,6 +1677,11 @@ impl<R: Runtime> Run<R> {
                 if let Some(note) = note {
                     content.push(' ');
                     content.push_str(&note);
+                }
+                if findings_dropped {
+                    content.push_str(
+                        " Its findings section was left out: findings are the reviewer's, and open ones are added to the saved plan by the IDE.",
+                    );
                 }
                 // Open tabs of the plan show the new version.
                 if let Ok(text) = std::fs::read_to_string(&path) {
