@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 
 /// Time for finding the declarations a search's lines are in.
 const SEARCH_OUTLINE_TIME: std::time::Duration = std::time::Duration::from_millis(1_500);
-use tauri::{AppHandle, Manager, Runtime};
+use crate::core::Core;
 
 fn file_tool_schemas() -> Vec<Value> {
     vec![
@@ -587,8 +587,8 @@ pub struct CallContext {
 /// Runs one tool call. Never fails: problems come back as an "Error: ..."
 /// result the model can read and act on.
 /// Stop kills a command that is running.
-pub async fn execute<R: Runtime>(
-    app: &AppHandle<R>,
+pub async fn execute(
+    core: &Core,
     root: Option<&str>,
     name: &str,
     args_json: &str,
@@ -608,7 +608,7 @@ pub async fn execute<R: Runtime>(
             }
         }
     };
-    match run(app, root, name, &args, stop, ctx).await {
+    match run(core, root, name, &args, stop, ctx).await {
         Ok(result) => result,
         // Some tools word their own errors ("Error: no declaration named…"):
         // don't prefix those twice.
@@ -617,8 +617,8 @@ pub async fn execute<R: Runtime>(
     }
 }
 
-async fn run<R: Runtime>(
-    app: &AppHandle<R>,
+async fn run(
+    core: &Core,
     root: Option<&str>,
     name: &str,
     args: &Map<String, Value>,
@@ -652,9 +652,8 @@ async fn run<R: Runtime>(
             let Some(query) = text(args, "query").filter(|q| !q.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"query\" is required."));
             };
-            let browser: tauri::State<'_, crate::browser_tools::BrowserState> = app.state();
             let hits = crate::browser_tools::web_search_inner(
-                &browser,
+                &core.browser,
                 query.into(),
                 uint(args, "max_results"),
                 Some(&**stop),
@@ -681,9 +680,8 @@ async fn run<R: Runtime>(
             let Some(url) = text(args, "url").filter(|u| !u.is_empty()) else {
                 return Ok(ToolResult::text("Error: \"url\" is required."));
             };
-            let browser: tauri::State<'_, crate::browser_tools::BrowserState> = app.state();
             let page = crate::browser_tools::browse_url_inner(
-                &browser,
+                &core.browser,
                 url.into(),
                 uint(args, "max_chars"),
                 Some(&**stop),
@@ -721,11 +719,9 @@ async fn run<R: Runtime>(
             return Ok(ToolResult::text(parts.join("\n")));
         }
         "browser_screenshot" => {
-            let browser: tauri::State<'_, crate::browser_tools::BrowserState> = app.state();
-            let db: tauri::State<'_, crate::chat_db::DbState> = app.state();
             let shot = crate::browser_tools::browser_screenshot_inner(
-                &browser,
-                &db,
+                &core.browser,
+                &core.db,
                 text(args, "url").map(str::to_string),
                 Some(&**stop),
             )

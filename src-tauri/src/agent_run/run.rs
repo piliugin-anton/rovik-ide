@@ -8,14 +8,14 @@
 //! written in a reply instead of submitted (Plan mode), unfinished checklist
 //! steps, and the verification gate (verify.rs).
 
-use super::events::{emit, AgentEvent, OutMessage, Patch, Status};
+use super::events::{AgentEvent, OutMessage, Patch, Status};
 use super::guard::Guard;
 use super::permissions::ChecklistMode;
 use super::project::{self, ProjectCheck};
 use super::subagent_run::SubCtx;
 use super::{
-    failure, log, plan, repair, repetition, subagent, tools, AgentState, Controls, EffortPick,
-    ModelProfile, StartKind, StartRequest, StopSignal,
+    failure, log, plan, repair, repetition, subagent, tools, Controls, EffortPick, ModelProfile,
+    StartKind, StartRequest, StopSignal,
 };
 use crate::agent::{
     ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS,
@@ -23,10 +23,10 @@ use crate::agent::{
 use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage, ToolCall};
 use crate::chat_db::DbState;
 use crate::chat_request::{ChatError, ErrorKind};
+use crate::core::Core;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::watch;
 
 /// Wait this long without any output before saying so.
@@ -107,10 +107,9 @@ pub(super) const CLM_RESTRICT_LIFT_BELOW: u32 = 75;
 /// Restricted turns with no edit before the safety valve lifts it.
 pub(super) const CLM_MAX_RESTRICTED_STALL: u32 = 2;
 
-pub struct Run<R: Runtime> {
-    pub(super) app: AppHandle<R>,
-    pub(super) state: AgentState,
-    pub(super) db: DbState,
+pub struct Run {
+    /// The host: the chat database, the other runs, where events go.
+    pub(super) core: Core,
     pub(super) dialog_id: String,
     pub(super) profile: ModelProfile,
     pub(super) options: Option<OpenAIChatOptions>,
@@ -356,19 +355,17 @@ pub(super) fn reasoning_meta(reasoning: Option<Value>) -> Option<Value> {
     reasoning.map(|r| json!({ "reasoning": r }))
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// Everything a run needs before its first step; None when there's
     /// nothing to do.
     pub(super) async fn prepare(
-        app: &AppHandle<R>,
-        state: &AgentState,
-        db: &DbState,
+        core: &Core,
         request: StartRequest,
         controls: Controls,
-    ) -> Result<Option<(Run<R>, Entry)>, String> {
+    ) -> Result<Option<(Run, Entry)>, String> {
         let dialog_id = request.dialog_id.clone();
-        let mut recent = recent_messages(db, &dialog_id).await?;
-        let config = state.config();
+        let mut recent = recent_messages(&core.db, &dialog_id).await?;
+        let config = core.agents.config();
         let mode = run_mode_for(&recent)
             .or(request.mode.clone())
             .unwrap_or_else(|| "agent".into());
@@ -384,20 +381,17 @@ impl<R: Runtime> Run<R> {
             .unwrap_or_else(crate::overlay::chats::enabled);
         let root = match &project_root {
             Some(r) if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) => {
-                let app_ = app.clone();
+                let core_ = core.clone();
                 let on_warn = Box::new(move |used: u64, limit: u64| {
-                    emit(
-                        &app_,
-                        AgentEvent::Notice {
-                            kind: "warning".into(),
-                            title: "This chat's changes are near their limit".into(),
-                            message: format!(
-                                "{} MB of {} MB. Past the limit, its writes fail until its changes land or are discarded.",
-                                used >> 20,
-                                limit >> 20
-                            ),
-                        },
-                    )
+                    core_.emit(AgentEvent::Notice {
+                        kind: "warning".into(),
+                        title: "This chat's changes are near their limit".into(),
+                        message: format!(
+                            "{} MB of {} MB. Past the limit, its writes fail until its changes land or are discarded.",
+                            used >> 20,
+                            limit >> 20
+                        ),
+                    })
                 });
                 match crate::overlay::chats::open(&dialog_id, std::path::Path::new(r), on_warn) {
                     Ok(o) => Some(o.view.to_string_lossy().into_owned()),
@@ -412,22 +406,19 @@ impl<R: Runtime> Run<R> {
         if let Some(problem) =
             isolation_problem.filter(|_| crate::overlay::chats::tell_not_isolated(&dialog_id))
         {
-            emit(
-                app,
-                AgentEvent::Notice {
-                    kind: "warning".into(),
-                    title: "This chat isn't isolated".into(),
-                    message: if problem.contains("couldn't mount") {
-                        format!(
-                            "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
-                        )
-                    } else {
-                        format!(
-                            "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files."
-                        )
-                    },
+            core.emit(AgentEvent::Notice {
+                kind: "warning".into(),
+                title: "This chat isn't isolated".into(),
+                message: if problem.contains("couldn't mount") {
+                    format!(
+                        "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files. Installing the virtual-files driver (Settings → Virtual files) lets chats work in isolation."
+                    )
+                } else {
+                    format!(
+                        "{problem}. It works in the project folder directly, and only one such chat at a time can run commands that change files."
+                    )
                 },
-            );
+            });
         }
         let is_send = matches!(request.start, StartKind::Send { .. });
         let is_continue_run = matches!(request.start, StartKind::ContinueRun);
@@ -512,9 +503,8 @@ impl<R: Runtime> Run<R> {
         // with no user message created so nothing gets lost. Both also
         // emit the live Checklist event, so the panel is correct from the
         // run's first turn.
-        async fn append_carry_note<R: Runtime>(
-            app: &AppHandle<R>,
-            db: &DbState,
+        async fn append_carry_note(
+            core: &Core,
             dialog_id: &str,
             recent: &mut Vec<MessageRow>,
             content: String,
@@ -525,18 +515,16 @@ impl<R: Runtime> Run<R> {
             m.meta = Some(meta);
             let stored = vec![m.clone()];
             let id = dialog_id.to_string();
-            if let Ok(seqs) = db
+            if let Ok(seqs) = core
+                .db
                 .write(move |c| store::append_messages(c, &id, &stored))
                 .await
             {
                 let seq = seqs.into_iter().next().unwrap_or(0);
-                emit(
-                    app,
-                    AgentEvent::MessagesAdded {
-                        dialog_id: dialog_id.to_string(),
-                        messages: vec![OutMessage::from_new(dialog_id, seq, &m, false)],
-                    },
-                );
+                core.emit(AgentEvent::MessagesAdded {
+                    dialog_id: dialog_id.to_string(),
+                    messages: vec![OutMessage::from_new(dialog_id, seq, &m, false)],
+                });
                 let seq_row = recent.last().map(|r| r.seq + 1).unwrap_or(0);
                 let meta = m.meta.clone();
                 let (mid, mcontent, mtool_calls, mtool_call_id, mcreated) =
@@ -560,13 +548,10 @@ impl<R: Runtime> Run<R> {
                 });
             }
             if let Some(items) = items {
-                emit(
-                    app,
-                    AgentEvent::Checklist {
-                        dialog_id: dialog_id.to_string(),
-                        items,
-                    },
-                );
+                core.emit(AgentEvent::Checklist {
+                    dialog_id: dialog_id.to_string(),
+                    items,
+                });
             }
         }
 
@@ -576,8 +561,7 @@ impl<R: Runtime> Run<R> {
             if let Some(carried) = plan::current_checklist(&recent) {
                 if carried.carried && !plan::open_steps(&carried.items).is_empty() {
                     append_carry_note(
-                        app,
-                        db,
+                        core,
                         &dialog_id,
                         &mut recent,
                         plan::carry_note(&carried.items),
@@ -592,8 +576,7 @@ impl<R: Runtime> Run<R> {
             if let Some(current) = plan::current_checklist(&recent) {
                 if !plan::open_steps(&current.items).is_empty() {
                     append_carry_note(
-                        app,
-                        db,
+                        core,
                         &dialog_id,
                         &mut recent,
                         plan::continue_note(&current.items),
@@ -614,8 +597,7 @@ impl<R: Runtime> Run<R> {
             {
                 let shown = plan::relative_plan_path(&file, project_root.as_deref());
                 append_carry_note(
-                    app,
-                    db,
+                    core,
                     &dialog_id,
                     &mut recent,
                     plan::plan_check_note(&shown, &problems),
@@ -630,10 +612,13 @@ impl<R: Runtime> Run<R> {
             Some(r) => {
                 // Settings are kept by the project's folder, not the view's.
                 let settings_root = project_root.clone().unwrap_or_else(|| r.clone());
-                let (app, r, verify) = (app.clone(), r.clone(), config.permissions.verify_changes);
-                crate::rt::spawn_blocking(move || project::load(&app, &r, &settings_root, verify))
-                    .await
-                    .unwrap_or_default()
+                let config_dir = core.paths.config_dir.clone();
+                let (r, verify) = (r.clone(), config.permissions.verify_changes);
+                crate::rt::spawn_blocking(move || {
+                    project::load(&config_dir, &r, &settings_root, verify)
+                })
+                .await
+                .unwrap_or_default()
             }
             None => Default::default(),
         };
@@ -728,9 +713,7 @@ impl<R: Runtime> Run<R> {
             settle_message,
             continue_reply,
             ..Run::blank(
-                app.clone(),
-                state.clone(),
-                db.clone(),
+                core.clone(),
                 crate::file_guard::Seen::new(dialog_id.clone()),
                 dialog_id,
                 request.profile,
@@ -746,20 +729,16 @@ impl<R: Runtime> Run<R> {
     /// no plan, no checks. `prepare` and `prepare_child` fill in the rest.
     #[allow(clippy::too_many_arguments)]
     fn blank(
-        app: AppHandle<R>,
-        state: AgentState,
-        db: DbState,
+        core: Core,
         seen: Arc<crate::file_guard::Seen>,
         dialog_id: String,
         profile: ModelProfile,
         options: Option<OpenAIChatOptions>,
         controls: Controls,
         role: Role,
-    ) -> Run<R> {
+    ) -> Run {
         Run {
-            app,
-            state,
-            db,
+            core,
             seen,
             dialog_id,
             profile,
@@ -863,11 +842,11 @@ impl<R: Runtime> Run<R> {
     /// prompt, and none of the lead's end-of-run machinery: no checklist,
     /// no checks, no CLM, no plan mode, no checkpoints (K03).
     pub(super) fn prepare_child(
-        parent: &Run<R>,
+        parent: &Run,
         dialog_id: String,
         sub: SubCtx,
         controls: Controls,
-    ) -> Run<R> {
+    ) -> Run {
         let profile = sub.models[0].clone();
         let options = sub.options.clone();
         // A writing kind works for the lead: the lead's record of what it
@@ -886,9 +865,7 @@ impl<R: Runtime> Run<R> {
             repo_map: parent.repo_map.clone(),
             repo_map_chars: parent.repo_map_chars,
             ..Run::blank(
-                parent.app.clone(),
-                parent.state.clone(),
-                parent.db.clone(),
+                parent.core.clone(),
                 seen,
                 dialog_id,
                 profile,
@@ -935,7 +912,7 @@ impl<R: Runtime> Run<R> {
         if self.sub().is_some() || self.root.is_none() || self.profile.no_tools {
             return Vec::new();
         }
-        let mut kinds = self.state.config().subagents.lead_kinds();
+        let mut kinds = self.core.agents.config().subagents.lead_kinds();
         if self.plan_mode {
             kinds.retain(|k| !k.writes());
         }
@@ -951,7 +928,7 @@ impl<R: Runtime> Run<R> {
     /// Parallel groups can run (F): the setting is on, step workers are
     /// on, and the chat is isolated (child overlays need its view).
     pub(super) fn parallel_on(&self) -> bool {
-        let config = self.state.config().subagents;
+        let config = self.core.agents.config().subagents;
         self.sub().is_none()
             && config.parallel_workers
             && config.kind(subagent::Kind::Worker).is_some()
@@ -975,21 +952,18 @@ impl<R: Runtime> Run<R> {
             Ok(outcome) => outcome,
             Err(e) => {
                 eprintln!("agent: run in {} failed: {e}", self.dialog_id);
-                emit(
-                    &self.app,
-                    AgentEvent::Notice {
-                        kind: "error".into(),
-                        title: "The agent stopped".into(),
-                        message: format!("Something went wrong: {e}"),
-                    },
-                );
+                self.core.emit(AgentEvent::Notice {
+                    kind: "error".into(),
+                    title: "The agent stopped".into(),
+                    message: format!("Something went wrong: {e}"),
+                });
                 "error".to_string()
             }
         };
         // P1.8: a lead's run that leaves no checks waiting leaves no state
         // for them either (an older run's is stale now).
         if self.sub().is_none() && outcome != "verify-needs-approval" {
-            self.state.drop_carry(&self.dialog_id);
+            self.core.agents.drop_carry(&self.dialog_id);
         }
         // An isolated chat's changes land now, or say why they don't.
         self.land_at_end(&outcome).await;
@@ -1009,7 +983,7 @@ impl<R: Runtime> Run<R> {
         if let Some(open) = self.open_steps_at_end {
             entry["openSteps"] = json!(open);
         }
-        log::write(&self.app, entry);
+        log::write(&self.core, entry);
         outcome
     }
 
@@ -1078,15 +1052,12 @@ impl<R: Runtime> Run<R> {
                 .await?;
                 self.settle(true).await;
                 if self.repetition_stops >= 2 || self.stopped() {
-                    emit(
-                        &self.app,
-                        AgentEvent::Notice {
-                            kind: "warning".into(),
-                            title: "The model kept repeating itself".into(),
-                            message: "Its reply was stopped twice, so the run ended. Try again, or a different model."
-                                .into(),
-                        },
-                    );
+                    self.core.emit(AgentEvent::Notice {
+                        kind: "warning".into(),
+                        title: "The model kept repeating itself".into(),
+                        message: "Its reply was stopped twice, so the run ended. Try again, or a different model."
+                            .into(),
+                    });
                     return Ok("repetition".into());
                 }
                 let next = if self.plan_mode {
@@ -1317,9 +1288,9 @@ impl<R: Runtime> Run<R> {
 
         // An effort picked since the last request applies from this one.
         self.take_effort();
-        let config = self.state.config();
+        let config = self.core.agents.config();
         let clm = self.context_mode == crate::clm::MODE_CLM
-            && crate::clm::availability(&self.app.state::<crate::vfs::VfsState>()).is_ok();
+            && crate::clm::availability(&self.core.vfs).is_ok();
         // Phase E: ignored compaction pressure restricts this turn to
         // context tools (90%+ at once, step/75% after 4 calls with no edit).
         self.update_clm_pressure(clm).await;
@@ -1474,12 +1445,18 @@ impl<R: Runtime> Run<R> {
             // stopped answering (and none of the reply has arrived), ask again.
             let mut wants_again = false;
             let mut ask_again = false;
-            let vfs = self.app.state::<crate::vfs::VfsState>();
+            let vfs = &self.core.vfs;
             let result = {
                 // ROVIK_API_LOG writes who each request is for (S09).
                 let request = crate::api_log::TAGS.scope(
                     self.log_tags(),
-                    crate::agent::run_chat(&self.db, &vfs, params, &mut cancel_rx, &mut on_event),
+                    crate::agent::run_chat(
+                        &self.core.db,
+                        &vfs,
+                        params,
+                        &mut cancel_rx,
+                        &mut on_event,
+                    ),
                 );
                 tokio::pin!(request);
                 let mut stop_rx = self.stop.subscribe();
@@ -1577,7 +1554,7 @@ impl<R: Runtime> Run<R> {
                     "ms": started.elapsed().as_millis() as u64,
                 });
                 self.note_sub_fields(&mut entry);
-                log::write(&self.app, entry);
+                log::write(&self.core, entry);
                 // Whatever the dropped attempt showed (its reasoning) goes.
                 if shown {
                     self.patch_ui(
@@ -1595,7 +1572,8 @@ impl<R: Runtime> Run<R> {
                         tool_calls: Some(Vec::new()),
                         ..Default::default()
                     };
-                    self.db
+                    self.core
+                        .db
                         .write_detached(move |c| store::update_message(c, &id, &patch));
                 }
                 opening_status = Some(Status::text(format!(
@@ -1647,7 +1625,7 @@ impl<R: Runtime> Run<R> {
                 entry["error"] = json!(error.kind);
             }
             self.note_sub_fields(&mut entry);
-            log::write(&self.app, entry);
+            log::write(&self.core, entry);
             return Ok(output);
         }
     }
@@ -1822,6 +1800,7 @@ impl<R: Runtime> Run<R> {
         self.clm_turns += 1;
         let dialog_id = self.dialog_id.clone();
         let state = self
+            .core
             .db
             .read(move |conn| crate::clm::store::load_state(conn, &dialog_id))
             .await
@@ -1884,7 +1863,7 @@ impl<R: Runtime> Run<R> {
             self.restricted_stall = 0;
             self.clm_non_compliant = true;
             log::write(
-                &self.app,
+                &self.core,
                 json!({
                     "event": "clmNonCompliant",
                     "dialogId": self.dialog_id,
@@ -1936,7 +1915,7 @@ impl<R: Runtime> Run<R> {
             self.restricted_turns += 1;
             self.restricted_stall += 1;
             log::write(
-                &self.app,
+                &self.core,
                 json!({
                     "event": "clmRestricted",
                     "dialogId": self.dialog_id,
@@ -1960,13 +1939,14 @@ impl<R: Runtime> Run<R> {
         }
         let dialog_id = self.dialog_id.clone();
         let revisions = self
+            .core
             .db
             .read(move |conn| crate::clm::store::revisions(conn, &dialog_id))
             .await
             .unwrap_or_default();
         let edit_revisions = revisions.iter().filter(|r| r.kind != "context").count();
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "clm",
                 "dialogId": self.dialog_id,
@@ -2051,7 +2031,7 @@ impl<R: Runtime> Run<R> {
         self.repo_map = new_map;
         self.map_refreshes += 1;
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "repoMapRefresh",
                 "dialogId": self.dialog_id,
@@ -2069,7 +2049,7 @@ impl<R: Runtime> Run<R> {
      */
 
     pub(super) async fn recent(&self) -> Result<Vec<MessageRow>, String> {
-        recent_messages(&self.db, &self.dialog_id).await
+        recent_messages(&self.core.db, &self.dialog_id).await
     }
 
     /// Stores messages at the end of the chat and shows them.
@@ -2085,6 +2065,7 @@ impl<R: Runtime> Run<R> {
         let id = self.dialog_id.clone();
         let stored = messages.clone();
         let seqs = self
+            .core
             .db
             .write(move |c| store::append_messages(c, &id, &stored))
             .await?;
@@ -2093,13 +2074,10 @@ impl<R: Runtime> Run<R> {
             .zip(seqs)
             .map(|(m, seq)| OutMessage::from_new(&self.dialog_id, seq, m, pending))
             .collect();
-        emit(
-            &self.app,
-            AgentEvent::MessagesAdded {
-                dialog_id: self.dialog_id.clone(),
-                messages: out,
-            },
-        );
+        self.core.emit(AgentEvent::MessagesAdded {
+            dialog_id: self.dialog_id.clone(),
+            messages: out,
+        });
         Ok(())
     }
 
@@ -2107,7 +2085,7 @@ impl<R: Runtime> Run<R> {
     /// user's, never taken for their request).
     pub(super) async fn add_harness(&self, content: String, kind: &str) -> Result<(), String> {
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "harness",
                 "dialogId": self.dialog_id,
@@ -2158,7 +2136,8 @@ impl<R: Runtime> Run<R> {
             failed: None,
             finalize: true,
         };
-        self.db
+        self.core
+            .db
             .write(move |c| store::update_message(c, &id, &patch))
             .await?;
         self.patch_ui(
@@ -2222,7 +2201,8 @@ impl<R: Runtime> Run<R> {
             meta: Some(meta.clone()),
             ..Default::default()
         };
-        self.db
+        self.core
+            .db
             .write(move |c| store::update_message(c, &id, &patch))
             .await?;
         self.patch_ui(
@@ -2236,14 +2216,11 @@ impl<R: Runtime> Run<R> {
     }
 
     pub(super) fn patch_ui(&self, message_id: &str, patch: Patch) {
-        emit(
-            &self.app,
-            AgentEvent::MessagePatched {
-                dialog_id: self.dialog_id.clone(),
-                message_id: message_id.to_string(),
-                patch,
-            },
-        );
+        self.core.emit(AgentEvent::MessagePatched {
+            dialog_id: self.dialog_id.clone(),
+            message_id: message_id.to_string(),
+            patch,
+        });
     }
 
     /// The first answer to a sent message: on none, the message is marked
@@ -2259,6 +2236,7 @@ impl<R: Runtime> Run<R> {
                 ..Default::default()
             };
             match self
+                .core
                 .db
                 .write(move |c| store::update_message(c, &id, &patch))
                 .await
@@ -2273,14 +2251,11 @@ impl<R: Runtime> Run<R> {
                 Err(e) => eprintln!("agent: could not mark a message failed: {e}"),
             }
         }
-        emit(
-            &self.app,
-            AgentEvent::UserMessageSettled {
-                dialog_id: self.dialog_id.clone(),
-                message_id,
-                ok,
-            },
-        );
+        self.core.emit(AgentEvent::UserMessageSettled {
+            dialog_id: self.dialog_id.clone(),
+            message_id,
+            ok,
+        });
     }
 
     /// The user's latest request in the chat, as sent (for the AI reviewer).
@@ -2312,9 +2287,8 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// A reply as it streams in: collected here, shown at most every
 /// `UI_EVERY`, stored every `CHECKPOINT_EVERY`.
-struct Stream<R: Runtime> {
-    app: AppHandle<R>,
-    db: DbState,
+struct Stream {
+    core: Core,
     dialog_id: String,
     message_id: String,
     profile_id: String,
@@ -2369,12 +2343,11 @@ struct Stream<R: Runtime> {
     last_saved: Instant,
 }
 
-impl<R: Runtime> Stream<R> {
-    fn new(run: &Run<R>, message_id: &str, cancel: Arc<watch::Sender<bool>>) -> Self {
+impl Stream {
+    fn new(run: &Run, message_id: &str, cancel: Arc<watch::Sender<bool>>) -> Self {
         let now = Instant::now();
         Stream {
-            app: run.app.clone(),
-            db: run.db.clone(),
+            core: run.core.clone(),
             dialog_id: run.dialog_id.clone(),
             message_id: message_id.to_string(),
             profile_id: run.profile.id.clone(),
@@ -2416,14 +2389,11 @@ impl<R: Runtime> Stream<R> {
     }
 
     fn patch(&self, patch: Patch) {
-        emit(
-            &self.app,
-            AgentEvent::MessagePatched {
-                dialog_id: self.dialog_id.clone(),
-                message_id: self.message_id.clone(),
-                patch,
-            },
-        );
+        self.core.emit(AgentEvent::MessagePatched {
+            dialog_id: self.dialog_id.clone(),
+            message_id: self.message_id.clone(),
+            patch,
+        });
     }
 
     fn set_status(&mut self, status: Option<Status>) {
@@ -2477,16 +2447,13 @@ impl<R: Runtime> Stream<R> {
                 self.reasoning.push_str(&content);
                 if !self.reasoning_seen {
                     self.reasoning_seen = true;
-                    emit(
-                        &self.app,
-                        AgentEvent::ReasoningLearned {
-                            profile_id: self.profile_id.clone(),
-                            accepted: Vec::new(),
-                            rejected: Vec::new(),
-                            unresolved: Vec::new(),
-                            reasons: true,
-                        },
-                    );
+                    self.core.emit(AgentEvent::ReasoningLearned {
+                        profile_id: self.profile_id.clone(),
+                        accepted: Vec::new(),
+                        rejected: Vec::new(),
+                        unresolved: Vec::new(),
+                        reasons: true,
+                    });
                 }
                 self.dirty_reasoning = true;
             }
@@ -2495,16 +2462,13 @@ impl<R: Runtime> Stream<R> {
                 rejected,
                 unresolved,
             } => {
-                emit(
-                    &self.app,
-                    AgentEvent::ReasoningLearned {
-                        profile_id: self.profile_id.clone(),
-                        accepted: accepted.clone(),
-                        rejected: rejected.clone(),
-                        unresolved: unresolved.clone(),
-                        reasons: false,
-                    },
-                );
+                self.core.emit(AgentEvent::ReasoningLearned {
+                    profile_id: self.profile_id.clone(),
+                    accepted: accepted.clone(),
+                    rejected: rejected.clone(),
+                    unresolved: unresolved.clone(),
+                    reasons: false,
+                });
                 self.learned = Some((accepted, rejected, unresolved));
             }
             ChatStreamEvent::Delta { content } => {
@@ -2534,13 +2498,10 @@ impl<R: Runtime> Stream<R> {
                 self.usage = usage;
             }
             ChatStreamEvent::ApiRoute { route } => {
-                emit(
-                    &self.app,
-                    AgentEvent::ApiRouteLearned {
-                        profile_id: self.profile_id.clone(),
-                        route,
-                    },
-                );
+                self.core.emit(AgentEvent::ApiRouteLearned {
+                    profile_id: self.profile_id.clone(),
+                    route,
+                });
             }
             ChatStreamEvent::Done => {}
             ChatStreamEvent::Retrying {
@@ -2575,13 +2536,10 @@ impl<R: Runtime> Stream<R> {
                 self.notes = notes;
             }
             ChatStreamEvent::ContextUpdated { status } => {
-                emit(
-                    &self.app,
-                    AgentEvent::ContextUpdated {
-                        dialog_id: self.dialog_id.clone(),
-                        status,
-                    },
-                );
+                self.core.emit(AgentEvent::ContextUpdated {
+                    dialog_id: self.dialog_id.clone(),
+                    status,
+                });
             }
             ChatStreamEvent::ToolCallStart { id, name } => {
                 self.mark_output();
@@ -2733,7 +2691,8 @@ impl<R: Runtime> Stream<R> {
                 tool_calls: (!self.tool_calls.is_empty()).then(|| self.tool_calls.clone()),
                 ..Default::default()
             };
-            self.db
+            self.core
+                .db
                 .write_detached(move |c| store::update_message(c, &id, &patch));
         }
     }

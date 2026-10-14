@@ -416,7 +416,6 @@ fn trim_context(lines: &mut Vec<SearchLine>, context: u64) {
 
 /// Search for the Files tab: larger result limit, include/exclude globs,
 /// whole-word matching. Runs off the main thread.
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn search_in_files(
     root: String,

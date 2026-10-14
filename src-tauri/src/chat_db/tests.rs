@@ -977,44 +977,19 @@ fn history_sends_a_user_message_as_it_was_first_sent() {
     );
 }
 
-/// An attached file reaches chat_store_attachment as the IPC's raw body, or
-/// as a JSON array where the webview blocks the custom protocol (postMessage).
-#[test]
-fn attachments_are_stored_from_either_ipc_body() {
-    use tauri::ipc::InvokeBody;
-    let dir = std::env::temp_dir().join(format!("chat-db-ipc-{}", std::process::id()));
+/// A file attached in the chat input is stored as the input sends it on:
+/// an image as a PNG fitted into 768×768, once however often it's attached,
+/// and a PDF as it is, with its pages. A damaged image and other types are
+/// refused. (How its bytes come over the IPC is the app's command's test.)
+#[tokio::test]
+async fn attachments_are_stored_as_pngs_and_pdfs() {
+    let dir = std::env::temp_dir().join(format!("chat-db-attach-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let db = super::DbState::open(&dir).unwrap();
-    let app = tauri::test::mock_builder()
-        .manage(db)
-        .invoke_handler(tauri::generate_handler![
-            super::commands::chat_store_attachment
-        ])
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
-    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-        .build()
-        .unwrap();
-    let store = |body: InvokeBody| {
-        tauri::test::get_ipc_response(
-            &webview,
-            tauri::webview::InvokeRequest {
-                cmd: "chat_store_attachment".into(),
-                callback: tauri::ipc::CallbackFn(0),
-                error: tauri::ipc::CallbackFn(1),
-                url: if cfg!(windows) {
-                    "http://tauri.localhost"
-                } else {
-                    "tauri://localhost"
-                }
-                .parse()
-                .unwrap(),
-                body,
-                headers: Default::default(),
-                invoke_key: tauri::test::INVOKE_KEY.to_string(),
-            },
-        )
-        .map(|r| r.deserialize::<serde_json::Value>().unwrap())
+    let store = |bytes: Vec<u8>| async {
+        super::attachments::store_attached(&db, bytes)
+            .await
+            .map(|stored| serde_json::to_value(stored).unwrap())
     };
 
     // A photo as a JPEG: stored as a PNG fitted into 768×768.
@@ -1027,49 +1002,38 @@ fn attachments_are_stored_from_either_ipc_body() {
     .write_to(&mut jpeg, image::ImageFormat::Jpeg)
     .unwrap();
     let jpeg = jpeg.into_inner();
-    let raw = store(InvokeBody::Raw(jpeg.clone())).unwrap();
-    let json = store(InvokeBody::Json(serde_json::json!(jpeg))).unwrap();
-    assert_eq!(raw, json, "the same image, stored once");
+    let first = store(jpeg.clone()).await.unwrap();
+    let again = store(jpeg).await.unwrap();
+    assert_eq!(first, again, "the same image, stored once");
     assert_eq!(
-        raw,
+        first,
         serde_json::json!({
-            "id": raw["id"],
+            "id": first["id"],
             "mime": "image/png",
             "pages": null,
             "width": 768,
             "height": 576,
         })
     );
-    let file = super::attachments::file_for(&dir, raw["id"].as_str().unwrap()).unwrap();
+    let file = super::attachments::file_for(&dir, first["id"].as_str().unwrap()).unwrap();
     assert_eq!(file.extension().unwrap(), "png");
     let stored = image::open(file).unwrap();
     assert_eq!((stored.width(), stored.height()), (768, 576));
 
-    let damaged = store(InvokeBody::Raw(
-        b"\x89PNG\r\n\x1a\nnot much of an image".to_vec(),
-    ));
-    assert!(damaged
-        .unwrap_err()
-        .to_string()
-        .contains("couldn't be read"));
+    let damaged = store(b"\x89PNG\r\n\x1a\nnot much of an image".to_vec()).await;
+    assert!(damaged.unwrap_err().contains("couldn't be read"));
 
-    let pdf = store(InvokeBody::Raw(
-        b"%PDF-1.4 << /Type /Page >> %%EOF".to_vec(),
-    ))
-    .unwrap();
+    let pdf = store(b"%PDF-1.4 << /Type /Page >> %%EOF".to_vec())
+        .await
+        .unwrap();
     assert_eq!(pdf["mime"], "application/pdf");
     assert_eq!(pdf["pages"], 1);
     assert_eq!(pdf["width"], serde_json::Value::Null);
     let file = super::attachments::file_for(&dir, pdf["id"].as_str().unwrap()).unwrap();
     assert_eq!(file.extension().unwrap(), "pdf");
 
-    let svg = store(InvokeBody::Raw(
-        b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec(),
-    ));
-    assert!(svg.unwrap_err().to_string().contains("PNG, JPEG"));
-    let malformed = store(InvokeBody::Json(serde_json::json!([137, 999])));
-    assert!(malformed.unwrap_err().to_string().contains("malformed"));
-    drop(webview);
-    drop(app);
+    let svg = store(b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec()).await;
+    assert!(svg.unwrap_err().contains("PNG, JPEG"));
+    drop(db);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -21,7 +21,6 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::State;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
@@ -519,13 +518,12 @@ pub struct SearchHit {
 }
 
 /// DuckDuckGo's HTML endpoint: server-rendered, no JavaScript needed.
-#[tauri::command]
 pub async fn web_search(
-    state: State<'_, BrowserState>,
+    state: &BrowserState,
     query: String,
     max_results: Option<usize>,
 ) -> Result<Vec<SearchHit>, String> {
-    web_search_inner(&state, query, max_results, None).await
+    web_search_inner(state, query, max_results, None).await
 }
 
 /// `web_search` for an agent run: Stop ends the wait at once.
@@ -619,13 +617,12 @@ struct RawPage {
 }
 
 /// Opens a URL and returns its readable text plus the main links on it.
-#[tauri::command]
 pub async fn browse_url(
-    state: State<'_, BrowserState>,
+    state: &BrowserState,
     url: String,
     max_chars: Option<usize>,
 ) -> Result<BrowsedPage, String> {
-    browse_url_inner(&state, url, max_chars, None).await
+    browse_url_inner(state, url, max_chars, None).await
 }
 
 /// `browse_url` for an agent run: Stop ends the wait at once.
@@ -663,13 +660,11 @@ pub struct BrowserScreenshot {
 
 /// Screenshots the viewport, opening `url` first when given (otherwise the
 /// page currently open in the agent's tab).
-#[tauri::command]
 pub async fn browser_screenshot(
-    state: State<'_, BrowserState>,
-    db: State<'_, crate::chat_db::DbState>,
+    core: &crate::core::Core,
     url: Option<String>,
 ) -> Result<BrowserScreenshot, String> {
-    browser_screenshot_inner(&state, &db, url, None).await
+    browser_screenshot_inner(&core.browser, &core.db, url, None).await
 }
 
 /// `browser_screenshot` for an agent run: Stop ends the wait at once.

@@ -45,8 +45,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use base64::Engine;
 use serde::Serialize;
-use tauri::ipc::Channel;
-use tauri::State;
 
 #[allow(unused_imports)] // re-exported for app code
 pub use events::{EventBatch, EventMask, FsEvent, Op, Source, SubscriptionId};
@@ -499,8 +497,7 @@ pub struct VfsEntry {
     pub size: u64,
 }
 
-#[tauri::command]
-pub async fn vfs_status(state: State<'_, VfsState>) -> Result<VfsStatus, String> {
+pub async fn vfs_status(state: &VfsState) -> Result<VfsStatus, String> {
     let driver = crate::rt::spawn_blocking(driver::status)
         .await
         .map_err(|e| e.to_string())?;
@@ -525,32 +522,22 @@ pub async fn vfs_status(state: State<'_, VfsState>) -> Result<VfsStatus, String>
     })
 }
 
-#[tauri::command]
 pub async fn vfs_install_driver() -> Result<driver::InstallOutcome, String> {
     driver::install().await
 }
 
-#[tauri::command]
-pub async fn vfs_mount(
-    app: tauri::AppHandle,
-    mountpoint: Option<String>,
-) -> Result<String, String> {
-    use tauri::Manager;
+pub async fn vfs_mount(state: &VfsState, mountpoint: Option<String>) -> Result<String, String> {
     let at = mountpoint
         .filter(|m| !m.trim().is_empty())
         .map(PathBuf::from);
     // Can wait on macFUSE for a while; not on the async runtime.
-    crate::rt::spawn_blocking(move || {
-        app.state::<VfsState>()
-            .mount(at)
-            .map(|p| p.to_string_lossy().into_owned())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let state = state.clone();
+    crate::rt::spawn_blocking(move || state.mount(at).map(|p| p.to_string_lossy().into_owned()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Opens the System Settings page a mount problem points to (macOS).
-#[tauri::command]
 pub async fn vfs_open_settings(pane: SettingsPane) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -567,15 +554,13 @@ pub async fn vfs_open_settings(pane: SettingsPane) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub async fn vfs_unmount(state: State<'_, VfsState>) -> Result<(), String> {
+pub async fn vfs_unmount(state: &VfsState) -> Result<(), String> {
     state.unmount()
 }
 
 /// Writes a virtual file. `encoding: "base64"` for binary content.
-#[tauri::command]
 pub async fn vfs_write_file(
-    state: State<'_, VfsState>,
+    state: &VfsState,
     path: String,
     content: String,
     encoding: Option<String>,
@@ -597,18 +582,13 @@ pub async fn vfs_write_file(
     })
 }
 
-#[tauri::command]
-pub async fn vfs_read_file(state: State<'_, VfsState>, path: String) -> Result<String, String> {
+pub async fn vfs_read_file(state: &VfsState, path: String) -> Result<String, String> {
     state
         .read_file(&path)
         .map(|d| String::from_utf8_lossy(&d).into_owned())
 }
 
-#[tauri::command]
-pub async fn vfs_list(
-    state: State<'_, VfsState>,
-    path: Option<String>,
-) -> Result<Vec<VfsEntry>, String> {
+pub async fn vfs_list(state: &VfsState, path: Option<String>) -> Result<Vec<VfsEntry>, String> {
     let rel = clean(path.as_deref().unwrap_or(""))?;
     let entries = state.fs.list(&rel).map_err(|e| err(&rel, e))?;
     Ok(entries
@@ -621,26 +601,25 @@ pub async fn vfs_list(
         .collect())
 }
 
-/// Streams events to the frontend in batches until `vfs_unsubscribe`.
-/// `kinds`: "created", "opened", "read", "written", "truncated", "closed",
-/// "removed", "renamed", "changes" (the default: everything but the
-/// per-request reads/writes and opens) or "all".
-#[tauri::command]
+/// Streams events in batches to `send` until `vfs_unsubscribe`, or until
+/// `send` says its receiver is gone. `kinds`: "created", "opened", "read",
+/// "written", "truncated", "closed", "removed", "renamed", "changes" (the
+/// default: everything but the per-request reads/writes and opens) or "all".
 pub async fn vfs_subscribe(
-    state: State<'_, VfsState>,
+    state: &VfsState,
     kinds: Option<Vec<String>>,
-    on_events: Channel<EventBatch>,
+    send: impl Fn(EventBatch) -> bool + Send + 'static,
 ) -> Result<u64, String> {
     let mask = match kinds {
         Some(kinds) if !kinds.is_empty() => EventMask::from_names(&kinds)?,
         _ => EventMask::CHANGES,
     };
-    // Unsubscribes itself once the channel is gone (the page reloaded).
+    // Unsubscribes itself once the receiver is gone (the page reloaded).
     let fs = Arc::downgrade(&state.fs);
     let me = Arc::new(std::sync::OnceLock::<SubscriptionId>::new());
     let me_in_sink = me.clone();
     let id = state.subscribe_batched(mask, move |batch| {
-        if on_events.send(batch).is_err() {
+        if !send(batch) {
             if let (Some(fs), Some(id)) = (fs.upgrade(), me_in_sink.get()) {
                 fs.unsubscribe(*id);
             }
@@ -650,24 +629,18 @@ pub async fn vfs_subscribe(
     Ok(id.0)
 }
 
-#[tauri::command]
-pub async fn vfs_unsubscribe(state: State<'_, VfsState>, id: u64) -> Result<bool, String> {
+pub async fn vfs_unsubscribe(state: &VfsState, id: u64) -> Result<bool, String> {
     Ok(state.unsubscribe(SubscriptionId(id)))
 }
 
 /// A file's revisions, oldest first.
-#[tauri::command]
-pub async fn vfs_revisions(
-    state: State<'_, VfsState>,
-    path: String,
-) -> Result<Vec<RevisionInfo>, String> {
+pub async fn vfs_revisions(state: &VfsState, path: String) -> Result<Vec<RevisionInfo>, String> {
     state.revisions(&path)
 }
 
 /// A revision's content: text (lossy UTF-8), or `encoding: "base64"`.
-#[tauri::command]
 pub async fn vfs_read_revision(
-    state: State<'_, VfsState>,
+    state: &VfsState,
     path: String,
     revision: u64,
     encoding: Option<String>,
@@ -681,9 +654,8 @@ pub async fn vfs_read_revision(
 }
 
 /// Makes a revision the file's content again (itself a new revision).
-#[tauri::command]
 pub async fn vfs_restore_revision(
-    state: State<'_, VfsState>,
+    state: &VfsState,
     path: String,
     revision: u64,
 ) -> Result<VfsFile, String> {
@@ -701,17 +673,12 @@ pub async fn vfs_restore_revision(
 }
 
 /// Changes how much history is kept (`maxBytes: 0` turns it off).
-#[tauri::command]
-pub async fn vfs_set_history_limits(
-    state: State<'_, VfsState>,
-    limits: HistoryLimits,
-) -> Result<(), String> {
+pub async fn vfs_set_history_limits(state: &VfsState, limits: HistoryLimits) -> Result<(), String> {
     state.fs.set_history_limits(limits);
     Ok(())
 }
 
-#[tauri::command]
-pub async fn vfs_remove(state: State<'_, VfsState>, path: String) -> Result<(), String> {
+pub async fn vfs_remove(state: &VfsState, path: String) -> Result<(), String> {
     state.remove(&path)
 }
 

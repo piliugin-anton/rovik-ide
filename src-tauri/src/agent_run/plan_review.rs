@@ -21,7 +21,6 @@ use super::{diff, log};
 use crate::chat_db::store::MessageRow;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
-use tauri::Runtime;
 
 /// Plan reviews in one run; past them, a plan is saved as it is.
 pub const MAX_PLAN_REVIEW_ROUNDS: u32 = 2;
@@ -258,7 +257,7 @@ pub struct Outcome {
     pub record: Option<Value>,
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// B09: reviews a submitted plan that passed the checker, before it's
     /// saved. `saved`: the chat's plan file as it is now.
     pub(super) async fn review_plan(
@@ -277,7 +276,7 @@ impl<R: Runtime> Run<R> {
         if self.sub().is_some() || self.stopped() || self.root.is_none() {
             return Ok(save(None));
         }
-        let config = self.state.config().subagents;
+        let config = self.core.agents.config().subagents;
         if config.kind(Kind::PlanReviewer).is_none() {
             return Ok(save(None));
         }
@@ -380,7 +379,7 @@ impl<R: Runtime> Run<R> {
             },
         }
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "planReview",
                 "dialogId": self.dialog_id,

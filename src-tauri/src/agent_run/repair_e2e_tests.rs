@@ -411,10 +411,9 @@ async fn a_rounds_commands_survive_waiting_for_approval() {
                 e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "b1"
             })
             .await;
-            let app = h.app.handle().clone();
+            let core = h.core.clone();
             agent_resolve_approval(
-                app.clone(),
-                app.state(),
+                &core,
                 h.dialog_id.clone(),
                 "b1".into(),
                 ApprovalDecision::Allow,
@@ -547,7 +546,7 @@ async fn rebuild_from_hashes_isolated_matches_project_copy() {
     assert_eq!(h.run_end().await, "verify-needs-approval");
     let waiting = h.messages().await.last().unwrap().id.clone();
     // The restart: what the run carried is gone.
-    h.app.state::<AgentState>().drop_carry(&h.dialog_id);
+    h.core.agents.drop_carry(&h.dialog_id);
     h.events.lock().unwrap().clear();
     let mut request = h.request(
         &url,
@@ -754,7 +753,7 @@ async fn after_a_restart_lost_state_is_never_verified() {
     assert_eq!(h.run_end().await, "verify-needs-approval");
     let waiting = h.messages().await.last().unwrap().id.clone();
     // The restart: what the run carried is gone.
-    h.app.state::<AgentState>().drop_carry(&h.dialog_id);
+    h.core.agents.drop_carry(&h.dialog_id);
     h.events.lock().unwrap().clear();
     h.start(h.request(
         &url,

@@ -19,7 +19,6 @@ use super::verify::CheckResult;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
-use tauri::Runtime;
 
 /// The excerpt of the output the agent gets with a triage.
 pub const EXCERPT_CHARS: usize = 2_000;
@@ -582,7 +581,7 @@ fn triage_skip_reason(skip: &Skip) -> String {
     }
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// C03: before a round's failures go back to the agent. None: no triage
     /// (off, nothing qualifies); otherwise what it found, or why it was
     /// skipped, in which case the agent gets the usual report.
@@ -597,7 +596,7 @@ impl<R: Runtime> Run<R> {
         if self.sub().is_some() || self.stopped() || self.profile.no_tools {
             return Ok(None);
         }
-        let config = self.state.config().subagents;
+        let config = self.core.agents.config().subagents;
         if config.kind(Kind::Triage).is_none() {
             return Ok(None);
         }
@@ -662,7 +661,7 @@ impl<R: Runtime> Run<R> {
         }
         self.update_meta(record_id, update(record.clone())).await?;
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "triage",
                 "dialogId": self.dialog_id,

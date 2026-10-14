@@ -35,25 +35,25 @@
 //!     "rules": [ { "tool": "bash", "contains": "git push", "decision": "deny" } ],
 //!     "questions": "recommended" }      // or "agent" (the agent decides), "stop"
 //!
-//! It runs on tauri's mock runtime, as the end-to-end tests do: the real
+//! It runs on a `Core` of its own, as the end-to-end tests do: the real
 //! database, tools and requests, no webview. The chat isn't isolated (that
 //! needs the virtual-files driver).
 
 use crate::agent::OpenAIChatOptions;
+use crate::agent_run::events::AgentEvent;
 use crate::agent_run::log::usage_counts;
 use crate::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
 use crate::agent_run::{
-    self, events, AgentConfig, AgentState, ApprovalDecision, ModelProfile, StartKind, StartRequest,
-    UserMessage,
+    self, AgentConfig, ApprovalDecision, ModelProfile, StartKind, StartRequest, UserMessage,
 };
 use crate::chat_db::store::{self, NewDialog};
-use crate::chat_db::DbState;
+use crate::core::{Core, EventSink, Paths};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::test::{mock_builder, mock_context, noop_assets};
-use tauri::{Listener, Manager};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 /// What a run is started with, from the settings file.
 #[derive(Deserialize, Debug)]
@@ -411,16 +411,26 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Tests: the run under way, its app and lead chat, to act on it as the
+/// Tests: the run under way, its core and lead chat, to act on it as the
 /// user would (pick another effort mid-request). Cleared as the run ends.
 #[cfg(test)]
-pub(crate) static TEST_RUN: std::sync::Mutex<
-    Option<(tauri::AppHandle<tauri::test::MockRuntime>, String)>,
-> = std::sync::Mutex::new(None);
+pub(crate) static TEST_RUN: std::sync::Mutex<Option<(Core, String)>> = std::sync::Mutex::new(None);
+
+/// The run's events, as the JSON the frontend would get, for `run` to
+/// follow.
+struct Events(UnboundedSender<Value>);
+
+impl EventSink for Events {
+    fn agent(&self, event: &AgentEvent) {
+        if let Ok(v) = serde_json::to_value(event) {
+            let _ = self.0.send(v);
+        }
+    }
+}
 
 /// Runs once and writes the report; returns it too.
 pub async fn run(args: &Args) -> Result<Value, String> {
-    // One run at a time: the agent log's folder is process-wide.
+    // One run at a time: tests find the run under way in TEST_RUN.
     static ONE_RUN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one = ONE_RUN.lock().await;
     let mut settings: Settings = read_json(&args.settings)?;
@@ -454,35 +464,25 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     // The run log goes with the report.
     let log_dir = data.join("log");
-    crate::project_profile::set_agent_log_dir(Some(log_dir.clone()));
-    // P6.4: reset however the run ends (an error return included).
-    struct LogDir;
-    impl Drop for LogDir {
+    #[cfg(test)]
+    struct TestRun;
+    #[cfg(test)]
+    impl Drop for TestRun {
+        // Cleared however the run ends (an error return included).
         fn drop(&mut self) {
-            crate::project_profile::set_agent_log_dir(None);
-            #[cfg(test)]
-            {
-                *TEST_RUN.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            }
+            *TEST_RUN.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
-    let log_dir_guard = LogDir;
+    #[cfg(test)]
+    let _test_run = TestRun;
 
-    let db = DbState::open(&data).map_err(|e| e.to_string())?;
-    let app = mock_builder()
-        .manage(db.clone())
-        .manage(crate::vfs::VfsState::default())
-        .manage(crate::browser_tools::BrowserState::default())
-        .manage(AgentState::default())
-        .build(mock_context(noop_assets()))
-        .map_err(|e| e.to_string())?;
-    let handle = app.handle().clone();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    handle.listen_any(events::EVENT, move |e| {
-        if let Ok(v) = serde_json::from_str::<Value>(e.payload()) {
-            let _ = tx.send(v);
-        }
-    });
+    let (tx, mut rx) = unbounded_channel::<Value>();
+    let paths = Paths {
+        log_dir: log_dir.clone(),
+        ..Paths::new(data.clone(), data.clone())
+    };
+    let core = Core::open(paths, Arc::new(Events(tx)))?;
+    let db = core.db.clone();
 
     let dialog_id = uuid::Uuid::new_v4().to_string();
     let dialog = NewDialog {
@@ -529,15 +529,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     #[cfg(test)]
     {
         *TEST_RUN.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((handle.clone(), dialog_id.clone()));
+            Some((core.clone(), dialog_id.clone()));
     }
-    agent_run::agent_start(
-        handle.clone(),
-        handle.state::<AgentState>(),
-        handle.state::<DbState>(),
-        request,
-    )
-    .await?;
+    agent_run::agent_start(&core, request).await?;
 
     // Answer what it asks until it ends (or the time runs out).
     let mut approvals: Vec<Value> = Vec::new();
@@ -561,7 +555,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                 // The provider doesn't report usage: the cap can't be kept.
                 let no_usage = watched.missing_usage > 0;
                 if no_usage || args.max_tokens.is_some_and(|max| watched.tokens() > max) {
-                    stop_and_wait(&handle, &mut rx, &dialog_id).await;
+                    stop_and_wait(&core, &mut rx, &dialog_id).await;
                     break if no_usage { "no-usage" } else { "budget" }.to_string();
                 }
                 continue;
@@ -571,7 +565,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             Ok(Some(e)) => e,
             Ok(None) => break "error".to_string(),
             Err(_) => {
-                stop_and_wait(&handle, &mut rx, &dialog_id).await;
+                stop_and_wait(&core, &mut rx, &dialog_id).await;
                 break "timeout".to_string();
             }
         };
@@ -597,8 +591,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                     "decision": match decision { Decision::Allow => "allow", Decision::Deny => "deny" },
                 }));
                 agent_run::agent_resolve_approval(
-                    handle.clone(),
-                    handle.state(),
+                    &core,
                     chat,
                     call,
                     match decision {
@@ -611,8 +604,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                 let r = &event["request"];
                 questions += 1;
                 agent_run::agent_answer_questions(
-                    handle.clone(),
-                    handle.state(),
+                    &core,
                     r["dialogId"].as_str().unwrap_or("").to_string(),
                     r["toolCallId"].as_str().unwrap_or("").to_string(),
                     policy.answer(&r["questions"]),
@@ -632,7 +624,6 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    drop(log_dir_guard);
 
     let id = dialog_id.clone();
     let messages = db
@@ -653,10 +644,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&args.out, text).map_err(|e| format!("{}: {e}", args.out.display()))?;
     // Closed first: Windows won't remove an open database's folder. The
-    // handle holds the app's managed copy of the database (round 3), so it
-    // goes before the database can be the last handle and close.
-    drop(app);
-    drop(handle);
+    // core holds its copy of the database (round 3), so it goes before the
+    // database can be the last handle and close.
+    drop(core);
     // The run's tasks let go of theirs as they wind down.
     for _ in 0..40 {
         if db.handles() == 1 {
@@ -686,12 +676,8 @@ fn has_run_line(log: &Path, dialog_id: &str) -> bool {
 
 /// Stops the run and lets it end and store what it has: its `runEnded`,
 /// or ten seconds.
-async fn stop_and_wait<R: tauri::Runtime>(
-    handle: &tauri::AppHandle<R>,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
-    dialog_id: &str,
-) {
-    agent_run::agent_stop(handle.clone(), handle.state(), dialog_id.to_string());
+async fn stop_and_wait(core: &Core, rx: &mut UnboundedReceiver<Value>, dialog_id: &str) {
+    agent_run::agent_stop(core, dialog_id.to_string());
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(e) = rx.recv().await {
             if e["type"] == "runEnded" && e["dialogId"] == dialog_id {
@@ -840,7 +826,7 @@ pub fn main_cli() -> i32 {
             return 2;
         }
     };
-    match tauri::async_runtime::block_on(run(&args)) {
+    match crate::rt::block_on(run(&args)) {
         Ok(report) => {
             println!(
                 "{}: {} ({} ms). Report: {}",
@@ -1219,12 +1205,11 @@ mod tests {
         }
     }
 
-    /// Round 2 (section 4.2), P6.4: a run that fails early leaves the agent
-    /// log's folder as it found it: a missing `--project` fails before it's
-    /// set; a database that can't open (its `attachments` folder is a file)
-    /// fails after, and the folder is reset.
+    /// Round 2 (section 4.2), P6.4: a run that fails early returns the error
+    /// and writes no report: a missing `--project`, and a database that
+    /// can't open (its `attachments` folder is a file).
     #[tokio::test]
-    async fn the_log_dir_is_reset_after_an_early_project_error() {
+    async fn an_early_error_writes_no_report() {
         let dir = std::env::temp_dir().join(format!("headless-early-{}", uuid::Uuid::new_v4()));
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
@@ -1245,14 +1230,10 @@ mod tests {
             timeout: Duration::from_secs(5),
             max_tokens: None,
         };
-        // Other runs may set their own folder meanwhile: only ours is checked.
-        let ours = Some(data.join("log"));
         let err = run(&args(dir.join("missing"))).await.unwrap_err();
         assert!(err.contains("missing"), "{err}");
-        assert_ne!(crate::project_profile::agent_log_dir(), ours);
         std::fs::write(data.join("attachments"), "").unwrap();
         assert!(run(&args(dir.clone())).await.is_err());
-        assert_ne!(crate::project_profile::agent_log_dir(), ours);
         assert!(!dir.join("report.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

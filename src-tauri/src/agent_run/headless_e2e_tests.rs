@@ -296,7 +296,7 @@ async fn the_policys_denied_commands_are_refused_without_approvals() {
     assert_eq!(report["outcome"], "done", "{report:#}");
     assert_eq!(report["approvals"], json!([]));
     let id = report["dialogId"].as_str().unwrap().to_string();
-    let db = DbState::open(&dir.0.join("data")).unwrap();
+    let db = crate::chat_db::DbState::open(&dir.0.join("data")).unwrap();
     let messages = db
         .read(move |c| store::get_messages(c, &id, None, 100))
         .await
@@ -628,9 +628,9 @@ async fn an_asked_again_request_with_usage_counts_as_a_reply() {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         let running = crate::headless::TEST_RUN.lock().unwrap().clone();
-        let (app, dialog) = running.expect("the run asked the model");
+        let (core, dialog) = running.expect("the run asked the model");
         assert_eq!(
-            agent_set_effort(app.state(), "p::m".into(), effort("low"), Some(dialog)),
+            agent_set_effort(&core, "p::m".into(), effort("low"), Some(dialog)),
             1
         );
     };

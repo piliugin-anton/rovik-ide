@@ -8,8 +8,8 @@
 //! - Screenshots and other binary data live in `attachments/`, addressed by
 //!   their SHA-256, and are served to the webview by a URI scheme.
 
+pub mod api;
 pub mod attachments;
-pub mod commands;
 pub mod history;
 pub mod images;
 pub mod projects;

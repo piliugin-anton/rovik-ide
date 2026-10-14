@@ -606,8 +606,7 @@ pub fn start_file_watch(
                     for (_chat, path) in
                         crate::overlay::chats::project_changed(&watch_root, &paths, false)
                     {
-                        crate::agent_run::events::emit(
-                            &app_handle,
+                        app_handle.state::<crate::core::Core>().emit(
                             crate::agent_run::events::AgentEvent::Notice {
                                 kind: "warning".into(),
                                 title: "A chat's change conflicts with the project".into(),

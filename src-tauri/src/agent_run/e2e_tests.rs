@@ -1,16 +1,15 @@
-//! Whole runs against a scripted provider: a mock Tauri app with the real
-//! chat database, the real tools and the real request code, talking to a
-//! local server that plays the model.
+//! Whole runs against a scripted provider: a `Core` with the real chat
+//! database, the real tools and the real request code, talking to a local
+//! server that plays the model.
 
 use super::permissions::ChecklistMode;
 use super::*;
 use crate::chat_db::store::{self, MessageRow, NewDialog};
+use crate::core::{EventSink, Paths};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
-use tauri::{Listener, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /*
@@ -280,11 +279,11 @@ mod headless_tests;
 mod context_tests;
 
 /*
- * The app
+ * The host
  */
 
 struct Harness {
-    app: tauri::App<MockRuntime>,
+    core: Core,
     project: PathBuf,
     events: Arc<Mutex<Vec<Value>>>,
     dialog_id: String,
@@ -324,21 +323,9 @@ async fn harness(files: &[(&str, &str)]) -> Harness {
         std::fs::write(p, content).unwrap();
     }
     std::fs::create_dir_all(&project).unwrap();
-    let db = DbState::open(&dir.0.join("data")).unwrap();
-    let app = mock_builder()
-        .manage(db.clone())
-        .manage(crate::vfs::VfsState::default())
-        .manage(crate::browser_tools::BrowserState::default())
-        .manage(AgentState::default())
-        .build(mock_context(noop_assets()))
-        .unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
-    let sink = events.clone();
-    app.listen_any(events::EVENT, move |e| {
-        sink.lock()
-            .unwrap()
-            .push(serde_json::from_str::<Value>(e.payload()).unwrap());
-    });
+    let paths = Paths::new(dir.0.join("data"), dir.0.join("config"));
+    let core = Core::open(paths, Arc::new(Recorder(events.clone()))).unwrap();
     let dialog_id = uuid::Uuid::new_v4().to_string();
     let dialog = NewDialog {
         id: dialog_id.clone(),
@@ -347,16 +334,27 @@ async fn harness(files: &[(&str, &str)]) -> Harness {
         updated_at: 0,
         project_id: None,
     };
-    db.write(move |c| store::create_dialog(c, &dialog))
+    core.db
+        .write(move |c| store::create_dialog(c, &dialog))
         .await
         .unwrap();
     Harness {
-        app,
+        core,
         project,
         events,
         dialog_id,
         _dir: dir,
         _isolated: None,
+    }
+}
+
+/// Keeps every event, as the JSON the frontend gets.
+struct Recorder(Arc<Mutex<Vec<Value>>>);
+
+impl EventSink for Recorder {
+    fn agent(&self, event: &AgentEvent) {
+        let json = serde_json::to_value(event).unwrap();
+        self.0.lock().unwrap().push(json);
     }
 }
 
@@ -411,15 +409,7 @@ impl Harness {
     }
 
     async fn start(&self, request: StartRequest) -> Option<String> {
-        let app = self.app.handle().clone();
-        agent_start(
-            app.clone(),
-            app.state::<AgentState>(),
-            app.state::<DbState>(),
-            request,
-        )
-        .await
-        .unwrap()
+        agent_start(&self.core, request).await.unwrap()
     }
 
     fn send(text: &str) -> StartKind {
@@ -451,8 +441,9 @@ impl Harness {
 
     async fn messages(&self) -> Vec<MessageRow> {
         let id = self.dialog_id.clone();
-        let db = self.app.state::<DbState>().inner().clone();
-        db.read(move |c| store::get_messages(c, &id, None, 500))
+        self.core
+            .db
+            .read(move |c| store::get_messages(c, &id, None, 500))
             .await
             .unwrap()
             .messages
@@ -575,10 +566,9 @@ async fn a_denied_edit_is_reported_to_the_model() {
         .unwrap()
         .ends_with("a.txt"));
 
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     assert!(agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "e1".into(),
         ApprovalDecision::Deny
@@ -625,15 +615,14 @@ async fn a_partly_accepted_edit_writes_only_those_changes() {
         .await;
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     let rejected = vec![diff::Hunk {
         orig_start: 3,
         deleted: vec!["three".into()],
         added: vec!["THREE".into()],
     }];
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Partial {
@@ -746,10 +735,9 @@ async fn an_approved_edit_merges_with_a_change_made_while_it_waited() {
         .await;
     // Another chat changes another line while the user reviews.
     std::fs::write(h.project.join("a.txt"), "one\ntwo\nTHREE\n").unwrap();
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Allow,
@@ -779,10 +767,9 @@ async fn a_partly_accepted_edit_keeps_a_change_made_while_it_waited() {
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
     std::fs::write(h.project.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Partial {
@@ -812,10 +799,9 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
     std::fs::write(h.project.join("a.txt"), "uno\ntwo\n").unwrap();
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Allow,
@@ -831,8 +817,7 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
     assert_eq!(again.len(), 2, "{again:#?}");
     assert_eq!(again[1]["request"]["edit"]["current"], "uno\ntwo\n");
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Deny,
@@ -1253,17 +1238,15 @@ async fn stop_ends_a_run_waiting_for_approval() {
         .await;
 
     // Another run in the same chat is refused meanwhile.
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     let again = agent_start(
-        app.clone(),
-        app.state(),
-        app.state(),
+        &core,
         h.request(&url, StartKind::Retry, quiet_permissions()),
     )
     .await;
     assert!(again.is_err());
 
-    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()));
     assert_eq!(h.run_end().await, "stopped");
     let messages = h.messages().await;
     let result = messages.iter().find(|m| m.role == "tool").unwrap();
@@ -1429,13 +1412,12 @@ async fn plan_mode_asks_and_saves_the_plan() {
         .wait_for("questionsAsked", |e| e["type"] == "questionsAsked")
         .await;
     assert_eq!(asked["request"]["questions"][0]["question"], "Which DB?");
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     let outcome: plan::QuestionsOutcome =
         serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
             .unwrap();
     assert!(agent_answer_questions(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "q1".into(),
         outcome
@@ -1474,7 +1456,7 @@ async fn a_resumed_chat_asks_again_then_continues() {
     let h = harness(&[]).await;
     // A chat that ended with a tool call that never ran.
     let id = h.dialog_id.clone();
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let stored = vec![
         run::new_message("user", "List files"),
         store::NewMessage {
@@ -1504,10 +1486,9 @@ async fn a_resumed_chat_asks_again_then_continues() {
         .as_str()
         .unwrap()
         .starts_with("Interrupted"));
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "l1".into(),
         ApprovalDecision::Allow,
@@ -1595,10 +1576,9 @@ async fn the_ai_reviewer_decides_and_risky_commands_still_ask() {
         .as_str()
         .unwrap()
         .starts_with("Commands that push"));
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "r2".into(),
         ApprovalDecision::Deny,
@@ -1676,13 +1656,8 @@ impl Harness {
     }
 
     fn pick_effort_with(&self, options: Option<crate::agent::OpenAIChatOptions>) -> usize {
-        let app = self.app.handle().clone();
-        agent_set_effort(
-            app.state(),
-            "p::m".into(),
-            options,
-            Some(self.dialog_id.clone()),
-        )
+        let core = self.core.clone();
+        agent_set_effort(&core, "p::m".into(), options, Some(self.dialog_id.clone()))
     }
 }
 
@@ -1709,13 +1684,13 @@ async fn a_stuck_request_is_asked_again_with_a_new_effort() {
     h.start(request).await;
     requests_seen(&seen, 1).await;
 
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     // Another model's effort changes nothing here; nor does picking it for
     // this model in another chat (that applies to the next request), nor
     // the same level again, sent in other forms.
     assert_eq!(
         agent_set_effort(
-            app.state(),
+            &core,
             "other::model".into(),
             effort("low"),
             Some(h.dialog_id.clone())
@@ -1724,7 +1699,7 @@ async fn a_stuck_request_is_asked_again_with_a_new_effort() {
     );
     assert_eq!(
         agent_set_effort(
-            app.state(),
+            &core,
             "p::m".into(),
             effort("medium"),
             Some("another-chat".into())
@@ -1807,11 +1782,10 @@ async fn an_effort_picked_mid_run_applies_to_the_next_request() {
     h.start(request).await;
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     h.pick_effort("low");
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "r1".into(),
         ApprovalDecision::Allow,
@@ -1844,8 +1818,8 @@ async fn a_reply_under_way_is_not_thrown_away_for_a_new_effort() {
         "not asked again: the reply was coming"
     );
 
-    let app = h.app.handle().clone();
-    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    let core = h.core.clone();
+    agent_stop(&core, h.dialog_id.clone());
     assert_eq!(h.run_end().await, "stopped");
     let messages = h.messages().await;
     assert_eq!(messages[1].content, "Part of the answer");
@@ -1920,10 +1894,9 @@ async fn every_call_of_a_turn_gets_a_result_when_stopped_midway() {
         e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "c1"
     })
     .await;
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "c1".into(),
         ApprovalDecision::Allow,
@@ -1932,7 +1905,7 @@ async fn every_call_of_a_turn_gets_a_result_when_stopped_midway() {
         e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "c2"
     })
     .await;
-    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    agent_stop(&core, h.dialog_id.clone());
     assert_eq!(h.run_end().await, "stopped");
 
     let messages = h.messages().await;
@@ -2099,7 +2072,7 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
     .await;
     h.start(h.request(&url, plan_send("Plan it"), quiet_permissions()))
         .await;
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     for id in ["q1", "q2", "q3"] {
         h.wait_for(id, |e| {
             e["type"] == "questionsAsked" && e["request"]["toolCallId"] == id
@@ -2108,8 +2081,7 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
         let outcome: plan::QuestionsOutcome =
             serde_json::from_value(json!({ "reply": "whatever" })).unwrap();
         assert!(agent_answer_questions(
-            app.clone(),
-            app.state(),
+            &core,
             h.dialog_id.clone(),
             id.into(),
             outcome
@@ -2118,8 +2090,7 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
         let again: plan::QuestionsOutcome =
             serde_json::from_value(json!({ "reply": "again" })).unwrap();
         assert!(!agent_answer_questions(
-            app.clone(),
-            app.state(),
+            &core,
             h.dialog_id.clone(),
             id.into(),
             again
@@ -2186,8 +2157,8 @@ async fn stop_while_a_question_waits_ends_the_run() {
         .await;
     h.wait_for("questionsAsked", |e| e["type"] == "questionsAsked")
         .await;
-    let app = h.app.handle().clone();
-    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    let core = h.core.clone();
+    assert!(agent_stop(&core, h.dialog_id.clone()));
     assert_eq!(h.run_end().await, "stopped");
     assert_eq!(h.events_of("questionsSettled").len(), 1);
     let answer = result_of(&h.messages().await, "q1").clone();
@@ -2509,7 +2480,7 @@ async fn plan_implementation_forces_todo_on_the_first_turn() {
 async fn a_pasted_image_is_stored_with_the_message_and_sent_in_it() {
     let h = harness(&[]).await;
     let (url, seen) = model(vec![Reply::Text("The theme makes it blue.")]).await;
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let mut webp = std::io::Cursor::new(Vec::new());
     image::DynamicImage::from(image::RgbImage::from_pixel(
         2000,
@@ -2582,7 +2553,7 @@ async fn an_attached_pdf_is_sent_as_a_file_to_a_model_that_takes_pdfs() {
         Reply::Text("Can't see it."),
     ])
     .await;
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let pdf =
         b"%PDF-1.4\n1 0 obj << /Type /Page >> endobj\n2 0 obj << /Type /Page >> endobj\n%%EOF";
     let stored = crate::chat_db::attachments::store_attached(&db, pdf.to_vec())
@@ -2654,20 +2625,18 @@ async fn a_message_with_a_missing_image_is_refused() {
         meta: None,
         attachments: vec!["f".repeat(64)],
     };
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     let err = agent_start(
-        app.clone(),
-        app.state::<AgentState>(),
-        app.state::<DbState>(),
+        &core,
         h.request(&url, StartKind::Send { message }, quiet_permissions()),
     )
     .await
     .unwrap_err();
     assert!(err.contains("no longer available"), "{err}");
-    assert!(!app.state::<AgentState>().is_running(&h.dialog_id));
+    assert!(!core.agents.is_running(&h.dialog_id));
     let dialog_id = h.dialog_id.clone();
-    let page = app
-        .state::<DbState>()
+    let page = core
+        .db
         .read(move |c| store::get_messages(c, &dialog_id, None, 10))
         .await
         .unwrap();
@@ -3435,25 +3404,22 @@ async fn a_new_file_is_approved_whole_and_an_allowed_edit_is_recorded_as_reviewe
         .as_str()
         .unwrap()
         .contains("New file"));
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Allow,
     );
     // Unknown and repeated answers do nothing.
     assert!(!agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Deny
     ));
     assert!(!agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "nope".into(),
         ApprovalDecision::Allow
@@ -3508,7 +3474,7 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
     request.config.as_mut().unwrap().approval_profiles = vec![reviewer];
     h.start(request).await;
 
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     // .env: never left to the reviewer.
     let asked = h
         .wait_for("approval e2", |e| {
@@ -3520,8 +3486,7 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
         .unwrap()
         .starts_with("Edits to credential or secret files"));
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "e2".into(),
         ApprovalDecision::Deny,
@@ -3540,8 +3505,7 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
         "{asked}"
     );
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "e3".into(),
         ApprovalDecision::Allow,
@@ -3587,10 +3551,9 @@ async fn no_reviewer_model_means_the_user_approves() {
         .as_str()
         .unwrap()
         .starts_with("No AI reviewer model is set"));
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "r1".into(),
         ApprovalDecision::Allow,
@@ -3733,7 +3696,7 @@ async fn runs_in_two_chats_go_on_independently() {
         updated_at: 0,
         project_id: None,
     };
-    let db = a.app.state::<DbState>().inner().clone();
+    let db = a.core.db.clone();
     db.write(move |c| store::create_dialog(c, &dialog))
         .await
         .unwrap();
@@ -3750,19 +3713,19 @@ async fn runs_in_two_chats_go_on_independently() {
     })
     .await;
 
-    let app = a.app.handle().clone();
-    let status = agent_status(app.state());
+    let core = a.core.clone();
+    let status = agent_status(&core);
     assert_eq!(status.runs.len(), 1, "A still runs");
     assert!(
-        !agent_stop(app.clone(), app.state(), b_id.clone()),
+        !agent_stop(&core, b_id.clone()),
         "B is done: nothing to stop"
     );
-    assert!(agent_stop(app.clone(), app.state(), a.dialog_id.clone()));
+    assert!(agent_stop(&core, a.dialog_id.clone()));
     a.wait_for("A ends", |e| {
         e["type"] == "runEnded" && e["dialogId"] == a.dialog_id.as_str()
     })
     .await;
-    assert!(agent_status(app.state()).runs.is_empty());
+    assert!(agent_status(&core).runs.is_empty());
 }
 
 #[tokio::test]
@@ -3781,20 +3744,19 @@ async fn status_lists_what_a_run_waits_on() {
         .await;
     h.wait_for("approval", |e| e["type"] == "approvalRequested")
         .await;
-    let app = h.app.handle().clone();
-    let status = agent_status(app.state());
+    let core = h.core.clone();
+    let status = agent_status(&core);
     assert_eq!(status.runs[0].dialog_id, h.dialog_id);
     assert_eq!(status.approvals[0].tool_call_id, "r1");
     assert!(status.questions.is_empty());
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "r1".into(),
         ApprovalDecision::Allow,
     );
     h.run_end().await;
-    let status = agent_status(app.state());
+    let status = agent_status(&core);
     assert!(status.runs.is_empty() && status.approvals.is_empty());
 }
 
@@ -3804,13 +3766,10 @@ async fn a_chat_that_doesnt_exist_cant_start() {
     let (url, seen) = model(vec![Reply::Text("x")]).await;
     let mut request = h.request(&url, Harness::send("Hi"), quiet_permissions());
     request.dialog_id = "no-such-chat".into();
-    let app = h.app.handle().clone();
-    let started = agent_start(app.clone(), app.state(), app.state(), request).await;
+    let core = h.core.clone();
+    let started = agent_start(&core, request).await;
     assert!(started.is_err());
-    assert!(
-        agent_status(app.state()).runs.is_empty(),
-        "not left registered"
-    );
+    assert!(agent_status(&core).runs.is_empty(), "not left registered");
     assert!(seen.lock().unwrap().is_empty());
 }
 
@@ -3894,7 +3853,7 @@ async fn an_older_waiting_check_is_superseded_and_carries_are_freed() {
             .map(|m| m.id.clone())
             .collect()
     };
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     h.start(h.request(&url, Harness::send("Write x"), permissions.clone()))
         .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
@@ -3976,16 +3935,10 @@ async fn an_older_waiting_check_is_superseded_and_carries_are_freed() {
         .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
     assert!(state.has_carry(&h.dialog_id));
-    let app = h.app.handle().clone();
-    crate::chat_db::commands::chat_delete_dialog(
-        app.clone(),
-        app.state::<AgentState>(),
-        app.state::<crate::vfs::VfsState>(),
-        app.state::<DbState>(),
-        h.dialog_id.clone(),
-    )
-    .await
-    .unwrap();
+    let core = h.core.clone();
+    crate::chat_db::api::chat_delete_dialog(&core, h.dialog_id.clone())
+        .await
+        .unwrap();
     assert!(!state.has_carry(&h.dialog_id));
 }
 
@@ -3993,7 +3946,7 @@ async fn an_older_waiting_check_is_superseded_and_carries_are_freed() {
 /// order.
 async fn store_records(h: &Harness, records: &[Value]) -> Vec<String> {
     let id = h.dialog_id.clone();
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let mut stored = vec![run::new_message("user", "Earlier")];
     for r in records {
         stored.push(store::NewMessage {
@@ -4073,7 +4026,7 @@ async fn a_resume_after_restart_supersedes_waiting_checks() {
     )
     .await;
     let id = h.dialog_id.clone();
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let stored = vec![store::NewMessage {
         tool_calls: Some(vec![store::ToolCall {
             id: "l1".into(),
@@ -4093,10 +4046,9 @@ async fn a_resume_after_restart_supersedes_waiting_checks() {
         .is_some());
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "l1".into(),
         ApprovalDecision::Allow,
@@ -4156,7 +4108,7 @@ async fn the_lead_is_told_once_that_state_was_lost() {
     assert_eq!(h.run_end().await, "verify-needs-approval");
     let record = h.messages().await.last().unwrap().id.clone();
     // As after a restart.
-    h.app.state::<AgentState>().drop_carry(&h.dialog_id);
+    h.core.agents.drop_carry(&h.dialog_id);
     // Each fix waits for approval again: "Run checks" until they pass.
     let mut record = record;
     let mut runs = 0;
@@ -4229,7 +4181,7 @@ async fn an_expired_carry_runs_afresh_and_says_so() {
         .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
     let record = h.messages().await.last().unwrap().id.clone();
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     state.age_carry(&h.dialog_id, verify::CARRY_TTL);
     h.events.lock().unwrap().clear();
     h.start(h.request(
@@ -4271,16 +4223,16 @@ async fn discard_and_delete_free_the_carry_and_spill_dir() {
         Reply::Text("Done."),
     ])
     .await;
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     let spill_dir = check_output::carry_dir(&h.dialog_id).unwrap();
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
 
     h.start(h.request(&url, Harness::send("Shrink"), needs_user_approval()))
         .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
     assert!(state.has_carry(&h.dialog_id));
     assert!(spill_dir.read_dir().unwrap().next().is_some(), "spilled");
-    let _ = crate::overlay::chats::overlay_discard(app.state(), h.dialog_id.clone()).await;
+    let _ = crate::overlay::chats::overlay_discard(&core.agents, h.dialog_id.clone()).await;
     assert!(!state.has_carry(&h.dialog_id));
     assert!(!spill_dir.exists(), "{}", spill_dir.display());
 
@@ -4290,15 +4242,9 @@ async fn discard_and_delete_free_the_carry_and_spill_dir() {
         .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
     assert!(spill_dir.read_dir().unwrap().next().is_some(), "spilled");
-    crate::chat_db::commands::chat_delete_dialog(
-        app.clone(),
-        app.state::<AgentState>(),
-        app.state::<crate::vfs::VfsState>(),
-        app.state::<DbState>(),
-        h.dialog_id.clone(),
-    )
-    .await
-    .unwrap();
+    crate::chat_db::api::chat_delete_dialog(&core, h.dialog_id.clone())
+        .await
+        .unwrap();
     assert!(!state.has_carry(&h.dialog_id));
     assert!(!spill_dir.exists(), "{}", spill_dir.display());
 }
@@ -4328,7 +4274,7 @@ async fn a_lead_that_errors_or_is_stopped_drops_the_carry() {
         Reply::Hang(None),
     ])
     .await;
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     h.start(h.request(&url, Harness::send("Write x"), needs_user_approval()))
         .await;
     assert_eq!(h.run_end().await, "verify-needs-approval");
@@ -4348,8 +4294,8 @@ async fn a_lead_that_errors_or_is_stopped_drops_the_carry() {
     h.start(h.request(&url, Harness::send("Wait"), needs_user_approval()))
         .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let app = h.app.handle().clone();
-    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    let core = h.core.clone();
+    assert!(agent_stop(&core, h.dialog_id.clone()));
     assert_eq!(h.run_end().await, "stopped");
     assert!(!state.has_carry(&h.dialog_id));
 }
@@ -4734,7 +4680,7 @@ async fn reads_that_need_approval_are_asked_one_at_a_time() {
     .await;
     h.start(h.request(&url, Harness::send("Look"), ask_approval("tools")))
         .await;
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     for id in ["c1", "c2", "c3"] {
         h.wait_for(id, |e| {
             e["type"] == "approvalRequested" && e["request"]["toolCallId"] == id
@@ -4744,8 +4690,7 @@ async fn reads_that_need_approval_are_asked_one_at_a_time() {
         let asked: Vec<Value> = h.events_of("approvalRequested");
         assert_eq!(asked.last().unwrap()["request"]["toolCallId"], id);
         agent_resolve_approval(
-            app.clone(),
-            app.state(),
+            &core,
             h.dialog_id.clone(),
             id.into(),
             ApprovalDecision::Allow,
@@ -4962,8 +4907,8 @@ async fn stop_before_a_batch_records_every_call_as_stopped() {
         e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e1"
     })
     .await;
-    let app = h.app.handle().clone();
-    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    let core = h.core.clone();
+    agent_stop(&core, h.dialog_id.clone());
     assert_eq!(h.run_end().await, "stopped");
     assert!(
         parallel::batches_of(&h.dialog_id).is_empty(),
@@ -5005,10 +4950,9 @@ async fn reads_after_an_approved_edit_run_together_and_see_the_edit() {
         e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "e1"
     })
     .await;
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         h.dialog_id.clone(),
         "e1".into(),
         ApprovalDecision::Allow,
@@ -5347,8 +5291,8 @@ async fn the_code_tools_run_together_and_word_their_errors_once() {
 async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
     // Gemini numbers calls per reply: two chats both get "function-call-1".
     let h = harness(&[]).await;
-    let app = h.app.handle().clone();
-    let state = app.state::<AgentState>().inner().clone();
+    let core = h.core.clone();
+    let state = core.agents.clone();
     let request = |dialog: &str| ApprovalRequest {
         tool_call_id: "function-call-1".into(),
         dialog_id: dialog.into(),
@@ -5361,10 +5305,10 @@ async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
         parent_call_id: None,
     };
     let wait = |dialog: &str| {
-        let (state, app, request) = (state.clone(), app.clone(), request(dialog));
+        let (state, core, request) = (state.clone(), core.clone(), request(dialog));
         tokio::spawn(async move {
             state
-                .wait_for_approval(&app, request, &StopSignal::new())
+                .wait_for_approval(&core, request, &StopSignal::new())
                 .await
         })
     };
@@ -5374,8 +5318,7 @@ async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert!(agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         "chat-a".into(),
         "function-call-1".into(),
         ApprovalDecision::Allow
@@ -5383,8 +5326,7 @@ async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
     assert!(matches!(a.await.unwrap(), ApprovalDecision::Allow));
     assert!(!b.is_finished(), "the other chat still waits");
     assert!(agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         "chat-b".into(),
         "function-call-1".into(),
         ApprovalDecision::Deny

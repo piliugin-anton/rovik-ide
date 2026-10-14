@@ -151,7 +151,6 @@ pub struct ToolDirEntry {
 /// Recursively lists a directory, respecting .gitignore and the built-in
 /// denylist. Capped on both depth and total entries so a huge or
 /// gitignore-less project can't produce an unbounded response.
-#[tauri::command]
 pub async fn tool_list_dir(
     root: String,
     path: Option<String>,
@@ -229,7 +228,6 @@ fn list_dir(
 
 /// Text or regex search across the project on ripgrep's engine (see
 /// code_search.rs). Runs off the main thread.
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn tool_search_code(
     root: String,
@@ -432,7 +430,6 @@ const DIAG_MAX_MARKERS: usize = 100;
 /// The editor's current markers for a file (fire-and-forget from the
 /// frontend's marker listener). Never fails the caller: bad input is an
 /// error string, never a panic.
-#[tauri::command]
 pub fn report_editor_diagnostics(
     root: String,
     path: String,
@@ -747,7 +744,6 @@ fn diagnostics_summary(root: &str, root_canon: &Path) -> Result<String, String> 
 /// name (`symbol`, see read_symbol.rs), or all of it. A file too large to
 /// read whole comes back as its start and a map of its declarations, and
 /// long ranges stop with a note (see read_file.rs).
-#[tauri::command]
 pub fn tool_read_file_range(
     root: String,
     path: String,
@@ -804,7 +800,6 @@ pub struct EditOutcome {
 /// `new_text`, optionally only within lines `start_line..=end_line`
 /// (see edit_file.rs). With `dry_run`, computes the result without writing,
 /// for the approval review.
-#[tauri::command]
 pub fn tool_edit_file(
     root: String,
     path: String,
@@ -883,7 +878,6 @@ pub fn edit_file(
 
 /// Writes (creating parent directories as needed) or overwrites a file
 /// inside the project root.
-#[tauri::command]
 pub fn tool_write_file(root: String, path: String, content: String) -> Result<String, String> {
     write_file(&root, &path, &content, None)
 }

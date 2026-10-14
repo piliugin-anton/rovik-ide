@@ -24,7 +24,6 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use tauri::Runtime;
 
 /// Change reviews in one run, whatever starts them (this hook; after a
 /// repair, R08).
@@ -665,7 +664,7 @@ pub fn review_brief(p: &BriefParts) -> String {
  * ---------------------------------------------------------------------------
  */
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// The run's change: each file the run changed, as it was and as it is.
     pub(super) fn change_set(&self) -> Vec<FileChange> {
         let Some(root) = self.root.clone() else {
@@ -729,7 +728,7 @@ impl<R: Runtime> Run<R> {
         if self.sub().is_some() || self.plan_mode || self.stopped() || self.profile.no_tools {
             return Ok(false);
         }
-        let config = self.state.config().subagents;
+        let config = self.core.agents.config().subagents;
         if config.kind(Kind::Reviewer).is_none() || self.root.is_none() {
             return Ok(false);
         }
@@ -849,7 +848,7 @@ impl<R: Runtime> Run<R> {
             review["reason"].as_str().map(str::to_string),
         ));
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "changeReview",
                 "dialogId": self.dialog_id,

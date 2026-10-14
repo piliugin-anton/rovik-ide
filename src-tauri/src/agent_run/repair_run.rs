@@ -25,7 +25,6 @@ use crate::chat_db::store;
 use crate::overlay::chats;
 use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
-use tauri::Runtime;
 
 /// The part of a check's output a fixer gets, at most.
 const FIX_EXCERPT_CHARS: usize = 3_000;
@@ -242,14 +241,20 @@ struct FixRound<'a> {
     record_id: &'a str,
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// Whether the repair loop runs here: the lead of an isolated chat in
     /// which a parallel group joined, with step workers on.
     fn repair_on(&self) -> bool {
         self.sub().is_none()
             && !self.groups.is_empty()
             && !self.profile.no_tools
-            && self.state.config().subagents.kind(Kind::Worker).is_some()
+            && self
+                .core
+                .agents
+                .config()
+                .subagents
+                .kind(Kind::Worker)
+                .is_some()
             && chats::get(&self.dialog_id).is_some()
     }
 
@@ -306,7 +311,7 @@ impl<R: Runtime> Run<R> {
         // R06: the owners fix in the first round; then, or after a round
         // that made no progress, the lead does it all.
         let lead_only = lead_only(judgement.verdict, self.rechecks, round);
-        let config = self.state.config().subagents;
+        let config = self.core.agents.config().subagents;
         let parallel: Vec<usize> = if lead_only.is_none() && config.parallel_repair {
             let set = causes::parallel_set(&found);
             found
@@ -394,7 +399,7 @@ impl<R: Runtime> Run<R> {
         )
         .await?;
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "repairRound",
                 "dialogId": self.dialog_id,
@@ -467,7 +472,7 @@ impl<R: Runtime> Run<R> {
         fix: &FixRound<'_>,
         cause: &Cause,
         root: Option<String>,
-    ) -> Result<(String, super::run::Run<R>), String> {
+    ) -> Result<(String, super::run::Run), String> {
         let FixRound {
             group,
             round,
@@ -480,10 +485,10 @@ impl<R: Runtime> Run<R> {
         let child = group
             .worker_chat(label, *step)
             .ok_or_else(|| format!("worker {label}'s chat isn't known"))?;
-        if self.state.is_running(&child) {
+        if self.core.agents.is_running(&child) {
             return Err(format!("worker {label} is still working"));
         }
-        let config = self.state.config().subagents;
+        let config = self.core.agents.config().subagents;
         if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
             return Err(why.trim_start_matches("Error: ").to_string());
         }
@@ -657,7 +662,7 @@ impl<R: Runtime> Run<R> {
         .and_then(|r| r);
         if let Err(e) = saved {
             log::write(
-                &self.app,
+                &self.core,
                 json!({ "event": "groupSave", "dialogId": self.dialog_id, "error": e }),
             );
         }
@@ -779,7 +784,7 @@ impl<R: Runtime> Run<R> {
                 }
             }
         }
-        let max = self.state.config().subagents.max_at_once();
+        let max = self.core.agents.config().subagents.max_at_once();
         let done: Vec<Option<SubResult>> = stream::iter(futures).buffered(max).collect().await;
         // The join, one at a time.
         let root = self.root.clone().unwrap_or_default();

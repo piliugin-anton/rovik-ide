@@ -49,7 +49,7 @@ impl Harness {
 
     async fn child_of(&self, call_id: &str) -> store::ChildDialog {
         let (id, call) = (self.dialog_id.clone(), call_id.to_string());
-        let db = self.app.state::<DbState>().inner().clone();
+        let db = self.core.db.clone();
         db.read(move |c| store::child_for_call(c, &id, &call))
             .await
             .unwrap()
@@ -58,7 +58,7 @@ impl Harness {
 
     async fn messages_of(&self, dialog_id: &str) -> Vec<MessageRow> {
         let id = dialog_id.to_string();
-        let db = self.app.state::<DbState>().inner().clone();
+        let db = self.core.db.clone();
         db.read(move |c| store::get_messages(c, &id, None, 500))
             .await
             .unwrap()
@@ -147,7 +147,7 @@ async fn a_scout_explores_and_reports_to_the_lead() {
     assert_eq!(roles(&work), ["user", "assistant", "tool", "assistant"]);
     assert!(work[0].content.contains("Where is MARK-1 defined?"));
     assert!(work[2].content.contains("MARK-1 lives here"));
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let listed = db
         .read(|c| store::list_dialogs(c, None, None, 50))
         .await
@@ -187,8 +187,8 @@ async fn a_scout_explores_and_reports_to_the_lead() {
     assert_eq!(ended[0]["status"], "done");
     assert!(!h.events_of("subagentProgress").is_empty());
     // No run of its own in the list of runs, and nothing left registered.
-    let app = h.app.handle().clone();
-    assert!(!app.state::<AgentState>().is_running(&h.dialog_id));
+    let core = h.core.clone();
+    assert!(!core.agents.is_running(&h.dialog_id));
 }
 
 #[tokio::test]
@@ -507,9 +507,9 @@ async fn stop_on_the_lead_stops_its_scouts() {
         .await;
     let child = started["childDialogId"].as_str().unwrap().to_string();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let app = h.app.handle().clone();
-    assert!(app.state::<AgentState>().is_running(&child));
-    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    let core = h.core.clone();
+    assert!(core.agents.is_running(&child));
+    assert!(agent_stop(&core, h.dialog_id.clone()));
     assert_eq!(h.run_end().await, "stopped");
     let result = h.task_result("t1").await;
     assert!(
@@ -517,8 +517,8 @@ async fn stop_on_the_lead_stops_its_scouts() {
         "{}",
         result.content
     );
-    assert!(!app.state::<AgentState>().is_running(&child));
-    assert!(!app.state::<AgentState>().is_running(&h.dialog_id));
+    assert!(!core.agents.is_running(&child));
+    assert!(!core.agents.is_running(&h.dialog_id));
 }
 
 #[tokio::test]
@@ -558,10 +558,9 @@ async fn a_scouts_approval_shows_in_the_lead_chat() {
     let child = request["dialogId"].as_str().unwrap().to_string();
     assert_ne!(child, h.dialog_id);
 
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     assert!(agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         child,
         "s1".into(),
         ApprovalDecision::Allow
@@ -649,7 +648,7 @@ async fn plan_mode_never_starts_a_writing_subagent() {
     }
     assert_eq!(h.file("a.txt").as_deref(), Some("x\n"));
     // No subagent chat was started for any of them.
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     for call in ["t1", "t2", "t3"] {
         let (id, call) = (h.dialog_id.clone(), call.to_string());
         let child = db
@@ -1395,25 +1394,25 @@ async fn landing_and_discarding_wait_for_running_subagents() {
         .await;
     h.wait_for("subagentStarted", |e| e["type"] == "subagentStarted")
         .await;
-    let app = h.app.handle().clone();
-    let refused = crate::overlay::chats::overlay_discard(app.state(), h.dialog_id.clone())
+    let core = h.core.clone();
+    let refused = crate::overlay::chats::overlay_discard(&core.agents, h.dialog_id.clone())
         .await
         .unwrap_err();
     assert_eq!(
         refused,
         "this chat's run is still going, with 1 subagent at work: stop it first"
     );
-    let refused = crate::overlay::chats::overlay_land(app.state(), h.dialog_id.clone(), false)
+    let refused = crate::overlay::chats::overlay_land(&core.agents, h.dialog_id.clone(), false)
         .await
         .err()
         .unwrap();
     assert!(refused.contains("1 subagent at work"));
     // Stop: the scout ends with the run, and nothing holds the chat.
-    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()));
     assert_eq!(h.run_end().await, "stopped");
-    assert_eq!(app.state::<AgentState>().running_children(&h.dialog_id), 0);
+    assert_eq!(core.agents.running_children(&h.dialog_id), 0);
     assert!(
-        crate::overlay::chats::overlay_discard(app.state(), h.dialog_id.clone())
+        crate::overlay::chats::overlay_discard(&core.agents, h.dialog_id.clone())
             .await
             .is_ok()
     );
@@ -1449,8 +1448,8 @@ async fn stopping_one_of_three_scouts_stops_only_it() {
         .await;
     let b = started["childDialogId"].as_str().unwrap().to_string();
     tokio::time::sleep(Duration::from_millis(150)).await;
-    let app = h.app.handle().clone();
-    assert!(agent_stop(app.clone(), app.state(), b));
+    let core = h.core.clone();
+    assert!(agent_stop(&core, b));
     assert_eq!(h.run_end().await, "done");
     let status = |c: &str, m: &MessageRow| {
         m.meta.as_ref().unwrap()["subagent"]["status"]
@@ -1470,7 +1469,7 @@ async fn stopping_one_of_three_scouts_stops_only_it() {
 #[tokio::test]
 async fn a_restart_during_a_scout_resumes_its_chat() {
     let h = harness(&[("a.txt", "x\n")]).await;
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     // As the app left it: the lead's task call, no result; the scout's
     // chat with its brief, one read done and one call that never ran.
     let lead = h.dialog_id.clone();
@@ -1586,7 +1585,7 @@ async fn a_lead_that_fails_mid_batch_leaves_no_subagent_running() {
         .unwrap()
         .remove("q11-1");
     assert_eq!(end, "error");
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     assert_eq!(state.running_children(&h.dialog_id), 0);
     assert!(!state.is_running(&h.dialog_id));
 }
@@ -1596,7 +1595,7 @@ async fn a_lead_that_fails_mid_batch_leaves_no_subagent_running() {
 #[tokio::test]
 async fn a_follow_up_resumed_after_a_restart_is_asked_once() {
     let h = harness(&[("a.txt", "x\n")]).await;
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let lead = h.dialog_id.clone();
     let mut user = crate::agent_run::run::new_message("user", "Find it");
     user.meta = Some(json!({ "mode": "agent" }));
@@ -6628,8 +6627,8 @@ async fn redo_puts_each_path_back_as_the_chat_had_it() {
         "{}",
         joined.content
     );
-    let app = h.app.handle().clone();
-    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    let core = h.core.clone();
+    agent_stop(&core, h.dialog_id.clone());
     assert_eq!(h.run_end().await, "stopped");
 
     let id = h.dialog_id.clone();
@@ -6750,7 +6749,7 @@ async fn a_failed_fixer_is_reported_as_having_changed_nothing() {
 #[tokio::test]
 async fn a_worker_resumed_after_a_restart_knows_what_it_wrote() {
     let h = plan_harness(&[("a.txt", "hello\n")]).await;
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     // As the app left it: the lead's task call, no result; the worker's
     // chat with its brief and one write done (a.txt says hello now).
     let lead = h.dialog_id.clone();
@@ -6888,8 +6887,8 @@ async fn stop_during_a_group_retries_no_worker() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(h.events_of("subagentStarted").len(), 2);
-    let app = h.app.handle().clone();
-    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    let core = h.core.clone();
+    agent_stop(&core, h.dialog_id.clone());
     assert_eq!(h.run_end().await, "stopped");
     // No third worker was started for a retry.
     assert_eq!(h.events_of("subagentStarted").len(), 2);
@@ -6939,8 +6938,8 @@ async fn stop_on_the_lead_while_its_scout_waits_for_an_approval() {
         .wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
     let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
-    let app = h.app.handle().clone();
-    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    let core = h.core.clone();
+    assert!(agent_stop(&core, h.dialog_id.clone()));
     assert_eq!(h.run_end().await, "stopped");
     let result = h.task_result("t1").await;
     assert!(
@@ -6948,9 +6947,9 @@ async fn stop_on_the_lead_while_its_scout_waits_for_an_approval() {
         "{}",
         result.content
     );
-    let state = app.state::<AgentState>();
+    let state = &core.agents;
     assert!(!state.is_running(&child) && !state.is_running(&h.dialog_id));
-    let status = serde_json::to_value(agent_status(app.state())).unwrap();
+    let status = serde_json::to_value(agent_status(&core)).unwrap();
     assert_eq!(status["approvals"], json!([]), "no approval left waiting");
     assert_eq!(status["subagents"], json!([]));
 }
@@ -6991,7 +6990,7 @@ async fn a_subagent_that_panics_mid_batch_leaves_nothing_running() {
     }
     let broken = h.task_result("x2").await;
     assert!(broken.content.starts_with("Error"), "{}", broken.content);
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     assert_eq!(state.running_children(&h.dialog_id), 0);
     assert!(!state.is_running(&h.dialog_id));
 }
@@ -7208,7 +7207,7 @@ async fn an_error_on_the_report_turn_keeps_what_it_had() {
         "what it had reaches the lead: {}",
         result.content
     );
-    assert!(!h.app.state::<AgentState>().is_running(&h.dialog_id));
+    assert!(!h.core.agents.is_running(&h.dialog_id));
 }
 
 /// Stop while a repair round's fixer works: the run ends stopped, the next
@@ -7256,10 +7255,10 @@ async fn stop_in_the_middle_of_a_repair_round() {
         .await;
     let fixer_chat = fixer["childDialogId"].as_str().unwrap().to_string();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let app = h.app.handle().clone();
-    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    let core = h.core.clone();
+    assert!(agent_stop(&core, h.dialog_id.clone()));
     assert_eq!(h.run_end().await, "verify-stopped");
-    let state = app.state::<AgentState>();
+    let state = &core.agents;
     assert!(!state.is_running(&fixer_chat) && !state.is_running(&h.dialog_id));
     assert_eq!(state.running_children(&h.dialog_id), 0);
     // The users fixer never started, and no recheck ran.
@@ -7373,8 +7372,8 @@ async fn plan_checks_see_the_chats_view_in_an_isolated_chat() {
     h.wait_for("the write", |e| e["type"] == "fileWritten")
         .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let app = h.app.handle().clone();
-    agent_stop(app.clone(), app.state(), h.dialog_id.clone());
+    let core = h.core.clone();
+    agent_stop(&core, h.dialog_id.clone());
     assert_eq!(h.run_end().await, "stopped");
     assert!(h.file("src/only_here.rs").is_none(), "not in the project");
 
@@ -7445,11 +7444,10 @@ async fn a_plan_review_waits_for_its_approval_and_goes_on() {
     // Waiting: nothing saved yet.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(h.plan_files().is_empty());
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
     assert!(agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         child,
         "r1".into(),
         ApprovalDecision::Allow
@@ -7512,7 +7510,7 @@ async fn a_plan_held_in_one_run_is_reviewed_in_the_next() {
 async fn deleting_a_project_removes_its_subagents_chats_and_files() {
     let mut h = harness(&[("a.txt", "x\n")]).await;
     h.isolate().await;
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let root = h.project.clone();
     let project_id = db
         .write(move |c| crate::chat_db::projects::open_project(c, &root))
@@ -7561,16 +7559,10 @@ async fn deleting_a_project_removes_its_subagents_chats_and_files() {
             std::fs::write(dir.join("project.txt"), "x").unwrap();
         }
     }
-    let app = h.app.handle().clone();
-    crate::chat_db::commands::chat_delete_project(
-        app.clone(),
-        app.state::<AgentState>(),
-        app.state::<crate::vfs::VfsState>(),
-        app.state::<DbState>(),
-        project_id,
-    )
-    .await
-    .unwrap();
+    let core = h.core.clone();
+    crate::chat_db::api::chat_delete_project(&core, project_id)
+        .await
+        .unwrap();
     for id in [&kid, &grandkid] {
         for dir in left(id) {
             assert!(!dir.exists(), "{} left", dir.display());
@@ -7628,16 +7620,13 @@ async fn a_failed_brief_append_leaves_nothing_running() {
         result_of(&messages, "fb1").content
     );
     let (id, call) = (h.dialog_id.clone(), "fb1".to_string());
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let child = db
         .read(move |c| store::child_for_call(c, &id, &call))
         .await
         .unwrap();
     assert!(child.is_none(), "no child chat left: {child:?}");
-    assert_eq!(
-        h.app.state::<AgentState>().running_children(&h.dialog_id),
-        0
-    );
+    assert_eq!(h.core.agents.running_children(&h.dialog_id), 0);
     assert!(
         h.task_result("fb2").await.content.contains("Status: done"),
         "its place went back"
@@ -8208,10 +8197,9 @@ async fn waiting_for_an_approval_doesnt_spend_the_wall() {
     let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
     // Longer than its whole budget (0.25 minutes).
     tokio::time::sleep(Duration::from_secs(16)).await;
-    let app = h.app.handle().clone();
+    let core = h.core.clone();
     assert!(agent_resolve_approval(
-        app.clone(),
-        app.state(),
+        &core,
         child,
         "s1".into(),
         ApprovalDecision::Allow
@@ -8258,9 +8246,9 @@ async fn an_error_before_the_batch_starts_unregisters_launched_children() {
             "{ok}"
         );
     }
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     assert_eq!(state.running_children(&h.dialog_id), 0);
-    let status = serde_json::to_value(agent_status(h.app.state())).unwrap();
+    let status = serde_json::to_value(agent_status(&h.core)).unwrap();
     assert_eq!(status["subagents"], json!([]), "{status}");
 }
 
@@ -8300,7 +8288,7 @@ async fn queued_children_past_max_at_once_are_stopped_with_the_lead() {
         .remove("qm-1");
     assert_eq!(end, "error");
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     while state.is_running(&h.dialog_id) && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -8465,7 +8453,7 @@ async fn continue_with_an_unknown_handle_in_a_batch() {
 /// (`max_tool_calls` of `budget`) with no result, and in the scout's chat
 /// its brief and `made` calls, each with its result.
 async fn scout_left_at_a_restart(h: &Harness, made: usize, budget: u32) -> String {
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let lead = h.dialog_id.clone();
     let mut user = crate::agent_run::run::new_message("user", "Find it");
     user.meta = Some(json!({ "mode": "agent" }));
@@ -8617,8 +8605,9 @@ async fn landing_waits_only_for_live_children() {
         .unwrap()
         .remove("ll-1");
     assert_eq!(end, "error");
-    let app = h.app.handle().clone();
-    let landed = crate::overlay::chats::overlay_land(app.state(), h.dialog_id.clone(), false).await;
+    let core = h.core.clone();
+    let landed =
+        crate::overlay::chats::overlay_land(&core.agents, h.dialog_id.clone(), false).await;
     if let Err(e) = &landed {
         assert!(!e.contains("at work"), "{e}");
     }
@@ -8632,7 +8621,7 @@ async fn landing_waits_only_for_live_children() {
 async fn a_resumed_subagents_wall_starts_at_resume() {
     let h = harness(&[("a.txt", "x\n")]).await;
     let child = scout_left_at_a_restart(&h, 0, 10).await;
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let id = child.clone();
     db.write(move |c| {
         c.execute(
@@ -9514,8 +9503,8 @@ async fn stop_during_the_join_keeps_finished_copies() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let app = h.app.handle().clone();
-    assert!(agent_stop(app.clone(), app.state(), h.dialog_id.clone()));
+    let core = h.core.clone();
+    assert!(agent_stop(&core, h.dialog_id.clone()));
     let result = h.result_when_ready("g1").await;
     assert_eq!(h.run_end().await, "stopped");
     let text = &result.content;
@@ -9840,18 +9829,16 @@ async fn verify_now_output_survives_verify_at_end_without_fuse() {
     let earlier =
         crate::agent_run::check_output::save(&h.dialog_id, "round-1", "lint", "earlier\n").unwrap();
     let (url, seen) = model(vec![Reply::Text("Not asked.")]).await;
-    let app = h.app.handle().clone();
-    let state = app.state::<AgentState>().inner().clone();
-    let db = app.state::<DbState>().inner().clone();
+    let core = h.core.clone();
+    let state = core.agents.clone();
     let request = h.request(&url, Harness::send("Greet"), checks_on());
     state.set_config(request.config.clone().unwrap());
     let controls = state.register(&h.dialog_id, "p::m", None).unwrap();
     let _registered = state.registered(&h.dialog_id, &controls.run_id);
-    let (mut run, _entry) =
-        crate::agent_run::run::Run::prepare(&app, &state, &db, request, controls)
-            .await
-            .unwrap()
-            .unwrap();
+    let (mut run, _entry) = crate::agent_run::run::Run::prepare(&core, request, controls)
+        .await
+        .unwrap()
+        .unwrap();
     run.changed_files = vec!["a.txt".into()];
 
     let said = run.verify_now(&[]).await.unwrap();
@@ -10123,18 +10110,16 @@ async fn a_conflicts_saved_versions_outlive_the_runs_checks() {
     let earlier =
         crate::agent_run::check_output::save(&h.dialog_id, "round-1", "lint", "earlier\n").unwrap();
     let (url, seen) = model(vec![Reply::Text("Not asked.")]).await;
-    let app = h.app.handle().clone();
-    let state = app.state::<AgentState>().inner().clone();
-    let db = app.state::<DbState>().inner().clone();
+    let core = h.core.clone();
+    let state = core.agents.clone();
     let request = h.request(&url, Harness::send("Greet"), checks_on());
     state.set_config(request.config.clone().unwrap());
     let controls = state.register(&h.dialog_id, "p::m", None).unwrap();
     let _registered = state.registered(&h.dialog_id, &controls.run_id);
-    let (mut run, _entry) =
-        crate::agent_run::run::Run::prepare(&app, &state, &db, request, controls)
-            .await
-            .unwrap()
-            .unwrap();
+    let (mut run, _entry) = crate::agent_run::run::Run::prepare(&core, request, controls)
+        .await
+        .unwrap()
+        .unwrap();
     run.changed_files = vec!["a.txt".into()];
     run.writes_since_verify = true;
 
@@ -10177,7 +10162,7 @@ async fn a_conflicts_saved_versions_outlive_the_runs_checks() {
 async fn deleting_a_lead_removes_its_subagents_checks_landings_and_carry() {
     let mut h = harness(&[("a.txt", "x\n")]).await;
     h.isolate().await;
-    let db = h.app.state::<DbState>().inner().clone();
+    let db = h.core.db.clone();
     let kid = uuid::Uuid::new_v4().to_string();
     let (parent, k) = (h.dialog_id.clone(), kid.clone());
     db.write(move |c| {
@@ -10213,23 +10198,17 @@ async fn deleting_a_lead_removes_its_subagents_checks_landings_and_carry() {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join("project.txt"), "x").unwrap();
     }
-    let state = h.app.state::<AgentState>();
+    let state = &h.core.agents;
     state.put_carry(
         &kid,
         crate::agent_run::verify::VerifyCarry::for_test("rec", Duration::ZERO, vec![]),
     );
     assert!(state.has_carry(&kid));
 
-    let app = h.app.handle().clone();
-    crate::chat_db::commands::chat_delete_dialog(
-        app.clone(),
-        app.state::<AgentState>(),
-        app.state::<crate::vfs::VfsState>(),
-        app.state::<DbState>(),
-        h.dialog_id.clone(),
-    )
-    .await
-    .unwrap();
+    let core = h.core.clone();
+    crate::chat_db::api::chat_delete_dialog(&core, h.dialog_id.clone())
+        .await
+        .unwrap();
     assert!(!checks.exists(), "{} left", checks.display());
     for dir in &left {
         assert!(!dir.exists(), "{} left", dir.display());

@@ -22,7 +22,7 @@
 //!   - a report that doesn't follow the format gets one repair turn, then
 //!     goes to the lead as written: `unformatted`.
 
-use super::events::{emit, AgentEvent};
+use super::events::AgentEvent;
 use super::guard::FinishedCall;
 use super::run::{
     new_message, reasoning_meta, text_before_cut, unanswered_tool_calls, Role, Run, IDE_NOTE,
@@ -41,7 +41,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::Runtime;
 
 /// What a subagent's run knows about itself.
 pub(super) struct SubCtx {
@@ -188,8 +187,8 @@ impl SubCtx {
 }
 
 /// A `task` call, ready to run or already answered.
-enum Job<R: Runtime> {
-    Run(Box<Run<R>>),
+enum Job {
+    Run(Box<Run>),
     /// Answered without a child of its own: a refusal, or a whole group of
     /// parallel workers (group.rs), with the result's meta.
     Answered(String, Option<Value>),
@@ -200,7 +199,7 @@ pub(super) type SubFuture = Pin<Box<dyn Future<Output = Option<SubResult>> + Sen
 /// A child's run as a task of its own: dropping the future that awaits it
 /// never cancels the child halfway (Stop ends it cleanly). None: it
 /// panicked.
-pub(super) async fn run_child<R: Runtime>(run: Run<R>) -> Option<SubResult> {
+pub(super) async fn run_child(run: Run) -> Option<SubResult> {
     crate::rt::spawn(go_sub(run)).await.ok().flatten()
 }
 
@@ -223,7 +222,7 @@ pub static FAIL_LAUNCH: std::sync::Mutex<std::collections::BTreeSet<String>> =
 pub static FAIL_BRIEF: std::sync::Mutex<std::collections::BTreeSet<String>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
-pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
+pub(super) fn go_sub(run: Run) -> SubFuture {
     // Unregistered however it ends, by the guard in its `SubCtx`: a child
     // that panicked would otherwise stay "running" and its chat couldn't be
     // deleted.
@@ -233,7 +232,7 @@ pub(super) fn go_sub<R: Runtime>(run: Run<R>) -> SubFuture {
     })
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /*
      * -----------------------------------------------------------------------
      * The lead's side: `task` calls
@@ -267,8 +266,8 @@ impl<R: Runtime> Run<R> {
             }
             return Ok(());
         }
-        let config = self.state.config().subagents;
-        let mut jobs: Vec<Job<R>> = Vec::with_capacity(calls.len());
+        let config = self.core.agents.config().subagents;
+        let mut jobs: Vec<Job> = Vec::with_capacity(calls.len());
         for tc in calls {
             if self.stopped() {
                 jobs.push(Job::Answered(
@@ -390,14 +389,14 @@ impl<R: Runtime> Run<R> {
             {
                 // P1.1: the run ends in an error; its subagents end first,
                 // stopped, so none is left running (or registered).
-                self.state.stop_children(&self.app, &self.dialog_id);
+                self.core.agents.stop_children(&self.core, &self.dialog_id);
                 while results.next().await.is_some() {}
                 return Err(e);
             }
         }
         if running > 0 {
             log::write(
-                &self.app,
+                &self.core,
                 json!({
                     "event": "subagentBatch",
                     "dialogId": self.dialog_id,
@@ -417,7 +416,7 @@ impl<R: Runtime> Run<R> {
         tc: &ToolCall,
         config: &SubagentConfig,
         resumed: bool,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         let kinds = self.subagent_kinds();
         if kinds.is_empty() {
             return Err(
@@ -473,7 +472,8 @@ impl<R: Runtime> Run<R> {
             return false;
         };
         let (parent, key) = (self.dialog_id.clone(), handle.to_string());
-        self.db
+        self.core
+            .db
             .read(move |c| store::child_by_handle(c, &parent, &key))
             .await
             .ok()
@@ -493,7 +493,7 @@ impl<R: Runtime> Run<R> {
         handle: &str,
         args: &serde_json::Map<String, Value>,
         resumed: bool,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         let goal = permissions::trimmed_str(args.get("goal"))
             .ok_or("Error: \"goal\" is required: the follow-up question.")?
             .to_string();
@@ -508,6 +508,7 @@ impl<R: Runtime> Run<R> {
         let max_tool_calls = permissions::count_arg(args.get("max_tool_calls"));
         let (parent, key) = (self.dialog_id.clone(), handle.to_string());
         let Some(child) = self
+            .core
             .db
             .read(move |c| store::child_by_handle(c, &parent, &key))
             .await?
@@ -527,7 +528,7 @@ impl<R: Runtime> Run<R> {
                     child.kind
                 )
             })?;
-        if self.state.is_running(&child.id) {
+        if self.core.agents.is_running(&child.id) {
             return Err(
                 "Error: that subagent is still working: wait for its report before asking it more."
                     .into(),
@@ -583,7 +584,7 @@ impl<R: Runtime> Run<R> {
         step: Option<super::plan::PlanStep>,
         goal: &str,
         resumed: bool,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         let mut sub = self
             .new_sub(kind, &tc.id, brief.budget(config.budget(kind)), config)
             .await?;
@@ -625,6 +626,7 @@ impl<R: Runtime> Run<R> {
         let (id, call) = (child.id.clone(), tc.id.clone());
         let asked = resumed
             && self
+                .core
                 .db
                 .read(move |c| {
                     Ok(store::get_messages(c, &id, None, 500)?
@@ -644,6 +646,7 @@ impl<R: Runtime> Run<R> {
             // Round 3: resumed, it goes on with the calls it already made.
             let id = child.id.clone();
             let made = self
+                .core
                 .db
                 .read(move |c| store::count_tool_calls(c, &id))
                 .await
@@ -726,12 +729,12 @@ impl<R: Runtime> Run<R> {
         call_id: &str,
         goal: &str,
         mut sub: SubCtx,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         #[cfg(test)]
         if FAIL_LAUNCH.lock().unwrap().contains(call_id) {
             return Err("Error: that subagent is already running.".into());
         }
-        let Some(controls) = self.state.register_child(
+        let Some(controls) = self.core.agents.register_child(
             &child_id,
             &self.dialog_id,
             call_id,
@@ -741,7 +744,7 @@ impl<R: Runtime> Run<R> {
             return Err("Error: that subagent is already running.".into());
         };
         sub.run_id = controls.run_id.clone();
-        sub.registered = Some(self.state.registered(&child_id, &controls.run_id));
+        sub.registered = Some(self.core.agents.registered(&child_id, &controls.run_id));
         let focus: Vec<String> = sub
             .scope
             .as_ref()
@@ -749,7 +752,7 @@ impl<R: Runtime> Run<R> {
             .unwrap_or_default();
         let map = self.kind_map(sub.kind, &focus);
         let writes = sub.kind.writes();
-        self.state.describe_child(
+        self.core.agents.describe_child(
             &child_id,
             super::ChildInfo {
                 kind: sub.kind.id().into(),
@@ -761,17 +764,14 @@ impl<R: Runtime> Run<R> {
                 tool_calls: 0,
             },
         );
-        emit(
-            &self.app,
-            AgentEvent::SubagentStarted {
-                dialog_id: self.dialog_id.clone(),
-                tool_call_id: call_id.to_string(),
-                child_dialog_id: child_id.clone(),
-                kind: sub.kind.id().into(),
-                model: sub.models[0].label.clone(),
-                goal: goal.to_string(),
-            },
-        );
+        self.core.emit(AgentEvent::SubagentStarted {
+            dialog_id: self.dialog_id.clone(),
+            tool_call_id: call_id.to_string(),
+            child_dialog_id: child_id.clone(),
+            kind: sub.kind.id().into(),
+            model: sub.models[0].label.clone(),
+            goal: goal.to_string(),
+        });
         let mut child = Run::prepare_child(self, child_id, sub, controls);
         // D06: what the files were before its first write to each, so a
         // worker that fails or is stopped can be rolled back (R02's code).
@@ -818,7 +818,7 @@ impl<R: Runtime> Run<R> {
         goal: &str,
         message: String,
     ) -> Result<(String, Option<SubResult>), String> {
-        let config = self.state.config().subagents;
+        let config = self.core.agents.config().subagents;
         let sub = self
             .new_sub(kind, call_id, config.budget(kind), &config)
             .await?;
@@ -858,7 +858,8 @@ impl<R: Runtime> Run<R> {
         let fail = FAIL_BRIEF.lock().unwrap().contains(call_id);
         #[cfg(not(test))]
         let fail = false;
-        self.db
+        self.core
+            .db
             .write(move |c| {
                 store::create_child_dialog(c, &dialog)?;
                 let stored = if fail {
@@ -892,7 +893,8 @@ impl<R: Runtime> Run<R> {
         }
         message.meta = Some(json!({ "subagentBrief": brief }));
         let id = child_id.to_string();
-        self.db
+        self.core
+            .db
             .write(move |c| store::append_messages(c, &id, &[message]).map(|_| ()))
             .await
     }
@@ -902,6 +904,7 @@ impl<R: Runtime> Run<R> {
     pub(super) async fn close_child_calls(&self, child_id: &str) -> Result<(), String> {
         let id = child_id.to_string();
         let recent = self
+            .core
             .db
             .read(move |c| store::get_messages(c, &id, None, 500))
             .await?
@@ -921,7 +924,8 @@ impl<R: Runtime> Run<R> {
             return Ok(());
         }
         let id = child_id.to_string();
-        self.db
+        self.core
+            .db
             .write(move |c| store::append_messages(c, &id, &results).map(|_| ()))
             .await
     }
@@ -935,18 +939,18 @@ impl<R: Runtime> Run<R> {
     /// Tells the lead's chat how far the subagent got (its block shows it).
     pub(super) fn note_sub_progress(&self, current_tool: &str) {
         let Some(sub) = self.sub() else { return };
-        self.state
-            .note_child_progress(&self.dialog_id, self.guard.tool_calls, &self.profile.label);
-        emit(
-            &self.app,
-            AgentEvent::SubagentProgress {
-                dialog_id: sub.parent_dialog_id.clone(),
-                tool_call_id: sub.parent_call_id.clone(),
-                tool_calls: self.guard.tool_calls,
-                current_tool: Some(current_tool.to_string()).filter(|t| !t.is_empty()),
-                model: self.profile.label.clone(),
-            },
+        self.core.agents.note_child_progress(
+            &self.dialog_id,
+            self.guard.tool_calls,
+            &self.profile.label,
         );
+        self.core.emit(AgentEvent::SubagentProgress {
+            dialog_id: sub.parent_dialog_id.clone(),
+            tool_call_id: sub.parent_call_id.clone(),
+            tool_calls: self.guard.tool_calls,
+            current_tool: Some(current_tool.to_string()).filter(|t| !t.is_empty()),
+            model: self.profile.label.clone(),
+        });
     }
 
     /// Runs the subagent to its report.
@@ -982,7 +986,7 @@ impl<R: Runtime> Run<R> {
         let Role::Sub(sub) = &self.role else {
             unreachable!("go_sub runs subagents only")
         };
-        self.state.unregister(&self.dialog_id, &sub.run_id);
+        self.core.agents.unregister(&self.dialog_id, &sub.run_id);
         let ms = self.started_at.elapsed().as_millis() as u64;
         let result = SubResult {
             kind: sub.kind,
@@ -1007,17 +1011,14 @@ impl<R: Runtime> Run<R> {
             notes,
             worker,
         };
-        emit(
-            &self.app,
-            AgentEvent::SubagentEnded {
-                dialog_id: sub.parent_dialog_id.clone(),
-                tool_call_id: sub.parent_call_id.clone(),
-                child_dialog_id: self.dialog_id.clone(),
-                status: status.id().into(),
-            },
-        );
+        self.core.emit(AgentEvent::SubagentEnded {
+            dialog_id: sub.parent_dialog_id.clone(),
+            tool_call_id: sub.parent_call_id.clone(),
+            child_dialog_id: self.dialog_id.clone(),
+            status: status.id().into(),
+        });
         log::write(
-            &self.app,
+            &self.core,
             subagent_log_line(sub, &self.dialog_id, &self.profile.model, &result),
         );
         result
@@ -1076,7 +1077,7 @@ impl<R: Runtime> Run<R> {
     fn note_models(&mut self, result: &SubResult) {
         for model in self.ledger.note(result) {
             log::write(
-                &self.app,
+                &self.core,
                 json!({
                     "event": "subagentCircuit",
                     "dialogId": self.dialog_id,
@@ -1090,6 +1091,7 @@ impl<R: Runtime> Run<R> {
     async fn files_read(&self) -> Vec<String> {
         let id = self.dialog_id.clone();
         let Ok(page) = self
+            .core
             .db
             .read(move |c| store::get_messages(c, &id, None, 500))
             .await
@@ -1261,7 +1263,7 @@ impl<R: Runtime> Run<R> {
             .unwrap_or(32_000);
         self.profile.context_tokens = Some(window * 3 / 4);
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "subagentTrim",
                 "dialogId": self.dialog_id,
@@ -1293,7 +1295,7 @@ impl<R: Runtime> Run<R> {
         self.options = options;
         self.profile = next;
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "subagentFallback",
                 "dialogId": dialog_id,
@@ -1394,7 +1396,7 @@ impl<R: Runtime> Run<R> {
     }
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /*
      * -----------------------------------------------------------------------
      * Step workers (worker.rs)
@@ -1426,7 +1428,7 @@ impl<R: Runtime> Run<R> {
         config: &SubagentConfig,
         brief: Brief,
         resumed: bool,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         let n = brief.step.unwrap_or(0);
         let Some((plan_path, plan)) = self.implementing_plan().await else {
             return Err("Error: workers carry out steps of a saved plan, and this run isn't implementing one. Do the work yourself.".into());
@@ -1489,7 +1491,8 @@ impl<R: Runtime> Run<R> {
     ) -> Result<(Option<store::ChildDialog>, String), String> {
         let existing = if resumed {
             let (parent, call) = (self.dialog_id.clone(), tc.id.clone());
-            self.db
+            self.core
+                .db
                 .read(move |c| store::child_for_call(c, &parent, &call))
                 .await?
         } else {
@@ -1521,7 +1524,7 @@ impl<R: Runtime> Run<R> {
         message: Option<String>,
         sub: SubCtx,
         admitted: Option<subagent::Admission>,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         let resumed = message.is_none();
         let started = async {
             match message {
@@ -1549,16 +1552,17 @@ impl<R: Runtime> Run<R> {
     /// launch leaves no chat behind.
     async fn launched(
         &mut self,
-        launched: Result<Run<R>, String>,
+        launched: Result<Run, String>,
         child_id: &str,
         resumed: bool,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         match launched {
             Ok(mut child) => {
                 if resumed {
                     // Every call it made, however long its chat (round 2).
                     let id = child_id.to_string();
                     let made = self
+                        .core
                         .db
                         .read(move |c| store::count_tool_calls(c, &id))
                         .await
@@ -1570,7 +1574,11 @@ impl<R: Runtime> Run<R> {
             Err(e) => {
                 if !resumed {
                     let id = child_id.to_string();
-                    let _ = self.db.write(move |c| store::delete_dialog(c, &id)).await;
+                    let _ = self
+                        .core
+                        .db
+                        .write(move |c| store::delete_dialog(c, &id))
+                        .await;
                 }
                 Err(e)
             }
@@ -1586,7 +1594,7 @@ impl<R: Runtime> Run<R> {
         config: &SubagentConfig,
         brief: Brief,
         resumed: bool,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         let plan = self.implementing_plan().await;
         let root = self.root.clone().unwrap_or_default();
         let touched = self.test_writer_hidden().await;
@@ -1643,9 +1651,10 @@ impl<R: Runtime> Run<R> {
     /// lead's) from what it was before this run, where that's known (the
     /// project's copy, in an isolated chat). They're never rolled back:
     /// what they were just before it isn't known any more.
-    async fn resume_child_writes(&mut self, child: &mut Run<R>, child_id: &str) {
+    async fn resume_child_writes(&mut self, child: &mut Run, child_id: &str) {
         let id = child_id.to_string();
         let Ok(page) = self
+            .core
             .db
             .read(move |c| store::get_messages(c, &id, None, 500))
             .await
@@ -1743,6 +1752,7 @@ impl<R: Runtime> Run<R> {
     pub(super) async fn grants_of(&self, child_id: &str) -> Vec<String> {
         let id = child_id.to_string();
         let Ok(page) = self
+            .core
             .db
             .read(move |c| store::get_messages(c, &id, None, 500))
             .await
@@ -1767,6 +1777,7 @@ impl<R: Runtime> Run<R> {
         // Its brief: the first message (a page is the latest ones, so the
         // brief is found by its heading).
         let first = self
+            .core
             .db
             .read(move |c| store::get_messages(c, &id, None, 500))
             .await
@@ -1840,13 +1851,10 @@ impl<R: Runtime> Run<R> {
             }
         };
         let items = worker::mark_step_done(&current, step, &steps)?;
-        emit(
-            &self.app,
-            AgentEvent::Checklist {
-                dialog_id: self.dialog_id.clone(),
-                items: items.clone(),
-            },
-        );
+        self.core.emit(AgentEvent::Checklist {
+            dialog_id: self.dialog_id.clone(),
+            items: items.clone(),
+        });
         Some(items)
     }
 

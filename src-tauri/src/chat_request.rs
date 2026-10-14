@@ -210,16 +210,6 @@ impl Drop for Registration<'_> {
     }
 }
 
-/// Async so it runs off the main thread: Stop must work even if the main
-/// thread is busy.
-#[tauri::command]
-pub async fn cancel_chat_request(
-    requests: tauri::State<'_, ChatRequests>,
-    request_id: String,
-) -> Result<bool, String> {
-    Ok(requests.cancel(&request_id))
-}
-
 /// Resolves when cancellation is requested (never, if the sender is gone).
 pub async fn cancelled(cancel: &mut watch::Receiver<bool>) {
     loop {

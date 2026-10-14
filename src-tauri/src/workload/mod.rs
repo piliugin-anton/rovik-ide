@@ -78,14 +78,12 @@ pub fn short_command(command: &str) -> String {
     }
 }
 
-#[tauri::command]
 pub fn workload_focus(dialog_id: Option<String>) {
     set_focus(dialog_id);
 }
 
 /// `None`: auto. A number: that many slots, as the user set it; kept for
 /// the next start.
-#[tauri::command]
 pub fn workload_set_slots(slots: Option<usize>) -> Result<(), String> {
     let slots = slots.map(|n| n.clamp(1, MAX_SLOTS));
     // Saved first: a setting that can't be kept isn't applied either.
@@ -117,7 +115,6 @@ pub struct WorkloadStatus {
 }
 
 /// For Settings → Builds & checks.
-#[tauri::command]
 pub fn workload_status() -> WorkloadStatus {
     let s = queue::slots();
     let cores = if s.cores > 0 {

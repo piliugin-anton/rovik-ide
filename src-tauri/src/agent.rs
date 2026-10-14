@@ -1,7 +1,7 @@
 use crate::chat_request::{responses, Api};
+use crate::core::Core;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tauri::ipc::Channel;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
@@ -776,70 +776,27 @@ pub struct ChatParams {
     pub chat_id: Option<String>,
 }
 
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
+/// A request the frontend makes itself, outside any run (a chat's title):
+/// Stop reaches it through `requests` by `request_id`, and its events go to
+/// `send`.
 pub async fn send_chat_message(
-    db: tauri::State<'_, crate::chat_db::DbState>,
-    base_url: String,
-    api_key: String,
-    model: String,
-    messages: Option<Vec<WireChatMessage>>,
-    dialog_id: Option<String>,
-    context_tokens: Option<usize>,
-    vision: Option<bool>,
-    pdf: Option<bool>,
-    current_user_content: Option<String>,
-    streaming: bool,
-    // Lets `cancel_chat_request` stop this request (and its retries).
+    core: &Core,
+    requests: &crate::chat_request::ChatRequests,
     request_id: Option<String>,
-    first_byte_timeout_ms: Option<u64>,
-    continue_reply: Option<bool>,
-    assistant_message_id: Option<String>,
-    requests: tauri::State<'_, crate::chat_request::ChatRequests>,
-    tools: Option<Vec<serde_json::Value>>,
-    system_prompt: Option<String>,
-    project_context: Option<String>,
-    options: Option<OpenAIChatOptions>,
-    context_mode: Option<String>,
-    api_route: Option<String>,
-    chat_id: Option<String>,
-    vfs: tauri::State<'_, crate::vfs::VfsState>,
-    on_event: Channel<ChatStreamEvent>,
+    params: ChatParams,
+    mut send: impl FnMut(ChatStreamEvent) + Send,
 ) -> Result<(), String> {
     // Registered first, so a Stop pressed while the history is still being
     // loaded is not lost.
     let mut registration = requests.register(request_id);
-    let params = ChatParams {
-        base_url,
-        api_key,
-        model,
-        messages,
-        dialog_id,
-        context_tokens,
-        vision,
-        pdf,
-        current_user_content,
-        streaming,
-        first_byte_timeout_ms,
-        continue_reply,
-        assistant_message_id,
-        tools,
-        system_prompt,
-        project_context,
-        volatile_context: None,
-        options,
-        context_mode,
-        carried_notes: Vec::new(),
-        no_tool_calls: false,
-        api_route,
-        chat_id,
-        force_tool: None,
-        checklist_note: None,
-    };
-    let mut emit = |event: ChatStreamEvent| {
-        let _ = on_event.send(event);
-    };
-    run_chat(&db, &vfs, params, &mut registration.cancel, &mut emit).await
+    run_chat(
+        &core.db,
+        &core.vfs,
+        params,
+        &mut registration.cancel,
+        &mut send,
+    )
+    .await
 }
 
 /// Runs one request: builds the history (for a chat), sends it with
@@ -1765,13 +1722,9 @@ pub struct ContextEstimate {
     clm_budget: Option<usize>,
 }
 
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn chat_context_estimate(
-    app: tauri::AppHandle,
-    db: tauri::State<'_, crate::chat_db::DbState>,
-    vfs: tauri::State<'_, crate::vfs::VfsState>,
-    agents: tauri::State<'_, crate::agent_run::AgentState>,
+    core: &Core,
     dialog_id: String,
     base_url: String,
     model: String,
@@ -1786,7 +1739,8 @@ pub async fn chat_context_estimate(
     mode: Option<String>,
     extra_chars: Option<usize>,
 ) -> Result<ContextEstimate, String> {
-    let permissions = agents.config().permissions;
+    let (db, vfs) = (&core.db, &core.vfs);
+    let permissions = core.agents.config().permissions;
     let root = root.filter(|r| !r.trim().is_empty());
     let tools = crate::agent_run::tools::tools_for(
         root.is_some(),
@@ -1828,9 +1782,9 @@ pub async fn chat_context_estimate(
     });
     let project_chars = match root {
         Some(root) => {
-            let verify = permissions.verify_changes;
+            let (config_dir, verify) = (core.paths.config_dir.clone(), permissions.verify_changes);
             crate::rt::spawn_blocking(move || {
-                crate::agent_run::project::cached_context(&app, &root, verify)
+                crate::agent_run::project::cached_context(&config_dir, &root, verify)
             })
             .await
             .unwrap_or_default()
@@ -1953,7 +1907,6 @@ pub struct RemoteModel {
 /// Accepts both the standard `{ "data": [...] }` envelope and a bare array,
 /// since a few self-hosted servers skip the envelope. Runs on the Rust side so
 /// local servers (Ollama, LM Studio, llama.cpp) aren't blocked by CORS.
-#[tauri::command]
 pub async fn list_models(
     base_url: String,
     api_key: Option<String>,

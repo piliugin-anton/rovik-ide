@@ -642,48 +642,38 @@ fn read_instructions(root: &Path) -> Option<ProjectInstructions> {
     })
 }
 
-// ---- tauri commands (not compiled into the standalone tests) ----
-
-#[tauri::command]
-pub fn project_profile(root: String) -> Result<ProjectProfile, String> {
-    let root = Path::new(&root);
+/// The project in a folder, as `detect` sees it.
+pub fn project_profile(root: &str) -> Result<ProjectProfile, String> {
+    let root = Path::new(root);
     if !root.is_dir() {
         return Err(format!("{}: not a folder", root.display()));
     }
     Ok(detect(root))
 }
 
-fn project_settings_path<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<std::path::PathBuf, String> {
-    use tauri::Manager;
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    Ok(dir.join("project-settings.json"))
+/// Where each project's saved settings are kept, in the config folder.
+fn project_settings_path(config_dir: &Path) -> std::path::PathBuf {
+    config_dir.join("project-settings.json")
 }
 
 /// The user's settings for one project (e.g. corrected check commands), as
 /// the JSON the frontend stored; null when there are none.
-#[tauri::command]
-pub fn load_project_settings<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    root: String,
-) -> Result<serde_json::Value, String> {
-    let path = project_settings_path(&app)?;
+pub fn load_project_settings(config_dir: &Path, root: &str) -> serde_json::Value {
+    let path = project_settings_path(config_dir);
     let all: serde_json::Value = fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    Ok(all.get(&root).cloned().unwrap_or(serde_json::Value::Null))
+    all.get(root).cloned().unwrap_or(serde_json::Value::Null)
 }
 
 /// Saves one project's settings; null removes them.
-#[tauri::command]
 pub fn save_project_settings(
-    app: tauri::AppHandle,
+    config_dir: &Path,
     root: String,
     settings: serde_json::Value,
 ) -> Result<(), String> {
-    let path = project_settings_path(&app)?;
+    let path = project_settings_path(config_dir);
     let mut all: serde_json::Map<String, serde_json::Value> = fs::read_to_string(&path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -697,40 +687,11 @@ pub fn save_project_settings(
     crate::atomic_file::write_atomic(&path, json.as_bytes()).map_err(|e| e.to_string())
 }
 
-/// Agent diagnostics: one JSON object per line in agent-log.jsonl in the
-/// app's data folder. Rotated to agent-log.1.jsonl at 5 MB.
-/// Where the agent log goes instead of the app's data folder (the headless
-/// runner, headless.rs, keeps it with its report).
-static AGENT_LOG_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
-
-/// Tests: where the agent log goes now (None: the app's data folder).
-#[cfg(test)]
-pub fn agent_log_dir() -> Option<std::path::PathBuf> {
-    AGENT_LOG_DIR
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-}
-
-#[cfg(any(test, feature = "headless"))]
-pub fn set_agent_log_dir(dir: Option<std::path::PathBuf>) {
-    *AGENT_LOG_DIR.lock().unwrap_or_else(|e| e.into_inner()) = dir;
-}
-
-pub fn append_agent_log<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    line: String,
-) -> Result<(), String> {
-    use tauri::Manager;
-    let chosen = AGENT_LOG_DIR
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let dir = match chosen {
-        Some(dir) => dir,
-        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
-    };
-    append_log_line(&dir, &line, 5 * 1024 * 1024)
+/// Agent diagnostics: one JSON object per line in `dir`'s agent-log.jsonl,
+/// the core's log folder (core.rs, `Paths::log_dir`). Rotated to
+/// agent-log.1.jsonl at 5 MB.
+pub fn append_agent_log(dir: &Path, line: &str) -> Result<(), String> {
+    append_log_line(dir, line, 5 * 1024 * 1024)
 }
 
 /// P6.3: the agent log's one writer at a time (append_log_line).

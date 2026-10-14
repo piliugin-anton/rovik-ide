@@ -31,7 +31,6 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::LazyLock;
-use tauri::Runtime;
 
 /// A checkpoint isn't taken of more than this (rollback then isn't offered).
 const MAX_CHECKPOINT_BYTES: usize = 64 << 20;
@@ -803,7 +802,7 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
     }
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// Whether the run works in its chat's own copy (an overlay), where
     /// nobody else writes.
     pub(super) fn isolated(&self) -> bool {
@@ -1015,16 +1014,13 @@ impl<R: Runtime> Run<R> {
             .await;
         }
         for (abs, before, content, deleted) in written {
-            super::events::emit(
-                &self.app,
-                super::events::AgentEvent::FileWritten {
-                    abs_path: abs,
-                    before,
-                    content,
-                    reviewed: true,
-                    deleted,
-                },
-            );
+            self.core.emit(super::events::AgentEvent::FileWritten {
+                abs_path: abs,
+                before,
+                content,
+                reviewed: true,
+                deleted,
+            });
         }
         // The run's list of changed files is what it was then, plus what
         // couldn't be put back.

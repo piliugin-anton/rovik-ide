@@ -146,9 +146,9 @@ pub fn project_context(
 /// Detected fresh (a few file reads): the project's checks and its prompt section.
 /// The project's checks and its section of the system prompt. `root` is
 /// where the run works (an isolated chat's view); `settings_root`, the
-/// project folder its saved settings are kept under.
-pub fn load<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+/// project folder its saved settings are kept under, in `config_dir`.
+pub fn load(
+    config_dir: &Path,
     root: &str,
     settings_root: &str,
     verify_on: bool,
@@ -157,8 +157,7 @@ pub fn load<R: tauri::Runtime>(
         return (Vec::new(), String::new());
     }
     let profile = project_profile::detect(Path::new(root));
-    let settings = project_profile::load_project_settings(app.clone(), settings_root.to_string())
-        .unwrap_or_default();
+    let settings = project_profile::load_project_settings(config_dir, settings_root);
     let checks = effective_checks(&profile, &settings);
     let context = project_context(&profile, &checks, verify_on);
     (checks, context)
@@ -166,11 +165,7 @@ pub fn load<R: tauri::Runtime>(
 
 /// The project section for estimates (the context meter), re-detected at
 /// most every few seconds: estimates follow every message of a run.
-pub fn cached_context<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    root: &str,
-    verify_on: bool,
-) -> String {
+pub fn cached_context(config_dir: &Path, root: &str, verify_on: bool) -> String {
     use std::collections::HashMap;
     use std::sync::{LazyLock, Mutex};
     use std::time::{Duration, Instant};
@@ -184,7 +179,7 @@ pub fn cached_context<R: tauri::Runtime>(
             return text;
         }
     }
-    let (_, text) = load(app, root, root, verify_on);
+    let (_, text) = load(config_dir, root, root, verify_on);
     if let Ok(mut cache) = CACHE.lock() {
         cache.retain(|_, (at, _)| at.elapsed() < FRESH);
         cache.insert(key, (Instant::now(), text.clone()));

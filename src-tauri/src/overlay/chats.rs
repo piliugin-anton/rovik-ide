@@ -1737,7 +1737,6 @@ fn summarize(changes: &[OverlayChange]) -> Vec<ChangedFile> {
 }
 
 /// Polled while a run goes: off the UI thread, it reads the overlay.
-#[tauri::command]
 pub async fn overlay_status(dialog_id: String) -> Result<OverlayStatus, String> {
     crate::rt::spawn_blocking(move || status(dialog_id))
         .await
@@ -1797,7 +1796,6 @@ pub struct FileVersions {
 }
 
 /// A changed file as the project has it and as the chat has it, for a diff.
-#[tauri::command]
 pub async fn overlay_file(dialog_id: String, path: String) -> Result<FileVersions, String> {
     crate::rt::spawn_blocking(move || file_versions(dialog_id, path))
         .await
@@ -1856,12 +1854,11 @@ fn not_running(agent: &crate::agent_run::AgentState, dialog_id: &str) -> Result<
     Ok(())
 }
 
-#[tauri::command]
 pub async fn overlay_discard(
-    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    agent: &crate::agent_run::AgentState,
     dialog_id: String,
 ) -> Result<(), String> {
-    not_running(&agent, &dialog_id)?;
+    not_running(agent, &dialog_id)?;
     agent.drop_carry(&dialog_id);
     crate::rt::spawn_blocking(move || discard(&dialog_id))
         .await
@@ -2050,13 +2047,12 @@ pub struct LandResult {
     pub error: Option<String>,
 }
 
-#[tauri::command]
 pub async fn overlay_land(
-    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    agent: &crate::agent_run::AgentState,
     dialog_id: String,
     keep_chat: bool,
 ) -> Result<LandResult, String> {
-    not_running(&agent, &dialog_id)?;
+    not_running(agent, &dialog_id)?;
     Ok(land_command(dialog_id, keep_chat).await)
 }
 
@@ -2088,13 +2084,12 @@ async fn land_command(dialog_id: String, keep_chat: bool) -> LandResult {
 
 /// Undoes a landing. Returns the files left as they are because they
 /// changed since. Refused while the chat's run is going, like landing.
-#[tauri::command]
 pub async fn overlay_undo(
-    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    agent: &crate::agent_run::AgentState,
     dialog_id: String,
     id: String,
 ) -> Result<Vec<super::land::Conflict>, String> {
-    not_running(&agent, &dialog_id)?;
+    not_running(agent, &dialog_id)?;
     crate::rt::spawn_blocking(move || {
         if !valid_id(&dialog_id) {
             return Err("bad chat id".to_string());
@@ -2805,12 +2800,11 @@ pub fn undo_merge(dialog_id: &str, only: Option<&[String]>) -> Result<UndoneMerg
     Ok(done)
 }
 
-#[tauri::command]
 pub async fn overlay_undo_merge(
-    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    agent: &crate::agent_run::AgentState,
     dialog_id: String,
 ) -> Result<UndoneMerge, String> {
-    not_running(&agent, &dialog_id)?;
+    not_running(agent, &dialog_id)?;
     crate::rt::spawn_blocking(move || undo_merge(&dialog_id, None))
         .await
         .map_err(|e| e.to_string())?
@@ -2818,19 +2812,17 @@ pub async fn overlay_undo_merge(
 
 /// Takes markers just handed to the chat back out (it couldn't take them):
 /// only those files, nothing merged before.
-#[tauri::command]
 pub async fn overlay_unmark(
-    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    agent: &crate::agent_run::AgentState,
     dialog_id: String,
     files: Vec<String>,
 ) -> Result<UndoneMerge, String> {
-    not_running(&agent, &dialog_id)?;
+    not_running(agent, &dialog_id)?;
     crate::rt::spawn_blocking(move || undo_merge(&dialog_id, Some(&files)))
         .await
         .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
 pub async fn overlay_conflict_file(
     dialog_id: String,
     path: String,
@@ -2841,15 +2833,14 @@ pub async fn overlay_conflict_file(
 }
 
 /// Refused while the chat's run goes: it may be changing the same file.
-#[tauri::command]
 pub async fn overlay_conflict_resolve(
-    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    agent: &crate::agent_run::AgentState,
     dialog_id: String,
     path: String,
     content: Option<String>,
     side: Option<String>,
 ) -> Result<Vec<super::land::Conflict>, String> {
-    not_running(&agent, &dialog_id)?;
+    not_running(agent, &dialog_id)?;
     crate::rt::spawn_blocking(move || {
         resolve_conflict(
             &dialog_id,
@@ -2872,12 +2863,11 @@ pub struct HandedOver {
 
 /// Puts conflict markers in the chat's files for it to resolve; returns
 /// the message that asks it to.
-#[tauri::command]
 pub async fn overlay_conflicts_to_chat(
-    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    agent: &crate::agent_run::AgentState,
     dialog_id: String,
 ) -> Result<HandedOver, String> {
-    not_running(&agent, &dialog_id)?;
+    not_running(agent, &dialog_id)?;
     crate::rt::spawn_blocking(move || {
         let files = mark_conflicts(&dialog_id)?;
         let request = if files.is_empty() {
@@ -3364,13 +3354,12 @@ pub fn redo_group(dialog_id: &str, name: &str) -> Result<String, String> {
 }
 
 /// The Redo sequentially button: returns the message to send the chat.
-#[tauri::command]
 pub async fn overlay_redo_group(
-    agent: tauri::State<'_, crate::agent_run::AgentState>,
+    agent: &crate::agent_run::AgentState,
     dialog_id: String,
     group: String,
 ) -> Result<String, String> {
-    not_running(&agent, &dialog_id)?;
+    not_running(agent, &dialog_id)?;
     crate::rt::spawn_blocking(move || redo_group(&dialog_id, &group))
         .await
         .map_err(|e| e.to_string())?

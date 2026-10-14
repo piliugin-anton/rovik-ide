@@ -1,23 +1,24 @@
 //! Diagnostics for tuning the agent: one JSON line per model reply, per
 //! verification round, per question and per finished run, appended to
-//! agent-log.jsonl in the app's data folder (rotated at 5 MB; see
-//! project_profile::append_agent_log). Linux: ~/.local/share/rovik-ide/.
+//! agent-log.jsonl in the core's log folder, the app's data folder
+//! (rotated at 5 MB; see project_profile::append_agent_log). Linux:
+//! ~/.local/share/rovik-ide/.
 //!
 //! Never fails and never blocks the agent: a failed write is dropped.
 
+use crate::core::Core;
 use serde_json::{Map, Value};
-use tauri::{AppHandle, Runtime};
 
-pub fn write<R: Runtime>(app: &AppHandle<R>, entry: Value) {
+pub fn write(core: &Core, entry: Value) {
     let mut line = Map::new();
     line.insert("t".into(), Value::String(iso_now()));
     if let Value::Object(fields) = entry {
         line.extend(fields);
     }
     let text = Value::Object(line).to_string();
-    let app = app.clone();
+    let dir = core.paths.log_dir.clone();
     crate::rt::spawn_blocking(move || {
-        let _ = crate::project_profile::append_agent_log(app, text);
+        let _ = crate::project_profile::append_agent_log(&dir, &text);
     });
 }
 

@@ -15,11 +15,10 @@
 //! While many files change in the project at once (a branch switch, a
 //! pull), isolated runs wait before their next step and before landing.
 
-use super::events::{emit, AgentEvent};
+use super::events::AgentEvent;
 use super::run::Run;
 use crate::overlay::chats::{self, Pending};
 use crate::overlay::land::{self, LandError};
-use tauri::Runtime;
 
 /// The longest a run waits for the project to settle.
 const MAX_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
@@ -30,12 +29,12 @@ const LANDS_AFTER: &[&str] = &["done", "verified", "unverified", "verify-unverif
 /// Outcomes that land without any check having run.
 const UNCHECKED: &[&str] = &["unverified", "verify-unverified"];
 
-impl<R: Runtime> Run<R> {
+impl Run {
     pub(super) async fn land_at_end(&mut self, outcome: &str) {
         let result = self.try_land(outcome).await;
         if let Some((what, files)) = result {
             super::log::write(
-                &self.app,
+                &self.core,
                 serde_json::json!({ "event": "landing", "dialogId": self.dialog_id, "result": what, "files": files }),
             );
         }
@@ -156,7 +155,7 @@ impl<R: Runtime> Run<R> {
             );
             return Some(("waits: conflicts", count));
         }
-        let p = self.state.config().permissions;
+        let p = self.core.agents.config().permissions;
         // Checks that would run: set up, and allowed by the command rules.
         let has_checks = p.verify_changes
             && self.checks.iter().any(|c| {
@@ -280,7 +279,7 @@ impl<R: Runtime> Run<R> {
     /// Runs the project's checks on the merged result in the chat's view.
     /// Returns the first failing check's command.
     async fn check_merged(&self, plan: &land::Plan, view: &std::path::Path) -> Option<String> {
-        let p = self.state.config().permissions;
+        let p = self.core.agents.config().permissions;
         let checks: Vec<_> = self
             .checks
             .iter()
@@ -367,7 +366,7 @@ impl<R: Runtime> Run<R> {
             return Ok(None);
         }
         super::log::write(
-            &self.app,
+            &self.core,
             serde_json::json!({ "event": "merged-project-changes", "dialogId": self.dialog_id, "files": files.iter().map(|(p, _)| p).collect::<Vec<_>>() }),
         );
         self.merged_from_project = Some(files);
@@ -429,19 +428,16 @@ impl<R: Runtime> Run<R> {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
         super::log::write(
-            &self.app,
+            &self.core,
             serde_json::json!({ "event": "project-busy", "dialogId": self.dialog_id, "ms": started.elapsed().as_millis() as u64 }),
         );
     }
 
     fn notice(&self, kind: &str, title: &str, message: &str) {
-        emit(
-            &self.app,
-            AgentEvent::Notice {
-                kind: kind.into(),
-                title: title.into(),
-                message: message.into(),
-            },
-        );
+        self.core.emit(AgentEvent::Notice {
+            kind: kind.into(),
+            title: title.into(),
+            message: message.into(),
+        });
     }
 }

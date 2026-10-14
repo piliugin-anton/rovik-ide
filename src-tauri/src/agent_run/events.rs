@@ -1,13 +1,13 @@
-//! What a run tells the frontend, as `agent-event` app events. They go to
-//! every window and don't depend on any component being mounted: the
-//! frontend listens once, at the module level (src/lib/agentRuns.ts), and
-//! the database stays the source of truth for anything it misses.
+//! What a run tells the frontend, through its host's `EventSink`
+//! (core.rs): the app sends them to every window as `agent-event` app
+//! events. They don't depend on any component being mounted: the frontend
+//! listens once, at the module level (src/lib/agentRuns.ts), and the
+//! database stays the source of truth for anything it misses.
 
 use super::plan::{Question, TodoItem};
 use crate::chat_db::store::{NewMessage, ToolCall};
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Runtime};
 
 pub const EVENT: &str = "agent-event";
 
@@ -276,10 +276,4 @@ pub enum AgentEvent {
         child_dialog_id: String,
         status: String,
     },
-}
-
-pub fn emit<R: Runtime>(app: &AppHandle<R>, event: AgentEvent) {
-    if let Err(e) = app.emit(EVENT, &event) {
-        eprintln!("agent: could not send an event: {e}");
-    }
 }

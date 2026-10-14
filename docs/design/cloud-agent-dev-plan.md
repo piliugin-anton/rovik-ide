@@ -1373,3 +1373,12 @@ Tasks add notes here when reality differs from the plan.
   (K18). The agent log's folder is a third path, `Paths::log_dir`: the data
   folder, except for the headless runner, which keeps the log with its
   report.
+- **C04, two tests besides the harness.** The test that stored an
+  attachment through the mock app's IPC is two tests now: the app's
+  `chat_store_attachment` reads the bytes from either body (a pure
+  function), and the core stores them (`attachments::store_attached`).
+  The headless test that checked the agent log's process-wide folder was
+  reset keeps its other checks: with the folder in each `Core`, there is
+  no such folder left. The core functions behind the commands take the
+  part of the `Core` they need (`&DbState`, `&AgentState`), or the `Core`
+  when they need more or send events.

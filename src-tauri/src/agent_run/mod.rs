@@ -55,15 +55,14 @@ pub mod worker;
 
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewMessage};
-use crate::chat_db::DbState;
-use events::{emit, AgentEvent, ApprovalRequest, OutMessage, QuestionsRequest};
+use crate::core::Core;
+use events::{AgentEvent, ApprovalRequest, OutMessage, QuestionsRequest};
 use permissions::Permissions;
 use plan::QuestionsOutcome;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Runtime, State};
 use tokio::sync::{oneshot, watch};
 
 /// A model, resolved by the frontend from the providers in its settings.
@@ -447,17 +446,17 @@ impl AgentState {
     /// whatever it waits on (approvals count as denied, questions as stopped).
     /// A lead's subagents stop with it; a subagent's chat stops only itself.
     /// False when nothing ran there (neither the chat nor a subagent of it).
-    pub fn stop<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) -> bool {
-        self.stop_in(app, dialog_id, true)
+    pub fn stop(&self, core: &Core, dialog_id: &str) -> bool {
+        self.stop_in(core, dialog_id, true)
     }
 
     /// Stops a lead's subagents only (the lead itself goes on, e.g. to
     /// report an error once they've ended).
-    pub(super) fn stop_children<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str) {
-        self.stop_in(app, dialog_id, false);
+    pub(super) fn stop_children(&self, core: &Core, dialog_id: &str) {
+        self.stop_in(core, dialog_id, false);
     }
 
-    fn stop_in<R: Runtime>(&self, app: &AppHandle<R>, dialog_id: &str, itself: bool) -> bool {
+    fn stop_in(&self, core: &Core, dialog_id: &str, itself: bool) -> bool {
         let mut inner = self.lock();
         let own = if itself {
             inner
@@ -493,13 +492,10 @@ impl AgentState {
             if let Some(w) = inner.approvals.remove(&key) {
                 let _ = w.reply.send(ApprovalDecision::Deny);
                 let (dialog_id, tool_call_id) = key;
-                emit(
-                    app,
-                    AgentEvent::ApprovalSettled {
-                        dialog_id,
-                        tool_call_id,
-                    },
-                );
+                core.emit(AgentEvent::ApprovalSettled {
+                    dialog_id,
+                    tool_call_id,
+                });
             }
         }
         let questions: Vec<WaitKey> = inner
@@ -512,22 +508,19 @@ impl AgentState {
             if let Some(w) = inner.questions.remove(&key) {
                 let _ = w.reply.send(QuestionsOutcome::Stopped { stopped: true });
                 let (dialog_id, tool_call_id) = key;
-                emit(
-                    app,
-                    AgentEvent::QuestionsSettled {
-                        dialog_id,
-                        tool_call_id,
-                    },
-                );
+                core.emit(AgentEvent::QuestionsSettled {
+                    dialog_id,
+                    tool_call_id,
+                });
             }
         }
         true
     }
 
     /// Asks the user and waits for the decision (Deny if the run is stopped).
-    pub async fn wait_for_approval<R: Runtime>(
+    pub async fn wait_for_approval(
         &self,
-        app: &AppHandle<R>,
+        core: &Core,
         request: ApprovalRequest,
         stop: &StopSignal,
     ) -> ApprovalDecision {
@@ -540,17 +533,17 @@ impl AgentState {
                 reply: tx,
             },
         );
-        emit(app, AgentEvent::ApprovalRequested { request });
+        core.emit(AgentEvent::ApprovalRequested { request });
         // Stopped just before it was registered: nobody would answer.
         if stop.is_set() {
-            self.resolve_approval(app, &key.0, &key.1, ApprovalDecision::Deny);
+            self.resolve_approval(core, &key.0, &key.1, ApprovalDecision::Deny);
         }
         rx.await.unwrap_or(ApprovalDecision::Deny)
     }
 
-    fn resolve_approval<R: Runtime>(
+    fn resolve_approval(
         &self,
-        app: &AppHandle<R>,
+        core: &Core,
         dialog_id: &str,
         tool_call_id: &str,
         decision: ApprovalDecision,
@@ -561,20 +554,17 @@ impl AgentState {
         };
         let _ = w.reply.send(decision);
         let (dialog_id, tool_call_id) = key;
-        emit(
-            app,
-            AgentEvent::ApprovalSettled {
-                dialog_id,
-                tool_call_id,
-            },
-        );
+        core.emit(AgentEvent::ApprovalSettled {
+            dialog_id,
+            tool_call_id,
+        });
         true
     }
 
     /// Shows the questions and waits for the answer (Stopped if the run is stopped).
-    pub async fn wait_for_answers<R: Runtime>(
+    pub async fn wait_for_answers(
         &self,
-        app: &AppHandle<R>,
+        core: &Core,
         request: QuestionsRequest,
         stop: &StopSignal,
     ) -> QuestionsOutcome {
@@ -587,10 +577,10 @@ impl AgentState {
                 reply: tx,
             },
         );
-        emit(app, AgentEvent::QuestionsAsked { request });
+        core.emit(AgentEvent::QuestionsAsked { request });
         if stop.is_set() {
             self.answer_questions(
-                app,
+                core,
                 &key.0,
                 &key.1,
                 QuestionsOutcome::Stopped { stopped: true },
@@ -600,9 +590,9 @@ impl AgentState {
             .unwrap_or(QuestionsOutcome::Stopped { stopped: true })
     }
 
-    fn answer_questions<R: Runtime>(
+    fn answer_questions(
         &self,
-        app: &AppHandle<R>,
+        core: &Core,
         dialog_id: &str,
         tool_call_id: &str,
         outcome: QuestionsOutcome,
@@ -613,13 +603,10 @@ impl AgentState {
         };
         let _ = w.reply.send(outcome);
         let (dialog_id, tool_call_id) = key;
-        emit(
-            app,
-            AgentEvent::QuestionsSettled {
-                dialog_id,
-                tool_call_id,
-            },
-        );
+        core.emit(AgentEvent::QuestionsSettled {
+            dialog_id,
+            tool_call_id,
+        });
         true
     }
 }
@@ -694,21 +681,16 @@ pub struct StartRequest {
     pub isolate: Option<bool>,
 }
 
-#[tauri::command]
-pub fn agent_configure(state: State<'_, AgentState>, config: AgentConfig) {
+/// The settings runs follow, as the frontend sent them.
+pub fn agent_configure(core: &Core, config: AgentConfig) {
     crate::overlay::chats::set_chat_resolves(config.permissions.chat_resolves_conflicts);
-    state.set_config(config);
+    core.agents.set_config(config);
 }
 
 /// Starts a run in the chat. Returns its id, or None when there was nothing
 /// to do (a Resume with nothing left to run).
-#[tauri::command]
-pub async fn agent_start<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AgentState>,
-    db: State<'_, DbState>,
-    request: StartRequest,
-) -> Result<Option<String>, String> {
+pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
+    let (state, db) = (&core.agents, &core.db);
     if let Some(config) = request.config.clone() {
         state.set_config(config);
     }
@@ -762,8 +744,6 @@ pub async fn agent_start<R: Runtime>(
         return Err("The agent is already working in this chat.".into());
     };
     let run_id = controls.run_id.clone();
-    let state = state.inner().clone();
-    let db = db.inner().clone();
 
     // A new message is stored before anything else: the run reads the
     // chat's history from the database.
@@ -787,13 +767,10 @@ pub async fn agent_start<R: Runtime>(
             .write(move |c| store::append_messages(c, &id, &stored))
             .await
         {
-            Ok(seqs) => emit(
-                &app,
-                AgentEvent::MessagesAdded {
-                    dialog_id: dialog_id.clone(),
-                    messages: vec![OutMessage::from_new(&dialog_id, seqs[0], &new, false)],
-                },
-            ),
+            Ok(seqs) => core.emit(AgentEvent::MessagesAdded {
+                dialog_id: dialog_id.clone(),
+                messages: vec![OutMessage::from_new(&dialog_id, seqs[0], &new, false)],
+            }),
             Err(e) => {
                 state.unregister(&dialog_id, &run_id);
                 return Err(e);
@@ -805,7 +782,7 @@ pub async fn agent_start<R: Runtime>(
         StartKind::Send { message } => Some(message.id.clone()),
         _ => None,
     };
-    let prepared = match run::Run::prepare(&app, &state, &db, request, controls).await {
+    let prepared = match run::Run::prepare(core, request, controls).await {
         Ok(Some(prepared)) => prepared,
         Ok(None) => {
             state.unregister(&dialog_id, &run_id);
@@ -825,39 +802,31 @@ pub async fn agent_start<R: Runtime>(
                     .await
                     .is_ok()
                 {
-                    emit(
-                        &app,
-                        AgentEvent::MessagePatched {
-                            dialog_id: dialog_id.clone(),
-                            message_id: message_id.clone(),
-                            patch: events::Patch {
-                                failed: Some(true),
-                                ..Default::default()
-                            },
+                    core.emit(AgentEvent::MessagePatched {
+                        dialog_id: dialog_id.clone(),
+                        message_id: message_id.clone(),
+                        patch: events::Patch {
+                            failed: Some(true),
+                            ..Default::default()
                         },
-                    );
+                    });
                 }
-                emit(
-                    &app,
-                    AgentEvent::UserMessageSettled {
-                        dialog_id,
-                        message_id,
-                        ok: false,
-                    },
-                );
+                core.emit(AgentEvent::UserMessageSettled {
+                    dialog_id,
+                    message_id,
+                    ok: false,
+                });
             }
             return Err(e);
         }
     };
 
-    emit(
-        &app,
-        AgentEvent::RunStarted {
-            dialog_id: dialog_id.clone(),
-            run_id: run_id.clone(),
-        },
-    );
+    core.emit(AgentEvent::RunStarted {
+        dialog_id: dialog_id.clone(),
+        run_id: run_id.clone(),
+    });
     let id = run_id.clone();
+    let core = core.clone();
     crate::rt::spawn(async move {
         let (mut run, entry) = prepared;
         // The run as a task of its own: should it panic, the chat is still
@@ -870,62 +839,52 @@ pub async fn agent_start<R: Runtime>(
                 "error".to_string()
             }
         };
-        state.unregister(&dialog_id, &id);
-        emit(
-            &app,
-            AgentEvent::RunEnded {
-                dialog_id,
-                run_id: id,
-                outcome,
-            },
-        );
+        core.agents.unregister(&dialog_id, &id);
+        core.emit(AgentEvent::RunEnded {
+            dialog_id,
+            run_id: id,
+            outcome,
+        });
     });
     Ok(Some(run_id))
 }
 
 /// A reasoning effort the user picked for a model (src/lib/reasoning.ts) in
 /// a chat: runs using that model follow it. Returns how many runs it reached.
-#[tauri::command]
 pub fn agent_set_effort(
-    state: State<'_, AgentState>,
+    core: &Core,
     profile_id: String,
     options: Option<OpenAIChatOptions>,
     dialog_id: Option<String>,
 ) -> usize {
-    state.set_effort(&profile_id, options, dialog_id.as_deref())
+    core.agents
+        .set_effort(&profile_id, options, dialog_id.as_deref())
 }
 
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;
 /// what it waits on is answered "no").
-#[tauri::command]
-pub fn agent_stop<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AgentState>,
-    dialog_id: String,
-) -> bool {
-    state.stop(&app, &dialog_id)
+pub fn agent_stop(core: &Core, dialog_id: String) -> bool {
+    core.agents.stop(core, &dialog_id)
 }
 
-#[tauri::command]
-pub fn agent_resolve_approval<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AgentState>,
+pub fn agent_resolve_approval(
+    core: &Core,
     dialog_id: String,
     tool_call_id: String,
     decision: ApprovalDecision,
 ) -> bool {
-    state.resolve_approval(&app, &dialog_id, &tool_call_id, decision)
+    core.agents
+        .resolve_approval(core, &dialog_id, &tool_call_id, decision)
 }
 
-#[tauri::command]
-pub fn agent_answer_questions<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, AgentState>,
+pub fn agent_answer_questions(
+    core: &Core,
     dialog_id: String,
     tool_call_id: String,
     outcome: QuestionsOutcome,
 ) -> bool {
-    state.answer_questions(&app, &dialog_id, &tool_call_id, outcome)
+    core.agents
+        .answer_questions(core, &dialog_id, &tool_call_id, outcome)
 }
 
 #[derive(Serialize)]
@@ -956,9 +915,8 @@ pub struct AgentStatus {
 }
 
 /// What's going on right now, for a frontend that (re)starts mid-run.
-#[tauri::command]
-pub fn agent_status(state: State<'_, AgentState>) -> AgentStatus {
-    let inner = state.lock();
+pub fn agent_status(core: &Core) -> AgentStatus {
+    let inner = core.agents.lock();
     AgentStatus {
         // A subagent's chat isn't a chat in the list: its lead's run stands
         // for it (its blocks show it running).
@@ -1000,13 +958,13 @@ pub fn agent_status(state: State<'_, AgentState>) -> AgentStatus {
 /// (`plan::current_checklist`, carried checklists included): the single
 /// source of truth for the UI panel, instead of the UI recomputing it from
 /// the messages it has loaded.
-#[tauri::command]
 pub async fn chat_checklist(
-    db: State<'_, DbState>,
+    core: &Core,
     dialog_id: String,
 ) -> Result<Option<plan::CurrentChecklist>, String> {
     const RECENT: usize = 500;
-    let page = db
+    let page = core
+        .db
         .read(move |c| store::get_messages(c, &dialog_id, None, RECENT))
         .await
         .map_err(|e| e.to_string())?;
@@ -1017,15 +975,14 @@ pub async fn chat_checklist(
 /// checklist's `todo` call `checklistClosed` (its other meta kept), so
 /// `plan::current_checklist` treats it as closed now and never carries it
 /// into a later request. Returns the chat's checklist after that.
-#[tauri::command]
-pub async fn chat_dismiss_checklist<R: Runtime>(
-    app: AppHandle<R>,
-    db: State<'_, DbState>,
+pub async fn chat_dismiss_checklist(
+    core: &Core,
     dialog_id: String,
     message_id: String,
 ) -> Result<Option<plan::CurrentChecklist>, String> {
     let id = message_id.clone();
-    let meta = db
+    let meta = core
+        .db
         .write(move |c| {
             let current: Option<String> = c
                 .query_row(
@@ -1048,18 +1005,15 @@ pub async fn chat_dismiss_checklist<R: Runtime>(
         })
         .await
         .map_err(|e| e.to_string())?;
-    events::emit(
-        &app,
-        events::AgentEvent::MessagePatched {
-            dialog_id: dialog_id.clone(),
-            message_id,
-            patch: events::Patch {
-                meta: Some(meta),
-                ..Default::default()
-            },
+    core.emit(events::AgentEvent::MessagePatched {
+        dialog_id: dialog_id.clone(),
+        message_id,
+        patch: events::Patch {
+            meta: Some(meta),
+            ..Default::default()
         },
-    );
-    chat_checklist(db, dialog_id).await
+    });
+    chat_checklist(core, dialog_id).await
 }
 
 #[cfg(test)]

@@ -19,7 +19,6 @@ use super::run::{new_message, Run};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use tauri::Runtime;
 
 /// Fix-and-recheck rounds before the gate gives up and reports.
 pub const MAX_VERIFY_ROUNDS: u32 = 3;
@@ -506,7 +505,7 @@ pub fn failure_report(
     lines.join("\n")
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// The project's checks that run: on, and with a command.
     fn enabled_checks(&self) -> Vec<ProjectCheck> {
         self.checks
@@ -578,7 +577,7 @@ impl<R: Runtime> Run<R> {
     /// None found (the app restarted, the chat was discarded, it expired):
     /// the record and the agent are told the checks start afresh (P1.7).
     pub(super) fn restore_verify_state(&mut self, record_id: &str) {
-        let Some(mut c) = self.state.take_carry(&self.dialog_id, record_id) else {
+        let Some(mut c) = self.core.agents.take_carry(&self.dialog_id, record_id) else {
             self.carry_lost = Some(record_id.to_string());
             return;
         };
@@ -701,7 +700,7 @@ impl<R: Runtime> Run<R> {
         approved: bool,
         record_id: Option<String>,
     ) -> Result<String, String> {
-        let p = self.state.config().permissions;
+        let p = self.core.agents.config().permissions;
         let Some(root) = self.root.clone() else {
             return Ok("done".into());
         };
@@ -802,7 +801,7 @@ impl<R: Runtime> Run<R> {
             if self.sub().is_none() {
                 let mut carry = self.take_verify_state(record_id);
                 carry.spilled = spill(&self.dialog_id, &mut carry.baseline);
-                self.state.put_carry(&self.dialog_id, carry);
+                self.core.agents.put_carry(&self.dialog_id, carry);
             }
             return Ok("verify-needs-approval".into());
         }
@@ -1140,7 +1139,7 @@ impl<R: Runtime> Run<R> {
     /// within the run's review budget. True: high findings went to the
     /// agent, and one more fix and check round is allowed.
     async fn review_after_green(&mut self, record_id: &str, meta: &Value) -> Result<bool, String> {
-        let config = self.state.config().subagents;
+        let config = self.core.agents.config().subagents;
         if config.kind(super::subagent::Kind::Reviewer).is_none() || self.plan_mode {
             return Ok(false);
         }
@@ -1204,7 +1203,7 @@ impl<R: Runtime> Run<R> {
         &mut self,
         owners: &[(String, usize, super::worker::WriteScope)],
     ) -> Option<String> {
-        let p = self.state.config().permissions;
+        let p = self.core.agents.config().permissions;
         let root = self.root.clone()?;
         if !p.verify_changes {
             return None;
@@ -1308,7 +1307,7 @@ impl<R: Runtime> Run<R> {
         flags: &[String],
     ) {
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "verify",
                 "dialogId": self.dialog_id,

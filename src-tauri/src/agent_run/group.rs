@@ -22,7 +22,6 @@ use crate::overlay::chats;
 use crate::overlay::land::LandError;
 use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
-use tauri::Runtime;
 
 /// A group worker's report in the group's result, at most.
 const REPORT_CHARS: usize = 2_500;
@@ -256,7 +255,7 @@ struct Member {
     scope: WriteScope,
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// F04: `task{kind:"workers", group}`. Never fails: problems come back
     /// as the call's result.
     pub(super) async fn run_group(
@@ -387,7 +386,7 @@ impl<R: Runtime> Run<R> {
             group,
             config,
         };
-        let mut runs: Vec<(Member, Option<Run<R>>)> = Vec::new();
+        let mut runs: Vec<(Member, Option<Run>)> = Vec::new();
         for (i, step) in members.iter().enumerate() {
             let label = owners[i].0.clone();
             let member = Member {
@@ -401,7 +400,7 @@ impl<R: Runtime> Run<R> {
                 Ok(run) => runs.push((member, Some(run))),
                 Err(e) => {
                     log::write(
-                        &self.app,
+                        &self.core,
                         json!({ "event": "groupFork", "dialogId": self.dialog_id, "error": e }),
                     );
                     chats::discard_child(&member.child_id);
@@ -544,7 +543,7 @@ impl<R: Runtime> Run<R> {
                     joins.before.iter().map(|(_, b)| b.clone()).collect();
                 chats::forget_snapshot(&self.dialog_id, &unused);
                 log::write(
-                    &self.app,
+                    &self.core,
                     json!({ "event": "groupSave", "dialogId": self.dialog_id, "error": e }),
                 );
             }
@@ -556,7 +555,7 @@ impl<R: Runtime> Run<R> {
             }
         }
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "group",
                 "dialogId": self.dialog_id,
@@ -576,7 +575,7 @@ impl<R: Runtime> Run<R> {
     /// A worker for one step of the group, in a child overlay of the chat's
     /// view, ready to run.
     #[allow(clippy::too_many_arguments)]
-    async fn fork_worker(&mut self, gp: &GroupPlan<'_>, member: &Member) -> Result<Run<R>, String> {
+    async fn fork_worker(&mut self, gp: &GroupPlan<'_>, member: &Member) -> Result<Run, String> {
         // Each worker started counts, a retry too (P2.7).
         let brief = subagent::Brief {
             kind: Kind::Worker,
@@ -601,7 +600,7 @@ impl<R: Runtime> Run<R> {
         &mut self,
         gp: &GroupPlan<'_>,
         member: &Member,
-    ) -> Result<Run<R>, String> {
+    ) -> Result<Run, String> {
         let GroupPlan {
             tc,
             plan_path,
@@ -961,7 +960,7 @@ impl<R: Runtime> Run<R> {
     }
 }
 
-impl<R: Runtime> Run<R> {
+impl Run {
     /// A group worker continued in its kept copy has ended (P1.2, P1.3):
     /// its copy lands now, merged with the chat's view; a conflict again
     /// lands the rest and keeps the copy, as at the join.

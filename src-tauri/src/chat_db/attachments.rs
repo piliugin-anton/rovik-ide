@@ -309,26 +309,11 @@ pub fn collect_garbage(conn: &Connection, data_dir: &Path) -> DbResult<usize> {
     Ok(ids.len())
 }
 
-/// Serves `chat-attachment://localhost/<id>` (and the Windows form,
-/// `http://chat-attachment.localhost/<id>`) from disk.
-pub fn serve(data_dir: &Path, uri_path: &str) -> tauri::http::Response<Vec<u8>> {
-    let id = uri_path.trim_start_matches('/');
-    let found = file_for(data_dir, id).and_then(|p| std::fs::read(&p).ok().map(|b| (p, b)));
-    match found {
-        Some((path, bytes)) => tauri::http::Response::builder()
-            .status(200)
-            .header("Content-Type", mime_for(&path))
-            // Content-addressed: the bytes for an id never change.
-            .header("Cache-Control", "public, max-age=31536000, immutable")
-            .body(bytes)
-            .unwrap_or_else(|_| not_found()),
-        None => not_found(),
-    }
-}
-
-fn not_found() -> tauri::http::Response<Vec<u8>> {
-    tauri::http::Response::builder()
-        .status(404)
-        .body(Vec::new())
-        .expect("static response")
+/// The file behind `chat-attachment://localhost/<id>` (and the Windows
+/// form, `http://chat-attachment.localhost/<id>`): its type and bytes, read
+/// from disk. None when there is no such attachment.
+pub fn read(data_dir: &Path, uri_path: &str) -> Option<(&'static str, Vec<u8>)> {
+    let path = file_for(data_dir, uri_path.trim_start_matches('/'))?;
+    let bytes = std::fs::read(&path).ok()?;
+    Some((mime_for(&path), bytes))
 }

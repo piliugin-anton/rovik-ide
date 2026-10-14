@@ -78,7 +78,6 @@ pub fn outline(path: &str, content: &str) -> Option<Vec<Symbol>> {
 /// definition. It can't replace typed intelligence (cross-file TS
 /// definitions, hover types, completions, diagnostics): that still comes
 /// from the TypeScript worker / language servers.
-#[tauri::command]
 pub fn outline_symbols(path: String, content: String) -> Option<Vec<Symbol>> {
     outline(&path, &content)
 }

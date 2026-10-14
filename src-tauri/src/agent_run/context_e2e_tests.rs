@@ -139,9 +139,7 @@ async fn run_turns(
 /// CLM needs the virtual volume. Its requests only read and write the
 /// files in memory, so a volume that says it's mounted does for them.
 fn pretend_volume(h: &Harness) {
-    h.app
-        .state::<crate::vfs::VfsState>()
-        .pretend_mounted(h._dir.0.join("volume"));
+    h.core.vfs.pretend_mounted(h._dir.0.join("volume"));
 }
 
 /*
@@ -400,10 +398,7 @@ async fn a_long_run_over_a_long_chat_keeps_its_cut_until_the_budget() {
             ]
         })
         .collect();
-    let (db, id) = (
-        h.app.state::<DbState>().inner().clone(),
-        h.dialog_id.clone(),
-    );
+    let (db, id) = (h.core.db.clone(), h.dialog_id.clone());
     db.write(move |c| store::append_messages(c, &id, &earlier).map(|_| ()))
         .await
         .unwrap();
@@ -591,7 +586,7 @@ async fn three_clm_turns_keep_the_context_file_and_the_prompt_in_step() {
 
     // The file is the context as sent, so the agent edits what it sees: the
     // read's output is the note (only the call that replaced it quotes it).
-    let vfs = h.app.state::<crate::vfs::VfsState>();
+    let vfs = &h.core.vfs;
     let file = String::from_utf8(
         vfs.read_file(&crate::clm::context_file(&h.dialog_id))
             .unwrap(),

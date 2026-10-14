@@ -7,7 +7,7 @@
 //! time (parallel.rs); their results are still recorded in the calls' order.
 
 use super::diff::{self, Hunk};
-use super::events::{emit, AgentEvent, ApprovalRequest, EditProposal, QuestionsRequest};
+use super::events::{AgentEvent, ApprovalRequest, EditProposal, QuestionsRequest};
 use super::guard::{FinishedCall, GuardVerdict, Write};
 use super::parallel::{self, InOrder};
 use super::permissions::{self, Approver, ToolVerdict};
@@ -16,7 +16,6 @@ use super::run::{chat_plan_file, Run};
 use super::{log, plan, tools, ApprovalDecision};
 use crate::chat_db::store::ToolCall;
 use serde_json::{json, Map, Value};
-use tauri::{Manager, Runtime};
 
 /// The agent's own context folder, as its file tools name it (CLM mode).
 const CONTEXT_PATH_PREFIX: &str = "@context";
@@ -167,14 +166,14 @@ fn describe_rejected_hunks(path: &str, rejected: &[Hunk], total: usize) -> Strin
 /// Paths extend_scope grants a step worker at most (P2.3).
 const MAX_GRANTS: usize = 8;
 
-impl<R: Runtime> Run<R> {
+impl Run {
     pub(super) async fn execute_tool_calls(
         &mut self,
         calls: &[ToolCall],
         resume_note: Option<&str>,
     ) -> Result<(), String> {
         // CLM mode: the agent's context folder.
-        let vfs = self.app.state::<crate::vfs::VfsState>();
+        let vfs = &self.core.vfs;
         let clm =
             self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(&vfs).is_ok();
         let context_dir = if clm {
@@ -256,7 +255,7 @@ impl<R: Runtime> Run<R> {
         if clm && is_context_path(args.get("path").and_then(|p| p.as_str()), context_dir) {
             return false;
         }
-        let config = self.state.config();
+        let config = self.core.agents.config();
         matches!(
             permissions::check_tool_call(&tc.name, &tc.arguments, &config.permissions),
             ToolVerdict::Permitted { approval: None }
@@ -276,7 +275,7 @@ impl<R: Runtime> Run<R> {
         let jobs: Vec<_> = calls
             .iter()
             .map(|tc| {
-                let (app, root) = (self.app.clone(), self.root.clone());
+                let (app, root) = (self.core.clone(), self.root.clone());
                 let (name, args, stop) = (tc.name.clone(), tc.arguments.clone(), self.stop.clone());
                 let ctx = self.call_context(&tc.id);
                 async move {
@@ -307,7 +306,7 @@ impl<R: Runtime> Run<R> {
             }
         }
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "parallelTools",
                 "dialogId": self.dialog_id,
@@ -464,7 +463,7 @@ impl<R: Runtime> Run<R> {
                 && (tc.name == "restore_context"
                     || tc.name == "write"
                         && crate::clm::is_live_path(
-                            &self.app.state::<crate::vfs::VfsState>(),
+                            &self.core.vfs,
                             &self.dialog_id,
                             path_arg.unwrap_or(""),
                         ))
@@ -541,6 +540,7 @@ impl<R: Runtime> Run<R> {
                         if !newly.is_empty() {
                             let dialog_id = self.dialog_id.clone();
                             let (tokens, budget) = self
+                                .core
                                 .db
                                 .read(move |conn| {
                                     Ok(crate::clm::store::load_state(conn, &dialog_id)
@@ -586,13 +586,10 @@ impl<R: Runtime> Run<R> {
                     .await?;
                 // The panel's live source while the run goes: every update,
                 // even an empty one (which clears a stale panel).
-                emit(
-                    &self.app,
-                    AgentEvent::Checklist {
-                        dialog_id: self.dialog_id.clone(),
-                        items,
-                    },
-                );
+                self.core.emit(AgentEvent::Checklist {
+                    dialog_id: self.dialog_id.clone(),
+                    items,
+                });
                 return Ok(());
             }
             // Questions to the user: answered in the chat, no approval
@@ -624,7 +621,7 @@ impl<R: Runtime> Run<R> {
             && !self.checklist_gate_refused
             && resume_note.is_none()
             && !self.last_verify_failed
-            && self.state.config().permissions.checklist != permissions::ChecklistMode::Off
+            && self.core.agents.config().permissions.checklist != permissions::ChecklistMode::Off
             && !(clm && is_context_path(path_arg, context_dir))
         {
             if let Some(reason) = plan::checklist_gate_reason(
@@ -693,7 +690,7 @@ impl<R: Runtime> Run<R> {
             None => {
                 let ctx = self.call_context(&tc.id);
                 tools::execute(
-                    &self.app,
+                    &self.core,
                     self.root.as_deref(),
                     &tool_name,
                     &args_json,
@@ -748,7 +745,7 @@ impl<R: Runtime> Run<R> {
         };
         let (pattern, reason) = self.guard.finding.clone().unwrap_or(("", String::new()));
         log::write(
-            &self.app,
+            &self.core,
             json!({
                 "event": "guard",
                 "dialogId": self.dialog_id,
@@ -798,6 +795,7 @@ impl<R: Runtime> Run<R> {
                 args_json.clone(),
             );
             let hint = self
+                .core
                 .db
                 .read(move |c| crate::clm::recall_hint(c, &d, &id, &name, &a))
                 .await;
@@ -875,7 +873,7 @@ impl<R: Runtime> Run<R> {
             // A command on the context file's real path (sed, python3, …)
             // is a context edit for the CLM pressure (run.rs).
             if clm {
-                let vfs = self.app.state::<crate::vfs::VfsState>();
+                let vfs = &self.core.vfs;
                 if let Some((file, _)) = crate::clm::real_paths(&vfs, &self.dialog_id) {
                     let command = permissions::str_arg(&args_json, "command").unwrap_or_default();
                     if (command.contains(&file) || command.contains("LIVE_CONTEXT.md"))
@@ -897,16 +895,13 @@ impl<R: Runtime> Run<R> {
                     .and_then(|a| a.get("by"))
                     .and_then(|b| b.as_str())
                     == Some("user");
-                emit(
-                    &self.app,
-                    AgentEvent::FileWritten {
-                        abs_path: abs.clone(),
-                        before,
-                        content: after.clone(),
-                        reviewed,
-                        deleted: false,
-                    },
-                );
+                self.core.emit(AgentEvent::FileWritten {
+                    abs_path: abs.clone(),
+                    before,
+                    content: after.clone(),
+                    reviewed,
+                    deleted: false,
+                });
             }
         }
 
@@ -942,8 +937,8 @@ impl<R: Runtime> Run<R> {
     async fn context_tool(&self, name: &str, args: &Map<String, Value>) -> String {
         let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("");
         let text = |k: &str| args.get(k).and_then(|v| v.as_str());
-        let db = self.db.clone();
-        let vfs = self.app.state::<crate::vfs::VfsState>();
+        let db = self.core.db.clone();
+        let vfs = &self.core.vfs;
         let result = match name {
             "read" => {
                 crate::clm::tool_read(
@@ -993,7 +988,7 @@ impl<R: Runtime> Run<R> {
     /// Permission first (refused calls never reach approval), then approval
     /// when the settings require it: by the user, or by the AI reviewer.
     async fn authorize(&self, tc: &ToolCall, resume_note: Option<&str>) -> Authorized {
-        let config = self.state.config();
+        let config = self.core.agents.config();
         let p = &config.permissions;
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
@@ -1093,7 +1088,7 @@ impl<R: Runtime> Run<R> {
                 // The reviewer model follows the setting; a Jev fallback can
                 // only be asked with typed input.
                 let typed = p.approval_typed_input;
-                let review = review::review(&self.app, models, &input, |i, profile| {
+                let review = review::review(&self.core, models, &input, |i, profile| {
                     if i == 0 {
                         typed
                     } else {
@@ -1172,8 +1167,9 @@ impl<R: Runtime> Run<R> {
         };
         let waiting = std::time::Instant::now();
         let decision = self
-            .state
-            .wait_for_approval(&self.app, request, &self.stop)
+            .core
+            .agents
+            .wait_for_approval(&self.core, request, &self.stop)
             .await;
         // Waiting for the user isn't the subagent's time (K07).
         if let Some(sub) = self.sub() {
@@ -1394,7 +1390,7 @@ impl<R: Runtime> Run<R> {
     /// its note on the tool block (a wait for a CPU slot shows there).
     fn call_context(&self, tool_call_id: &str) -> tools::CallContext {
         let (app, dialog_id, id) = (
-            self.app.clone(),
+            self.core.clone(),
             self.dialog_id.clone(),
             tool_call_id.to_string(),
         );
@@ -1406,27 +1402,21 @@ impl<R: Runtime> Run<R> {
                 .map_or_else(|| self.dialog_id.clone(), |s| s.parent_dialog_id.clone()),
             hidden: self.sub().map(|s| s.hidden.clone()).unwrap_or_default(),
             note: std::sync::Arc::new(move |note| {
-                emit(
-                    &app,
-                    AgentEvent::ToolNote {
-                        dialog_id: dialog_id.clone(),
-                        tool_call_id: id.clone(),
-                        note,
-                    },
-                )
+                app.emit(AgentEvent::ToolNote {
+                    dialog_id: dialog_id.clone(),
+                    tool_call_id: id.clone(),
+                    note,
+                })
             }),
         }
     }
 
     fn tool_note(&self, tool_call_id: &str, note: Option<String>) {
-        emit(
-            &self.app,
-            AgentEvent::ToolNote {
-                dialog_id: self.dialog_id.clone(),
-                tool_call_id: tool_call_id.to_string(),
-                note,
-            },
-        );
+        self.core.emit(AgentEvent::ToolNote {
+            dialog_id: self.dialog_id.clone(),
+            tool_call_id: tool_call_id.to_string(),
+            note,
+        });
     }
 
     /*
@@ -1439,9 +1429,9 @@ impl<R: Runtime> Run<R> {
     /// Only in Plan mode, a few per run; the answer is the tool's result,
     /// kept with the questions in its meta for the card.
     async fn ask_user(&mut self, tc: &ToolCall, args: &Map<String, Value>) -> Result<(), String> {
-        let log_question = |run: &Run<R>, questions: usize, answers: Vec<String>| {
+        let log_question = |run: &Run, questions: usize, answers: Vec<String>| {
             log::write(
-                &run.app,
+                &run.core,
                 json!({
                     "event": "question",
                     "dialogId": run.dialog_id,
@@ -1484,12 +1474,13 @@ impl<R: Runtime> Run<R> {
             questions: questions.clone(),
         };
         let outcome = self
-            .state
-            .wait_for_answers(&self.app, request, &self.stop)
+            .core
+            .agents
+            .wait_for_answers(&self.core, request, &self.stop)
             .await;
         log_question(self, questions.len(), plan::outcome_kinds(&outcome));
         if matches!(outcome, plan::QuestionsOutcome::Stopped { .. }) {
-            self.state.stop(&self.app, &self.dialog_id);
+            self.core.agents.stop(&self.core, &self.dialog_id);
         }
         let content = plan::describe_outcome(&questions, &outcome);
         let meta = json!({ "questions": { "questions": questions, "outcome": outcome } });
@@ -1685,16 +1676,13 @@ impl<R: Runtime> Run<R> {
                 }
                 // Open tabs of the plan show the new version.
                 if let Ok(text) = std::fs::read_to_string(&path) {
-                    emit(
-                        &self.app,
-                        AgentEvent::FileWritten {
-                            abs_path: path.clone(),
-                            before: None,
-                            content: text,
-                            reviewed: true,
-                            deleted: false,
-                        },
-                    );
+                    self.core.emit(AgentEvent::FileWritten {
+                        abs_path: path.clone(),
+                        before: None,
+                        content: text,
+                        reviewed: true,
+                        deleted: false,
+                    });
                 }
                 let mut meta = json!({ "planFile": path });
                 if let Some(record) = record {

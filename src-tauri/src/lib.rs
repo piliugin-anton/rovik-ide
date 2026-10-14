@@ -15,6 +15,7 @@ mod chat_request;
 mod clm;
 mod code_search;
 mod command_tool;
+mod commands;
 pub mod core;
 mod edit_file;
 mod file_guard;
@@ -75,11 +76,6 @@ pub fn run() {
         .setup(|app| {
             let paths = Paths::new(app.path().app_data_dir()?, app.path().app_config_dir()?);
             let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
-            // The commands that take one of its parts get the core's.
-            app.manage(core.db.clone());
-            app.manage(core.agents.clone());
-            app.manage(core.vfs.clone());
-            app.manage(core.browser.clone());
             app.manage(core);
             // The main window, as tauri.conf.json describes it (`create`
             // is off there): built here to let its page read the clipboard,
@@ -98,10 +94,10 @@ pub fn run() {
         // Screenshots: chat-attachment://localhost/<sha256> (Windows:
         // http://chat-attachment.localhost/<sha256>).
         .register_asynchronous_uri_scheme_protocol("chat-attachment", |ctx, request, responder| {
-            let db = ctx.app_handle().state::<chat_db::DbState>().inner().clone();
+            let core = ctx.app_handle().state::<Core>().inner().clone();
             let path = request.uri().path().to_string();
-            tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(chat_db::attachments::serve(db.data_dir(), &path));
+            rt::spawn_blocking(move || {
+                responder.respond(attachment_response(core.db.data_dir(), &path));
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -121,29 +117,29 @@ pub fn run() {
             filesystem::dir_entry_count,
             filesystem::load_ai_settings,
             filesystem::save_ai_settings,
-            chat_db::commands::chat_list_dialogs,
-            chat_db::commands::chat_open_project,
-            chat_db::commands::chat_answer_copy,
-            chat_db::commands::chat_answer_moved,
-            chat_db::commands::chat_decline_projects,
-            chat_db::commands::chat_list_projects,
-            chat_db::commands::chat_relink_project,
-            chat_db::commands::chat_delete_project,
-            chat_db::commands::chat_get_messages,
-            chat_db::commands::chat_get_messages_around,
-            chat_db::commands::chat_get_message_body,
-            chat_db::commands::chat_create_dialog,
-            chat_db::commands::chat_append_messages,
-            chat_db::commands::chat_update_message,
-            chat_db::commands::chat_rename_dialog,
-            chat_db::commands::chat_delete_dialog,
-            chat_db::commands::chat_search,
-            chat_db::commands::chat_messages_answered,
-            chat_db::commands::chat_store_attachment,
-            chat_db::commands::chat_save_composer_draft,
-            chat_db::commands::chat_get_composer_draft,
-            chat_db::commands::chat_set_model,
-            chat_db::commands::chat_get_model,
+            commands::chat::chat_list_dialogs,
+            commands::chat::chat_open_project,
+            commands::chat::chat_answer_copy,
+            commands::chat::chat_answer_moved,
+            commands::chat::chat_decline_projects,
+            commands::chat::chat_list_projects,
+            commands::chat::chat_relink_project,
+            commands::chat::chat_delete_project,
+            commands::chat::chat_get_messages,
+            commands::chat::chat_get_messages_around,
+            commands::chat::chat_get_message_body,
+            commands::chat::chat_create_dialog,
+            commands::chat::chat_append_messages,
+            commands::chat::chat_update_message,
+            commands::chat::chat_rename_dialog,
+            commands::chat::chat_delete_dialog,
+            commands::chat::chat_search,
+            commands::chat::chat_messages_answered,
+            commands::chat::chat_store_attachment,
+            commands::chat::chat_save_composer_draft,
+            commands::chat::chat_get_composer_draft,
+            commands::chat::chat_set_model,
+            commands::chat::chat_get_model,
             filesystem::load_last_project,
             filesystem::save_last_project,
             filesystem::get_path_id,
@@ -192,72 +188,72 @@ pub fn run() {
             lsp::rust_analyzer::ra_install,
             lsp::rust_analyzer::ra_rust_src_status,
             lsp::rust_analyzer::ra_install_rust_src,
-            agent::send_chat_message,
-            chat_request::cancel_chat_request,
-            agent_run::agent_configure,
-            agent_run::agent_start,
-            agent_run::agent_stop,
-            agent_run::agent_set_effort,
-            agent_run::agent_resolve_approval,
-            agent_run::agent_answer_questions,
-            agent_run::agent_status,
-            agent_run::chat_checklist,
-            agent_run::chat_dismiss_checklist,
-            agent::list_models,
-            browser_tools::web_search,
-            browser_tools::browse_url,
-            browser_tools::browser_screenshot,
-            agent_tools::tool_list_dir,
-            agent_tools::tool_search_code,
-            code_search::search_in_files,
-            agent_tools::tool_read_file_range,
-            agent_tools::tool_write_file,
-            agent_tools::tool_edit_file,
-            agent_tools::report_editor_diagnostics,
-            project_profile::project_profile,
-            project_profile::load_project_settings,
-            project_profile::save_project_settings,
-            agent::chat_context_estimate,
-            workload::workload_focus,
-            overlay::chats::overlay_status,
-            overlay::chats::overlay_file,
-            overlay::chats::overlay_discard,
-            overlay::chats::overlay_land,
-            overlay::chats::overlay_undo,
-            overlay::chats::overlay_conflict_file,
-            overlay::chats::overlay_conflict_resolve,
-            overlay::chats::overlay_conflicts_to_chat,
-            overlay::chats::overlay_redo_group,
-            overlay::chats::overlay_undo_merge,
-            overlay::chats::overlay_unmark,
-            workload::workload_set_slots,
-            workload::workload_status,
-            outline::outline_symbols,
-            vfs::vfs_status,
-            vfs::vfs_install_driver,
-            vfs::vfs_mount,
-            vfs::vfs_unmount,
-            vfs::vfs_open_settings,
-            vfs::vfs_write_file,
-            vfs::vfs_read_file,
-            vfs::vfs_list,
-            vfs::vfs_remove,
-            vfs::vfs_revisions,
-            vfs::vfs_read_revision,
-            vfs::vfs_restore_revision,
-            vfs::vfs_set_history_limits,
-            vfs::vfs_subscribe,
-            vfs::vfs_unsubscribe,
-            clm::clm_status,
-            clm::clm_set_mode,
-            clm::clm_reset,
-            clm::clm_list_revisions,
-            clm::clm_read_revision,
-            clm::clm_restore_revision,
-            clm::clm_tool_read,
-            clm::clm_tool_edit,
-            clm::clm_tool_write,
-            clm::clm_recall_hint,
+            commands::agent::send_chat_message,
+            commands::agent::cancel_chat_request,
+            commands::agent::agent_configure,
+            commands::agent::agent_start,
+            commands::agent::agent_stop,
+            commands::agent::agent_set_effort,
+            commands::agent::agent_resolve_approval,
+            commands::agent::agent_answer_questions,
+            commands::agent::agent_status,
+            commands::agent::chat_checklist,
+            commands::agent::chat_dismiss_checklist,
+            commands::agent::list_models,
+            commands::browser::web_search,
+            commands::browser::browse_url,
+            commands::browser::browser_screenshot,
+            commands::tools::tool_list_dir,
+            commands::tools::tool_search_code,
+            commands::tools::search_in_files,
+            commands::tools::tool_read_file_range,
+            commands::tools::tool_write_file,
+            commands::tools::tool_edit_file,
+            commands::tools::report_editor_diagnostics,
+            commands::project::project_profile,
+            commands::project::load_project_settings,
+            commands::project::save_project_settings,
+            commands::agent::chat_context_estimate,
+            commands::workload::workload_focus,
+            commands::overlay::overlay_status,
+            commands::overlay::overlay_file,
+            commands::overlay::overlay_discard,
+            commands::overlay::overlay_land,
+            commands::overlay::overlay_undo,
+            commands::overlay::overlay_conflict_file,
+            commands::overlay::overlay_conflict_resolve,
+            commands::overlay::overlay_conflicts_to_chat,
+            commands::overlay::overlay_redo_group,
+            commands::overlay::overlay_undo_merge,
+            commands::overlay::overlay_unmark,
+            commands::workload::workload_set_slots,
+            commands::workload::workload_status,
+            commands::tools::outline_symbols,
+            commands::vfs::vfs_status,
+            commands::vfs::vfs_install_driver,
+            commands::vfs::vfs_mount,
+            commands::vfs::vfs_unmount,
+            commands::vfs::vfs_open_settings,
+            commands::vfs::vfs_write_file,
+            commands::vfs::vfs_read_file,
+            commands::vfs::vfs_list,
+            commands::vfs::vfs_remove,
+            commands::vfs::vfs_revisions,
+            commands::vfs::vfs_read_revision,
+            commands::vfs::vfs_restore_revision,
+            commands::vfs::vfs_set_history_limits,
+            commands::vfs::vfs_subscribe,
+            commands::vfs::vfs_unsubscribe,
+            commands::clm::clm_status,
+            commands::clm::clm_set_mode,
+            commands::clm::clm_reset,
+            commands::clm::clm_list_revisions,
+            commands::clm::clm_read_revision,
+            commands::clm::clm_restore_revision,
+            commands::clm::clm_tool_read,
+            commands::clm::clm_tool_edit,
+            commands::clm::clm_tool_write,
+            commands::clm::clm_recall_hint,
             open_url::open_url,
         ])
         .build(tauri::generate_context!())
@@ -269,6 +265,30 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// `chat-attachment://localhost/<sha256>`'s response: the attachment, or 404.
+fn attachment_response(
+    data_dir: &std::path::Path,
+    uri_path: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::Response;
+    let not_found = || {
+        Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .expect("static response")
+    };
+    match chat_db::attachments::read(data_dir, uri_path) {
+        Some((mime, bytes)) => Response::builder()
+            .status(200)
+            .header("Content-Type", mime)
+            // Content-addressed: the bytes for an id never change.
+            .header("Cache-Control", "public, max-age=31536000, immutable")
+            .body(bytes)
+            .unwrap_or_else(|_| not_found()),
+        None => not_found(),
+    }
 }
 
 /// The core's events, to every window (src/lib/agentRuns.ts listens).

@@ -19,10 +19,10 @@ use super::ModelProfile;
 use crate::agent::{
     ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, WireChatMessage,
 };
+use crate::core::Core;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::sync::LazyLock;
-use tauri::{AppHandle, Manager, Runtime};
 
 /// Which approval group the action belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -203,8 +203,8 @@ pub fn lean_then_plain(max_tokens: u32) -> [Option<OpenAIChatOptions>; 2] {
 }
 
 /// A single request outside any chat: the messages are given and nothing is stored.
-pub async fn complete_once<R: Runtime>(
-    app: &AppHandle<R>,
+pub async fn complete_once(
+    core: &Core,
     profile: &ModelProfile,
     system_prompt: &str,
     user: String,
@@ -233,9 +233,7 @@ pub async fn complete_once<R: Runtime>(
     };
     // Never cancelled: the sender lives as long as the request.
     let (_tx, mut rx) = tokio::sync::watch::channel(false);
-    let db = app.state::<crate::chat_db::DbState>();
-    let vfs = app.state::<crate::vfs::VfsState>();
-    crate::agent::run_chat(&db, &vfs, params, &mut rx, &mut emit).await?;
+    crate::agent::run_chat(&core.db, &core.vfs, params, &mut rx, &mut emit).await?;
     match failure {
         Some(e) => Err(format!(
             "{}: {}",
@@ -249,8 +247,8 @@ pub async fn complete_once<R: Runtime>(
     }
 }
 
-async fn review_with_text<R: Runtime>(
-    app: &AppHandle<R>,
+async fn review_with_text(
+    core: &Core,
     profile: &ModelProfile,
     input: &ReviewInput,
     errors: &mut Vec<String>,
@@ -258,7 +256,7 @@ async fn review_with_text<R: Runtime>(
     let prompt = build_prompt(input);
     for options in lean_then_plain(300) {
         match complete_once(
-            app,
+            core,
             profile,
             SYSTEM_PROMPT,
             prompt.clone(),
@@ -516,8 +514,8 @@ async fn review_with_typed(
 
 /// The reviewer model, then each fallback, until one answers. `typed_for`
 /// says which ones are asked with typed input.
-pub async fn review<R: Runtime>(
-    app: &AppHandle<R>,
+pub async fn review(
+    core: &Core,
     models: &[ModelProfile],
     input: &ReviewInput,
     typed_for: impl Fn(usize, &ModelProfile) -> bool,
@@ -527,7 +525,7 @@ pub async fn review<R: Runtime>(
         let answer = if typed_for(i, profile) {
             review_with_typed(profile, input, &mut errors).await
         } else {
-            review_with_text(app, profile, input, &mut errors).await
+            review_with_text(core, profile, input, &mut errors).await
         };
         // An unsure answer is an answer: it goes to the user, not to a fallback.
         if let Some(answer) = answer {

@@ -259,7 +259,7 @@ pub fn red_note(passing: &[String]) -> Option<String> {
     })
 }
 
-impl<R: tauri::Runtime> super::run::Run<R> {
+impl super::run::Run {
     /// E04: the test writer's new tests, run on the code before the change
     /// (the project under an isolated chat), in a throwaway overlay. A test
     /// file whose tests pass there is flagged.

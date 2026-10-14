@@ -50,7 +50,6 @@ use document::CtxMsg;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use tauri::State;
 
 pub const MODE_TRIMMING: &str = "trimming";
 pub const MODE_CLM: &str = "clm";
@@ -762,7 +761,9 @@ fn line_range(content: &str, start: Option<usize>, end: Option<usize>) -> String
     lines[start - 1..end].join("\n")
 }
 
-async fn revision_text(
+/// Revision `number` of the chat's context, from the volume's history, or
+/// from the database once the volume no longer has it.
+pub async fn revision_text(
     db: &DbState,
     vfs: &VfsState,
     dialog_id: &str,
@@ -819,18 +820,6 @@ async fn revisions_listing(db: &DbState, dialog_id: &str) -> Result<String, Stri
         prompt::REVISIONS_PATH
     ));
     Ok(out.join("\n"))
-}
-
-#[tauri::command]
-pub async fn clm_tool_read(
-    db: State<'_, DbState>,
-    vfs: State<'_, VfsState>,
-    dialog_id: String,
-    path: String,
-    start_line: Option<usize>,
-    end_line: Option<usize>,
-) -> Result<String, String> {
-    tool_read(&db, &vfs, &dialog_id, &path, start_line, end_line).await
 }
 
 /// read on `@context/…`.
@@ -893,21 +882,6 @@ pub async fn tool_read(
 
 const APPLIES: &str = "It becomes your context when your next request is sent.";
 
-#[tauri::command]
-pub async fn clm_tool_edit(
-    vfs: State<'_, VfsState>,
-    dialog_id: String,
-    path: String,
-    old_text: String,
-    new_text: String,
-    start_line: Option<usize>,
-    end_line: Option<usize>,
-) -> Result<String, String> {
-    tool_edit(
-        &vfs, &dialog_id, &path, &old_text, &new_text, start_line, end_line,
-    )
-}
-
 /// The file a write to `path` changes: the context file or one of the
 /// agent's own files, never a revision.
 fn writable(vfs: &VfsState, dialog_id: &str, path: &str) -> Result<String, String> {
@@ -962,16 +936,6 @@ pub fn tool_edit(
     })
 }
 
-#[tauri::command]
-pub async fn clm_tool_write(
-    vfs: State<'_, VfsState>,
-    dialog_id: String,
-    path: String,
-    content: String,
-) -> Result<String, String> {
-    tool_write(&vfs, &dialog_id, &path, &content)
-}
-
 /// write on `@context/…`.
 pub fn tool_write(
     vfs: &VfsState,
@@ -1012,9 +976,8 @@ fn same_call(name: &str, a: &str, b: &str) -> bool {
 
 /// When the agent repeats a call whose earlier result it removed from its
 /// context, a note offering the revision that still holds that result.
-#[tauri::command]
-pub async fn clm_recall_hint(
-    db: State<'_, DbState>,
+pub async fn recall_hint_of(
+    db: &DbState,
     dialog_id: String,
     tool_call_id: String,
     name: String,
@@ -1126,15 +1089,6 @@ pub struct ClmStatus {
     pub compliance: Option<String>,
 }
 
-#[tauri::command]
-pub async fn clm_status(
-    db: State<'_, DbState>,
-    vfs: State<'_, VfsState>,
-    dialog_id: String,
-) -> Result<ClmStatus, String> {
-    status(&db, &vfs, dialog_id).await
-}
-
 /// The chat's CLM state as it is now (also sent by a run after each request
 /// is prepared, so the UI follows it turn by turn).
 pub async fn status(db: &DbState, vfs: &VfsState, dialog_id: String) -> Result<ClmStatus, String> {
@@ -1189,27 +1143,14 @@ fn compliance_summary(state: &store::State) -> Option<String> {
     ))
 }
 
-#[tauri::command]
-pub async fn clm_set_mode(
-    db: State<'_, DbState>,
-    dialog_id: String,
-    mode: String,
-) -> Result<(), String> {
+/// Sends the chat as stored and trimmed to fit (`trimming`), or with the
+/// agent's own context (`clm`).
+pub async fn set_mode(db: &DbState, dialog_id: String, mode: String) -> Result<(), String> {
     if mode != MODE_TRIMMING && mode != MODE_CLM {
         return Err(format!("unknown context mode {mode}"));
     }
     db.write(move |conn| store::set_context_mode(conn, &dialog_id, &mode))
         .await
-}
-
-/// Drops the agent's context; the chat is sent as stored again.
-#[tauri::command]
-pub async fn clm_reset(
-    db: State<'_, DbState>,
-    vfs: State<'_, VfsState>,
-    dialog_id: String,
-) -> Result<(), String> {
-    reset(&db, &vfs, &dialog_id).await
 }
 
 /// Drops the agent's context, and an edit to the file not sent yet (it
@@ -1232,37 +1173,13 @@ pub async fn reset(db: &DbState, vfs: &VfsState, dialog_id: &str) -> Result<(), 
     Ok(())
 }
 
-#[tauri::command]
-pub async fn clm_list_revisions(
-    db: State<'_, DbState>,
+/// The chat's stored revisions of its context.
+pub async fn list_revisions(
+    db: &DbState,
     dialog_id: String,
 ) -> Result<Vec<store::RevisionRow>, String> {
     db.read(move |conn| store::revisions(conn, &dialog_id))
         .await
-}
-
-#[tauri::command]
-pub async fn clm_read_revision(
-    db: State<'_, DbState>,
-    vfs: State<'_, VfsState>,
-    dialog_id: String,
-    number: u64,
-) -> Result<String, String> {
-    revision_text(&db, &vfs, &dialog_id, number).await
-}
-
-/// Puts revision `number` back as the context file: it's read back like an
-/// edit before the next request.
-#[tauri::command]
-pub async fn clm_restore_revision(
-    db: State<'_, DbState>,
-    vfs: State<'_, VfsState>,
-    dialog_id: String,
-    number: u64,
-) -> Result<(), String> {
-    restore_revision(&db, &vfs, &dialog_id, number)
-        .await
-        .map(|_| ())
 }
 
 /// An older revision to put back, followed by the blocks of the current
