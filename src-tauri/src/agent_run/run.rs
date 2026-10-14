@@ -137,14 +137,15 @@ pub struct Run<R: Runtime> {
     pub(super) guard: Guard,
     /// ask_user calls so far (Plan mode caps them).
     pub(super) questions_asked: u32,
-    /// The project's checks and the system-prompt section about it.
+    /// The project's checks and the system-prompt section about it. Fixed
+    /// for the run: what changes (the repository map) is sent apart.
     pub(super) checks: Vec<ProjectCheck>,
     pub(super) project_context: String,
-    /// The project section without the repository map: the map is rebuilt
-    /// mid-run while this stays fixed, then recombined into project_context.
-    pub(super) base_project_context: String,
     /// The current repository map text (the `## Repository map` section),
-    /// if any. Updated mid-run as files change; the next model turn sends it.
+    /// if any. Updated mid-run as files change; the next model turn sends
+    /// it at the end of the request (`ChatParams::volatile_context`), never
+    /// in the system prompt, so a refresh doesn't invalidate the provider's
+    /// cache of the prefix.
     pub(super) repo_map: Option<String>,
     /// Map budget in chars (about 2% of the context window), fixed at prepare.
     pub(super) repo_map_chars: usize,
@@ -667,11 +668,9 @@ impl<R: Runtime> Run<R> {
         };
         // The repository map: the declarations most relevant to the request.
         // Built once here, then refreshed mid-run as files change
-        // (refresh_repo_map_if_needed): the base section stays fixed while
-        // the map is rebuilt and recombined into project_context before the
-        // next model turn.
+        // (refresh_repo_map_if_needed). The next model turn sends it at the
+        // end of the request, after the history (ChatParams::volatile_context).
         let repo_map_chars = repo_map_chars(request.profile.context_tokens);
-        let base_project_context = project_context;
         let repo_map = match &root {
             Some(r) => {
                 let (r, request_text) = (r.clone(), map_request_text.clone());
@@ -691,7 +690,6 @@ impl<R: Runtime> Run<R> {
             }
             None => None,
         };
-        let project_context = join_project_context(&base_project_context, &repo_map);
 
         // Forcing `todo` on a plan implementation's first turn only makes
         // sense when no checklist exists yet (nothing to carry, nothing
@@ -722,7 +720,6 @@ impl<R: Runtime> Run<R> {
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
             checks,
             project_context,
-            base_project_context,
             repo_map,
             repo_map_chars,
             writes_since_verify: !changed_files.is_empty(),
@@ -782,7 +779,6 @@ impl<R: Runtime> Run<R> {
             questions_asked: 0,
             checks: Vec::new(),
             project_context: String::new(),
-            base_project_context: String::new(),
             repo_map: None,
             repo_map_chars: 0,
             map_writes_since_refresh: 0,
@@ -889,7 +885,6 @@ impl<R: Runtime> Run<R> {
             project_root: parent.project_root.clone(),
             local_date: parent.local_date.clone(),
             project_context: parent.project_context.clone(),
-            base_project_context: parent.base_project_context.clone(),
             repo_map: parent.repo_map.clone(),
             repo_map_chars: parent.repo_map_chars,
             ..Run::blank(
@@ -1451,6 +1446,7 @@ impl<R: Runtime> Run<R> {
                 tools: Some(tools.clone()),
                 system_prompt: system_prompt.clone(),
                 project_context: Some(project_context.clone()),
+                volatile_context: self.repo_map.clone(),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
                 carried_notes: carried_notes.clone(),
@@ -1991,11 +1987,6 @@ impl<R: Runtime> Run<R> {
         );
     }
 
-    /// Recombines the fixed project section with the current map.
-    pub(super) fn rebuild_project_context(&mut self) {
-        self.project_context = join_project_context(&self.base_project_context, &self.repo_map);
-    }
-
     /// Rebuilds the repository map mid-run, so the next model turn sees the
     /// new declarations (not the run-start snapshot).
     ///
@@ -2055,7 +2046,6 @@ impl<R: Runtime> Run<R> {
             return Ok(false);
         }
         self.repo_map = new_map;
-        self.rebuild_project_context();
         self.map_refreshes += 1;
         log::write(
             &self.app,
@@ -2893,15 +2883,6 @@ fn repo_map_chars(context_tokens: Option<usize>) -> usize {
 /// ranking didn't move, so idle long runs pay one cheap walk per interval.
 const MAP_MAX_AGE: Duration = Duration::from_secs(120);
 
-/// The system-prompt project section: the fixed base plus the current map.
-fn join_project_context(base: &str, map: &Option<String>) -> String {
-    match (base, map) {
-        (base, Some(map)) if base.is_empty() => map.clone(),
-        (base, Some(map)) => format!("{base}\n\n{map}"),
-        (base, None) => base.to_string(),
-    }
-}
-
 /// Files the chat read or changed, latest last.
 fn touched_paths(messages: &[MessageRow]) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
@@ -3103,21 +3084,6 @@ mod tests {
         assert_eq!(run_mode_for(&messages).as_deref(), Some("plan"));
         assert_eq!(last_user_wire_content(&messages).as_deref(), Some("wire"));
         assert_eq!(chat_plan_file(&messages).as_deref(), Some("/p/a.md"));
-    }
-
-    #[test]
-    fn the_project_section_recombines_with_the_current_map() {
-        let map = Some("## Repository map\nbody".to_string());
-        assert_eq!(
-            join_project_context("## Project\nbase", &map),
-            "## Project\nbase\n\n## Repository map\nbody"
-        );
-        assert_eq!(join_project_context("", &map), "## Repository map\nbody");
-        assert_eq!(
-            join_project_context("## Project\nbase", &None),
-            "## Project\nbase"
-        );
-        assert_eq!(join_project_context("", &None), "");
     }
 }
 

@@ -142,6 +142,25 @@ impl WireChatMessage {
             other: Default::default(),
         }
     }
+
+    /// Adds text at the end of the message: after a string content, or as
+    /// one more text part of a content array (a message with screenshots).
+    pub fn append_text(&mut self, text: &str) {
+        match &mut self.content {
+            serde_json::Value::String(s) => {
+                let before = s.trim_end();
+                *s = if before.is_empty() {
+                    text.to_string()
+                } else {
+                    format!("{before}\n\n{text}")
+                };
+            }
+            serde_json::Value::Array(parts) => {
+                parts.push(serde_json::json!({ "type": "text", "text": text }));
+            }
+            other => *other = serde_json::Value::String(text.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -719,6 +738,12 @@ pub struct ChatParams {
     // About the open project (stack, check commands, its agent instructions),
     // appended to the default system prompt.
     pub project_context: Option<String>,
+    // Context that changes from one step to the next (the repository map,
+    // rebuilt as files change). It goes at the very end of the request, on
+    // its last message, so everything before it (the system prompt, the
+    // tools, the history) is byte-identical to the previous step's and the
+    // provider's prompt cache serves it (prompt_cache.rs).
+    pub volatile_context: Option<String>,
     pub options: Option<OpenAIChatOptions>,
     // How the chat's context is managed: "trimming" (default) or "clm"
     // (Context Language Models: the agent edits its context as a file, src/clm).
@@ -796,6 +821,7 @@ pub async fn send_chat_message(
         tools,
         system_prompt,
         project_context,
+        volatile_context: None,
         options,
         context_mode,
         carried_notes: Vec::new(),
@@ -838,6 +864,7 @@ pub async fn run_chat(
         tools,
         system_prompt,
         project_context,
+        volatile_context,
         options,
         context_mode,
         carried_notes,
@@ -890,12 +917,15 @@ pub async fn run_chat(
     let tool_chars = tools.as_ref().map_or(0, |t| {
         serde_json::to_string(t).map_or(0, |j| j.chars().count())
     });
-    let budget = history_budget(
-        window,
-        system_prompt.chars().count() + tool_chars,
-        chars_per_token,
-        reserve,
-    );
+    // The volatile tail goes with every request, so it's counted with the
+    // fixed parts, not against the history.
+    let tail = volatile_context
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    let fixed_chars = system_prompt.chars().count()
+        + tool_chars
+        + tail.as_ref().map_or(0, |t| t.chars().count() + 2);
+    let budget = history_budget(window, fixed_chars, chars_per_token, reserve);
 
     // Context Language Models need the virtual volume (the agent's shell
     // edits the file there); without it the chat falls back to trimming.
@@ -921,7 +951,7 @@ pub async fn run_chat(
     let clm_budget = clm_prompt.as_ref().map(|p| {
         history_budget(
             window,
-            p.chars().count() + tool_chars,
+            fixed_chars - system_prompt.chars().count() + p.chars().count(),
             chars_per_token,
             reserve,
         )
@@ -1067,6 +1097,12 @@ pub async fn run_chat(
             tool_call_id: None,
             other: Default::default(),
         });
+    }
+
+    // Zone 2 of the request: what changes between steps rides on the last
+    // message, after the stable prefix (ChatParams::volatile_context).
+    if let (Some(tail), Some(last)) = (&tail, messages.last_mut()) {
+        last.append_text(tail);
     }
 
     messages.insert(
@@ -1982,6 +2018,33 @@ mod tests {
         let notes = with_carried_notes(&s(&["edit REJECTED", "readout"]), &s(&["readout"]));
         assert_eq!(notes, s(&["edit REJECTED", "readout"]));
         assert_eq!(with_carried_notes(&[], &s(&["a"])), s(&["a"]));
+    }
+
+    #[test]
+    fn volatile_context_is_appended_to_the_last_message() {
+        let mut text = WireChatMessage::text("tool", "wrote 3 bytes\n\n");
+        text.append_text("## Repository map\nsrc/a.rs");
+        assert_eq!(
+            text.content,
+            serde_json::json!("wrote 3 bytes\n\n## Repository map\nsrc/a.rs")
+        );
+
+        let mut empty = WireChatMessage::text("user", "");
+        empty.append_text("tail");
+        assert_eq!(empty.content, serde_json::json!("tail"));
+
+        // A message with a screenshot keeps its parts; the text is one more.
+        let mut parts = WireChatMessage::text("user", "");
+        parts.content = serde_json::json!([
+            { "type": "text", "text": "see" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } }
+        ]);
+        parts.append_text("tail");
+        assert_eq!(
+            parts.content[2],
+            serde_json::json!({ "type": "text", "text": "tail" })
+        );
+        assert_eq!(parts.content.as_array().unwrap().len(), 3);
     }
 
     #[test]
