@@ -3989,7 +3989,9 @@ async fn a_side_effect_outside_a_workers_scope_doesnt_land() {
 /// changes the same file in the chat's view, as the user editing it
 /// meanwhile: a conflict when that worker lands.
 async fn edit_while_workers_run(h: &Harness, path: &str, theirs: &str, ours: &str) {
-    for _ in 0..400 {
+    // Up to 30 s: the whole suite at once can hold a worker back for more
+    // than the few seconds it takes alone.
+    for _ in 0..3000 {
         let written = crate::overlay::chats::children_of(&h.dialog_id)
             .iter()
             .filter_map(|c| crate::overlay::chats::get(c))
