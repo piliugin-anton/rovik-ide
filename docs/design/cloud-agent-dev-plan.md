@@ -1610,3 +1610,34 @@ Tasks add notes here when reality differs from the plan.
   - P09's attachments test now picks the `Uploading` events out of what
     the app was told: `CloudEvent` has a second variant, which its
     patterns didn't allow for.
+- **T03, projects and worktrees.**
+  - The plan names no request that makes a chat's worktree before M04's
+    import, so the first `WorkSync` of a chat makes it, at the snapshot.
+    A later `WorkSync` changes nothing until T07 brings the merge.
+    `WorkSync` also carries `dialogId` and `project`, which section 4.2
+    leaves out, and answers `Synced { root }`, which T07 can grow.
+  - `ProjectEnsure` creates the bare repository and the project's row,
+    whose folder is the repository, and keeps the project's name, folder
+    in its repository and settings in `state.json`. A worktree made later
+    gets the settings under its root.
+  - The worktree's ID file is written alone (`projects::write_id_file`),
+    and the repository's `info/exclude` names `**/.rovik/project.json`
+    after the client's patterns: the ID file stays out of results even
+    when the snapshot has no `.rovik/.gitignore`. The repository's own
+    config has `core.autocrlf=false`, whatever the account's says.
+  - The client's patterns are `Shadow::excludes()`: the lines of the
+    project's `info/exclude` and of the global excludes file
+    (`core.excludesFile`, or git's XDG default), without comments and
+    blank lines.
+  - The test checks that the worktree's git ignores a file only the
+    client's global excludes name. Results, which take the same rules,
+    are T05's.
+  - Deleting a chat removes its worktree, its branch `rovik/<chat>` and
+    its refs under `refs/rovik/chats/<chat>/` in every project's
+    repository, its root's `project_paths` row and its `state.json`
+    entry. Garbage is collected at start-up: the worktrees of chats whose
+    rows are gone, and folders in `work/` no chat has. R01's `Gc` can
+    call the same.
+  - A chat's id names a folder, a worktree and a branch, so a sync with
+    one that isn't letters, digits, `-` and `_` is refused.
+  - The daemon gives a chat it makes a row for the worktree's project.

@@ -7,8 +7,10 @@ use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::HostInfo;
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
+use crate::work::{Project, Synced};
 use crate::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -93,6 +95,28 @@ pub enum Request {
         number: u64,
     },
 
+    // Work: the project on the server (6.4–6.7).
+    /// Creates the project's repository and row on the daemon, or brings
+    /// them up to date: its name and settings, and the ignore rules only
+    /// the client has (K32). → `Done`.
+    ProjectEnsure {
+        project: Project,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        settings: Option<Value>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        excludes: Vec<String>,
+    },
+    /// Brings the chat's worktree to a snapshot pushed before it (6.7). A
+    /// chat without one gets it there, on its own branch (6.4).
+    /// → `Synced`.
+    WorkSync {
+        dialog_id: String,
+        project: String,
+        snapshot: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        excludes: Vec<String>,
+    },
+
     // Host: the server, for the hosts page, deploy and upgrade.
     HostInfo,
 }
@@ -117,6 +141,8 @@ pub enum Response {
     HostInfo(HostInfo),
     /// `BlobsMissing`: the attachments it lacks.
     Ids(Vec<String>),
+    /// `WorkSync`.
+    Synced(Synced),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -161,4 +187,5 @@ replies! {
     Text => String,
     HostInfo => HostInfo,
     Ids => Vec<String>,
+    Synced => Synced,
 }

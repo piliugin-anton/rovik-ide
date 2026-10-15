@@ -420,6 +420,17 @@ fn descendants_in(
     Ok(out)
 }
 
+/// The chat belongs to `project_id` from now on: a daemon's chat to the
+/// project its worktree is of (6.4).
+pub fn set_dialog_project(conn: &Connection, id: &str, project_id: Option<&str>) -> DbResult<()> {
+    conn.execute(
+        "UPDATE dialogs SET project_id = ?2 WHERE id = ?1",
+        params![id, project_id],
+    )
+    .map(drop)
+    .map_err(err)
+}
+
 pub fn delete_dialog(conn: &mut Connection, id: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     // Round 3: the subagents' chats first, each once, however the parent

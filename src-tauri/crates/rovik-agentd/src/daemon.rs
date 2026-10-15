@@ -8,10 +8,12 @@ use crate::events::Events;
 use crate::host;
 use crate::packs::Projects;
 use crate::store::Store;
+use crate::work;
 use rovik_core::chat_db::store::{self, NewDialog};
 use rovik_core::{project_profile, Core};
 use rovik_protocol::agent::StartRequest;
 use rovik_protocol::{Fail, FailCode, Request, Response};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The oldest app protocol the daemon serves (4.5).
@@ -27,6 +29,8 @@ pub struct Daemon {
     pub store: Arc<Store>,
     /// Each project's repository, for the packs (6.4).
     pub projects: Projects,
+    /// Where the chats' worktrees go (6.4).
+    pub worktrees: PathBuf,
     /// `--same-machine`: a chat runs in the folder its start names, for
     /// development until projects are carried to the server (T04).
     pub same_machine: bool,
@@ -46,6 +50,26 @@ impl Daemon {
                 .configure(computer, config)
                 .map(|()| Response::Done)
                 .map_err(|e| Fail::new(FailCode::Internal, e)),
+            Request::ProjectEnsure {
+                project,
+                settings,
+                excludes,
+            } => work::ensure_project(self, project, settings, excludes).await,
+            Request::WorkSync {
+                dialog_id,
+                project,
+                snapshot,
+                excludes,
+            } => work::sync(self, computer, &dialog_id, &project, &snapshot, excludes).await,
+            // The chat's worktree goes with its rows.
+            Request::ChatDelete { dialog_id } => {
+                let delete = Request::ChatDelete {
+                    dialog_id: dialog_id.clone(),
+                };
+                let reply = rovik_core::dispatch(&self.core, delete).await?;
+                work::remove(self, &dialog_id).await;
+                Ok(reply)
+            }
             request => rovik_core::dispatch(&self.core, request).await,
         }
     }
@@ -77,7 +101,7 @@ impl Daemon {
         // The daemon works in its own copy, never in an overlay (D8).
         start.isolate = Some(false);
         self.keep_project_settings(&mut start)?;
-        self.ensure_chat(&start.dialog_id).await?;
+        self.ensure_chat(&start.dialog_id, None).await?;
         rovik_core::dispatch(&self.core, Request::AgentStart(start)).await
     }
 
@@ -94,26 +118,30 @@ impl Daemon {
     }
 
     /// A chat started here before chats can move here (M04) has no row
-    /// yet: it gets one, so its messages can be stored.
-    async fn ensure_chat(&self, dialog_id: &str) -> Result<(), Fail> {
-        let id = dialog_id.to_string();
+    /// yet: it gets one, so its messages can be stored. A chat with a
+    /// worktree belongs to the worktree's project (6.4).
+    pub async fn ensure_chat(&self, dialog_id: &str, project: Option<&str>) -> Result<(), Fail> {
+        let (id, project) = (dialog_id.to_string(), project.map(String::from));
         self.core
             .db
             .write(move |c| {
-                if store::get_dialog(c, &id)?.is_none() {
-                    let now = store::now_ms();
-                    store::create_dialog(
-                        c,
-                        &NewDialog {
-                            id,
-                            title: "Chat".into(),
-                            created_at: now,
-                            updated_at: now,
-                            project_id: None,
-                        },
-                    )?;
+                if store::get_dialog(c, &id)?.is_some() {
+                    return match project {
+                        Some(project) => store::set_dialog_project(c, &id, Some(&project)),
+                        None => Ok(()),
+                    };
                 }
-                Ok(())
+                let now = store::now_ms();
+                store::create_dialog(
+                    c,
+                    &NewDialog {
+                        id,
+                        title: "Chat".into(),
+                        created_at: now,
+                        updated_at: now,
+                        project_id: project,
+                    },
+                )
             })
             .await
             .map_err(|e| Fail::new(FailCode::Internal, e))

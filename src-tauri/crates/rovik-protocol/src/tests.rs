@@ -11,6 +11,7 @@ use crate::host::{HostInfo, Install};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
+use crate::work::{Project, Synced};
 use crate::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -373,6 +374,30 @@ fn every_request_round_trips() {
                 dialog_id: "d".into(),
                 number: 2,
             },
+            Request::ProjectEnsure {
+                project: Project {
+                    id: "p".into(),
+                    name: "app".into(),
+                    subpath: "web".into(),
+                },
+                settings: Some(json!({ "checks": ["npm test"] })),
+                excludes: vec!["*.local".into()],
+            },
+            Request::ProjectEnsure {
+                project: Project {
+                    id: "p".into(),
+                    name: "app".into(),
+                    subpath: String::new(),
+                },
+                settings: None,
+                excludes: Vec::new(),
+            },
+            Request::WorkSync {
+                dialog_id: "d".into(),
+                project: "p".into(),
+                snapshot: "0123456789abcdef0123456789abcdef01234567".into(),
+                excludes: vec!["*.local".into()],
+            },
             Request::HostInfo,
         ],
     );
@@ -446,6 +471,9 @@ fn every_response_round_trips() {
             Response::HostInfo(HostInfo::default()),
             Response::Ids(vec!["a".repeat(64)]),
             Response::Ids(Vec::new()),
+            Response::Synced(Synced {
+                root: "/home/me/.local/share/rovik/work/d".into(),
+            }),
         ],
     );
 }

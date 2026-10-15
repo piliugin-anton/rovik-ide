@@ -108,11 +108,11 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
                 .map(|_| Response::Done)
         }
 
-        // The daemon's own group: it answers these itself.
-        Request::HostInfo => {
+        // The daemon's own groups: it answers these itself.
+        Request::ProjectEnsure { .. } | Request::WorkSync { .. } | Request::HostInfo => {
             return Err(Fail::new(
                 FailCode::BadRequest,
-                "Only a daemon answers HostInfo.",
+                "Only a daemon answers the Work and Host requests.",
             ))
         }
     }

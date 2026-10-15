@@ -433,3 +433,23 @@ fn a_chat_works_only_in_its_own_projects_folders() {
         "a chat with no project isn't tied to one"
     );
 }
+
+#[test]
+fn a_daemon_keeps_a_project_by_the_desktops_id() {
+    let mut conn = db();
+    let (repo, worktree) = (temp("daemon-repo"), temp("daemon-work"));
+    ensure(&mut conn, "desktop-id-1", "app", &repo).unwrap();
+    ensure(&mut conn, "desktop-id-1", "app", &worktree).unwrap();
+    chat(&mut conn, "c", None);
+    crate::chat_db::store::set_dialog_project(&conn, "c", Some("desktop-id-1")).unwrap();
+
+    assert_eq!(chats(&conn, Some("desktop-id-1")), ["c"]);
+    assert!(chat_may_use(&conn, Some("desktop-id-1"), &worktree).unwrap());
+    write_id_file(&worktree, "desktop-id-1").unwrap();
+    assert_eq!(read_id(&worktree).as_deref(), Some("desktop-id-1"));
+    assert!(!worktree.join(".rovik/.gitignore").exists());
+
+    forget_path(&conn, "desktop-id-1", &worktree).unwrap();
+    assert!(!chat_may_use(&conn, Some("desktop-id-1"), &worktree).unwrap());
+    assert!(chat_may_use(&conn, Some("desktop-id-1"), &repo).unwrap());
+}

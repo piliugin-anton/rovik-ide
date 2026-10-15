@@ -16,6 +16,7 @@
 //!   restart.rs  the runs a crash or an upgrade cut, at start-up (5.4)
 //!   keys.rs     keys.json: the providers' keys (D11)
 //!   packs.rs    each project's repository and its packs (6.4)
+//!   work.rs     each chat's worktree (6.4)
 //!   host.rs     `HostInfo`
 //!   attach.rs   `attach --stdio`: a byte bridge to the socket
 //!   doctor.rs   `doctor`: what this server lacks for the daemon
@@ -55,6 +56,8 @@ mod server;
 mod session;
 #[cfg(unix)]
 mod store;
+#[cfg(unix)]
+mod work;
 
 #[cfg(unix)]
 fn main() {

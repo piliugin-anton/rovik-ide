@@ -25,7 +25,7 @@ impl Projects {
     /// Each ref of the project, with its commit: none before its first
     /// push.
     pub fn refs(&self, project: &str) -> Result<Refs, Fail> {
-        let Some(repo) = self.existing(project)? else {
+        let Some(repo) = self.open(project)? else {
             return Ok(Refs::default());
         };
         let mut refs = BTreeMap::new();
@@ -91,16 +91,49 @@ impl Projects {
         })
     }
 
+    /// The project's repository, ready for its chats' worktrees (6.4):
+    /// they check out what the snapshots hold, byte for byte (K40), and
+    /// ignore what the client ignores (K32) and the project's ID file.
+    pub fn prepare(&self, project: &str, excludes: &[String]) -> Result<Repository, Fail> {
+        let repo = self.repository(project)?;
+        let mut config = repo.config().map_err(internal)?;
+        config.set_bool("core.autocrlf", false).map_err(internal)?;
+        let mut rules =
+            String::from("# What the client ignores and the server doesn't know of (K32).\n");
+        for pattern in excludes {
+            rules.push_str(pattern);
+            rules.push('\n');
+        }
+        rules.push_str(
+            "# The project's ID file, which each worktree has.\n**/.rovik/project.json\n",
+        );
+        let file = repo.path().join("info/exclude");
+        std::fs::create_dir_all(repo.path().join("info"))
+            .and_then(|()| std::fs::write(file, rules))
+            .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
+        Ok(repo)
+    }
+
+    /// The projects that have a repository here.
+    pub fn ids(&self) -> Vec<String> {
+        let entries = std::fs::read_dir(&self.dir).into_iter().flatten().flatten();
+        let names = entries.map(|entry| entry.file_name().to_string_lossy().into_owned());
+        names
+            .filter_map(|name| name.strip_suffix(".git").map(String::from))
+            .collect()
+    }
+
+    /// The project's repository, when it has one.
+    pub fn open(&self, project: &str) -> Result<Option<Repository>, Fail> {
+        Ok(Repository::open_bare(self.path(project)?).ok())
+    }
+
     /// The project's repository, created the first time.
     fn repository(&self, project: &str) -> Result<Repository, Fail> {
-        match self.existing(project)? {
+        match self.open(project)? {
             Some(repo) => Ok(repo),
             None => Repository::init_bare(self.path(project)?).map_err(internal),
         }
-    }
-
-    fn existing(&self, project: &str) -> Result<Option<Repository>, Fail> {
-        Ok(Repository::open_bare(self.path(project)?).ok())
     }
 
     fn path(&self, project: &str) -> Result<PathBuf, Fail> {

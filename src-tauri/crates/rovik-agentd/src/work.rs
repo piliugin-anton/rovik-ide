@@ -1,0 +1,269 @@
+//! Each chat's worktree on the daemon (6.4, D8). A project's repository
+//! holds the snapshots its desktop pushed (T02). A chat works in a worktree
+//! of its own in `work/<chat>`, on branch `rovik/<chat>` at the snapshot it
+//! started from. Its root, the worktree or the project's folder in it, is
+//! one of its project's folders and has the project's ID file, so a run
+//! there works as a local chat does in its project. A deleted chat takes
+//! its worktree, branch and refs with it, and start-up collects those of
+//! chats deleted while the daemon was away.
+
+use crate::daemon::Daemon;
+use crate::store::Place;
+use git2::{BranchType, Oid, Repository, WorktreeAddOptions, WorktreePruneOptions};
+use rovik_core::chat_db::{projects, store};
+use rovik_core::{project_profile, rt};
+use rovik_protocol::packs::PUSHED_REFS;
+use rovik_protocol::work::{Project, Synced};
+use rovik_protocol::{Fail, FailCode, Response};
+use serde_json::Value;
+use std::fs;
+use std::path::Path;
+
+/// `ProjectEnsure`: the project's repository with the client's ignore
+/// rules, its row, and its settings for its worktrees.
+pub async fn ensure_project(
+    daemon: &Daemon,
+    project: Project,
+    settings: Option<Value>,
+    excludes: Vec<String>,
+) -> Result<Response, Fail> {
+    let (projects, id) = (daemon.projects.clone(), project.id.clone());
+    let prepared = rt::spawn_blocking(move || {
+        let repo = projects.prepare(&id, &excludes)?;
+        Ok::<_, Fail>(repo.path().to_path_buf())
+    });
+    let repo = prepared.await.map_err(joined)??;
+    let (id, name) = (project.id.clone(), project.name.clone());
+    let row = daemon
+        .core
+        .db
+        .write(move |c| projects::ensure(c, &id, &name, &repo));
+    row.await.map_err(internal)?;
+    daemon
+        .store
+        .ensure_project(&project, settings)
+        .map_err(internal)?;
+    Ok(Response::Done)
+}
+
+/// `WorkSync`: a chat without a worktree gets one at the snapshot. A chat
+/// that has one keeps it as it is until syncs merge (T07).
+pub async fn sync(
+    daemon: &Daemon,
+    computer: &str,
+    chat: &str,
+    project: &str,
+    snapshot: &str,
+    excludes: Vec<String>,
+) -> Result<Response, Fail> {
+    if !plain(chat) {
+        return Err(bad_request(format!("{chat} isn't a chat's id.")));
+    }
+    daemon.store.check_owner(computer, chat)?;
+    let state = daemon.store.project(project).ok_or_else(|| {
+        bad_request("The project isn't on this server yet: ProjectEnsure comes first.")
+    })?;
+    if let Some(place) = daemon.store.place(chat).filter(|p| p.worktree.is_dir()) {
+        let root = place.worktree.join(&state.subpath);
+        return Ok(Response::Synced(synced(&root)));
+    }
+    let base = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
+    let worktree = daemon.worktrees.join(chat);
+    let (projects, id, name, at) = (
+        daemon.projects.clone(),
+        project.to_string(),
+        chat.to_string(),
+        worktree.clone(),
+    );
+    let made = rt::spawn_blocking(move || {
+        let repo = projects.prepare(&id, &excludes)?;
+        make_worktree(&repo, &name, base, &at)
+    });
+    made.await.map_err(joined)??;
+
+    let root = worktree.join(&state.subpath);
+    projects::write_id_file(&root, project).map_err(|e| internal(e.to_string()))?;
+    let (id, name, folder) = (project.to_string(), state.name.clone(), root.clone());
+    let row = daemon
+        .core
+        .db
+        .write(move |c| projects::ensure(c, &id, &name, &folder));
+    row.await.map_err(internal)?;
+    daemon.ensure_chat(chat, Some(project)).await?;
+    if let Some(settings) = state.settings {
+        let config_dir = &daemon.core.paths.config_dir;
+        let saved = project_profile::save_project_settings(config_dir, text(&root), settings);
+        saved.map_err(internal)?;
+    }
+    let place = Place {
+        project: project.to_string(),
+        worktree,
+    };
+    daemon
+        .store
+        .worktree_made(computer, chat, place, snapshot)?;
+    Ok(Response::Synced(synced(&root)))
+}
+
+/// After `ChatDelete`: the chat's worktree, its branch and its refs in
+/// every project's repository, and its root among its project's folders.
+pub async fn remove(daemon: &Daemon, chat: &str) {
+    // No sync takes an id that isn't plain: nothing of it is on disk.
+    if !plain(chat) {
+        return daemon.store.forget(chat);
+    }
+    if let Some(place) = daemon.store.place(chat) {
+        let subpath = daemon
+            .store
+            .project(&place.project)
+            .unwrap_or_default()
+            .subpath;
+        let root = place.worktree.join(subpath);
+        let project = place.project.clone();
+        let forgotten = daemon
+            .core
+            .db
+            .write(move |c| projects::forget_path(c, &project, &root));
+        if let Err(e) = forgotten.await {
+            log::warn!("{chat}'s worktree stays among its project's folders: {e}");
+        }
+    }
+    let (projects, name, worktree) = (
+        daemon.projects.clone(),
+        chat.to_string(),
+        daemon.worktrees.join(chat),
+    );
+    let removed = rt::spawn_blocking(move || {
+        for id in projects.ids() {
+            if let Ok(Some(repo)) = projects.open(&id) {
+                drop_chat(&repo, &name);
+            }
+        }
+        match fs::remove_dir_all(&worktree) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    });
+    if let Ok(Err(e)) = removed.await {
+        log::warn!("{chat}'s worktree stays: {e}");
+    }
+    daemon.store.forget(chat);
+}
+
+/// At start-up: the worktrees of chats deleted while the daemon was away,
+/// and folders in `work/` that no chat has.
+pub async fn collect(daemon: &Daemon) {
+    let known = daemon.store.chats_with_worktrees();
+    for chat in &known {
+        let id = chat.clone();
+        let row = daemon
+            .core
+            .db
+            .read(move |c| store::get_dialog(c, &id))
+            .await;
+        if matches!(row, Ok(None)) {
+            log::info!("{chat} was deleted: its worktree goes");
+            remove(daemon, chat).await;
+        }
+    }
+    let folders = fs::read_dir(&daemon.worktrees)
+        .into_iter()
+        .flatten()
+        .flatten();
+    for folder in folders {
+        let name = folder.file_name().to_string_lossy().into_owned();
+        if known.contains(&name) {
+            continue;
+        }
+        log::info!("work/{name} belongs to no chat: it goes");
+        if plain(&name) {
+            remove(daemon, &name).await;
+        } else if let Err(e) = fs::remove_dir_all(folder.path()) {
+            log::warn!("work/{name} stays: {e}");
+        }
+    }
+}
+
+/// Makes the chat's worktree at `base`, on its branch, in place of what an
+/// earlier one left. The checkout writes the files as the snapshot holds
+/// them.
+fn make_worktree(repo: &Repository, chat: &str, base: Oid, at: &Path) -> Result<(), Fail> {
+    let commit = repo
+        .find_commit(base)
+        .map_err(|_| bad_request("The snapshot isn't on this server: push it first."))?;
+    drop_chat_worktree(repo, chat);
+    match fs::remove_dir_all(at) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(internal(e.to_string())),
+        _ => {}
+    }
+    if let Some(parent) = at.parent() {
+        fs::create_dir_all(parent).map_err(|e| internal(e.to_string()))?;
+    }
+    let branch = repo.branch(&branch(chat), &commit, true).map_err(git)?;
+    let mut opts = WorktreeAddOptions::new();
+    opts.reference(Some(branch.get()));
+    repo.worktree(chat, at, Some(&opts)).map_err(git)?;
+    Ok(())
+}
+
+/// What a chat leaves in a project's repository: its worktree's record, its
+/// branch and its refs.
+fn drop_chat(repo: &Repository, chat: &str) {
+    drop_chat_worktree(repo, chat);
+    if let Ok(mut branch) = repo.find_branch(&branch(chat), BranchType::Local) {
+        let _ = branch.delete();
+    }
+    let glob = format!("{PUSHED_REFS}chats/{chat}/*");
+    let names: Vec<String> = repo
+        .references_glob(&glob)
+        .map(|mut refs| refs.names().flatten().map(String::from).collect())
+        .unwrap_or_default();
+    for name in names {
+        if let Ok(mut reference) = repo.find_reference(&name) {
+            let _ = reference.delete();
+        }
+    }
+}
+
+fn drop_chat_worktree(repo: &Repository, chat: &str) {
+    if let Ok(worktree) = repo.find_worktree(chat) {
+        let mut opts = WorktreePruneOptions::new();
+        opts.valid(true).locked(true).working_tree(true);
+        let _ = worktree.prune(Some(&mut opts));
+    }
+}
+
+/// A chat's branch.
+fn branch(chat: &str) -> String {
+    format!("rovik/{chat}")
+}
+
+/// Whether a chat's id can name its folder, worktree and branch as it is.
+fn plain(chat: &str) -> bool {
+    let fits = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    !chat.is_empty() && chat.len() <= 64 && chat.chars().all(fits)
+}
+
+fn synced(root: &Path) -> Synced {
+    Synced { root: text(root) }
+}
+
+fn text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn bad_request(message: impl Into<String>) -> Fail {
+    Fail::new(FailCode::BadRequest, message)
+}
+
+fn internal(message: String) -> Fail {
+    Fail::new(FailCode::Internal, message)
+}
+
+fn git(e: git2::Error) -> Fail {
+    internal(e.message().to_string())
+}
+
+fn joined(e: tokio::task::JoinError) -> Fail {
+    internal(e.to_string())
+}

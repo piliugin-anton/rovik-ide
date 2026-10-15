@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{Daemon, COMPUTER};
+use common::{commit_all, write, Daemon, COMPUTER};
 use git2::{ObjectType, Oid, Repository, Signature};
 use rovik_client::shadow::Shadow;
 use rovik_client::{Client, CloudEvent, HostState, Identity, Remote, UnixConnector};
@@ -116,28 +116,6 @@ async fn ready(check: impl Fn() -> bool) {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("never ready");
-}
-
-fn write(path: &Path, content: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, content).unwrap();
-}
-
-/// Commits every file under `root`, in a repository created the first
-/// time.
-fn commit_all(root: &Path) -> Oid {
-    let repo = Repository::open(root).unwrap_or_else(|_| Repository::init(root).unwrap());
-    let mut index = repo.index().unwrap();
-    index
-        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-        .unwrap();
-    index.write().unwrap();
-    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-    let me = Signature::now("Test", "test@example.com").unwrap();
-    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-    let parents: Vec<_> = parent.iter().collect();
-    repo.commit(Some("HEAD"), &me, &me, "work", &tree, &parents)
-        .unwrap()
 }
 
 /// How many objects of each kind a pack file holds.

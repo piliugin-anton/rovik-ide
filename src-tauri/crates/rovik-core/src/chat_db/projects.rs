@@ -113,9 +113,16 @@ fn write_id(root: &Path, id: &str) -> bool {
             "# Rovik IDE: the project's local ID (chats are kept on this machine).\nproject.json\n",
         );
     }
+    write_id_file(root, id).is_ok()
+}
+
+/// Writes the ID file alone: a daemon's worktree has the project's
+/// `.rovik/.gitignore` from its snapshot (6.4).
+pub fn write_id_file(root: &Path, id: &str) -> std::io::Result<()> {
+    let dir = root.join(".rovik");
+    fs::create_dir_all(&dir)?;
     let body = serde_json::to_string_pretty(&IdFile { id: id.to_string() }).unwrap_or_default();
     crate::atomic_file::write_atomic(&dir.join("project.json"), format!("{body}\n").as_bytes())
-        .is_ok()
 }
 
 fn folder_name(root: &Path) -> String {
@@ -273,6 +280,38 @@ fn decide(conn: &Connection, key: &str, id: &str, decision: &str) -> DbResult<()
     )
     .map_err(err)?;
     Ok(())
+}
+
+/// A project a daemon keeps for the desktop that has it (6.4): its row with
+/// the desktop's id, created the first time, and `path` one of its folders,
+/// where its chats may work.
+pub fn ensure(conn: &mut Connection, id: &str, name: &str, path: &Path) -> DbResult<()> {
+    let (key, display) = (path_key(path), path.to_string_lossy().into_owned());
+    let tx = conn.transaction().map_err(err)?;
+    let known = tx
+        .query_row("SELECT 1 FROM projects WHERE id = ?1", params![id], |_| {
+            Ok(())
+        })
+        .optional()
+        .map_err(err)?
+        .is_some();
+    if known {
+        record_path(&tx, id, &key, &display, name, now_ms())?;
+    } else {
+        insert_project(&tx, id, name, &key, &display, now_ms())?;
+    }
+    tx.commit().map_err(err)
+}
+
+/// `path` isn't one of the project's folders any more. Called before the
+/// folder goes: its key is the path with its links resolved.
+pub fn forget_path(conn: &Connection, id: &str, path: &Path) -> DbResult<()> {
+    conn.execute(
+        "DELETE FROM project_paths WHERE project_id = ?1 AND path = ?2",
+        params![id, path_key(path)],
+    )
+    .map(drop)
+    .map_err(err)
 }
 
 /// Whether a chat of `project_id` may work in the folder `root`: it's one of

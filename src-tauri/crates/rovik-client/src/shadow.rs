@@ -137,6 +137,26 @@ impl Shadow {
         &self.subpath
     }
 
+    /// The ignore rules only this computer has (K32): the project's
+    /// `info/exclude` and the user's global excludes, which a daemon puts in
+    /// the project's repository so that the chat's worktree ignores the
+    /// same files.
+    pub fn excludes(&self) -> Vec<String> {
+        let config = self.repo.config();
+        let global = config.and_then(|c| c.get_path("core.excludesfile")).ok();
+        let files = [self.repo.path().join("info/exclude")]
+            .into_iter()
+            .chain(global.or_else(xdg_excludes));
+        let mut rules = Vec::new();
+        for text in files.filter_map(|file| fs::read_to_string(file).ok()) {
+            let lines = text
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with('#'));
+            rules.extend(lines.map(String::from));
+        }
+        rules
+    }
+
     /// Takes a snapshot of the project for `chat`. A tree that hasn't
     /// changed keeps the chat's previous commit.
     pub fn snapshot(&self, chat: &str) -> Result<Snapshot> {
@@ -510,6 +530,15 @@ fn loose_objects(objects: &Path) -> Vec<(Oid, PathBuf)> {
         }
     }
     loose
+}
+
+/// The user's global excludes when their git config names none: git's own
+/// default, in the XDG config folder.
+fn xdg_excludes() -> Option<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(config.join("git/ignore"))
 }
 
 /// Whether the loose objects are due to be packed: never packed, or a day

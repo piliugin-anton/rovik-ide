@@ -1,16 +1,19 @@
 //! state.json (5.1, 6.2): each chat's computer and how its run last
-//! started, whether that run is going and how the last one ended, and each
-//! computer's configuration, all without keys (keys.json has them, D11) or
-//! the message's text. Read at start-up, so a chat's events still find
-//! their computer, its runs their computer's configuration (D16), and an
+//! started, whether that run is going and how the last one ended, its
+//! project and worktree (6.4), each computer's configuration and each
+//! project's settings, all without keys (keys.json has them, D11) or the
+//! message's text. Read at start-up, so a chat's events still find their
+//! computer, its runs their computer's configuration (D16), and an
 //! interrupted run its way back (5.4).
 
 use crate::keys::Keys;
 use rovik_protocol::agent::{
     AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
 };
+use rovik_protocol::work::Project;
 use rovik_protocol::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -23,6 +26,22 @@ pub struct State {
     /// Each computer's last configuration.
     #[serde(default)]
     pub computers: BTreeMap<String, AgentConfig>,
+    /// The projects a computer carried here, by id (6.4).
+    #[serde(default)]
+    pub projects: BTreeMap<String, ProjectState>,
+}
+
+/// A project a computer carried here, as its last `ProjectEnsure` said.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectState {
+    pub name: String,
+    /// Its folder in its repository: "" at its root (K31).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subpath: String,
+    /// Its settings (K03), for each worktree of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -46,6 +65,22 @@ pub struct ChatState {
     /// When the daemon restarted its run after a crash, in epoch ms (5.4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restarts: Vec<i64>,
+    /// Its project, once it has a worktree (6.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Its worktree's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<PathBuf>,
+    /// The commit its worktree is based on: the landing base (6.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+}
+
+/// Where a chat works: its project and its worktree's folder.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    pub project: String,
+    pub worktree: PathBuf,
 }
 
 /// A chat restarted this many times within `RESTART_WINDOW_MS` isn't
@@ -146,12 +181,7 @@ impl Store {
     pub fn started(&self, computer: &str, start: &StartRequest) -> Result<(), Fail> {
         let mut inner = self.lock();
         let earlier = inner.state.chats.get(&start.dialog_id).cloned();
-        if earlier.as_ref().is_some_and(|c| c.computer != computer) {
-            return Err(Fail::new(
-                FailCode::NotOwner,
-                "Another computer moved this chat to the server.",
-            ));
-        }
+        inner.check_owner(computer, &start.dialog_id)?;
         let mut keys_changed = inner.keys.take([&start.profile]);
         if let Some(config) = &start.config {
             keys_changed |= inner.keys.take(config.models());
@@ -178,6 +208,84 @@ impl Store {
         }
         inner.set_config(computer, config);
         self.save(&inner)
+    }
+
+    /// Refuses another computer's chat.
+    pub fn check_owner(&self, computer: &str, dialog_id: &str) -> Result<(), Fail> {
+        self.lock().check_owner(computer, dialog_id)
+    }
+
+    /// The project as its computer last described it (6.4).
+    pub fn ensure_project(&self, project: &Project, settings: Option<Value>) -> Result<(), String> {
+        let mut inner = self.lock();
+        let state = ProjectState {
+            name: project.name.clone(),
+            subpath: project.subpath.clone(),
+            settings,
+        };
+        if inner.state.projects.get(&project.id) == Some(&state) {
+            return Ok(());
+        }
+        inner.state.projects.insert(project.id.clone(), state);
+        self.save(&inner)
+    }
+
+    pub fn project(&self, id: &str) -> Option<ProjectState> {
+        self.lock().state.projects.get(id).cloned()
+    }
+
+    /// `computer`'s chat has its worktree at `worktree`, based on `base`.
+    pub fn worktree_made(
+        &self,
+        computer: &str,
+        dialog_id: &str,
+        place: Place,
+        base: &str,
+    ) -> Result<(), Fail> {
+        let mut inner = self.lock();
+        inner.check_owner(computer, dialog_id)?;
+        let chat = inner
+            .state
+            .chats
+            .entry(dialog_id.to_string())
+            .or_insert_with(|| ChatState {
+                computer: computer.to_string(),
+                ..ChatState::default()
+            });
+        chat.project = Some(place.project);
+        chat.worktree = Some(place.worktree);
+        chat.base = Some(base.to_string());
+        self.save(&inner).map_err(internal)
+    }
+
+    /// Where the chat works, once it has a worktree.
+    pub fn place(&self, dialog_id: &str) -> Option<Place> {
+        let inner = self.lock();
+        let chat = inner.state.chats.get(dialog_id)?;
+        Some(Place {
+            project: chat.project.clone()?,
+            worktree: chat.worktree.clone()?,
+        })
+    }
+
+    /// The chats that have a worktree.
+    pub fn chats_with_worktrees(&self) -> Vec<String> {
+        let inner = self.lock();
+        let chats = inner.state.chats.iter();
+        chats
+            .filter(|(_, chat)| chat.worktree.is_some())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// A deleted chat: nothing of it is kept.
+    pub fn forget(&self, dialog_id: &str) {
+        let mut inner = self.lock();
+        if inner.state.chats.remove(dialog_id).is_some() {
+            if let Err(e) = self.save(&inner) {
+                log::error!("state.json: {e}");
+            }
+        }
     }
 
     /// The configuration the chat's runs follow: its computer's.
@@ -286,6 +394,17 @@ impl Store {
 }
 
 impl Inner {
+    fn check_owner(&self, computer: &str, dialog_id: &str) -> Result<(), Fail> {
+        let chat = self.state.chats.get(dialog_id);
+        if chat.is_some_and(|c| c.computer != computer) {
+            return Err(Fail::new(
+                FailCode::NotOwner,
+                "Another computer moved this chat to the server.",
+            ));
+        }
+        Ok(())
+    }
+
     /// The computer's configuration: with keys here, without in state.json.
     fn set_config(&mut self, computer: &str, mut config: AgentConfig) {
         self.keys.give(config.models_mut());

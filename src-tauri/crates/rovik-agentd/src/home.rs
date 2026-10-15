@@ -58,6 +58,11 @@ impl Home {
         self.share.join("tmp")
     }
 
+    /// The chats' worktrees (6.4).
+    pub fn work(&self) -> PathBuf {
+        self.share.join("work")
+    }
+
     /// Creates the folders the first time. Refuses ones another user owns
     /// or that others can open: chats and keys are kept in them.
     pub fn prepare(&self) -> Result<(), String> {

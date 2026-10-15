@@ -12,6 +12,7 @@ use crate::packs::Projects;
 use crate::restart;
 use crate::server::{self, OwnUser};
 use crate::store::Store;
+use crate::work;
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::{process, rt, Core, EventSink, Paths};
 use std::path::PathBuf;
@@ -90,11 +91,13 @@ async fn run(
         events,
         store,
         projects: Projects::new(home.root.join("projects")),
+        worktrees: home.work(),
         same_machine,
         virtual_files_problem,
     });
 
     // 7. The runs the last process left going (5.4).
+    work::collect(&daemon).await;
     restart::restart_interrupted(&daemon).await;
 
     // 8. The socket, then serving.

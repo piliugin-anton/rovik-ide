@@ -21,6 +21,7 @@ pub mod permissions;
 pub mod plan;
 mod request;
 pub mod subagents;
+pub mod work;
 
 pub use frame::{Event, Fail, FailCode, Frame, Secret};
 pub use request::{Request, Response};

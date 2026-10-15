@@ -502,3 +502,27 @@ pub fn start_request(url: &str, project: &std::path::Path, text: String) -> Star
         project_settings: None,
     }
 }
+
+/// Writes a file, and its folders.
+pub fn write(path: &Path, content: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+}
+
+/// Commits every file under `root` that no ignore rule names, in a
+/// repository created the first time.
+pub fn commit_all(root: &Path) -> git2::Oid {
+    let repo =
+        git2::Repository::open(root).unwrap_or_else(|_| git2::Repository::init(root).unwrap());
+    let mut index = repo.index().unwrap();
+    index
+        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+        .unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let me = git2::Signature::now("Test", "test@example.com").unwrap();
+    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    let parents: Vec<_> = parent.iter().collect();
+    repo.commit(Some("HEAD"), &me, &me, "work", &tree, &parents)
+        .unwrap()
+}

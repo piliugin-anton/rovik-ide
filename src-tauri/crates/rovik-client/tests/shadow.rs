@@ -536,3 +536,19 @@ fn a_chat_id_has_to_make_a_ref() {
     assert!(shadow.snapshot("../escape").is_err());
     assert!(shadow.snapshot("").is_err());
 }
+
+#[test]
+fn the_rules_only_this_computer_has_go_to_the_server() {
+    let fixture = Fixture::new();
+    let root = fixture.project();
+    write(&root.join("a.txt"), "a\n");
+    commit_all(&root);
+    write(
+        &root.join(".git/info/exclude"),
+        "# local notes\nsecret.txt\n\n/build-local/\n",
+    );
+
+    let excludes = fixture.shadow().excludes();
+
+    assert_eq!(excludes, ["secret.txt", "/build-local/", "*.mine"]);
+}
