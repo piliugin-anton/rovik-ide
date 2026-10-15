@@ -312,7 +312,12 @@ async fn a_messages_update_goes_to_its_chats_owner() {
     assert_eq!(reply, Ok(Response::Done));
     let reply = remote.route_message("m2", failed("m2")).await;
     assert_eq!(reply, Ok(Response::Done));
-    let requests = fake.requests.lock().unwrap().clone();
+    let requests: Vec<Request> = fake.requests.lock().unwrap().clone();
+    // The mirror's pull of the chat placed there comes when it comes.
+    let requests: Vec<Request> = requests
+        .into_iter()
+        .filter(|r| !matches!(r, Request::ChatChangesSince { .. }))
+        .collect();
     assert_eq!(requests, [failed("m1")], "only the remote chat's");
     // The owner has it, and so does the mirror.
     assert!(app.rows("remote-chat").await[0].failed);
@@ -412,6 +417,9 @@ async fn a_project_with_a_remote_chat_isnt_merged_or_deleted() {
     app.chat("local-chat", Some(&all_local), Vec::new()).await;
     let remote = Remote::new(app.core.clone());
     remote.place("remote-chat", HOST);
+    // Its location is queued before the writes after it: one waits for it.
+    let written = app.core.db.write(|_| Ok::<(), String>(()));
+    written.await.unwrap();
     let refused = remote.keep_project(&with_remote, "merging it").await;
     assert_eq!(
         refused,
