@@ -2451,3 +2451,9 @@ Tasks add notes here when reality differs from the plan.
     login is refused before anything is uploaded. A second user's
     deploy, a deploy without sudo, and a changed binary on a real server
     stay manual checks on a systemd host.
+- **H08 is skipped for now, as asked.** The agent's Chrome stays on eoka
+  0.5.14's DevTools port on `127.0.0.1`, so on a shared server other users
+  can reach the browser that runs as you (K52). `docs/cloud-hosts.md`
+  says so and suggests leaving the browser tools off on servers shared
+  with people you don't trust. D18 and H08 stand as the plan for when the
+  pipe transport is taken up again.
