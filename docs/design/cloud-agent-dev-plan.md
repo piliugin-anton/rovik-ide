@@ -647,7 +647,9 @@ away.
   between an event and its rows still ends up with what the database has
   (K22). The chat store already treats these as idempotent.
 - **Where the position is kept:** `mirror_state(dialog_id, host, rev,
-imported_result)`, updated in the same transaction as the rows.
+imported_result, imported_seq, unreported_landing)`, updated in the same
+  transaction as the rows. The last three are 6.5's: the result imported
+  last and its number, and a landing its host wasn't told of yet.
 - **Attachments** with no file here are fetched from `/blobs/<sha256>` and
   stored, with their `attachments` rows, before the `message_attachments`
   rows that reference them are applied. A file the owner can't serve gets
@@ -765,9 +767,10 @@ imported_result)`, updated in the same transaction as the rows.
 **On the client, while connected.**
 
 - **Finding results:** `ResultReady` while connected, and `WorkResults` on
-  every connection. Any result newer than `mirror_state.imported_result`
-  is imported, so a result that ended while the laptop slept isn't lost
-  (K24).
+  every connection. Each chat's results are numbered (`seq`), and any
+  result newer than the one `mirror_state` records is imported, so a
+  result that ended while the laptop slept isn't lost (K24). An older
+  `ResultReady` replayed after a newer result is passed over.
 - **Importing:**
   - The client fetches the result into the shadow repository.
   - `overlay::import` builds the chat's local overlay store from the
@@ -787,8 +790,13 @@ imported_result)`, updated in the same transaction as the rows.
     `LANDS_AFTER`, no conflict markers, no conflicts, and the plan not
     `merged`, and only while the chat's project is the open project.
   - Conflicts go to the isolation bar, as they do now.
-  - A `merged` plan with checks on goes to 6.6.
-  - After a landing, the client sends `WorkLanded`.
+  - A `merged` plan goes to 6.6 when the chat's checks would run, which
+    the result says (`checks`). Without checks, it lands merged, as a
+    local chat's does.
+  - After a landing, the client sends `WorkLanded`. A landing its host
+    can't be told of yet waits in `mirror_state.unreported_landing` and is
+    sent after the next connection, so an app restarted meanwhile still
+    tells it (K34).
 - A result that waits shows in the bar as "Ready to land" until the
   project is opened or the user lands it.
 
@@ -1059,7 +1067,7 @@ project, and packs through the tunnel (D6) can be tested without SSH.
 
 | ID  | Task                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Needs                        | Done when                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M01 | `SCHEMA_V10` (6.3): `dialogs.location` (NULL means here; `moving:<host>`, `host:<id>`, and `released` on the daemon), `sync_clock`, `rev` columns and their triggers, an index on `(dialog_id, rev)`, and the local tables `cloud_moves` and `mirror_state`. Also the ownership refusal in `dispatch` (4.2).                                                                                                                                                                                                                                                                                     | P02                          | A migration test from version 9. A test runs every write function of `chat_db/store.rs`, `clm/store.rs` and `chat_db/projects.rs` and checks that `rev` rose on the rows each touched. `EXPLAIN QUERY PLAN` shows the changes query using the index. `dispatch` refuses a chat in `moving:` or `host:`.                                                                                                                                                                                                                                                                                      |
+| M01 | `SCHEMA_V10` (6.3): `dialogs.location` (NULL means here; `moving:<host>`, `host:<id>`, and `released` on the daemon), `sync_clock`, `rev` columns and their triggers, an index on `(dialog_id, rev)`, and the local tables `cloud_moves` and `mirror_state`. The client keeps in `mirror_state` the result each chat imported last, with its `seq`, and a landing its host wasn't told of yet (6.5), in place of T06's shadow ref and in-memory list. Also the ownership refusal in `dispatch` (4.2).                                                                                            | P02                          | A migration test from version 9. A test runs every write function of `chat_db/store.rs`, `clm/store.rs` and `chat_db/projects.rs` and checks that `rev` rose on the rows each touched. `EXPLAIN QUERY PLAN` shows the changes query using the index. `dispatch` refuses a chat in `moving:` or `host:`. After a restart of the app, an imported result isn't imported again, and a landing not yet reported is reported after the next connection.                                                                                                                                           |
 | M02 | `chat_db::sync`: `ChangeSet`, `changes_since` in pages, and `apply` (6.3), with the CLM revision deletions, the local `project_id` and `location` kept, and the location check in the same transaction.                                                                                                                                                                                                                                                                                                                                                                                          | M01                          | Tests: applying the changes in any batches and pages gives the same database as one full export; applying twice changes nothing; a finalized body stored in `message_bodies` arrives whole; a child chat arrives with its parent's location; a CLM revision the owner deleted is deleted; a chat that moved back isn't written to.                                                                                                                                                                                                                                                           |
 | M03 | The safe point. `AgentPause` in the core: a flag on `RunControl`, handed to the run with its `Controls` and checked where a checkpoint pause happens in `run.rs` and between verification rounds. The run pauses with `PauseInfo { kind: "move", host }`, a new field, and no `reason`, so there is no summary request (K29). `Drain` uses the same flag with kind `drain`. Running `task` children finish first, and the call returns when the run has ended. `MessageList.tsx` shows a `move` pause as "Moved to <host>" and a `drain` pause as "Paused for an upgrade", not as a stuck agent. | P02                          | e2e: a pause during a tool call stores the call's result and makes no further request, with outcome `paused-move`; `ContinueRun` then continues the count; a pause during a scout lets the scout finish first; Stop still stops at once. `npm test`: both pause kinds render with their own text.                                                                                                                                                                                                                                                                                            |
 | M04 | Import and ownership on the daemon: `POST /chats/import` (one transaction, idempotent per `move_id`, the chat's computer recorded, the worktree created before the commit, a released chat cleared first, a row without a file for an attachment the daemon doesn't have), `ChatOwner` and `ChatRelease`.                                                                                                                                                                                                                                                                                        | M02, T03, T09                | Daemon tests: two imports with one `move_id` make one chat; another computer's import of a chat it doesn't own is refused; after a release, writes are refused and reading changes still works; a chat released earlier can be imported again; a bundle that references a file the client couldn't upload imports, and requests say the file is no longer shown; a bundle of 50 MB imports.                                                                                                                                                                                                  |
@@ -1854,3 +1862,9 @@ Tasks add notes here when reality differs from the plan.
     path. The frontend moves to it with U04.
   - The tests drive the routes through `Remote` against the real daemon.
     The app's commands only choose between the remote and the local route.
+- **After milestone T, a review of its limits.** Each limit the notes above
+  name was settled with the plan's owner; the fixes are follow-ups to the
+  tasks they change.
+  - Which result a chat imported last, and a landing its host wasn't told
+    of yet, go into M01's `mirror_state` (6.3, 6.5 and M01's task say so
+    now). Until M01, T06's shadow ref and in-memory list stay.
