@@ -185,6 +185,21 @@ export interface ChatMessage {
 }
 
 /** The approval decision on one tool call. */
+/** Where a run paused and why (`PauseInfo`, src-tauri agent_run/guard.rs). */
+export interface RunPause {
+  /**
+   * After a number of tool calls, or because it looked stuck; for the chat's
+   * move to or from a host, or for an upgrade of the server's Rovik.
+   */
+  kind: 'checkpoint' | 'loop' | 'move' | 'drain';
+  /** Tool calls run so far in the run, Continues included. */
+  toolCalls: number;
+  /** A loop's: why it looked stuck. */
+  reason?: string;
+  /** A move's: where the chat went. */
+  host?: string;
+}
+
 export interface ToolApproval {
   by: 'user' | 'ai';
   approved: boolean;
@@ -230,9 +245,10 @@ export interface ToolMeta {
   sentContent?: string;
   /**
    * An empty assistant message marking where a run paused (never sent to the
-   * model): after a number of tool calls, or because it looked stuck.
+   * model): after a number of tool calls, because it looked stuck, or for a
+   * move or an upgrade (lib/runPause.ts).
    */
-  paused?: { kind: 'checkpoint' | 'loop'; toolCalls: number; reason?: string };
+  paused?: RunPause;
   /** The verification gate's record of a round of checks (lib/verification.ts). */
   verification?: import('./lib/verification').VerificationMeta;
   /**

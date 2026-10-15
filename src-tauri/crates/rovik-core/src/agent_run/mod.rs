@@ -102,6 +102,32 @@ impl StopSignal {
     }
 }
 
+/// A pause asked of a run (6.8, R02): it stops at its next safe point,
+/// where a checkpoint pause happens, with this kind ("move" or "drain")
+/// and, for a move, the host the chat goes to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PauseRequest {
+    pub kind: &'static str,
+    pub host: Option<String>,
+}
+
+/// A pause, once asked: seen by the run at its safe points.
+#[derive(Default)]
+pub struct PauseSignal(Mutex<Option<PauseRequest>>);
+
+impl PauseSignal {
+    pub fn get(&self) -> Option<PauseRequest> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set(&self, request: PauseRequest) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
+    }
+}
+
+/// The pause kinds a run can be asked for (`PauseInfo::kind`).
+pub const MOVE: &str = "move";
+
 struct RunControl {
     run_id: String,
     /// A subagent's run: its lead's chat and `task` call. Stop there stops it too.
@@ -110,6 +136,9 @@ struct RunControl {
     /// The run's model (`ModelProfile::id`): an effort chosen for it applies.
     profile_id: String,
     stop: Arc<StopSignal>,
+    /// A lead's: a move or a drain asked of it. Its subagents' runs have
+    /// their own, never set, so they finish first.
+    pause: Arc<PauseSignal>,
     /// The reasoning effort picked while the run goes on (see `set_effort`).
     effort: watch::Sender<EffortPick>,
     /// A subagent's: what its block shows, for a page reloaded mid-run (P1.5).
@@ -130,6 +159,7 @@ pub struct EffortPick {
 pub(super) struct Controls {
     pub run_id: String,
     pub stop: Arc<StopSignal>,
+    pub pause: Arc<PauseSignal>,
     pub effort: watch::Receiver<EffortPick>,
 }
 
@@ -324,6 +354,7 @@ impl AgentState {
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         let stop = Arc::new(StopSignal::new());
+        let pause = Arc::new(PauseSignal::default());
         let (effort_tx, effort_rx) = watch::channel(EffortPick {
             options,
             here: false,
@@ -336,6 +367,7 @@ impl AgentState {
                 parent_call: parent.map(|(_, c)| c.to_string()),
                 profile_id: profile_id.to_string(),
                 stop: stop.clone(),
+                pause: pause.clone(),
                 effort: effort_tx,
                 child: None,
             },
@@ -343,8 +375,46 @@ impl AgentState {
         Some(Controls {
             run_id,
             stop,
+            pause,
             effort: effort_rx,
         })
+    }
+
+    /// Asks the chat's run to pause at its next safe point. False when no
+    /// run of its own goes there (a subagent's chat pauses with its lead).
+    pub fn pause(&self, dialog_id: &str, request: PauseRequest) -> bool {
+        let inner = self.lock();
+        match inner.runs.get(dialog_id).filter(|r| r.parent.is_none()) {
+            Some(run) => {
+                run.pause.set(request);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The pause asked of the chat's run, if any.
+    #[cfg(test)]
+    pub(crate) fn pause_asked(&self, dialog_id: &str) -> Option<PauseRequest> {
+        self.lock().runs.get(dialog_id)?.pause.get()
+    }
+
+    /// Asks every lead's run to pause for a drain: their chats.
+    pub fn drain(&self) -> Vec<String> {
+        let inner = self.lock();
+        let request = PauseRequest {
+            kind: recovery::DRAIN,
+            host: None,
+        };
+        inner
+            .runs
+            .iter()
+            .filter(|(_, r)| r.parent.is_none())
+            .map(|(chat, run)| {
+                run.pause.set(request.clone());
+                chat.clone()
+            })
+            .collect()
     }
 
     /// A reasoning effort chosen for a model: the runs using it take it for
@@ -821,6 +891,60 @@ pub fn agent_set_effort(
 ) -> usize {
     core.agents
         .set_effort(&profile_id, options, dialog_id.as_deref())
+}
+
+/// Pauses the chat's run for a move to or from `host` (6.8): at its next
+/// safe point, where a checkpoint pause happens, once its subagents are
+/// done, and with no summary asked of the model (K29). Stop still stops it
+/// at once. Returns when the run has ended: whether it paused for the
+/// move, which `ContinueRun` then continues. False when no run went.
+pub async fn agent_pause(core: &Core, dialog_id: String, host: String) -> Result<bool, String> {
+    let request = PauseRequest {
+        kind: MOVE,
+        host: Some(host),
+    };
+    if !core.agents.pause(&dialog_id, request) {
+        return Ok(false);
+    }
+    ended(core, &dialog_id).await;
+    last_paused_for(core, &dialog_id, MOVE).await
+}
+
+/// Pauses every run for an upgrade of the server's Rovik (R02), each at
+/// its next safe point, as `agent_pause` does. Returns once all of them
+/// have ended: how many paused for it, which the new binary continues
+/// (5.4).
+pub async fn drain(core: &Core) -> usize {
+    let mut paused = 0;
+    for chat in core.agents.drain() {
+        ended(core, &chat).await;
+        if last_paused_for(core, &chat, recovery::DRAIN)
+            .await
+            .unwrap_or(false)
+        {
+            paused += 1;
+        }
+    }
+    paused
+}
+
+/// Waits until the chat's run and its subagents' have ended.
+async fn ended(core: &Core, dialog_id: &str) {
+    while core.agents.is_running(dialog_id) {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Whether the chat's last stored message is a pause of `kind`.
+async fn last_paused_for(core: &Core, dialog_id: &str, kind: &str) -> Result<bool, String> {
+    let id = dialog_id.to_string();
+    let last = core
+        .db
+        .read(move |c| crate::chat_db::store::get_messages(c, &id, None, 1))
+        .await?;
+    let meta = last.messages.last().and_then(|m| m.meta.as_ref());
+    let paused = meta.and_then(|meta| meta.pointer("/paused/kind")?.as_str());
+    Ok(paused == Some(kind))
 }
 
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;

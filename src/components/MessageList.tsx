@@ -33,6 +33,7 @@ import type { ComposerPdf } from '../lib/composerAttachments';
 import { copySegments } from '../lib/composerClipboard';
 import { segmentsOfMessage, type DraftSegment } from '../lib/composerSegments';
 import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
+import { pauseText } from '../lib/runPause';
 import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
@@ -1284,11 +1285,7 @@ export default function MessageList(props: {
                         <circle cx="8" cy="8" r="6" />
                         <path d="M6.5 5.75v4.5M9.5 5.75v4.5" />
                       </svg>
-                      <span class="chat-paused-text">
-                        {paused().kind === 'checkpoint'
-                          ? `Paused after ${paused().toolCalls} tool calls.`
-                          : `Paused after ${paused().toolCalls} tool calls: the agent seems stuck, ${paused().reason}.`}
-                      </span>
+                      <span class="chat-paused-text">{pauseText(paused())}</span>
                       <Show when={isLatest(m)}>
                         <button
                           type="button"

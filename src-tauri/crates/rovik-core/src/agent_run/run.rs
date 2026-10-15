@@ -16,7 +16,7 @@ use super::subagent::SubagentSettings;
 use super::subagent_run::SubCtx;
 use super::{
     failure, log, plan, repair, repetition, subagent, tools, Controls, EffortPick, ModelProfile,
-    StartKind, StartRequest, StopSignal,
+    PauseRequest, PauseSignal, StartKind, StartRequest, StopSignal,
 };
 use crate::agent::{
     ChatParams, ChatStreamEvent, OpenAIChatOptions, ReasoningEffort, REASONING_FIELDS,
@@ -227,6 +227,9 @@ pub struct Run {
     pub(super) repetition_stops: u32,
     pub(super) started_at: Instant,
     pub(super) stop: Arc<StopSignal>,
+    /// A move or a drain asked of the run (6.8, R02): it pauses at its next
+    /// safe point.
+    pub(super) pause: Arc<PauseSignal>,
     /// The reasoning effort the user picks while the run goes on.
     effort: watch::Receiver<EffortPick>,
     /// Reasoning forms the provider refused in this run: never sent again,
@@ -808,6 +811,7 @@ impl Run {
             repetition_stops: 0,
             started_at: Instant::now(),
             stop: controls.stop,
+            pause: controls.pause,
             effort: controls.effort,
             refused_formats: Vec::new(),
             settle_message: None,
@@ -1057,6 +1061,13 @@ impl Run {
             if self.stopped() {
                 return Ok("stopped".into());
             }
+            // Every tool call has its result here, and the checks are
+            // between rounds: a move or a drain pauses the run (6.8, R02).
+            // Not before an interrupted reply is picked up, which a later
+            // `ContinueRun` wouldn't do.
+            if let Some(pause) = self.pause.get().filter(|_| !self.continue_reply) {
+                return self.pause_for(pause).await;
+            }
             let turn = self.model_turn().await?;
 
             // Stopped for repeating itself: keep the reply up to where it
@@ -1230,6 +1241,24 @@ impl Run {
                 return Ok(format!("paused-{}", pause.kind));
             }
         }
+    }
+
+    /// Pauses here for a move or a drain. The record names the host a move
+    /// goes to and gives no reason, so no summary is asked of the model,
+    /// and the chat shows where it went, not a stuck agent (K29).
+    /// `ContinueRun` goes on counting from it.
+    async fn pause_for(&mut self, request: PauseRequest) -> Result<String, String> {
+        let pause = super::guard::PauseInfo {
+            kind: request.kind,
+            tool_calls: self.guard.tool_calls,
+            reason: None,
+            host: request.host,
+        };
+        let mut paused = new_message("assistant", "");
+        // Empty, no tool calls: kept out of what the model is sent.
+        paused.meta = Some(json!({ "paused": pause }));
+        self.append(vec![paused]).await?;
+        Ok(format!("paused-{}", pause.kind))
     }
 
     /// Before a loop pause: one reply without tools, in which the model

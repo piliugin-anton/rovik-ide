@@ -82,6 +82,7 @@ fn answer(request: &Request) -> Response {
         Request::AgentStart(_) => Response::RunId(Some("run-1".into())),
         Request::AgentStatus => Response::AgentStatus(AgentStatus::default()),
         Request::AgentStop { .. }
+        | Request::AgentPause { .. }
         | Request::AgentResolveApproval { .. }
         | Request::AgentAnswerQuestions { .. } => Response::Bool(true),
         _ => Response::Done,

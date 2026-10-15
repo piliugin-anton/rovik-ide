@@ -376,6 +376,10 @@ fn every_request_round_trips() {
             Request::AgentStop {
                 dialog_id: "d".into(),
             },
+            Request::AgentPause {
+                dialog_id: "d".into(),
+                host: "server".into(),
+            },
             Request::AgentResolveApproval {
                 dialog_id: "d".into(),
                 tool_call_id: "c".into(),

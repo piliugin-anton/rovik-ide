@@ -33,6 +33,9 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         Request::AgentStop { dialog_id } => {
             Ok(Response::Bool(agent_run::agent_stop(core, dialog_id)))
         }
+        Request::AgentPause { dialog_id, host } => agent_run::agent_pause(core, dialog_id, host)
+            .await
+            .map(Response::Bool),
         Request::AgentResolveApproval {
             dialog_id,
             tool_call_id,
@@ -352,6 +355,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_pause_says_whether_the_run_paused_for_the_move() {
+        let (test, id) = chat(Vec::new()).await;
+        let request = Request::AgentPause {
+            dialog_id: id,
+            host: "server".into(),
+        };
+        assert_eq!(call(&test.core, request).await, Response::Bool(false));
+    }
+
+    #[tokio::test]
     async fn agent_resolve_approval_says_whether_one_waited() {
         let (test, id) = chat(Vec::new()).await;
         let request = Request::AgentResolveApproval {
@@ -637,6 +650,10 @@ mod tests {
         let runs = vec![
             Request::AgentStop {
                 dialog_id: id.into(),
+            },
+            Request::AgentPause {
+                dialog_id: id.into(),
+                host: "server".into(),
             },
             Request::AgentResolveApproval {
                 dialog_id: id.into(),

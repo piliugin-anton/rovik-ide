@@ -21,6 +21,15 @@ pub enum Request {
     AgentStop {
         dialog_id: String,
     },
+    /// Pauses the chat's run for its move to `host` (6.8), at the run's
+    /// next safe point: once its tool calls have their results and its
+    /// subagents are done. Answers when the run has ended: whether it
+    /// paused for the move, which `ContinueRun` continues where the chat
+    /// goes. False when no run went. → `Bool`.
+    AgentPause {
+        dialog_id: String,
+        host: String,
+    },
     AgentResolveApproval {
         dialog_id: String,
         tool_call_id: String,
@@ -211,8 +220,9 @@ pub enum Target<'a> {
 pub enum Access {
     /// Reads it: allowed wherever its rows are.
     Read,
-    /// Controls the run going for it: stops it or answers what it waits
-    /// on. Allowed for a chat that is moving, whose run pauses (6.8).
+    /// Controls the run going for it: stops or pauses it, or answers what
+    /// it waits on. Allowed for a chat that is moving, whose run pauses
+    /// (6.8).
     Run,
     /// Starts a run or changes its rows.
     Write,
@@ -230,6 +240,7 @@ impl Request {
         match self {
             Request::AgentStart(start) => chat(&start.dialog_id, Write),
             Request::AgentStop { dialog_id }
+            | Request::AgentPause { dialog_id, .. }
             | Request::AgentResolveApproval { dialog_id, .. }
             | Request::AgentAnswerQuestions { dialog_id, .. } => chat(dialog_id, Run),
             Request::ChatChecklist { dialog_id }

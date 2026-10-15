@@ -521,6 +521,48 @@ async fn stop_on_the_lead_stops_its_scouts() {
     assert!(!core.agents.is_running(&h.dialog_id));
 }
 
+/// 6.8: a move leaves the lead's scouts alone, and pauses the lead once
+/// their reports are in.
+#[tokio::test]
+async fn a_move_lets_a_running_scout_finish_first() {
+    let h = harness(&[("a.txt", "MARK-M lives here\n")]).await;
+    let read = Reply::Call {
+        id: "s1",
+        name: "read",
+        args: json!({ "path": "a.txt" }),
+    };
+    let (url, seen) = model_routed(
+        vec![(
+            "MARK-M",
+            vec![Reply::Slow(400, Box::new(read)), Reply::Text(REPORT)],
+        )],
+        vec![task("t1", "Where is MARK-M defined?"), Reply::Text("Done.")],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Find it", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    // The scout's first request is out: the move is asked meanwhile.
+    requests_seen(&seen, 2).await;
+    assert_eq!(requests_with(&seen, "MARK-M").len(), 1);
+    let pausing = h.pause_for_move("build-server").await;
+    assert!(within("the pause", pausing).await.unwrap());
+    assert_eq!(h.run_end().await, "paused-move");
+
+    // The scout went on to its report, which the lead has; the lead asked
+    // nothing more.
+    assert_eq!(requests_with(&seen, "MARK-M").len(), 2);
+    let result = h.task_result("t1").await;
+    assert_eq!(result.meta.as_ref().unwrap()["subagent"]["status"], "done");
+    assert!(result.content.ends_with(REPORT));
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    let lead = h.messages().await;
+    assert_eq!(roles(&lead), ["user", "assistant", "tool", "assistant"]);
+    assert_eq!(lead[3].meta.as_ref().unwrap()["paused"]["kind"], "move");
+    let child = h.child_of("t1").await;
+    assert!(!h.core.agents.is_running(&child.id));
+    assert!(!h.core.agents.is_running(&h.dialog_id));
+}
+
 #[tokio::test]
 async fn a_scouts_approval_shows_in_the_lead_chat() {
     let h = harness(&[("a.txt", "x\n")]).await;

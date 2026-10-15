@@ -2036,3 +2036,23 @@ Tasks add notes here when reality differs from the plan.
     in one page at the end: the three mirrors end as the owner is, search
     rows included. A change made between two pages comes with the next
     pull.
+- **M03, the safe point.**
+  - `AgentPause { dialogId, host }` answers `Bool` once the run has ended:
+    whether it paused for the move. It controls the run, so a chat that is
+    moving takes it, as Stop. The core's `agent_pause` waits for the run
+    and its subagents to end, then reads the chat's last row.
+  - The pause is checked at the top of the run's loop: after each round of
+    tool calls, where a checkpoint pause happens, and after a round of
+    checks that goes back to the model. A checkpoint or a loop pause due
+    on the same round comes first, since it's the user's. An interrupted
+    reply that a start picks up is finished first, which `ContinueRun`
+    wouldn't do.
+  - Only a lead's run has the pause: its subagents' runs get their own,
+    never set, so a `task` call ends as it would have, and the lead pauses
+    after it. Stop still ends the run at once, and the pause answers false.
+  - `agent_run::drain` pauses every lead's run the same way with kind
+    `drain` and returns how many paused. No request carries it yet: who
+    may drain a daemon is R02's, with the upgrade.
+  - `PauseInfo` has `host`, and `meta.paused` is typed `RunPause` in the
+    frontend: `lib/runPause.ts` writes its line, and a kind from a newer
+    app reads as a plain pause.

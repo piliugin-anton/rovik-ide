@@ -50,6 +50,14 @@ async fn agent_stop(core: &Core, dialog_id: String) -> bool {
         .unwrap()
 }
 
+async fn agent_pause(core: &Core, dialog_id: String, host: &str) -> bool {
+    let request = Request::AgentPause {
+        dialog_id,
+        host: host.into(),
+    };
+    through(core, request).await.unwrap()
+}
+
 async fn agent_resolve_approval(
     core: &Core,
     dialog_id: String,
@@ -247,6 +255,29 @@ impl Harness {
     fn file(&self, path: &str) -> Option<String> {
         std::fs::read_to_string(self.project.join(path)).ok()
     }
+
+    /// Asks the chat's run to pause for a move to `host`, as the client
+    /// does (6.8), and returns once the run has the pause: the answer comes
+    /// when the run has ended.
+    async fn pause_for_move(&self, host: &'static str) -> tokio::task::JoinHandle<bool> {
+        let (core, chat) = (self.core.clone(), self.dialog_id.clone());
+        let pausing = tokio::spawn(async move { agent_pause(&core, chat, host).await });
+        for _ in 0..400 {
+            if self.core.agents.pause_asked(&self.dialog_id).is_some() {
+                return pausing;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the run wasn't asked to pause");
+    }
+}
+
+/// What `future` gives, within 30 s: a run that doesn't pause goes on, and
+/// waiting for its pause would hang the test.
+async fn within<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(30), future)
+        .await
+        .unwrap_or_else(|_| panic!("{what} didn't come"))
 }
 
 fn roles(messages: &[MessageRow]) -> Vec<&str> {
@@ -1092,6 +1123,164 @@ async fn a_paused_run_continues_where_it_stopped() {
         messages.last().unwrap().meta.as_ref().unwrap()["paused"]["toolCalls"],
         2
     );
+}
+
+/// 6.8: a move pauses the run at its next safe point, once the tool call
+/// going on has its result, without asking the model for anything (K29);
+/// where the chat went, `ContinueRun` counts on from there.
+#[tokio::test]
+async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
+    let h = harness(&[("a.txt", "x")]).await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "bash",
+            args: json!({ "command": "ls" }),
+        },
+        Reply::Call {
+            id: "r2",
+            name: "read",
+            args: json!({ "path": "a.txt" }),
+        },
+        Reply::Text("All done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        tool_call_checkpoint: Some(2),
+        ..ask_approval("commands")
+    };
+    h.start(h.request(&url, Harness::send("Run it"), permissions.clone()))
+        .await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    let pausing = h.pause_for_move("build-server").await;
+    // What the run waits on can still be answered (6.8).
+    let core = h.core.clone();
+    let chat = h.dialog_id.clone();
+    let approved = agent_resolve_approval(&core, chat, "r1".into(), ApprovalDecision::Allow);
+    assert!(approved.await);
+    let paused = within("the pause", pausing).await.unwrap();
+    assert!(paused, "it paused for the move");
+    assert_eq!(h.run_end().await, "paused-move");
+    assert!(!core.agents.is_running(&h.dialog_id));
+
+    let messages = h.messages().await;
+    assert_eq!(roles(&messages), ["user", "assistant", "tool", "assistant"]);
+    // The command ran, and its output is the call's result.
+    let listed = &result_of(&messages, "r1").content;
+    assert!(listed.contains("a.txt"), "{listed}");
+    assert_eq!(
+        messages[3].meta.as_ref().unwrap()["paused"],
+        json!({ "kind": "move", "toolCalls": 1, "host": "build-server" })
+    );
+    assert_eq!(seen.lock().unwrap().len(), 1, "no request after the pause");
+
+    // Where the chat went, counting goes on from 1: the checkpoint is at 2.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, StartKind::ContinueRun, permissions))
+        .await;
+    assert_eq!(h.run_end().await, "paused-checkpoint");
+    let messages = h.messages().await;
+    assert_eq!(
+        messages.last().unwrap().meta.as_ref().unwrap()["paused"],
+        json!({ "kind": "checkpoint", "toolCalls": 2 })
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+/// Stop ends a run that is pausing for a move at once, as any other.
+#[tokio::test]
+async fn stop_still_ends_a_run_pausing_for_a_move() {
+    let h = harness(&[]).await;
+    let (url, seen) = model(vec![Reply::Call {
+        id: "r1",
+        name: "bash",
+        args: json!({ "command": "ls" }),
+    }])
+    .await;
+    h.start(h.request(&url, Harness::send("List"), ask_approval("commands")))
+        .await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    let pausing = h.pause_for_move("build-server").await;
+    let core = h.core.clone();
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
+    assert_eq!(h.run_end().await, "stopped");
+    let paused = within("the run's end", pausing).await.unwrap();
+    assert!(!paused, "it stopped, not paused");
+    let messages = h.messages().await;
+    assert_eq!(
+        result_of(&messages, "r1").content,
+        "Error: stopped by the user before this ran."
+    );
+    let paused = messages
+        .iter()
+        .filter(|m| m.meta.as_ref().is_some_and(|m| m.get("paused").is_some()));
+    assert_eq!(paused.count(), 0);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+/// R02: a drain pauses every run at its safe point, and the start-up of
+/// the new binary continues them (5.4).
+#[tokio::test]
+async fn a_drain_pauses_every_run_for_the_next_binary_to_continue() {
+    let a = harness(&[]).await;
+    let b_id = uuid::Uuid::new_v4().to_string();
+    let dialog = NewDialog {
+        id: b_id.clone(),
+        title: "B".into(),
+        created_at: 0,
+        updated_at: 0,
+        project_id: None,
+    };
+    let db = a.core.db.clone();
+    db.write(move |c| store::create_dialog(c, &dialog))
+        .await
+        .unwrap();
+    let (url, seen) = model(vec![Reply::Call {
+        id: "r1",
+        name: "bash",
+        args: json!({ "command": "ls" }),
+    }])
+    .await;
+    a.start(a.request(&url, Harness::send("A"), ask_approval("commands")))
+        .await;
+    let mut b = a.request(&url, Harness::send("B"), ask_approval("commands"));
+    b.dialog_id = b_id.clone();
+    a.start(b).await;
+    for chat in [&a.dialog_id, &b_id] {
+        a.wait_for("approvalRequested", |e| {
+            e["type"] == "approvalRequested" && e["request"]["dialogId"] == chat.as_str()
+        })
+        .await;
+    }
+
+    let core = a.core.clone();
+    let draining = tokio::spawn(async move { drain(&core).await });
+    let core = a.core.clone();
+    for chat in [&a.dialog_id, &b_id] {
+        for _ in 0..400 {
+            if core.agents.pause_asked(chat).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let asked = core.agents.pause_asked(chat).map(|p| p.kind);
+        assert_eq!(asked, Some(recovery::DRAIN));
+        let approved =
+            agent_resolve_approval(&core, chat.clone(), "r1".into(), ApprovalDecision::Allow);
+        assert!(approved.await);
+    }
+    let paused = within("the drain", draining).await.unwrap();
+    assert_eq!(paused, 2, "both paused");
+    let ended = a.events_of("runEnded");
+    let outcomes: Vec<&str> = ended.iter().filter_map(|e| e["outcome"].as_str()).collect();
+    assert_eq!(outcomes, ["paused-drain", "paused-drain"]);
+    assert_eq!(seen.lock().unwrap().len(), 2, "no request after the pauses");
+    for chat in [&a.dialog_id, &b_id] {
+        let next = recovery::after_crash(&core, chat).await.unwrap();
+        assert_eq!(next, recovery::Recovery::Start(StartKind::ContinueRun));
+    }
 }
 
 #[tokio::test]

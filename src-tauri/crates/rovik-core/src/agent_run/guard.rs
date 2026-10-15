@@ -91,12 +91,18 @@ impl GuardVerdict {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PauseInfo {
-    /// "checkpoint" or "loop".
+    /// "checkpoint" or "loop"; "move" for a chat moving to or from a host
+    /// (6.8), "drain" for an upgrade of the server's Rovik (R02).
     pub kind: &'static str,
     /// Tool calls run so far in this run, Continues included.
     pub tool_calls: u32,
+    /// Why the run paused, which the model is asked to sum up first (a
+    /// loop's). A move or a drain has none, so it asks nothing (K29).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The host a chat moves to, which the transcript names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 pub struct Guard {
@@ -173,6 +179,7 @@ impl Guard {
                 kind: "loop",
                 tool_calls: self.tool_calls,
                 reason: Some(reason.clone()),
+                host: None,
             });
         }
         match self.next_checkpoint {
@@ -180,6 +187,7 @@ impl Guard {
                 kind: "checkpoint",
                 tool_calls: self.tool_calls,
                 reason: None,
+                host: None,
             }),
             _ => None,
         }
@@ -663,7 +671,8 @@ mod tests {
             Some(PauseInfo {
                 kind: "checkpoint",
                 tool_calls: 50,
-                reason: None
+                reason: None,
+                host: None,
             })
         );
     }
