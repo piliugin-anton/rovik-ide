@@ -20,6 +20,7 @@ mod rev_tests;
 mod schema;
 pub mod search;
 pub mod store;
+pub mod sync;
 #[cfg(test)]
 mod tests;
 

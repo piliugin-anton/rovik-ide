@@ -11,6 +11,7 @@ use crate::host::{HostInfo, Install};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
+use crate::sync::*;
 use crate::work::{
     Change, ChatResult, ChatSync, Handed, Project, SyncState, Synced, UndoneMerge, WorkChange,
     WorkFile,
@@ -19,8 +20,78 @@ use crate::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
+
+/// A page with one of each row a chat has, as the owner stores them.
+fn changes_page() -> ChangesPage {
+    ChangesPage {
+        changes: ChangeSet {
+            dialogs: vec![StoredDialog {
+                id: "d".into(),
+                title: "Chat".into(),
+                created_at: 1,
+                updated_at: 2,
+                message_count: 1,
+                preview: Some("Hello".into()),
+                archived: 0,
+                parent_id: None,
+                parent_call_id: None,
+                kind: None,
+                context_mode: Some("clm".into()),
+                model_provider: Some("p".into()),
+                model_id: Some("m".into()),
+                effort: None,
+            }],
+            clm_states: vec![StoredClmState {
+                dialog_id: "d".into(),
+                tokens: 10,
+                budget: 100,
+                updated_at: 3,
+                rendered: Some("# Context".into()),
+                ..Default::default()
+            }],
+            clm_revisions: vec![StoredRevision {
+                dialog_id: "d".into(),
+                number: 4,
+                kind: "context".into(),
+                created_at: 3,
+                tokens: 10,
+                content: "# Context".into(),
+            }],
+            messages: vec![StoredMessage {
+                id: "m".into(),
+                dialog_id: "d".into(),
+                seq: 1024,
+                role: "tool".into(),
+                body_external: true,
+                body_bytes: 9000,
+                tool_call_id: Some("c1".into()),
+                meta: Some("{\"paused\":null}".into()),
+                finalized: true,
+                created_at: 4,
+                content: "the preview".into(),
+                body: Some("the whole result".into()),
+                attachments: vec!["a".repeat(64)],
+                extras: vec![StoredExtra {
+                    call_id: "c1".into(),
+                    extra_content: "{}".into(),
+                    created_at: 4,
+                }],
+                ..Default::default()
+            }],
+            clm_kept: Some(BTreeMap::from([("d".to_string(), vec![4])])),
+        },
+        next: Some(ChangesCursor {
+            upto: 57,
+            chat: "d".into(),
+            table: ChangedTable::Messages,
+            rev: 50,
+            key: "m".into(),
+        }),
+        rev: 57,
+    }
+}
 
 fn result(pending: Option<&str>) -> ChatResult {
     ChatResult {
@@ -372,6 +443,16 @@ fn every_request_round_trips() {
             Request::ChatDelete {
                 dialog_id: "d".into(),
             },
+            Request::ChatChangesSince {
+                dialog_id: "d".into(),
+                rev: 0,
+                cursor: None,
+            },
+            Request::ChatChangesSince {
+                dialog_id: "d".into(),
+                rev: 41,
+                cursor: changes_page().next,
+            },
             Request::BlobsMissing {
                 ids: vec!["a".repeat(64), "b".repeat(64)],
             },
@@ -597,8 +678,24 @@ fn every_response_round_trips() {
                 restored: vec!["src/main.rs".into()],
                 changed_since: vec!["src/lib.rs".into()],
             }),
+            Response::ChatChanges(changes_page()),
+            Response::ChatChanges(ChangesPage::default()),
         ],
     );
+}
+
+#[test]
+fn every_changed_table_round_trips_in_the_order_a_pull_reads_them() {
+    let tables = [
+        ChangedTable::Dialogs,
+        ChangedTable::ClmState,
+        ChangedTable::ClmRevisions,
+        ChangedTable::Messages,
+    ];
+    for table in tables {
+        round_trip(&table);
+    }
+    assert!(tables.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
 #[test]

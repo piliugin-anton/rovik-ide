@@ -24,7 +24,7 @@ use tokio_tungstenite::WebSocketStream;
 /// How long a new connection has to say `Hello`.
 const HELLO_WAIT: Duration = Duration::from_secs(10);
 /// What this daemon serves beyond protocol 1's start (4.5).
-const FEATURES: &[&str] = &[features::ATTACHMENTS, features::PROJECTS];
+const FEATURES: &[&str] = &[features::ATTACHMENTS, features::PROJECTS, features::MIRROR];
 /// Frames waiting for the writer. A connection whose events back up past
 /// this falls behind the live ones and is dropped.
 const QUEUE: usize = 256;

@@ -21,6 +21,7 @@ pub mod permissions;
 pub mod plan;
 mod request;
 pub mod subagents;
+pub mod sync;
 pub mod work;
 
 pub use frame::{Event, Fail, FailCode, Frame, Secret};
@@ -50,6 +51,9 @@ pub mod features {
     /// The project transport (6.4–6.7): `/packs`, and the Work group as
     /// its tasks bring it.
     pub const PROJECTS: &str = "projects";
+    /// The mirror and the move (6.3, 6.8): `ChatChangesSince`, and the
+    /// requests and the bundle that move a chat as their tasks bring them.
+    pub const MIRROR: &str = "mirror";
 }
 
 #[cfg(test)]

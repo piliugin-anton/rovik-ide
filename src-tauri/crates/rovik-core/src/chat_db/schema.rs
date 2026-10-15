@@ -587,9 +587,15 @@ mod tests {
         assert!(sideways.is_err(), "a move goes there or back");
 
         let plan: Vec<String> = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {CHANGED_MESSAGES}"))
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                crate::chat_db::sync::CHANGED_MESSAGES
+            ))
             .unwrap()
-            .query_map(rusqlite::params!["old", 1, 100], |r| r.get(3))
+            .query_map(
+                rusqlite::params!["old", 1, i64::MAX, i64::MIN, "", 100],
+                |r| r.get(3),
+            )
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
@@ -601,9 +607,3 @@ mod tests {
         migrate(&mut conn).unwrap();
     }
 }
-
-/// The query a mirror's pull makes for a chat's messages changed since a
-/// revision (6.3), oldest change first: `chat_db::sync` reads them so.
-#[cfg(test)]
-const CHANGED_MESSAGES: &str =
-    "SELECT id FROM messages WHERE dialog_id = ?1 AND rev > ?2 ORDER BY rev LIMIT ?3";

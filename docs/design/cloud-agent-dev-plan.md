@@ -2007,3 +2007,32 @@ Tasks add notes here when reality differs from the plan.
     app does. A result imported again after a restart changed nothing where
     its landing stood, so that test undoes the landing first: imported
     again, the undone change came back.
+- **M02, the mirror's changes.**
+  - `ChatChangesSince { dialogId, rev, cursor }` answers `ChatChanges`, a
+    `ChangesPage` of the protocol's `sync` module: the rows as stored
+    (`StoredDialog`, `StoredMessage`, …), with the columns that hold JSON
+    as the text they are. A daemon names `mirror` among its features. It
+    reads, so a released chat still answers it, and another computer's
+    chat doesn't.
+  - A pull reads up to the owner's clock when it began
+    (`ChangesCursor::upto`): its pages don't chase the writes made while
+    they come, which come with the next pull, from that clock. Each page is
+    one read transaction. The chat rows all come on the first page,
+    parents first, whatever their size: they're small, and a new
+    subagent's chat needs its parent's row first. Then each chat's CLM
+    state, CLM revisions and messages, by revision; the index is on
+    (dialog_id, rev, id), so a page reads on from where the last stopped.
+  - `apply_in` writes a row only where it differs, so a second application
+    writes nothing and raises no revision. A message a run's event brought
+    first, numbered here (P08), takes the owner's number, and a row that
+    had that number here steps aside (negative) until its own change
+    brings its number. An attachment no file came for gets a row without
+    a file (K44); M05 fetches the files first.
+  - `apply_pulled` is the mirror's: it checks that the chat is still on that
+    host in its transaction, and moves `mirror_state.rev` on the last page.
+    M04's import uses `apply_in`, with where a new chat goes.
+  - The test of pages builds an owner's chat in four rounds and pulls it a
+    row a page after each round, in pages of 2 KB after two of them, and
+    in one page at the end: the three mirrors end as the owner is, search
+    rows included. A change made between two pages comes with the next
+    pull.

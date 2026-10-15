@@ -12,7 +12,7 @@
 
 use crate::agent_run;
 use crate::chat_db::location::{self, Location};
-use crate::chat_db::{api, attachments};
+use crate::chat_db::{api, attachments, sync};
 use crate::clm;
 use crate::core::Core;
 use crate::workload;
@@ -96,6 +96,13 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         Request::BlobsMissing { ids } => {
             attachments::blobs_missing(db, ids).await.map(Response::Ids)
         }
+        Request::ChatChangesSince {
+            dialog_id,
+            rev,
+            cursor,
+        } => sync::pull(db, dialog_id, rev, cursor)
+            .await
+            .map(Response::ChatChanges),
 
         Request::ClmStatus { dialog_id } => clm::status(db, vfs, dialog_id)
             .await

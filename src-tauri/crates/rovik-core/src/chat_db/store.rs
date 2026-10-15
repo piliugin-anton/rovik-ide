@@ -502,7 +502,11 @@ fn delete_dialog_in(tx: &Connection, id: &str) -> DbResult<()> {
  * ---------------------------------------------------------------------------
  */
 
-fn remove_search_row(conn: &Connection, dialog_id: &str, message_id: Option<&str>) -> DbResult<()> {
+pub(super) fn remove_search_row(
+    conn: &Connection,
+    dialog_id: &str,
+    message_id: Option<&str>,
+) -> DbResult<()> {
     let rowid: Option<i64> = match message_id {
         Some(m) => conn
             .query_row(
@@ -535,7 +539,7 @@ fn remove_search_row(conn: &Connection, dialog_id: &str, message_id: Option<&str
     Ok(())
 }
 
-fn index_title(conn: &Connection, dialog_id: &str, title: &str) -> DbResult<()> {
+pub(super) fn index_title(conn: &Connection, dialog_id: &str, title: &str) -> DbResult<()> {
     remove_search_row(conn, dialog_id, None)?;
     conn.execute(
         "INSERT INTO search_rows (dialog_id, message_id) VALUES (?1, NULL)",
@@ -556,7 +560,12 @@ fn index_title(conn: &Connection, dialog_id: &str, title: &str) -> DbResult<()> 
     Ok(())
 }
 
-fn index_message(conn: &Connection, dialog_id: &str, message_id: &str, text: &str) -> DbResult<()> {
+pub(super) fn index_message(
+    conn: &Connection,
+    dialog_id: &str,
+    message_id: &str,
+    text: &str,
+) -> DbResult<()> {
     remove_search_row(conn, dialog_id, Some(message_id))?;
     conn.execute(
         "INSERT INTO search_rows (dialog_id, message_id) VALUES (?1, ?2)",

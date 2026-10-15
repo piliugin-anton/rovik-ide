@@ -151,6 +151,11 @@ async fn each_computers_configuration_applies_to_its_own_chats() {
         Request::ClmListRevisions {
             dialog_id: laptop_chat(),
         },
+        Request::ChatChangesSince {
+            dialog_id: laptop_chat(),
+            rev: 0,
+            cursor: None,
+        },
         Request::ChatDelete {
             dialog_id: laptop_chat(),
         },
@@ -170,6 +175,20 @@ async fn each_computers_configuration_applies_to_its_own_chats() {
         })
         .await;
     assert_eq!(renamed, Ok(Response::Done));
+    // The laptop pulls its chat's rows (6.3).
+    let pulled = laptop
+        .call(Request::ChatChangesSince {
+            dialog_id: laptop_chat(),
+            rev: 0,
+            cursor: None,
+        })
+        .await;
+    let Ok(Response::ChatChanges(page)) = pulled else {
+        panic!("no changes: {pulled:?}");
+    };
+    assert_eq!(page.changes.dialogs[0].title, "Still the laptop's");
+    assert!(page.changes.messages.iter().any(|m| m.id == "u1"));
+    assert!(page.next.is_none());
     let stopped = laptop
         .call(Request::AgentStop {
             dialog_id: laptop_chat(),
