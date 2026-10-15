@@ -1754,14 +1754,15 @@ async fn a_reviewer_gets_a_smaller_map_around_the_change() {
     assert_eq!(h.run_end().await, "unverified");
 
     fn map_of(body: &Value) -> String {
-        // The map ends the request (after the history), not the system prompt.
+        // The map goes on the request (on a first request, the last
+        // message), before its text, not in the system prompt. It has no
+        // blank line.
         let tail = tail_text(body);
         let Some(at) = tail.find("## Repository map") else {
             return String::new();
         };
         let rest = &tail[at..];
-        let end = rest[3..].find("\n## ").map_or(rest.len(), |e| e + 3);
-        rest[..end].trim_end().to_string()
+        rest.split("\n\n").next().unwrap_or(rest).to_string()
     }
     let lead = map_of(&seen.lock().unwrap()[0]);
     let scout = map_of(&requests_with(&seen, "MARK-MAP")[0]);

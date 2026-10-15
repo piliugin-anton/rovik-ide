@@ -6,9 +6,14 @@
 //! prompt, the tool schemas and the history, append-only from one step to
 //! the next (agent.rs builds it; chat_db/history.rs replaces and trims in
 //! batches and with hysteresis, so the cut doesn't move every step; user
-//! messages are sent as they were first sent). Zone 2, the tail: what
-//! changes between steps (the repository map, the focus note, context
-//! notes) rides on the request's last message, after everything cacheable.
+//! messages are sent as they were first sent). The repository map is in
+//! it too, on the run's request (`history::add_request_context`): it
+//! changes only when a run rebuilds it, at most every two minutes, and
+//! moves on to the next request with the next run. Zone 2, the tail: the
+//! short notes that change between steps (the focus note, context notes)
+//! ride on the request's last message, after everything cacheable. Nothing
+//! long goes there: the end of the request is where the model looks for
+//! what to do next, and a map there read as the start of the task.
 //!
 //! On top of that shape, what each provider wants:
 //! - OpenAI (and Azure OpenAI) caches prefixes of 1024+ tokens on its own;
@@ -79,8 +84,8 @@ pub fn apply(body: &mut Value, base_url: &str, cache_key: Option<&str>) {
 
 /// A breakpoint on the system prompt, and one on the latest message before
 /// the latest assistant reply: everything up to there is sent the same way
-/// on the next step. The messages after it don't qualify: the tail and the
-/// notes (context notes, the focus note) ride on the last one, or on a tool
+/// on the next step. The messages after it don't qualify: the notes
+/// (context notes, the focus note) ride on the last one, or on a tool
 /// result followed by its screenshot, and the next step sends them without.
 fn mark_breakpoints(body: &mut Value) {
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
@@ -222,7 +227,7 @@ mod tests {
         );
         assert_eq!(messages[2]["content"], "", "an empty text gets none");
         // The last message carries what changes between steps (the
-        // repository map, notes): the next step sends it without them.
+        // notes): the next step sends it without them.
         assert_eq!(messages[3]["content"], "file text");
         assert_eq!(messages[3]["tool_call_id"], "c1", "other fields stay");
     }
@@ -235,7 +240,7 @@ mod tests {
             { "role": "assistant", "content": "", "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "bash", "arguments": "{}" } }] },
             { "role": "tool", "tool_call_id": "c1", "content": "  " },
             { "role": "assistant", "content": "", "tool_calls": [{ "id": "c2", "type": "function", "function": { "name": "read", "arguments": "{}" } }] },
-            { "role": "tool", "tool_call_id": "c2", "content": "text\n\n## Repository map\n…" }
+            { "role": "tool", "tool_call_id": "c2", "content": "text\n\n[Reminder from the IDE …]" }
         ]});
         apply(&mut b, "https://openrouter.ai/api/v1", None);
         let messages = b["messages"].as_array().unwrap();

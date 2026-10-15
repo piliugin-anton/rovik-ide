@@ -95,6 +95,7 @@ impl CtxMsg {
             role: self.role.clone(),
             full_chars: text.chars().count(),
             text,
+            typed: None,
             needs_body: false,
             tool_calls: self.tool_calls.clone(),
             tool_call_id: self.tool_call_id.clone(),

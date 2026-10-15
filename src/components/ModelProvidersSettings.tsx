@@ -475,7 +475,7 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                   <span
                     role="columnheader"
                     class="numeric"
-                    title="How long to wait for the first token before retrying. Raise it for slow reasoning models."
+                    title="How long to wait for the first token before retrying. Each retry after no answer waits twice as long. Raise it for slow reasoning models."
                   >
                     Timeout
                   </span>
@@ -565,7 +565,7 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                       inputMode="numeric"
                       value={m.firstTokenTimeoutSec ? `${m.firstTokenTimeoutSec} s` : ''}
                       placeholder={`${DEFAULT_FIRST_TOKEN} s`}
-                      title="How long to wait for the first token before retrying. Raise it for slow reasoning models."
+                      title="How long to wait for the first token before retrying. Each retry after no answer waits twice as long. Raise it for slow reasoning models."
                       aria-label={`First-token timeout for ${m.id}, in seconds`}
                       onChange={(e) => {
                         setFirstTokenTimeout(m.id, e.currentTarget.value);

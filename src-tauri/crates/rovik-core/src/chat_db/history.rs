@@ -76,6 +76,11 @@ pub struct Msg {
     pub id: String,
     pub role: String,
     pub text: String,
+    /// What the user typed, when the message is sent in another form
+    /// (`text`: with the editor context and file references the frontend
+    /// put before it, `meta.sentContent`). The focus note quotes this: the
+    /// request in the user's words. None: `text` is what was typed.
+    pub typed: Option<String>,
     /// Characters of the full content (the text may be a preview).
     pub full_chars: usize,
     /// The full body still has to be loaded before sending.
@@ -757,7 +762,10 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     {
         return None;
     }
-    let text = messages[start].text.trim();
+    // In the user's words: the editor context and the references'
+    // instructions the frontend sends before them (`Msg::typed`) would fill
+    // the quote and read as being told to go and read those files again.
+    let text = typed_text(&messages[start]).trim();
     let request = char_prefix(text, FOCUS_REQUEST_CHARS);
     let more = if request.len() < text.len() || messages[start].needs_body {
         " …"
@@ -781,7 +789,7 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     }
     if text.chars().count() < SHORT_REQUEST_CHARS {
         if let Some(prev) = messages[..start].iter().rposition(starts_request) {
-            let prev_text = messages[prev].text.trim();
+            let prev_text = typed_text(&messages[prev]).trim();
             if !prev_text.is_empty() && prev_text != text {
                 let prev_request = char_prefix(prev_text, FOCUS_REQUEST_CHARS);
                 let prev_more = if prev_request.len() < prev_text.len() || messages[prev].needs_body
@@ -831,6 +839,32 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     }
     note.push_str("\n[end of reminder]");
     Some(note)
+}
+
+/// A message's text as the user typed it (`Msg::typed`).
+fn typed_text(m: &Msg) -> &str {
+    m.typed.as_deref().unwrap_or(&m.text)
+}
+
+/// Puts what the IDE made for the request (the repository map:
+/// `ChatParams::request_context`) on the message of that request (by id),
+/// before its text, on every step of the run: the request is then sent the
+/// same way on every step, in the part providers cache, and ends with the
+/// user's words. Each request ends with the step the model works from,
+/// not with a map of where to start, which made it start over. Without
+/// that message, it goes on the last one.
+pub fn add_request_context(messages: &mut [Msg], request_id: Option<&str>, context: &str) {
+    let at = request_id
+        .and_then(|id| messages.iter().rposition(|m| m.id == id))
+        .or(messages.len().checked_sub(1));
+    if let Some(m) = at.map(|i| &mut messages[i]) {
+        m.text = if m.text.trim().is_empty() {
+            context.to_string()
+        } else {
+            format!("{context}\n\n{}", m.text)
+        };
+        m.full_chars = m.text.chars().count();
+    }
 }
 
 /// Puts the note on the request's last message (not stored).
@@ -1014,6 +1048,8 @@ pub fn fit_keeping(
 
 /// Loads, fits and converts a chat's history to Chat Completions messages,
 /// keeping the cut its last request was sent with (`kept`) while it fits.
+/// `request_context` goes on the current request's message
+/// (`add_request_context`); `token_budget` doesn't include it.
 #[allow(clippy::too_many_arguments)]
 pub fn build_wire(
     conn: &Connection,
@@ -1023,6 +1059,7 @@ pub fn build_wire(
     token_budget: usize,
     accepts: Accepts,
     current_user_content: Option<&str>,
+    request_context: Option<&str>,
     gemini: bool,
     chars_per_token: f64,
     kept: Option<&Cut>,
@@ -1051,6 +1088,13 @@ pub fn build_wire(
         kept,
     );
     load_bodies(conn, &mut fitted)?;
+    if let Some(context) = request_context {
+        let request = fitted
+            .iter()
+            .rfind(|m| starts_request(m))
+            .map(|m| m.id.clone());
+        add_request_context(&mut fitted, request.as_deref(), context);
+    }
     if let Some(note) = focus {
         add_focus_note(&mut fitted, &note);
         info.estimated_tokens += note_tokens;
@@ -1188,6 +1232,9 @@ pub fn load_messages(
                 && m.tool_calls.as_ref().map_or(true, |t| t.is_empty()))
         })
         .map(|m| {
+            // The stored content is what was typed (or its preview, for a
+            // long one: enough for the focus note's quote).
+            let typed = sent_content(&m).map(|_| m.content.clone());
             let (text, full_chars, needs_body) = match sent_content(&m) {
                 Some(sent) => (sent.to_string(), sent.chars().count(), false),
                 None if m.body_external => (m.content.clone(), m.body_bytes as usize, true),
@@ -1211,6 +1258,7 @@ pub fn load_messages(
                 id: m.id,
                 role: m.role,
                 text,
+                typed,
                 tool_calls: m.tool_calls,
                 tool_call_id: m.tool_call_id,
                 attachments,
@@ -1246,6 +1294,9 @@ pub fn use_sent_content(messages: &mut [Msg], current_user_content: Option<&str>
         current_user_content,
         messages.iter_mut().rev().find(|m| starts_request(m)),
     ) {
+        if last_user.typed.is_none() {
+            last_user.typed = Some(std::mem::take(&mut last_user.text));
+        }
         last_user.text = content.to_string();
         last_user.full_chars = content.chars().count();
         last_user.needs_body = false;
@@ -1267,6 +1318,7 @@ pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
                 id: format!("unanswered-{id}"),
                 role: "tool".into(),
                 text: UNANSWERED_NOTE.into(),
+                typed: None,
                 full_chars: UNANSWERED_NOTE.chars().count(),
                 needs_body: false,
                 tool_calls: None,
@@ -1493,6 +1545,7 @@ mod tests {
             id: format!("{role}-{}", text.len()),
             role: role.into(),
             text: text.into(),
+            typed: None,
             full_chars: text.chars().count(),
             needs_body: false,
             tool_calls: None,
@@ -1655,6 +1708,54 @@ mod tests {
             history.push(tool(&id, 10));
         }
         history
+    }
+
+    /// A user message sent as the frontend sends it: the editor context and
+    /// the file references' instructions, then what was typed.
+    fn sent(mut m: Msg) -> Msg {
+        let typed = std::mem::take(&mut m.text);
+        m.text = format!(
+            "[Active editor context — file src/a.rs (rust); cursor at line 1, col 1.]\n\n\
+             The user explicitly referenced these project files:\n- src/a.rs\n\n\
+             Treat these as explicit file references from the user. Use the available file tools \
+             to inspect them when relevant.\n\n{typed}"
+        );
+        m.full_chars = m.text.chars().count();
+        m.typed = Some(typed);
+        m
+    }
+
+    #[test]
+    fn focus_note_quotes_the_request_as_typed() {
+        let mut history = long_run("continue");
+        history[0] = sent(history[0].clone());
+        history[2] = sent(history[2].clone());
+        let note = focus_note(&history).unwrap();
+        // The words the user typed: a short one quotes the request it
+        // continues, also as typed.
+        assert!(
+            note.contains("The request (quoted):\n> continue\n"),
+            "{note}"
+        );
+        assert!(
+            note.contains("The earlier request it continues (quoted):\n> an earlier request\n"),
+            "{note}"
+        );
+        // Not the editor context or the references' instructions, which
+        // would read as being told to go and read the files again.
+        assert!(!note.contains("Active editor context"), "{note}");
+        assert!(!note.contains("explicitly referenced"), "{note}");
+
+        // The current request's sent form, set for the request, keeps what
+        // was typed too.
+        let mut history = long_run("continue");
+        use_sent_content(
+            &mut history,
+            Some("[Active editor context — file b.rs]\n\ncontinue"),
+        );
+        assert_eq!(history[2].typed.as_deref(), Some("continue"));
+        let note = focus_note(&history).unwrap();
+        assert!(note.contains("> continue\nThe earlier request"), "{note}");
     }
 
     #[test]

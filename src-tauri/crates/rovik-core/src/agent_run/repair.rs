@@ -1032,7 +1032,6 @@ impl Run {
             }
         }
         self.changed_files = changed;
-        self.map_writes_since_refresh += 1;
         let mut diff = diffs.join("\n");
         if diff.chars().count() > MAX_ROLLBACK_DIFF_CHARS {
             diff = format!(

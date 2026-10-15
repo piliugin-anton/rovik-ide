@@ -199,6 +199,9 @@ pub struct Prepared {
     pub info: FitInfo,
     /// Notes for the model, added to the end of the request.
     pub notes: Vec<String>,
+    /// The id of the user's latest message, the request: what the IDE
+    /// made for it goes on it (`history::add_request_context`).
+    pub request_id: Option<String>,
 }
 
 /// Steps 1–5 above, for a request to `model`. Fails only for database or
@@ -603,6 +606,10 @@ pub async fn prepare(
         )
     };
 
+    let request_id = effective
+        .iter()
+        .rfind(|m| is_users(m))
+        .map(|m| m.id.clone());
     state.tokens = tokens;
     state.budget = budget;
     state.rendered = Some(file_text);
@@ -621,6 +628,7 @@ pub async fn prepare(
         messages,
         info,
         notes,
+        request_id,
     })
 }
 

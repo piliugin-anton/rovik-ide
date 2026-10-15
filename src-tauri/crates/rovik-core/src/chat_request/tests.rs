@@ -275,13 +275,27 @@ async fn run_against(
     limits: Limits,
     cancel_after: Option<u64>,
 ) -> (Result<(), ChatError>, Vec<ChatStreamEvent>) {
+    run_body_against(
+        url,
+        &json!({"model":"m","messages":[]}),
+        limits,
+        cancel_after,
+    )
+    .await
+}
+
+async fn run_body_against(
+    url: &str,
+    body: &serde_json::Value,
+    limits: Limits,
+    cancel_after: Option<u64>,
+) -> (Result<(), ChatError>, Vec<ChatStreamEvent>) {
     let client = Client::new();
-    let body = json!({"model":"m","messages":[]});
     let spec = RequestSpec {
         client: &client,
         url,
         api_key: "k",
-        body: &body,
+        body,
         streaming: true,
         limits,
         api: Api::ChatCompletions,
@@ -424,6 +438,162 @@ async fn partial_reply_then_stall_stops_without_retrying() {
     );
     assert_eq!(names(&events), ["delta:Hello"]);
     assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// A reply that starts after 600 ms.
+fn late() -> Reply {
+    Reply::Sse {
+        events: vec![(600, TEXT.into()), (0, DONE.into())],
+        hang: false,
+    }
+}
+
+fn limits_of(ms: u64) -> Limits {
+    Limits {
+        first_byte: Duration::from_millis(ms),
+        idle: Duration::from_millis(ms),
+        overall: Duration::from_secs(5),
+    }
+}
+
+/// A provider slower to start than the limit (a long prompt, a cold cache)
+/// gets there on a later attempt: an attempt that got nothing back gives
+/// the next one twice as long.
+#[tokio::test]
+async fn an_attempt_after_a_silent_one_waits_twice_as_long() {
+    let (url, served) = mock(vec![late(), late()]).await;
+    let (result, events) = run_against(&url, limits_of(400), None).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(names(&events), ["retrying:2", "delta:Hello", "done"]);
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// Only silence lengthens the wait: a reply that started and then stopped
+/// had its first data in time.
+#[tokio::test]
+async fn a_reply_that_stops_does_not_lengthen_the_wait() {
+    let stopped = Reply::Sse {
+        events: vec![(0, r#"data: {"choices":[{"delta":{}}]}"#.into())],
+        hang: true,
+    };
+    let (url, served) = mock(vec![stopped, late(), late()]).await;
+    let (result, events) = run_against(&url, limits_of(400), None).await;
+    assert!(result.is_ok(), "{result:?}");
+    // The second attempt still waits 400 ms; the third, 800.
+    assert_eq!(
+        names(&events),
+        ["retrying:2", "retrying:3", "delta:Hello", "done"]
+    );
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+const MB: usize = 1024 * 1024;
+
+/// A request with `size` bytes of text in it.
+fn big_body(size: usize) -> serde_json::Value {
+    json!({"model":"m","messages":[{"role":"user","content":"x".repeat(size)}]})
+}
+
+/// A server that reads the first `slow` bytes of each request body at
+/// `per_sec` bytes a second (0: not at all) and the rest at full speed,
+/// then replies "Hello". Returns the URL and the connections it took.
+async fn slow_reader(slow: usize, per_sec: usize) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    // A small receive window: what isn't read yet waits on the client's side.
+    socket.set_recv_buffer_size(32 * 1024).unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = socket.listen(16).unwrap();
+    let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = served.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 64 * 1024];
+                let mut head = Vec::new();
+                let (length, mut got) = loop {
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    head.extend_from_slice(&buf[..n]);
+                    if let Some(end) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let text = String::from_utf8_lossy(&head[..end]).to_ascii_lowercase();
+                        let length = text
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        break (length, head.len() - end - 4);
+                    }
+                };
+                let started = Instant::now();
+                while got < length {
+                    if got < slow {
+                        if per_sec == 0 {
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                            return;
+                        }
+                        let due = started + Duration::from_secs_f64(got as f64 / per_sec as f64);
+                        tokio::time::sleep_until(due.into()).await;
+                    }
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    got += n;
+                }
+                let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{TEXT}\n\n{DONE}\n\n");
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (url, served)
+}
+
+/// A big request on a slow link (attachments) isn't a provider that
+/// stopped responding: the first-byte limit counts from when the last of
+/// the request went out, not from when it started going.
+#[tokio::test]
+async fn a_slow_upload_that_keeps_moving_is_not_a_stall() {
+    // Half of it at 8 MB/s: 1.5 s, twice the limit. The rest at full
+    // speed, so what the client still holds when it hands over the last
+    // piece arrives at once.
+    let (url, served) = slow_reader(12 * MB, 8 * MB).await;
+    let (result, events) = run_body_against(&url, &big_body(24 * MB), limits_of(700), None).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        names(&events),
+        ["delta:Hello", "done"],
+        "on the first attempt"
+    );
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// A connection that stops taking the request is a connection problem, and
+/// found as soon as it has taken nothing for the first-byte limit.
+#[tokio::test]
+async fn an_upload_that_stops_is_a_connection_problem() {
+    let (url, served) = slow_reader(usize::MAX, 0).await;
+    let limits = Limits {
+        overall: Duration::from_secs(30),
+        ..limits_of(300)
+    };
+    let started = Instant::now();
+    let (result, _) = run_body_against(&url, &big_body(16 * MB), limits, None).await;
+    let error = result.unwrap_err();
+    assert_eq!(
+        (error.kind, error.attempts),
+        (ErrorKind::Network, MAX_ATTEMPTS)
+    );
+    // Not the 30 s each attempt may take in all.
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert_eq!(
+        served.load(std::sync::atomic::Ordering::SeqCst),
+        MAX_ATTEMPTS as usize
+    );
 }
 
 #[tokio::test]
