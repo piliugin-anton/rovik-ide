@@ -791,8 +791,8 @@ imported_result, imported_seq, unreported_landing)`, updated in the same
     `merged`, and only while the chat's project is the open project.
   - Conflicts go to the isolation bar, as they do now.
   - A `merged` plan goes to 6.6 when the chat's checks would run, which
-    the result says (`checks`). Without checks, it lands merged, as a
-    local chat's does.
+    the result says (`unchecked` when they wouldn't). Without checks, it
+    lands merged, as a local chat's does.
   - After a landing, the client sends `WorkLanded`. A landing its host
     can't be told of yet waits in `mirror_state.unreported_landing` and is
     sent after the next connection, so an app restarted meanwhile still
@@ -1795,10 +1795,10 @@ Tasks add notes here when reality differs from the plan.
   - `CheckMerged` sets `merged_from_project` without the diffs, which only
     the server's merge knows, so the fix round names the merged files
     without showing what the project changed in them.
-  - The client sends every result that would land merged back to the
-    server, checks on or off: with the checks off, the server's run ends at
-    once and its result lands merged, as a local chat's would. The client
-    doesn't need the chat's settings for this.
+  - The client sent every result that would land merged back to the
+    server, checks on or off: with the checks off, the server's run ended at
+    once and its result landed merged. Since the review below, a result
+    without checks to run lands merged here.
   - Rounds are counted per chat, at most two; a landing or a new message
     starts the count again. After two, the result waits with
     `LandError::Unchecked`'s reason, "changed again".
@@ -1882,3 +1882,12 @@ Tasks add notes here when reality differs from the plan.
     doesn't know which number it imported, so such a result changes
     nothing until M01 keeps the number. `Remote::result_ready` is public
     for the test that replays an older result.
+  - A result says whether checks would run on it merged with the project's
+    newer changes (`ChatResult.unchecked`, additive). The daemon works it
+    out as it commits the result, from the checks of the chat's root and its
+    computer's permissions, with `agent_run::checks_would_run`, which local
+    landing now calls too. The import keeps it in `import.json`, and
+    `land_by_itself` lands such a merge as a local chat does. Before, it
+    went back to the server for a run with nothing to check, which added a
+    "no checks are set up" record to the chat when verification was on.
+    `overlay::import::import` and `Shadow::import` take the `ChatResult`.

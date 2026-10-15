@@ -65,7 +65,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
 
-pub use landing::pending_reason;
+pub use landing::{checks_would_run, pending_reason};
 pub use rovik_protocol::agent::{
     AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
     RunningSubagent, StartKind, StartRequest, UserMessage,

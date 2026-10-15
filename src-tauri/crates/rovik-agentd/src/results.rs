@@ -19,7 +19,7 @@ use crate::events::Events;
 use crate::store::{Place, Store};
 use git2::build::TreeUpdateBuilder;
 use git2::{Delta, FileMode, Index, ObjectType, Oid, Repository, ResetType, Signature};
-use rovik_core::agent_run::pending_reason;
+use rovik_core::agent_run::{self, pending_reason, project, AgentConfig};
 use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_core::staging::{self, Base};
@@ -33,6 +33,8 @@ use std::sync::Arc;
 pub struct Results {
     /// The chats' result indexes.
     dir: PathBuf,
+    /// The core's configuration folder, with the projects' settings.
+    config_dir: PathBuf,
     store: Arc<Store>,
     events: Arc<Events>,
     /// One commit or move of a landing base at a time (a result, a landing,
@@ -41,9 +43,15 @@ pub struct Results {
 }
 
 impl Results {
-    pub fn new(dir: PathBuf, store: Arc<Store>, events: Arc<Events>) -> Arc<Results> {
+    pub fn new(
+        dir: PathBuf,
+        config_dir: PathBuf,
+        store: Arc<Store>,
+        events: Arc<Events>,
+    ) -> Arc<Results> {
         Arc::new(Results {
             dir,
+            config_dir,
             store,
             events,
             base: tokio::sync::Mutex::new(()),
@@ -74,11 +82,16 @@ impl Results {
             dialog_id.to_string(),
         );
         let marked = self.store.marked_of(dialog_id);
+        let root = place.worktree.join(self.store.subpath_of(dialog_id));
+        let config = self.store.config_of(dialog_id);
+        let config_dir = self.config_dir.clone();
         let committed = rt::spawn_blocking(move || {
             let commit = commit_worktree(&place.worktree, &index, &base, &chat)?;
-            Ok::<_, String>((commit, markers_left(&place.worktree, marked)))
+            let marked = markers_left(&place.worktree, marked);
+            let checks = config.is_some_and(|c| checks_would_run(&config_dir, &root, &c));
+            Ok::<_, String>((commit, marked, checks))
         });
-        let (commit, marked) = committed
+        let (commit, marked, checks) = committed
             .await
             .map_err(|e| internal(e.to_string()))?
             .map_err(internal)?;
@@ -90,6 +103,7 @@ impl Results {
             outcome: outcome.to_string(),
             pending: pending_reason(outcome),
             marked,
+            unchecked: !checks,
         };
         let result = self.store.result_made(dialog_id, made);
         self.events
@@ -258,6 +272,15 @@ fn changes_of(
         }
     }
     Ok(changes)
+}
+
+/// Whether the chat's checks would run on its result merged with the
+/// project's newer changes: those its run in `root` has, by its computer's
+/// configuration, as a local chat's landing asks (6.5).
+fn checks_would_run(config_dir: &Path, root: &Path, config: &AgentConfig) -> bool {
+    let (p, root) = (&config.permissions, root.to_string_lossy());
+    let (checks, _) = project::load(config_dir, &root, &root, p.verify_changes);
+    agent_run::checks_would_run(p, &checks)
 }
 
 /// Of the files a sync marked, those whose markers are still in the

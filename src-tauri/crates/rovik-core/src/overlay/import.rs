@@ -18,9 +18,9 @@
 //!   its own root. The others are listed and never land.
 //! - **An import replaces the chat's store**, unless the user is resolving
 //!   conflicts in it. The new store is built beside it and swapped in.
-//! - **Landing by itself** follows landing.rs's rules, but never lands a
-//!   result merged with the project's newer changes: its checks run on the
-//!   server first (6.6).
+//! - **Landing by itself** follows landing.rs's rules, but lands a result
+//!   merged with the project's newer changes only when no checks would run
+//!   on the merge: otherwise they run on the server first (6.6).
 
 use super::chats::{self, Pending};
 use super::fs::{write_manifest, DeletedBase, OverlayChange};
@@ -29,6 +29,7 @@ use super::tiers::Tiers;
 use crate::vfs::store::Kind;
 use git2::build::CheckoutBuilder;
 use git2::{DiffFile, FileMode, Oid, Repository, Tree};
+use rovik_protocol::work::ChatResult;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -50,6 +51,10 @@ pub struct Imported {
     /// The paths it changed outside the project's folder in its
     /// repository (K31): listed, never landed.
     pub outside: Vec<String>,
+    /// No checks would run on it merged with the project's newer changes:
+    /// such a merge lands by itself (`ChatResult::unchecked`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unchecked: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -78,29 +83,30 @@ impl From<String> for ImportError {
 
 const RECORD: &str = "import.json";
 
-/// Builds the chat's store for `project` from `result`: its changes on its
-/// parent, the landing base, both of which `repo` has. `subpath` is the
-/// project's folder in the trees ("" at their root), and `marked` the files
-/// the server put conflict markers in, from the trees' root.
+/// Builds its chat's store for `project` from `result`: the changes of its
+/// commit on its parent, the landing base, both of which `repo` has, with
+/// the files its server put conflict markers in. `subpath` is the
+/// project's folder in the trees ("" at their root).
 pub fn import(
     repo: &Repository,
-    dialog_id: &str,
     project: &Path,
     subpath: &str,
-    result: Oid,
-    marked: &[String],
+    result: &ChatResult,
 ) -> Result<Imported, ImportError> {
+    let dialog_id = result.dialog_id.as_str();
     let store = chats::store_dir(dialog_id)
         .ok_or_else(|| ImportError::Failed("the app's data folder isn't known yet".into()))?;
     if resolving(dialog_id) {
         return Err(ImportError::Resolving);
     }
+    let (marked, unchecked) = (&result.marked, result.unchecked);
+    let result = Oid::from_str(&result.commit).map_err(|e| e.message().to_string())?;
     let project = project
         .canonicalize()
         .unwrap_or_else(|_| project.to_path_buf());
     let staging = store.with_file_name(format!(".import-{dialog_id}"));
     remove(&staging)?;
-    let built = build(repo, &project, subpath, result, &store, &staging);
+    let built = build(repo, &project, subpath, result, unchecked, &store, &staging);
     let swapped = built
         .map_err(ImportError::Failed)
         .and_then(|(changes, imported)| {
@@ -135,10 +141,12 @@ pub fn wait(dialog_id: &str, reason: &str) {
     chats::set_pending(dialog_id, Some(&pending));
 }
 
-/// Lands the chat's imported result by itself: never merged with the
-/// project's newer changes, which its server checks first (6.6).
+/// Lands the chat's imported result by itself: merged with the project's
+/// newer changes only when no checks would run on the merge, which its
+/// server checks first otherwise (6.6).
 pub fn land_by_itself(dialog_id: &str) -> Result<Option<Landed>, LandError> {
-    chats::land_now_with(dialog_id, false, false)
+    let unchecked = imported(dialog_id).is_some_and(|i| i.unchecked);
+    chats::land_now_with(dialog_id, false, unchecked)
 }
 
 /// Whether the user is resolving conflicts in the chat's store.
@@ -187,6 +195,7 @@ fn build(
     project: &Path,
     subpath: &str,
     result: Oid,
+    unchecked: bool,
     store: &Path,
     staging: &Path,
 ) -> Result<(Vec<OverlayChange>, Imported), String> {
@@ -308,6 +317,7 @@ fn build(
         commit: result.to_string(),
         changed: entries.values().map(|e| e.tree_path.clone()).collect(),
         outside: outside.into_iter().collect(),
+        unchecked,
     };
     fs::write(
         staging.join("project.txt"),

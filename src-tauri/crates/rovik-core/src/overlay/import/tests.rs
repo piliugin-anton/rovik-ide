@@ -67,11 +67,24 @@ impl Fixture {
     }
 
     fn import(&self, result: Oid) -> Result<Imported, ImportError> {
-        import(&self.repo, CHAT, &self.project, "", result, &[])
+        import(&self.repo, &self.project, "", &told(result, &[]))
     }
 
     fn read(&self, path: &str) -> String {
         fs::read_to_string(self.project.join(path)).unwrap()
+    }
+}
+
+/// The server's word on a result of the chat: its commit, with `marked`.
+fn told(commit: Oid, marked: &[&str]) -> ChatResult {
+    ChatResult {
+        dialog_id: CHAT.into(),
+        commit: commit.to_string(),
+        seq: 1,
+        outcome: "done".into(),
+        pending: None,
+        marked: marked.iter().map(|m| m.to_string()).collect(),
+        unchecked: false,
     }
 }
 
@@ -229,6 +242,27 @@ fn a_conflict_waits_and_lands_anyway() {
 }
 
 #[test]
+fn a_merge_lands_by_itself_only_when_no_checks_would_run() {
+    let f = fixture(&[("a.txt", "1\n2\n3\n")], false);
+    let result = f.result(&[("a.txt", Some("ONE\n2\n3\n"), TEXT)]);
+    // The project changed the file too, on other lines.
+    write(&f.project.join("a.txt"), "1\n2\nTHREE\n");
+
+    f.import(result).unwrap();
+    let waits = land_by_itself(CHAT);
+
+    assert!(matches!(waits, Err(LandError::Unchecked(_))), "{waits:?}");
+    assert_eq!(f.read("a.txt"), "1\n2\nTHREE\n");
+    let unchecked = ChatResult {
+        unchecked: true,
+        ..told(result, &[])
+    };
+    import(&f.repo, &f.project, "", &unchecked).unwrap();
+    land_by_itself(CHAT).unwrap();
+    assert_eq!(f.read("a.txt"), "ONE\n2\nTHREE\n");
+}
+
+#[test]
 fn a_newer_result_replaces_one_that_waits() {
     let f = fixture(&[("a.txt", "a\n"), ("b.txt", "b\n")], false);
     let first = f.result(&[("a.txt", Some("first\n"), TEXT)]);
@@ -254,7 +288,7 @@ fn a_projects_folder_in_its_repository_takes_its_own_changes() {
     ]);
     let web = f.project.join("web");
 
-    let imported = import(&f.repo, CHAT, &web, "web", result, &[]).unwrap();
+    let imported = import(&f.repo, &web, "web", &told(result, &[])).unwrap();
 
     assert_eq!(imported.changed, ["web/app.js"]);
     assert_eq!(imported.outside, ["api/main.go"]);
@@ -270,7 +304,7 @@ fn files_marked_on_the_server_wait_for_their_markers() {
     let marked = "<<<<<<< project (now)\nA\n||||||| before\na\n=======\nB\n>>>>>>> this chat\n";
     let result = f.result(&[("a.txt", Some(marked), TEXT)]);
 
-    import(&f.repo, CHAT, &f.project, "", result, &["a.txt".into()]).unwrap();
+    import(&f.repo, &f.project, "", &told(result, &["a.txt"])).unwrap();
 
     assert_eq!(chats::markers_left(CHAT), ["a.txt"]);
     let waits = land_by_itself(CHAT);

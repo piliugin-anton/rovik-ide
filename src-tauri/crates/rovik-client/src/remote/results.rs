@@ -181,8 +181,8 @@ impl Remote {
         let client = self.client(host).map_err(|fail| fail.message)?;
         let fetched = client.fetch(&project, &dir, &[commit]).await;
         fetched.map_err(|fail| fail.message)?;
-        let (name, marked) = (chat.clone(), result.marked.clone());
-        let imported = rt::spawn_blocking(move || shadow.import(&name, commit, &marked));
+        let told = result.clone();
+        let imported = rt::spawn_blocking(move || shadow.import(&told));
         match imported.await.map_err(|e| e.to_string())? {
             Ok(imported) if imported.changed.is_empty() => {}
             Ok(_) => {

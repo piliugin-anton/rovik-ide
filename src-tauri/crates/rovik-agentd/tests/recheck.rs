@@ -4,6 +4,7 @@
 //! on the merge, and the new result lands. A check that fails is a fix
 //! round for the chat, whose result lands afterwards. After two rounds of
 //! the project changing the same files again meanwhile, the result waits.
+//! Without checks to run, the merge lands here at once, as a local chat's.
 
 mod common;
 
@@ -150,4 +151,31 @@ async fn after_two_rounds_of_changing_again_the_result_waits() {
         "1\n2\nTHREE\nFOUR\nFIVE\n"
     );
     let _ = std::fs::remove_file(&go);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_checks_the_merge_lands_here_at_once() {
+    let mut setup = Setup::new().await;
+    write(&setup.project.join("a.txt"), LINES);
+    let app = App::new(&mut setup).await;
+    app.remote.set_open_project(None);
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        writes("w1", "a.txt", "ONE\n2\n3\n4\n5\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    // Checks would run at its end, but the project has none.
+    app.remote
+        .start(start(&setup, &url, verified()))
+        .await
+        .unwrap();
+    let run = |setup: &Setup| setup.daemon.state()["chats"][CHAT]["runId"].clone();
+
+    changed_here_then_opened(&setup, &app, "1\n2\n3\n4\nFIVE\n").await;
+    let ran = run(&setup);
+
+    landed_as(&setup, "a.txt", "ONE\n2\n3\n4\nFIVE\n").await;
+    assert_eq!(run(&setup), ran, "no run checked the merge there");
 }

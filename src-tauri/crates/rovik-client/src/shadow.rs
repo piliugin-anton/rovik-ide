@@ -44,6 +44,7 @@ pub use guards::{Guards, LARGE_FILE, LARGE_HISTORY};
 use git2::{Commit, Config, Oid, Reference, Repository, RepositoryInitOptions, Signature};
 use rovik_core::overlay::import::{self, ImportError, Imported};
 use rovik_core::staging::{self, Base, Staged};
+use rovik_protocol::work::ChatResult;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -256,21 +257,16 @@ impl Shadow {
         Ok(())
     }
 
-    /// Imports the chat's result, fetched into the shadow, as the chat's
-    /// overlay store for the project (6.5). `marked`: the files its host put
-    /// conflict markers in.
-    pub fn import(
-        &self,
-        chat: &str,
-        result: Oid,
-        marked: &[String],
-    ) -> std::result::Result<Imported, ImportError> {
+    /// Imports a chat's result, fetched into the shadow, as the chat's
+    /// overlay store for the project (6.5).
+    pub fn import(&self, result: &ChatResult) -> std::result::Result<Imported, ImportError> {
         let _held = hold(&self.busy);
         let (root, subpath) = (&self.root, &self.subpath);
-        let imported = import::import(&self.repo, chat, root, subpath, result, marked)?;
-        let name = format!("{IMPORTED}{chat}");
+        let imported = import::import(&self.repo, root, subpath, result)?;
+        let commit = Oid::from_str(&result.commit).map_err(|e| ImportError::Failed(git(e)))?;
+        let name = format!("{IMPORTED}{}", result.dialog_id);
         self.repo
-            .reference(&name, result, true, "imported")
+            .reference(&name, commit, true, "imported")
             .map_err(|e| ImportError::Failed(git(e)))?;
         Ok(imported)
     }

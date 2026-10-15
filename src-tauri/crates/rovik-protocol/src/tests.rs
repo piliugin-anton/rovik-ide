@@ -29,6 +29,7 @@ fn result(pending: Option<&str>) -> ChatResult {
         outcome: "done".into(),
         pending: pending.map(String::from),
         marked: Vec::new(),
+        unchecked: false,
     }
 }
 
@@ -541,6 +542,10 @@ fn every_response_round_trips() {
             Response::ChatResult(result(Some("Not landed: the run was stopped."))),
             Response::ChatResult(ChatResult {
                 marked: vec!["src/main.rs".into()],
+                ..result(None)
+            }),
+            Response::ChatResult(ChatResult {
+                unchecked: true,
                 ..result(None)
             }),
             Response::ChatResults(vec![result(None)]),

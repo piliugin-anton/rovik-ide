@@ -348,6 +348,15 @@ impl Store {
         told
     }
 
+    /// The project's folder in the chat's worktree, from its root: "" when
+    /// the project is its repository's root folder (K31).
+    pub fn subpath_of(&self, dialog_id: &str) -> String {
+        let inner = self.lock();
+        let chat = inner.state.chats.get(dialog_id);
+        let project = chat.and_then(|chat| inner.state.projects.get(chat.project.as_ref()?));
+        project.map(|p| p.subpath.clone()).unwrap_or_default()
+    }
+
     /// The chat's newest result.
     pub fn result_of(&self, dialog_id: &str) -> Option<ChatResult> {
         self.lock().state.chats.get(dialog_id)?.result.clone()

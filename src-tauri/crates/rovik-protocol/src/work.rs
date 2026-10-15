@@ -39,6 +39,11 @@ pub struct ChatResult {
     /// gone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub marked: Vec<String>,
+    /// No checks would run on it merged with the project's newer changes,
+    /// by the chat's settings on its daemon: such a merge lands as it is,
+    /// as a local chat's does, without going back to be checked (6.6).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unchecked: bool,
 }
 
 /// What a sync did (6.7).

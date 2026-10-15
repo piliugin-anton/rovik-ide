@@ -16,6 +16,8 @@
 //! pull), isolated runs wait before their next step and before landing.
 
 use super::events::AgentEvent;
+use super::permissions::{check_command, Permissions, Verdict};
+use super::project::ProjectCheck;
 use super::run::Run;
 use crate::overlay::chats::{self, Pending};
 use crate::overlay::land::{self, LandError};
@@ -50,6 +52,19 @@ pub fn pending_reason(outcome: &str) -> Option<String> {
         _ => "the run didn't finish",
     };
     Some(format!("Not landed: {reason}."))
+}
+
+/// Whether checks would run on a result merged with the project's newer
+/// changes: set up, enabled, and allowed by the command rules. Without
+/// them, a merge lands as it is, for a local chat and for a daemon's
+/// result alike (6.5).
+pub fn checks_would_run(permissions: &Permissions, checks: &[ProjectCheck]) -> bool {
+    permissions.verify_changes
+        && checks.iter().any(|c| {
+            c.enabled
+                && !c.command.trim().is_empty()
+                && !matches!(check_command(&c.command, permissions), Verdict::Refused(_))
+        })
 }
 
 impl Run {
@@ -164,16 +179,7 @@ impl Run {
             return Some(("waits: conflicts", count));
         }
         let p = self.config().permissions;
-        // Checks that would run: set up, and allowed by the command rules.
-        let has_checks = p.verify_changes
-            && self.checks.iter().any(|c| {
-                c.enabled
-                    && !c.command.trim().is_empty()
-                    && !matches!(
-                        super::permissions::check_command(&c.command, &p),
-                        super::permissions::Verdict::Refused(_)
-                    )
-            });
+        let has_checks = checks_would_run(&p, &self.checks);
         if plan.merged && has_checks && p.command_approval.required {
             // The merged result's checks are commands too: not without the
             // user's go. Land (in the bar) lands it as it is.
@@ -453,7 +459,7 @@ impl Run {
 
 #[cfg(test)]
 mod tests {
-    use super::pending_reason;
+    use super::{checks_would_run, pending_reason, Permissions, ProjectCheck};
 
     /// One table for both sides: a local chat's landing and a daemon's
     /// results give each outcome the same reason (6.5).
@@ -486,5 +492,33 @@ mod tests {
         assert!(flagged.contains("weakens tests"), "{flagged}");
         let unchecked = pending_reason("verify-unchecked").unwrap();
         assert!(unchecked.contains("couldn't be checked"), "{unchecked}");
+    }
+
+    #[test]
+    fn checks_would_run_when_set_up_enabled_and_allowed() {
+        let check = |command: &str, enabled: bool| ProjectCheck {
+            kind: "test".into(),
+            command: command.into(),
+            enabled,
+        };
+        let on = Permissions {
+            verify_changes: true,
+            allow_any_command: true,
+            ..Permissions::default()
+        };
+        assert!(checks_would_run(&on, &[check("npm test", true)]));
+        assert!(!checks_would_run(&on, &[]), "none set up");
+        assert!(!checks_would_run(&on, &[check("npm test", false)]), "off");
+        assert!(!checks_would_run(&on, &[check("  ", true)]), "empty");
+        let off = Permissions {
+            verify_changes: false,
+            ..on.clone()
+        };
+        assert!(!checks_would_run(&off, &[check("npm test", true)]));
+        let denied = Permissions {
+            denied_commands: vec!["npm".into()],
+            ..on
+        };
+        assert!(!checks_would_run(&denied, &[check("npm test", true)]));
     }
 }

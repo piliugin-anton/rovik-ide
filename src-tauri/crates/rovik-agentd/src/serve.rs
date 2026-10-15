@@ -69,7 +69,12 @@ async fn run(
         Arc::new(move |chat| owners.owner(chat)),
     );
     let paths = Paths::new(home.data(), home.core_config());
-    let results = Results::new(home.results(), store.clone(), events.clone());
+    let results = Results::new(
+        home.results(),
+        home.core_config(),
+        store.clone(),
+        events.clone(),
+    );
     let sink = Tap {
         store: store.clone(),
         events: events.clone(),
