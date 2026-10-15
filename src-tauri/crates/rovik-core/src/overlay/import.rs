@@ -142,7 +142,7 @@ pub fn land_by_itself(dialog_id: &str) -> Result<Option<Landed>, LandError> {
 }
 
 /// Whether the user is resolving conflicts in the chat's store.
-fn resolving(dialog_id: &str) -> bool {
+pub fn resolving(dialog_id: &str) -> bool {
     chats::pending(dialog_id).is_some_and(|p| !p.conflicts.is_empty())
 }
 

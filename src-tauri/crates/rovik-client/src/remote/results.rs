@@ -2,7 +2,9 @@
 //! project's shadow and imported as the chat's overlay store, one at a time
 //! in the order they came: from `ResultReady`, and from `WorkResults` after
 //! every connection, so a result that ended while this computer was away
-//! comes in too (K24). It lands by itself under landing.rs's rules while
+//! comes in too (K24). Results are numbered, and one older than the newest
+//! that came in, as a `ResultReady` replayed after a connection can be, is
+//! passed over. It lands by itself under landing.rs's rules while
 //! the chat's project is the open project, and waits as "Ready to land"
 //! otherwise. Each landing is reported to the host with `WorkLanded`, at
 //! once or after its next connection, so the next result doesn't bring
@@ -75,8 +77,8 @@ impl Remote {
         landed.await.unwrap_or_else(|_| Err(gone()))
     }
 
-    /// A result the host told of.
-    pub(super) fn result_ready(&self, host: &str, result: ChatResult) {
+    /// A result its host told of, into the queue.
+    pub fn result_ready(&self, host: &str, result: ChatResult) {
         let host = host.to_string();
         let _ = self.jobs.send(Job::Import { host, result });
     }
@@ -141,11 +143,15 @@ impl Remote {
         }
     }
 
-    /// Fetches the chat's result and imports it, unless it came in before,
-    /// then lands it if it may.
+    /// Fetches the chat's result and imports it, unless it came in before
+    /// or a newer one did, then lands it if it may.
     async fn import(&self, host: &str, result: ChatResult) -> Result<(), String> {
         let chat = result.dialog_id.clone();
         if self.host_of(&chat).as_deref() != Some(host) {
+            return Ok(());
+        }
+        let seen = self.lock().results_seen.get(&chat).copied();
+        if passed_over(seen, result.seq) {
             return Ok(());
         }
         let (project, root) = self
@@ -160,6 +166,16 @@ impl Remote {
         };
         let shadow = opened.await.map_err(|e| e.to_string())??;
         if shadow.imported(&chat) == Some(commit) {
+            // The same changes, after a run that changed nothing more: its
+            // outcome decides again whether they land, while they wait
+            // here. Before this session knew of an older result, it can't
+            // tell, and they stay as they are.
+            let waits = chats::exists(&chat) && !import::resolving(&chat);
+            if seen.is_some() && waits {
+                self.decide(&chat, &project, result.pending.as_deref())
+                    .await;
+            }
+            self.saw(&chat, result.seq);
             return Ok(());
         }
         let client = self.client(host).map_err(|fail| fail.message)?;
@@ -169,22 +185,43 @@ impl Remote {
         let imported = rt::spawn_blocking(move || shadow.import(&name, commit, &marked));
         match imported.await.map_err(|e| e.to_string())? {
             Ok(imported) if imported.changed.is_empty() => {}
-            Ok(_) => match &result.pending {
-                Some(reason) => import::wait(&chat, reason),
-                None if !self.is_open(&project) => import::wait(&chat, import::READY),
-                None => {
-                    let _ = self.land_imported(&chat, None).await;
-                }
-            },
-            Err(ImportError::Resolving) => self.notice(
-                &chat,
-                "info",
-                "A newer result of this chat is ready",
-                "It comes in once its conflicts are settled.",
-            ),
+            Ok(_) => {
+                self.decide(&chat, &project, result.pending.as_deref())
+                    .await
+            }
+            Err(ImportError::Resolving) => {
+                self.notice(
+                    &chat,
+                    "info",
+                    "A newer result of this chat is ready",
+                    "It comes in once its conflicts are settled.",
+                );
+                return Ok(());
+            }
             Err(ImportError::Failed(e)) => return Err(e),
         }
+        self.saw(&chat, result.seq);
         Ok(())
+    }
+
+    /// Lands the chat's imported result by itself, or has it wait: for
+    /// the reason its run's outcome gives, or for its project to open.
+    async fn decide(&self, dialog_id: &str, project: &str, pending: Option<&str>) {
+        match pending {
+            Some(reason) => import::wait(dialog_id, reason),
+            None if !self.is_open(project) => import::wait(dialog_id, import::READY),
+            None => {
+                let _ = self.land_imported(dialog_id, None).await;
+            }
+        }
+    }
+
+    /// The chat's result numbered `seq` came in: older ones are passed over
+    /// from now on.
+    fn saw(&self, dialog_id: &str, seq: u64) {
+        if seq > 0 {
+            self.lock().results_seen.insert(dialog_id.to_string(), seq);
+        }
     }
 
     /// The results that waited for their project, once it's open.
@@ -385,5 +422,26 @@ impl Remote {
             title: title.into(),
             message: message.into(),
         });
+    }
+}
+
+/// Whether a result numbered `seq` is older than the newest one that came
+/// in (`seen`), or that one again, as a replayed `ResultReady` can be. One
+/// without a number (0) is judged by its commit alone.
+fn passed_over(seen: Option<u64>, seq: u64) -> bool {
+    seq > 0 && seen.is_some_and(|seen| seq <= seen)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::passed_over;
+
+    #[test]
+    fn a_result_older_than_the_newest_is_passed_over() {
+        assert!(!passed_over(None, 1), "the first of this session");
+        assert!(!passed_over(Some(1), 2), "a newer one");
+        assert!(passed_over(Some(2), 2), "the same one again");
+        assert!(passed_over(Some(2), 1), "an older one, replayed");
+        assert!(!passed_over(Some(2), 0), "unnumbered: by its commit");
     }
 }

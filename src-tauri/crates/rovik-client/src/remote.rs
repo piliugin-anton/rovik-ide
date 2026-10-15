@@ -129,6 +129,10 @@ struct State {
     /// How many times each chat's result went back to be checked merged
     /// with the project's newer changes (6.6), since its last message.
     rechecks: HashMap<String, u32>,
+    /// The number of each chat's newest result handled this session (6.5):
+    /// an older one, replayed after it, is passed over. M01 keeps it in
+    /// `mirror_state`.
+    results_seen: HashMap<String, u64>,
 }
 
 impl Remote {

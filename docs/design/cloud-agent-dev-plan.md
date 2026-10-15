@@ -1868,3 +1868,17 @@ Tasks add notes here when reality differs from the plan.
   - Which result a chat imported last, and a landing its host wasn't told
     of yet, go into M01's `mirror_state` (6.3, 6.5 and M01's task say so
     now). Until M01, T06's shadow ref and in-memory list stay.
+  - Results are numbered (`ChatResult.seq`, additive): the daemon counts
+    each chat's results in `state.json`, and the same result again keeps
+    its number. The client passes over a result older than the newest one
+    that came in this session, or that one again. A `ResultReady` replayed
+    after a connection comes behind the result `WorkResults` brought: when
+    it was older, its commit was at no ref any more, so its fetch failed
+    and the chat said its changes didn't come back.
+  - A result with the imported one's commit, from a run that changed
+    nothing more, now decides again whether the changes land while they
+    wait here: a run stopped and then finished without changes left them
+    waiting with the stop's reason. After the app starts, the client
+    doesn't know which number it imported, so such a result changes
+    nothing until M01 keeps the number. `Remote::result_ready` is public
+    for the test that replays an older result.

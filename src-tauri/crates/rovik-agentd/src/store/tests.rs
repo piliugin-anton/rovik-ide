@@ -294,3 +294,29 @@ fn a_restart_is_its_last_start_again_with_its_key() {
     assert_eq!(restart.config, None);
     assert!(store.restart_request("unknown", StartKind::Retry).is_none());
 }
+
+/// 6.5: a client passes over a result older than the newest it has.
+#[test]
+fn results_are_numbered_and_the_same_one_keeps_its_number() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &start("chat", "", None)).unwrap();
+    let result = |commit: &str, outcome: &str| ChatResult {
+        dialog_id: "chat".into(),
+        commit: commit.into(),
+        seq: 0,
+        outcome: outcome.into(),
+        pending: None,
+        marked: Vec::new(),
+    };
+
+    assert_eq!(store.result_made("chat", result("c1", "done")).seq, 1);
+    assert_eq!(store.result_made("chat", result("c1", "done")).seq, 1);
+    let outcome = store.result_made("chat", result("c1", "verified"));
+    assert_eq!(outcome.seq, 2, "the same commit after another run");
+    assert_eq!(store.result_made("chat", result("c2", "verified")).seq, 3);
+
+    let reopened = Store::open(&dir.0).unwrap();
+    assert_eq!(reopened.result_of("chat").unwrap().seq, 3);
+    assert_eq!(reopened.result_made("chat", result("c3", "done")).seq, 4);
+}

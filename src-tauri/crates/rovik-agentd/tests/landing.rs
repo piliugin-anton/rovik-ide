@@ -4,10 +4,12 @@
 //! anyway, the daemon hears of every landing so an undone one stays
 //! undone, a result that ended while the app was away comes in when it
 //! connects, and text comes back with the project's own line endings.
+//! Results are numbered: an older one told again is passed over, and the
+//! same changes after another run land by that run's outcome.
 
 mod common;
 
-use common::app::{landed, App};
+use common::app::{landed, landed_as, App, HOST};
 use common::project::{
     ended, message, read, ready_to_run, start, unattended, writes, Setup, CHAT, PROJECT,
 };
@@ -215,4 +217,88 @@ async fn with_autocrlf_text_comes_back_with_crlf() {
         .unwrap();
 
     assert_eq!(landed(&setup, "src/crlf.rs").await, "one\r\ntwo\r\n");
+}
+
+/// The chat's newest result on the daemon.
+async fn newest_result(setup: &Setup) -> ChatResult {
+    let results: Vec<ChatResult> = setup.client.request(Request::WorkResults).await.unwrap();
+    results.into_iter().find(|r| r.dialog_id == CHAT).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_result_told_again_is_passed_over() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        writes("w1", "src/main.rs", "fn main() { one() }\n"),
+        Reply::Text("Done."),
+        writes("w2", "src/main.rs", "fn main() { two() }\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    landed_as(&setup, "src/main.rs", "fn main() { one() }\n").await;
+    let older = newest_result(&setup).await;
+    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
+    landed_as(&setup, "src/main.rs", "fn main() { two() }\n").await;
+    let newer = newest_result(&setup).await;
+    assert!(older.seq < newer.seq, "{} then {}", older.seq, newer.seq);
+
+    // The first one's `ResultReady` again, as a replay after a connection
+    // can bring it behind the newer result. Its commit is at no ref there
+    // any more: fetching it would fail, and say the changes didn't come.
+    app.remote.result_ready(HOST, older);
+    // Behind it in the queue: once Land is through, so is the result.
+    let _ = app.remote.land(CHAT, false).await;
+
+    let events = app.test.events.lock().unwrap().clone();
+    let failed = |e: &Value| e["title"] == "This chat's changes didn't come back";
+    assert!(!events.iter().any(failed), "passed over, not fetched");
+    assert!(!chats::exists(CHAT), "nothing came of it");
+    assert_eq!(
+        read(&setup.project.join("src/main.rs")),
+        "fn main() { two() }\n"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_kept_by_a_stop_land_after_a_run_that_changed_nothing() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.connect(&setup).await;
+    let root = ready_to_run(&setup).await;
+    let (url, asked) = model(vec![
+        writes("w1", "src/new.rs", "fn new() {}\n"),
+        Reply::Hang(None),
+        Reply::Text("Nothing more to do."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    // Stopped while the model doesn't answer, after the chat's write.
+    until("the model asked after the write", || {
+        (asked.lock().unwrap().len() == 2).then_some(())
+    })
+    .await;
+    assert!(root.join("src/new.rs").exists());
+    let stop = Request::AgentStop {
+        dialog_id: CHAT.into(),
+    };
+    setup.client.request::<bool>(stop).await.unwrap();
+    until("the stopped run's changes waiting", || {
+        chats::pending(CHAT).filter(|p| p.reason.contains("stopped"))
+    })
+    .await;
+
+    // The same changes come back from a run that ended well.
+    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
+
+    assert_eq!(landed(&setup, "src/new.rs").await, "fn new() {}\n");
 }

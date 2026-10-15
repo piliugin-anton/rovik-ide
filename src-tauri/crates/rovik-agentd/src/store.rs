@@ -293,9 +293,22 @@ impl Store {
         self.lock().state.chats.get(dialog_id)?.outcome.clone()
     }
 
-    /// The chat's newest result.
-    pub fn result_made(&self, dialog_id: &str, result: ChatResult) {
-        self.change(dialog_id, |chat| chat.result = Some(result));
+    /// The chat's newest result, numbered after the one before it: the
+    /// same result again keeps its number.
+    pub fn result_made(&self, dialog_id: &str, mut result: ChatResult) -> ChatResult {
+        self.change(dialog_id, |chat| {
+            let unnumbered = |r: &ChatResult| ChatResult {
+                seq: 0,
+                ..r.clone()
+            };
+            result.seq = match &chat.result {
+                Some(last) if unnumbered(last) == unnumbered(&result) => last.seq,
+                Some(last) => last.seq + 1,
+                None => 1,
+            };
+            chat.result = Some(result.clone());
+        });
+        result
     }
 
     /// Conflict markers went into `files` for the chat to settle: they're

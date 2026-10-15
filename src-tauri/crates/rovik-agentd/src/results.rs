@@ -5,10 +5,10 @@
 //! ignore rule matches stays in instead of landing as a deletion (K30), the
 //! agent's `git status` in the worktree never changes under it, and later
 //! results read only the files that changed. A result is committed when the
-//! chat's run ends and on `WorkResult`; the newest is kept in `state.json`
-//! with its outcome, the reason a local chat's landing would give and the
-//! files a sync marked that still have their markers (6.7), and
-//! `ResultReady` tells the chat's computer.
+//! chat's run ends and on `WorkResult`; the newest is kept in `state.json`,
+//! numbered after the one before it, with its outcome, the reason a local
+//! chat's landing would give and the files a sync marked that still have
+//! their markers (6.7), and `ResultReady` tells the chat's computer.
 //!
 //! Once a result has landed there, `WorkLanded` moves the landing base to
 //! the result's content for the paths that landed, so the next result
@@ -83,14 +83,15 @@ impl Results {
             .map_err(|e| internal(e.to_string()))?
             .map_err(internal)?;
         self.store.marks_left(dialog_id, marked.clone());
-        let result = ChatResult {
+        let made = ChatResult {
             dialog_id: dialog_id.to_string(),
             commit: commit.to_string(),
+            seq: 0,
             outcome: outcome.to_string(),
             pending: pending_reason(outcome),
             marked,
         };
-        self.store.result_made(dialog_id, result.clone());
+        let result = self.store.result_made(dialog_id, made);
         self.events
             .chat(dialog_id, Event::ResultReady(result.clone()));
         Ok(result)

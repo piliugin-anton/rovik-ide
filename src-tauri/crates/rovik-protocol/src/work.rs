@@ -23,6 +23,12 @@ pub struct ChatResult {
     pub dialog_id: String,
     /// The result's commit, at the chat's result ref (`packs::result_ref`).
     pub commit: String,
+    /// Its number among the chat's results on its daemon, from 1: a newer
+    /// result has a higher one, and the same result keeps its own, so a
+    /// client passes over one older than the newest it has (6.5). 0: not
+    /// numbered.
+    #[serde(default)]
+    pub seq: u64,
     pub outcome: String,
     /// Why it doesn't land on its own, if it doesn't: the reason a local
     /// chat's landing would give.

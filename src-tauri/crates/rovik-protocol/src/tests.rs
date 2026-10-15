@@ -25,6 +25,7 @@ fn result(pending: Option<&str>) -> ChatResult {
     ChatResult {
         dialog_id: "d".into(),
         commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        seq: 3,
         outcome: "done".into(),
         pending: pending.map(String::from),
         marked: Vec::new(),
@@ -944,4 +945,15 @@ fn pack_bodies_round_trip() {
     let unsafe_query = format!("ref=refs/rovik/a&b=c&new={id}&ref=refs/heads/main");
     assert_eq!(Update::parse(&unsafe_query), None);
     assert_eq!(Update::parse("ref=refs/rovik/a&new=HEAD"), None);
+}
+
+#[test]
+fn a_result_from_a_daemon_that_numbers_none_reads_as_zero() {
+    let older: ChatResult = serde_json::from_value(json!({
+        "dialogId": "d",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "outcome": "done",
+    }))
+    .unwrap();
+    assert_eq!(older.seq, 0, "a daemon from T05");
 }
