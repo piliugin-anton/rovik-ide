@@ -6,6 +6,7 @@
 use crate::auth::Tokens;
 use crate::events::Events;
 use crate::host;
+use crate::packs::Projects;
 use crate::store::Store;
 use rovik_core::chat_db::store::{self, NewDialog};
 use rovik_core::{project_profile, Core};
@@ -24,6 +25,8 @@ pub struct Daemon {
     pub events: Arc<Events>,
     /// Each chat's computer and settings, each computer's configuration.
     pub store: Arc<Store>,
+    /// Each project's repository, for the packs (6.4).
+    pub projects: Projects,
     /// `--same-machine`: a chat runs in the folder its start names, for
     /// development until projects are carried to the server (T04).
     pub same_machine: bool,

@@ -8,6 +8,7 @@ use crate::daemon::Daemon;
 use crate::events::Events;
 use crate::home::{self, Home};
 use crate::logfile;
+use crate::packs::Projects;
 use crate::restart;
 use crate::server::{self, OwnUser};
 use crate::store::Store;
@@ -88,6 +89,7 @@ async fn run(
         tokens,
         events,
         store,
+        projects: Projects::new(home.root.join("projects")),
         same_machine,
         virtual_files_problem,
     });

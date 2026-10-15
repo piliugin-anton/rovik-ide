@@ -20,6 +20,8 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "toki
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util.workspace = true
 tokio-tungstenite.workspace = true
+# Each project's bare repository, and the packs in and out of it (6.4).
+git2.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

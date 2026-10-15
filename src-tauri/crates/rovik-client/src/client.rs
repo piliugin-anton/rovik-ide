@@ -1,15 +1,20 @@
 //! One host's connection (4.1): the WebSocket that carries the calls and
-//! the events, `POST /call` for what is too big for a frame, and a new
-//! connection whenever the link drops, waiting longer each time (6.10).
+//! the events, HTTP for what is too big for a frame and for files and
+//! packs, and a new connection whenever the link drops, waiting longer
+//! each time (6.10).
 
 use crate::connector::Connector;
-use crate::http;
+use crate::{http, packs};
 use futures_util::{SinkExt, Stream, StreamExt};
+use git2::Oid;
+use rovik_protocol::packs::Pushed;
 use rovik_protocol::{
-    Event, Fail, FailCode, Frame, Request, Response, Secret, MAX_CALL, MAX_FRAME, PROTOCOL,
+    features, Event, Fail, FailCode, Frame, Request, Response, Secret, MAX_CALL, MAX_FRAME,
+    PROTOCOL,
 };
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
@@ -238,6 +243,44 @@ impl Client {
         let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
         let bytes = http::get_blob(connector, identity, id).await?;
         Ok(bytes.map(|b| b.to_vec()))
+    }
+
+    /// Sends `new` from the shadow repository at `shadow` to the project's
+    /// ref `name` on the daemon (6.4), telling `progress` the bytes sent so
+    /// far.
+    pub async fn push(
+        &self,
+        project: &str,
+        shadow: &Path,
+        name: &str,
+        new: Oid,
+        progress: impl Fn(u64) + Send + Sync + 'static,
+    ) -> Result<Pushed, Fail> {
+        self.takes_projects()?;
+        let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
+        let progress = Box::new(progress);
+        packs::push(connector, identity, shadow, project, name, new, progress).await
+    }
+
+    /// Takes what the daemon has of `wants` for the project into the
+    /// shadow repository at `shadow` (6.4). Returns how many objects came.
+    pub async fn fetch(&self, project: &str, shadow: &Path, wants: &[Oid]) -> Result<usize, Fail> {
+        self.takes_projects()?;
+        let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
+        packs::fetch(connector, identity, shadow, project, wants).await
+    }
+
+    /// A daemon from before the project transport has no `/packs` (4.5).
+    fn takes_projects(&self) -> Result<(), Fail> {
+        match self.daemon() {
+            Some(daemon) if !daemon.features.iter().any(|f| f == features::PROJECTS) => {
+                Err(Fail::new(
+                    FailCode::Version,
+                    "The server's daemon can't take projects yet: it needs an upgrade.",
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 }
 

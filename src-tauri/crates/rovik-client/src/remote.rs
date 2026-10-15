@@ -5,16 +5,19 @@
 use crate::client::{Client, HostState, Identity, Incoming};
 use crate::connector::Connector;
 use crate::hosts::Hosts;
+use git2::Oid;
 use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest, OutMessage, Patch};
 use rovik_core::agent_run::subagent::Kind;
 use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequest, UserMessage};
 use rovik_core::chat_db::attachments;
 use rovik_core::chat_db::store::{self, MessagePatch, NewChildDialog, NewMessage};
 use rovik_core::{project_profile, Core};
+use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::{features, Event, Fail, FailCode, Request, Response};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::{mpsc, oneshot};
 
@@ -37,6 +40,13 @@ pub enum CloudEvent {
         message_id: String,
         sent: u64,
         total: u64,
+    },
+    /// A chat's project going up to its host (6.4): the bytes of its pack
+    /// sent so far. A pack's size isn't known until it's built.
+    Pushing {
+        dialog_id: String,
+        project: String,
+        sent: u64,
     },
 }
 
@@ -108,7 +118,7 @@ impl Remote {
         })
     }
 
-    /// Where uploads' progress goes from now on.
+    /// Where uploads' and pushes' progress goes from now on.
     pub fn on_cloud(&self, sink: CloudSink) {
         *self.cloud.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }
@@ -373,6 +383,35 @@ impl Remote {
             done += len;
         }
         Ok(())
+    }
+
+    /// Sends the chat's snapshot to its host, as the chat's snapshot ref
+    /// there (6.4), with the pack's progress on `cloud-event`.
+    pub async fn push_snapshot(
+        &self,
+        dialog_id: &str,
+        project: &str,
+        shadow: &Path,
+        snapshot: Oid,
+    ) -> Result<Pushed, Fail> {
+        let host = self
+            .host_of(dialog_id)
+            .ok_or_else(|| Fail::new(FailCode::BadRequest, "The chat isn't on a host."))?;
+        let (cloud, chat, project_id) = (self.cloud(), dialog_id.to_string(), project.to_string());
+        let progress = move |sent| {
+            if let Some(cloud) = &cloud {
+                cloud(CloudEvent::Pushing {
+                    dialog_id: chat.clone(),
+                    project: project_id.clone(),
+                    sent,
+                });
+            }
+        };
+        let name = packs::snapshot_ref(dialog_id);
+        let client = self.client(&host)?;
+        client
+            .push(project, shadow, &name, snapshot, progress)
+            .await
     }
 
     /// What runs and waits, here and on every connected host (6.1).

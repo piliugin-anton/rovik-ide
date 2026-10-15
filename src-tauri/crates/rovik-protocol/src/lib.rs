@@ -16,6 +16,7 @@ pub mod diff;
 pub mod events;
 mod frame;
 pub mod host;
+pub mod packs;
 pub mod permissions;
 pub mod plan;
 mod request;
@@ -45,6 +46,9 @@ pub mod features {
     /// whose message names attachments, which a daemon without it would
     /// send to the model without them (K46).
     pub const ATTACHMENTS: &str = "attachments";
+    /// The project transport (6.4–6.7): `/packs`, and the Work group as
+    /// its tasks bring it.
+    pub const PROJECTS: &str = "projects";
 }
 
 #[cfg(test)]

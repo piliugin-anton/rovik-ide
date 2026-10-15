@@ -9,12 +9,13 @@
 //!   config.rs   config.toml, read once at start-up
 //!   auth.rs     the computers' tokens, by their hashes (D5)
 //!   daemon.rs   what the daemon does with a request
-//!   server.rs   HTTP on the socket: /health, /rpc and /call
+//!   server.rs   HTTP on the socket: /health, /rpc, /call, /blobs, /packs
 //!   session.rs  one WebSocket and its frames (4.1)
 //!   events.rs   the events: numbered, paced, kept, routed (4.3)
 //!   store.rs    state.json: each chat's computer and settings (D16)
 //!   restart.rs  the runs a crash or an upgrade cut, at start-up (5.4)
 //!   keys.rs     keys.json: the providers' keys (D11)
+//!   packs.rs    each project's repository and its packs (6.4)
 //!   host.rs     `HostInfo`
 //!   attach.rs   `attach --stdio`: a byte bridge to the socket
 //!   doctor.rs   `doctor`: what this server lacks for the daemon
@@ -42,6 +43,8 @@ mod host;
 mod keys;
 #[cfg(unix)]
 mod logfile;
+#[cfg(unix)]
+mod packs;
 #[cfg(unix)]
 mod restart;
 #[cfg(unix)]

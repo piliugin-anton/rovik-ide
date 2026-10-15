@@ -7,15 +7,17 @@
 //!
 //!   connector.rs  how a connection reaches the daemon: a stream each time
 //!   client.rs     one host's connection, its calls and its events
-//!   http.rs       `POST /call`
+//!   http.rs       `POST /call`, `/blobs` and `/packs`
 //!   hosts.rs      each host's client and state
 //!   remote.rs     the app's remote chats: routing, starts and events (6.1)
 //!   shadow.rs     each project's shadow repository and its snapshots (6.4)
+//!   packs.rs      packs between a shadow repository and a host (6.4)
 
 mod client;
 mod connector;
 mod hosts;
 mod http;
+mod packs;
 mod remote;
 pub mod shadow;
 #[cfg(test)]

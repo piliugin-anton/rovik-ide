@@ -146,17 +146,21 @@ impl App {
     /// Bytes uploaded so far, by the progress the app was told.
     fn uploaded(&self) -> u64 {
         let uploads = self.uploads.lock().unwrap();
-        let last = |message: &str| {
-            uploads.iter().rev().find_map(
-                |CloudEvent::Uploading {
-                     message_id, sent, ..
-                 }| { (message_id == message).then_some(*sent) },
-            )
-        };
-        let messages: std::collections::BTreeSet<&str> = uploads
+        let progress: Vec<(&str, u64)> = uploads
             .iter()
-            .map(|CloudEvent::Uploading { message_id, .. }| message_id.as_str())
+            .filter_map(|event| match event {
+                CloudEvent::Uploading {
+                    message_id, sent, ..
+                } => Some((message_id.as_str(), *sent)),
+                _ => None,
+            })
             .collect();
+        let last = |message: &str| {
+            let sent = progress.iter().rev().find(|(id, _)| *id == message);
+            sent.map(|(_, sent)| *sent)
+        };
+        let messages: std::collections::BTreeSet<&str> =
+            progress.iter().map(|(id, _)| *id).collect();
         messages.into_iter().filter_map(last).sum()
     }
 

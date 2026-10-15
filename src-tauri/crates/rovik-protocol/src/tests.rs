@@ -766,3 +766,43 @@ fn a_configuration_without_its_keys() {
     assert_eq!(keyless.models().count(), named.len());
     assert!(config.models().all(|m| !m.api_key.is_empty()), "untouched");
 }
+
+/// The bodies of `/packs` (4.4), and the query of a push.
+#[test]
+fn pack_bodies_round_trip() {
+    use crate::packs::{pushable, Fetch, Pushed, Refs, Update};
+    let id = "0123456789abcdef0123456789abcdef01234567";
+    let refs = Refs {
+        refs: [("refs/rovik/chats/c/snapshot".to_string(), id.to_string())].into(),
+    };
+    assert_eq!(
+        round_trip(&refs),
+        json!({ "refs": { "refs/rovik/chats/c/snapshot": id } })
+    );
+    let fetch = Fetch {
+        wants: vec![id.into()],
+        haves: vec![],
+    };
+    assert_eq!(round_trip(&fetch), json!({ "wants": [id], "haves": [] }));
+    assert_eq!(round_trip(&Pushed { objects: 3 }), json!({ "objects": 3 }));
+
+    for old in [None, Some(id.to_string())] {
+        let update = Update {
+            name: "refs/rovik/chats/c/snapshot".into(),
+            old,
+            new: id.into(),
+        };
+        assert_eq!(Update::parse(&update.query()), Some(update));
+    }
+    for name in [
+        "refs/heads/main",
+        "refs/rovik/../x",
+        "refs/rovik/a b",
+        "refs/rovik/x.lock",
+    ] {
+        assert!(!pushable(name), "{name}");
+    }
+    let unsafe_query = format!("ref=refs/rovik/a&b=c&new={id}&ref=refs/heads/main");
+    assert_eq!(Update::parse(&unsafe_query), None);
+    assert_eq!(Update::parse("ref=refs/rovik/a&new=HEAD"), None);
+}

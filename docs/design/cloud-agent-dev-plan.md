@@ -1583,3 +1583,30 @@ Tasks add notes here when reality differs from the plan.
     paths: the global excludes are a fixture's, and the machine's git
     settings don't count. The hashed files are `Snapshot::hashed`, and a
     test checks that the index keeps every file's stat data.
+- **T02, packs.**
+  - Building a pack, taking one in and checking that a commit is complete
+    are `rovik_core::packs`, which the client and the daemon share. A
+    complete commit is one whose whole tree and parents are there; the
+    history behind the parents isn't walked again.
+  - The daemon creates `projects/<id>.git` on a project's first push.
+    T03's `ProjectEnsure` adds the project's row and its exclude patterns.
+  - A client may push only refs under `refs/rovik/`, written in letters,
+    digits, `-`, `_`, `.` and `/`, so the push's query string needs no
+    escaping and no new dependency. A chat's snapshot goes to
+    `refs/rovik/chats/<chat>/snapshot` (`packs::snapshot_ref`).
+  - A fetch may want only the commits of the project's refs.
+  - A push against a ref that moved is refused with `409` and `Busy`. The
+    client reads the refs before each push, so pushing again gets there.
+  - The daemon reads a pushed pack with a 60-second idle timeout. The
+    client has none of its own yet: H02's keepalives find a dead link.
+  - The daemon names `projects` among its `Welcome`'s features (4.5), and
+    the client checks for it before a push or a fetch.
+  - A push's progress is `CloudEvent::Pushing`, from
+    `Remote::push_snapshot`, in bytes sent: a pack's size isn't known
+    while it's built. A fetch tells none yet; T06 brings the imports that
+    would show it.
+  - The client's HTTP requests no longer declare a length of 0 for a body
+    whose length isn't known: such a body goes chunked.
+  - P09's attachments test now picks the `Uploading` events out of what
+    the app was told: `CloudEvent` has a second variant, which its
+    patterns didn't allow for.

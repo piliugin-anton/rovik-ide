@@ -1,7 +1,8 @@
 //! HTTP on the daemon's socket (4.4): `/health`, the WebSocket at `/rpc`,
-//! and `/call` for a call too big for a frame. Only the daemon's own user
-//! can connect (the socket is 0600 and each peer's uid is checked, D5), and
-//! every request but `/health` names its computer with a token.
+//! `/call` for a call too big for a frame, the attachments' files at
+//! `/blobs`, and the projects' packs at `/packs`. Only the daemon's own
+//! user can connect (the socket is 0600 and each peer's uid is checked,
+//! D5), and every request but `/health` names its computer with a token.
 
 use crate::cli::VERSION;
 use crate::daemon::Daemon;
@@ -17,13 +18,17 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use futures_util::StreamExt;
 use rovik_core::chat_db::attachments;
 use rovik_core::rt;
+use rovik_protocol::packs::{Fetch, Pushed, Update};
 use rovik_protocol::{Fail, FailCode, Frame, MAX_BLOB, MAX_CALL, PROTOCOL};
+use std::convert::Infallible;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 
 pub fn router(daemon: Arc<Daemon>) -> Router {
@@ -32,8 +37,17 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
         .route("/rpc", get(rpc))
         .route("/call", post(call))
         .route("/blobs/{id}", get(blob).put(put_blob))
+        .route("/packs/{project}/refs", get(pack_refs))
+        .route("/packs/{project}", post(push_pack))
+        .route("/packs/{project}/fetch", post(fetch_pack))
         .with_state(daemon)
 }
+
+/// How long a pack may go without a byte moving before it's given up (4.4):
+/// a big one over a slow link takes minutes, but its bytes keep moving.
+const IDLE: Duration = Duration::from_secs(60);
+/// A pack's pieces on their way between the socket and the repository.
+const PIECES: usize = 16;
 
 /// No token: a client sees whether the daemon is there, and which.
 async fn health() -> Response {
@@ -144,6 +158,100 @@ async fn put_blob(
     }
 }
 
+/// The project's refs, which a client builds its pack against (6.4).
+async fn pack_refs(
+    State(daemon): State<Arc<Daemon>>,
+    _: Computer,
+    Path(project): Path<String>,
+) -> Response {
+    let projects = daemon.projects.clone();
+    match rt::spawn_blocking(move || projects.refs(&project)).await {
+        Ok(Ok(refs)) => json(StatusCode::OK, &refs),
+        Ok(Err(fail)) => failed(fail),
+        Err(e) => failed(Fail::new(FailCode::Internal, e.to_string())),
+    }
+}
+
+/// A pack that moves one of the project's refs (6.4). It's taken in as it
+/// comes, and the ref moves only once it's all here and the commit is
+/// complete. A pack cut short leaves no ref, and is sent again whole.
+async fn push_pack(
+    State(daemon): State<Arc<Daemon>>,
+    _: Computer,
+    Path(project): Path<String>,
+    request: Request,
+) -> Response {
+    let Some(update) = request.uri().query().and_then(Update::parse) else {
+        return failed(Fail::new(
+            FailCode::BadRequest,
+            "A push names a ref under refs/rovik/, and the commits it moves from and to.",
+        ));
+    };
+    let (pieces, mut taken) = mpsc::channel::<Vec<u8>>(PIECES);
+    let projects = daemon.projects.clone();
+    let receiving = rt::spawn_blocking(move || {
+        let pieces = std::iter::from_fn(|| taken.blocking_recv());
+        projects.receive(&project, &update, pieces)
+    });
+    let mut body = request.into_body().into_data_stream();
+    while let Ok(Some(Ok(piece))) = tokio::time::timeout(IDLE, body.next()).await {
+        if pieces.send(piece.to_vec()).await.is_err() {
+            break;
+        }
+    }
+    drop(pieces);
+    match receiving.await {
+        Ok(Ok(objects)) => json(StatusCode::OK, &Pushed { objects }),
+        Ok(Err(fail)) => failed(fail),
+        Err(e) => failed(Fail::new(FailCode::Internal, e.to_string())),
+    }
+}
+
+/// The pack of what a client wants from the project and lacks (6.4), sent
+/// as it's built.
+async fn fetch_pack(
+    State(daemon): State<Arc<Daemon>>,
+    _: Computer,
+    Path(project): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Ok(fetch) = serde_json::from_slice::<Fetch>(&body) else {
+        return failed(Fail::new(FailCode::BadRequest, "The body isn't a fetch."));
+    };
+    let projects = daemon.projects.clone();
+    let (checked, ready) = oneshot::channel();
+    let (pieces, built) = mpsc::channel::<Result<Bytes, Infallible>>(PIECES);
+    rt::spawn_blocking(move || {
+        let wanted = match projects.wanted(&project, &fetch) {
+            Ok(wanted) => wanted,
+            Err(fail) => {
+                let _ = checked.send(Err(fail));
+                return;
+            }
+        };
+        let _ = checked.send(Ok(()));
+        let mut piece = |piece: &[u8]| {
+            pieces
+                .blocking_send(Ok(Bytes::copy_from_slice(piece)))
+                .is_ok()
+        };
+        if let Err(fail) = wanted.send(&mut piece) {
+            log::warn!("a fetch of {project} stopped: {fail}");
+        }
+    });
+    match ready.await {
+        Ok(Ok(())) => {
+            let pack = futures_util::stream::unfold(built, |mut built| async move {
+                built.recv().await.map(|piece| (piece, built))
+            });
+            let kind = [(CONTENT_TYPE, "application/x-git-packed-objects")];
+            (StatusCode::OK, kind, Body::from_stream(pack)).into_response()
+        }
+        Ok(Err(fail)) => failed(fail),
+        Err(_) => failed(Fail::new(FailCode::Internal, "The pack couldn't be built.")),
+    }
+}
+
 /// The WebSocket of 4.1. tungstenite speaks it once the upgrade is done;
 /// the session checks the `Hello` it starts with.
 async fn rpc(
@@ -232,6 +340,16 @@ impl FromRequestParts<Arc<Daemon>> for Computer {
 /// A request refused before it got to the daemon, with why.
 fn refusal(status: StatusCode, fail: Fail) -> Response {
     json(status, &fail)
+}
+
+/// A refusal with the status its code calls for: a moved ref is a conflict.
+fn failed(fail: Fail) -> Response {
+    let status = match fail.code {
+        FailCode::BadRequest => StatusCode::BAD_REQUEST,
+        FailCode::Busy => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    refusal(status, fail)
 }
 
 fn json(status: StatusCode, body: &impl serde::Serialize) -> Response {
