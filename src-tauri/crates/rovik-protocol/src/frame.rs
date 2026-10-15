@@ -2,7 +2,7 @@
 //! both directions, of at most `MAX_FRAME` bytes each.
 
 use crate::events::AgentEvent;
-use crate::work::ChatResult;
+use crate::work::{ChatResult, ChatSync};
 use crate::{Request, Response};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -63,6 +63,9 @@ pub enum Event {
     Agent(AgentEvent),
     /// A chat's result is committed (6.5).
     ResultReady(ChatResult),
+    /// A sync brought the project's changes to a chat's worktree, or waits
+    /// (6.7).
+    SyncState(ChatSync),
     /// About the host rather than a chat.
     HostNotice { kind: String, message: String },
     /// In place of an event too big for a frame (4.1): catch this chat up.

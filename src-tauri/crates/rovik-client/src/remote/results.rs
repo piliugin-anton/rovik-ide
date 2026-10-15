@@ -165,8 +165,8 @@ impl Remote {
         let client = self.client(host).map_err(|fail| fail.message)?;
         let fetched = client.fetch(&project, &dir, &[commit]).await;
         fetched.map_err(|fail| fail.message)?;
-        let name = chat.clone();
-        let imported = rt::spawn_blocking(move || shadow.import(&name, commit, &[]));
+        let (name, marked) = (chat.clone(), result.marked.clone());
+        let imported = rt::spawn_blocking(move || shadow.import(&name, commit, &marked));
         match imported.await.map_err(|e| e.to_string())? {
             Ok(imported) if imported.changed.is_empty() => {}
             Ok(_) => match &result.pending {
@@ -223,6 +223,9 @@ impl Remote {
             .await
             .map_err(|e| LandError::Failed(e.to_string()))?;
         if let (Ok(_), Some(imported)) = (&landed, imported) {
+            // The landing base moves there: the next message syncs again,
+            // even with the project as it was at the last sync.
+            self.lock().last_sync.remove(dialog_id);
             self.report(dialog_id, imported).await;
         }
         if keep_chat.is_none() {
@@ -304,7 +307,10 @@ impl Remote {
 
     /// The chat's project here, by its id and folder: the open folder when
     /// it's the open project, else the folder it was last opened from.
-    async fn project_of(&self, dialog_id: &str) -> Result<Option<(String, PathBuf)>, String> {
+    pub(super) async fn project_of(
+        &self,
+        dialog_id: &str,
+    ) -> Result<Option<(String, PathBuf)>, String> {
         let id = dialog_id.to_string();
         let db = &self.core.db;
         let Some(project) = db.read(move |c| store::dialog_project(c, &id)).await? else {
@@ -328,7 +334,7 @@ impl Remote {
             .is_some_and(|(id, _)| id == project)
     }
 
-    fn notice(&self, dialog_id: &str, kind: &str, title: &str, message: &str) {
+    pub(super) fn notice(&self, dialog_id: &str, kind: &str, title: &str, message: &str) {
         self.core.emit(AgentEvent::Notice {
             dialog_id: Some(dialog_id.to_string()),
             kind: kind.into(),

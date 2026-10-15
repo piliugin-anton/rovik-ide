@@ -7,57 +7,20 @@
 
 mod common;
 
-use common::app::App;
-use common::project::{ended, read, ready_to_run, start, unattended, Setup, CHAT};
+use common::app::{landed, App};
+use common::project::{
+    ended, message, read, ready_to_run, start, unattended, writes, Setup, CHAT, PROJECT,
+};
 use common::{until, write};
 use git2::{Oid, Repository, StatusOptions};
-use rovik_core::agent_run::{StartKind, StartRequest, UserMessage};
-use rovik_core::overlay::chats;
+use rovik_core::agent_run::permissions::Permissions;
+use rovik_core::overlay::{chats, import};
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::work::ChatResult;
 use rovik_protocol::Request;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
-
-/// The model writes a file.
-fn writes(id: &'static str, path: &str, content: &str) -> Reply {
-    Reply::Call {
-        id,
-        name: "write",
-        args: json!({ "path": path, "content": content }),
-    }
-}
-
-/// The chat's next message, after the first.
-fn more(setup: &Setup, url: &str) -> StartRequest {
-    let mut next = start(setup, url, unattended());
-    next.start = StartKind::Send {
-        message: UserMessage {
-            id: "u2".into(),
-            content: "More".into(),
-            meta: None,
-            attachments: Vec::new(),
-        },
-    };
-    next
-}
-
-/// The chat's landing base on the daemon.
-fn base(setup: &Setup) -> String {
-    let state = setup.daemon.state();
-    state["chats"][CHAT]["base"].as_str().unwrap().to_string()
-}
-
-/// Waits for a file to land in the desktop's project: there, and the
-/// landing over, its import gone.
-async fn landed(setup: &Setup, path: &str) -> String {
-    let file = setup.project.join(path);
-    until(&format!("{path} landed in the project"), || {
-        (file.exists() && !chats::exists(CHAT)).then(|| read(&file))
-    })
-    .await
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_change_lands_here_and_an_undo_stays_undone() {
@@ -65,7 +28,7 @@ async fn a_remote_change_lands_here_and_an_undo_stays_undone() {
     let app = App::new(&mut setup).await;
     app.connect(&setup).await;
     let root = ready_to_run(&setup).await;
-    let snapshot = base(&setup);
+    let snapshot = setup.base();
     let (url, _) = model(vec![
         writes("w1", "src/new.rs", "fn new() {}\n"),
         Reply::Text("Done."),
@@ -83,7 +46,7 @@ async fn a_remote_change_lands_here_and_an_undo_stays_undone() {
     assert!(!chats::exists(CHAT), "landed: the import is gone");
     // The daemon heard of it: its landing base has the file now.
     let moved = until("the landing base moved", || {
-        Some(base(&setup)).filter(|b| *b != snapshot)
+        Some(setup.base()).filter(|b| *b != snapshot)
     })
     .await;
     let there = setup.there();
@@ -106,8 +69,10 @@ async fn a_remote_change_lands_here_and_an_undo_stays_undone() {
         .await
         .unwrap();
     assert!(!setup.project.join("src/new.rs").exists());
-    app.remote.start(more(&setup, &url)).await.unwrap();
+    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
 
+    // The next message's sync took the undo there, as the user's change.
+    assert!(!root.join("src/new.rs").exists());
     assert_eq!(landed(&setup, "src/other.rs").await, "fn other() {}\n");
     assert!(
         !setup.project.join("src/new.rs").exists(),
@@ -122,15 +87,7 @@ async fn a_conflict_waits_for_resolve_and_land_anyway() {
     let app = App::new(&mut setup).await;
     app.connect(&setup).await;
     ready_to_run(&setup).await;
-    // Changed here since the snapshot went, on the lines the chat changes.
-    write(
-        &setup.project.join("src/main.rs"),
-        "fn main() { local() }\n",
-    );
-    write(
-        &setup.project.join("src/lib.rs"),
-        "pub fn lib() { local() }\n",
-    );
+    app.remote.set_open_project(None);
     let (url, _) = model(vec![
         writes("w1", "src/main.rs", "fn main() { remote() }\n"),
         writes("w2", "src/lib.rs", "pub fn lib() { remote() }\n"),
@@ -139,11 +96,29 @@ async fn a_conflict_waits_for_resolve_and_land_anyway() {
         Reply::Text("Done."),
     ])
     .await;
+    // The chat doesn't resolve conflicts itself: the next message's sync
+    // waits, and its changes stay as they are there.
+    let keeps = Permissions {
+        chat_resolves_conflicts: false,
+        ..unattended()
+    };
+    app.remote.start(start(&setup, &url, keeps)).await.unwrap();
+    until("the result waiting for its project", || {
+        chats::pending(CHAT).filter(|p| p.reason == import::READY)
+    })
+    .await;
+    // Changed here meanwhile, on the lines the chat changed.
+    write(
+        &setup.project.join("src/main.rs"),
+        "fn main() { local() }\n",
+    );
+    write(
+        &setup.project.join("src/lib.rs"),
+        "pub fn lib() { local() }\n",
+    );
 
-    app.remote
-        .start(start(&setup, &url, unattended()))
-        .await
-        .unwrap();
+    let open = (PROJECT.to_string(), setup.project.clone());
+    app.remote.set_open_project(Some(open));
 
     let pending = until("the conflicts in the bar", || {
         chats::pending(CHAT).filter(|p| !p.conflicts.is_empty())
@@ -155,10 +130,10 @@ async fn a_conflict_waits_for_resolve_and_land_anyway() {
         read(&setup.project.join("src/main.rs")),
         "fn main() { local() }\n"
     );
-    let snapshot = base(&setup);
+    let snapshot = setup.base();
     // The chat goes on meanwhile: its newer result waits while the
     // conflicts are settled.
-    app.remote.start(more(&setup, &url)).await.unwrap();
+    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
     until("the newer result held back", || {
         let events = app.test.events.lock().unwrap();
         let held = |e: &&Value| e["title"] == "A newer result of this chat is ready";
@@ -179,7 +154,7 @@ async fn a_conflict_waits_for_resolve_and_land_anyway() {
     let project = |path: &str| read(&setup.project.join(path));
     assert_eq!(project("src/main.rs"), "fn main() { local(); remote() }\n");
     assert_eq!(project("src/lib.rs"), "pub fn lib() { remote() }\n");
-    assert_ne!(base(&setup), snapshot, "the daemon heard of the landing");
+    assert_ne!(setup.base(), snapshot, "the daemon heard of the landing");
     // The newer result comes in now, on the new base: only its own change.
     assert_eq!(landed(&setup, "src/later.rs").await, "fn later() {}\n");
     assert_eq!(project("src/main.rs"), "fn main() { local(); remote() }\n");

@@ -7,7 +7,8 @@ use git2::Repository;
 use rovik_client::shadow::Shadow;
 use rovik_client::{Client, HostState, Identity, Incoming, UnixConnector};
 use rovik_core::agent_run::permissions::Permissions;
-use rovik_core::agent_run::{AgentConfig, StartRequest};
+use rovik_core::agent_run::{AgentConfig, StartKind, StartRequest, UserMessage};
+use rovik_core::testing::Reply;
 use rovik_protocol::agent::AgentStatus;
 use rovik_protocol::packs::snapshot_ref;
 use rovik_protocol::work::{Project, Synced};
@@ -79,6 +80,12 @@ impl Setup {
         sync_as(&self.client, chat, snapshot).await
     }
 
+    /// The chat's landing base on the daemon.
+    pub fn base(&self) -> String {
+        let state = self.daemon.state();
+        state["chats"][CHAT]["base"].as_str().unwrap().to_string()
+    }
+
     /// The project's repository on the daemon.
     pub fn there(&self) -> Repository {
         let path = self.daemon.data.join(format!("projects/{PROJECT}.git"));
@@ -140,6 +147,29 @@ pub fn start(setup: &Setup, url: &str, permissions: Permissions) -> StartRequest
         ..AgentConfig::default()
     });
     start
+}
+
+/// A later message of `CHAT`, with its own `id`.
+pub fn message(setup: &Setup, url: &str, id: &str) -> StartRequest {
+    let mut next = start(setup, url, unattended());
+    next.start = StartKind::Send {
+        message: UserMessage {
+            id: id.into(),
+            content: "More".into(),
+            meta: None,
+            attachments: Vec::new(),
+        },
+    };
+    next
+}
+
+/// The model writes a file.
+pub fn writes(id: &'static str, path: &str, content: &str) -> Reply {
+    Reply::Call {
+        id,
+        name: "write",
+        args: json!({ "path": path, "content": content }),
+    }
 }
 
 /// Any command, no approvals, no checks.

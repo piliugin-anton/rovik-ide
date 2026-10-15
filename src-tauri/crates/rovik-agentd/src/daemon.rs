@@ -10,9 +10,11 @@ use crate::packs::Projects;
 use crate::results::Results;
 use crate::store::Store;
 use crate::work;
+use rovik_core::agent_run::wire_content;
 use rovik_core::chat_db::store::{self, NewDialog};
+use rovik_core::overlay::chats;
 use rovik_core::{project_profile, Core};
-use rovik_protocol::agent::StartRequest;
+use rovik_protocol::agent::{StartKind, StartRequest};
 use rovik_protocol::{Fail, FailCode, Request, Response};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -96,10 +98,25 @@ impl Daemon {
 
     /// A start (6.2): the store keeps its keys apart and its settings, and
     /// the chat becomes the computer's.
-    async fn start(&self, computer: &str, start: StartRequest) -> Result<Response, Fail> {
+    async fn start(&self, computer: &str, mut start: StartRequest) -> Result<Response, Fail> {
         self.can_run(&start.dialog_id)?;
         self.store.started(computer, &start)?;
+        self.tell_marked(&mut start);
         self.run(start).await
+    }
+
+    /// The first message after a sync put conflict markers in the chat's
+    /// files tells its model of them, once (6.7).
+    fn tell_marked(&self, start: &mut StartRequest) {
+        let StartKind::Send { message } = &start.start else {
+            return;
+        };
+        let Some(files) = self.store.marks_to_tell(&start.dialog_id) else {
+            return;
+        };
+        let text = (start.current_user_content.take()).unwrap_or_else(|| wire_content(message));
+        let note = chats::markers_note(&files);
+        start.current_user_content = Some(format!("{text}\n\nNote: {note}"));
     }
 
     /// A chat runs in its worktree (6.4), or, with `--same-machine`, in the

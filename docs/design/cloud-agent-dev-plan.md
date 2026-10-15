@@ -1738,3 +1738,42 @@ Tasks add notes here when reality differs from the plan.
     result doesn't bring the undone change back.
   - The tests share `tests/common/app.rs`: the app's core, its `Remote` and
     its shadow, with the overlays' data folder held for the test.
+- **T07, syncing before each message.**
+  - `Remote::start` syncs a remote chat before each `Send`
+    (`remote/sync.rs`): a snapshot, `ProjectEnsure` once a session per host
+    and project, the push, and `WorkSync`. A snapshot the chat's last sync
+    took isn't synced again, but a landing makes the next message sync,
+    since it moved the landing base. A chat without a project, or on a
+    daemon without `projects`, isn't synced. A sync that fails says so in a
+    notice, and the message goes to the chat as it was.
+  - The daemon merges in `sync.rs`, under the same lock as results and
+    landings. It takes "chat resolves conflicts" from the chat's computer's
+    configuration, which each start brings. A sync that applies moves the
+    chat's branch to the snapshot and resets the worktree's index (mixed).
+  - A link or a folder on either side is unmergeable, like a binary file. A
+    file both sides added is merged against nothing, so different text
+    conflicts.
+  - `Synced` grows `state` and `files`, and `Event::SyncState` carries the
+    same, as `ChatSync` with the chat's id. `SyncState` has four states:
+    `synced` (applied; the files merged with the chat's own), `marked`,
+    `conflicts` (waits; the chat could take them) and `unmergeable` (waits;
+    binary, or deleted on one side and changed on the other).
+  - The client keeps each chat's last sync (`Remote::sync_state`) for T10's
+    `overlay_status` and U05's bar. Until U05, a sync that waits says why
+    in a notice.
+  - The marker text builder is `overlay::markers` now. `mark_one`,
+    `markers_left` and the daemon's sync use it, with the same labels.
+  - The daemon keeps the marked files in `state.json`. The next message's
+    start tells the model of them once, with the note a local chat gets
+    (`chats::markers_note`), added to the text the model gets for the
+    message (`current_user_content`, else `agent_run::wire_content`). Each
+    result lists the marked files that still have their markers
+    (`ChatResult.marked`), which the import writes to `markers.json`, so
+    landing waits until they're gone.
+  - A daemon run isn't reminded of markers left when it ends
+    (`remind_of_markers`): that stays an overlay chat's.
+  - T06's tests now go through the sync. The undo test checks that the
+    next message's sync took the undo to the worktree. The conflict test's
+    chat doesn't resolve conflicts, so its second message's sync waits, and
+    the local edits come after its first result, which waits for the
+    project to open: before, the sync would have brought them to the chat.

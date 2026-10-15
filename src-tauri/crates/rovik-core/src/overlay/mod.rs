@@ -6,6 +6,7 @@ pub mod confine;
 pub mod fs;
 pub mod import;
 pub mod land;
+pub mod markers;
 pub mod tiers;
 
 #[cfg(test)]

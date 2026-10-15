@@ -2,8 +2,8 @@
 //! in the setup's project and on the daemon, with the project open, its
 //! shadow where the app keeps it, and its remote chats' `Remote`.
 
-use super::project::{Setup, CHAT, PROJECT};
-use super::COMPUTER;
+use super::project::{read, Setup, CHAT, PROJECT};
+use super::{until, COMPUTER};
 use rovik_client::{shadow, HostState, Identity, Remote, UnixConnector};
 use rovik_core::chat_db::projects;
 use rovik_core::chat_db::store::{self, NewDialog};
@@ -72,4 +72,14 @@ impl App {
         }
         panic!("never connected\n{}", setup.daemon.output());
     }
+}
+
+/// Waits for a file to land in the setup's project: there, and the landing
+/// over, its import gone.
+pub async fn landed(setup: &Setup, path: &str) -> String {
+    let file = setup.project.join(path);
+    until(&format!("{path} landed in the project"), || {
+        (file.exists() && !chats::exists(CHAT)).then(|| read(&file))
+    })
+    .await
 }

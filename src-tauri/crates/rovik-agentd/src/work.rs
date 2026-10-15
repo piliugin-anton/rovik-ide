@@ -1,20 +1,22 @@
 //! Each chat's worktree on the daemon (6.4, D8). A project's repository
 //! holds the snapshots its desktop pushed (T02). A chat works in a worktree
 //! of its own in `work/<chat>`, on branch `rovik/<chat>` at the snapshot it
-//! started from. Its root, the worktree or the project's folder in it, is
-//! one of its project's folders and has the project's ID file, so a run
-//! there works as a local chat does in its project. A deleted chat takes
-//! its worktree, branch and refs with it, and start-up collects those of
-//! chats deleted while the daemon was away.
+//! started from, and each later sync merges the project's newer snapshot
+//! into it (sync.rs). Its root, the worktree or the project's folder in
+//! it, is one of its project's folders and has the project's ID file, so a
+//! run there works as a local chat does in its project. A deleted chat
+//! takes its worktree, branch and refs with it, and start-up collects
+//! those of chats deleted while the daemon was away.
 
 use crate::daemon::Daemon;
 use crate::store::Place;
+use crate::sync::{self, Merged};
 use git2::{BranchType, Oid, Repository, WorktreeAddOptions, WorktreePruneOptions};
 use rovik_core::chat_db::{projects, store};
 use rovik_core::{project_profile, rt};
 use rovik_protocol::packs::PUSHED_REFS;
-use rovik_protocol::work::{Project, Synced};
-use rovik_protocol::{Fail, FailCode, Response};
+use rovik_protocol::work::{ChatSync, Project, SyncState, Synced};
+use rovik_protocol::{Event, Fail, FailCode, Response};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,7 +49,7 @@ pub async fn ensure_project(
 }
 
 /// `WorkSync`: a chat without a worktree gets one at the snapshot. A chat
-/// that has one keeps it as it is until syncs merge (T07).
+/// that has one gets the snapshot merged into it.
 pub async fn sync(
     daemon: &Daemon,
     computer: &str,
@@ -63,10 +65,15 @@ pub async fn sync(
     let state = daemon.store.project(project).ok_or_else(|| {
         bad_request("The project isn't on this server yet: ProjectEnsure comes first.")
     })?;
-    if let Some(root) = root(daemon, chat) {
-        return Ok(Response::Synced(synced(&root)));
-    }
     let base = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
+    if let Some(root) = root(daemon, chat) {
+        let merged = merge_into(daemon, chat, project, base, excludes).await?;
+        return Ok(Response::Synced(Synced {
+            root: text(&root),
+            state: merged.state,
+            files: merged.files,
+        }));
+    }
     let worktree = daemon.worktrees.join(chat);
     let (projects, id, name, at) = (
         daemon.projects.clone(),
@@ -102,6 +109,45 @@ pub async fn sync(
         .store
         .worktree_made(computer, chat, place, snapshot)?;
     Ok(Response::Synced(synced(&root)))
+}
+
+/// Merges the snapshot into the chat's worktree, under the client's ignore
+/// rules (sync.rs), and tells the chat's computer what it did.
+async fn merge_into(
+    daemon: &Daemon,
+    chat: &str,
+    project: &str,
+    snapshot: Oid,
+    excludes: Vec<String>,
+) -> Result<Merged, Fail> {
+    let place = daemon.store.place(chat).filter(|p| p.project == project);
+    let place = place.ok_or_else(|| bad_request("This chat works in another project here."))?;
+    let config = daemon.store.config_of(chat).unwrap_or_default();
+    let resolves = config.permissions.chat_resolves_conflicts;
+    let _base = daemon.results.hold_base().await;
+    let base = daemon
+        .store
+        .base_of(chat)
+        .ok_or_else(|| internal("The chat's worktree has no base commit.".into()))?;
+    let (projects, id) = (daemon.projects.clone(), project.to_string());
+    let merged = rt::spawn_blocking(move || {
+        projects.prepare(&id, &excludes)?;
+        sync::merge(&place.worktree, &base, snapshot, resolves)
+    });
+    let merged = merged.await.map_err(joined)??;
+    if merged.applied() {
+        daemon.store.base_moved(chat, &snapshot.to_string());
+    }
+    if merged.state == SyncState::Marked {
+        daemon.store.marked_by_sync(chat, &merged.files);
+    }
+    let told = ChatSync {
+        dialog_id: chat.to_string(),
+        state: merged.state,
+        files: merged.files.clone(),
+    };
+    daemon.events.chat(chat, Event::SyncState(told));
+    Ok(merged)
 }
 
 /// The chat's root on this server, once it has a worktree: the worktree,
@@ -252,7 +298,10 @@ fn plain(chat: &str) -> bool {
 }
 
 fn synced(root: &Path) -> Synced {
-    Synced { root: text(root) }
+    Synced {
+        root: text(root),
+        ..Synced::default()
+    }
 }
 
 /// The form a root takes in a start and in the project's settings.

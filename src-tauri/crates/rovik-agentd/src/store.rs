@@ -77,6 +77,12 @@ pub struct ChatState {
     /// Its newest result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<ChatResult>,
+    /// Files a sync put conflict markers in, until they're gone (6.7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked: Vec<String>,
+    /// Its next message's start is to tell the chat of them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tell_marked: bool,
 }
 
 /// Where a chat works: its project and its worktree's folder.
@@ -289,6 +295,43 @@ impl Store {
     /// The chat's newest result.
     pub fn result_made(&self, dialog_id: &str, result: ChatResult) {
         self.change(dialog_id, |chat| chat.result = Some(result));
+    }
+
+    /// A sync put conflict markers in `files`: they're kept, and the chat's
+    /// next message tells it.
+    pub fn marked_by_sync(&self, dialog_id: &str, files: &[String]) {
+        self.change(dialog_id, |chat| {
+            chat.marked.extend(files.iter().cloned());
+            chat.marked.sort();
+            chat.marked.dedup();
+            chat.tell_marked = true;
+        });
+    }
+
+    /// The files a sync marked that had their markers still, last looked.
+    pub fn marked_of(&self, dialog_id: &str) -> Vec<String> {
+        let inner = self.lock();
+        let chat = inner.state.chats.get(dialog_id);
+        chat.map(|chat| chat.marked.clone()).unwrap_or_default()
+    }
+
+    /// Of the files a sync marked, `left` still have their markers.
+    pub fn marks_left(&self, dialog_id: &str, left: Vec<String>) {
+        self.change(dialog_id, |chat| {
+            chat.tell_marked &= !left.is_empty();
+            chat.marked = left;
+        });
+    }
+
+    /// The marked files the chat is to be told of, once.
+    pub fn marks_to_tell(&self, dialog_id: &str) -> Option<Vec<String>> {
+        let mut told = None;
+        self.change(dialog_id, |chat| {
+            if std::mem::take(&mut chat.tell_marked) {
+                told = Some(chat.marked.clone());
+            }
+        });
+        told
     }
 
     /// The chat's newest result.

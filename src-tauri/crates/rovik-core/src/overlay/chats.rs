@@ -12,6 +12,10 @@
 //! isolation, and the run says so.
 
 use super::fs::{OverlayChange, OverlayFs, DEFAULT_LIMIT};
+// The markers put in a chat's files for it to resolve.
+use super::markers::{
+    self, BASE as MARK_BASE, CHAT as MARK_CHAT, PROJECT as MARK_PROJECT, SPLIT as MARK_SPLIT,
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -1237,7 +1241,7 @@ pub fn take_note(dialog_id: &str) -> Option<String> {
     }
     if !notes.marked.is_empty() {
         let files: Vec<String> = notes.marked.iter().cloned().collect();
-        parts.push(resolve_request(&files).replace("\n\n", " "));
+        parts.push(markers_note(&files));
     }
     if let Some(peer) = fresh_peer_note(dialog_id) {
         parts.push(peer);
@@ -2299,33 +2303,17 @@ pub fn conflict_file(dialog_id: &str, path: &str) -> Result<crate::merge::Confli
 
 /// [`conflict_file`], from the three versions as read.
 fn conflict_file_of(path: &str, s: &Sides) -> crate::merge::ConflictFile {
-    use crate::merge::{is_binary, merge3_raw, parse_merged, MergeSegment};
     let binary = [&s.base, &s.chat, &s.project]
         .iter()
-        .any(|b| b.as_deref().is_some_and(is_binary));
+        .any(|b| b.as_deref().is_some_and(crate::merge::is_binary));
     let text = |b: &Option<Vec<u8>>| {
         b.as_deref()
             .map(|b| String::from_utf8_lossy(b).into_owned())
     };
     let segments = if binary {
         Vec::new()
-    } else if let (Some(p), Some(c)) = (&s.project, &s.chat) {
-        // Refused by libgit2 (not for text, but just in case): the whole
-        // file as one conflict.
-        match merge3_raw(s.base.as_deref().unwrap_or(&[]), p, c) {
-            Ok(merged) => parse_merged(&String::from_utf8_lossy(&merged.content)),
-            Err(_) => vec![MergeSegment::Conflict {
-                ours: text(&s.project).unwrap_or_default(),
-                base: text(&s.base).unwrap_or_default(),
-                theirs: text(&s.chat).unwrap_or_default(),
-            }],
-        }
     } else {
-        vec![MergeSegment::Conflict {
-            ours: text(&s.project).unwrap_or_default(),
-            base: text(&s.base).unwrap_or_default(),
-            theirs: text(&s.chat).unwrap_or_default(),
-        }]
+        markers::segments(s.base.as_deref(), s.project.as_deref(), s.chat.as_deref())
     };
     crate::merge::ConflictFile {
         path: path.to_string(),
@@ -2390,13 +2378,6 @@ pub fn resolve_conflict(
     }
     Ok(left)
 }
-
-/// The markers put in the chat's files for it to resolve, labelled so they
-/// can be found again (and aren't mistaken for markers of its own).
-const MARK_PROJECT: &str = "<<<<<<< project (now)";
-const MARK_BASE: &str = "||||||| before";
-const MARK_SPLIT: &str = "=======";
-const MARK_CHAT: &str = ">>>>>>> this chat";
 
 fn markers_file(dialog_id: &str) -> Option<PathBuf> {
     Some(store_dir(dialog_id)?.join("markers.json"))
@@ -2484,28 +2465,7 @@ fn mark_one(dialog_id: &str, path: &str) -> Result<bool, String> {
     if file.binary || file.ours.is_none() || file.theirs.is_none() {
         return Ok(false);
     }
-    let mut text = String::new();
-    for seg in &file.segments {
-        match seg {
-            crate::merge::MergeSegment::Common { text: t } => text.push_str(t),
-            crate::merge::MergeSegment::Conflict { ours, base, theirs } => {
-                for (mark, part) in [
-                    (MARK_PROJECT, ours),
-                    (MARK_BASE, base),
-                    (MARK_SPLIT, theirs),
-                ] {
-                    text.push_str(mark);
-                    text.push('\n');
-                    text.push_str(part);
-                    if !part.is_empty() && !part.ends_with('\n') {
-                        text.push('\n');
-                    }
-                }
-                text.push_str(MARK_CHAT);
-                text.push('\n');
-            }
-        }
-    }
+    let text = markers::text(&file.segments);
     // The chat's own version is kept: Resolve… and Undo the merge use it.
     keep_versions(dialog_id, path, &s)?;
     with_fs(dialog_id, |fs| {
@@ -2526,18 +2486,19 @@ pub fn markers_left(dialog_id: &str) -> Vec<String> {
     if all.is_empty() {
         return all;
     }
-    let (left, resolved): (Vec<String>, Vec<String>) = all.into_iter().partition(|path| {
-        current_version(dialog_id, path).is_some_and(|c| {
-            String::from_utf8_lossy(&c)
-                .lines()
-                .any(|l| l.starts_with(MARK_PROJECT) || l.starts_with(MARK_CHAT))
-        })
-    });
+    let (left, resolved): (Vec<String>, Vec<String>) = all
+        .into_iter()
+        .partition(|path| current_version(dialog_id, path).is_some_and(|c| markers::left_in(&c)));
     for path in &resolved {
         forget_kept(dialog_id, path);
     }
     set_marked(dialog_id, left.clone());
     left
+}
+
+/// What the chat's model is told of files marked for it, in a note.
+pub fn markers_note(files: &[String]) -> String {
+    resolve_request(files).replace("\n\n", " ")
 }
 
 /// What the chat is asked, with the conflicts marked in its files.

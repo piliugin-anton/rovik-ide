@@ -11,7 +11,7 @@ use crate::host::{HostInfo, Install};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
-use crate::work::{ChatResult, Project, Synced};
+use crate::work::{ChatResult, ChatSync, Project, SyncState, Synced};
 use crate::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -25,6 +25,7 @@ fn result(pending: Option<&str>) -> ChatResult {
         commit: "0123456789abcdef0123456789abcdef01234567".into(),
         outcome: "done".into(),
         pending: pending.map(String::from),
+        marked: Vec::new(),
     }
 }
 
@@ -491,8 +492,19 @@ fn every_response_round_trips() {
             Response::Ids(Vec::new()),
             Response::Synced(Synced {
                 root: "/home/me/.local/share/rovik/work/d".into(),
+                state: SyncState::Synced,
+                files: Vec::new(),
+            }),
+            Response::Synced(Synced {
+                root: "/home/me/.local/share/rovik/work/d".into(),
+                state: SyncState::Marked,
+                files: vec!["src/main.rs".into()],
             }),
             Response::ChatResult(result(Some("Not landed: the run was stopped."))),
+            Response::ChatResult(ChatResult {
+                marked: vec!["src/main.rs".into()],
+                ..result(None)
+            }),
             Response::ChatResults(vec![result(None)]),
             Response::ChatResults(Vec::new()),
         ],
@@ -509,6 +521,11 @@ fn every_event_round_trips() {
                 run_id: "r".into(),
             }),
             Event::ResultReady(result(None)),
+            Event::SyncState(ChatSync {
+                dialog_id: "d".into(),
+                state: SyncState::Conflicts,
+                files: vec!["src/main.rs".into()],
+            }),
             Event::HostNotice {
                 kind: "drain".into(),
                 message: "Rovik is being upgraded.".into(),
@@ -518,6 +535,20 @@ fn every_event_round_trips() {
             },
         ],
     );
+}
+
+#[test]
+fn every_sync_state_round_trips() {
+    for state in [
+        SyncState::Synced,
+        SyncState::Marked,
+        SyncState::Conflicts,
+        SyncState::Unmergeable,
+    ] {
+        round_trip(&state);
+    }
+    let older: Synced = serde_json::from_value(json!({ "root": "/w" })).unwrap();
+    assert_eq!(older.state, SyncState::Synced, "a daemon from T03");
 }
 
 #[test]

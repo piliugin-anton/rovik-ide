@@ -16,6 +16,7 @@ use rovik_core::overlay::import::Imported;
 use rovik_core::{project_profile, Core};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
+use rovik_protocol::work::ChatSync;
 use rovik_protocol::{features, Event, Fail, FailCode, Request, Response};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -24,6 +25,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::{mpsc, oneshot};
 
 mod results;
+mod sync;
 
 /// The outcome told for a run that ended while its host was away: the
 /// client can't know it until results come (T05).
@@ -115,6 +117,12 @@ struct State {
     open: Option<(String, PathBuf)>,
     /// Landings their hosts weren't told of yet, by chat.
     unreported: HashMap<String, Imported>,
+    /// Each chat's snapshot as its last sync took it (6.7).
+    last_sync: HashMap<String, Oid>,
+    /// The projects ensured on each host this session: (host, project).
+    ensured: HashSet<(String, String)>,
+    /// Each chat's last sync, as its host told it.
+    syncs: HashMap<String, ChatSync>,
 }
 
 impl Remote {
@@ -247,10 +255,10 @@ impl Remote {
     }
 
     /// A start (6.1). A remote chat's is prepared for its host first: its
-    /// project checked here, local paths taken out of the request's text
-    /// (K08), the project's settings added (K03), the host's approval
-    /// policy applied (6.9), and the text left out when the host has it
-    /// already (K50).
+    /// project checked here and synced before a message (6.7), local paths
+    /// taken out of the request's text (K08), the project's settings added
+    /// (K03), the host's approval policy applied (6.9), and the text left
+    /// out when the host has it already (K50).
     pub async fn start(&self, mut request: StartRequest) -> Result<Response, Fail> {
         let Some(host) = self.host_of(&request.dialog_id) else {
             return rovik_core::dispatch(&self.core, Request::AgentStart(request)).await;
@@ -259,6 +267,9 @@ impl Remote {
         agent_run::check_project(&self.core.db, &request.dialog_id, request.root.as_deref())
             .await
             .map_err(internal)?;
+        if matches!(request.start, StartKind::Send { .. }) {
+            self.sync_before_send(&host, &request.dialog_id).await;
+        }
         if let Some(root) = request.root.clone().filter(|r| !r.trim().is_empty()) {
             relative_paths(&mut request, &root);
             let settings =
@@ -502,6 +513,11 @@ impl Remote {
                 Event::Agent(event) => self.agent_event(host, event).await,
                 Event::Resync { dialog_id } => self.resync(host, &dialog_id).await,
                 Event::ResultReady(result) => self.result_ready(host, result),
+                Event::SyncState(sync) => {
+                    if self.host_of(&sync.dialog_id).as_deref() == Some(host) {
+                        self.synced(sync);
+                    }
+                }
                 Event::HostNotice { kind, message } => self.core.emit(AgentEvent::Notice {
                     dialog_id: None,
                     kind,

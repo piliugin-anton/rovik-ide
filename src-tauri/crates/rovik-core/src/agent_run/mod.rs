@@ -661,6 +661,12 @@ pub async fn check_attachments(
 pub const ATTACHMENT_GONE: &str =
     "A file attached to the message is no longer available. Remove it and attach it again.";
 
+/// What a user message sends the model: the text with its editor context
+/// (`meta.sentContent`), else its text.
+pub fn wire_content(message: &UserMessage) -> String {
+    run::sent_text(message.meta.as_ref()).unwrap_or_else(|| message.content.clone())
+}
+
 /// A sent message as the chat stores it.
 pub fn stored_message(message: &UserMessage) -> NewMessage {
     NewMessage {

@@ -28,6 +28,11 @@ pub struct ChatResult {
     /// chat's landing would give.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<String>,
+    /// Files that still have the conflict markers a sync put in them (6.7),
+    /// from the root of the result's tree: it doesn't land until they're
+    /// gone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked: Vec<String>,
 }
 
 /// What a sync did (6.7).
@@ -37,4 +42,39 @@ pub struct Synced {
     /// The chat's root on the server: its worktree, or the project's folder
     /// in it.
     pub root: String,
+    #[serde(default)]
+    pub state: SyncState,
+    /// The files `state` is about, from the root of the project's
+    /// repository.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+}
+
+/// Where a chat's worktree stands after a sync brought the project's
+/// changes (6.7). Waiting, the chat goes on with the older copy of the
+/// files the project changed.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncState {
+    /// Applied. The files are those merged with the chat's own changes.
+    #[default]
+    Synced,
+    /// Applied, with conflict markers in the files for the chat to settle.
+    Marked,
+    /// Waits: the files changed on the same lines here and in the chat,
+    /// which doesn't resolve conflicts itself.
+    Conflicts,
+    /// Waits: among the files, some are binary, or deleted on one side and
+    /// changed on the other. They stay with the user, whatever the setting.
+    Unmergeable,
+}
+
+/// A chat's sync, for the isolation bar (6.7).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSync {
+    pub dialog_id: String,
+    pub state: SyncState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }

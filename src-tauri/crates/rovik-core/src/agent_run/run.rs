@@ -2838,11 +2838,13 @@ pub(super) async fn recent_messages(
 }
 
 fn sent_content(m: &MessageRow) -> Option<String> {
-    m.meta
-        .as_ref()?
-        .get("sentContent")?
-        .as_str()
-        .map(str::to_string)
+    sent_text(m.meta.as_ref())
+}
+
+/// A user message's `meta.sentContent`: the text it sent with its editor
+/// context.
+pub(super) fn sent_text(meta: Option<&serde_json::Value>) -> Option<String> {
+    meta?.get("sentContent")?.as_str().map(str::to_string)
 }
 
 /// The mode of the request a run belongs to: its starting message's.

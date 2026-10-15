@@ -6,7 +6,8 @@
 //! agent's `git status` in the worktree never changes under it, and later
 //! results read only the files that changed. A result is committed when the
 //! chat's run ends and on `WorkResult`; the newest is kept in `state.json`
-//! with its outcome and the reason a local chat's landing would give, and
+//! with its outcome, the reason a local chat's landing would give and the
+//! files a sync marked that still have their markers (6.7), and
 //! `ResultReady` tells the chat's computer.
 //!
 //! Once a result has landed there, `WorkLanded` moves the landing base to
@@ -19,11 +20,13 @@ use crate::store::{Place, Store};
 use git2::build::TreeUpdateBuilder;
 use git2::{FileMode, Index, ObjectType, Oid, Repository, ResetType, Signature};
 use rovik_core::agent_run::pending_reason;
+use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_core::staging::{self, Base};
 use rovik_protocol::packs::result_ref;
 use rovik_protocol::work::ChatResult;
 use rovik_protocol::{Event, Fail, FailCode};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -32,8 +35,8 @@ pub struct Results {
     dir: PathBuf,
     store: Arc<Store>,
     events: Arc<Events>,
-    /// One commit or move of a landing base at a time: a result is always
-    /// committed on the base as it is.
+    /// One commit or move of a landing base at a time (a result, a landing,
+    /// a sync): a result is always committed on the base as it is.
     base: tokio::sync::Mutex<()>,
 }
 
@@ -70,17 +73,22 @@ impl Results {
             self.dir.join(format!("{dialog_id}.index")),
             dialog_id.to_string(),
         );
-        let committed =
-            rt::spawn_blocking(move || commit_worktree(&place.worktree, &index, &base, &chat));
-        let commit = committed
+        let marked = self.store.marked_of(dialog_id);
+        let committed = rt::spawn_blocking(move || {
+            let commit = commit_worktree(&place.worktree, &index, &base, &chat)?;
+            Ok::<_, String>((commit, markers_left(&place.worktree, marked)))
+        });
+        let (commit, marked) = committed
             .await
             .map_err(|e| internal(e.to_string()))?
             .map_err(internal)?;
+        self.store.marks_left(dialog_id, marked.clone());
         let result = ChatResult {
             dialog_id: dialog_id.to_string(),
             commit: commit.to_string(),
             outcome: outcome.to_string(),
             pending: pending_reason(outcome),
+            marked,
         };
         self.store.result_made(dialog_id, result.clone());
         self.events
@@ -115,6 +123,11 @@ impl Results {
             self.commit(dialog_id, &newer.outcome).await?;
         }
         Ok(())
+    }
+
+    /// The landing bases, held while one is read and moved.
+    pub async fn hold_base(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.base.lock().await
     }
 
     /// The chat's worktree and its landing base.
@@ -169,6 +182,13 @@ fn commit_worktree(worktree: &Path, index: &Path, base: &str, chat: &str) -> Res
         .map_err(git)?;
     repo.reference(&name, commit, true, "result").map_err(git)?;
     Ok(commit)
+}
+
+/// Of the files a sync marked, those whose markers are still in the
+/// worktree.
+fn markers_left(worktree: &Path, marked: Vec<String>) -> Vec<String> {
+    let left = |path: &String| fs::read(worktree.join(path)).is_ok_and(|f| markers::left_in(&f));
+    marked.into_iter().filter(left).collect()
 }
 
 /// A new landing base: `base` with `landed`'s entries for `paths`, as one
