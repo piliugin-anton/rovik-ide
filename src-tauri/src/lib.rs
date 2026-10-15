@@ -1,4 +1,6 @@
 use crate::{filesystem::WatcherState, terminal::TerminalState};
+use rovik_client::provider_keys::ProviderKeys;
+use rovik_client::secrets::SecretStore;
 use rovik_client::Remote;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
 use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
@@ -43,7 +45,13 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let paths = Paths::new(app.path().app_data_dir()?, app.path().app_config_dir()?);
+            let config = app.path().app_config_dir()?;
+            // The providers' API keys, in the keychain or the encrypted
+            // file in its place, out of ai-settings.json (H06).
+            let secrets = Arc::new(SecretStore::open(config.join("secrets.json")));
+            let keys = ProviderKeys::new(config.join("ai-settings.json"), secrets);
+            app.manage(Arc::new(keys));
+            let paths = Paths::new(app.path().app_data_dir()?, config);
             let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
             // Chats on hosts (6.1): their requests go to the host, and its
             // events come back through the core's sink.

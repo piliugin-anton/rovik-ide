@@ -2341,3 +2341,24 @@ Tasks add notes here when reality differs from the plan.
     used yet. The e2e test runs the probe on this machine through the
     test SSH server, against a local API that answers 401 and a closed
     port. The run against a VPS stays manual.
+- **H06, the desktop's API keys.**
+  - `rovik_client::provider_keys::ProviderKeys` stands between the two
+    settings commands and `ai-settings.json`. The file is now version 3:
+    each provider whose key is saved has an empty `apiKey` and says where
+    the key is in `apiKeyIn` (`keychain`, or `secrets-file` for the
+    encrypted file). The key's account is `provider/<id>/api-key`. A
+    version 2 file's keys move over at the first load. The frontend gets
+    the keys filled in and saves them as before, so it didn't change.
+    Older app versions still read the file, with empty keys.
+  - A save puts each key in the store, and forgets the key of a provider
+    that's gone or whose key was cleared. Load and save share a lock, so
+    a load that moves keys can't write over a save. Both run off the
+    main thread, as the keychain may take a moment or ask the user.
+  - The app opens one `SecretStore` at start-up, with `secrets.json` in
+    its config folder as the fallback. While that file is locked (no
+    passphrase is asked yet; U01 adds that), keys can't be read or saved
+    there. Keys already in the settings file stay in it, as before H06,
+    until a load with the store unlocked moves them. A key that couldn't
+    be read at the last load is kept when the frontend saves it empty,
+    since empty then means unknown, not cleared. The same applies when
+    the keychain refuses a read.

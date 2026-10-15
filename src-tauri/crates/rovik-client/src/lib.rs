@@ -18,6 +18,8 @@
 //!   host_settings.rs  the hosts this computer knows (cloud-hosts.json)
 //!   secrets.rs    passwords, passphrases, tokens and API keys, in the
 //!                 keychain or a file encrypted in its place
+//!   provider_keys.rs  the desktop's API keys out of ai-settings.json, into
+//!                 the secrets
 //!   ssh.rs        SSH to a host: a channel to its daemon for each stream,
 //!                 and the commands that set it up
 //!   system_ssh.rs the user's own ssh, forwarding a socket to the daemon
@@ -31,6 +33,7 @@ pub mod host_settings;
 mod hosts;
 mod http;
 mod packs;
+pub mod provider_keys;
 mod remote;
 pub mod secrets;
 pub mod shadow;

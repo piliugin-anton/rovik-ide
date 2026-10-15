@@ -1,5 +1,6 @@
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{self, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
+use rovik_client::provider_keys::ProviderKeys;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -1538,24 +1539,25 @@ pub fn copy_path(
 
 // --- AI chat: settings persistence + the actual API call ------------------
 
-fn ai_settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    Ok(dir.join("ai-settings.json"))
+// `ai-settings.json`, its API keys in the keychain (H06): off the main
+// thread, as the keychain may take a moment, or ask the user.
+#[tauri::command]
+pub async fn load_ai_settings(keys: State<'_, Arc<ProviderKeys>>) -> Result<String, String> {
+    let keys = Arc::clone(&keys);
+    rovik_core::rt::spawn_blocking(move || keys.load())
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn load_ai_settings(app: AppHandle) -> Result<String, String> {
-    let path = ai_settings_path(&app)?;
-    if !path.exists() {
-        return Ok(r#"{"profiles":[],"activeProfileId":null}"#.to_string());
-    }
-    fs::read_to_string(&path).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn save_ai_settings(app: AppHandle, json: String) -> Result<(), String> {
-    let path = ai_settings_path(&app)?;
-    rovik_core::atomic_file::write_atomic_private(&path, json.as_bytes()).map_err(|e| e.to_string())
+pub async fn save_ai_settings(
+    keys: State<'_, Arc<ProviderKeys>>,
+    json: String,
+) -> Result<(), String> {
+    let keys = Arc::clone(&keys);
+    rovik_core::rt::spawn_blocking(move || keys.save(&json))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize, Deserialize)]
